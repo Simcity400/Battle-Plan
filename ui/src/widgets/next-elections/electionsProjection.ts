@@ -6,7 +6,7 @@ import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow,
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatProgress, formatScalar } from '../../families/valueFormat.ts';
 import type { ElectionEntry, NextElectionsReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -62,7 +62,7 @@ function termCell(entry: ElectionEntry, hour: number): TableCell {
   }
   const share = Math.max(0, Math.min(1, (hour - entry.last) / (entry.next - entry.last)));
   return {
-    value: knownValue(`${Math.floor(share * 100)}%`),
+    value: knownValue(formatProgress(share)),
     sortValue: share === 0 ? zeroValue(0) : knownValue(share),
     bar: { fraction: share === 0 ? zeroValue(0) : knownValue(share) },
   };

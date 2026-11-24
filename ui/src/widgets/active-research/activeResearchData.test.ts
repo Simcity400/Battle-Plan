@@ -64,7 +64,7 @@ test('the drawn card uses the dated slot identity, progress and countdown', () =
   assert.equal(values.get('0:days'), '2 days left');
   assert.equal(values.get('0:bar'), '0.5');
   const later = slotValues(reply(day(97), [read]), day(98), () => .625);
-  assert.equal(later.get('0:percent'), '63%');
+  assert.equal(later.get('0:percent'), '62%');
   assert.equal(later.get('0:days'), '1 day left');
   assert.equal(later.get('0:bar'), '0.625');
 });

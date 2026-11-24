@@ -1042,9 +1042,9 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(labelTip?.payload?.title, 'Strained');
     const hoverTip = deriveTimeChartTooltip(model, layout, `plot:${hoverAt}`);
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}:${i.value}`), [
-      'In supply:27.00% · 27 divisions',
-      'Strained:66.00% · 66 divisions',
-      'No supply:7.00% · 7 divisions',
+      'In supply:27% · 27 divisions',
+      'Strained:66% · 66 divisions',
+      'No supply:7% · 7 divisions',
     ]);
   });
 
@@ -1106,8 +1106,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
 
     assert.equal(model.mode, 'stack');
     assert.deepEqual(model.stack?.bands.map(b => [b.id, b.endLabel?.value]), [
-      ['fascism', '70.0%'],
-      ['democratic', '30.0%'],
+      ['fascism', '70%'],
+      ['democratic', '30%'],
     ]);
     assert.equal(model.note, 'Test Leader · Nazism · Test Party');
     assert.equal(model.markers?.length, 1, 'future election marker must be clamped');
@@ -1116,8 +1116,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}=${i.value}`), [
       'Leader=Test Leader',
       'Ideology · party=Nazism · Test Party',
-      'Fascist (ruling)=70.0%',
-      'Democratic=30.0%',
+      'Fascist (ruling)=70%',
+      'Democratic=30%',
     ]);
   });
 });

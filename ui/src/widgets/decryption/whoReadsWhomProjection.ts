@@ -1,6 +1,7 @@
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell, MatrixCells } from '../../families/heat/matrixModel.ts';
 import { registerHeatMatrixProjection } from '../../families/heat/matrixRegistry.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { CipherCounts, CipherPair } from '../../generated/dashboard';
 import { pairKey, percentOf } from './decryptionData.ts';
 import {
@@ -123,7 +124,7 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
           fraction: percent / 100,
           color,
           tooltip,
-          audit: `${pairKey(pair)}|${percent}%`,
+          audit: `${pairKey(pair)}|${formatProgress(percent / 100)}`,
           selectable: true,
         });
       }

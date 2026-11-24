@@ -1,7 +1,7 @@
 import type { AuditRow } from '../../draw/notifications';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
-import { formatDateOnly } from '../valueFormat.ts';
+import { formatDateOnly, formatShare } from '../valueFormat.ts';
 import type { HeatPart } from './scale.ts';
 
 export type HeatLaneCell =
@@ -203,7 +203,7 @@ export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell)
   return {
     title,
     hour,
-    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? `${Math.round(part.share * 100)}%`, swatch: part.color })),
+    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? formatShare(part.share), swatch: part.color })),
   };
 }
 

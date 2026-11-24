@@ -5,7 +5,7 @@ import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
-import { formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
+import { formatShare, formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
@@ -391,7 +391,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
       const segFmt = formatValueState(seg.value, seg.format);
       items.push(segFmt.kind === 'notRecorded' || segFmt.kind === 'notApplicable'
         ? { label: seg.label, swatch: seg.color, missingReason: segFmt.reason }
-        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${Math.round(seg.share * 100)}%)` });
+        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${formatShare(seg.share)})` });
     }
   }
   if (row.readout?.primary && !items.length && !missingReason) {
@@ -442,7 +442,7 @@ export function deriveBarsMirror(
     if (item.segments?.length) {
       cells.push({
         column: 'segments',
-        spoken: item.segments.map(seg => `${seg.label} ${Math.round(seg.share * 100)}%`).join(', '),
+        spoken: item.segments.map(seg => `${seg.label} ${formatShare(seg.share)}`).join(', '),
       });
     }
     if (item.readout?.primary) {

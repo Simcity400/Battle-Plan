@@ -3,7 +3,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
-import { formatScalar } from '../valueFormat.ts';
+import { formatScalar, formatShare } from '../valueFormat.ts';
 import { registerTimeChart, type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
@@ -55,7 +55,7 @@ const COLOURED = 8;
 
 export function formatCountryValue(value: number, format: CountryLinesSpec['format']): string {
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
-  if (format === 'percent') return formatScalar(value, { decimals: 0, maxDecimals: 1, fixedDecimals: true, percent: true });
+  if (format === 'percent') return formatShare(value / 100);
   return formatScalar(value, { decimals: 0, maxDecimals: 2 });
 }
 

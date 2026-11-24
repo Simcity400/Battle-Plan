@@ -11,6 +11,7 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import { regionLabel } from '../../families/heat/scale.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatShare } from '../../families/valueFormat.ts';
 import type { MinedRegion } from '../../generated/dashboard';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
 
@@ -137,7 +138,7 @@ function projectMineRegion(
       continue;
     }
     const share = total > 0n && amount > 0n ? Number(amount * 10000n / total) / 10000 : 0;
-    const pct = Math.round(share * 100);
+    const pct = formatShare(share);
     if (amount > 0n) {
       segments.push({
         key: owner.tag,
@@ -145,7 +146,7 @@ function projectMineRegion(
         share,
         value: knownValue(amount),
         color: ownerColor,
-        inlineLabel: `${ownerName} ${pct}%`,
+        inlineLabel: `${ownerName} ${pct}`,
       });
     } else {
       segments.push({
@@ -156,7 +157,7 @@ function projectMineRegion(
         color: ownerColor,
       });
     }
-    items.push({ label: ownerName, swatch: ownerColor, value: `${minesCountText(amount, scale)} (${pct}%)` });
+    items.push({ label: ownerName, swatch: ownerColor, value: `${minesCountText(amount, scale)} (${pct})` });
   }
 
   if (region.unknownOwners > 0) {

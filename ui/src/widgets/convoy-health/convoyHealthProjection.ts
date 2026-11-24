@@ -14,6 +14,7 @@ import {
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
 import { regionIds } from '../../families/regionTokens.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
 
@@ -40,7 +41,7 @@ export function efficiencyColour(share: number): string {
 }
 
 export function percentText(value: number, scale: number): string {
-  return `${Math.floor((value * 100) / scale)}%`;
+  return formatProgress(value / scale);
 }
 
 function stateCell(state: ConvoyCellState, scale: number): HeatLaneCell {

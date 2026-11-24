@@ -8,7 +8,7 @@ import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatProgress } from '../../families/valueFormat.ts';
 import type { Country, OperativesRosterReply, OperativeTrait, RosterOperative } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -88,8 +88,7 @@ function progressCell(operative: RosterOperative): TableCell {
   const ratio = operative.experienceRatio;
   if (ratio === null) return { value: notRecorded(operative.experienceMissing ?? 'Progress not recorded'), bar: null };
   const share = Math.max(0, Math.min(1, ratio));
-  const percent = Math.floor(share * 100);
-  return { value: knownValue(`${percent}%`), sortValue: knownValue(share), bar: { fraction: share === 0 ? zeroValue(0) : knownValue(share) } };
+  return { value: knownValue(formatProgress(share)), sortValue: knownValue(share), bar: { fraction: share === 0 ? zeroValue(0) : knownValue(share) } };
 }
 
 function missionCell(readView: BoundedReadView, operative: RosterOperative, boundary: IdentityBoundary): TableCell {

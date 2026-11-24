@@ -20,7 +20,7 @@ import {
   buildBoundedStack,
   seriesHeadValue,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatScalar, formatShare as formatDerivedShare, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { SeriesState } from '../../generated/dashboard';
 import {
   formatShare,
@@ -51,10 +51,6 @@ export interface SupplyHealthOptions {
   readonly tag: string | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
-}
-
-function formatWholePct(value: number): string {
-  return `${Math.round(value)}%`;
 }
 
 function readHoverStates(readView: BoundedReadView, name: string): { readonly hour: number; readonly states: readonly SeriesState[] } | null {
@@ -152,7 +148,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
                 colorBar: BAND_COLOURS[state],
                 name: STATE_LABELS[state],
                 fullName: STATE_LABELS[state],
-                value: formatWholePct(headValue),
+                value: formatDerivedShare(headValue / 100),
               },
         };
       }),
@@ -173,7 +169,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       const head = headsByState[idx];
       return head === null || head === undefined
         ? []
-        : [{ row: state, key: state, value: formatWholePct(head) }];
+        : [{ row: state, key: state, value: formatDerivedShare(head / 100) }];
     });
 
     return {

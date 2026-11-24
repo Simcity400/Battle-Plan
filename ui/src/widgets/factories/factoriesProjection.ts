@@ -132,7 +132,7 @@ function scalarOf(raw: bigint | number): Value<bigint | number> {
 }
 
 function countText(amount: number): string {
-  return formatScalar(amount, { decimals: 0 });
+  return formatScalar(amount, 'integer');
 }
 
 function segment(key: string, label: string, amount: number, total: number, color: string, hatched = false): BarsSegment {

@@ -32,6 +32,8 @@ import {
   formatDateParts,
   formatDateValue,
   formatOutOf,
+  formatProgress,
+  formatRecordedPercent,
   formatScalar,
   formatShare,
   formatValueState,
@@ -339,17 +341,54 @@ test('text from a product that is blank or absent is not recorded, with the reas
   assert.deepEqual(textValue('Brest', 'Name not localised'), knownValue('Brest'));
 });
 
-test('fixedDecimals and formatShare preserve exact temperature, modifier, and share formatting', () => {
+test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and signed truncation follow the display precision rules', () => {
   assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '0.0 °C');
   assert.equal(formatScalar(-5.2, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '−5.2 °C');
   assert.equal(formatScalar(12, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '12.0 °C');
   assert.equal(formatScalar(15.5, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '+15.5%');
   assert.equal(formatScalar(-10.2, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '−10.2%');
   assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '0%');
+  assert.equal(formatScalar(0.4, { decimals: 0, signed: true }), '0');
+  assert.equal(formatScalar(-0.4, { decimals: 0, signed: true }), '0');
+  assert.equal(formatScalar(120.7, { decimals: 0, signed: true }), '+120');
+  assert.equal(formatScalar(-120.7, { decimals: 0, signed: true }), '−120');
+  assert.equal(formatScalar(-5, 'percent2'), '−5.00%');
+
   assert.equal(formatShare(0), '0%');
   assert.equal(formatShare(0.0001), '<0.1%');
+  assert.equal(formatShare(0.0009), '<0.1%');
+  assert.equal(formatShare(0.001), '0.1%');
   assert.equal(formatShare(0.042), '4.2%');
+  assert.equal(formatShare(0.07), '7%');
+  assert.equal(formatShare(0.073), '7.3%');
   assert.equal(formatShare(0.334), '33%');
-  assert.equal(formatShare(0.9999), '100%');
+  assert.equal(formatShare(0.6667), '67%');
+  assert.equal(formatShare(0.996), '99%');
+  assert.equal(formatShare(0.9999), '99%');
+  assert.equal(formatShare(1), '100%');
   assert.equal(formatShare(null), '');
+
+  assert.equal(formatProgress(0), '0%');
+  assert.equal(formatProgress(0.009), '0%');
+  assert.equal(formatProgress(0.29), '29%');
+  assert.equal(formatProgress(0.57), '57%');
+  assert.equal(formatProgress(0.58), '58%');
+  assert.equal(formatProgress(0.625), '62%');
+  assert.equal(formatProgress(0.996), '99%');
+  assert.equal(formatProgress(0.999999999), '99%');
+  assert.equal(formatProgress(1), '100%');
+  assert.equal(formatProgress(null), '');
+  assert.equal(formatScalar(99.6, 'progress'), '99%');
+  assert.equal(formatScalar(100, 'progress'), '100%');
+
+  assert.equal(formatRecordedPercent(0), '0%');
+  assert.equal(formatRecordedPercent(75), '75%');
+  assert.equal(formatRecordedPercent(75.3), '75.3%');
+  assert.equal(formatRecordedPercent(75.25), '75.25%');
+  assert.equal(formatRecordedPercent(0.14 * 100), '14%');
+  assert.equal(formatRecordedPercent(0.29 * 100), '29%');
+  assert.equal(formatRecordedPercent(-5.2), '−5.2%');
+  assert.equal(formatRecordedPercent(15.5, { signed: true }), '+15.5%');
+  assert.equal(formatRecordedPercent(-10.2, { signed: true }), '−10.2%');
+  assert.equal(formatRecordedPercent(0, { signed: true }), '0%');
 });

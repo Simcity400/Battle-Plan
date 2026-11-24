@@ -25,7 +25,7 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
-import { formatCompactScalar, formatValueState, notRecordedLabel } from '../valueFormat.ts';
+import { formatCompactScalar, formatShare, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import {
@@ -137,7 +137,7 @@ function drawShareSegments(
       ctx.fillRect(cursor, y, segW, height);
     }
     if (!seg.hatched && segW >= 34) {
-      const pctText = `${Math.round(seg.share * 100)}%`;
+      const pctText = formatShare(seg.share);
       const fullText = seg.inlineLabel ?? `${seg.label} ${pctText}`;
       ctx.font = `600 11px ${theme.font}`;
       ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);

@@ -326,16 +326,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.font = font;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, { decimals: 0, maxDecimals: 0 })}/d` : '0';
+    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, 'integer')}/d` : '0';
     ctx.fillStyle = sp.produced && sp.produced > 0 ? theme.text : theme.muted;
     if (producedText) ctx.fillText(fit(producedText, font, partW - 6), left + partW - 4, middle);
     if (sp.needMissing == null && sp.need !== null) {
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fit(formatScalar(sp.need, { decimals: 0, maxDecimals: 0 }), font, partW - 6), left + partW * 2 - 4, middle);
+      ctx.fillText(fit(formatScalar(sp.need, 'integer'), font, partW - 6), left + partW * 2 - 4, middle);
     }
     if (sp.balanceMissing == null && sp.balance !== null) {
       ctx.fillStyle = sp.balance < 0 ? tokens.shortage : sp.balance > 0 ? theme.text : theme.muted;
-      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, maxDecimals: 0, signed: true }), font, partW - 4), right, middle);
+      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, signed: true }), font, partW - 4), right, middle);
     }
     ctx.restore();
     return;

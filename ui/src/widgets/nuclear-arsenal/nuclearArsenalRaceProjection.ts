@@ -40,7 +40,7 @@ function makeRow(
   const pres = countryRowPresentation(readView, row.tag);
   const value = row.total === 0 ? zeroValue() : knownValue(row.total);
   const tooltipItems: TooltipListItem[] = [
-    { label: 'Nuclear stockpile', value: formatScalar(row.total, { decimals: 0, maxDecimals: 0 }) },
+    { label: 'Nuclear stockpile', value: formatScalar(row.total, 'integer') },
   ];
   let segments: BarsSegment[] | undefined;
   if (split && row.total > 0 && row.counts.length > 0) {
