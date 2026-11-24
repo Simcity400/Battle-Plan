@@ -181,6 +181,7 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
         amount: None,
         cause: None,
         strike: None,
+        decision_state: None,
     }
 }
 

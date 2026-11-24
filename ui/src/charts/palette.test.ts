@@ -1,9 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
+import { contrast, isDark, mixRgb, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Rgb } from '../shell/appearance/color';
 import { BUILT_IN_THEMES, themeColors } from '../shell/appearance/themes.ts';
-import { CATEGORY_LIMIT, categoricalPalette, distance, GREY_CHROMA, MARK_CONTRAST, nudgeApart } from './palette.ts';
+import {
+  CATEGORY_LIMIT,
+  SECONDARY_DASH,
+  authoredHex,
+  categoricalPalette,
+  colour,
+  colours,
+  distance,
+  GREY_CHROMA,
+  lineStyle,
+  lineStyles,
+  MARK_CONTRAST,
+  nudgeApart,
+  resolveColour,
+} from './palette.ts';
 import { NearestColours } from './paletteDistance.ts';
 
 function scalarDistance(first: Rgb, second: Rgb): number {
@@ -161,4 +175,79 @@ test('all 5000 fixed country colours stay present without quadratic gap scans', 
     for (const color of result) assert.ok(contrast(color, background) >= MARK_CONTRAST - 0.05);
   }
 });
+
+test('ordinal colours are stable under filtering and reordering, and extend lazily', () => {
+  const surface = '#16181d';
+  const full = colours(surface, [0, 1, 2, 3, 4, 5, 12, 40]);
+  const reordered = colours(surface, [40, 2, 12, 0]);
+  assert.equal(reordered.get(40), full.get(40));
+  assert.equal(reordered.get(2), full.get(2));
+  assert.equal(reordered.get(12), full.get(12));
+  assert.equal(reordered.get(0), full.get(0));
+  assert.equal(colour(surface, 0), full.get(0));
+  const firstOnly = colour('#12151a', 0);
+  const later = colour('#12151a', 80);
+  assert.equal(colour('#12151a', 0), firstOnly);
+  assert.notEqual(firstOnly, later);
+});
+
+test('ordinal palette stays unique and >= 3:1 up to 1,500 across every built-in theme, mode, and chip background', () => {
+  const count = 1500;
+  for (const theme of BUILT_IN_THEMES) {
+    for (const mode of ['dark', 'light'] as const) {
+      const tokens = themeColors(theme, mode);
+      const surfaceRgb = parseColor(tokens.surface)!;
+      const raisedRgb = parseColor(tokens.raised)!;
+      const textRgb = parseColor(tokens.text)!;
+      const accentRgb = parseColor(tokens.accent)!;
+      const hoverChipRgb = mixRgb(surfaceRgb, textRgb, 0.08);
+      const selectedChipRgb = mixRgb(surfaceRgb, accentRgb, 0.22);
+      const backgrounds = [
+        ['surface', surfaceRgb],
+        ['raised', raisedRgb],
+        ['hover', hoverChipRgb],
+        ['selected', selectedChipRgb],
+      ] as const;
+      const extras = [tokens.raised, toHex(hoverChipRgb), toHex(selectedChipRgb)];
+      const seen = new Set<string>();
+      for (let i = 0; i < count; i++) {
+        const hex = colour(tokens.surface, i, { contrastSurfaces: extras });
+        assert.equal(seen.has(hex), false, `${theme.id}/${mode} duplicate ${hex} at ordinal ${i}`);
+        seen.add(hex);
+        const rgb = parseColor(hex)!;
+        for (const [name, bg] of backgrounds) {
+          const ratio = contrast(rgb, bg);
+          assert.ok(ratio >= MARK_CONTRAST, `${theme.id}/${mode} ordinal ${i} (${hex}) contrast ${ratio.toFixed(4)} < 3.0 on ${name}`);
+        }
+      }
+      assert.equal(seen.size, count);
+    }
+  }
+  const midGreySeen = new Set<string>();
+  for (let i = 0; i < count; i++) midGreySeen.add(colour('#808080', i));
+  assert.equal(midGreySeen.size, count);
+});
+
+test('authored colours stay byte-exact, handle collisions explicitly, and secondary lines pair dash patterns', () => {
+  const surface = '#16181d';
+  const exact = '#4f86f7';
+  assert.equal(authoredHex(exact), exact);
+  assert.equal(authoredHex([79, 134, 247]), '#4f86f7');
+  assert.equal(resolveColour(surface, 0, exact), exact);
+  const generated0 = colour(surface, 0);
+  assert.notEqual(resolveColour(surface, 0, null, { avoid: [generated0] }), generated0);
+  assert.deepEqual(lineStyle(surface, 0), { color: colour(surface, 0), primary: [], secondary: SECONDARY_DASH });
+  assert.ok(lineStyle(surface, CATEGORY_LIMIT).primary.length > 0);
+  const styles = lineStyles([
+    { key: 'a', preferred: 0 },
+    { key: 'b', preferred: 1 },
+    { key: 'c', preferred: CATEGORY_LIMIT },
+  ], categoricalPalette(surface), surface);
+  assert.equal(styles.get('a')!.color, colour(surface, 0));
+  assert.deepEqual(styles.get('a')!.primary, []);
+  assert.deepEqual(styles.get('a')!.secondary, SECONDARY_DASH);
+  assert.equal(styles.get('c')!.color, colour(surface, CATEGORY_LIMIT));
+  assert.ok(styles.get('c')!.primary.length > 0);
+});
+
 

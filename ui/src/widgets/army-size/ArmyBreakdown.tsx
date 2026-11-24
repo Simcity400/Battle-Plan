@@ -166,7 +166,7 @@ export default function ArmyBreakdown({ runtime, gate, track, active, options, c
   const bands = useMemo(() => selected && tag ? armyDrillBands(selected, tag, measure, range) : null, [selected, tag, measure, range]);
   const parts = useMemo(() => [...(measure === 'battalions' ? data?.types ?? [] : [])
     .map(type => ({ id: type.key, label: typeName(type) })), ARMY_REMAINDER], [data, measure]);
-  const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
+  const colours = useMemo(() => partColours(parts, tokens.categories, undefined, tokens.surface), [parts, tokens.categories, tokens.surface]);
   const valueAt = (at: number) => countryDrillTagAt(identitySpans, at) && model && tag ? armyDrillValue(model, tag, at, measure) : null;
   const partsOf = (value: ReturnType<typeof valueAt>) => value?.parts.flatMap(part => part.value === null ? [] : [{ ...part,
     value: part.value, color: colours.get(part.id) }]) ?? [];
