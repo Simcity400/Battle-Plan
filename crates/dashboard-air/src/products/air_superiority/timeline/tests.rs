@@ -211,3 +211,45 @@ fn a_regions_days_are_summed_once_each_from_two_reads_a_stretch() {
     let over = StretchDays { first_day: 2, last_day: 4, counts_last: true, start: [(1, row(2, 7, 0))].into(), end: [(1, row(4, 9, 15))].into() };
     assert_eq!(day_sums(&[over])[&1], 7 + 8 + 9, "a last day over counts");
 }
+
+#[test]
+fn tile_viewpoint_clears_when_a_later_recorded_roster_shows_the_side_absent() {
+    let world = world();
+    let holders = holders();
+    let held = Held(world.clone());
+    let days = reads(&world, LAST);
+    let cancelled = AtomicBool::new(false);
+    let dissolved = Groups {
+        factions: [(7, FactionHistory { first_hour: 0, members: vec![Run { tag: "ENG".into(), first_hour: 0, last_hour: 5 * DAY - 1 }], leaders: vec![Run { tag: "ENG".into(), first_hour: 0, last_hour: 5 * DAY - 1 }], incomplete: vec![] })].into(),
+        wars: vec![],
+        unobserved_factions: vec![],
+        unobserved_wars: vec![],
+        identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: LAST, slot: *id, country_id: *id }])).collect(),
+    };
+    let dissolved_index = index::build(dissolved, 0, LAST);
+    let side_view = params(AirMode::Viewpoint, Some("f:7"), false, None);
+    let shown = Days { index: &dissolved_index, holders: &holders, days: &days, rows: &held, params: &side_view, theatres: None }
+        .shown(&[1], &dissolved_index, &cancelled)
+        .unwrap();
+    assert_eq!(shown.viewpoint, None, "a later recorded roster without f:7 clears the carried viewpoint");
+
+    let still_present = index();
+    let theatres: Vec<Option<Result<HashSet<u32>, ()>>> = (0..DAYS).map(|day| Some(Ok(if day + 1 < DAYS { [1].into() } else { [99].into() }))).collect();
+    let shown = Days { index: &still_present, holders: &holders, days: &days, rows: &held, params: &side_view, theatres: Some(&theatres) }
+        .shown(&[1], &still_present, &cancelled)
+        .unwrap();
+    assert!(shown.viewpoint.is_some(), "a side still present in the roster keeps its viewpoint even when the region is outside theatres");
+
+    let unobserved_end = Groups {
+        factions: [(7, FactionHistory { first_hour: 0, members: vec![run("ENG")], leaders: vec![run("ENG")], incomplete: vec![] })].into(),
+        wars: vec![],
+        unobserved_factions: vec![(10 * DAY, LAST)],
+        unobserved_wars: vec![],
+        identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: LAST, slot: *id, country_id: *id }])).collect(),
+    };
+    let unobserved_index = index::build(unobserved_end, 0, LAST);
+    let shown = Days { index: &unobserved_index, holders: &holders, days: &days, rows: &held, params: &side_view, theatres: None }
+        .shown(&[1], &unobserved_index, &cancelled)
+        .unwrap();
+    assert!(shown.viewpoint.is_some(), "an unobserved final roster does not establish side absence");
+}
