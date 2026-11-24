@@ -21,6 +21,7 @@ import type {
   StrategicRegionsReply,
 } from '../../generated/dashboard';
 import { busyWait } from '../../shell/busy.ts';
+import { productArt } from '../art/types.ts';
 import { BRANCH_READS, IdentityIndex, drawnFlagKey, type BranchRead } from './index.ts';
 import {
   identityKeyString,
@@ -131,7 +132,23 @@ function drawn(entry: DrawnFlagEntry | undefined): boolean {
 
 const REGION_ABSENT = 'Not a strategic region of this recording';
 const LEADER_ABSENT = 'Not a leader of this country at this hour';
+const PLACE_ABSENT = 'No such place at this hour';
 const PLACE_NOT_ANSWERED = 'Place name not answered';
+const LEADER_NOT_ANSWERED = 'Leader not answered';
+const PRESENCE_UNKNOWN = 'Not known at this hour';
+
+function runEntry(run: NameRun, absent: string, warnings: readonly string[]): EntityRunEntry {
+  switch (run.presence) {
+    case 'absent':
+      return { firstHour: run.firstHour, lastHour: run.lastHour, absent: true, reason: run.missing ?? absent, name: null };
+    case 'unknown': {
+      const reason = run.missing ?? PRESENCE_UNKNOWN;
+      return { firstHour: run.firstHour, lastHour: run.lastHour, name: null, nameReason: reason, holderReason: reason, warnings };
+    }
+    case 'present':
+      return { firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings };
+  }
+}
 
 type EntityRequest =
   | { readonly kind: 'regions'; readonly id: string }
@@ -597,12 +614,12 @@ export class IdentityBroker {
           break;
         case 'places':
           if (state.index.resolve(key, request.from).kind === 'pending') {
-            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: PLACE_NOT_ANSWERED }]);
+            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: PLACE_NOT_ANSWERED, holderReason: PLACE_NOT_ANSWERED }]);
           }
           break;
         case 'leaders':
           if (state.index.resolve(key, request.from).kind === 'pending') {
-            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, absent: true, reason: LEADER_ABSENT, name: null }]);
+            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: LEADER_NOT_ANSWERED, holderReason: LEADER_NOT_ANSWERED }]);
           }
           break;
       }
@@ -634,9 +651,7 @@ export class IdentityBroker {
           if (id !== null) (key.kind === 'state' ? states : provinces).push(id);
         }
         return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => {
-          const entry = (run: NameRun): EntityRunEntry => ({
-            firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings: reply.warnings,
-          });
+          const entry = (run: NameRun) => runEntry(run, PLACE_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['state', 'province'], reply.from, reply.to, reply.unknown);
           for (const place of reply.states) index.replaceEntityRuns({ kind: 'state', id: place.id }, reply.from, reply.to, place.runs.map(entry));
           for (const place of reply.provinces) index.replaceEntityRuns({ kind: 'province', id: place.id }, reply.from, reply.to, place.runs.map(entry));
@@ -647,9 +662,7 @@ export class IdentityBroker {
         const references: string[] = [];
         for (const key of keys.values()) if (key.kind === 'leader') references.push(String(key.id));
         return this.transport.loadLeaderNameRuns(state.scope, request.owner, request.from, request.to, references, signal, state.recording).then(reply => {
-          const entry = (run: NameRun): EntityRunEntry => (run.absent
-            ? { firstHour: run.firstHour, lastHour: run.lastHour, absent: true, reason: run.missing ?? LEADER_ABSENT, name: null }
-            : { firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings: reply.warnings });
+          const entry = (run: NameRun) => runEntry(run, LEADER_ABSENT, reply.warnings);
           index.replaceEntityUnknown(['leader'], reply.from, reply.to, reply.unknown);
           for (const leader of reply.leaders) {
             index.replaceEntityRuns({ kind: 'leader', owner: request.owner, id: leader.reference }, reply.from, reply.to, leader.runs.map(entry));
@@ -679,7 +692,8 @@ export class IdentityBroker {
         const failure = asFailure(error);
         const count = (state.entityRetryAt.get(request.id)?.count ?? 0) + 1;
         state.entityRetryAt.set(request.id, { count, at: transientError(error) ? this.clock.now() + retryDelay(count) : Infinity });
-        for (const key of keys.values()) state.index.setEntityFailure(key, failure);
+        const [from, to] = request.kind === 'regions' ? state.index.bounds() : [request.from, request.to];
+        for (const key of keys.values()) state.index.setEntityFailure(key, from, to, failure);
         this.notify(state);
         this.reconcile(state);
       },
@@ -713,7 +727,9 @@ export class IdentityBroker {
       } else if (ask.key.kind === 'faction') {
         groups = true;
         facts = true;
-      } else if (state.index.resolve(ask.key, at).kind === 'pending') {
+      } else {
+        const answered = state.index.resolve(ask.key, at).kind;
+        if (answered !== 'pending' && answered !== 'failed') continue;
         const request = entityRequestOf(ask.key, at, state.index.bounds());
         if (request) entities.push([request, identityKeyString(ask.key), ask.key]);
       }
@@ -895,7 +911,7 @@ export class IdentityBroker {
           const entry: DrawnFlagEntry = image
             ? { url: image.png, image }
             : resolution
-              ? { resolution }
+              ? { resolution: productArt(resolution) }
               : { resolution: { status: 'failed', reason: 'The flag reply left this choice out', retryable: true } };
           state.index.setDrawnFlag(size, choice, entry);
         });

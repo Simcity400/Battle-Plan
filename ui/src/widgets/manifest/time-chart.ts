@@ -2,8 +2,12 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type Fam
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
+import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
+import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
 
+const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
+const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
 const WORLD_TENSION_VIEW_FIELD = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
 const WORLD_TENSION_TENSION_OPTIONS = [...WORLD_TENSION_VIEW_FIELD, ...TENSION_CHART_OPTIONS];
 
@@ -80,6 +84,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'dockyard-spending',
+    view: 'months',
+    label: 'By month',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: DOCKYARD_MONTHS_OPTIONS,
+    loadSpec: timeChartSpec(
+      'dockyard-spending',
+      'months',
+      () => import('../dockyard-spending/dockyardMonthsProjection.ts'),
+      mod => ({ projection: mod.dockyardMonthsProjection, declaration: mod.dockyardMonthsDeclaration }),
+    ),
+  },
+  {
     kind: 'experience',
     view: DEFAULT_VIEW,
     family: 'time-chart',
@@ -115,6 +133,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'military-factory-spending',
+    view: 'months',
+    label: 'By month',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: FACTORY_MONTHS_OPTIONS,
+    loadSpec: timeChartSpec(
+      'military-factory-spending',
+      'months',
+      () => import('../military-factory-spending/factoryMonthsProjection.ts'),
+      mod => ({ projection: mod.factoryMonthsProjection, declaration: mod.factoryMonthsDeclaration }),
+    ),
+  },
+  {
     kind: 'navy-size',
     view: 'lines',
     label: 'Lines',
@@ -125,6 +157,19 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'lines',
       () => import('../navy-size/navyLinesProjection.ts'),
       mod => ({ projection: mod.navyLinesProjection, declaration: mod.navyLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'occupation-trend',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'occupation-trend',
+      'lines',
+      () => import('../occupation-trend/occupationLinesProjection.ts'),
+      mod => ({ projection: mod.occupationLinesProjection, declaration: mod.occupationLinesDeclaration }),
     ),
   },
   {

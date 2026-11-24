@@ -120,6 +120,8 @@ export interface LaneStep {
   readonly pictures?: readonly Picture<Value>[];
   readonly inspect?: string | null;
   readonly speed?: number;
+  readonly seek?: number;
+  readonly owner?: string;
   readonly generation?: number;
   readonly now?: number;
   readonly check?: boolean;
@@ -145,8 +147,9 @@ export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = 
         pictures: step.pictures ?? [],
         model: step.binding,
         hour: step.hour,
+        seek: step.seek ?? 0,
         speed: step.speed ?? 0,
-        binding: { generation: step.generation ?? 1, surfaces: [surface], offset: 0, pin: null },
+        binding: { generation: step.generation ?? 1, surfaces: [surface], offset: 0, pin: null, ...(step.owner !== undefined ? { owner: step.owner } : {}) },
         inspect: step.inspect ?? null,
         now: step.now ?? 1000,
       }, state, () => `c${++seq}`);
@@ -180,8 +183,10 @@ export function assertFreshPaint(makeView: () => LaneView, steps: readonly LaneS
   const recording = installRecordingCanvas();
   try {
     const played = driveLane(makeView(), recording.canvases, surface);
+    let seek = 0;
     for (const step of steps) {
-      const painted = played.paint(step);
+      if (step.check) seek++;
+      const painted = played.paint({ ...step, seek: step.seek ?? seek });
       if (!step.check) continue;
       const fresh = driveLane(makeView(), recording.canvases, surface);
       const freshPainted = fresh.paint(step);

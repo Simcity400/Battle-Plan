@@ -13,7 +13,7 @@ import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const FIXED = 100_000n;
-const PERCENT = { decimals: 0, percent: true, maxDecimals: 0 } as const;
+const PERCENT = 'progress' as const;
 
 const items = (raw: string): Value<number> => {
   const whole = BigInt(raw) / FIXED;

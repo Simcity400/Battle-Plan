@@ -86,7 +86,7 @@ export function regionPickerControl(
     label?: string;
     automatic?: string;
     hint?: string;
-    addLabel?: string;
+    sea?: boolean;
     visibleWhen?: OptionField['visibleWhen'];
   },
 ): OptionField {
@@ -95,10 +95,10 @@ export function regionPickerControl(
     section: options?.section ?? 'options',
     label: options?.label ?? 'Regions',
     hint: options?.hint,
-    kind: 'ordered-set',
-    automatic: options?.automatic ?? 'All regions',
-    addLabel: options?.addLabel ?? 'Add region',
+    kind: 'regions',
+    automatic: options?.automatic ?? 'Most active regions',
     default: '',
+    ...(options?.sea ? { sea: true } : {}),
     ...(options?.visibleWhen ? { visibleWhen: options.visibleWhen } : {}),
   };
 }

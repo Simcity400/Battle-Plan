@@ -246,14 +246,14 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
   let unattributed = 0;
   for (const episode of episodes) {
     const marks: [number, 0 | 1, string | null][] = [];
-    if (episode.launchedHour !== null) marks.push([episode.launchedHour, 0, episode.launchedRaider ?? episode.raider]);
-    if (episode.succeededHour !== null) marks.push([episode.succeededHour, 1, episode.endedRaider ?? episode.raider]);
+    if (episode.launchedHour !== null) marks.push([episode.launchedHour, 0, episode.launchedRaider]);
+    if (episode.succeededHour !== null) marks.push([episode.succeededHour, 1, episode.endedRaider]);
     if (!marks.length) continue;
     const slot = episode.raiderSlot === null ? null : countryKey(episode.raiderSlot);
     let missingRaider = false;
     for (const [hour, kind, raider] of marks) {
-      if (raider === null) { missingRaider = true; continue; }
       const key = slot !== null && chosenKeys.has(slot) ? slot : raider;
+      if (key === null) { missingRaider = true; continue; }
       const list = events.get(key) ?? [];
       list.push([hour, kind]);
       events.set(key, list);

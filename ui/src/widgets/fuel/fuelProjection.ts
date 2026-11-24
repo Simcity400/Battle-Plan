@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { FutureDataError, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../../families/contract.ts';
@@ -98,7 +99,7 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       hoverDetail: fuelHoverDetail(readView, options.digits),
       auditRows: series.flatMap(s => (s.headValue === null || s.headValue === undefined
         ? []
-        : [{ row: s.id, key: s.id, value: formatFuelAmount(s.headValue) }])),
+        : [auditRow(s.id, formatFuelAmount(s.headValue))])),
     };
   },
 });

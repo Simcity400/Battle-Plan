@@ -9,6 +9,7 @@ use std::{
 
 pub const SERIES_PRODUCTS: &[&str] = &[
     "series-state",
+    dashboard_query::series::ranked::PRODUCT,
     "series-summary",
     "series-next-change",
     dashboard_query::tile::PRODUCT,
@@ -160,6 +161,12 @@ pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadCont
         }
         if product == "series-next-change" && kind(params) == Some(dashboard_world::products::scalars::world_tension::SERIES) {
             return dashboard_world::products::scalars::world_tension::next_change(&query, params);
+        }
+        if product == dashboard_query::series::ranked::PRODUCT && params.get("group").is_some_and(|group| !group.is_null()) {
+            let groups = dashboard_world::products::groups::shared(source, &query, context, cancelled)?;
+            let resolve = |group: &dashboard_query::series::ranked::GroupSelection, hour: i32| dashboard_world::products::group_members::members_at(&groups, group, hour, query.timeline.first);
+            return dashboard_query::series::answer_grouped(&query, product, params, &resolve)?
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));
         }
         return dashboard_query::series::answer(&query, product, params)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));

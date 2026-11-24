@@ -10,7 +10,7 @@ import {
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { TensionStackEvent, WorldTensionStackReply } from '../../generated/dashboard';
 import { EVENTS_TABLE_BASE } from './definition.ts';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
@@ -40,10 +40,7 @@ function parseEvents(raw: unknown): ParsedEvents {
 function formatAddedPercent(raw: string, scale: number): string {
   const num = Number(raw);
   if (!Number.isFinite(num) || scale <= 0) return '0%';
-  const pct = num / scale;
-  const sign = pct > 0 ? '+' : pct < 0 ? '\u2212' : '';
-  const abs = Math.abs(pct).toFixed(2).replace(/\.?0+$/, '');
-  return `${sign}${abs}%`;
+  return formatRecordedPercent(num / scale, { signed: true });
 }
 
 export function worldTensionEventsColumns(): readonly TableColumnSpec[] {

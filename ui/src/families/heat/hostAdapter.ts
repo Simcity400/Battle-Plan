@@ -1,5 +1,6 @@
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
+import { parseRegionHitKey } from '../regions/regionRows.ts';
 import type { LaneActivation } from './lanesDeclaration.ts';
 import { layoutHeatLanes } from './lanesLayout.ts';
 import { matrixWindow } from './matrixLayout.ts';
@@ -48,6 +49,8 @@ export function parseHeatMatrixHit(hitKey: string | null): ParsedFamilyHit | nul
 }
 
 export function parseHeatLanesHit(hitKey: string | null): ParsedFamilyHit | null {
+  const region = parseRegionHitKey(hitKey);
+  if (region) return { key: region.key, subject: region.key, kind: `region-${region.part}`, toggle: false, inspectToken: hitKey! };
   if (!hitKey || !hitKey.startsWith('lane:')) return null;
   const key = hitKey.slice(5);
   if (!key) return null;
@@ -174,6 +177,7 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
       lastHour: model.lastHour,
       displayedHour: model.hour,
       rows: model.rows,
+      regions: model.regions,
       legend: model.legend,
       requestedReadoutWidth: model.readoutWidth,
       requestedRowHeight: model.rowHeight,

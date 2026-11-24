@@ -378,6 +378,7 @@ impl AtHour for OperativesRoster {
     const KEY: &'static str = "operatives-roster";
     const TITLE: &'static str = "Operatives roster";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = OperativesRosterParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = OperativesRosterReply;
@@ -429,6 +430,10 @@ impl AtHour for OperativesRoster {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(operative_content::content(source, load))
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        if frame.tables[TableId::OperativeMemberships.index()].sampled_at().is_some() { i32::MAX } else { frame.hour }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

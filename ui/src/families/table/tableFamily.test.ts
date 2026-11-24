@@ -30,7 +30,7 @@ import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
-import { showBundle, type Settlement } from '../readUnits.ts';
+import { showBundle } from '../readUnits.ts';
 import { effectiveCountryUnobserved, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
 import { groupUnobserved } from '../../dashboard/groups.ts';
@@ -40,6 +40,8 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
+import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
@@ -638,6 +640,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
       ...scene,
       model: audit ? { ...model, audit: true } : model,
       hour: 10,
+      seek: 0,
       speed,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
@@ -701,6 +704,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
         pictures: [],
         model: makeModel(rows, focusedKey, extra),
         hour: 10,
+        seek: 0,
         speed,
         binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
         inspect,
@@ -952,7 +956,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
         scrollTop: 0,
       },
       hour: 10,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 100,
@@ -1042,21 +1046,17 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
-  const complete: Settlement = { kind: 'complete', bundle: { hour: 50, span: [10, 50], proof: null, panels: new Map() } };
-  const holding: Settlement = { kind: 'hold' };
   const bundleAt50 = { span: [10, 50] };
   const bundleAt60 = { span: [20, 60] };
-  const first = showBundle(null, complete, bundleAt50, 'plan', ctxA);
-  const refreshed = showBundle(first.last, complete, bundleAt50, 'plan', ctxB);
+  const first = showBundle(null, bundleAt50, false, 'plan', ctxA);
+  const refreshed = showBundle(first.last, bundleAt50, false, 'plan', ctxB);
   assert.equal(refreshed.shown?.frozen, ctxB, 'F1: when every reply answers the current requests, option, role, settings and looks changes refresh immediately');
-  const retained = showBundle(refreshed.last, holding, null, 'plan', ctxA);
+  const retained = showBundle(refreshed.last, bundleAt50, true, 'plan', ctxA);
   assert.equal(retained.shown, refreshed.shown, 'S1: while a request is superseded, the last complete bundle is shown with its own context, settings and looks');
-  assert.equal(retained.held, true);
   assert.equal(retained.shown?.bundle, bundleAt50);
-  const updated = showBundle(retained.last, complete, bundleAt60, 'plan', ctxA);
+  const updated = showBundle(retained.last, bundleAt60, false, 'plan', ctxA);
   assert.equal(updated.shown?.bundle, bundleAt60, 'S1: updates once the new replies complete a bundle');
   assert.equal(updated.shown?.frozen, ctxA, 'S1: the updated bundle carries the new selection context');
-  assert.equal(showBundle(updated.last, holding, null, 'other plan', ctxB).shown, null, 'a bundle is never held across a change of plan');
 
   const emptyGsA = gameScoreProjection.project(createBoundedReadView({
     hour: 10,
@@ -1158,7 +1158,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         scrollTop: 0,
       },
       hour: 10,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 100,
@@ -1185,6 +1185,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         scrollTop: 0,
       },
       hour: 10,
+      seek: 0,
       speed: 24,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
@@ -1227,6 +1228,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         auditId: 42,
       },
       hour: 10,
+      seek: 0,
       speed: 24,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
@@ -1496,7 +1498,8 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
   assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
-  assert.ok(tooltipText(tipAtLeast).includes('at least 1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText including atLeast');
+  assert.ok(tooltipText(tipAtLeast).includes('1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText without at least wording');
+  assert.ok(!tooltipText(tipAtLeast).includes('at least'), 'F8: tooltipText omits at least wording');
 
   const auditA = deriveTableAudit({ model: mAtLeast, flatRows: resolveTableRows(mAtLeast, settings), visibleColumns: layouts });
   const auditB = deriveTableAudit({ model: mPlainPartial, flatRows: resolveTableRows(mPlainPartial, settings), visibleColumns: layouts });
@@ -1697,7 +1700,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
       pictures: [],
       model: { family: 'table' as const, kind: 'test-rank-marker-timer', options: {}, settings: rmSettings, sources: {}, staticPanels: { main: { rows: list } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
       hour,
-      speed: 24,
+      seek: 0, speed: 24,
       binding: { generation: 1, surfaces: [{ width: 320, height: 180, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: clockNow,
@@ -1805,7 +1808,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         pictures: [],
         model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
-        speed: 24,
+        seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
         inspect: null,
         now: 5000,
@@ -1905,7 +1908,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         pictures: [],
         model: { family: 'table' as const, kind: 'test-panes-fresh', options: {}, settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
-        speed: 24,
+        seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 700, height: 240, dpr: 1 }], offset: 0, pin: null },
         inspect: null,
         now: 5000,
@@ -2031,7 +2034,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     const paint = () => view.paint({
       widget: 1, subs: [], pictures: [],
       model: { family: 'table' as const, kind: 'test-names-arrive', options: {}, settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
-      hour: 1, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
+      hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
     }, state, () => `c${seq++}`);
     const widthOf = (painted: ReturnType<typeof paint>) => (painted.fields.widths?.value as { widths: Record<string, number> }).widths.name!;
     const before = widthOf(paint());
@@ -2041,6 +2044,47 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+
+  const withAction: TableColumnSpec[] = [
+    kinds[0]!,
+    { key: 'name', label: 'Organisation', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'size', label: 'Size', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+    { key: 'spare', label: '', as: 'plain', offered: ['plain'], priority: 2 },
+    { key: 'view', label: '', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'action', sortable: false },
+  ];
+  const named = 'Army Ordnance Department';
+  const tipRows = resolveTableRows({ hour: 1, columns: withAction, rows: [{
+    key: 'org', name: named, tooltipAction: 'Open its organisation window',
+    cells: { pic: { value: knownValue(named), iconSlot: true }, name: { value: knownValue(named) }, size: { value: zeroValue(0) }, spare: { value: knownValue('stray') }, view: { value: knownValue('View'), actionLabel: 'View' } },
+  }] }, tableSettingsOf(undefined, withAction, { density: 'normal', sort: { column: 'size', direction: 'descending' } }));
+  const tip = deriveTableTooltip(tipRows, 'org', withAction, 1)!;
+  assert.equal(tip.title, named, 'the name column, not the picture before it, is the title');
+  assert.deepEqual(tip.rows.map(row => row.label), ['Size'], 'no unlabelled row, no repeated name, no action word');
+  assert.equal(tip.note, 'Open its organisation window', 'an action column contributes only its hint');
+});
+
+test('tree rows align whether or not they can open: a level with openable rows gives every row of that level the chevron lane, children start under their parent\'s name', () => {
+  const tree: TableColumnSpec[] = [
+    { key: 'pic', label: '', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', sortable: false },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
+  const settings = tableSettingsOf(undefined, tree, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  const leaf = (key: string, children?: TableRow[]): TableRow => ({ key, name: key, cells: { name: { value: knownValue(key) } }, ...(children ? { children } : {}) });
+  const rows = resolveTableRows({ hour: 1, columns: tree, rows: [leaf('A', [leaf('A1')]), leaf('B'), leaf('C', [leaf('C1', [leaf('C1a')]), leaf('C2')])] }, settings, { A: true, C: true, C1: true });
+  const data = rows.filter((item): item is Extract<FlatTableRow, { kind: 'data' }> => item.kind === 'data');
+  assert.deepEqual(data.map(item => [item.key, item.level, item.isTreeGroup]), [['A', 1, true], ['A1', 2, false], ['B', 1, false], ['C', 1, true], ['C1', 2, true], ['C1a', 3, false], ['C2', 2, false]]);
+  const levels = treeLevelsOf(rows);
+  assert.equal(treeLevelsOf(rows), levels, 'held per row list');
+  const starts = Object.fromEntries(data.map(item => [item.key, treeTextStart(item.level, levels)]));
+  assert.deepEqual(starts, { A: TREE_CHEVRON_LANE, A1: 2 * TREE_CHEVRON_LANE, B: TREE_CHEVRON_LANE, C: TREE_CHEVRON_LANE, C1: 2 * TREE_CHEVRON_LANE, C1a: 2 * TREE_CHEVRON_LANE, C2: 2 * TREE_CHEVRON_LANE });
+  const flat = resolveTableRows({ hour: 1, columns: tree, rows: [leaf('A', [leaf('A1')]), leaf('B')] }, settings, { A: true });
+  const flatLevels = treeLevelsOf(flat);
+  assert.deepEqual(flat.map(item => item.kind === 'data' ? treeTextStart(item.level, flatLevels) : -1), [TREE_CHEVRON_LANE, TREE_CHEVRON_LANE, TREE_CHEVRON_LANE], 'a leaf, a group and a child of a two-level tree start at one x');
+  assert.equal(treeTextStart(1, treeLevelsOf(resolveTableRows({ hour: 1, columns: tree, rows: [leaf('B')] }, settings))), 0, 'a flat table reserves no lane');
+  const layout = layoutFamilyTable(buildColumnLayouts(tree, settings, { pic: 52, name: 200 }), 400);
+  const nameX = layout.columns[0]!.width;
+  assert.equal(hitFamilyTable(layout, flat, { x: nameX + 12, y: 10 }, 36, 0, 0, false, 0).toggle, true, 'the chevron opens its group');
+  assert.equal(hitFamilyTable(layout, flat, { x: nameX + 12, y: 36 * 2 + 10 }, 36, 0, 0, false, 0).toggle, false, 'a leaf has no chevron to hit');
 });
 
 test('log capability: headerless widths, date-grouped boundaries, gap/refused/loading slots, in-place children, and fresh-paint equality after seek back, same-hour correction and reorder', () => {
@@ -2334,7 +2378,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
           reducedMotion: true,
         },
         hour,
-        speed: 24,
+        seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 640, height: 360, dpr: 1 }], offset: 0, pin: null },
         inspect: null,
         now: 5000,

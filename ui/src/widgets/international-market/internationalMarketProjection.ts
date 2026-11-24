@@ -13,7 +13,7 @@ import {
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { knownValue, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
 import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 
 const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
@@ -132,24 +132,24 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       const firstIcon = row.equipment[0]?.icon ?? null;
       const art = artState(readView, urlArtHandle(firstIcon));
 
+      const priceOf = (variant: string) => row.prices.find(item => item.variant === variant)?.amount ?? null;
+      const levelOf = (variant: string) => row.levels.find(item => item.variant === variant)?.level ?? null;
+      const single = row.equipment.length === 1 ? row.equipment[0]! : null;
+      const several = notApplicable('Several equipment: each is listed with its own amount, price and level');
       const extra: TooltipExtraRow[] = [
         { label: 'Seller', value: seller.value, divider: true },
         { label: 'Buyer', value: buyer.value },
-        ...row.equipment.map((item, idx): TooltipExtraRow => ({
-          label: item.name ?? 'Equipment name unavailable',
-          value: knownValue(units(item.amount)),
-          lookupKey: item.variant,
-          ...(idx === 0 ? { divider: true } : {}),
-        })),
-        ...row.prices.map((item): TooltipExtraRow => ({
-          label: `Agreed price · ${item.name ?? 'Equipment name unavailable'}`,
-          value: knownValue(cic(item.amount)),
-        })),
+        ...row.equipment.map((item, idx): TooltipExtraRow => {
+          const price = priceOf(item.variant);
+          const level = levelOf(item.variant);
+          const parts = [units(item.amount), ...(price !== null ? [cic(price)] : []), ...(level !== null ? [levelText(level)] : [])];
+          return { label: item.name ?? 'Equipment name unavailable', value: knownValue(parts.join(' · ')), lookupKey: item.variant, ...(idx === 0 ? { divider: true } : {}) };
+        }),
       ];
 
       if (options.view === 'requests') {
-        const amt = row.equipment[0]?.amount ?? null;
-        const lvl = row.levels[0]?.level ?? null;
+        const amt = single?.amount ?? null;
+        const lvl = single ? levelOf(single.variant) : null;
         return {
           key: row.key,
           name: allEquipment || 'Equipment',
@@ -157,8 +157,8 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
             buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
             seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
             equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
-            amount: { value: amt === null ? notRecorded('Amount not recorded') : amt === 0n ? zeroValue(0n) : knownValue(amt) },
-            level: { value: lvl === null ? notRecorded('Price level not recorded') : knownValue(levelText(lvl)) },
+            amount: { value: single === null ? several : amt === null ? notRecorded('Amount not recorded') : amt === 0n ? zeroValue(0n) : knownValue(amt) },
+            level: { value: single === null ? several : lvl === null ? notRecorded('Price level not recorded') : knownValue(levelText(lvl)) },
           },
           tooltipTitle: `${seller.name} \u2192 ${buyer.name}`,
           tooltipExtra: extra,
@@ -171,7 +171,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         };
       }
 
-      const priceRaw = row.prices[0]?.amount ?? null;
+      const priceRaw = single ? priceOf(single.variant) : null;
       const assigned = valueFromLive(live, liveKey(row.key, 'assigned'));
       const needed = valueFromLive(live, liveKey(row.key, 'convoys'));
       const collected = valueFromLive(live, liveKey(row.key, 'collected'));
@@ -188,7 +188,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
         buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
         equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
-        price: { value: priceRaw === null ? notRecorded('Price not recorded') : knownValue(priceRaw) },
+        price: { value: single === null ? several : priceRaw === null ? notRecorded('Price not recorded') : knownValue(priceRaw) },
         convoys: { value: assigned, format: 'integer', secondaryValue: needed },
         collected: { value: collected },
         deliveries: { value: deliveries },

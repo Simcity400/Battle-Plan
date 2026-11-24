@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -9,6 +10,7 @@ import {
 } from '../../families/time-chart/declaration.ts';
 import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import { formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionStackReply } from '../../generated/dashboard';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
 
@@ -21,8 +23,7 @@ export interface WorldTensionLinesOptions {
 }
 
 function formatContributionPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatRecordedPercent(value);
 }
 
 function resolveLineColors(rawColors: readonly (string | null)[], surface: string): string[] {
@@ -97,10 +98,12 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         empty: { message: 'No threat contribution recorded in this view.', kind: 'empty' },
       };
     }
-    const endHour = reply.endHour ?? hour;
+    const endHour = reply.endHour;
+    const labelHour = endHour ?? hour;
+    const hasNegative = reply.bands.some(band => band.values.some(v => v !== null && v < 0));
     const infos = reply.bands.map(band => {
       if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
-      const id = readView.who('country', band.tag, endHour);
+      const id = readView.who('country', band.tag, labelHour);
       const baseName = id.name.status === 'ready' ? id.name.value : band.tag;
       return {
         name: baseName,
@@ -122,7 +125,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         if (h > hour) break;
         points.push({ hour: h, value: band.values[i] ?? null });
       }
-      const headValue = band.endValue;
+      const headValue = endHour !== null ? band.endValue : null;
       return {
         id: band.tag ?? `slot:${band.slot}`,
         key: band.tag ?? `slot:${band.slot}`,
@@ -132,7 +135,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         step: true,
         points,
         headValue,
-        headHour: endHour,
+        headHour: labelHour,
         ...(flag ? { flag } : {}),
         rank,
         endLabel: isTop && headValue !== null
@@ -147,14 +150,14 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatContributionPct(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatContributionPct(s.headValue!))));
     return {
       kind: 'world-tension',
       measureTitle: 'Contribution to world tension',
       mode: 'lines',
       hour,
       extent: options.extent,
-      yAxis: { format: 'percent', fixed: null, min: 0 },
+      yAxis: { format: 'percent', fixed: null, ...(hasNegative ? {} : { min: 0 }) },
       series,
       ...(gaps.length > 0 ? { gaps } : {}),
       warnings: reply.warnings,

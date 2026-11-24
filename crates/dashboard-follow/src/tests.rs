@@ -549,6 +549,10 @@ fn a_series_reads_its_tags_holder_at_the_head() {
     assert!(answers.iter().any(|(id, ..)| *id == 5) && answers.iter().any(|(id, ..)| *id == 6), "both answered after the seek");
     for (id, hour, answer) in &answers {
         assert_eq!(answer, &harness.fresh(if *id == 5 { &series } else { &top }, *hour), "query {id} at hour {hour} after the seek back");
+        if *id == 6 {
+            assert_eq!(answer.not_recorded.as_deref(), Some("Countries holds a row of a country not known at this hour"), "rows no tag holds refuse the top at {hour}");
+            continue;
+        }
         assert_eq!((answer.keys[0], answer.values[0]), (100, i64::from(*hour) / 10), "query {id} at hour {hour}: AAA's first holder");
     }
 }
@@ -561,19 +565,35 @@ fn series_identity(query: &Query) -> Identity {
 #[test]
 fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     let pages = record(quiet);
-    let mut harness = harness(&pages);
     let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
-    let mut holders = Holders::default();
-    holders.tags.insert("MMM".into(), held(1, 101));
-    holders.tags.insert("ZZZ".into(), held(2, 102));
-    holders.tags.insert("AAA".into(), held(3, 103));
-    holders.tags.insert("NNN".into(), held(9, 999));
     let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
-    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let top = Query::series_top(&POWER, &POWER.measures[0], 2, identity.clone());
-    let least = Query::series_top(&POWER, &POWER.measures[0], 2, identity.clone()).least();
-    let none_top = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 4, identity.clone());
-    let none_least = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, identity).least();
+    let identity = |tags: &[(&str, u32, u32)]| {
+        let mut holders = Holders::default();
+        for &(tag, slot, id) in tags {
+            holders.tags.insert(tag.into(), held(slot, id));
+        }
+        Identity { holders: Arc::new(holders), timeline: Arc::new(timeline.clone()) }
+    };
+    let partly = identity(&[("MMM", 1, 101), ("ZZZ", 2, 102), ("AAA", 3, 103), ("NNN", 9, 999)]);
+    let mut first = harness(&pages);
+    let unknown = Query::series_top(&POWER, &POWER.measures[0], 2, partly.clone());
+    let unknown_none = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, partly);
+    first.follow.follow(5, unknown.clone()).unwrap();
+    first.follow.follow(6, unknown_none.clone()).unwrap();
+    first.seek(0);
+    let played = first.play(50);
+    for (id, query) in [(5, &unknown), (6, &unknown_none)] {
+        let (_, hour, answer) = played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).next_back().expect("an answer");
+        assert_eq!(answer, first.fresh(query, hour));
+        assert_eq!(answer.not_recorded.as_deref(), Some("Countries holds a row of a country not known at this hour"), "a row no tag holds refuses the top, never drops out");
+    }
+
+    let whole = identity(&[("MMM", 1, 101), ("ZZZ", 2, 102), ("AAA", 3, 103), ("NNN", 9, 999), ("CCC", 0, 100), ("BBB", 4, 104), ("YYY", 5, 105), ("ZZY", 6, 106), ("YYZ", 7, 107)]);
+    let mut harness = harness(&pages);
+    let top = Query::series_top(&POWER, &POWER.measures[0], 2, whole.clone());
+    let least = Query::series_top(&POWER, &POWER.measures[0], 2, whole.clone()).least();
+    let none_top = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 2, whole.clone());
+    let none_least = Query::series_top(&POWER_NONE, &POWER_NONE.measures[0], 3, whole).least();
     harness.follow.follow(7, top.clone()).unwrap();
     harness.follow.follow(8, least.clone()).unwrap();
     harness.follow.follow(9, none_top.clone()).unwrap();
@@ -581,22 +601,20 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     harness.seek(0);
     let played = harness.play(50);
     let last = |id: u32| played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).next_back().expect("an answer");
-    let (_, hour, answer) = last(7);
-    assert_eq!(answer, harness.fresh(&top, hour));
-    let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
-    assert_eq!(names, ["MMM", "AAA"], "value first, then tag in byte order, never key");
-    let (_, hour, answer) = last(8);
-    assert_eq!(answer, harness.fresh(&least, hour));
-    let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
-    assert_eq!(names, ["AAA", "ZZZ"], "the least first, a tie by tag in byte order");
-    for (id, query, wanted) in [(9, &none_top, &["MMM", "AAA", "NNN", "ZZZ"][..]), (10, &none_least, &["AAA", "NNN"][..])] {
+    let cases: [(u32, &Query, &[&str], &str); 4] = [
+        (7, &top, &["MMM", "CCC"], "value first"),
+        (8, &least, &["AAA", "BBB"], "the least first, a tie at the last place by tag in byte order, never key"),
+        (9, &none_top, &["MMM", "CCC"], "value first"),
+        (10, &none_least, &["AAA", "BBB", "NNN"], "a holder with no row ranks at zero, a tie by tag"),
+    ];
+    for (id, query, wanted, why) in cases {
         let (_, hour, answer) = last(id);
         assert_eq!(answer, harness.fresh(query, hour));
         let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
-        assert_eq!(names, wanted, "a holder with no row ranks at zero");
-        let nnn = names.iter().position(|name| *name == "NNN").unwrap();
-        assert_eq!((answer.keys[nnn], answer.values[nnn], answer.states[nnn]), (999, 0, State::Value));
+        assert_eq!(names, wanted, "{why}");
     }
+    let (_, _, answer) = last(10);
+    assert_eq!((answer.keys[2], answer.values[2], answer.states[2]), (999, 0, State::Value));
 }
 
 static PARTS: Series = Series {
@@ -758,14 +776,14 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     }
     let army = serde_json::json!({ "product": "army-size", "params": { "branchId": "1", "countries": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false } });
     match crate::parse(&army, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("army-totals", "ownerDivisions")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("army-totals", "ownerDivisions")),
         _ => panic!("a series"),
     }
     let typed = serde_json::json!({ "product": "army-size", "params": { "branchId": "1", "countries": ["GER"], "measure": "battalions", "countFor": "owner", "byType": true } });
     assert_eq!(crate::parse(&typed, &nobody()).err().unwrap().to_string(), "Army sizes by unit type are not followed at the head");
     let air = serde_json::json!({ "product": "air-force-size", "params": { "branchId": "1", "countries": [], "top": 10, "measure": "wings", "ownership": "effective" } });
     match crate::parse(&air, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("air-force-totals", "effectiveWings")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("air-force-totals", "effectiveWings")),
         _ => panic!("a series"),
     }
     let navy = serde_json::json!({ "product": "navy-size", "params": { "branchId": "1", "countries": ["GER"], "top": null, "measure": "strength", "ownership": "logical", "grouping": "type" } });
@@ -786,19 +804,19 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     assert!(crate::parse(&one, &nobody()).is_err(), "one part is not followed");
     let territory = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 10, "hour": 5 } });
     match crate::parse(&territory, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("territory", "controlledStates")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("territory", "controlledStates")),
         _ => panic!("a ranked series"),
     }
     let unranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "ownedArea" }, "hour": 5 } });
     assert!(crate::parse(&unranked, &nobody()).is_err(), "a series asked for no tags ranks a top");
     let ranked = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "top": 10 } });
     match crate::parse(&ranked, &nobody()).unwrap() {
-        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false }, .. } => assert_eq!((series.kind, measure.name), ("country-game-scores", "total")),
+        Query::Series { series, measure, mode: SeriesMode::Top { n: 10, least: false, .. }, .. } => assert_eq!((series.kind, measure.name), ("country-game-scores", "total")),
         _ => panic!("a ranked series"),
     }
     let chosen_top = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "reads": [{ "country": "GER", "hour": 0 }], "top": 1 } });
     match crate::parse(&chosen_top, &nobody()).unwrap() {
-        Query::Series { countries, mode: SeriesMode::Top { n: 1, least: false }, .. } => assert_eq!(countries, vec!["GER".into()]),
+        Query::Series { countries, mode: SeriesMode::Top { n: 1, least: false, .. }, .. } => assert_eq!(countries, vec!["GER".into()]),
         _ => panic!("a top of named countries ranks them"),
     }
     let world = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "top": 3 } });
@@ -812,7 +830,7 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         _ => panic!("a series of every member"),
     }
     let wide = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 1_000 } });
-    assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Top { n: 1_000, least: false }, .. }));
+    assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Top { n: 1_000, least: false, .. }, .. }));
     let log =serde_json::json!({ "product": "log-page", "params": { "branchId": "1", "log": "market-events", "to": 9, "pageSize": 50, "columns": ["kind", "country"] } });
     let columns = vec![dashboard_declare::field(TableId::MarketEvents, "kind").unwrap(), dashboard_declare::field(TableId::MarketEvents, "country").unwrap()];
     match crate::parse(&log, &nobody()).unwrap() {

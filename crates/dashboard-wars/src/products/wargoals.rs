@@ -175,6 +175,7 @@ impl AtHour for Wargoals {
     const KEY: &'static str = "wargoals";
     const TITLE: &'static str = "War goals";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("computes justification completion hours and wargoal available/expiry state against at.hour");
     type Params = WargoalsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = WargoalsReply;

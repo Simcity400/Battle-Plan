@@ -13,6 +13,7 @@ import { buildRowSourceFromHead, type DatedLogRow, type PagedRowsSnapshot, type 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly series?: ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -92,6 +93,7 @@ function readScene(
           onArtDemand: (handle: ArtHandle) => laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks),
         }
       : {}),
+    ...(sources.staticShifts ? { panelShifts: sources.staticShifts } : {}),
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();

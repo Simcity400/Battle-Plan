@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { LaneView, Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions, type LaneStep } from '../laneRuntime.ts';
@@ -65,7 +65,7 @@ interface TableShape {
   readonly totalHeight: number;
   readonly maxima: Map<string, number>;
   readonly maximaCols: string;
-  readonly rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
+  readonly rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
   readonly sortSig: string;
   readonly orderKeys: readonly string[];
   readonly markers: ReadonlyMap<string, RankMarker>;

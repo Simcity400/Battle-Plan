@@ -1,22 +1,30 @@
 import { linearTicks } from '../../charts/valueAxis.ts';
-import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
+import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
 
 export const BARS_PAD_X = 12;
 export const BARS_PAD_TOP = 6;
 export const BARS_PAD_BOTTOM = 6;
-export const BARS_SECTION_HEIGHT = 20;
 export const BARS_HEADER_HEIGHT = 22;
 export const BARS_AXIS_HEIGHT = 20;
 export const BARS_LEGEND_ROW_HEIGHT = 22;
 export const BARS_VALUE_GAP = 6;
 export const BARS_SPLIT_CENTER_GAP = 36;
-export const BARS_REMOVE_BUTTON_SIZE = 22;
 export const BARS_GRIP_WIDTH = 10;
+export const PICK_WIDTH = 330;
+export const PICK_GAP = 24;
+export const PICK_ROW_HEIGHT = 22;
+export const PICK_DIVIDER_GAP = 8;
+
+export function pickListWidth(width: number): number {
+  return width >= PICK_WIDTH + PICK_GAP + 360 ? PICK_WIDTH : 0;
+}
 
 export interface BarsLayout {
   readonly form: BarsForm;
+  readonly bodyLeft: number;
+  readonly pickWidth: number;
   readonly twoSidedLayout: BarsTwoSidedLayout;
   readonly width: number;
   readonly height: number;
@@ -120,6 +128,34 @@ export function layoutFamilyBars(
   model: BarsModel,
   width: number,
   height: number,
+  theme?: FamilyTheme,
+  measure?: (text: string) => number,
+): BarsLayout {
+  const pickWidth = model.pickList ? pickListWidth(width) : 0;
+  if (pickWidth <= 0) return layoutBarsBody(model, width, height, theme, measure);
+  const offset = pickWidth + PICK_GAP;
+  const body = layoutBarsBody(model, Math.max(1, width - offset), height, theme, measure);
+  return {
+    ...body,
+    width: Math.max(1, Math.floor(width)),
+    bodyLeft: offset,
+    pickWidth,
+    nameX: body.nameX + offset,
+    plotLeft: body.plotLeft + offset,
+    plotRight: body.plotRight + offset,
+    centerX: body.centerX + offset,
+    readoutX: body.readoutX + offset,
+    pairX: body.pairX + offset,
+    rightPlotLeft: body.rightPlotLeft + offset,
+    rightPlotRight: body.rightPlotRight + offset,
+    rightNameX: body.rightNameX + offset,
+  };
+}
+
+function layoutBarsBody(
+  model: BarsModel,
+  width: number,
+  height: number,
   _theme?: FamilyTheme,
   measure?: (text: string) => number,
 ): BarsLayout {
@@ -153,7 +189,7 @@ export function layoutFamilyBars(
   for (let i = 0; i < model.rows.length; i++) {
     const row = model.rows[i]!;
     rowTops.push(cursorY);
-    const rh = row.kind === 'section' ? BARS_SECTION_HEIGHT : dataRowHeight;
+    const rh = row.kind === 'section' ? ROW_SECTION_HEIGHT : dataRowHeight;
     rowHeights.push(rh);
     cursorY += rh;
   }
@@ -296,6 +332,8 @@ export function layoutFamilyBars(
 
   return {
     form,
+    bodyLeft: 0,
+    pickWidth: 0,
     twoSidedLayout,
     width: w,
     height: h,
@@ -362,4 +400,13 @@ export function visibleBarsRange(
   let last = lo;
   while (last < count && layout.rowTops[last]! < bottomEdge) last++;
   return { first, last: Math.min(count, last + overscan) };
+}
+
+export function barsAuditWindow(layout: BarsLayout, scrollTop: number): { readonly first: number; readonly count: number } {
+  const { first, last } = visibleBarsRange(layout, scrollTop, 0);
+  return { first, count: last - first };
+}
+
+export function barsScrollHeight(layout: BarsLayout): number {
+  return layout.totalHeight + layout.height - layout.bodyHeight;
 }

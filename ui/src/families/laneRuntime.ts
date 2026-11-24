@@ -22,6 +22,7 @@ export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly scrollTop: number;
   readonly scrollLeft?: number;
@@ -101,6 +102,18 @@ export interface LaneRuntimeOptions {
 
 type Field = { readonly value: unknown; readonly content: string };
 
+interface Painting {
+  readonly seek: number;
+  readonly speed: number;
+  readonly hour: number;
+  readonly owner: string | undefined;
+  readonly pin: number | null;
+  readonly kind: string;
+  readonly view: string | undefined;
+  readonly options: unknown;
+  readonly sources: unknown;
+}
+
 interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   readonly canvas: OffscreenCanvas;
   readonly ctx: OffscreenCanvasRenderingContext2D;
@@ -129,14 +142,12 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   drawUntil: number;
   drawn: LaneDrawn<TBinding, TModel, TLayout> | null;
   before: LaneDrawn<TBinding, TModel, TLayout> | null;
+  painting: Painting | null;
   changedAt: number;
   demandFields: Record<string, Field>;
   layout: TLayout | null;
   layoutModel: TModel | null;
   layoutHour: number;
-  layoutOwner: string | undefined;
-  layoutView: string | undefined;
-  layoutSelected: string | null | undefined;
   layoutKey: readonly unknown[];
   expiry: number;
   pagedRows: unknown;
@@ -193,6 +204,26 @@ function field(held: Held<LaneBinding, unknown, unknown>, slot: string, value: u
 
 function windowKeyOf(binding: LaneBinding): string {
   return binding.window ? `${binding.window.first}:${binding.window.count}` : '';
+}
+
+function painting(input: PaintInput, binding: LaneBinding): Painting {
+  return {
+    seek: input.seek, speed: input.speed, hour: input.hour, owner: input.binding.owner, pin: input.binding.pin,
+    kind: binding.kind, view: binding.view, options: binding.options, sources: binding.sources,
+  };
+}
+
+function continues(last: Painting | null, next: Painting): boolean {
+  return last !== null
+    && next.speed > 0 && last.speed > 0
+    && next.seek === last.seek
+    && next.hour > last.hour
+    && next.pin === null && last.pin === null
+    && next.owner === last.owner
+    && next.kind === last.kind
+    && next.view === last.view
+    && next.options === last.options
+    && next.sources === last.sources;
 }
 
 function backing(surface: Surface): readonly [number, number, number] {
@@ -259,9 +290,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       artProvider: createLaneArtProvider(art),
       projected: null, projectedArtRevision: 0,
       kind: '', viewName: undefined, options: undefined, staticPanels: undefined, staticAnswers: undefined,
-      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, changedAt: -Infinity,
+      parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, painting: null, changedAt: -Infinity,
       demandFields: {},
-      layout: null, layoutModel: null, layoutHour: -Infinity, layoutOwner: undefined, layoutView: undefined, layoutSelected: undefined, layoutKey: [], expiry: Infinity,
+      layout: null, layoutModel: null, layoutHour: -Infinity, layoutKey: [], expiry: Infinity,
       pagedRows: undefined, windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
       drawKey: [], content: '', motion: false, artKey: '',
       structureKey: [], structureFields: {},
@@ -279,15 +310,13 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   }
 
   return {
-    next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
+    next(scene: Scene, hour: number, state?: Map<string, unknown>): number | null {
       const binding = scene.model;
       if (!isBinding(binding)) return Infinity;
       const projection = projectionOf(binding, scene.widget);
-      if (projection === 'loading' || projection === 'unknown') return Infinity;
+      if (projection === 'loading' || projection === 'unknown') return null;
       const held = state?.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
-      if (held && sameInputs(held, binding, scene, hour)) return Math.min(held.validUntil, Math.max(hour + 1, family.redraw(held.projected!.model, hour)));
-      if (!projection.nextChange) return Infinity;
-      return projection.nextChange(sceneReadView(scene, binding, hour, held ? readersOf(held) : undefined), binding.options);
+      return held && sameInputs(held, binding, scene, hour) ? Math.min(held.validUntil, Math.max(hour + 1, family.redraw(held.projected!.model, hour))) : null;
     },
 
     unmount(widget: number, state: Map<string, unknown>): void {
@@ -357,12 +386,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const hour = input.hour;
       const timed = binding.audit === true;
       const t0 = timed ? performance.now() : 0;
-      const owner = input.binding.owner;
-      const continuing = keep.layoutHour !== -Infinity
-        && keep.layoutOwner === owner
-        && keep.layoutView === binding.view
-        && keep.layoutSelected === binding.selectedKey
-        && (hour === keep.layoutHour || (hour > keep.layoutHour && input.speed > 0));
+      const current = painting(input, binding);
+      const continuing = continues(keep.painting, current);
+      keep.painting = current;
       const readers = readersOf(keep);
       let reuse = sameInputs(keep, binding, input, hour);
       if (reuse && (readersChanged || keep.projectedArtRevision !== keep.artRevision)) {
@@ -374,6 +400,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         const base: SceneSources = {
           sources: binding.sources,
           ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
+          ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
           ...(binding.hovers ? { hovers: binding.hovers } : {}),
           kind: binding.kind,
@@ -434,9 +461,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.layoutKey = layoutKey;
       }
       keep.layoutHour = hour;
-      keep.layoutOwner = owner;
-      keep.layoutView = binding.view;
-      keep.layoutSelected = binding.selectedKey;
       const layout = keep.layout;
       const tLayout = timed ? performance.now() : 0;
       let readNow: BoundedReadView | null = null;

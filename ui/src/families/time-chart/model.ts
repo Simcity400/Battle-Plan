@@ -1,5 +1,5 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
-import type { AuditRow } from '../../draw/notifications.ts';
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ArtResult, BoundedSeries } from '../plan.ts';
 
@@ -107,8 +107,11 @@ export interface ChartMonthSlot {
   readonly partial?: boolean;
   readonly partialToHour?: number;
   readonly segments: readonly ChartColumnSegment[];
+  readonly missingParts?: readonly { readonly label: string; readonly color: string; readonly reason: string }[];
   readonly totalValue: number;
   readonly totalText: string;
+  readonly totalMissingReason?: string;
+  readonly note?: string;
 }
 
 export interface ChartColumnModel {
@@ -194,7 +197,7 @@ export interface TimeChartModel {
     readonly detail?: string;
     readonly kind?: 'empty' | 'unavailable';
   } | null;
-  readonly auditRows?: readonly AuditRow[];
+  readonly auditRows?: readonly FamilyAuditRow[];
 }
 
 export interface TimeChartSettings {

@@ -1,3 +1,5 @@
+import { pictureError } from '../../shell/perf.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { tooltipStore } from '../../charts/tooltip.ts';
@@ -5,12 +7,12 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
-import { displayedHour } from '../boundedView.ts';
+import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
-import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -262,6 +264,16 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   assert.deepEqual(calls, ['verifierA:snapA@100', 'verifierB:snapB@200']);
   assert.equal(resA?.values.get('row'), 'A');
   assert.equal(resB?.values.get('row'), 'B');
+
+  const shown = [auditCell('GER', 'label', 'Germany'), auditCell('GER', 'value', '3'), auditCell('FRA', 'label', 'France'), auditCell('FRA', 'value', '2')];
+  const exactOf = (rows: readonly FamilyAuditRow[]) => createPlanAuditVerifier<null, Record<string, never>>()(5, {
+    projection: { family: 'bars', kind: 'synthetic-audit', project: () => null },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: () => rows,
+  }, undefined);
+  assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
+  await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -402,6 +414,28 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
   };
   assert.equal(action.subject, 'battle:42');
   assert.equal(action.hour, hour);
+});
+
+test('activating a row closes its tooltip, which stays closed under the opened window until the pointer or focus reaches another row', () => {
+  const tooltips = new FamilyTooltipController('activated-row');
+  const tip = (rowKey: string): FamilyTooltipEntry => ({ hour: 10, rowKey, content: { title: rowKey, rows: [] } });
+  const sync = (inspectedKey: string | null, focusedKey: string | null = null) => tooltips.syncFromInstall({
+    dim: false, held: false, inspectedKey, pointerPos: inspectedKey ? { x: 5, y: 5 } : null, hoverTip: inspectedKey ? tip(inspectedKey) : null,
+    focusInside: focusedKey !== null, focusedKey, focusAnchor: { x: 0, y: 0 }, focusTip: focusedKey ? tip(focusedKey) : null, viewportHeight: 800,
+  });
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true);
+  tooltips.dismissActivated('org');
+  assert.equal(tooltips.isHoverShown(), false, 'activation closes the tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), false, 'a later install does not reopen it over the window');
+  sync(null, 'org');
+  assert.equal(tooltips.isHoverShown(), false, 'the focused activated row stays quiet too');
+  sync('other');
+  assert.equal(tooltips.isHoverShown(), true, 'another row shows its tooltip');
+  sync('org');
+  assert.equal(tooltips.isHoverShown(), true, 'coming back to the row shows it again');
+  tooltips.dispose();
 });
 
 test('window placement clamps and centres within viewport bounds and sameFamilyTheme detects presentation token changes', () => {
@@ -806,7 +840,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(activatedPts, ['plot:200']);
 
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
-  assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
+  assert.equal(parseBarsHit('remove:reg1'), null, 'removing a region is the regions control, never a canvas hit');
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
   assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
@@ -952,9 +986,9 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
 });
 
 test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
-  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
-  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
-  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
-  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
-  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
+  const followed = { hour: 120, follows: true };
+  assert.deepEqual(boundDated(followed, [100, 140], true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, null, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, null, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, null, false, true, [0, 500]), { h: 0, c: 500 });
 });
