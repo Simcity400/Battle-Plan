@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { ResourceBalanceReply } from '../../generated/dashboard';
-import { POOL_CELLS, automaticResource, balanceOf, barStructure, breakdownRows, campaignScale, dealAccounting, dealAt, dealsOf, momentScale, orderResources, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourcePartGroups, resourceParts, resourceTimeLayers, validateResourceBalance, validateResourceSizes } from './resourceData.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
+import { POOL_CELLS, balanceOf, barStructure, breakdownRows, campaignScale, dealAccounting, dealAt, dealsOf, momentScale, orderResources, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourcePartGroups, resourceParts, validateResourceBalance, validateResourceSizes } from './resourceData.ts';
 import type { ResourcePools } from './resourceData';
 
 const pools = (id: number, produced: string, production = '-300000', subjects = '0'): ResourcePools => ({
@@ -58,7 +57,6 @@ test('the campaign scale is the longest bar over the span, the moment scale the 
   assert.equal(campaignScale(sizes), 1200000n);
   assert.equal(momentScale([pools(1, '200000'), pools(2, '900000', '-100000')]), 900000n);
   assert.equal(partWidth(-600000n, 1200000n), '50%');
-  assert.equal(automaticResource(reply().resources, sizes), 'steel');
 });
 
 test('a breakdown parts the balance as the game adds it: supply, needs, and the rounding left beside the net', () => {
@@ -92,15 +90,4 @@ test('a malformed reply is refused', () => {
   assert.throws(() => validateResourceBalance({ ...reply(), pools: [9] }), /malformed/);
   assert.throws(() => validateResourceBalance({ ...reply(), shown: [9] }), /malformed/);
   assert.throws(() => validateResourceBalance({ ...reply(), resources: [...reply().resources].reverse() }), /malformed/);
-});
-
-test('resource time layers report supply and demand extents so the chart scales to recorded values', () => {
-  const summary = (low: number, high: number): ChartSummary => ({
-    from: 0, to: 47, width: 2, buckets: [
-      { firstHour: 0, lastHour: 23, lastValueHour: 23, minHour: 0, maxHour: 23, firstValue: low, lastValue: high, minValue: low, maxValue: high, firstBreak: false, hasBreak: false },
-    ],
-  });
-  const layers = resourceTimeLayers([{ id: 'steel', color: '#888' }], true, id => id === 'steel' ? summary(100, 144) : undefined, id => id === 'steel' ? summary(20, 60) : undefined, () => 47);
-  const ranges = layers.map(layer => layer.extent?.([0, 47])).filter((range): range is [number, number] => range != null);
-  assert.deepEqual(ranges, [[100, 144], [20, 60]]);
 });

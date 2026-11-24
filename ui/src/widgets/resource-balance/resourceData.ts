@@ -1,11 +1,5 @@
-import { drawGapSummary, drawLineSummary, summaryExtent } from '../../charts/chartSummary.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
-import { SECONDARY_DASH } from '../../charts/palette.ts';
-import type { ChartLayer } from '../../charts/TimeChart';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
-import { chosenShown, largestToken, toggleChosen as toggleKit } from '../../dashboard/chosen.ts';
-import type { ChipAction, ChoiceSource } from '../../dashboard/chosen';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { fitTooltip } from '../../charts/tooltip.ts';
@@ -157,18 +151,6 @@ export function resourcePartGroups(balance: Balance) {
   ];
 }
 
-const resourceChoices = (resources: readonly ResourceInfo[]): ChoiceSource => ({
-  lines: token => resources.filter(item => item.token === token).length,
-  name: token => resourceName(resources.find(item => item.token === token) ?? { name: null, token, ordinal: 1 }),
-  noun: 'resource',
-});
-
-export const chosenResources = (resources: readonly ResourceInfo[], chosen: readonly string[], automatic: string | null) =>
-  chosenShown(resourceChoices(resources), chosen, automatic);
-
-export const toggleResource = (resources: readonly ResourceInfo[], stored: readonly string[], shown: readonly string[], token: string): ChipAction =>
-  toggleKit(resourceChoices(resources), stored, shown, token, Number.MAX_SAFE_INTEGER);
-
 export function dealAccounting(deals: readonly DealAt[]) {
   let widest = 0n;
   for (const deal of deals) {
@@ -177,14 +159,6 @@ export function dealAccounting(deals: readonly DealAt[]) {
     if (magnitude > widest) widest = magnitude;
   }
   return { total: dealsTotal(deals), widest };
-}
-
-export function automaticResource(resources: readonly ResourceInfo[], sizes: ResourceSizesReply | undefined): string | null {
-  const longest = new Map((sizes?.sizes ?? []).map(size => [size.id, size.longestRaw]));
-  return largestToken(resources.map(item => {
-    const raw = longest.get(item.id);
-    return { token: item.token, size: raw ? BigInt(raw) : 0n, recorded: raw != null };
-  }));
 }
 
 export const resourceName = (item: Pick<ResourceInfo, 'name' | 'token' | 'ordinal'>) => `${contentTitle(item.name, item.token, 'Resource name unavailable')}${item.ordinal > 1 ? ` (${item.ordinal})` : ''}`;
@@ -277,24 +251,6 @@ export function resourceTooltip(head: Pick<TooltipContent, 'title' | 'icon' | 's
   return fitTooltip(forms(), height, { keep: 1 });
 }
 
-export interface LineAt { resource: ResourceInfo; color: string; balance: Balance | null; deals: Deals | null; missing: string | null }
-
-export function overTimeTooltip(title: string, lines: readonly LineAt[], decimals: number, partner: CountryLabel, height: number): TooltipContent {
-  const head = (line: LineAt, index: number): TooltipRow => ({ label: resourceName(line.resource), swatch: line.color, strong: true, divider: index > 0 });
-  const missing = (line: LineAt): TooltipRow => ({ label: line.missing ?? 'Not recorded', tone: 'muted' });
-  function* forms(): Generator<TooltipContent> {
-    if (lines.length <= FULL_BREAKDOWN_MAX) {
-      for (const count of dealCounts(lines.map(line => line.deals))) {
-        yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? breakdownRows(line.balance, line.deals, decimals, partner, count) : [missing(line)])]) };
-      }
-    }
-    yield { title, rows: lines.flatMap((line, index) => [head(line, index), ...(line.balance ? summaryRows(line.balance, decimals) : [missing(line)])]) };
-    yield { title,
-      rows: lines.map(line => ({ label: resourceName(line.resource), swatch: line.color, short: true, ...(line.balance ? netValue(line.balance, decimals) : { value: 'Not recorded', tone: 'muted' as const }) })) };
-  }
-  return fitTooltip(forms(), height, { more: hidden => `${hidden} more` });
-}
-
 export const describeResource = (resource: ResourceInfo, balance: Balance | null, decimals: number) => balance
   ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, decimals)}, demand ${formatAmount(balance.demand, decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, decimals)}`
   : `${resourceName(resource)}: not recorded at this time`;
@@ -305,31 +261,3 @@ export const segmentLook = (raw: bigint, colour: string | undefined) => raw < 0n
 export const legendFlags = (balances: readonly (Balance | null)[]) =>
   `${balances.some(balance => balance && balance.fromSubjects !== 0n)}|${balances.some(balance => balance && balance.toOverlord !== 0n)}`;
 
-export interface ResourceTimeLine { id: string; color: string }
-
-export function resourceTimeLayers(lines: readonly ResourceTimeLine[], shade: boolean,
-  supplyOf: (id: string) => ChartSummary | undefined, demandOf: (id: string) => ChartSummary | undefined,
-  untilOf: () => number | null): ChartLayer[] {
-  return [
-    ...shade && lines.length === 1 ? [{ draw: (ctx, frame, chartTokens, state) => {
-      const id = lines[0].id, high = supplyOf(id), low = demandOf(id);
-      if (high && low) drawGapSummary(ctx, frame, chartTokens, high, low, chartTokens.positive, chartTokens.error, state.playhead);
-    } } satisfies ChartLayer] : [],
-    ...lines.flatMap(line => [
-      {
-        draw: (ctx, frame, chartTokens, state) => {
-          const drawn = supplyOf(line.id);
-          if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead);
-        },
-        extent: x => { const drawn = supplyOf(line.id); return drawn ? summaryExtent(drawn, x, untilOf()) : null; },
-      },
-      {
-        draw: (ctx, frame, chartTokens, state) => {
-          const drawn = demandOf(line.id);
-          if (drawn) drawLineSummary(ctx, frame, chartTokens, drawn, line.color, false, state.playhead, { dash: SECONDARY_DASH, endDot: false });
-        },
-        extent: x => { const drawn = demandOf(line.id); return drawn ? summaryExtent(drawn, x, untilOf()) : null; },
-      },
-    ] satisfies ChartLayer[]),
-  ];
-}

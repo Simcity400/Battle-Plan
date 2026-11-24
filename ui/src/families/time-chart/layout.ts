@@ -5,6 +5,7 @@ import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
+import { layoutChartRows, type RowsFrame } from './rows.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
@@ -141,6 +142,7 @@ export interface TimeChartLayout {
   readonly markers: readonly PlacedMarker[];
   readonly gaps: readonly PlacedGap[];
   readonly columns: readonly PlacedColumnItem[];
+  readonly rows?: RowsFrame;
   readonly legendTop: number | null;
   readonly toX: (hour: number) => number;
   readonly toY: (value: number) => number;
@@ -354,6 +356,18 @@ function buildColumnsLayout(
   return out;
 }
 
+function rowsChartLayout(model: TimeChartModel, width: number, height: number, small: boolean, fontFamily: string, measure: MeasureText): TimeChartLayout {
+  const frame = layoutChartRows(model, width, height, small, measure, fontFamily);
+  const span = Math.max(1, frame.xDomain[1] - frame.xDomain[0]);
+  return {
+    width, height, small, left: frame.left, right: width - frame.left - frame.plotWidth, top: frame.top, bottom: height - frame.axisY,
+    plotWidth: frame.plotWidth, plotHeight: frame.axisY - frame.top, baseY: frame.axisY, markerLaneHeight: 0, axisY: frame.axisY,
+    xDomain: frame.xDomain, yDomain: [0, 1], yTicks: [], playheadX: frame.toX(model.hour + 1), dateTabText: '', dateTabX: 0, dateTabWidth: 0,
+    axisTicks: [], rawAxisTicks: frame.axisTicks, endLabels: [], markers: [], gaps: [], columns: [], rows: frame, legendTop: null,
+    toX: frame.toX, toY: () => frame.axisY, fromX: px => frame.xDomain[0] + ((px - frame.left) / frame.plotWidth) * span,
+  };
+}
+
 export function layoutTimeChart(
   model: TimeChartModel,
   width: number,
@@ -365,6 +379,7 @@ export function layoutTimeChart(
 ): TimeChartLayout {
   const narrow = width <= 490;
   const small = narrow || height <= 200;
+  if (model.mode === 'rows') return rowsChartLayout(model, width, height, small, fontFamily, measure);
   const smallFont = `11px ${fontFamily}`;
   const tabFont = `600 11px ${fontFamily}`;
   const labelNameFont = `500 12px ${fontFamily}`;

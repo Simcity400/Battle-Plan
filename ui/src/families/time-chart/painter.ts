@@ -20,6 +20,7 @@ import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
+import { drawChartRows, parseRowsInspect } from './rows.ts';
 
 export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
   const items: ArtUrlInput[] = [];
@@ -36,6 +37,7 @@ export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartL
   if (model.overlays) {
     for (const ov of model.overlays) items.push(ov.icon);
   }
+  for (const placed of layout.rows?.rows.rows ?? []) items.push(placed.row.icon);
   return collectArtUrls(items);
 }
 
@@ -218,6 +220,10 @@ export function drawTimeChart(
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, layout.width, layout.height);
+  if (layout.rows) {
+    drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey));
+    return;
+  }
 
   const smallFont = `${theme.fontSize.small}px ${theme.font}`;
   const labelNameFont = `500 ${theme.fontSize.body}px ${theme.font}`;

@@ -4,6 +4,7 @@ import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
+import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
@@ -161,6 +162,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'months',
       () => import('../military-factory-spending/factoryMonthsProjection.ts'),
       mod => ({ projection: mod.factoryMonthsProjection, declaration: mod.factoryMonthsDeclaration }),
+    ),
+  },
+  {
+    kind: 'resource-balance',
+    view: 'time',
+    label: 'Over time',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: RESOURCE_TIME_OPTIONS,
+    loadSpec: timeChartSpec(
+      'resource-balance',
+      'time',
+      () => import('../resource-balance/resourceTimeProjection.ts'),
+      mod => ({ projection: mod.resourceTimeProjection, declaration: mod.resourceTimeDeclaration }),
     ),
   },
   {
