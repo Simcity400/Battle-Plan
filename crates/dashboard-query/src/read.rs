@@ -162,7 +162,6 @@ fn may_change(buckets: &[Vec<Held>], before: Option<&[Held]>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments, reason = "a change search names its run, table, column, keys and bounds")]
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn nearest_change(
     recording: &Recording,
     run: u32,

@@ -451,7 +451,7 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
         CountryLinkRow { id: 2, canonical_slot: 20 },
     ];
     let opinion = RelationOpinionRow { owner_country: 7, target_country: 2, opinion: 42 };
-    let replay = Replay::from_synthetic(Vec::new(), campaign.id.clone(), session, branch, 131, |frame, hour| {
+    let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, branch, 131, |frame, hour| {
         frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
         frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial: None, read: true, sample: Sample::FromReadBit })?;
         frame.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit })?;

@@ -61,10 +61,6 @@ pub(crate) fn coverage_of(table: usize, status: Status, reason: Option<&str>, wi
     }
 }
 
-pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
-    coverage_of(table, status, reason, false).into_missing()
-}
-
 #[derive(Default)]
 pub(crate) struct Reasons(HashMap<(usize, u32), Box<str>>);
 
