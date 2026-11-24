@@ -1,9 +1,23 @@
+import type { AnyBarsWidgetDeclaration } from '../families/bars/declaration.ts';
+import type { BarsProjection } from '../families/bars/model.ts';
 import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../families/manifest.ts';
 import { bindFamilyManifest } from '../families/registry.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from './game-score/definition.ts';
+
+function barsSpec<TModule>(
+  kind: string,
+  view: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: BarsProjection<any>; readonly declaration: AnyBarsWidgetDeclaration },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'bars', kind, view, projection, declaration };
+  });
+}
 
 function tableSpec<TModule>(
   kind: string,
@@ -111,6 +125,41 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('./political-power/politicalPowerProjection.ts'),
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'factories',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: barsSpec(
+      'factories',
+      'race',
+      () => import('./factories/factoriesProjection.ts'),
+      mod => ({ projection: mod.factoriesProjection, declaration: mod.factoriesDeclaration }),
+    ),
+  },
+  {
+    kind: 'air-superiority-region',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: barsSpec(
+      'air-superiority-region',
+      DEFAULT_VIEW,
+      () => import('./air-superiority-region/airSuperiorityProjection.ts'),
+      mod => ({ projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration }),
+    ),
+  },
+  {
+    kind: 'minefields',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: barsSpec(
+      'minefields',
+      DEFAULT_VIEW,
+      () => import('./minefields/minefieldsProjection.ts'),
+      mod => ({ projection: mod.minefieldsProjection, declaration: mod.minefieldsDeclaration }),
     ),
   },
 ];
