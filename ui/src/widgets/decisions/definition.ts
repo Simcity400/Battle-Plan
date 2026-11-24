@@ -40,7 +40,7 @@ export const DECISIONS_COLUMNS: readonly TableColumnSpec[] = [
     priority: 2,
     sortable: false,
     numeric: true,
-    minWidth: 88,
+    minWidth: 96,
     widest: ['999 PP'],
   },
   logStatusColumn({ minWidth: 120, widest: ['Completed'] }),

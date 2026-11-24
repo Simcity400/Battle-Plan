@@ -5,7 +5,7 @@ import { urlArtHandle } from '../../families/art/provider.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, resolveIdentity } from '../../families/table/identityCell.ts';
 import type { TableCellStockpile, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar, formatShare, type ValueFormat } from '../../families/valueFormat.ts';
@@ -170,7 +170,7 @@ function project(readView: BoundedReadView, options: StockpileProjectionOptions)
   };
 }
 
-export const stockpileProjection: TableProjection<StockpileProjectionOptions> = registerTableProjection({ kind: 'equipment-stockpile', family: 'table', project }, 'bars');
+export const stockpileProjection: TableProjection<StockpileProjectionOptions> = registerFamilyProjection<TableProjection<StockpileProjectionOptions>>({ kind: 'equipment-stockpile', family: 'table', project }, 'bars');
 
 function validateTypes(raw: unknown): StockpileTypesReply {
   const reply = raw as Partial<StockpileTypesReply> | null;

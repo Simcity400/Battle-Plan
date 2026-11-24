@@ -7,7 +7,7 @@ import {
   type TableColumnSpec,
   type TableProjection,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
@@ -67,7 +67,7 @@ export function worldTensionEventsColumns(): readonly TableColumnSpec[] {
   ];
 }
 
-export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerTableProjection(
+export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOptions> = registerFamilyProjection(
   declareTableProjection<ParsedEvents, TensionStackEvent, WorldTensionEventsOptions>({
     kind: 'world-tension',
     validate: parseEvents,
@@ -118,7 +118,7 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
       }
       return { rows: shown, warnings: parsed.warnings };
     },
-    rowKey: row => `${row.hour}:${row.firstRead}:${row.reason}:${row.tag ?? ''}`,
+    rowKey: row => `${row.hour}:${row.firstRead}:${row.slot ?? ''}:${row.secondCountry}:${row.place}:${row.reason}`,
     rowName: row => row.reason,
     tooltipTitle: row => row.reason,
     tooltipNote: row => (row.remembered ? 'Country tag last held this slot before disappearing.' : undefined),

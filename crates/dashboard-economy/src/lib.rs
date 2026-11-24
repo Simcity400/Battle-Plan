@@ -7,5 +7,4 @@ pub mod registrations;
 
 pub fn forget(source: &dashboard_base::Source) {
     products::convoys::forget(source);
-    products::economy::market::ledger::forget(source);
 }

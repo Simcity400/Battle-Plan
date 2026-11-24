@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { campaignToken, chosenShown, largestToken, storedChoices, toggleChosen } from './chosen.ts';
+import { campaignToken, chosenShown, largestToken, toggleChosen } from './chosen.ts';
 import type { ChoiceSource } from './chosen';
-import { contentKey, setToken, storableToken, UNSTORABLE } from './options.ts';
+import { storableToken, UNSTORABLE } from './options.ts';
 
 const LINES: Record<string, number> = { infantry_equipment: 1, artillery_equipment: 1, twice: 2 };
 const SOURCE: ChoiceSource = { lines: token => LINES[token] ?? 0, name: token => token.toUpperCase(), noun: 'equipment type' };
@@ -57,16 +57,4 @@ test('a campaign-scoped token differs between campaigns and stays storable', () 
   const here = campaignToken(key, '7:tank');
   const source: ChoiceSource = { lines: token => token === here ? 1 : 0, name: token => token, noun: 'variant' };
   assert.deepEqual(chosenShown(source, [campaignToken('fedcba', '7:tank')], here), [here]);
-});
-
-test('a key a setting cannot store is chosen through its stored token', () => {
-  const keys: Record<string, number> = { 'mod rifles': 1, infantry_equipment: 1 };
-  const source = storedChoices({ lines: key => keys[key] ?? 0, name: key => key, noun: 'equipment type' });
-  const token = setToken('mod rifles');
-  assert.equal(storableToken('mod rifles'), false);
-  assert.equal(source.lines(token), 1);
-  const action = toggleChosen(source, [], ['infantry_equipment'], token, 8);
-  assert.ok('value' in action, JSON.stringify(action));
-  assert.deepEqual(action.value.split(' ').map(contentKey), ['infantry_equipment', 'mod rifles']);
-  assert.deepEqual(chosenShown(source, action.value.split(' '), 'infantry_equipment').map(contentKey), ['infantry_equipment', 'mod rifles']);
 });

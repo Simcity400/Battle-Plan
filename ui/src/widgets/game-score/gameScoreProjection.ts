@@ -11,7 +11,7 @@ import {
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
 import { inHourRanges, nextFactionsChange } from '../../families/holders.ts';
-import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
+import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
@@ -20,7 +20,7 @@ import {
   type TableProjection,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
@@ -106,6 +106,7 @@ function nextGameScoreChange(hour: number, options: GameScoreProjectionOptions):
     nextRangesChange(options.unobserved, hour),
     nextMembershipChange(options.membership, hour),
     nextFactionsChange(options.factionRuns, hour, options.factionUnobserved, options.factionIncomplete),
+    nextLookChange(options.labels, hour),
   );
 }
 
@@ -140,7 +141,7 @@ export function gameScoreColumns(hints?: GameScoreReply['hints']): TableColumnSp
   ];
 }
 
-export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = registerTableProjection(
+export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = registerFamilyProjection(
   declareTableProjection<GameScoreReply, GameScoreRow, GameScoreProjectionOptions>({
     kind: 'game-score',
     validate: validateGameScore,

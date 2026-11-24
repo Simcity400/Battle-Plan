@@ -4,7 +4,7 @@ import { headKey, headRead, headSubject, momentHour, retain } from './headProduc
 import { PlaybackController } from './playback.ts';
 import type { FrameEngine, EngineFrame } from '../engine/frame';
 import { WidgetFrames } from './widgetClock.ts';
-import { followSpan, watchBoundary } from './widgetTime.ts';
+import { followSpan, watchBoundary, watchTrackHours } from './widgetTime.ts';
 import { at, FOLLOW, SPEC, type TrackHour, axisAt } from './regionTime.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 
@@ -136,4 +136,34 @@ test('a frame re-reads only the boundary watches whose span it crossed, however 
   for (const stop of stops) stop();
   page.seek(10_000);
   assert.equal(reads, 1503, 'released watches are never read again');
+});
+
+test('a following game window hears every new hour of uninterrupted playback, once each, and a seek, but no frame within an hour', t => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const tasks = new Map<string, (frame: EngineFrame) => boolean | void>();
+  const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | void) => {
+    tasks.set(phase, run);
+    return { wake() {}, stop() { tasks.delete(phase); } };
+  } } as unknown as FrameEngine;
+  const tick = (ms: number) => {
+    now += ms;
+    for (const phase of ['clock', 'paint']) tasks.get(phase)?.({ now, dt: ms, index: 0, phase } as EngineFrame);
+  };
+  const page = new PlaybackController(engine);
+  t.after(() => page.stop());
+  page.setBounds({ firstHour: 0, lastHour: 500 });
+  page.seek(100);
+  const heard: number[] = [];
+  const stop = watchTrackHours(new WidgetFrames(page, 'equipment-designs').clock, () => heard.push(page.getHour()));
+  page.setSpeed(10);
+  page.setPlaying(true);
+  for (let frame = 0; frame < 30; frame++) tick(16);
+  assert.ok(page.getHour() >= 104, `playback moved on to ${page.getHour()}`);
+  assert.deepEqual(heard, Array.from({ length: page.getHour() - 100 }, (_, index) => 101 + index), 'each hour once, in order, with no anchor or boundary in between');
+  page.seek(50);
+  assert.equal(heard.at(-1), 50, 'a seek is heard');
+  stop();
+  page.seek(60);
+  assert.equal(heard.at(-1), 50, 'a stopped watch hears nothing');
 });

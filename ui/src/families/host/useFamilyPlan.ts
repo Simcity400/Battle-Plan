@@ -771,7 +771,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
   const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
-  const asks = useMemo(() => (active && plan ? hoverAsks(plan, hoverHour) : []), [active, plan, hoverHour]);
+  const displayedSeries = tiledState.key === pixelBinnedKey ? tiledState.series : undefined;
+  const asks = useMemo(
+    () => (active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }) : []),
+    [active, plan, hoverHour, displayedSeries],
+  );
   const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
   const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
 

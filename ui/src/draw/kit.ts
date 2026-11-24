@@ -9,7 +9,7 @@ import {
   type FittedLabel,
   type FittedLine,
 } from '../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../charts/textWidth.ts';
+import { measureCanvasText, textWidth, type Canvas2D } from '../charts/textWidth.ts';
 import type { FamilyTheme } from '../families/contract';
 import {
   drawHatchRect,
@@ -25,40 +25,14 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { CHART_MEASURE_COLOURS } from '../charts/palette.ts';
-import { contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
+import { CHART_MEASURE_COLOURS, paletteCache } from '../charts/palette.ts';
+import { niceStep } from '../charts/valueAxis.ts';
+import { colorCache, contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
-import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
 type Baseline = 'top' | 'middle' | 'bottom' | 'alphabetic';
 export interface LabelStyle { font: string; fill: string; align: Align; baseline: Baseline; squeeze?: boolean }
-
-export interface Kit {
-  begin(width: number, height: number, background?: string): void;
-  rect(x: number, y: number, width: number, height: number, fill: string, radius?: number): void;
-  rule(x0: number, y0: number, x1: number, y1: number, stroke: string, width?: number): void;
-  area(xs: ArrayLike<number>, highs: ArrayLike<number>, lows: ArrayLike<number>, count: number, fill: string, outline?: string): void;
-  line(xs: ArrayLike<number>, ys: ArrayLike<number>, count: number, stroke: string, width: number): void;
-  label(text: string, x: number, y: number, style: LabelStyle, maxWidth?: number): number;
-  measure(text: string, font: string): number;
-  icon(key: string, x: number, y: number, width: number, height: number): boolean;
-  fade(alpha: number): void;
-  dashed(pattern: readonly number[]): void;
-  desaturate(): void;
-  clip(x: number, y: number, width: number, height: number): void;
-  newPath(): PathBuilder;
-  clipPath(path: PathBuilder): void;
-  path(path: PathBuilder, paint: PathPaint): void;
-  erase(x: number, y: number, width: number, height: number): void;
-  raster(raster: KitRaster, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
-  readonly pixelRatio: number;
-  save(): void;
-  restore(): void;
-  place?(axes: Placement): void;
-  when?(span: readonly [number, number] | null): void;
-  pulse?(x: number, y: number, size: number, fill: string): void;
-}
 
 export type Placement = 'pixel' | 'x' | 'y' | 'xy';
 
@@ -133,9 +107,9 @@ export const DEFAULT_FAMILY_THEME: FamilyTheme = {
   hatchSpacing: 5,
 };
 
-export function resolveKitTokens(
-  theme: Pick<FamilyTheme, 'surface' | 'text' | 'muted' | 'accent'> & Partial<FamilyTheme>,
-) {
+type KitTokenInput = Pick<FamilyTheme, 'surface' | 'text' | 'muted' | 'accent'> & Partial<FamilyTheme>;
+
+function buildKitTokens(theme: KitTokenInput) {
   const dark = isDarkTheme(theme);
   const ink = dark ? '255, 255, 255' : '15, 23, 42';
   return {
@@ -169,6 +143,52 @@ export function resolveKitTokens(
     markerTick: dark ? 'rgba(245, 245, 245, 0.42)' : 'rgba(15, 23, 42, 0.42)',
     partsTrack: dark ? 'rgba(245, 245, 245, 0.045)' : 'rgba(15, 23, 42, 0.05)',
   };
+}
+
+type KitTokens = ReturnType<typeof buildKitTokens>;
+
+interface CachedTokens {
+  readonly surface: string;
+  readonly text: string;
+  readonly muted: string;
+  readonly accent: string;
+  readonly dark: boolean | undefined;
+  readonly raised: string | undefined;
+  readonly tokens: KitTokens;
+}
+
+const kitTokenCache = new WeakMap<object, CachedTokens>();
+let activeThemeSurface: string | null = null;
+
+export function resolveKitTokens(theme: KitTokenInput): KitTokens {
+  if (activeThemeSurface !== null && activeThemeSurface !== theme.surface) {
+    colorCache.clear();
+    paletteCache.clear();
+  }
+  activeThemeSurface = theme.surface;
+  const cached = kitTokenCache.get(theme);
+  if (
+    cached
+    && cached.surface === theme.surface
+    && cached.text === theme.text
+    && cached.muted === theme.muted
+    && cached.accent === theme.accent
+    && cached.dark === theme.dark
+    && cached.raised === theme.raised
+  ) {
+    return cached.tokens;
+  }
+  const tokens = buildKitTokens(theme);
+  kitTokenCache.set(theme, {
+    surface: theme.surface,
+    text: theme.text,
+    muted: theme.muted,
+    accent: theme.accent,
+    dark: theme.dark,
+    raised: theme.raised,
+    tokens,
+  });
+  return tokens;
 }
 
 export function drawRowHover(
@@ -824,15 +844,18 @@ export function drawLegendEntry(
   color: string,
   theme: FamilyTheme,
   options?: {
+    readonly line?: boolean;
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
     readonly outlined?: boolean;
+    readonly swatch?: 'line' | 'square';
     readonly flag?: FlagSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined ? 9 : 12;
+  const isLine = Boolean(options?.line || options?.swatch === 'line' || options?.dash?.length);
+  const swatchW = isLine ? 14 : options?.hatch ? 10 : 9;
   const gap = 6;
   let cursor = x;
   ctx.save();
@@ -848,20 +871,20 @@ export function drawLegendEntry(
     ctx.stroke();
     ctx.setLineDash([]);
     cursor += swatchW + gap;
-  } else if (options?.dash?.length) {
+  } else if (isLine) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    ctx.setLineDash([...options.dash]);
+    if (options?.dash?.length) ctx.setLineDash([...options.dash]);
     ctx.beginPath();
     ctx.moveTo(cursor, middleY);
     ctx.lineTo(cursor + swatchW, middleY);
     ctx.stroke();
-    ctx.setLineDash([]);
+    if (options?.dash?.length) ctx.setLineDash([]);
     cursor += swatchW + gap;
   } else if (color) {
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.roundRect(cursor, Math.round(middleY - 1.5), swatchW, 3, 1.5);
+    ctx.roundRect(cursor, Math.round(middleY - 4.5), swatchW, 9, 2);
     ctx.fill();
     cursor += swatchW + gap;
   }
@@ -872,18 +895,20 @@ export function drawLegendEntry(
     cursor += fw + gap;
   }
   const fontSize = theme.fontSize.small;
-  ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
+  const font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
+  ctx.font = font;
   ctx.fillStyle = options?.muted ? theme.muted : theme.text;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const usedW = cursor - x;
   const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - usedW) : 10_000;
   const fitted = drawFittedLabel(ctx, label, cursor, middleY, textMax, {
+    font,
     fontSize,
     lineHeight: labelLineHeight(fontSize),
     maxLines: 1,
   });
-  const drawnW = fitted.lines[0] ? textWidth(ctx, fitted.lines[0]) : 0;
+  const drawnW = fitted.lines[0] ? measureCanvasText(ctx, fitted.lines[0], font) : 0;
   ctx.restore();
   return { width: usedW + drawnW, label: fitted };
 }
@@ -1114,15 +1139,31 @@ const DARK_FILL_INK = 'rgba(17, 17, 17, 0.88)';
 const LIGHT_FILL_INK = 'rgba(255, 255, 255, 0.96)';
 const DARK_FILL_INK_RGB = { r: 17, g: 17, b: 17 };
 const LIGHT_FILL_INK_RGB = { r: 255, g: 255, b: 255 };
+const MAX_INK_PER_THEME = 512;
+const contrastInkCache = new WeakMap<object, { readonly surface: string; readonly text: string; readonly map: Map<string, string> }>();
 
 export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
+  let bucket = contrastInkCache.get(theme);
+  if (!bucket || bucket.surface !== theme.surface || bucket.text !== theme.text) {
+    bucket = { surface: theme.surface, text: theme.text, map: new Map() };
+    contrastInkCache.set(theme, bucket);
+  }
+  const cached = bucket.map.get(fill);
+  if (cached !== undefined) return cached;
   const parsed = parseColorAlpha(fill);
-  if (!parsed) return theme.text;
-  const surface = parsed.alpha < 1 ? parseColor(theme.surface) : null;
-  const bg = surface && parsed.alpha < 1 ? mixRgb(surface, parsed.rgb, parsed.alpha) : parsed.rgb;
-  return contrast(bg, DARK_FILL_INK_RGB) >= contrast(bg, LIGHT_FILL_INK_RGB)
-    ? DARK_FILL_INK
-    : LIGHT_FILL_INK;
+  let resolved: string;
+  if (!parsed) {
+    resolved = theme.text;
+  } else {
+    const surface = parsed.alpha < 1 ? parseColor(theme.surface) : null;
+    const bg = surface && parsed.alpha < 1 ? mixRgb(surface, parsed.rgb, parsed.alpha) : parsed.rgb;
+    resolved = contrast(bg, DARK_FILL_INK_RGB) >= contrast(bg, LIGHT_FILL_INK_RGB)
+      ? DARK_FILL_INK
+      : LIGHT_FILL_INK;
+  }
+  if (bucket.map.size >= MAX_INK_PER_THEME) bucket.map.clear();
+  bucket.map.set(fill, resolved);
+  return resolved;
 }
 
 export function drawChevron(
@@ -1258,14 +1299,30 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   const start = gameDate(Math.floor(startHour));
   const end = gameDate(Math.floor(endHour));
   const ticks: TimeAxisTick[] = [];
-  if (!start || !end || spanHours <= 62 * hoursPerDay) {
+  if (!start || !end) {
+    const spanDays = Math.max(1, (spanHours + 1) / hoursPerDay);
+    const fit = Math.max(2, Math.floor(plotWidth / 64));
+    const step = Math.max(1, Math.round(niceStep(spanDays, fit)));
+    const firstDay = Math.floor((startHour - HOUR_EPOCH) / hoursPerDay);
+    const lastDay = Math.floor((endHour - HOUR_EPOCH) / hoursPerDay);
+    const firstTickDay = Math.ceil(firstDay / step) * step;
+    for (let day = firstTickDay; day <= lastDay && ticks.length < 256; day += step) {
+      const hour = HOUR_EPOCH + day * hoursPerDay;
+      if (hour <= startHour || hour > endHour) continue;
+      const parts = formatDateParts(hour);
+      const date = gameDate(hour);
+      ticks.push({ hour, label: parts?.dayMonth ?? formatDateOnly(hour), major: date ? date.day === 1 : false });
+    }
+    return ticks;
+  }
+  if (spanHours <= 62 * hoursPerDay) {
     const spanDays = Math.max(1, (spanHours + 1) / hoursPerDay);
     const fit = Math.max(2, Math.floor(plotWidth / 64));
     const step = [1, 2, 3, 5, 7, 14].find(candidate => Math.ceil(spanDays / candidate) <= fit) ?? 14;
     const firstDay = Math.floor((startHour - HOUR_EPOCH) / hoursPerDay);
     const lastDay = Math.floor((endHour - HOUR_EPOCH) / hoursPerDay);
-    for (let day = firstDay; day <= lastDay; day++) {
-      if (((day % step) + step) % step !== 0) continue;
+    const firstTickDay = Math.ceil(firstDay / step) * step;
+    for (let day = firstTickDay; day <= lastDay && ticks.length < 256; day += step) {
       const hour = HOUR_EPOCH + day * hoursPerDay;
       if (hour <= startHour || hour > endHour) continue;
       const parts = formatDateParts(hour);
@@ -1275,36 +1332,45 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
     return ticks;
   }
   if (spanHours < 2 * 365 * hoursPerDay) {
-    const months = (end.year - start.year) * 12 + (end.month - start.month) + 1;
-    const fit = Math.max(2, Math.floor(plotWidth / 56));
-    const step = [1, 2, 3, 6, 12].find(candidate => Math.ceil(months / candidate) <= fit) ?? 12;
     let year = start.year;
     let month = start.month;
     if (start.day > 15) {
       month++;
       if (month > 12) { month = 1; year++; }
     }
+    let hasLabel = false;
     while (year < end.year || (year === end.year && month <= end.month)) {
-      if ((month - 1) % step === 0) {
-        const rawHour = engineHour({ year, month, day: 1, hour: 1 });
-        const hour = rawHour !== null && rawHour < startHour && year === start.year && month === start.month && start.day <= 15
-          ? startHour
-          : rawHour;
-        if (hour !== null && hour >= startHour && hour <= endHour) {
-          const major = month === 1;
-          ticks.push({ hour, label: major ? String(year) : monthNames[month - 1]!.slice(0, 3), major });
+      const rawHour = engineHour({ year, month, day: 1, hour: 1 });
+      const hour = rawHour !== null && rawHour < startHour && year === start.year && month === start.month && start.day <= 15
+        ? startHour
+        : rawHour;
+      if (hour !== null && hour >= startHour && hour <= endHour) {
+        const major = month === 1;
+        const quarter = month === 4 || month === 7 || month === 10;
+        let label = major ? String(year) : quarter ? monthNames[month - 1]!.slice(0, 3) : '';
+        if (label && !hasLabel && !major) {
+          label = `${label} ${year}`;
         }
+        if (label) hasLabel = true;
+        ticks.push({ hour, label, major });
       }
       month++;
       if (month > 12) { month = 1; year++; }
+    }
+    if (!hasLabel && ticks.length > 0) {
+      const first = ticks[0]!;
+      const date = gameDate(Math.floor(first.hour));
+      if (date) {
+        ticks[0] = { ...first, label: `${monthNames[date.month - 1]!.slice(0, 3)} ${date.year}` };
+      }
     }
     return ticks;
   }
   const years = end.year - start.year + 1;
   const fit = Math.max(2, Math.floor(plotWidth / 48));
-  const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? 100;
-  for (let year = start.year; year <= end.year; year++) {
-    if (year % step !== 0) continue;
+  const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? Math.max(100, Math.round(niceStep(years, fit)));
+  const firstYear = Math.ceil(start.year / step) * step;
+  for (let year = firstYear; year <= end.year && ticks.length < 256; year += step) {
     const rawHour = engineHour({ year, month: 1, day: 1, hour: 1 });
     const hour = rawHour !== null && rawHour < startHour && year === start.year && start.month === 1 && start.day <= 15
       ? startHour
@@ -1342,6 +1408,7 @@ export function drawTimeAxisGrid(
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (const tick of ticks) {
+    if (!tick.label) continue;
     const x = Math.floor(timeAxisX(frame, tick.hour)) + 0.5;
     if (x <= frame.plotLeft + 1 || x >= frame.plotRight - 1) continue;
     ctx.moveTo(x, top);
@@ -1360,6 +1427,8 @@ export interface TimeAxisOptions extends TimeAxisFrame {
   readonly playheadLineTop?: number | null;
   readonly hairline?: 'normal' | 'strong' | 'band' | 'none';
   readonly tickMarks?: boolean;
+  readonly tickColor?: string;
+  readonly firstLabelOnly?: boolean;
   readonly tabBounds?: { readonly left: number; readonly right: number };
   readonly tabY?: number;
   readonly labelY?: number;
@@ -1375,42 +1444,47 @@ export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], opti
   const tabY = options.tabY ?? axisTop + 4;
   const labelY = options.labelY ?? axisTop + 14;
   const showTicks = options.tickMarks !== false;
+  const axisFont = `400 ${theme.fontSize.small}px ${theme.font}`;
   ctx.save();
-  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = axisFont;
   const keepOut: [number, number][] = [];
   let px: number | null = null;
   if (options.playhead !== null) {
     px = timeAxisX(options, options.playhead);
-    const tabW = textWidth(ctx, options.playheadLabel) + 14;
+    const tabW = measureCanvasText(ctx, options.playheadLabel, axisFont) + 14;
     const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(px - tabW / 2)));
     keepOut.push([left - 6, left + tabW + 6]);
   }
   let hx: number | null = null;
   if (options.hover != null && options.hoverLabel) {
     hx = timeAxisX(options, options.hover);
-    const tabW = textWidth(ctx, options.hoverLabel) + 14;
+    const tabW = measureCanvasText(ctx, options.hoverLabel, axisFont) + 14;
     const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(hx - tabW / 2)));
     keepOut.push([left - 6, left + tabW + 6]);
   }
-  ctx.fillStyle = theme.muted;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.strokeStyle = tokens.hairlineStrong;
+  ctx.strokeStyle = options.tickColor ?? tokens.hairlineStrong;
   ctx.lineWidth = 1;
   let lastRight = -Infinity;
+  let shownFirst = false;
   for (const tick of ticks) {
     const x = timeAxisX(options, tick.hour);
-    const half = textWidth(ctx, tick.label) / 2;
     if (showTicks) {
       ctx.beginPath();
       ctx.moveTo(Math.floor(x) + 0.5, axisTop);
-      ctx.lineTo(Math.floor(x) + 0.5, axisTop + (tick.major === false ? 3 : 4));
+      ctx.lineTo(Math.floor(x) + 0.5, axisTop + (tick.major === false ? 3 : 5));
       ctx.stroke();
     }
+    if (!tick.label) continue;
+    if (options.firstLabelOnly && shownFirst) continue;
+    const half = measureCanvasText(ctx, tick.label, axisFont) / 2;
     if (x - half < plotLeft - 4 || x + half > plotRight + 4) continue;
     if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
     if (x - half < lastRight + 8) continue;
+    ctx.fillStyle = tick.major !== false ? tokens.textSecondary : theme.muted;
     ctx.fillText(tick.label, x, labelY);
+    shownFirst = true;
     lastRight = x + half;
   }
   ctx.restore();
@@ -1866,20 +1940,60 @@ export interface LegendStripGradient {
 export interface LegendStripEntry {
   readonly label: string;
   readonly color?: string;
+  readonly line?: boolean;
   readonly dash?: readonly number[];
   readonly hatch?: boolean;
   readonly outlined?: boolean;
+  readonly swatch?: 'line' | 'square';
   readonly flag?: FlagSlotState;
   readonly muted?: boolean;
 }
 
+export interface LegendEntrySource {
+  readonly length: number;
+  at(index: number): LegendStripEntry;
+  readonly trailing?: readonly LegendStripEntry[];
+}
+
 export interface LegendStripSpec {
   readonly gradient?: LegendStripGradient;
-  readonly entries?: readonly LegendStripEntry[];
+  readonly entries?: readonly LegendStripEntry[] | LegendEntrySource;
   readonly rightNote?: string;
   readonly padX?: number;
   readonly entryGap?: number;
   readonly hairline?: boolean;
+}
+
+function measureLegendEntryWidth(ctx: Canvas2D, entry: LegendStripEntry, font: string): number {
+  const isLine = Boolean(entry.line || entry.swatch === 'line' || entry.dash?.length);
+  const gap = 6;
+  let width = 0;
+  if (entry.hatch) width += 10 + gap;
+  else if (entry.outlined) width += 9 + gap;
+  else if (isLine) width += 14 + gap;
+  else if (entry.color) width += 9 + gap;
+  if (entry.flag && entry.flag.kind !== 'pending') width += 16 + gap;
+  return width + measureCanvasText(ctx, entry.label, font);
+}
+
+function drawEntryItem(
+  ctx: Canvas2D,
+  cursor: number,
+  middleY: number,
+  entry: LegendStripEntry,
+  theme: FamilyTheme,
+  maxWidth?: number,
+): number {
+  return drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
+    ...(entry.line ? { line: true } : {}),
+    ...(entry.swatch ? { swatch: entry.swatch } : {}),
+    ...(entry.dash?.length ? { dash: entry.dash } : {}),
+    ...(entry.hatch ? { hatch: true } : {}),
+    ...(entry.outlined ? { outlined: true } : {}),
+    ...(entry.flag ? { flag: entry.flag } : {}),
+    ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
+    ...(maxWidth !== undefined ? { maxWidth } : {}),
+  }).width;
 }
 
 export function drawLegendStrip(
@@ -1909,30 +2023,125 @@ export function drawLegendStrip(
     );
     cursor += drawn.width + 14;
   }
-  if (spec.entries) {
-    for (const entry of spec.entries) {
-      const room = rightLimit - cursor;
-      if (room < 32) break;
-      const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
-        ...(entry.dash?.length ? { dash: entry.dash } : {}),
-        ...(entry.hatch ? { hatch: true } : {}),
-        ...(entry.outlined ? { outlined: true } : {}),
-        ...(entry.flag ? { flag: entry.flag } : {}),
-        ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
-        maxWidth: room,
-      });
-      cursor += drawn.width + entryGap;
+  const smallFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  ctx.save();
+  ctx.font = smallFont;
+  const rightNoteW = spec.rightNote ? measureCanvasText(ctx, spec.rightNote, smallFont) : 0;
+  const entryLimit = spec.rightNote ? Math.max(cursor, rightLimit - rightNoteW - entryGap) : rightLimit;
+  const avail = Math.max(0, entryLimit - cursor);
+
+  if (spec.entries && avail > 0) {
+    const isArray = Array.isArray(spec.entries);
+    const missingEntries: LegendStripEntry[] = [];
+    const ordinaryIndices: number[] = [];
+    let ordinaryCount: number;
+    let getOrdinary: (index: number) => LegendStripEntry;
+
+    if (isArray) {
+      const list = spec.entries as readonly LegendStripEntry[];
+      for (let i = 0; i < list.length; i++) {
+        if (list[i]!.hatch) missingEntries.push(list[i]!);
+        else ordinaryIndices.push(i);
+      }
+      ordinaryCount = ordinaryIndices.length;
+      getOrdinary = i => list[ordinaryIndices[i]!]!;
+    } else {
+      const source = spec.entries as LegendEntrySource;
+      if (source.trailing) {
+        for (const item of source.trailing) missingEntries.push(item);
+      }
+      ordinaryCount = source.length;
+      getOrdinary = i => source.at(i);
+    }
+
+    const missingWidths = missingEntries.map(entry => measureLegendEntryWidth(ctx, entry, smallFont));
+    const missingTotalW = missingWidths.reduce((sum, w) => sum + w, 0)
+      + Math.max(0, missingEntries.length - 1) * entryGap;
+
+    const fetched: LegendStripEntry[] = [];
+    const fetchedWidths: number[] = [];
+    let sumOrdinary = 0;
+    let allFit = true;
+    for (let i = 0; i < ordinaryCount; i++) {
+      const entry = getOrdinary(i);
+      const w = measureLegendEntryWidth(ctx, entry, smallFont);
+      fetched.push(entry);
+      fetchedWidths.push(w);
+      sumOrdinary += (i > 0 ? entryGap : 0) + w;
+      const totalWithMissing = sumOrdinary + (missingEntries.length > 0 ? entryGap + missingTotalW : 0);
+      if (totalWithMissing > avail) {
+        allFit = false;
+        break;
+      }
+    }
+    if (allFit && ordinaryCount === 0 && missingTotalW > avail) {
+      allFit = false;
+    }
+
+    if (allFit) {
+      if (isArray) {
+        for (const entry of spec.entries as readonly LegendStripEntry[]) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+      } else {
+        for (const entry of fetched) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+        for (const entry of missingEntries) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+      }
+    } else {
+      const keepMissing = missingEntries.length > 0 && missingTotalW <= avail;
+      const ordinaryBudget = keepMissing ? Math.max(0, avail - missingTotalW - entryGap) : avail;
+      if (ordinaryCount === 1 && fetched.length === 1) {
+        if (ordinaryBudget >= 24) {
+          cursor += drawEntryItem(ctx, cursor, middleY, fetched[0]!, theme, ordinaryBudget) + entryGap;
+        }
+      } else if (ordinaryCount > 0) {
+        let bestK = 0;
+        let prefixW = 0;
+        for (let k = 1; k <= fetched.length && k < ordinaryCount; k++) {
+          prefixW += (k > 1 ? entryGap : 0) + fetchedWidths[k - 1]!;
+          const moreLabel = `+${ordinaryCount - k} more`;
+          const needed = prefixW + entryGap + measureCanvasText(ctx, moreLabel, smallFont);
+          if (needed <= ordinaryBudget) bestK = k;
+          else break;
+        }
+        for (let i = 0; i < bestK; i++) {
+          cursor += drawEntryItem(ctx, cursor, middleY, fetched[i]!, theme) + entryGap;
+        }
+        const hidden = ordinaryCount - bestK;
+        if (hidden > 0) {
+          const moreLabel = `+${hidden} more`;
+          const moreW = measureCanvasText(ctx, moreLabel, smallFont);
+          if (cursor + moreW <= (keepMissing ? x + padX + avail - missingTotalW - entryGap : entryLimit) + 0.5) {
+            ctx.fillStyle = theme.muted;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(moreLabel, cursor, middleY);
+            cursor += moreW + entryGap;
+          }
+        }
+      }
+      if (keepMissing) {
+        for (const entry of missingEntries) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+      }
     }
   }
+  ctx.restore();
+
   if (spec.rightNote) {
     const maxW = Math.max(0, rightLimit - cursor);
     if (maxW >= 24) {
       ctx.save();
-      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = smallFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(spec.rightNote, maxW, s => textWidth(ctx, s)), rightLimit, middleY);
+      ctx.fillText(ellipsise(spec.rightNote, maxW, s => measureCanvasText(ctx, s, smallFont)), rightLimit, middleY);
       ctx.restore();
     }
   }

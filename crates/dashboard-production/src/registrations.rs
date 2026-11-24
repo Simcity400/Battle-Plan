@@ -5,9 +5,8 @@ dashboard_base::register_products! {
     CONSTRUCTION_LOG_CONSTRUCTIONLOGMANIFEST => crate::products::construction::log::ConstructionLogManifest,
     CONSTRUCTION_LOG_CONSTRUCTIONLOG => crate::products::construction::log::ConstructionLog,
     CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown,
-    STOCKPILE_EQUIPMENTSTOCKPILECATALOGUE => crate::products::stockpile::EquipmentStockpileCatalogue,
-    STOCKPILE_EQUIPMENTSTOCKPILECHART => crate::products::stockpile::EquipmentStockpileChart,
     STOCKPILE_EQUIPMENTSTOCKPILETYPES => crate::products::stockpile::EquipmentStockpileTypes,
+    STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines,
     EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCED => crate::products::equipment_produced::EquipmentProduced,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,
@@ -20,7 +19,6 @@ dashboard_base::register_hourly_products! {
     PRODUCTION_PRODUCTIONLICENCES => crate::products::production::ProductionLicences,
     PRODUCTION_INDUSTRIALORGANISATIONS => crate::products::production::IndustrialOrganisations,
     PRODUCTION_EQUIPMENTDESIGNS => crate::products::production::EquipmentDesigns,
-    STOCKPILE_EQUIPMENTSTOCKPILEAT => crate::products::stockpile::EquipmentStockpileAt,
     STOCKPILE_STOCKPILEARTWORK => crate::products::stockpile::StockpileArtwork,
     EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD => crate::products::equipment_losses::EquipmentLossHead,
 }
