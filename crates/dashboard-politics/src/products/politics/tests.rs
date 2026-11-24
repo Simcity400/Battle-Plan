@@ -1,8 +1,9 @@
-use super::{PoliticsRun, civil_wars, history};
+use super::{PoliticsRun, civil_wars, history, state};
 use dashboard_base::{Source, test_fixtures::{CAMPAIGN, snapshot_records, source}};
+use dashboard_follow::live::Cells;
 use replay::campaign::Replay;
 use replay_data::rows::{
-    CountryCivilWarRow, CountryCounterInputRow, CountryLinkRow, CountryRow, PoliticsRow, PowerBalanceMemberRow, PowerBalanceRow, Recorded, TableId, TableRows,
+    CountryCivilWarRow, CountryCounterInputRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, PowerBalanceMemberRow, PowerBalanceRow, Recorded, TableId, TableRows,
 };
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -85,7 +86,7 @@ fn run(first: i32, last: i32, value: impl ToString) -> PoliticsRun {
 fn an_election_schedule_is_held_by_an_owner_of_states_and_an_unread_eligibility_is_refused_not_denied() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None };
+    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None, hour: None };
     let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.known.len(), 1);
     assert_eq!((reply.known[0].first_hour, reply.known[0].last_hour), (FIRST, LAST));
@@ -108,7 +109,7 @@ fn a_holders_balances_follow_the_records_listing_it_with_their_ranges_and_leanin
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let country = |tag: &str| {
-        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some(tag.into()) };
+        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some(tag.into()), hour: None };
         let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.holder_balances.len(), 1, "{tag} has one holder");
         reply.holder_balances[0].clone()
@@ -137,7 +138,7 @@ fn a_holders_balances_follow_the_records_listing_it_with_their_ranges_and_leanin
 fn memberships_list_every_holders_balances_by_the_records_listing_it_without_reading_their_values() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Memberships, country: None };
+    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Memberships, country: None, hour: None };
     let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
     let holders: Vec<&str> = reply.holder_balances.iter().map(|holder| holder.holder.as_str()).collect();
     assert_eq!(holders, ["7", "8"], "every holder listed by a record");
@@ -199,7 +200,7 @@ fn a_holders_schedule_across_its_raw_ids_is_in_hour_order() {
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "politics-ids".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None };
+    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None, hour: None };
     let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.elections.len(), 1);
     let ger = &reply.elections[0];
@@ -265,4 +266,173 @@ fn next_elections_at_hour_is_bounded_by_asked_countries_and_independent_of_stret
     let lost: serde_json::Value = serde_json::from_str::<serde_json::Value>(&lost.unwrap()).unwrap()["data"].clone();
     assert!(lost["rows"].as_array().unwrap().is_empty(), "GER owns no states at hour 116");
     assert_eq!(lost["unknown"], 0);
+}
+
+#[test]
+fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusals() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        ("common/country_tags/synthetic.txt", "GER=\"countries/ger.txt\" ENG=\"countries/eng.txt\""),
+        ("common/defines/test.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }"),
+        ("common/units/synthetic.txt", "sub_units={syn_unit={}}"),
+        ("common/ideologies/synthetic.txt", "ideologies = { democratic = {} fascism = {} }"),
+        (
+            "common/bop/synthetic.txt",
+            concat!(
+                "GER_bop = {\n",
+                "  initial_value = 0.0\n",
+                "  left_side = GER_left\n",
+                "  right_side = GER_right\n",
+                "  side = { id = GER_left range = { id = GER_low min = -1.0 max = 0.0 } }\n",
+                "  side = { id = GER_right range = { id = GER_high min = 0.0 max = 1.0 } }\n",
+                "}\n",
+            ),
+        ),
+        (
+            "common/ideologies/00_ideologies.txt",
+            "ideologies = { democratic = { types = { liberalism = {} } } fascism = { types = { fascism_ideology = {} } } }\n",
+        ),
+        (
+            "common/scripted_localisation/synthetic.txt",
+            concat!(
+                "defined_text = {\n",
+                "  name = GetCouncil\n",
+                "  text = { trigger = { ENG = { has_government = democratic } } localization_key = COUNCIL_DEM }\n",
+                "  text = { localization_key = COUNCIL_ALT }\n",
+                "}\n",
+            ),
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " GER_bop:0 \"Power Struggle\"\n",
+                " GER_left:0 \"[GetCouncil]\"\n",
+                " GER_right:0 \"[ROOT.GetTag]\"\n",
+                " GER_low:0 \"[ROOT.GetTag] low\"\n",
+                " GER_high:0 \"[ROOT.GetTag] high\"\n",
+                " COUNCIL_DEM:0 \"Democratic Council\"\n",
+                " COUNCIL_ALT:0 \"Fascist Council\"\n",
+            ),
+        ),
+    ]);
+    let catalogue = Arc::new(dashboard_text::catalogue::tests::with_effect_describer(
+        catalogue,
+        dashboard_effects::effect_describer,
+    ));
+    let make_frame = |hour: i32| {
+        let mut f = frame(hour);
+        let ruling_eng = if hour < 115 { 1 } else { 0 };
+        set(
+            &mut f,
+            TableId::CountryCounterInputs,
+            TableRows::CountryCounterInputs(vec![
+                CountryCounterInputRow { country: GER, owned_state_count: 5, ..Default::default() },
+                CountryCounterInputRow { country: ENG, owned_state_count: 3, ..Default::default() },
+            ]),
+        );
+        set(
+            &mut f,
+            TableId::Politics,
+            TableRows::Politics(vec![
+                PoliticsRow { country: GER, ruling_party: Some(1), ..Default::default() },
+                PoliticsRow { country: ENG, ruling_party: Some(ruling_eng), ..Default::default() },
+            ]),
+        );
+        set(
+            &mut f,
+            TableId::PoliticalParties,
+            TableRows::PoliticalParties(vec![
+                PoliticalPartyRow { country: ENG, id: 0, token: b"democratic".to_vec(), is_ruling: u8::from(ruling_eng == 0), ..Default::default() },
+                PoliticalPartyRow { country: ENG, id: 1, token: b"fascism".to_vec(), is_ruling: u8::from(ruling_eng == 1), ..Default::default() },
+            ]),
+        );
+        set(
+            &mut f,
+            TableId::PowerBalances,
+            TableRows::PowerBalances(vec![PowerBalanceRow {
+                ordinal: 0,
+                value_raw: if hour < 115 { -20_000 } else { 40_000 },
+                balance: b"GER_bop".to_vec(),
+                left: b"GER_left".to_vec(),
+                right: b"GER_right".to_vec(),
+                trending: b"MISSING_SIDE".to_vec(),
+                active_range: if hour < 115 { b"GER_low".to_vec() } else { b"GER_high".to_vec() },
+            }]),
+        );
+        f
+    };
+    let frames = (FIRST..=LAST).map(make_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "bop-scripted".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+
+    let without_hour = history::answer(
+        &query,
+        &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: None },
+        Some(Ok(Arc::clone(&catalogue))),
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(without_hour.names.get("GER_bop").map(String::as_str), Some("Power Struggle"));
+    assert!(!without_hour.names.contains_key("GER_left"), "scripted side names must never enter plain token cache");
+    assert!(!without_hour.names.contains_key("GER_low"), "scripted range names must never enter plain token cache");
+    let ger_no_hour = &without_hour.holder_balances[0].balances[0];
+    assert_eq!(ger_no_hour.left.as_ref().unwrap().name, None);
+    assert!(ger_no_hour.left.as_ref().unwrap().reason.is_some());
+
+    let (early, early_reads) = replay_recording::cells::count_reads(|| {
+        history::answer(
+            &query,
+            &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: Some(105) },
+            Some(Ok(Arc::clone(&catalogue))),
+            &cancelled,
+        )
+        .unwrap()
+    });
+    assert!(!early_reads.contains_key(&TableId::Provinces), "staged reads must never touch Provinces");
+    assert!(!early_reads.contains_key(&TableId::States), "staged reads must never touch States");
+    assert!(!early.names.contains_key("GER_left"));
+    let ger_early = &early.holder_balances[0].balances[0];
+    assert_eq!(ger_early.left.as_ref().unwrap().name.as_deref(), Some("Fascist Council"), "left={:?}", ger_early.left);
+    assert_eq!(ger_early.right.as_ref().unwrap().name.as_deref(), Some(""), "right={:?}", ger_early.right);
+    assert_eq!(ger_early.ranges.iter().find(|r| r.token == "GER_low").unwrap().name.as_deref(), Some("GER low"), "ranges={:?}", ger_early.ranges);
+
+    let late = history::answer(
+        &query,
+        &history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some("GER".into()), hour: Some(125) },
+        Some(Ok(Arc::clone(&catalogue))),
+        &cancelled,
+    )
+    .unwrap();
+    let ger_late = &late.holder_balances[0].balances[0];
+    assert_eq!(ger_late.left.as_ref().unwrap().name.as_deref(), Some("Democratic Council"));
+    assert_eq!(ger_late.ranges.iter().find(|r| r.token == "GER_high").unwrap().name.as_deref(), Some("GER high"));
+
+    let shared_frame = make_frame(125);
+    let shared_reply = state::read(
+        &shared_frame,
+        &state::PoliticsStateParams { branch_id: "1".into(), view: state::PoliticsView::Balances, country: None },
+        Some(Ok(catalogue.as_ref())),
+        &Cells::default(),
+    )
+    .unwrap();
+    let shared = &shared_reply.balances[0];
+    assert_eq!(shared.left.name.as_deref(), Some("Democratic Council"));
+    assert_eq!(shared.right.name.as_deref(), Some(""));
+    assert_eq!(shared.trending.as_ref().unwrap().name, None);
+    assert_eq!(shared.trending.as_ref().unwrap().reason.as_deref(), Some("no localisation in the recorded content"));
+    assert_eq!(shared.range.as_ref().unwrap().name, None, "shared multi-member record without chosen country refuses scripted active range");
+    assert!(shared.range.as_ref().unwrap().reason.as_deref().unwrap().contains("country event scope"));
 }

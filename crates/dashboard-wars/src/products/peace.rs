@@ -741,14 +741,14 @@ impl GraphBuilder {
     }
 }
 
-pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[Settled], joins: &Joins) -> (Vec<PeaceDeal>, PeaceTransferGraph, Vec<String>) {
+pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[Settled], joins: &Joins) -> (Vec<PeaceDeal>, PeaceTransferGraph, Vec<PeaceWarning>) {
     let mut warnings = Vec::new();
     let mut recorded: HashMap<u64, Vec<&Outcome>> = HashMap::new();
     let mut unsampled: BTreeMap<(i32, u32), Vec<&Outcome>> = BTreeMap::new();
     for row in outcomes {
         match (row.observation, row.conference) {
             (PeaceOutcomeRow::RECORDED, Some(conference)) => recorded.entry(conference).or_default().push(row),
-            (PeaceOutcomeRow::RECORDED, None) => warnings.push(format!("A compared conference's outcome at hour {} names no conference; it is not shown.", row.after)),
+            (PeaceOutcomeRow::RECORDED, None) => warnings.push(PeaceWarning::at(row.after, format!("A compared conference's outcome at hour {} names no conference; it is not shown.", row.after))),
             _ => unsampled.entry((row.after, row.group)).or_default().push(row),
         }
     }
@@ -789,7 +789,7 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
         }
         let publication_hour = *publication_hour;
         let Some(id) = row.conference else {
-            warnings.push(format!("A finalizer conference identity was unavailable: {}", String::from_utf8_lossy(row.failure.as_deref().unwrap_or_default())));
+            warnings.push(PeaceWarning::at(row.hour.unwrap_or(publication_hour), format!("A finalizer conference identity was unavailable: {}", String::from_utf8_lossy(row.failure.as_deref().unwrap_or_default()))));
             continue;
         };
         let id = id.to_string();
@@ -945,7 +945,7 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
     deals.retain(|deal| !deal.derived || deal.conference_id.is_some() || !deal.items.is_empty());
     deals.sort_by(|a, b| b.end_hour.unwrap_or(b.last_observed_hour).cmp(&a.end_hour.unwrap_or(a.last_observed_hour)).then_with(|| a.id.cmp(&b.id)));
     if let Err(reason) = &joins.action_key {
-        warnings.push(format!("State transfers are not named by their recorded keyword: {reason}"));
+        warnings.push(PeaceWarning { hour: None, text: format!("State transfers are not named by their recorded keyword: {reason}") });
     }
     (deals, campaign.finish(), warnings)
 }
@@ -1104,72 +1104,10 @@ impl Product for PeaceDeals {
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| invalid("Invalid peace-deals branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let recording = query.replay.recording();
-        let mut warnings = vec![DERIVED_WARNING.to_owned()];
-        let mut unobserved = PeaceUnobserved::default();
-        let mut rows = Vec::new();
-        for stretch in &query.timeline.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let (first, last, run) = (stretch.first, stretch.last, stretch.run);
-            complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceSettlements, first, last)?, first, last, &mut unobserved.settlements);
-            complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceConferences, first, last)?, first, last, &mut unobserved.conferences);
-            complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceOutcomes, first, last)?, first, last, &mut unobserved.ownership);
-        }
-        let span_columns = SPAN_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceConferenceSpans, name).unwrap_or(usize::MAX));
-        if span_columns.contains(&usize::MAX) {
-            return Err(invalid("peace conference spans does not hold the columns the peace deals read"));
-        }
-        for row in logged(&query, "peace-conference-spans")? {
-            match conference_span(&row, &span_columns) {
-                Some(span) => rows.push(span),
-                None => warnings.push(format!("A peace conference's span at hour {} is not recorded in full; it is not shown.", row.hour)),
-            }
-        }
-        for gap in &query.timeline.unheld {
-            for held in [&mut unobserved.settlements, &mut unobserved.conferences, &mut unobserved.ownership] {
-                held.push(HourSpan { first_hour: gap.first, last_hour: gap.last });
-            }
-        }
-        for held in [&mut unobserved.settlements, &mut unobserved.conferences, &mut unobserved.ownership] {
-            *held = dashboard_world::products::subjects::settle(std::mem::take(held));
-        }
-        let ownership = unobserved.ownership.clone();
-        for held in [&mut unobserved.wars, &mut unobserved.subjects, &mut unobserved.governments, &mut unobserved.existence, &mut unobserved.victory_points] {
-            held.clone_from(&ownership);
-        }
-        let columns: [usize; 11] = [
-            "observation", "conference", "before_hour", "change", "group", "state", "from_slot", "from_id", "to_slot", "to_id", "victory_points",
-        ]
-        .map(|name| dashboard_declare::field(TableId::PeaceOutcomes, name).unwrap_or(usize::MAX));
-        if columns.contains(&usize::MAX) {
-            return Err(invalid("peace outcomes does not hold the columns the peace deals read"));
-        }
-        let mut outcomes = Vec::new();
-        for row in logged(&query, "peace-outcomes")? {
-            match outcome(&row, &columns) {
-                Some(outcome) => outcomes.push(outcome),
-                None => warnings.push(format!("A peace outcome at hour {} is not recorded in full; it is not shown.", row.hour)),
-            }
-        }
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let settlement_columns = SETTLEMENT_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceSettlements, name).unwrap_or(usize::MAX));
-        if settlement_columns.contains(&usize::MAX) {
-            return Err(invalid("peace settlements does not hold the columns the peace deals read"));
-        }
-        let mut settled = Vec::new();
-        for row in logged(&query, "peace-settlements")? {
-            match settlement(&row, &settlement_columns) {
-                Some(settlement) => settled.push(Settled { publication_hour: row.hour, row: settlement }),
-                None => warnings.push(format!("A peace settlement at hour {} is not recorded in full; it is not shown.", row.hour)),
-            }
-        }
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let joins = joins(source, &query, &outcomes, &settled, &mut warnings)?;
-        let (deals, transfers, more) = fold(&listings(rows), &outcomes, &settled, &joins);
-        warnings.extend(more);
-        let derived = deals.iter().any(|deal| deal.derived || deal.items.iter().any(|item| item.derived));
-        let mut reply = PeaceDealsReply { branch_id: params.branch_id.clone(), derived, deals, transfers, unobserved, warnings };
+        let assembled = assemble(source, branch, cancelled)?;
+        let derived = assembled.deals.iter().any(|deal| deal.derived || deal.items.iter().any(|item| item.derived));
+        let warnings = std::iter::once(DERIVED_WARNING.to_owned()).chain(assembled.warnings.into_iter().map(|warning| warning.text)).collect();
+        let mut reply = PeaceDealsReply { branch_id: params.branch_id.clone(), derived, deals: assembled.deals, transfers: assembled.transfers, unobserved: assembled.unobserved, warnings };
         match context.content.as_ref() {
             None => reply.warnings.push("Peace action names are unavailable until the game and user folders are chosen.".into()),
             Some(options) => match catalogue::catalogue(source, options) {
@@ -1184,6 +1122,93 @@ impl Product for PeaceDeals {
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeaceWarning {
+    pub hour: Option<i32>,
+    pub text: String,
+}
+
+impl PeaceWarning {
+    fn at(hour: i32, text: String) -> Self {
+        Self { hour: Some(hour), text }
+    }
+}
+
+pub(crate) struct Assembled {
+    pub(crate) deals: Vec<PeaceDeal>,
+    pub(crate) transfers: PeaceTransferGraph,
+    pub(crate) unobserved: PeaceUnobserved,
+    pub(crate) warnings: Vec<PeaceWarning>,
+}
+
+pub(crate) fn assemble(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Assembled> {
+    let query = dashboard_base::queries::query(source, branch)?;
+    let recording = query.replay.recording();
+    let mut warnings = Vec::new();
+    let mut unobserved = PeaceUnobserved::default();
+    let mut rows = Vec::new();
+    for stretch in &query.timeline.stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let (first, last, run) = (stretch.first, stretch.last, stretch.run);
+        complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceSettlements, first, last)?, first, last, &mut unobserved.settlements);
+        complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceConferences, first, last)?, first, last, &mut unobserved.conferences);
+        complement(&replay_lanes::lanes::reads(recording, run, TableId::PeaceOutcomes, first, last)?, first, last, &mut unobserved.ownership);
+    }
+    let span_columns = SPAN_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceConferenceSpans, name).unwrap_or(usize::MAX));
+    if span_columns.contains(&usize::MAX) {
+        return Err(invalid("peace conference spans does not hold the columns the peace deals read"));
+    }
+    for row in logged(&query, "peace-conference-spans")? {
+        match conference_span(&row, &span_columns) {
+            Some(span) => rows.push(span),
+            None => warnings.push(PeaceWarning::at(row.hour, format!("A peace conference's span at hour {} is not recorded in full; it is not shown.", row.hour))),
+        }
+    }
+    for gap in &query.timeline.unheld {
+        for held in [&mut unobserved.settlements, &mut unobserved.conferences, &mut unobserved.ownership] {
+            held.push(HourSpan { first_hour: gap.first, last_hour: gap.last });
+        }
+    }
+    for held in [&mut unobserved.settlements, &mut unobserved.conferences, &mut unobserved.ownership] {
+        *held = dashboard_world::products::subjects::settle(std::mem::take(held));
+    }
+    let ownership = unobserved.ownership.clone();
+    for held in [&mut unobserved.wars, &mut unobserved.subjects, &mut unobserved.governments, &mut unobserved.existence, &mut unobserved.victory_points] {
+        held.clone_from(&ownership);
+    }
+    let columns: [usize; 11] = [
+        "observation", "conference", "before_hour", "change", "group", "state", "from_slot", "from_id", "to_slot", "to_id", "victory_points",
+    ]
+    .map(|name| dashboard_declare::field(TableId::PeaceOutcomes, name).unwrap_or(usize::MAX));
+    if columns.contains(&usize::MAX) {
+        return Err(invalid("peace outcomes does not hold the columns the peace deals read"));
+    }
+    let mut outcomes = Vec::new();
+    for row in logged(&query, "peace-outcomes")? {
+        match outcome(&row, &columns) {
+            Some(outcome) => outcomes.push(outcome),
+            None => warnings.push(PeaceWarning::at(row.hour, format!("A peace outcome at hour {} is not recorded in full; it is not shown.", row.hour))),
+        }
+    }
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let settlement_columns = SETTLEMENT_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceSettlements, name).unwrap_or(usize::MAX));
+    if settlement_columns.contains(&usize::MAX) {
+        return Err(invalid("peace settlements does not hold the columns the peace deals read"));
+    }
+    let mut settled = Vec::new();
+    for row in logged(&query, "peace-settlements")? {
+        match settlement(&row, &settlement_columns) {
+            Some(settlement) => settled.push(Settled { publication_hour: row.hour, row: settlement }),
+            None => warnings.push(PeaceWarning::at(row.hour, format!("A peace settlement at hour {} is not recorded in full; it is not shown.", row.hour))),
+        }
+    }
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let joins = joins(source, &query, &outcomes, &settled, &mut warnings)?;
+    let (deals, transfers, more) = fold(&listings(rows), &outcomes, &settled, &joins);
+    warnings.extend(more);
+    Ok(Assembled { deals, transfers, unobserved, warnings })
 }
 
 fn listings(rows: Vec<PeaceConferenceSpanRow>) -> Vec<PeaceConferenceSpanRow> {
@@ -1286,7 +1311,7 @@ fn outcome(row: &log::Row, columns: &[usize; 11]) -> Option<Outcome> {
     })
 }
 
-fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Settled], warnings: &mut Vec<String>) -> io::Result<Joins> {
+fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Settled], warnings: &mut Vec<PeaceWarning>) -> io::Result<Joins> {
     let recording = query.replay.recording();
     let mut joins = Joins { holders: HolderTags::new(query), ..Joins::default() };
     let slots = slot_holders(query);
@@ -1366,7 +1391,7 @@ fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Se
         let (politics, parties, appearances) = match (frame.complete::<tables::Politics>(), frame.complete::<tables::PoliticalParties>(), frame.complete::<tables::CountryAppearance>()) {
             (Ok(politics), Ok(parties), Ok(appearances)) => (politics, parties, appearances),
             _ => {
-                warnings.push(format!("Governments are not recorded at hour {hour}; government changes there are not shown."));
+                warnings.push(PeaceWarning::at(hour, format!("Governments are not recorded at hour {hour}; government changes there are not shown.")));
                 continue;
             }
         };

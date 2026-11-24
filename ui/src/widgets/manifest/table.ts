@@ -32,6 +32,19 @@ const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_T
 
 export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'war-contribution',
+    view: 'sides',
+    label: 'Sides',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: tableSpec(
+      'war-contribution',
+      'sides',
+      () => import('../war-contribution/sidesProjection.ts'),
+      mod => ({ projection: mod.warContributionSidesProjection, declaration: mod.warContributionSidesDeclaration }),
+    ),
+  },
+  {
     kind: 'campaign-clock',
     view: DEFAULT_VIEW,
     family: 'table',
@@ -354,6 +367,50 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'events',
       () => import('../world-tension/worldTensionEventsProjection.ts'),
       mod => ({ projection: mod.worldTensionEventsProjection, declaration: mod.worldTensionEventsDeclaration }),
+    ),
+  },
+  {
+    kind: 'market-ledger',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'market-ledger',
+      DEFAULT_VIEW,
+      () => import('../market-ledger/marketLedgerProjection.ts'),
+      mod => ({ projection: mod.marketLedgerProjection, declaration: mod.marketLedgerDeclaration }),
+    ),
+  },
+  {
+    kind: 'decisions',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'decisions',
+      DEFAULT_VIEW,
+      () => import('../decisions/decisionsProjection.ts'),
+      mod => ({ projection: mod.decisionsProjection, declaration: mod.decisionsDeclaration }),
+    ),
+  },
+  {
+    kind: 'event-choices',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'event-choices',
+      DEFAULT_VIEW,
+      () => import('../event-choices/eventChoicesProjection.ts'),
+      mod => ({ projection: mod.eventChoicesProjection, declaration: mod.eventChoicesDeclaration }),
+    ),
+  },
+  {
+    kind: 'event-feed',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'event-feed',
+      DEFAULT_VIEW,
+      () => import('../event-feed/eventFeedProjection.ts'),
+      mod => ({ projection: mod.eventFeedProjection, declaration: mod.eventFeedDeclaration }),
     ),
   },
 ];

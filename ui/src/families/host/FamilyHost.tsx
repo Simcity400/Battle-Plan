@@ -27,9 +27,12 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
+import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import {
   familyBinding,
+  familyInspectToken,
   lazyActionKeys,
+  parseFamilyHit,
   type FamilyArtDemand,
   type FamilyContextHit,
   type FamilyGestureContext,
@@ -188,6 +191,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
   readonly staticSources?: FamilyStaticSources | null;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -236,6 +240,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   allowEmptyFollow = false,
   owner,
   staticSources = null,
+  pagedRows,
   tiledSeries,
   tiledRevision = 0,
   hovers,
@@ -323,6 +328,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
+  const lastMirrorSelectedRef = useRef<string | null>(null);
   const lastVisibleRef = useRef<boolean | null>(null);
   const lastExtentRef = useRef({ width: -1, height: -1 });
   const lastRawMetaRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; raw: unknown } | null>(null);
@@ -405,6 +411,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    pagedRows,
     tiledSeries,
     hovers,
     artResolutions,
@@ -455,13 +462,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const kind = latestRef.current.adapter.mirror ?? 'none';
     const selected = latestRef.current.selectedKey ?? null;
     if (kind === 'table') {
-      syncTableMirror(mirrorBodyRef.current, mirror, {
+      const moved = syncTableMirror(mirrorBodyRef.current, mirror, {
         selectedKey: selected,
+        rowsFocusable: (latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows',
         focusedKeyRef,
         focusInsideRef,
         restoringFocusRef,
         lastMirrorKeyRef,
       });
+      if (moved) queueMicrotask(() => bindRef.current());
       return;
     }
     if (kind !== 'listbox') return;
@@ -529,6 +538,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
       ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
+      ...(cur.pagedRows && Object.keys(cur.pagedRows).length ? { pagedRows: cur.pagedRows } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
       ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
@@ -646,7 +656,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       return true;
     }
     const toggle = command === 'toggle';
-    const action = actionFor(picture, input.hit ?? activeAdapter.parseHit(input.key) ?? { key: input.key }, toggle);
+    const action = actionFor(picture, input.hit ?? parseFamilyHit(activeAdapter, input.key) ?? { key: input.key }, toggle);
     if (!action) return false;
     dispatchAction(toggle ? { ...action, toggle: true } : action);
     return true;
@@ -899,8 +909,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       const mirror = fields.mirror as MirrorModel | undefined;
-      if (mirror && mirror !== lastMirrorObjRef.current) {
+      const selectedNow = cur.selectedKey ?? null;
+      if (mirror && (mirror !== lastMirrorObjRef.current || selectedNow !== lastMirrorSelectedRef.current)) {
         lastMirrorObjRef.current = mirror;
+        lastMirrorSelectedRef.current = selectedNow;
         syncMirrorRef.current(mirror);
       }
 
@@ -927,7 +939,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         dim: !!shown.dim,
         held: heldRef.current,
         inspectedKey: inspected,
-        inspectedToken: inspectedHit ? (inspectedHit.inspectToken ?? activeAdapter.inspectToken(inspectedHit.key)) : null,
+        inspectedToken: inspectedHit ? (inspectedHit.inspectToken ?? familyInspectToken(activeAdapter, inspectedHit.key)) : null,
         pointerPos: lastPointerRef.current,
         hoverTip: hoverTip?.text ?? null,
         hoverFieldKey: hoverTip?.key ?? null,
@@ -968,8 +980,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       isBlocked: () => heldRef.current || dimRef.current || !installedPictureRef.current,
       getInstalled: resolveInstalled,
       getViewportHeight: () => latestRef.current.viewportHeight,
-      parseHit: hitKey => latestRef.current.adapter.parseHit(hitKey),
-      inspectToken: key => latestRef.current.adapter.inspectToken(key),
+      parseHit: hitKey => parseFamilyHit(latestRef.current.adapter, hitKey),
+      inspectToken: key => familyInspectToken(latestRef.current.adapter, key),
       onHoverChange: hit => publishHoverHour(hit?.hour ?? null),
       ...(gestures
         ? {
@@ -1009,6 +1021,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       stopPointer();
       stopInstall();
       auditWatch.dispose();
+      lastMirrorObjRef.current = null;
+      syncMirrorRef.current(null);
       installedPictureRef.current = null;
       installedFieldsRef.current = EMPTY_FIELDS;
       navRef.current = EMPTY_NAV;
@@ -1059,6 +1073,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    pagedRows,
     tiledSeries,
     tiledRevision,
     hovers,
@@ -1128,7 +1143,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusKey: key => {
           focusedKeyRef.current = key;
-          const hour = activeAdapter.parseHit(key)?.hour;
+          const hour = parseFamilyHit(activeAdapter, key)?.hour;
           if (hour !== undefined) publishHoverHour(hour);
           bindRef.current();
         },

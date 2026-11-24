@@ -7,6 +7,7 @@ import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
+import { buildRowSourceFromHead, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type TableRowSource } from './table/rowSource.ts';
 import type {
   ArtProvider,
   BoundedReadView,
@@ -199,7 +200,7 @@ const NO_ENTRIES: readonly SourceEntry[] = [];
 
 export function readsWithoutFollow(read: SourceTimeShape): boolean {
   if (read.shape === 'range') return true;
-  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point' || read.shape === 'paged-rows') && read.followQuery === null;
 }
 
 export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
@@ -238,6 +239,40 @@ export interface StaticRequestSpec {
   readonly validate?: (raw: unknown) => unknown;
   readonly entry: SourceEntry;
   readonly span: readonly [number, number] | null;
+}
+
+function tailQueryParams(
+  query: LogTailQuery,
+  hour: number,
+  offset: number,
+  limit: number,
+): Record<string, unknown> {
+  return {
+    branchId: query.branchId,
+    ...(query.log !== undefined ? { log: query.log } : {}),
+    facets: query.facets,
+    from: query.from,
+    hour,
+    offset: String(Math.max(0, Math.floor(offset))),
+    limit: Math.max(1, Math.floor(limit)),
+    ...(query.columns !== undefined ? { columns: query.columns } : {}),
+    ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
+    ...(query.scope !== undefined ? { scope: query.scope } : {}),
+  };
+}
+
+export function buildTailPageRequest(
+  entry: SourceEntry,
+  ask: PageFetchAsk,
+): ProductRequest | null {
+  if (entry.read.shape !== 'paged-rows') return null;
+  const params = tailQueryParams(entry.read.tailQuery, ask.hour, ask.offset, ask.limit);
+  return productRequest({
+    sourceId: entry.source.id,
+    revision: entry.source.revision,
+    product: entry.read.tailQuery.product,
+    params,
+  });
 }
 
 export function buildStaticRequest(
@@ -322,6 +357,33 @@ export function buildStaticRequest(
     };
   }
 
+  if (read.shape === 'paged-rows') {
+    let targetHour: number | null = null;
+    if (options.timeMode === 'pin') {
+      targetHour = options.pinHour;
+    } else if (options.window) {
+      targetHour = Math.min(options.branch.lastHour, Math.floor(options.window.lastHour));
+    } else if (options.timeMode === 'campaign') {
+      targetHour = options.branch.lastHour;
+    }
+    if (targetHour === null || targetHour < options.branch.firstHour) return null;
+    const params = tailQueryParams(read.tailQuery, targetHour, 0, read.tailQuery.limit);
+    const request = productRequest({
+      sourceId: entry.source.id,
+      revision: entry.source.revision,
+      product: read.tailQuery.product,
+      params,
+    });
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, read.tailQuery.product, params),
+      request,
+      dynamicKeys: ['hour'],
+      validate: read.validate ? (raw => { read.validate!(raw, targetHour); return raw; }) : undefined,
+      entry,
+      span: read.tailQuery.from !== null ? [read.tailQuery.from, targetHour] as const : [options.branch.firstHour, targetHour] as const,
+    };
+  }
+
   return null;
 }
 
@@ -336,6 +398,7 @@ export function stabilizeCanvasDimension(
   }
   return Math.max(1, Math.round(measured));
 }
+
 
 export interface PlaybackBoundedSpec extends StaticRequestSpec {
   readonly anchorHour: number;
@@ -508,6 +571,7 @@ interface ExactPart {
   readonly panel?: unknown;
   readonly live?: ReturnType<ReturnType<typeof repliedCells>['read']>;
   readonly hover?: unknown;
+  readonly rows?: TableRowSource<DatedLogRow>;
 }
 
 export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
@@ -594,6 +658,19 @@ async function readEntryExact(
     return { name: entry.name, hour: recorded, hover: await fetchRaw(request) };
   }
 
+  if (read.shape === 'paged-rows') {
+    const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
+    const request = productRequest({
+      sourceId: entry.source.id,
+      revision: entry.source.revision,
+      product: read.tailQuery.product,
+      params,
+    });
+    const raw = await fetchRaw(request);
+    const rowSource = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${entry.name}`, raw, undefined, recorded);
+    return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
+  }
+
   return null;
 }
 
@@ -617,6 +694,7 @@ export async function readPlanExact(
   const panels = new Map<string, unknown>();
   const live = new Map<string, NonNullable<ExactPart['live']>>();
   const hovers = new Map<string, { hour: number; data: unknown }>();
+  const rows = new Map<string, TableRowSource<DatedLogRow>>();
   let hour = recorded as number;
   for (const part of parts) {
     if (!part) continue;
@@ -624,12 +702,14 @@ export async function readPlanExact(
     if (part.panel !== undefined) panels.set(part.name, part.panel);
     if (part.live) live.set(part.name, part.live);
     if (part.hover !== undefined) hovers.set(part.name, { hour: part.hour, data: part.hover });
+    if (part.rows !== undefined) rows.set(part.name, part.rows);
   }
   return createBoundedReadView({
     hour: displayedHour(hour),
     ...(panels.size ? { panels } : {}),
     ...(live.size ? { live } : {}),
     ...(hovers.size ? { hovers } : {}),
+    ...(rows.size ? { rows } : {}),
     ...(options.identity ? { identity: options.identity } : {}),
     ...(options.art ? { art: options.art } : {}),
   });

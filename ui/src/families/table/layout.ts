@@ -40,6 +40,11 @@ export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
   readonly columns: FamilyColumnLayout[];
 }
 
+export const SHARE_TRACK_WIDTH = 56;
+export const SHARE_TRACK_HEIGHT = 4;
+export const SHARE_TRACK_GAP = 10;
+export const SHARE_FIGURE_SLOT = 52;
+const SHARE_PARTIAL_TAB = 11;
 const SORT_ARROW_WIDTH = 16;
 const KIND_COLUMN_ART = 32;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
@@ -130,6 +135,10 @@ export function measureFixedColumnWidths(
       out[column.key] = column.minWidth ?? KIND_COLUMN_ART + CELL_INSET * 2;
       continue;
     }
+    if (column.cellKind === 'item' && !column.widest?.length) {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
+      continue;
+    }
     if (column.cellKind === 'stockpileSum') {
       out[column.key] = column.minWidth ?? 210;
       continue;
@@ -167,6 +176,12 @@ export function measureFixedColumnWidths(
       for (const sample of statusSamples) widestStatus = Math.max(widestStatus, measure(sample, statusFont));
       const statusW = Math.max(column.minWidth ?? 88, widestStatus + 12 + CELL_INSET * 2, headerWidth);
       out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, statusW) : statusW);
+      continue;
+    }
+    if (column.cellKind === 'share') {
+      const track = settings.sort.column === column.key ? SHARE_TRACK_WIDTH + SHARE_TRACK_GAP : 0;
+      const shareW = Math.max(column.minWidth ?? 0, headerWidth, SHARE_FIGURE_SLOT + SHARE_PARTIAL_TAB + track + CELL_INSET * 2);
+      out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, shareW) : shareW);
       continue;
     }
     if (column.display === 'flag') {
@@ -207,7 +222,7 @@ function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayou
 
 export function growWeight(column: FamilyColumnLayout): number {
   if (column.grow !== undefined) return Math.max(0, column.grow);
-  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill'
+  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'share' || column.cellKind === 'skill'
     || column.cellKind === 'kind' || column.cellKind === 'twoWay' || column.cellKind === 'date' || column.cellKind === 'status') return 0;
   return column.width;
 }

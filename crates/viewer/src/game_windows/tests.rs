@@ -630,11 +630,12 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: None,
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -654,11 +655,12 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: None,
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -678,11 +680,12 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: None,
+                scroll: &BTreeMap::new(),
             },
             &cancelled,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -958,11 +961,12 @@ fn stale_generation_cancels_without_evicting_newer_cache_entry() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: Some(stale_gen),
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -1001,6 +1005,7 @@ fn a_render_admitted_before_its_source_is_released_is_cancelled_and_caches_nothi
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: Some(admitted),
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| {
@@ -1011,7 +1016,7 @@ fn a_render_admitted_before_its_source_is_released_is_cancelled_and_caches_nothi
                 })
             },
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -1054,10 +1059,17 @@ fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_sour
     assert!(cache.get(&frame("b", 3)).is_some());
 
     let window = [9; 32];
-    let base = frame_fingerprint(window, Some(10), true, &[]);
-    assert_ne!(base, frame_fingerprint(window, Some(11), true, &[]));
-    assert_ne!(base, frame_fingerprint(window, Some(10), true, &["warned".to_owned()]));
-    assert_ne!(base, frame_fingerprint([8; 32], Some(10), true, &[]));
+    let unscrolled = BTreeMap::new();
+    let base = frame_fingerprint(window, Some(10), true, &[], &unscrolled);
+    assert_ne!(base, frame_fingerprint(window, Some(11), true, &[], &unscrolled));
+    assert_ne!(base, frame_fingerprint(window, Some(10), true, &["warned".to_owned()], &unscrolled));
+    assert_ne!(base, frame_fingerprint([8; 32], Some(10), true, &[], &unscrolled));
+    let scrolled = BTreeMap::from([("root/list".to_owned(), 30.0)]);
+    assert_ne!(base, frame_fingerprint(window, Some(10), true, &[], &scrolled));
+    assert_ne!(
+        frame_fingerprint(window, Some(10), true, &[], &scrolled),
+        frame_fingerprint(window, Some(10), true, &[], &BTreeMap::from([("root/list".to_owned(), 45.0)]))
+    );
 }
 
 #[test]
@@ -1072,6 +1084,7 @@ fn sub_window_regions_take_their_place_in_paint_order() {
         view: None,
         tooltip: None,
         alpha_mask: None,
+        scroll: None,
     };
     let parts = ["root", "root.backdrop", "root.slots", "root.close_button"];
     let ordered = paint_ordered_regions(
@@ -1194,4 +1207,74 @@ fn service_refuses_non_blended_shader_in_layer_mode() {
         err.to_string().contains("without blending"),
         "expected non-blended layer refusal, got: {err}"
     );
+}
+
+#[test]
+fn a_list_box_scrolls_to_the_rows_below_its_visible_area() {
+    content_reader_script::test_game::enter();
+    let gui = native::read_at(
+        br#"guiTypes = {
+            scrollbarType = {
+                name = "list_slider" size = { x = 10 y = 60 } minValue = 0 maxValue = 1
+                slider = "slider" track = "track" leftButton = "down" rightButton = "up"
+                buttonType = { name = "up" spriteType = "GFX_arrow" }
+                buttonType = { name = "down" spriteType = "GFX_arrow" }
+                guiButtonType = { name = "track" spriteType = "GFX_thumb" }
+                guiButtonType = { name = "slider" spriteType = "GFX_thumb" }
+            }
+            containerWindowType = {
+                name = "list_panel"
+                size = { width = 200 height = 200 }
+                smoothListboxType = {
+                    name = "rows"
+                    position = { x = 4 y = 6 }
+                    size = { x = 30 y = 25 }
+                    scrollbarType = "list_slider"
+                }
+            }
+        }"#,
+        [400, 300],
+    );
+    let root = gui.template("list_panel").unwrap().clone();
+    let mut resources = gui_fixture::fixture_with(gui);
+    resources.add_sprite("GFX_arrow", [10, 10], 1);
+    resources.add_sprite("GFX_thumb", [3, 17], 1);
+    let list = root.find(native::Kind::SmoothListBox, "rows").unwrap();
+    let layout = layout_window(&root, &resources, [400, 300], |_| {}).unwrap();
+    let holder = layout.holders.iter().find(|holder| holder.path == list.path).unwrap();
+    let rows = [[10, 10]; 5];
+    let shown = |places: Vec<Option<[i32; 2]>>| places.iter().map(Option::is_some).collect::<Vec<_>>();
+
+    let mut top = ComposedPlan::default();
+    assert_eq!(
+        shown(top.list_rows(list, holder, &rows, &resources).unwrap()),
+        [true, true, true, false, false]
+    );
+    let region = top.extra_regions.last().unwrap();
+    assert_eq!(region.path, list.path);
+    assert!(region.passthrough);
+    assert_eq!(
+        region.scroll,
+        Some(GameWindowScroll { position: 0.0, range: 25.0, wheel: 10.0 })
+    );
+    assert_eq!(top.scrollbars.len(), 1);
+    assert!(!top.scrollbars[0].parts.is_empty());
+
+    let mut end = ComposedPlan::scrolled(BTreeMap::from([(list.path.clone(), 400.0)]));
+    assert_eq!(
+        shown(end.list_rows(list, holder, &rows, &resources).unwrap()),
+        [false, false, true, true, true]
+    );
+    assert_eq!(
+        end.extra_regions.last().and_then(|region| region.scroll.as_ref()).map(|scroll| scroll.position),
+        Some(25.0)
+    );
+
+    let mut short = ComposedPlan::default();
+    assert_eq!(
+        shown(short.list_rows(list, holder, &rows[..2], &resources).unwrap()),
+        [true, true]
+    );
+    assert!(short.extra_regions.is_empty());
+    assert!(short.scrollbars.is_empty());
 }

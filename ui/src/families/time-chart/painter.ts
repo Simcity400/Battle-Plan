@@ -656,7 +656,7 @@ export function drawTimeChart(
     ctx.restore();
   }
 
-  if (model.overlays && !layout.small) {
+  if (model.overlays && layout.plotHeight >= 72 && layout.plotWidth >= 240) {
     for (const ov of model.overlays) {
       ctx.save();
       ctx.font = overlayFont;
