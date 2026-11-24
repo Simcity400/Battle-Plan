@@ -20,7 +20,7 @@ export interface Binding {
 }
 
 export interface Supply {
-  statics?: { staticPanels?: unknown; staticAnswers?: unknown } | null;
+  statics?: { staticPanels?: unknown; staticAnswers?: unknown; staticShifts?: unknown } | null;
   identity?: number | null;
   dated?: Dated | null;
 }
@@ -88,11 +88,11 @@ interface Sent {
   open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit']; supply: number;
 }
 
-interface Supplied { statics: { staticPanels?: unknown; staticAnswers?: unknown } | null; identity: number | null }
+interface Supplied { statics: { staticPanels?: unknown; staticAnswers?: unknown; staticShifts?: unknown } | null; identity: number | null }
 
 interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; own: unknown; supplied: Supplied; supply: number; binding: Binding;
-  installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; forceFull: boolean; motion: boolean; inspect: string | null;
+  installed: Sent | null; shown: Sent | null; inflight: Sent | null; sent: Record<string, string>; forceFull: boolean; motion: boolean; inspect: string | null;
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
 }
@@ -549,7 +549,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const supplied: Supplied = was?.supplied ?? { statics: null, identity: null };
     const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model, own: model, supplied, supply: was?.supply ?? 0,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
-      installed: was?.installed ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
+      installed: was?.installed ?? null, shown: was?.shown ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
     made.model = this.compose(made);
     this.widgets.set(widget, made);
@@ -587,6 +587,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     held.inflight = null;
     if (ownerChanged) {
       held.installed = null;
+      held.shown = null;
       held.parked = null;
       held.inspect = null;
       this.parkedWidgets.delete(widget);
@@ -624,8 +625,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const { dated: _, ...rest } = held.binding;
       held.binding = change.dated ? { ...rest, dated: change.dated } : rest;
     }
-    if (change.statics !== undefined || change.identity !== undefined) held.model = this.compose(held);
-    held.supply++;
+    if (change.statics !== undefined || change.identity !== undefined) {
+      held.model = this.compose(held);
+      held.supply++;
+    }
     this.dirtyWidgets.add(widget);
     this.syncWindowTracking(held);
     this.wake();
@@ -653,10 +656,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   pointer(widget: number, _surface: number, point: [number, number] | null, installed?: number) {
     const held = this.widgets.get(widget);
     if (!held) return;
+    const owner = held.binding.owner;
     const accepted = installed === undefined ? undefined : this.presented.get(installed);
-    const inst = accepted && accepted.widget === widget && accepted.sent.binding === held.binding.generation ? accepted.sent : held.installed;
-    const hit = inst?.hit;
-    this.host.hit?.(widget, point && hit ? hit(point) : null, inst?.id, inst?.owner);
+    const named = installed === undefined ? held.installed : accepted?.widget === widget ? accepted.sent : held.shown?.id === installed ? held.shown : null;
+    const inst = named && (named.owner === undefined || owner === undefined || named.owner === owner) ? named : null;
+    this.host.hit?.(widget, point && inst?.hit ? inst.hit(point) : null, installed ?? inst?.id, inst?.owner);
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {
@@ -1387,7 +1391,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const owner = this.presented.get(ack.id);
       this.presented.delete(ack.id);
       const widget = owner === undefined ? undefined : this.widgets.get(owner.widget);
-      if (!widget || !owner || owner.sent.binding !== widget.binding.generation) continue;
+      if (!widget || !owner) continue;
+      const sameOwner = owner.sent.owner === undefined || widget.binding.owner === undefined || owner.sent.owner === widget.binding.owner;
+      if (sameOwner && (!widget.shown || widget.shown.id < owner.sent.id)) widget.shown = owner.sent;
+      if (owner.sent.binding !== widget.binding.generation) continue;
       if (!widget.installed || widget.installed.id < owner.sent.id) widget.installed = owner.sent;
       if (widget.inflight?.id === ack.id) widget.inflight = null;
       for (const sub of widget.subs) this.schedulePrune(sub);
@@ -1460,6 +1467,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private isOpenFollowed(widget: Widget, selected: Selected): boolean {
     if (!widget.subs.length || selected.window[1] !== Infinity || this.host.views(widget.view).next) return false;
+    if (widget.binding.dated && Number.isFinite(widget.binding.dated.c)) return false;
     const route = this.routeOf(widget);
     if (route === null) return false;
     const confirmed = this.routeConfirmedFollowed.get(route);
@@ -1474,6 +1482,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private isOpenPanel(widget: Widget, selected: Selected): boolean {
     if (!widget.subs.length || selected.window[1] !== Infinity || this.host.views(widget.view).next) return false;
+    if (widget.binding.dated && Number.isFinite(widget.binding.dated.c)) return false;
     const route = this.routeOf(widget);
     if (route === null) return false;
     const confirmed = this.routeConfirmedPanel.get(route);
