@@ -68,7 +68,7 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
   boundary: (_model, hour) => hour + 1,
   redraw: () => Infinity,
   status: () => 'scene',
-  view: binding => [binding.zoom],
+  view: ['zoom'],
   layout(projected, binding, surface, theme, measure) {
     const zoom = binding.zoom?.x;
     const model = zoom && projected.view?.x !== zoom ? { ...projected, view: { ...projected.view, x: zoom } } : projected;

@@ -1,5 +1,6 @@
 import type { Channel } from '../dashboard/follow/facts';
 import type { FrameRequest } from '../dashboard/follow/page';
+import type { PayloadsMessage } from '../dashboard/follow/payloads';
 import type { Binding, Presented, Supply } from './lane';
 
 export type ToLane =
@@ -12,7 +13,7 @@ export type ToLane =
   | { type: 'unmount'; widget: number }
   | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean }
   | ({ type: 'supply'; widget: number } & Supply)
-  | { type: 'identity'; id: number; snapshot: unknown }
+  | PayloadsMessage
   | { type: 'exact'; sub: number; hour: number; data: unknown; refused: string | null }
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
