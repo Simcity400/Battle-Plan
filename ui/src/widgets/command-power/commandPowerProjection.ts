@@ -23,7 +23,6 @@ import {
   spendMarkersOf,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface CommandPowerOptions {
   readonly tags: readonly string[];
@@ -38,9 +37,7 @@ export interface CommandPowerOptions {
 
 
 function formatEndAmount(value: number): string {
-  if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
-  const sign = value < 0 ? '\u2212' : '';
-  return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
+  return formatChartAxisValue(value, 'power');
 }
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
@@ -179,7 +176,6 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
   subject: 'command power',
   emptyCampaign: 'Load a campaign to see command power.',
   icon: 'chart-line',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;

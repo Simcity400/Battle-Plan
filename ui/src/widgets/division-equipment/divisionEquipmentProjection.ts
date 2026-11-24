@@ -4,10 +4,11 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
-import { artState, urlArtHandle, type ArtState } from '../../families/table/identityCell.ts';
-import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY, OPTIONS } from './definition.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artState, type ArtState } from '../../families/table/identityCell.ts';
+import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -43,11 +44,11 @@ export function missingValue(raw: string | null): Value<number> {
 
 const summary = (reply: DivisionEquipmentReply): string | null => reply.divisionsShort === null
   ? null
-  : `${reply.divisionsShort.toLocaleString('en-US')} ${reply.divisionsShort === 1 ? 'division' : 'divisions'} short`;
+  : `${formatScalar(reply.divisionsShort, 'integer')} ${reply.divisionsShort === 1 ? 'division' : 'divisions'} short`;
 
 const partial = (reply: DivisionEquipmentReply): string | null => reply.unknownDivisions === null
   ? 'Divisions not recorded'
-  : reply.unknownDivisions > 0 ? `${reply.unknownDivisions.toLocaleString('en-US')} ${reply.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : null;
+  : reply.unknownDivisions > 0 ? `${formatScalar(reply.unknownDivisions, 'integer')} ${reply.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : null;
 
 function bodyState(reply: DivisionEquipmentReply): { readonly empty?: string; readonly emptyKind?: 'empty' | 'unavailable' } | null {
   if (reply.missing !== null) return { empty: reply.missing, emptyKind: 'unavailable' };
@@ -232,7 +233,6 @@ export const equipmentTypeDeclaration: TableWidgetDeclaration<Record<string, nev
   subject: 'division equipment',
   emptyCampaign: 'Load a campaign to see division equipment.',
   icon: 'cube',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
   sources: ctx => sources(ctx),
   projection: equipmentTypeProjection,

@@ -1,5 +1,4 @@
 import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent, type TooltipRow } from '../../charts/tooltip.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
 import { formatBoundDate, formatDateHover, type DateBoundKind } from '../valueFormat.ts';
 
 export const HOVER_OPEN_MS = 150;
@@ -170,7 +169,7 @@ export class FamilyTooltipController {
       return cached.fitted;
     }
     const raw = resolveTooltipEntryContent(entry);
-    const dated = raw.subtitle ? raw : { ...raw, subtitle: formatDateTime(flooredHour) };
+    const dated = raw.subtitle ? raw : { ...raw, subtitle: formatDateHover(flooredHour) };
     const fitted = fitTooltip([dated], viewportHeight);
     const next: FittedCache = { entry, hour: flooredHour, height: viewportHeight, fitted };
     if (channel === 'hover') this.hoverCache = next;
@@ -281,7 +280,7 @@ export class FamilyTooltipController {
     announce?: (message: string) => void,
   ): boolean {
     if (!tip) return false;
-    const dateText = formatDateTime(Math.floor(hour));
+    const dateText = formatDateHover(Math.floor(hour));
     const pinnedContent: TooltipContent = { ...resolveTooltipEntryContent(tip), subtitle: `Pinned at ${dateText}` };
     this.pinned = { key: tip.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
     this.tipVisible = true;

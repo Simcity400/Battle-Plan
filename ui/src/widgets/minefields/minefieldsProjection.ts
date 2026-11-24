@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { DEFAULT_CARD_SURFACE, reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -8,10 +8,10 @@ import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars
 import { registerBarsProjection } from '../../families/bars/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { MinedRegion } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
 
 const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
@@ -43,8 +43,9 @@ function projectMineRegion(
   readView: BoundedReadView,
 ): ShareRowEntry {
   const id = String(region.region);
-  const name = names.get(id) ?? 'Region name unavailable';
-  const labelMissing = !names.has(id);
+  const named = regionLabel(readView, region.region, names.get(id) ?? null);
+  const name = named.label;
+  const labelMissing = named.nameMissing !== undefined;
   const live = readView.live('main');
   const meta: RegionRow = {
     region: id,
@@ -124,15 +125,16 @@ function projectMineRegion(
 
   const segments: BarsSegment[] = [];
   const items: TooltipListItem[] = [{ label: 'Mines', value: minesCountText(total, scale) }];
-  region.owners.forEach((owner, index) => {
+  const unrecordedColour = reservedGrey(FALLBACK_SURFACE);
+  for (const owner of region.owners) {
     const identity = readView.who('country', owner.tag);
     const ownerName = identity.name.status === 'ready' ? identity.name.value : owner.tag;
-    const ownerColor = identity.colour?.status === 'ready' ? identity.colour.value : colour(FALLBACK_SURFACE, index);
+    const ownerColor = identity.colour?.status === 'ready' ? identity.colour.value : unrecordedColour;
     const ownerKey = liveKey(id, owner.tag);
     const amount = readBigInt(live, ownerKey);
     if (amount === null) {
       items.push({ label: ownerName, swatch: ownerColor, missingReason: live?.missing(ownerKey) ?? 'Not recorded at this hour' });
-      return;
+      continue;
     }
     const share = total > 0n && amount > 0n ? Number(amount * 10000n / total) / 10000 : 0;
     const pct = Math.round(share * 100);
@@ -155,7 +157,7 @@ function projectMineRegion(
       });
     }
     items.push({ label: ownerName, swatch: ownerColor, value: `${minesCountText(amount, scale)} (${pct}%)` });
-  });
+  }
 
   if (region.unknownOwners > 0) {
     items.push({ label: 'Not recorded', value: `${region.unknownOwners} ${region.unknownOwners === 1 ? 'country' : 'countries'}` });
@@ -244,7 +246,6 @@ export const minefieldsDeclaration: BarsWidgetDeclaration<MinefieldsProjectionOp
   subject: 'minefields',
   emptyCampaign: 'Load a campaign to see minefields.',
   icon: 'anchor',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: minefieldsSources,
   projection: minefieldsProjection,

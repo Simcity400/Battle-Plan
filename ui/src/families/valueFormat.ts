@@ -67,7 +67,7 @@ export type ValueFormat =
   | 'clockSeconds'
   | 'decimal1'
   | 'percent2'
-  | { readonly decimals: number; readonly percent?: boolean; readonly unit?: string; readonly signed?: boolean; readonly maxDecimals?: number };
+  | { readonly decimals: number; readonly percent?: boolean; readonly unit?: string; readonly signed?: boolean; readonly maxDecimals?: number; readonly fixedDecimals?: boolean };
 
 export interface FormatValueOptions {
   readonly figure?: string;
@@ -162,6 +162,9 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   const suffix = format.unit ? ` ${format.unit}` : '';
   const sign = format.signed && raw > 0 ? '+' : '';
   if (raw === 0 || raw === 0n) {
+    if (format.fixedDecimals && format.maxDecimals !== undefined && format.maxDecimals > 0) {
+      return `0.${'0'.repeat(format.maxDecimals)}${format.percent ? '%' : ''}${suffix}`;
+    }
     return `${format.percent ? '0%' : '0'}${suffix}`;
   }
   if (format.maxDecimals !== undefined && format.decimals > format.maxDecimals) {
@@ -173,10 +176,20 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     return `${negative ? '−' : sign}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
   }
   if (format.maxDecimals !== undefined && format.decimals === 0) {
-    const formatted = formatFixedDecimal(raw, format.maxDecimals, false, true, '\u2212', format.signed === true);
+    const formatted = formatFixedDecimal(raw, format.maxDecimals, format.fixedDecimals === true, true, '\u2212', format.signed === true);
     return `${formatted}${format.percent ? '%' : ''}${suffix}`;
   }
   return `${sign}${amountText(raw, format.decimals, format.percent)}${suffix}`;
+}
+
+export function formatShare(share: number | null | undefined): string {
+  if (share == null || !Number.isFinite(share) || share < 0) return '';
+  const pct = share * 100;
+  if (pct === 0) return '0%';
+  if (pct < 0.05) return '<0.1%';
+  if (pct >= 99.95) return '100%';
+  if (pct >= 10) return `${Math.round(pct)}%`;
+  return `${pct.toFixed(1)}%`;
 }
 
 export interface CompactScalar {
