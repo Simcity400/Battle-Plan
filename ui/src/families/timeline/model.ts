@@ -81,6 +81,7 @@ export interface TimelineModel {
   readonly labelWidth: number;
   readonly outcomeWidth?: number;
   readonly summaryText?: string | null;
+  readonly summaryPartial?: string | null;
   readonly empty?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly warnings: readonly string[];
@@ -119,10 +120,12 @@ export function visibleLanes(
 
 export function deriveTimelineAudit(model: TimelineModel): FamilyAuditRow[] {
   const rows: FamilyAuditRow[] = [];
-  if (model.summaryText) rows.push(auditRow('__summary__', model.summaryText));
+  if (model.summaryText) rows.push(auditRow('__summary__', `${model.summaryText}${model.summaryPartial ? `|partial:${model.summaryPartial}` : ''}`));
+  if (model.notes?.length) rows.push(auditRow('__notes__', model.notes.join('|')));
   for (const lane of model.lanes) {
     const spans = lane.spans.map(spanAudit).join(',');
-    rows.push(auditRow(lane.key, `${lane.auditValue}|${lane.flagTag ?? ''}|${spans}`));
+    const opened = lane.openedMarker ? `|opened:${lane.openedMarker.hour}` : '';
+    rows.push(auditRow(lane.key, `${lane.auditValue}|${lane.flagTag ?? ''}|${spans}${opened}`));
   }
   return rows;
 }

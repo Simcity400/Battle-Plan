@@ -6,6 +6,7 @@ import type { MapOptions } from '../shell/api';
 import type { DashboardSource } from './client';
 import type { WidgetDefinition, WidgetRuntime } from './definitions';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
+import type { OptionValue } from './options';
 import { recordingDisplayName } from './recordingNames';
 import DefaultCountryChip from './CountryChip';
 import WidgetCountryControl from './WidgetCountryControl';
@@ -34,6 +35,7 @@ export interface WidgetHeaderProps {
   headerSlotElement: HTMLSpanElement | null;
   source?: DashboardSource;
   onApply?: (widget: WidgetSpec, view?: boolean) => void;
+  setOption?: (key: string, value: OptionValue) => void;
   onRemove?: () => void;
   onReset?: () => void;
   resetUndoVisible?: boolean;
@@ -65,6 +67,7 @@ export default function WidgetHeader({
   headerSlotElement,
   source,
   onApply,
+  setOption,
   onRemove,
   onReset,
   resetUndoVisible = false,
@@ -308,9 +311,9 @@ export default function WidgetHeader({
     {readingBadge && <span className="dash-reading-badge is-in-header">{readingBadge}</span>}
     <div className="dash-widget-controls">
       {filterSlotRef && <span className="dash-widget-filter-slot" ref={filterSlotRef} />}
-      {hasSubject && (readOnly || !template || !onApply
+      {hasSubject && (readOnly || !template || !onApply || !setOption
         ? <CountryChip widget={widget} runtime={runtime} active={false} compact={effectiveDrop.compactSubject} onSlot={countrySlotRef} />
-        : <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply}
+        : <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply} setOption={setOption}
             compact={effectiveDrop.compactSubject} onRegisterOpen={onRegisterOpenCountries}>
             <CountryChip widget={widget} runtime={runtime} active={active} compact={effectiveDrop.compactSubject} onSlot={countrySlotRef} />
           </WidgetCountryControl>)}
