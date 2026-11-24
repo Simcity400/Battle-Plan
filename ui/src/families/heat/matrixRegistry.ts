@@ -11,7 +11,7 @@ export function registerHeatMatrixProjection<TOptions>(
   projection: HeatMatrixProjection<TOptions>,
   view = DEFAULT_VIEW,
 ): HeatMatrixProjection<TOptions> {
-  return registerFamilyProjection(projection, view) as HeatMatrixProjection<TOptions>;
+  return registerFamilyProjection(projection, view, 'heat-matrix') as HeatMatrixProjection<TOptions>;
 }
 
 export function heatMatrixProjection(kind: string, view?: string): HeatMatrixProjection<unknown> | undefined {

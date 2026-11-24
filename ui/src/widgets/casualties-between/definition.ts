@@ -2,6 +2,8 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
 export const OPTIONS: readonly OptionField[] = [
+  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'matrix',
+    choices: [{ value: 'matrix', label: 'Matrix' }, { value: 'opponents', label: 'By opponent' }] },
   { key: 'between', section: 'options', label: 'With countries chosen, show', kind: 'choice', default: 'touching',
     choices: [{ value: 'touching', label: 'Their casualties with anyone' }, { value: 'between', label: 'Only casualties between them' }] },
 ];

@@ -1,4 +1,6 @@
+import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import type { LiveValues } from '../../charts/live';
+import { textWidth } from '../../charts/textWidth.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
@@ -28,7 +30,7 @@ import {
   hitFamilyBars,
   type BarsGlideOffset,
 } from './painter.ts';
-import { barsProjection, ensureBarsProjection } from './registry.ts';
+import { ensureBarsProjection } from './registry.ts';
 
 export interface FamilyBarsBinding<TOptions = unknown> {
   readonly family: 'bars';
@@ -249,9 +251,11 @@ export function familyBarsLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyBarsBinding(bound)) return Infinity;
-      const proj = barsProjection(bound.kind, bound.view);
+      const proj = ensureBarsProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (proj === 'loading') return hour + 1;
+      if (proj === 'unknown') return Infinity;
       let next = Infinity;
-      if (proj?.nextChange) {
+      if (proj.nextChange) {
         const index = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
         const readView = barsReadViewFromScene(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined);
         next = Math.min(next, proj.nextChange(readView, bound.options));
@@ -268,7 +272,7 @@ export function familyBarsLaneView(
         return { surfaces: [], fields: {}, motion: false };
       }
       const proj = ensureBarsProjection(bound.kind, bound.view, () => wake(input.widget));
-      if (proj === 'loading') return { surfaces: [], fields: {}, motion: false };
+      if (proj === 'loading') return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       if (proj === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown bars declaration: ${bound.kind}` };
       }
@@ -411,7 +415,12 @@ export function familyBarsLaneView(
       const layoutSig = `${surface.width}:${surface.height}:${model.form}:${model.rows.length}:${model.rowHeight ?? ''}:${model.showAxis ? 1 : 0}`;
       let layoutChanged = false;
       if (!held.cachedLayout || modelChanged || held.layoutSig !== layoutSig) {
-        held.cachedLayout = layoutFamilyBars(model, surface.width, surface.height, bound.theme);
+        const measureCtx = held.ctx;
+        const labelFont = `${LABEL_WEIGHT} ${bound.theme.fontSize.body}px ${bound.theme.font}`;
+        held.cachedLayout = layoutFamilyBars(model, surface.width, surface.height, bound.theme, text => {
+          measureCtx.font = labelFont;
+          return textWidth(measureCtx, text);
+        });
         held.layoutSig = layoutSig;
         layoutChanged = true;
       }
@@ -570,6 +579,13 @@ export function familyBarsLaneView(
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
+        viewport: {
+          width: bound.width,
+          height: bound.height,
+          dpr: input.binding.surfaces[0]?.dpr ?? 1,
+          scrollLeft: 0,
+          scrollTop: bound.scrollTop,
+        },
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: moving,

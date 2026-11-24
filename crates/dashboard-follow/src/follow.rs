@@ -817,7 +817,7 @@ impl Engine {
                     followed.until = identity_until(identity, countries, head);
                     index.until = index.until.min(followed.until);
                     index.series.push(query);
-                    if matches!(mode, SeriesMode::Top { .. } | SeriesMode::Parts { .. }) {
+                    if matches!(mode, SeriesMode::Top { .. } | SeriesMode::Parts { .. } | SeriesMode::NavalLosses { .. }) {
                         index.broad.push(query);
                         false
                     } else {
@@ -1053,7 +1053,7 @@ impl Engine {
                     followed.until = identity_until(identity, countries, head);
                     followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
-                    let keys = if matches!(mode, SeriesMode::Top { .. } | SeriesMode::Parts { .. }) { Vec::new() } else { holder_keys(&followed.tags.rows) };
+                    let keys = if matches!(mode, SeriesMode::Top { .. } | SeriesMode::Parts { .. } | SeriesMode::NavalLosses { .. }) { Vec::new() } else { holder_keys(&followed.tags.rows) };
                     let old = mem::replace(&mut followed.keys, keys);
                     for key in old.iter().filter(|key| !followed.keys.contains(key)) {
                         index.unwatch(query, *key);

@@ -31,11 +31,7 @@ const USES: &[Uses] = &[Uses { definition: Definition::Define(SHIP_RETENTION), r
 const YEAR: i64 = 365 * 24;
 
 fn key(slot: u32, country: u32, attribution: u8, kind: u8) -> u128 {
-    u128::from(slot) << 48 | u128::from(country) << 16 | u128::from(attribution) << 8 | u128::from(kind)
-}
-
-fn run_key(kind: u8) -> u128 {
-    key(Total::RUN, Total::RUN, Total::LOST, kind)
+    Total { slot, country, attribution, kind, ..Total::default() }.key()
 }
 
 fn signature(entry: &SunkShipEntry, seed: u64) -> u64 {
@@ -266,7 +262,7 @@ impl NavalLosses {
         let view = hour.table(TableId::NavalLossTotals);
         for kind in [Total::SHIPS, Total::CONVOYS] {
             let held = &mut self.kinds[usize::from(kind)];
-            let Some(slot) = view.slot(run_key(kind)) else {
+            let Some(slot) = view.slot(Total::run_key(kind)) else {
                 *held = Kind { unread: held.unread, ..Kind::default() };
                 continue;
             };
@@ -349,7 +345,7 @@ impl Writer for NavalLosses {
             out.set(TableId::NavalLossTotals, target, vec![total.map_or(Value::Unrecorded, Value::I64), unknown.map_or(Value::Unrecorded, Value::U32), Value::Unrecorded, Value::Unrecorded, Value::Unrecorded]);
         }
         for kind in [Total::SHIPS, Total::CONVOYS] {
-            out.set(TableId::NavalLossTotals, run_key(kind), self.kinds[usize::from(kind)].cells());
+            out.set(TableId::NavalLossTotals, Total::run_key(kind), self.kinds[usize::from(kind)].cells());
         }
         self.last = Some(at);
         Ok(())

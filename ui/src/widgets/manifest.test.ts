@@ -26,8 +26,9 @@ import {
 } from '../families/settingsControls.ts';
 import { encodeTableSettings, ROW_HEIGHT, tableDefaults, tableSettingsOf, updateTableSettings, type TableBase, type TableColumnDefaults } from '../families/table/settings.ts';
 import { widgetMetas } from './definitions.ts';
-import { FAMILY_VIEWS } from './familyManifest.ts';
+import { FAMILY_MANIFESTS, FAMILY_VIEWS, familyLaneView } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
+import { drawnViews } from '../draw/views/drawn.ts';
 import {
   activeFamilyView,
   isFamilyWidgetView,
@@ -48,7 +49,10 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.equal(FAMILY_VIEWS.length, 7);
+  assert.ok(FAMILY_VIEWS.length >= 10);
+  for (const kind of ['factories', 'air-superiority-region', 'minefields']) {
+    assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
+  }
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
@@ -157,6 +161,65 @@ test('worker projection registry loads table and bars projections lazily on dema
     assert.ok(timeChartWakes >= 1);
   }
   assert.equal(familyProjection('time-chart', 'political-power')?.kind, 'political-power');
+
+  let heatMatrixLoads = 0;
+  let heatLanesLoads = 0;
+  bindFamilyManifest([
+    {
+      kind: 'synthetic-heat-matrix',
+      view: DEFAULT_VIEW,
+      family: 'heat-matrix',
+      loadSpec: async () => {
+        heatMatrixLoads++;
+        return {
+          family: 'heat-matrix',
+          kind: 'synthetic-heat-matrix',
+          view: DEFAULT_VIEW,
+          projection: { family: 'heat-matrix', kind: 'synthetic-heat-matrix', project: () => ({ rows: [], columns: [], cells: [], hour: 0 }) },
+        };
+      },
+    },
+    {
+      kind: 'synthetic-heat-lanes',
+      view: DEFAULT_VIEW,
+      family: 'heat-lanes',
+      loadSpec: async () => {
+        heatLanesLoads++;
+        return {
+          family: 'heat-lanes',
+          kind: 'synthetic-heat-lanes',
+          view: DEFAULT_VIEW,
+          projection: { family: 'heat-lanes', kind: 'synthetic-heat-lanes', project: () => ({ rows: [], hour: 0 }) },
+        };
+      },
+    },
+  ]);
+
+  const matrixWakes: number[] = [];
+  const matrixView = drawnViews('heat-matrix', wid => matrixWakes.push(wid))!;
+  const matrixBinding = { family: 'heat-matrix', kind: 'synthetic-heat-matrix', options: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
+  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), 51);
+  for (let i = 0; i < 16 && !matrixWakes.length; i++) await Promise.resolve();
+  assert.equal(heatMatrixLoads, 1);
+  assert.deepEqual(matrixWakes, [7]);
+  assert.equal(familyProjection('heat-matrix', 'synthetic-heat-matrix')?.kind, 'synthetic-heat-matrix');
+
+  const lanesWakes: number[] = [];
+  const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
+  const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
+  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), 51);
+  for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
+  assert.equal(heatLanesLoads, 1);
+  assert.deepEqual(lanesWakes, [9]);
+  assert.equal(familyProjection('heat-lanes', 'synthetic-heat-lanes')?.kind, 'synthetic-heat-lanes');
+
+  assert.deepEqual(
+    FAMILY_MANIFESTS.map(entry => entry.family),
+    ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart'],
+  );
+  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart']) {
+    assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
+  }
 });
 
 test('shared data-driven settings controls expose bars-behind, three row heights, columns, view switch, and ordered regions', () => {
@@ -189,7 +252,9 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.equal(barsBehindOf('off'), 'off');
   assert.equal(barsBehindOf('sorted'), 'sorted');
   assert.equal(barsBehindOf('all'), 'all');
-  assert.equal(barsBehindOf('bogus'), 'sorted');
+  assert.equal(barsBehindOf('bogus'), 'all');
+  assert.deepEqual(BARS_BEHIND_CHOICES.map(c => c.label), ['Every column', 'Sorted column', 'Off']);
+  assert.deepEqual(ROW_HEIGHT_CHOICES.map(c => c.label), ['Compact', 'Default', 'Comfortable']);
 
   const added1 = addOrderedToken('', 'reg_1');
   const added2 = addOrderedToken(added1!, 'reg_2');

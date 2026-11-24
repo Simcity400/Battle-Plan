@@ -3,16 +3,16 @@ import type { OptionField } from '../../dashboard/options';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
-  { key: 'state', label: 'State', as: 'plain', offered: OFFERED.text },
-  { key: 'owner', label: 'Owner', as: 'flagName', offered: OFFERED.country },
-  { key: 'occupier', label: 'Occupier', as: 'flagName', offered: OFFERED.country },
-  { key: 'resistance', label: 'Resistance', as: 'meterAfter', tone: 'red', offered: OFFERED.number },
-  { key: 'compliance', label: 'Compliance', as: 'meterAfter', tone: 'blue', offered: OFFERED.number },
-  { key: 'garrison', label: 'Garrison', as: 'faint', tone: 'blue', offered: OFFERED.number },
-  { key: 'law', label: 'Occupation law', as: 'dot', offered: OFFERED.status },
+  { key: 'owner', label: 'Owner', as: 'flag', offered: OFFERED.country, showNamesDefault: false },
+  { key: 'state', label: 'State', as: 'plain', offered: OFFERED.text, hideable: false },
+  { key: 'resistance', label: 'Resistance', as: 'track', tone: 'red', offered: OFFERED.number },
+  { key: 'compliance', label: 'Compliance', as: 'track', tone: 'grey', offered: OFFERED.number },
+  { key: 'law', label: 'Occupation law', as: 'text', offered: OFFERED.status },
+  { key: 'occupier', label: 'Occupier', as: 'flag', offered: OFFERED.country, showNamesDefault: false, defaultHidden: true },
+  { key: 'garrison', label: 'Garrison', as: 'faint', tone: 'blue', offered: OFFERED.number, defaultHidden: true },
 ];
 export const DEFAULT_SORT = { column: 'resistance', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'comfortable', overflow: 'tooltip', sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = [
   { key: 'countryRole', section: 'options', label: 'Filter by', kind: 'choice', default: 'occupier',
     choices: [{ value: 'occupier', label: 'Occupier' }, { value: 'occupied', label: 'Occupied country' }],
