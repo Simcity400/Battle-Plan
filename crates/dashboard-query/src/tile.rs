@@ -194,7 +194,7 @@ pub fn tile(
         lines.push(TileLine {
             country: ask.country.clone(),
             part: line.part_text(ask),
-            missing: line.missing(&ask.country, first, last, &parts)?,
+            missing: crate::head::coverage_missing(line, &ask.country, first, last, &parts)?,
             parts: parts
                 .iter()
                 .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })

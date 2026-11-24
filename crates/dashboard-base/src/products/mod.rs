@@ -13,6 +13,7 @@ pub mod idea_format;
 pub mod politics_content;
 pub mod read_ahead;
 pub mod resources;
+pub mod series_head;
 
 
 mod registry;

@@ -601,11 +601,16 @@ pub struct Changes {
     pub(crate) passing: Passing,
     pub(crate) is_log: bool,
     pub(crate) log: Logged,
+    pub(crate) hourly: bool,
 }
 
 impl Changes {
     pub fn table(&self) -> usize {
         self.table
+    }
+
+    pub fn hourly(&self) -> bool {
+        self.hourly
     }
 
     pub fn reset(&self) -> bool {
@@ -705,6 +710,7 @@ impl Changes {
         self.passing.clear();
         self.is_log = false;
         self.log.clear();
+        self.hourly = false;
     }
 
     pub(crate) fn set_head(&mut self, head: Hour, short: u32, stalled: bool) {

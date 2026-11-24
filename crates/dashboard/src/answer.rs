@@ -13,11 +13,13 @@ pub const SERIES_PRODUCTS: &[&str] = &[
     "series-next-change",
     "events-page",
     dashboard_query::tile::PRODUCT,
+    dashboard_query::head::PRODUCT,
     dashboard_query::series::PARTS,
 ];
 
 pub fn forget(source: &Source) {
     dashboard_base::queries::forget(source);
+    dashboard_base::products::series_head::forget(source);
     dashboard_world::forget(source);
     dashboard_land::forget(source);
     dashboard_wars::forget(source);

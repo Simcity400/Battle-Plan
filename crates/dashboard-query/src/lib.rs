@@ -4,6 +4,7 @@ pub mod cost;
 pub mod fields;
 #[cfg(test)]
 mod fixture;
+pub mod head;
 pub mod identity;
 pub mod log;
 pub mod named;

@@ -1,0 +1,51 @@
+.tc-surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.tc-surface[data-tc-pending] {
+  visibility: hidden;
+}
+
+.tc-extent {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.tc-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.tc-host {
+  outline: none;
+  touch-action: none;
+}
+
+.tc-host:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+  border-radius: var(--r-sm);
+}
+
+.tc-state-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  background: var(--surface);
+}
+
+.tc-live-region {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

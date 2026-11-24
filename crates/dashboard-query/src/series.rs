@@ -337,6 +337,9 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
     let Some(series) = dashboard_declare::series(kind) else {
         return Ok(None);
     };
+    if product == crate::head::PRODUCT {
+        return Ok(Some(serde_json::to_value(crate::head::answer(query, params)?)?));
+    }
     let value = params;
     let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid {kind} request: {error}")))?;
     if params.family.kind != series.kind {
@@ -509,19 +512,19 @@ impl<'q, 'a> Line<'q, 'a> {
         self.series
     }
 
-    fn withheld_at(&self, run: u32, hour: i32) -> Option<&str> {
+    pub fn withheld_at(&self, run: u32, hour: i32) -> Option<&str> {
         let recording = self.query.replay.recording();
         match recording.table_coverage(self.series.table.index(), run) {
             replay_recording::columnar_frames::TableCoverage::Valid => None,
             replay_recording::columnar_frames::TableCoverage::WithheldAll(reason) => Some(reason),
             replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
-                let valid = recording.run(run).ok()?.first_hour + ordinal as i32;
-                (hour < valid).then_some(reason)
+                let valid = i64::from(recording.run(run).ok()?.first_hour) + i64::from(ordinal);
+                (i64::from(hour) < valid).then_some(reason)
             }
         }
     }
 
-    fn withheld_span(&self, run: u32, first: i32, last: i32) -> Option<(i32, i32, &str)> {
+    pub fn withheld_span(&self, run: u32, first: i32, last: i32) -> Option<(i32, i32, &str)> {
         if first > last {
             return None;
         }
@@ -530,26 +533,26 @@ impl<'q, 'a> Line<'q, 'a> {
             replay_recording::columnar_frames::TableCoverage::Valid => None,
             replay_recording::columnar_frames::TableCoverage::WithheldAll(reason) => Some((first, last, reason)),
             replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => {
-                let valid = recording.run(run).ok()?.first_hour + ordinal as i32;
-                (first < valid).then(|| (first, last.min(valid - 1), reason))
+                let valid = i64::from(recording.run(run).ok()?.first_hour) + i64::from(ordinal);
+                (i64::from(first) < valid).then(|| (first, (i64::from(last).min(valid - 1)) as i32, reason))
             }
         }
     }
 
-    fn valid_part(&self, part: &Part) -> Option<Part> {
+    pub fn valid_part(&self, part: &Part) -> Option<Part> {
         let recording = self.query.replay.recording();
         match recording.table_coverage(self.series.table.index(), part.run) {
             replay_recording::columnar_frames::TableCoverage::Valid => Some(*part),
             replay_recording::columnar_frames::TableCoverage::WithheldAll(_) => None,
             replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => {
-                let valid = recording.run(part.run).ok()?.first_hour + ordinal as i32;
-                let first = part.first.max(valid);
-                (first <= part.last).then_some(Part { first, starts: part.starts || first > part.first, ..*part })
+                let valid = i64::from(recording.run(part.run).ok()?.first_hour) + i64::from(ordinal);
+                let first = i64::from(part.first).max(valid);
+                (first <= i64::from(part.last)).then_some(Part { first: first as i32, starts: part.starts || first > i64::from(part.first), ..*part })
             }
         }
     }
 
-    fn overlaps_withheld(&self, parts: &[Part], lo: i32, hi: i32) -> bool {
+    pub fn overlaps_withheld(&self, parts: &[Part], lo: i32, hi: i32) -> bool {
         lo <= hi
             && parts.iter().any(|part| {
                 let (a, b) = (part.first.max(lo), part.last.min(hi));
@@ -604,8 +607,17 @@ impl<'q, 'a> Line<'q, 'a> {
         self.series.drops
     }
 
-    pub(crate) fn scale(&self) -> f64 {
+    pub fn scale(&self) -> f64 {
         10_f64.powi(i32::from(self.measure.decimals))
+    }
+
+    pub fn measure_index(&self) -> io::Result<u32> {
+        self.series
+            .measures
+            .iter()
+            .position(|measure| std::ptr::eq(measure, self.measure))
+            .map(|at| at as u32)
+            .ok_or_else(|| invalid("No such measure"))
     }
 
     fn by_key(&self) -> HashMap<u128, Vec<(i32, i32, &str)>> {
@@ -869,7 +881,7 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    pub(crate) fn missing_at(&self, country: &Country, hour: i32) -> Option<String> {
+    pub fn missing_at(&self, country: &Country, hour: i32) -> Option<String> {
         let Some(stretch) = self.query.timeline.at(hour) else {
             return Some(self.query.timeline.reason(hour));
         };
@@ -887,7 +899,7 @@ impl<'q, 'a> Line<'q, 'a> {
         }
     }
 
-    pub(crate) fn absent(&self, country: &Country, hour: i32) -> String {
+    pub fn absent(&self, country: &Country, hour: i32) -> String {
         match country {
             Country::Tag(tag) => format!("{tag} is held by no country"),
             Country::Slot(_) => self.query.holders.say(country, hour, |name| format!("{name}'s {} was not recorded at this hour", self.measure.name)),
@@ -982,8 +994,9 @@ impl<'q, 'a> Line<'q, 'a> {
             let part = whole;
             let held = recording.run(part.run)?;
             let block = ((i64::from(hour) - i64::from(held.first_hour)) / i64::from(UNIT_ORDINALS)) as u32;
-            let block_first = held.first_hour + (block * UNIT_ORDINALS) as i32;
-            let block_last = (block_first + UNIT_ORDINALS as i32 - 1).min(held.first_hour + held.ordinals as i32 - 1);
+            let block_first = (i64::from(held.first_hour) + i64::from(block) * i64::from(UNIT_ORDINALS)) as i32;
+            let block_last = (i64::from(block_first) + i64::from(UNIT_ORDINALS) - 1)
+                .min(i64::from(held.first_hour) + i64::from(held.ordinals) - 1) as i32;
             let part = self
                 .held(ask, block_first, block_last)
                 .into_iter()
@@ -994,13 +1007,14 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         for ((run, block), wanted) in blocks {
             let held = recording.run(run)?;
-            let block_first = held.first_hour + (block * UNIT_ORDINALS) as i32;
-            let block_last = (block_first + UNIT_ORDINALS as i32 - 1).min(held.first_hour + held.ordinals as i32 - 1);
+            let block_first = (i64::from(held.first_hour) + i64::from(block) * i64::from(UNIT_ORDINALS)) as i32;
+            let block_last = (i64::from(block_first) + i64::from(UNIT_ORDINALS) - 1)
+                .min(i64::from(held.first_hour) + i64::from(held.ordinals) - 1) as i32;
             let valid_floor = match recording.table_coverage(self.series.table.index(), run) {
-                replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => held.first_hour + ordinal as i32,
+                replay_recording::columnar_frames::TableCoverage::WithheldBefore { ordinal, .. } => (i64::from(held.first_hour) + i64::from(ordinal)) as i32,
                 _ => held.first_hour,
             };
-            let from = (block_first - 1).max(valid_floor);
+            let from = (i64::from(block_first) - 1).max(i64::from(valid_floor)) as i32;
             let mut keys: Vec<u128> = wanted.iter().map(|(_, part, _)| part.key).collect();
             keys.sort_unstable();
             keys.dedup();
@@ -1035,7 +1049,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 });
                 if self.series.drops && hour > whole_first && first == hour && found > 0 {
                     let (_, before_last, before) = runs[found - 1];
-                    if let (Some(before), true) = (before, before_last + 1 == hour)
+                    if let (Some(before), true) = (before, i64::from(before_last) + 1 == i64::from(hour))
                         && value < before
                     {
                         out[at].drop = Some(SeriesDrop { hour, before_raw: before.to_string(), after_raw: value.to_string() });
@@ -1119,7 +1133,7 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    fn key_runs(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::Runs>> {
+    pub fn key_runs(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::Runs>> {
         let recording = self.query.replay.recording();
         let Some(parts) = self.series.parts.filter(|_| dashboard_declare::absent_is_zero(self.series.table)) else {
             return read::runs(recording, run, self.series.table, self.source, Some(keys), from, to);
@@ -1815,6 +1829,19 @@ impl<'q, 'a> Line<'q, 'a> {
         let patterns = self.drop_patterns(tags, self.query.timeline.first, last)?;
         let counts = self.drops_log()?.counts(&patterns, tags.len(), first, last, bin_hours)?;
         Ok(counts.into_iter().map(|counts| (counts.before, counts.bins)).collect())
+    }
+
+    pub fn drop_interval_count(&self, country: &Country, from: i32, to: i32) -> io::Result<u64> {
+        if from > to {
+            return Ok(0);
+        }
+        let patterns = self.drop_patterns(std::slice::from_ref(country), from, to)?;
+        if patterns.is_empty() {
+            return Ok(0);
+        }
+        let coarse = log::bin_for(i64::from(to) - i64::from(from) + 1, 256);
+        let bins = self.drops_log()?.bins(&patterns, from, to, coarse)?;
+        Ok(bins.into_iter().flatten().map(|(_, count)| count).sum())
     }
 
     pub fn page<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, cursor: u64, size: u32) -> io::Result<SeriesEventPage> {

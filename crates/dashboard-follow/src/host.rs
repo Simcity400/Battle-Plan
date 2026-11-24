@@ -278,11 +278,13 @@ impl StepProduct {
         let mut lanes = self.lanes.clone();
         for wanted in read.iter().filter(|wanted| host.held.get(wanted.table) == Some(&true)) {
             match lanes.iter_mut().find(|lane| lane.table == wanted.table) {
-                Some(lane) if wanted.columns.iter().all(|column| lane.columns.contains(column)) => {}
+                Some(lane) if wanted.columns.iter().all(|column| lane.columns.contains(column)) && (!wanted.keyed || lane.keyed) && (!wanted.hourly || lane.hourly) => {}
                 Some(lane) => {
                     lane.columns.extend(&wanted.columns);
                     lane.columns.sort_unstable();
                     lane.columns.dedup();
+                    lane.keyed |= wanted.keyed;
+                    lane.hourly |= wanted.hourly;
                 }
                 None => lanes.push(wanted.clone()),
             }
@@ -723,12 +725,12 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
             (self.anchored)(&self.owner, anchor);
             self.playhead().epoch()
         });
-        let epoch = self.playhead().epoch();
-        reads.anchor(epoch, anchor.seek);
+        let epoch_u64 = self.playhead().epoch();
+        reads.anchor(epoch_u64, anchor.seek);
         drop(reads);
         {
             let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
-            let epoch = epoch as u32;
+            let epoch = epoch_u64 as u32;
             let previous = panels.pace.replace((anchor.playing, anchor.speed));
             panels.stamp.2 = epoch;
             let different_seek = panels.stamp.3 != anchor.seek;
@@ -739,6 +741,17 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
                     shown.data = None;
                     shown.pushed = None;
                 }
+            }
+            let head = self.playhead().head(Instant::now());
+            let mut reseed = false;
+            for product in panels.products.values_mut() {
+                if product.seed.is_some() || (!anchor.playing && (different_seek || anchor.sought || !product.joined)) {
+                    product.seed = Some((epoch_u64, head));
+                    reseed = true;
+                }
+            }
+            if reseed {
+                self.needs_seed.store(true, Ordering::Release);
             }
         }
         self.driver_gate.wake();

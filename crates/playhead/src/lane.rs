@@ -667,12 +667,14 @@ impl Lane {
         }
         let last = self.pages.runs()[self.run].hours() - 1;
         let target = (i64::from(to) - i64::from(self.game(0))).clamp(0, i64::from(last)) as u32;
+        let hourly = hours.is_some();
         let stop = if target >= next { self.advance(target, true, hours)? } else { Stop::Reached };
         if let Some(passage) = &mut self.passage {
             let first = self.pages.runs()[self.run].first_hour;
             passage.write(&mut out.passing, self.keyed, &self.cells, &self.columns, &self.inserts, &self.deletes, |hour| first + hour as Hour)?;
         }
         self.finish(out)?;
+        out.hourly = hourly;
         if stop == Stop::Packed {
             out.set_renumber(self.cells.rows());
             self.pack()?;
@@ -856,6 +858,9 @@ impl Lane {
                 changed.slots.iter().for_each(|&slot| unmark(marks, slot));
             }
             written.clear();
+            if !changed.slots.is_sorted() {
+                changed.slots.sort_unstable();
+            }
             changed.fill(cells.column(column).expect("a selected column"))?;
         }
         if lived && !crossed {
@@ -979,6 +984,9 @@ fn hour_changes(out: &mut Vec<Changes>, table: usize, columns: &[usize], keyed: 
             }
         }
         changed.slots.iter().for_each(|&slot| unmark(marks, slot));
+        if !changed.slots.is_sorted() {
+            changed.slots.sort_unstable();
+        }
         changed.fill(cells.column(changed.column()).expect("a selected column"))?;
     }
     for &(at, slot, key) in deleted {

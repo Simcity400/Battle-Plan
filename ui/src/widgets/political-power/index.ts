@@ -1,9 +1,10 @@
 import { createElement } from 'react';
 import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
 import CountryChip from '../../dashboard/CountryChip';
-import MeasureWidget from '../country-measure/MeasureWidget';
-import type { MeasureConfig } from '../country-measure/MeasureWidget';
+import { POLITICAL_POWER_DECLARATION } from '../../families/time-chart/declaration.ts';
+import TimeChartHost from '../../families/time-chart/TimeChartHost.tsx';
 
-const config: MeasureConfig = { measure: 'politicalPower', title: 'Political power', noun: 'political power', unit: 'PP' };
-
-export default { countryChip: CountryChip, render: (props: WidgetProps) => createElement(MeasureWidget, { ...props, config }) } satisfies WidgetRenderer;
+export default {
+  countryChip: CountryChip,
+  render: (props: WidgetProps) => createElement(TimeChartHost, { ...props, declaration: POLITICAL_POWER_DECLARATION }),
+} satisfies WidgetRenderer;

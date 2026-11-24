@@ -59,6 +59,13 @@ pub fn typescript_contract() -> String {
         dashboard_query::tile::TileMarks::decl(),
         dashboard_query::tile::TileLine::decl(),
         dashboard_query::tile::SeriesTileReply::decl(),
+        dashboard_query::head::HeadOpenBin::decl(),
+        dashboard_query::head::HeadValue::decl(),
+        dashboard_query::head::HeadMarks::decl(),
+        dashboard_query::head::HeadLine::decl(),
+        dashboard_query::head::HeadRosterEntry::decl(),
+        dashboard_query::head::HeadRoster::decl(),
+        dashboard_query::head::SeriesHeadReply::decl(),
         dashboard_query::series::NavigationKey::decl(),
         dashboard_query::series::SeriesRead::decl(),
         dashboard_query::series::SeriesLineAsk::decl(),
@@ -179,6 +186,7 @@ pub fn series_walk() -> dashboard_query::fields::Walk {
     use dashboard_query::fields::{Leaf, Walk};
     dashboard_query::series::params_walk()
         .join(dashboard_query::tile::params_walk())
+        .join(dashboard_query::head::params_walk())
         .join(dashboard_land::products::army::series_params_walk())
         .join(dashboard_players::products::player_apm::head::tile_ask_walk())
         .join(dashboard_world::products::scalars::world_tension::step_walk())
