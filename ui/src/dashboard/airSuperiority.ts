@@ -5,7 +5,6 @@ import { formatAmount, rescale } from '../charts/valueAxis.ts';
 import { liveKey } from '../charts/live.ts';
 import type { LiveValues } from '../charts/live';
 import { int, object } from './validation.ts';
-import { countryLineColours } from './countryLineColours.ts';
 import type { AirCell, AirChoicesReply, AirRegion, AirSide, AirSuperiorityReply } from '../generated/dashboard';
 
 export type AirState = 'known' | 'unknown' | 'inactive' | 'filtered' | 'no-air-object' | 'gap';
@@ -40,46 +39,6 @@ export function airSideName(side: AirSide, country: (tag: string) => string, fac
   const tag = side.tag ?? side.leader;
   const name = tag ? country(tag) : 'Coalition (name not recorded)';
   return side.key.startsWith('w:') && side.coBelligerents > 0 ? `${name} and allies` : name;
-}
-
-export function sideColourKey(side: AirSide): string {
-  if (side.anchor) return `anchor:${side.anchor.tag}@${side.anchor.hour}`;
-  const tag = side.tag ?? side.leader;
-  return tag ? `tag:${tag}` : `side:${side.key}`;
-}
-
-export function resolveSideColours(
-  sides: readonly AirSide[],
-  anchorColor: (tag: string, hour: number) => [number, number, number] | null,
-  tagColor: (tag: string) => [number, number, number] | null,
-  viewpointTag: string | null,
-  surface: string,
-  fixed: boolean,
-): Map<string, string> {
-  const entries = new Map<string, { color: [number, number, number] }>();
-  for (const side of sides) {
-    if (side.colourFaction) continue;
-    const id = sideColourKey(side);
-    if (entries.has(id)) continue;
-    const anchor = side.anchor ? anchorColor(side.anchor.tag, side.anchor.hour) : null;
-    const tag = side.tag ?? side.leader;
-    const color = anchor ?? (tag ? tagColor(tag) : null);
-    if (color) entries.set(id, { color });
-  }
-  if (viewpointTag) {
-    const color = tagColor(viewpointTag);
-    if (color) entries.set(`country:${viewpointTag}`, { color });
-  }
-  return countryLineColours([...entries.keys()].sort(), entries, surface, fixed);
-}
-
-export function sideColor(
-  side: AirSide,
-  factionColours: ReadonlyMap<string, string>,
-  fallbackColours: ReadonlyMap<string, string>,
-  muted: string,
-): string {
-  return side.colourFaction ? factionColours.get(side.colourFaction) ?? muted : fallbackColours.get(sideColourKey(side)) ?? muted;
 }
 
 const NOT_FOLLOWED = 'Not followed';

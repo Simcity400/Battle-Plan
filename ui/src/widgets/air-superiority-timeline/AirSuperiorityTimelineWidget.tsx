@@ -26,13 +26,13 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { airSummaryTooltip, airTooltip, momentRows, regionLabel, sideOrder, validateAirSuperiority } from '../../dashboard/airSuperiority';
 import { airMode, airParams, useAirLooks } from '../../dashboard/useAirSuperiority';
 import type { AirRankingReply, AirSide, AirTimelineReply } from '../../generated/dashboard';
-import { STEP, activeLegendCutoff, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, mergeTimelineSides, tileLegendChangeHours, timelineViewpointSide, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
+import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
 import { OPTIONS } from './definition';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import './airSuperiorityTimeline.css';
 import { productRequest } from '../../dashboard/request.ts';
 
-const EMPTY_HOURS: readonly number[] = [];
+const NO_SIDES: AirSide[] = [];
 const RANKING_MOVES = ['lastHour'] as const;
 
 export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
@@ -82,29 +82,18 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const head = useHeadProduct(runtime, gate, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
   const moment = momentParams ? head.data : undefined;
   const newest = head.current;
-  const headHour = moment ? head.at : null;
-  const axisOffset = track?.axisOffset ?? 0;
-  const displayedRegionIds = useMemo(() => regions.map(region => region.id), [regions]);
-  const changeHours = useMemo(() => following ? tileLegendChangeHours(replies, displayedRegionIds) : EMPTY_HOURS, [following, replies, displayedRegionIds]);
-  const followCutoff = useAtHead(runtime.clock, active && following, hour => {
-    const now = Math.min(Math.floor(hour) + axisOffset, lastHour);
-    return runtime.clock.getSnapshot().playing ? activeLegendCutoff(now, changeHours, headHour) : now;
-  });
-  const throughHour = following ? followCutoff : lastHour;
   const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);
-  const sides = useMemo(() => mergeTimelineSides(replies, { regions: displayedRegionIds, throughHour, moment, momentHour: headHour }),
-    [replies, displayedRegionIds, throughHour, moment, headHour]);
-  const viewpointSide = useMemo(() => timelineViewpointSide(replies, { regions: displayedRegionIds, throughHour, moment, momentHour: headHour }),
-    [replies, displayedRegionIds, throughHour, moment, headHour]);
-  const allSides = useMemo(() => {
+  const sides = useMemo(() => {
     const held: AirSide[] = [];
-    for (const reply of replies) if (reply) held.push(...reply.sides);
-    if (moment) held.push(...moment.sides);
-    if (viewpointSide && !held.includes(viewpointSide)) held.push(viewpointSide);
+    for (const side of [...replies.flatMap(reply => reply?.sides ?? NO_SIDES), ...(moment?.sides ?? NO_SIDES)]) if (!held.some(known => known.key === side.key)) held.push(side);
     return held;
-  }, [replies, moment, viewpointSide]);
-  const lookHour = following && Number.isFinite(throughHour) ? throughHour : lastRead;
-  const air = useAirLooks(props, data ? { sides, viewpoint: null, viewpointSide, allSides } : undefined, lookHour, mode);
+  }, [replies, moment]);
+  const viewpoint = useMemo(() => {
+    const side = data?.viewpoint == null ? null : data.sides[data.viewpoint];
+    const at = side ? sides.findIndex(held => held.key === side.key) : -1;
+    return at < 0 ? null : at;
+  }, [data, sides]);
+  const air = useAirLooks(props, data ? { sides, viewpoint } : undefined, lastRead, mode);
   const { looks, tokens } = air;
   const joined = useMemo(() => joinTiles(replies, spans, looks, regions), [replies, spans, looks, regions]);
   const { rows, periods } = joined;
@@ -117,6 +106,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
     },
     subscribe: live.subscribe,
   } : undefined, [moment, data, live, looks, regions, head.shownAt, newest]);
+  const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo<LiveHead | undefined>(() => track && widget.time.mode !== 'pin'
     ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined, [track, widget.time.mode, runtime.clock, axisOffset]);
   const playhead = !track || !window ? null : widget.time.mode === 'pin' ? window.lastHour : Math.floor(runtime.clock.getSnapshot().position + axisOffset);
