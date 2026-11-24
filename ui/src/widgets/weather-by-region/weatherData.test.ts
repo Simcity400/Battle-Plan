@@ -55,6 +55,11 @@ test('a modifier is its sampled value; a day without one is unknown, never zero;
 test('the asked window keeps whole blocks while days fit, else asks its own days folded to the pixels; regions filter by choice', () => {
   const branch = { firstHour: 0, lastHour: 100_000 };
   assert.deepEqual(weatherWindow(branch, [2_200, 2_300], 400), { first: 2_160, last: 4_319, width: 90 });
+  assert.deepEqual(weatherWindow(branch, [2_200, 2_300], 400, 100_000), { first: 2_160, last: 4_319, width: 90 });
+  assert.deepEqual(weatherWindow(branch, [2_200, 2_300], 400, 2_300), { first: 2_160, last: 2_300, width: 6 },
+    'snapping never pushes the asked window past the playhead ceiling');
+  assert.deepEqual(weatherWindow(branch, [0, 50_003], 256, 50_003), { first: 0, last: 50_003, width: 256 },
+    'folded windows stop at the playhead hour instead of the end of the day');
   assert.deepEqual(weatherWindow(branch, [0, 99_999], 256), { first: 0, last: 100_000, width: 256 }, 'whole days, within the branch');
   assert.deepEqual(shownRegions(reply, ['2']).map(region => region.name), ['Sea']);
   assert.equal(shownRegions(reply, []).length, 3);

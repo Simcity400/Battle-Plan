@@ -18,13 +18,14 @@ export const DAY_HOURS = 24;
 const BLOCK_HOURS = 90 * 24;
 const dayOf = (hour: number) => Math.floor(hour / DAY_HOURS);
 
-export function weatherWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number) {
+export function weatherWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number, limit = branch.lastHour) {
+  const cap = Math.min(branch.lastHour, limit);
   if (dayOf(extent[1]) - dayOf(extent[0]) + 1 <= pixels) {
     const first = Math.max(branch.firstHour, Math.floor(extent[0] / BLOCK_HOURS) * BLOCK_HOURS);
-    const last = Math.min(branch.lastHour, Math.ceil((extent[1] + 1) / BLOCK_HOURS) * BLOCK_HOURS - 1);
-    return { first, last, width: dayOf(last) - dayOf(first) + 1 };
+    const last = Math.min(cap, Math.ceil((extent[1] + 1) / BLOCK_HOURS) * BLOCK_HOURS - 1);
+    return { first, last, width: Math.max(1, dayOf(last) - dayOf(first) + 1) };
   }
-  return { first: Math.max(branch.firstHour, dayOf(extent[0]) * DAY_HOURS), last: Math.min(branch.lastHour, (dayOf(extent[1]) + 1) * DAY_HOURS - 1), width: pixels };
+  return { first: Math.max(branch.firstHour, dayOf(extent[0]) * DAY_HOURS), last: Math.min(cap, (dayOf(extent[1]) + 1) * DAY_HOURS - 1), width: pixels };
 }
 
 const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'

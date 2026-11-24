@@ -73,10 +73,16 @@ const addExact = (left: bigint, right: bigint) => left + right;
 
 export interface Part { key: string; label: string }
 export interface MonthPart { key: string; value: number; raw: bigint }
-export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[] }
+export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[]; unretained?: boolean }
 export interface MonthBars { periods: MonthPeriod[]; parts: Part[]; first: number; last: number }
 
 const plotted = (raw: bigint, measure: Measure) => measure === 'manpower' ? Number(raw) : fixedNumber(String(raw), 5);
+
+function measureUnavailable(reply: Pick<ArmyLossesData, 'availability'>, measure: Measure, ledger: Ledger): boolean {
+  if (reply.availability.armies !== null) return true;
+  if (measure === 'manpower') return reply.availability.manpower !== null;
+  return reply.availability.months !== null || (ledger === 'enemy' ? reply.availability.enemyEquipment !== null : reply.availability.ownEquipment !== null);
+}
 
 export function monthBars(reply: ArmyLossesData, measure: Measure, stack: ManpowerStack | EquipmentStack, ledger: Ledger,
   firstHour: number, lastHour: number, limit: number): MonthBars {
@@ -135,10 +141,18 @@ export function monthBars(reply: ArmyLossesData, measure: Measure, stack: Manpow
   const parts: Part[] = kept.map(key => ({ key, label: labels.get(key) ?? key }));
   if (folded.size) parts.push({ key: OTHER, label: 'Other' });
   const part = (key: string, raw: bigint): MonthPart => ({ key, value: plotted(raw, measure), raw });
+  const unavailable = measureUnavailable(reply, measure, ledger);
   const periods: MonthPeriod[] = [];
   for (let month = first; month <= last; month++) {
     const firstOf = firstHourOfMonth(month), lastOf = firstHourOfMonth(month + 1) - 1;
-    if (!known.has(month) || unknown.has(month)) { periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true }); continue; }
+    if (unknown.has(month) || (!known.has(month) && unavailable)) {
+      periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true });
+      continue;
+    }
+    if (!known.has(month)) {
+      periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unretained: true });
+      continue;
+    }
     const shown = values.get(month) ?? new Map<string, bigint>();
     let other = 0n;
     for (const [key, value] of shown) if (folded.has(key)) other = sum(other, value);
@@ -166,6 +180,7 @@ export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measur
   colour: (key: string) => string): TooltipContent {
   const title = monthLabel(Number(period.key));
   if (period.unknown) return { title, subtitle: caption, rows: [{ label: 'Not recorded', tone: 'muted' }] };
+  if (period.unretained) return { title, subtitle: caption, rows: [{ label: 'Not in the game’s Combat Log', tone: 'muted' }] };
   const labels = new Map(parts.map(part => [part.key, part.label]));
   const rows: TooltipRow[] = period.parts.map(part => ({ label: labels.get(part.key) ?? part.key, swatch: colour(part.key), value: formatAmount(part.raw, measure) }));
   const total = period.parts.reduce((sum, part) => (measure === 'manpower' ? addManpower : addExact)(sum, part.raw), 0n);

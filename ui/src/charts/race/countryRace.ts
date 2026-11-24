@@ -59,6 +59,18 @@ export function countryRaceReadHour(tag: string, moment: number, hours?: Readonl
   return readHour ? readHour(tag, moment) : hours ? hours.get(tag) ?? null : moment;
 }
 
+export function countryRaceLookHours(tags: readonly string[], view: string, linesView: boolean, moment: number,
+  labelHours: ReadonlyMap<string, number>, countryLookHours?: ReadonlyMap<string, number>,
+  readHour?: (tag: string, hour: number) => number | null): ReadonlyMap<string, number> | undefined {
+  if (readHour) return new Map(tags.flatMap(tag => {
+    const read = readHour(tag, linesView ? labelHours.get(tag) ?? moment : moment);
+    return read === null ? [] : [[tag, read] as const];
+  }));
+  if (view === 'race') return countryLookHours;
+  if (!linesView || !labelHours.size) return undefined;
+  return new Map(tags.map(tag => [tag, labelHours.get(tag) ?? moment] as const));
+}
+
 export function countryRacePickTag(view: string, lines: readonly CountryRaceLine[], mixTag?: string): string | null {
   return view === 'mix' ? mixTag ?? null : lines.length === 1 ? lines[0].tag : null;
 }

@@ -2,7 +2,7 @@ import type { Gate } from '../../dashboard/regionGate';
 import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
-import { drawLineSummary } from '../../charts/chartSummary';
+import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import TimeChart from '../../charts/TimeChart';
@@ -34,6 +34,7 @@ export default function PairHistory({ widget, runtime, active, pair, gate, hour 
       const summary = series.summaryOf(keyId(key));
       if (summary) drawLineSummary(ctx, frame, chartTokens, summary, tokens.accent, true, state.playhead ?? null);
     },
+    extent: x => { const summary = series.summaryOf(keyId(key)); return summary ? summaryExtent(summary, x, null) : null; },
   })), [keys, series.summaryOf, tokens.accent]);
   const chartData = useMemo<ChartData>(() => ({ revision: () => [series.revision()], subscribe: series.subscribe }), [series.revision, series.subscribe]);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;

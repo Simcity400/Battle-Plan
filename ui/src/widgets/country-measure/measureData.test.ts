@@ -56,6 +56,11 @@ test('group members draw only while they belong', () => {
   const humansGap = { ...groups, unobserved: { humans: [{ firstHour: 190, lastHour: 200 }], factions: [], wars: [] } };
   assert.deepEqual(resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'end', aggregate: false }, [], humansGap, 200).tags, ['GER']);
   assert.deepEqual(resolveCountries({ kind: 'selected' }, ['GER'], undefined, 0).tags, ['GER']);
+  assert.deepEqual(resolveCountries({ kind: 'all' }, ['GER'], undefined, 200), {
+    tags: [], membership: null, unobserved: [], dropped: 0, known: resolveCountries({ kind: 'selected' }, ['GER'], undefined, 0).known,
+    reason: null, top: 0xffff_ffff,
+  });
+  assert.equal(resolveAny({ kind: 'all' }, ['GER'], undefined, 200, 50).top, 50);
 });
 
 test('political and command power offer every chosen country without a widget limit', () => {

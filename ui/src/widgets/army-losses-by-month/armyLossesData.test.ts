@@ -25,16 +25,25 @@ const reply = (): ArmyLossesData => ({ hour: firstHourOfMonth(M + 3), tag: 'GER'
   emptyMonths: [], unknownMonths: [], availability: { armies: null, manpower: null, months: null, ownEquipment: null, enemyEquipment: null }, warnings: [] });
 const span = [firstHourOfMonth(M), firstHourOfMonth(M + 3) + 5] as const;
 
-test('channels stack Ground, Air and Navy signed, and missing months are unknown', () => {
+test('channels stack Ground, Air and Navy signed, and months absent from a complete combat log are neither unknown nor zero', () => {
   const bars = monthBars(reply(), 'manpower', 'channel', 'combat', span[0], span[1], 10);
   assert.deepEqual(bars.parts.map(part => part.label), ['Ground', 'Air', 'Navy']);
   assert.equal(bars.periods.length, 4);
   assert.deepEqual(bars.periods[0].parts.map(part => part.value), [95, 20, 3], 'only counted armies; a negative correction is kept');
   assert.deepEqual(bars.periods[0].values, [95, 20, 3], 'the column bands are the parts, in order');
-  assert.deepEqual(bars.periods[1].values, [], 'an unknown month has no bands');
-  assert.equal(bars.periods[1].unknown, true, 'a month with no retained entry is never zero');
+  assert.deepEqual(bars.periods[1].values, [], 'an unretained month has no bands');
+  assert.equal(bars.periods[1].unknown, undefined, 'a month absent from a complete combat log is not marked Not recorded');
+  assert.equal(bars.periods[1].unretained, true);
+  assert.deepEqual(monthTooltip(bars.periods[1], bars.parts, 'manpower', 'Manpower lost', null, () => '').rows,
+    [{ label: 'Not in the game’s Combat Log', tone: 'muted' }]);
   assert.deepEqual(bars.periods[2].parts.map(part => part.value), [7, 0, 0]);
-  assert.equal(bars.periods[3].unknown, true);
+  assert.equal(bars.periods[3].unknown, undefined);
+  assert.equal(bars.periods[3].unretained, true);
+  const missingTable = { ...reply(), availability: { ...reply().availability, manpower: 'table not recorded' } };
+  const unavailableBars = monthBars(missingTable, 'manpower', 'channel', 'combat', span[0], span[1], 10);
+  assert.equal(unavailableBars.periods[1].unknown, true, 'when the table itself is unavailable, absent months stay unknown');
+  assert.deepEqual(monthTooltip(unavailableBars.periods[1], unavailableBars.parts, 'manpower', 'Manpower lost', null, () => '').rows,
+    [{ label: 'Not recorded', tone: 'muted' }]);
 });
 
 test('army-group stacks use the current parent, an independent bucket and an explicit unresolved one', () => {
@@ -53,7 +62,10 @@ test('attrition adds its three modes, and recovery stays its own ledger', () => 
   assert.deepEqual(attrition.periods[0].parts, [{ key: JSON.stringify(['archetype', 'rifle']), value: 3, raw: 300000n }]);
   const recovered = monthBars(reply(), 'equipment', 'type', 'recovered', span[0], span[1], 10);
   assert.deepEqual(recovered.periods[0].parts, [{ key: JSON.stringify(['archetype', 'rifle']), value: 9, raw: 900000n }]);
-  assert.equal(monthBars(reply(), 'equipment', 'type', 'combat', span[0], span[1], 10).periods[0].unknown, true);
+  assert.equal(monthBars(reply(), 'equipment', 'type', 'combat', span[0], span[1], 10).periods[0].unknown, undefined);
+  assert.equal(monthBars(reply(), 'equipment', 'type', 'combat', span[0], span[1], 10).periods[0].unretained, true);
+  const missingOwn = { ...reply(), availability: { ...reply().availability, ownEquipment: 'not recorded' } };
+  assert.equal(monthBars(missingOwn, 'equipment', 'type', 'combat', span[0], span[1], 10).periods[0].unknown, true);
 });
 
 test('many parts fold the smallest into Other without losing their amount', () => {

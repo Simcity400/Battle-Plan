@@ -298,6 +298,7 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   if (factionTotals && selection.kind === 'group' && selection.aggregate && selection.group.type === 'faction') {
     return { ...none, reason: null, factionId: selection.group.id };
   }
+  if (selection.kind === 'all') return { ...none, reason: null, top: Math.max(1, Math.min(max, 0xffff_ffff)) };
   if (selection.kind !== 'group') {
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
     return { ...none, tags: tags.slice(0, max), dropped: Math.max(0, tags.length - max), reason: tags.length ? null : CHOOSE };

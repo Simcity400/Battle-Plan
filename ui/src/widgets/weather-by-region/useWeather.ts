@@ -22,9 +22,10 @@ export function weatherShow(widget: WidgetSpec): { show: WeatherShow; chosen: st
   return { show, chosen: options.modifier ? contentKey(String(options.modifier)) : null };
 }
 
-export function weatherRequest(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number) {
+export function weatherRequest(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number,
+  limit?: number) {
   const { show, chosen } = weatherShow(widget);
-  const window = track && extent ? weatherWindow(track.branch, extent, pixels) : null;
+  const window = track && extent ? weatherWindow(track.branch, extent, pixels, limit) : null;
   const span = window && window.first <= window.last ? gate.span(window.first, window.last) : null;
   if (!track || !window || !span) return null;
   const asked = show === 'modifiers' ? 'modifier' : show;
@@ -43,13 +44,14 @@ function useWindowWidth(): number {
   return width;
 }
 
-export function useWeather(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, extent: readonly [number, number] | null, pixels: number | null) {
+export function useWeather(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, extent: readonly [number, number] | null, pixels: number | null,
+  limit?: number) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const { show, chosen } = weatherShow(widget);
   const window = useWindowWidth();
   const gate = useGate(runtime, widget, SPEC, active);
-  const product = useProduct<WeatherReply>(runtime.client, weatherRequest(gate, widget, track, extent, pixels ?? window), active, validateWeather, track?.source);
+  const product = useProduct<WeatherReply>(runtime.client, weatherRequest(gate, widget, track, extent, pixels ?? window, limit), active, validateWeather, track?.source);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, show, chosen]);
   const kept = useRef<{ client: unknown; scope: string; data: WeatherReply } | null>(null);
   if (product.data) kept.current = { client: runtime.client, scope, data: product.data };
@@ -73,7 +75,7 @@ export function useWeatherInView(widget: WidgetSpec, runtime: WidgetRuntime, act
   }, [owner]);
   const current = view?.owner === owner ? view : null;
   const asked: [number, number] | null = extent && current ? [Math.max(extent[0], current.from), Math.min(extent[1], current.to)] : null;
-  const weather = useWeather(widget, runtime, active, asked && asked[0] <= asked[1] ? asked : extent, current?.pixels ?? null);
+  const weather = useWeather(widget, runtime, active, asked && asked[0] <= asked[1] ? asked : extent, current?.pixels ?? null, extent?.[1]);
   return { ...weather, onSummaryView };
 }
 

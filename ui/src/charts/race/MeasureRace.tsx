@@ -419,7 +419,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     navigation={raceView === 'lines' && top == null ? series : undefined} onReachHour={raceView === 'lines' ? onReach : undefined}
     onPick={parts && breakdown ? openDrill : onPick} parts={partList} raceLegendParts={splitting ? partList : []} partsLabel={parts?.label}
     labels={{ race: hour => `${label}, ${dayLabel(hour)}`, lines: `${label} over time` }}
-    lineEmpty={{ icon, message: 'No countries to draw. Choose countries in the widget settings.' }} notRecorded={notRecorded}
+    lineEmpty={top != null && !rankedLines.data ? undefined : { icon, message: 'No countries to draw. Choose countries in the widget settings.' }} notRecorded={notRecorded}
     resetKey={resetKey}
     presentation={{ exact: true, held: false, lineColourHours: 'labels', windowedLegend: true, linePadding: CHART_LAYOUT.countryEndLabels,
       raceEmptyState: false, resetTimeView: true }}

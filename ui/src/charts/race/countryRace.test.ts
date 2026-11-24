@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours } from './countryRace.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceLookHours, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours } from './countryRace.ts';
 import { barExtent, selectRaceRow, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
@@ -208,3 +208,9 @@ test('a stack changing at every read fills as one shape per stretch, never as se
   assert.ok(joined[0].hours.at(-1)! < joined[1].hours[0]);
 });
 
+test('summary-only lines fall back to the view moment for country looks instead of passing an empty map', () => {
+  assert.equal(countryRaceLookHours(['GER', 'ITA'], 'lines', true, 500, new Map()), undefined);
+  assert.deepEqual([...countryRaceLookHours(['GER', 'ITA'], 'lines', true, 500, new Map([['GER', 400]]))!], [['GER', 400], ['ITA', 500]]);
+  const raceHours = new Map([['GER', 300]]);
+  assert.equal(countryRaceLookHours(['GER'], 'race', false, 500, new Map(), raceHours), raceHours);
+});

@@ -172,18 +172,18 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   else if (data.absent) main = <WidgetState kind="unavailable" message={nameDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`} detail={nameDetail} />;
   else if (data.availability.armies || data.availability.manpower && measure === 'manpower')
     main = <WidgetState kind="unavailable" message="The combat log wasn’t recorded at this time." detail={nameDetail} />;
-  else if (!bars.periods.some(period => !period.unknown))
+  else if (!bars.periods.some(period => !period.unknown && !period.unretained))
     main = <WidgetState kind="empty" message={`${nameDetail ? 'No recorded army losses' : `${countryName} has no recorded army losses`}${following ? ' yet' : ''}.`} detail={nameDetail} />;
   else {
     charted = true;
     main = <div className="army-losses-chart">
-      <TimeChart label={`${caption} per month`} extent={[first, widget.time.mode === 'range' && window ? Math.floor(window.lastHour) : track.branch.lastHour]}
+      <TimeChart label={`${caption} per month`} extent={[first, widget.time.mode === 'range' && window ? Math.floor(window.lastHour) : pinned ? Math.max(first, data.hour) : track.branch.lastHour]}
         branchStart={track.branch.firstHour} playhead={pinned ? hour : null} liveHead={liveHead} playback="cursor"
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)} data={chartData}
         fitValues={span => span ? [Math.min(0, span[0]), Math.max(0, span[1])] : null}
         active={active} revision={`${structureHour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
         tooltip={at => { const period = monthAt(at); return period && liveData ? monthTooltip(period, liveData.read().bars.parts, measure, caption, pinned ? liveData.read().data.hour : null, colour) : null; }}
-        onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
+        onPick={at => { const period = monthAt(at); if (period && !period.unknown && !period.unretained) pick(Math.floor(at)); }}
         onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.floor(at))])} />
     </div>;
   }

@@ -10,7 +10,7 @@ import HeatMatrix from '../../charts/heat/HeatMatrix';
 import type { MatrixAxisItem, MatrixCell } from '../../charts/heat/HeatMatrix';
 import { signedColor } from '../../charts/heat/matrix';
 import { dayLabel } from '../../charts/draw';
-import { drawLineSummary } from '../../charts/chartSummary';
+import { drawLineSummary, summaryExtent } from '../../charts/chartSummary';
 import { jumpItem } from '../../charts/jump';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer, ChartData } from '../../charts/TimeChart';
@@ -75,6 +75,7 @@ function PairHistory({ runtime, gate, track, pair: chosen, hour, active, followi
       const summary = series.summaryOf(keyId(key));
       if (summary) drawLineSummary(ctx, frame, tokens, summary, looks.colour(index ? 'second' : 'first'), true, state.playhead ?? null, index ? { dash: SECONDARY_DASH } : {});
     },
+    extent: x => { const summary = series.summaryOf(keyId(key)); return summary ? summaryExtent(summary, x, null) : null; },
   })), [keys, series.summaryOf, looks]);
   const chartData = useMemo<ChartData>(() => ({ revision: () => [series.revision()], subscribe: series.subscribe }), [series.revision, series.subscribe]);
   const valueAt = (index: number, at: number) => {
