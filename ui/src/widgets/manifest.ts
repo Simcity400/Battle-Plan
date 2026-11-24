@@ -39,6 +39,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'minefields': { load: () => import('./minefields') },
   'national-focus': { load: () => import('./national-focus') },
   'national-spirits': { load: () => import('./national-spirits') },
+  'navy-size': { load: () => import('./navy-size') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },

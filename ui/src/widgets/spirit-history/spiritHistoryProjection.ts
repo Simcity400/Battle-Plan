@@ -8,11 +8,10 @@ import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBou
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
-import { spirits, spiritsShown, type SpiritSort } from '../national-spirits/spiritsData.ts';
+import { spirits, spiritsShown } from '../national-spirits/spiritsData.ts';
 import { OPTIONS } from './definition.ts';
 
 export interface SpiritHistoryOptions {
-  readonly sort: SpiritSort;
   readonly showEnded: boolean;
   readonly iconsOnBars: boolean;
   readonly firstHour: number;
@@ -49,7 +48,7 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     if (!reply) return timelineModel(base);
     const nextChangeAt = nextBoundaryAfter(boundaries(reply), hour);
     const gaps = clipSpansToHour(reply.unobserved, hour);
-    const seen = spiritsShown(spirits({ ...reply, spans: boundedRuns(reply.spans, hour) }), hour, opt.sort, opt.showEnded, gaps);
+    const seen = spiritsShown(spirits({ ...reply, spans: boundedRuns(reply.spans, hour) }), hour, opt.showEnded, gaps);
     if (!seen.length) {
       const classified = new Set(reply.ideas.filter(info => info.category).map(info => info.token));
       const unclassified = reply.spans.some(span => span.firstHour <= hour && !classified.has(span.token));
@@ -145,7 +144,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   }),
   projection: spiritHistoryProjection,
   projectionOptions: (ctx, extra) => ({
-    sort: (ctx.options.sort as SpiritSort) ?? 'gained',
     showEnded: ctx.options.ended !== 'hidden',
     iconsOnBars: ctx.options.iconsOnBars !== false,
     firstHour: extra.extent[0],

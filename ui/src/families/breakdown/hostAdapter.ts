@@ -37,8 +37,6 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'breakdown',
-      kind: ctx.kind,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

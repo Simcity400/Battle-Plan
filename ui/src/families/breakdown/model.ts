@@ -1,9 +1,10 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix } from '../../shell/appearance/color.ts';
+import { tintColour } from '../../shell/appearance/color.ts';
 import type { BoundedReadView, FamilyTheme } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
 import { buildTooltipContent, type TooltipListItem } from '../host/tooltips.ts';
+import { formatScalar, formatShare } from '../valueFormat.ts';
 import type { BreakdownViewMode } from './options.ts';
 
 export interface BreakdownPart {
@@ -84,28 +85,10 @@ export const COMPARISON_KEY = '__comparison__';
 
 const TOOLTIP_PARTS = 8;
 
-export function formatShare(share: number | null | undefined): string {
-  if (share == null || !Number.isFinite(share) || share < 0) return '';
-  const pct = share * 100;
-  if (pct === 0) return '0%';
-  if (pct < 0.05) return '<0.1%';
-  if (pct >= 99.95) return '100%';
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  return `${pct.toFixed(1)}%`;
-}
-
 export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   if (part.color) return part.color;
   if (part.neutral) return theme.grey;
   return colour(theme.surface, part.ordinal);
-}
-
-export function tintColour(hex: string, amount: number): string {
-  return mix(hex, '#ffffff', amount);
-}
-
-export function shadeColour(hex: string, amount: number): string {
-  return mix(hex, '#000000', amount);
 }
 
 export function childTint(parent: string, child: BreakdownPart, theme: FamilyTheme, tints: readonly number[]): string {
@@ -211,7 +194,7 @@ export function buildBreakdownTooltip(
     items.push({ label: level.total.verb, value: withUnit(part.exact ?? part.text, unit), swatch, strong: true });
     if (!level.total.atLeast && part.share != null) items.push({ label: 'Share', value: formatShare(part.share) });
     if (!level.total.atLeast && parent && part.parentShare != null) items.push({ label: `Share of ${parent.name}`, value: formatShare(part.parentShare) });
-    if (part.count !== undefined && part.count > 0) items.push({ label: part.countLabel ?? 'Count', value: part.count.toLocaleString('en-US') });
+    if (part.count !== undefined && part.count > 0) items.push({ label: part.countLabel ?? 'Count', value: formatScalar(part.count, 'integer') });
   }
   if (part.partial && part.partialReason) items.push({ label: 'Coverage', value: part.partialReason, tone: 'muted' });
   if (part.detailRows) items.push(...part.detailRows);

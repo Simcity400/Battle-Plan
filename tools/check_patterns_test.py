@@ -402,6 +402,34 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/draw/kit.ts": "export function computeTimeAxisTicks() { return []; }\n",
         })[0], 0)
 
+    def test_family_colour_literals_are_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/table/cellPainters.ts": "const c = '#e5484d';\nconst g = `rgba(${r}, 0, 0, 0.5)`;\n",
+            "ui/src/widgets/foo/fooProjection.ts": "const s = 'hsl(200, 50%, 50%)';\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-colour-literal", out)
+        self.assertIn("ui/src/charts/palette.ts", out)
+        self.assertEqual(check({}, {
+            "ui/src/charts/palette.ts": "export const RED = '#e5484d';\n",
+            "ui/src/shell/appearance/color.ts": "export const f = () => `rgba(0, 0, 0, 1)`;\n",
+            "ui/src/draw/kit.ts": "const c = '#111111';\n",
+            "ui/src/families/table/tableFamily.test.ts": "const c = '#e5484d';\n",
+        })[0], 0)
+
+    def test_family_locale_string_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/widgets/foo/fooProjection.ts": "import { usNumber } from '../../charts/numberFormat.ts';\nconst f = new Intl.NumberFormat('en-US');\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-locale-string", out)
+        self.assertIn("ui/src/families/valueFormat.ts", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/valueFormat.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/families/table/tableFamily.test.ts": "const s = count.toLocaleString('en-US');\n",
+        })[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,7 @@ import type {
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import {
+  familyBinding,
   lazyActionKeys,
   type FamilyArtDemand,
   type FamilyContextHit,
@@ -533,7 +534,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     const staticPanels = cur.staticSources?.panels;
     const staticAnswers = cur.staticSources?.answers;
-    const binding = curAdapter.buildBinding({
+    const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
       options: cur.options,

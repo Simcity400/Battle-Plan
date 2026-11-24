@@ -132,7 +132,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
   ctx.rect(0, viewTop, layout.width, viewH);
   ctx.clip();
 
-  const trackFill = tokens.dark ? 'rgba(245, 245, 245, 0.045)' : 'rgba(15, 23, 42, 0.05)';
+  const trackFill = tokens.partsTrack;
   const treeStroke = tokens.hairlineStrong;
 
   for (let at = firstRowFrom(layout.rows, scrollTop - 2); at < layout.rows.length; at++) {

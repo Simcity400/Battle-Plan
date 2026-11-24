@@ -1,16 +1,16 @@
 import { contrastInkForFill } from '../../draw/kit.ts';
+import { shadeColour } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { formatShare } from '../valueFormat.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
   childTint,
   COMPARISON_KEY,
-  formatShare,
   PARTIAL_KEY,
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,
   rowsBelow,
-  shadeColour,
   type BreakdownComparison,
   type BreakdownPart,
   type BreakdownTotal,

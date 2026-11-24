@@ -407,16 +407,6 @@ export class IdentityIndex {
     this.resolveChanges++;
   }
 
-  addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
-    const id = identityKeyString(key);
-    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < run.firstHour || item.firstHour > run.lastHour);
-    kept.push(run);
-    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
-    this.entityRuns.set(id, kept);
-    this.entityFailures.delete(id);
-    this.resolveChanges++;
-  }
-
   replaceEntityRuns(key: EntityIdentityKey, from: number, to: number, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
     const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < from || item.firstHour > to);

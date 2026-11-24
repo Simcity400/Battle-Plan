@@ -13,14 +13,14 @@ import type {
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionIds } from '../../families/regionTokens.ts';
-import { formatDateParts } from '../../families/valueFormat.ts';
+import { formatDateParts, formatScalar } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
   RegionalWeatherColumnRegion,
   RegionalWeatherReply,
   WeatherReadout,
 } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
+import { surfaceMix } from '../../shell/appearance/color.ts';
 import { OPTIONS, type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
@@ -39,13 +39,11 @@ export function weatherShow(options: Readonly<Record<string, unknown>>): Weather
 }
 
 export function temperatureText(raw: number): string {
-  const value = raw / FIXED;
-  return `${value < 0 ? '−' : ''}${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`;
+  return formatScalar(raw / FIXED, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' });
 }
 
 export function modifierText(raw: number): string {
-  const value = (raw / FIXED) * 100;
-  return `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
+  return formatScalar((raw / FIXED) * 100, { decimals: 0, maxDecimals: 1, percent: true, signed: true });
 }
 
 interface Palette {
@@ -61,7 +59,7 @@ function palette(reply: RegionalWeatherReply, surface: string): Palette {
   reply.flags.forEach((item, ordinal) => flag.set(item.id, colour(surface, ordinal)));
   return {
     flag,
-    track: mix(surface, '#f5f5f5', 0.04),
+    track: surfaceMix(surface, 0.04),
     cold: readableColour(CHART_MEASURE_COLOURS.temperatureCold, surface),
     warm: readableColour(CHART_MEASURE_COLOURS.temperatureWarm, surface),
     ramp: readableColour(CHART_MEASURE_COLOURS.weatherModifier, surface),

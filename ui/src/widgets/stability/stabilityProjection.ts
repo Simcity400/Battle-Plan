@@ -23,7 +23,7 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
@@ -69,8 +69,7 @@ export interface StabilityOptions {
 
 
 function formatPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 1, percent: true });
 }
 
 function resolveMarkerTitle(m: StabilityRawMarker, readView: BoundedReadView, limitHour: number): string {
@@ -190,7 +189,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const countryColor = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
+      const countryColor = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;

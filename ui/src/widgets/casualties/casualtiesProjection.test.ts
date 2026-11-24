@@ -4,7 +4,7 @@ import { assertBarsModelValid, formatBarsValueField, type BarsDataRow } from '..
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { SeriesStateReply } from '../../generated/dashboard';
-import { casualtiesButterflyProjection, casualtiesRaceProjection, type CasualtiesOptions } from './casualtiesProjection.ts';
+import { casualtiesButterflyDeclaration, casualtiesButterflyProjection, casualtiesRaceProjection, type CasualtiesOptions } from './casualtiesProjection.ts';
 
 const identity: IdentityProvider = {
   resolve(kind, key, atHour) {
@@ -38,7 +38,7 @@ const panels = (patch: Record<string, SeriesStateReply> = {}) => new Map<string,
 }));
 
 const view = (map = panels()) => createBoundedReadView({ hour: displayedHour(500), panels: map, identity });
-const BUTTERFLY: CasualtiesOptions = { view: 'butterfly', includeUnknown: false, chosen: null };
+const BUTTERFLY: CasualtiesOptions = { view: 'butterfly', includeUnknown: false, chosen: null, membership: null };
 
 test('the butterfly keeps the product rank, puts casualties taken left and dealt right, and leaves the unrecorded last', () => {
   const model = casualtiesButterflyProjection.project(view(), BUTTERFLY);
@@ -70,4 +70,42 @@ test('a chosen country the product does not answer is drawn last as not recorded
   const rows = casualtiesButterflyProjection.project(view(), { ...BUTTERFLY, chosen: ['GER', 'FIN'] }).rows as BarsDataRow[];
   assert.equal(rows[rows.length - 1]!.key, 'FIN');
   assert.equal(rows[rows.length - 1]!.left?.value.value.kind, 'notRecorded');
+});
+
+type Ctx = Parameters<typeof casualtiesButterflyDeclaration.sources>[0];
+const ctxOf = (countries: Record<string, unknown>): Ctx => ({
+  track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+  branch: { id: '1' },
+  options: {},
+  countries: { all: false, top: null, every: [], tags: [], membership: null, ...countries },
+}) as unknown as Ctx;
+
+function askedAt(ctx: Ctx, name: string, hour: number): Readonly<Record<string, unknown>> | null {
+  const read = casualtiesButterflyDeclaration.sources(ctx, { following: false, staticSpan: null }).entries.find(entry => entry.name === name)!.read;
+  assert.equal(read.shape, 'point');
+  return read.shape === 'point' ? read.buildExactParams!(read.params!, hour as never, 'static') : null;
+}
+
+test('under the default Top selection the detail measures are read for every country, and an unread detail panel is loading, not missing', () => {
+  assert.equal(casualtiesButterflyDeclaration.countries?.mode === 'multi' && casualtiesButterflyDeclaration.countries.everyOnTop, true,
+    'the host lists every country when Top is chosen');
+  const listed = ctxOf({ top: 10, every: ['GER', 'SOV'] });
+  assert.deepEqual((askedAt(listed, 'dealt', 500) as { reads: unknown }).reads, [{ country: 'GER', hour: 500 }, { country: 'SOV', hour: 500 }]);
+  assert.equal(askedAt(ctxOf({ top: 10 }), 'dealt', 500), null, 'nothing is asked with an empty country list');
+  const rank = casualtiesButterflyDeclaration.sources(listed, { following: false, staticSpan: null }).entries.find(entry => entry.name === 'rank')!.read;
+  assert.equal(rank.shape === 'point' && rank.provenInterval, undefined, 'a Top answer holds for its own hour until the product proves more');
+  const rankOnly = view(new Map([['rank', reply('dealtAndTaken', [['SOV', 900], ['GER', 700]])]]));
+  const model = casualtiesButterflyProjection.project(rankOnly, casualtiesButterflyDeclaration.projectionOptions(ctxOf({ top: 10 })));
+  assert.deepEqual(model.rows, [], 'recorded casualties are not drawn as missing while their details load');
+  assert.equal(model.empty, undefined);
+});
+
+test('a faction member that joins after the displayed hour is neither asked for nor drawn', () => {
+  const ctx = ctxOf({ tags: ['GER', 'ITA'], membership: { GER: [[0, 900]], ITA: [[600, 900]] } });
+  assert.deepEqual((askedAt(ctx, 'rank', 500) as { reads: unknown }).reads, [{ country: 'GER', hour: 500 }]);
+  assert.deepEqual((askedAt(ctx, 'taken', 700) as { reads: unknown }).reads, [{ country: 'GER', hour: 700 }, { country: 'ITA', hour: 700 }]);
+  const before = ctxOf({ tags: ['GER', 'FIN'], membership: { GER: [[0, 900]], FIN: [[600, 900]] } });
+  const shown = (casualtiesButterflyProjection.project(view(), casualtiesButterflyDeclaration.projectionOptions(before)).rows as BarsDataRow[]).map(row => row.key);
+  assert.equal(shown.includes('FIN'), false, 'a member from tomorrow is not drawn today');
+  assert.equal(casualtiesButterflyProjection.nextChange?.(view(), casualtiesButterflyDeclaration.projectionOptions(before)), 600);
 });

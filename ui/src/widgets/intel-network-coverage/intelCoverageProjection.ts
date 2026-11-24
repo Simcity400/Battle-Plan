@@ -4,8 +4,9 @@ import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageCell, IntelCoverageMeasure, IntelCoverageReply } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
+import { surfaceMix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
 export const INTEL_TOP_DEFAULT = 12;
@@ -17,7 +18,7 @@ export interface IntelCoverageProjectionOptions {
 }
 
 export function coverageText(raw: number | bigint, scale: number | bigint, measure: IntelCoverageMeasure): string {
-  if (measure === 'covered') return Number(raw).toLocaleString('en-US');
+  if (measure === 'covered') return formatScalar(raw, 'integer');
   return `${Math.round((Number(raw) / Number(scale || 1)) * 100)}%`;
 }
 
@@ -44,7 +45,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   if (displayed.length < 2) {
     return emptyModel(hour, { empty: displayed.length === 1 ? 'No intel networks of or in this country at this date.' : 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
   }
-  const grey = mix(options.surface, '#f5f5f5', 0.08);
+  const grey = surfaceMix(options.surface, 0.08);
   const accent = readableColour(CHART_MEASURE_COLOURS.intelCoverage, options.surface);
   const entities: MatrixAxisEntity[] = displayed.map(country => {
     const tag = country.tag ?? null;

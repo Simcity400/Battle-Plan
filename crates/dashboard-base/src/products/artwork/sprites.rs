@@ -14,6 +14,10 @@ use ts_rs::TS;
 
 pub struct SpriteArtwork;
 
+pub fn unit_icon_key(unit: &str) -> String {
+    format!("GFX_unit_{unit}_icon_medium")
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpriteFrame {

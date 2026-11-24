@@ -1,4 +1,5 @@
 import type { Breakdown, BreakdownPart as WirePart } from '../../generated/dashboard';
+import { formatScalar } from '../valueFormat.ts';
 import { PATH, type BreakdownPart, type BreakdownTotal } from './model.ts';
 
 export interface BreakdownWords {
@@ -41,9 +42,9 @@ export function breakdownParts(breakdown: Breakdown, words: BreakdownWords): rea
 }
 
 function hours(count: number): string {
-  if (count < 48) return `${count.toLocaleString('en-US')} ${count === 1 ? 'hour' : 'hours'} not recorded`;
+  if (count < 48) return `${formatScalar(count, 'integer')} ${count === 1 ? 'hour' : 'hours'} not recorded`;
   const days = Math.floor(count / 24);
-  return `${days.toLocaleString('en-US')} ${days === 1 ? 'day' : 'days'} not recorded`;
+  return `${formatScalar(days, 'integer')} ${days === 1 ? 'day' : 'days'} not recorded`;
 }
 
 export function breakdownTotal(breakdown: Breakdown, words: BreakdownWords): BreakdownTotal {
