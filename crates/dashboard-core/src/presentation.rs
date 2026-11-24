@@ -232,7 +232,7 @@ pub struct Admitted {
     content_work: bool,
     recorded: bool,
     cancel: Arc<dyn Cancel>,
-    mount: Option<Result<Arc<Presented>, (io::ErrorKind, String)>>,
+    mount: Option<Result<Arc<Presented>, Arc<io::Error>>>,
 }
 
 static RECORDED: Presentation = Presentation {
@@ -318,14 +318,14 @@ impl Admitted {
     pub fn set_mount(&mut self, mount: &io::Result<Arc<Presented>>) {
         self.mount = Some(match mount {
             Ok(presented) => Ok(Arc::clone(presented)),
-            Err(error) => Err((error.kind(), error.to_string())),
+            Err(error) => Err(Arc::new(crate::duplicate(error))),
         });
     }
 
     pub fn mount(&self) -> Option<io::Result<Arc<Presented>>> {
         self.mount.as_ref().map(|mount| match mount {
             Ok(presented) => Ok(Arc::clone(presented)),
-            Err((kind, message)) => Err(io::Error::new(*kind, message.clone())),
+            Err(error) => Err(crate::duplicate(error)),
         })
     }
 }
@@ -362,9 +362,8 @@ impl<T: Clone> Config<T> {
 
     pub fn update<R>(&self, change: impl FnOnce(&mut T) -> R) -> R {
         let mut state = self.lock();
-        let result = change(&mut state.value);
         state.generation += 1;
-        result
+        change(&mut state.value)
     }
 
     pub fn close(&self) {

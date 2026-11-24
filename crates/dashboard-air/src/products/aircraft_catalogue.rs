@@ -1,6 +1,5 @@
 use content_reader_mesh::mesh::MeshProducts as _;
 
-use replay_frame::frame::DecodedFrame;
 use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue, View}, products::{ContentOptions, LoadContext, Product, check_reply_budget}};
 use content_reader_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
 use content_reader_layers::{LayerRole, ResolvedLayers};
@@ -347,9 +346,8 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                     continue;
                 };
                 for frame in frames {
-                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
-                        break;
-                    };
+                    let frame = frame?;
+                    let decoded = &frame.decoded;
                     if !dashboard_text::metadata::slot_read(
                         replay.format,
                         &decoded.metrics,

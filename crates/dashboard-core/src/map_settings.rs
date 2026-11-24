@@ -59,6 +59,8 @@ pub struct Game {
     pub audio: MapAudio,
 }
 
+const SIZE_LIMIT: usize = 4 * 1024 * 1024;
+
 fn path() -> io::Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("LOCALAPPDATA")
@@ -96,17 +98,23 @@ impl Store {
         }
     }
     fn load_from(path: &std::path::Path) -> io::Result<Self> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error),
         };
-        if bytes.len() > 4 * 1024 * 1024 {
-            return Err(crate::invalid("Map settings exceed their size limit"));
+        let damaged = |why: &dyn std::fmt::Display| crate::invalid(format!("{}: {why}", path.display()));
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut io::Read::take(file, SIZE_LIMIT as u64 + 1), &mut bytes)?;
+        if bytes.len() > SIZE_LIMIT {
+            return Err(damaged(&"map settings exceed their size limit"));
         }
-        let entries: BTreeMap<String, CampaignMapSettings> = serde_json::from_slice(&bytes)?;
-        for entry in entries.values() {
-            entry.validate().map_err(crate::invalid)?;
+        let entries: BTreeMap<String, CampaignMapSettings> =
+            serde_json::from_slice(&bytes).map_err(|error| damaged(&error))?;
+        for (key, entry) in &entries {
+            entry
+                .validate()
+                .map_err(|why| damaged(&format_args!("{key}: {why}")))?;
         }
         Ok(Self {
             entries,
@@ -217,7 +225,7 @@ impl Store {
             let mut entries = saved.entries;
             entries.insert(key, settings);
             let bytes = serde_json::to_vec(&entries)?;
-            if bytes.len() > 4 * 1024 * 1024 {
+            if bytes.len() > SIZE_LIMIT {
                 return Err(crate::invalid("Map settings exceed their size limit"));
             }
             Ok(receipt.replace(path, |out| io::Write::write_all(out, &bytes))?.with(entries, ()))

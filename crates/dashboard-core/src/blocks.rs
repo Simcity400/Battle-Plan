@@ -7,9 +7,8 @@ use replay_data::rows::TableId;
 use replay_frame::frame::RecordedFrame;
 use std::{
     io,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Condvar, Mutex, MutexGuard, OnceLock,
+        Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -67,7 +66,7 @@ enum Sent {
 }
 
 struct Feed {
-    received: mpsc::Receiver<Sent>,
+    received: Option<mpsc::Receiver<Sent>>,
     held: Option<Sent>,
     current: Option<usize>,
     broken: Option<io::Error>,
@@ -75,36 +74,53 @@ struct Feed {
 
 impl Feed {
     fn next(&mut self) -> Option<Sent> {
-        self.held.take().or_else(|| self.received.recv().ok())
+        self.held
+            .take()
+            .or_else(|| self.received.as_ref()?.recv().ok())
+    }
+}
+
+struct Close<'a>(&'a RefCell<Feed>);
+
+impl Drop for Close<'_> {
+    fn drop(&mut self) {
+        let mut feed = self.0.borrow_mut();
+        feed.received = None;
+        feed.held = None;
+        feed.current = None;
     }
 }
 
 pub struct BlockHours {
     feed: Rc<RefCell<Feed>>,
     position: usize,
+    ended: bool,
 }
 
 impl Iterator for BlockHours {
-    type Item = ScanHour;
+    type Item = io::Result<ScanHour>;
 
-    fn next(&mut self) -> Option<ScanHour> {
-        let mut feed = self.feed.borrow_mut();
-        if feed.current != Some(self.position) {
+    fn next(&mut self) -> Option<io::Result<ScanHour>> {
+        if self.ended {
             return None;
         }
+        let mut feed = self.feed.borrow_mut();
+        if feed.current != Some(self.position) {
+            self.ended = true;
+            return Some(Err(io::Error::other(
+                "this block's hours were read after the scan moved past them",
+            )));
+        }
         match feed.next() {
-            Some(Sent::Hour(hour)) => Some(*hour),
+            Some(Sent::Hour(hour)) => return Some(Ok(*hour)),
             Some(Sent::Broken(at, error)) if at == self.position => {
                 feed.broken.get_or_insert(error);
-                feed.current = None;
-                None
             }
-            other => {
-                feed.held = other;
-                feed.current = None;
-                None
-            }
+            other => feed.held = other,
         }
+        feed.current = None;
+        self.ended = true;
+        None
     }
 }
 
@@ -122,7 +138,7 @@ pub fn scan_blocks<'a, R>(
     });
     let (sender, received) = mpsc::sync_channel::<Sent>(AHEAD_HOURS);
     let feed = Rc::new(RefCell::new(Feed {
-        received,
+        received: Some(received),
         held: None,
         current: None,
         broken: None,
@@ -137,6 +153,7 @@ pub fn scan_blocks<'a, R>(
             let _core = cores().take();
             walk(replay, walking, tables, cancelled, &sender);
         })?;
+        let _close = Close(&feed);
         let mut next = 0;
         let mut iterate = std::iter::from_fn(|| {
             if next == blocks.len() {
@@ -156,6 +173,7 @@ pub fn scan_blocks<'a, R>(
                             Ok(BlockHours {
                                 feed: Rc::clone(&feed),
                                 position,
+                                ended: false,
                             }),
                         ));
                     }
@@ -177,9 +195,7 @@ pub fn scan_blocks<'a, R>(
             }
         });
         let result = scan(&mut iterate);
-        drop(iterate);
         let broken = feed.borrow_mut().broken.take();
-        drop(feed);
         match (result, broken) {
             (Ok(_), Some(error)) => Err(error),
             (result, _) => result,
@@ -245,131 +261,17 @@ fn walk(
         }
         if let Err(error) = walked {
             if let Some(position) = open {
-                let error = io::Error::new(error.kind(), error.to_string());
-                if sender.send(Sent::Broken(position, error)).is_err() {
+                if sender.send(Sent::Broken(position, crate::duplicate(&error))).is_err() {
                     return;
                 }
             }
             for position in begun..end {
-                let error = io::Error::new(error.kind(), error.to_string());
-                if sender.send(Sent::Failed(position, error)).is_err() {
+                if sender.send(Sent::Failed(position, crate::duplicate(&error))).is_err() {
                     return;
                 }
             }
         }
         at = end;
-    }
-}
-
-pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
-    blocks: Vec<&'a B>,
-    ahead: usize,
-    cancelled: &AtomicBool,
-    read_block: &(dyn Fn(&'a B) -> io::Result<T> + Sync),
-    scan: impl FnOnce(&mut dyn Iterator<Item = (&'a B, io::Result<T>)>) -> io::Result<R>,
-) -> io::Result<R> {
-    let readers = ahead;
-    let state = Ahead {
-        state: Mutex::new(State {
-            taken: 0,
-            handed: 0,
-            stop: false,
-            ahead,
-            reads: engine_allocation::default_vec(blocks.len())?,
-        }),
-        changed: Condvar::new(),
-    };
-    let ahead = &state;
-    let read = |position: usize| {
-        let _core = cores().take();
-        catch_unwind(AssertUnwindSafe(|| read_block(blocks[position])))
-            .unwrap_or_else(|_| Err(io::Error::other("block read failed")))
-    };
-    let cpu_family = replay_frame::cpu::family();
-    thread::scope(|scope| {
-        let _stop = Stop(ahead);
-        for _ in 0..readers.min(blocks.len().saturating_sub(1)) {
-            let priority = job_priority::JobPriority::current();
-            thread::Builder::new().spawn_scoped_carried(scope, || {
-                priority.enter(job_priority::Level::Normal);
-                let _cpu = replay_frame::cpu::scope("scan read-ahead", cpu_family);
-                while let Some(position) = ahead.take(cancelled) {
-                    let result = read(position);
-                    ahead.lock().reads[position] = Some(result);
-                    ahead.changed.notify_all();
-                }
-            })?;
-        }
-        scan(&mut std::iter::from_fn(|| {
-            let mut state = ahead.lock();
-            let position = state.handed;
-            if position == blocks.len() {
-                return None;
-            }
-            let result = if position == state.taken {
-                state.taken += 1;
-                drop(state);
-                let result = read(position);
-                state = ahead.lock();
-                result
-            } else {
-                loop {
-                    if let Some(result) = state.reads[position].take() {
-                        break result;
-                    }
-                    state = ahead.changed.wait(state).unwrap_or_else(|e| e.into_inner());
-                }
-            };
-            state.handed += 1;
-            drop(state);
-            ahead.changed.notify_all();
-            Some((blocks[position], result))
-        }))
-    })
-}
-
-struct State<T> {
-    taken: usize,
-    handed: usize,
-    stop: bool,
-    ahead: usize,
-    reads: Vec<Option<io::Result<T>>>,
-}
-
-struct Ahead<T> {
-    state: Mutex<State<T>>,
-    changed: Condvar,
-}
-
-impl<T> Ahead<T> {
-    fn lock(&self) -> MutexGuard<'_, State<T>> {
-        self.state.lock().unwrap_or_else(|error| error.into_inner())
-    }
-
-    fn take(&self, cancelled: &AtomicBool) -> Option<usize> {
-        let mut state = self.lock();
-        loop {
-            if state.stop || state.taken == state.reads.len() || cancelled.load(Ordering::Acquire) {
-                return None;
-            }
-            if state.taken <= state.handed + state.ahead {
-                state.taken += 1;
-                return Some(state.taken - 1);
-            }
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
-        }
-    }
-}
-
-struct Stop<'a, T>(&'a Ahead<T>);
-
-impl<T> Drop for Stop<'_, T> {
-    fn drop(&mut self) {
-        self.0.lock().stop = true;
-        self.0.changed.notify_all();
     }
 }
 
@@ -420,44 +322,6 @@ mod tests {
     use replay_capture_spool::spool::Record;
     use replay_frame::frame::FrameEncoder;
 
-    #[test]
-    fn read_ahead_keeps_the_callers_job() {
-        use job_priority::JobPriority;
-        use std::{sync::Arc, time::Duration};
-
-        let replay =
-            Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![source(1, 1, None)])]).unwrap();
-        let background = Arc::new(AtomicBool::new(true));
-        JobPriority::run(Arc::clone(&background), || {
-            for expected in [true, false] {
-                background.store(expected, Ordering::Release);
-                let (sent, received) = std::sync::mpsc::channel();
-                let caller = thread::current().id();
-                scan_blocks_by(
-                    vec![&replay.index[0]; 3],
-                    1,
-                    &AtomicBool::new(false),
-                    &|_| {
-                        sent.send((thread::current().id(), JobPriority::current().background()))
-                            .unwrap();
-                        Ok(())
-                    },
-                    |reads| {
-                        let (worker, inherited) =
-                            received.recv_timeout(Duration::from_secs(10)).unwrap();
-                        assert_ne!(worker, caller);
-                        assert_eq!(inherited, expected);
-                        for (_, read) in reads {
-                            read?;
-                        }
-                        Ok(())
-                    },
-                )
-                .unwrap();
-            }
-        });
-    }
-
     fn twelve_blocks() -> Replay {
         let initial = records(1, vec![source(1, 1, None)]);
         let context = initial[..2].to_vec();
@@ -483,10 +347,14 @@ mod tests {
             |reads| {
                 let mut first = reads.next().unwrap().1?;
                 reads.next();
-                Ok(first.next().is_some())
+                Ok(first.next().map(|hour| hour.err().map(|error| error.kind())))
             },
         );
-        assert!(passed_over.unwrap(), "hours skipped by the scan must not read as a finished block");
+        assert_eq!(
+            passed_over.unwrap(),
+            Some(Some(io::ErrorKind::Other)),
+            "hours skipped by the scan must not read as a finished block"
+        );
     }
 
     #[test]
@@ -500,7 +368,11 @@ mod tests {
             |reads| reads.next().unwrap().1,
         )
         .unwrap();
-        assert!(kept.next().is_some(), "a block read after its scan ended must not read as a finished block");
+        assert!(
+            matches!(kept.next(), Some(Err(_))),
+            "a block read after its scan ended must not read as a finished block"
+        );
+        assert!(kept.next().is_none());
     }
 
     #[test]
@@ -516,7 +388,7 @@ mod tests {
             &cancelled,
             |reads| {
                 Ok(reads
-                    .map(|(block, frames)| (block.first_hour, frames.unwrap().next().unwrap().hour))
+                    .map(|(block, frames)| (block.first_hour, frames.unwrap().next().unwrap().unwrap().hour))
                     .collect::<Vec<_>>())
             },
         );

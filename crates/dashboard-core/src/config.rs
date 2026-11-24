@@ -32,7 +32,8 @@ impl Config {
 
     fn load_from(path: &Path) -> io::Result<Self> {
         match fs::read(path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| invalid(format!("{}: {error}", path.display()))),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error),
         }
