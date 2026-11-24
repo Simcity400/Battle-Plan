@@ -19,20 +19,22 @@ import { type TimeChartBinding } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
-import { timeChartLaneView } from './laneView.ts';
+import { timeChartLane } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
-import { formatChartAxisValue, layoutTimeChart } from './layout.ts';
+import { SceneTiles } from '../sceneTiles.ts';
+import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
 import { parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
-import { seriesHeadValue, buildBoundedStack } from './seriesHelpers.ts';
+import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
 
 const measure: MeasureText = (text: string) => text.length * 6.5;
@@ -116,7 +118,7 @@ function laneOn(created: { readonly ctx: Canvas2D }) {
     constructor(width: number, height: number) { this.width = width; this.height = height; }
     getContext() { return created.ctx; }
   };
-  return timeChartLaneView(() => {});
+  return createLaneView(timeChartLane, () => {});
 }
 
 describe('time-chart BoundedSeries & Foundation C integration', () => {
@@ -706,6 +708,36 @@ describe('time-chart picture authority', () => {
     assert.equal(tip?.payload?.note, 'Ongoing gap');
     assert.equal(tip?.payload?.subtitle, `From ${formatDateOnly(H1936 + 300)}`, 'no end after the displayed hour');
   });
+  it('a deselected line leaves the tile cursors, so cycling countries keeps no history behind', () => {
+    const hour = H1936 + 95;
+    const line = (tag: string) => ({ source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
+      buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
+    const tiles = new SceneTiles();
+    const scene = { widget: 1, subs: [], pictures: [], model: null };
+    const held = () => (tiles as unknown as { readonly cursors: ReadonlyMap<string, unknown> }).cursors.size;
+    for (let at = 0; at < 50; at++) tiles.series(scene, { sources: {} }, { tiledBySource: { main: { [`C${at}`]: line(`C${at}`) } } }, hour);
+    assert.equal(held(), 1, 'only the line still selected keeps a cursor');
+    tiles.series(scene, { sources: {} }, {}, hour);
+    assert.equal(held(), 0);
+  });
+  it('a hover reuses the laid-out chart: only end-label fading and the axis labels under the hover tab change', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 900;
+    const line = makeTiledLine('GER', [makeBucket(base, base + 899, 10)]);
+    const series = (id: string, value: number) => ({ id, key: id, name: id, color: '#e3a83b', role: 'primary' as const,
+      bounded: boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(value) }), headValue: value, headHour: hour, endLabel: { value: String(value) } });
+    const model = pictureModel(hour, { series: [series('a', 10), series('b', 20)] });
+    const laid = layoutTimeChart(model, 600, 260, FONT, measure);
+    let measured = 0;
+    const counting = (text: string, font: string) => { measured++; return measure(text, font); };
+    const tick = laid.axisTicks.find(item => item.label !== null && item.hour < hour - 200)!;
+    const hovered = hoverTimeChartLayout(laid, model.hour, FONT, counting, tick.hour, 'a');
+    assert.equal(measured, 1, 'only the hover tab is measured; no series, bucket or label is laid out again');
+    for (const field of ['yTicks', 'markers', 'gaps', 'columns', 'axisCandidates', 'toX'] as const) assert.equal(hovered[field], laid[field], `${field} is the base layout's`);
+    assert.equal(hovered.axisTicks.find(item => item.hour === tick.hour)!.label, null, 'the axis label under the hover tab is hidden');
+    assert.deepEqual(Object.fromEntries(hovered.endLabels.map(label => [label.seriesId, label.faded])), { a: false, b: true }, 'the other series fades');
+    assert.equal(hoverTimeChartLayout(laid, model.hour, FONT, counting, null, null), laid, 'no hover is the base layout itself');
+  });
   it('scales and draws a historical zoom from its own window, never from the current head', () => {
     const base = Math.floor(H1936 / 96) * 96;
     const hour = base + 40 * 24;
@@ -727,16 +759,18 @@ describe('time-chart picture authority', () => {
     const hour = base + 40;
     const line = makeTiledLine('GER', [makeBucket(base, base + 30, 10, 10, 30, 10, base + 30)]);
     const missingHead = boundTiledSeries(line, displayedHour(hour), { headValue: notRecorded('Countries not read at this hour') });
-    assert.equal(seriesHeadValue(missingHead, undefined, 0, 0), null, 'an explicitly missing head stays missing');
+    const headOf = (bounded: ReturnType<typeof boundTiledSeries>) =>
+      headReading(createBoundedReadView({ hour, series: new Map([['main', new Map([['GER', bounded]])]]) }), 'main', { tag: 'GER' }, 0);
+    assert.deepEqual(headOf(missingHead), { missing: 'Countries not read at this hour' }, 'an explicitly missing head stays missing');
     const model = politicalPowerProjection.project(createBoundedReadView({
       hour,
       series: new Map([['main', new Map([['GER', missingHead]])]]),
     }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(model.series[0]!.endLabel, null);
-    assert.deepEqual(model.auditRows, []);
+    assert.deepEqual(model.auditRows?.map(row => `${row.row}=${row.value}`), ['GER=Countries not read at this hour'], 'the audit states the missing head');
 
     const gapAfter = boundTiledSeries({ ...line, missing: [{ firstHour: base + 31, lastHour: hour, reason: 'Recording gap' }] }, displayedHour(hour), {});
-    assert.equal(seriesHeadValue(gapAfter, undefined, 0, 0), null, 'a gap after the last reading leaves the head unknown');
+    assert.equal(headOf(gapAfter), null, 'a gap after the last reading leaves the head unknown, never the last bucket');
 
     const withHead = { id: 'pp', key: 'pp', name: 'PP', color: '#e3a83b', role: 'primary' as const,
       bounded: boundTiledSeries(line, displayedHour(base + 30), { headPoint: { hour: base + 30, value: 35 }, headValue: knownValue(35) }), headValue: 35, headHour: base + 30 };
@@ -831,9 +865,9 @@ describe('time-chart picture authority', () => {
       tiledBySource: { main: { GER: tiled(first, last) } },
     } satisfies TimeChartBinding);
     const surface = { width: 600, height: 240, dpr: 1 };
-    assert.equal(assertQuietFrames(() => timeChartLaneView(() => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
+    assert.equal(assertQuietFrames(() => createLaneView(timeChartLane, () => {}), { label: 'chart', binding: bound(10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
     const held = bound(10, 30);
-    assertFreshPaint(() => timeChartLaneView(() => {}), [
+    assertFreshPaint(() => createLaneView(timeChartLane, () => {}), [
       { label: 'held', binding: held, hour, check: true },
       { label: 'earlier', binding: held, hour: hour - 20, speed: 24, check: true },
       { label: 'back to the head', binding: held, hour, check: true },
@@ -852,7 +886,7 @@ describe('time-chart picture authority', () => {
         const head = bounded?.headValue;
         return {
           kind: 'test-head-index', measureTitle: 'Index', mode: 'lines', hour: readView.hour, extent: [H1936, H1936 + 95], yAxis: { format: 'number' },
-          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head?.kind === 'known' ? String(head.value) : head?.kind === 'notRecorded' ? head.reason : `last bucket ${seriesHeadValue(bounded, undefined, 0, 0)}` }],
+          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head?.kind === 'known' ? String(head.value) : head?.kind === 'notRecorded' ? head.reason : `head ${headValueOf(headReading(readView, 'main', { tag: 'ITA' }, 0))}` }],
         };
       },
     });
@@ -1024,6 +1058,31 @@ describe('several countries, one measure', () => {
     assert.equal(model.series[1]!.color, model.series[0]!.color);
     assert.ok(model.series.every(s => s.endLabel === null), 'end labels off by option');
     assert.deepEqual(model.legend?.map(entry => [entry.label, !!entry.dash]), [['Resistance', false], ['Compliance', true]]);
+  });
+
+  it('audits the plotted heads whatever the end labels show, so a wrong drawn value differs from the exact read', () => {
+    const options = { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: false, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
+    const drawn = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]) }), options);
+    const state = (country: string, raw: string) => ({ country, hour, run: { valueRaw: raw }, missing: null });
+    const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', { decimals: 0, states: [state('A07', '7000'), state('A01', '1500')] }]]) }), options);
+    const rows = (model: typeof drawn) => model.auditRows?.map(row => `${row.row}=${row.value}`);
+    assert.deepEqual(rows(drawn), ['A07=7,000', 'A01=1,000'], 'labels off still audits every plotted head');
+    assert.deepEqual(rows(exact), ['A07=7,000', 'A01=1,500']);
+    assert.notDeepEqual(rows(drawn), rows(exact), 'the wrong drawn value is caught');
+  });
+
+  it('audits a ranked chart from the product’s exact ranked reply and hovers only members at the hovered hour', () => {
+    const reading = (raw: string) => ({ hour, run: { valueRaw: raw }, missing: null });
+    const ranked = { hour, measures: [{ name: 'm', decimals: 0 }], rows: [{ country: 'A09', readings: [reading('9000')] }, { country: 'A02', readings: [reading('2000')] }], refused: null, from: hour, until: hour };
+    const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', ranked]]) }),
+      { tags: [], top: 2, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(exact.auditRows?.map(row => `${row.row}=${row.value}`), ['A09=9,000', 'A02=2,000']);
+
+    const hovers = new Map([['hover', { hour: base + 30, data: { states: [{ country: 'A10', hour: base + 30, run: { valueRaw: '5' }, missing: null }] } }]]);
+    const membership = Object.fromEntries(tags.map(tag => [tag, tag === 'A10' ? [[base, base + 20] as const, [base + 40, base + 95] as const] : [[base, base + 95] as const]]));
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), hovers }),
+      { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(model.series.find(s => s.id === 'A10')!.exact, null, 'not a member at the hovered hour: no reading shown');
   });
 });
 

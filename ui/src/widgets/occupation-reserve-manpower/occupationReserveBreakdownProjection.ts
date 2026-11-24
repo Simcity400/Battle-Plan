@@ -1,5 +1,5 @@
 import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
 import { flagChoiceArt } from '../../families/art/provider.ts';
@@ -14,12 +14,12 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import type { ChartArtSlot, ChartGap, ChartHoverDetail, ChartStackBand } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
-import { wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { formatDateOnly, formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { CountryIdentitiesReply, OccupationReserveReply, ReserveHistoryReply, ReserveSegment } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import {
   holderOf,
+  reserveHistoryProof,
   segmentAt,
   segmentParts,
   sourceTagAt,
@@ -30,6 +30,7 @@ import {
 export interface OccupationReserveHolderChoice {
   readonly tag: string;
   readonly id: number;
+  readonly slot?: number;
 }
 
 export interface OccupationReserveBreakdownOptions {
@@ -59,30 +60,44 @@ function singleCountryKey(ctx: FamilyPlanContext<CountryIdentitiesReply>): strin
     : null;
 }
 
+function slotForCountryId(aux: CountryIdentitiesReply | undefined, countryId: number): number | undefined {
+  if (!aux) return undefined;
+  for (const entry of aux.countries) {
+    const hit = entry.identities.find(item => item.countryId === countryId);
+    if (hit) return hit.slot;
+  }
+  return undefined;
+}
+
 function resolveHolder(ctx: FamilyPlanContext<CountryIdentitiesReply>): OccupationReserveHolderChoice | null {
   const explicit = ctx.options.holder ? holderOf(contentKey(String(ctx.options.holder))) : null;
-  if (explicit) return explicit;
+  if (explicit) {
+    const slot = slotForCountryId(ctx.aux, explicit.id);
+    return slot !== undefined ? { ...explicit, slot } : explicit;
+  }
   const key = singleCountryKey(ctx);
   if (!key) return null;
   const run = ctx.countries.holders?.[key]?.find(item => item.countryId !== undefined);
   if (run && run.countryId !== undefined) {
-    return { tag: run.tag, id: run.countryId };
+    const parsed = countryFromKey(key);
+    const slot = typeof parsed === 'number' ? parsed : slotForCountryId(ctx.aux, run.countryId);
+    return slot !== undefined ? { tag: run.tag, id: run.countryId, slot } : { tag: run.tag, id: run.countryId };
   }
   if (!ctx.aux) return null;
   const parsed = countryFromKey(key);
   if (typeof parsed === 'number') {
     for (const entry of ctx.aux.countries) {
       const hit = entry.identities.find(item => item.slot === parsed);
-      if (hit) return { tag: entry.tag, id: hit.countryId };
+      if (hit) return { tag: entry.tag, id: hit.countryId, slot: hit.slot };
     }
     return null;
   }
   const byTag = ctx.aux.countries.find(entry => entry.tag === parsed);
   const first = byTag?.identities[0];
-  return first ? { tag: byTag.tag, id: first.countryId } : null;
+  return first ? { tag: byTag.tag, id: first.countryId, slot: first.slot } : null;
 }
 
-function latestSourceTagUpTo(history: ReserveHistoryReply, source: number, hour: number): string | null {
+function latestSourceTag(history: ReserveHistoryReply, source: number, hour: number): string | null {
   const exact = sourceTagAt(history, source, hour);
   if (exact !== null) return exact;
   const tags = history.sources.find(item => item.id === source)?.tags ?? [];
@@ -93,16 +108,7 @@ function latestSourceTagUpTo(history: ReserveHistoryReply, source: number, hour:
   return null;
 }
 
-function clipSegments(segments: readonly ReserveSegment[], hour: number): ReserveSegment[] {
-  const out: ReserveSegment[] = [];
-  for (const segment of segments) {
-    if (segment.firstHour > hour) break;
-    out.push(segment.lastHour > hour ? { ...segment, lastHour: hour } : segment);
-  }
-  return out;
-}
-
-function sourcesUpTo(segments: readonly ReserveSegment[]): number[] {
+function sourcesIn(segments: readonly ReserveSegment[]): number[] {
   const peak = new Map<number, number>();
   for (const segment of segments) {
     for (const entry of segment.entries ?? []) {
@@ -115,10 +121,14 @@ function sourcesUpTo(segments: readonly ReserveSegment[]): number[] {
     .map(([source]) => source);
 }
 
-function countryNameAt(readView: BoundedReadView, tag: string | null, atHour: number, fallback: string): string {
-  if (tag === null) return fallback;
-  const who = readView.who('country', tag, Math.min(atHour, readView.hour));
-  return who.name.status === 'ready' ? who.name.value : tag;
+function unresolvedSourceLabel(sourceId: number): string {
+  return `Source #${sourceId} (tag not recorded)`;
+}
+
+function countryNameAt(readView: BoundedReadView, key: string | null, atHour: number, fallback: string): string {
+  if (key === null) return fallback;
+  const who = readView.who('country', key, Math.min(atHour, readView.hour));
+  return who.name.status === 'ready' ? who.name.value : key;
 }
 
 function countryFlagAt(readView: BoundedReadView, tag: string | null, atHour: number): ChartArtSlot | undefined {
@@ -137,7 +147,7 @@ function assignSourceColours(
   const out = new Map<number, string>();
   const bg = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
   const rawRgbs = sources.map((source, index) => {
-    const tag = latestSourceTagUpTo(history, source, hour);
+    const tag = latestSourceTag(history, source, hour);
     const who = tag ? readView.who('country', tag, hour) : null;
     const hex = who?.colour?.status === 'ready'
       ? readableColour(who.colour.value, surface)
@@ -164,6 +174,7 @@ function readExactHover(readView: BoundedReadView): { readonly hour: number; rea
 function buildHoverDetail(
   readView: BoundedReadView,
   holder: OccupationReserveHolderChoice,
+  history: ReserveHistoryReply,
   colours: ReadonlyMap<number, string>,
 ): ChartHoverDetail | null {
   const exact = readExactHover(readView);
@@ -176,8 +187,23 @@ function buildHoverDetail(
       items: [{ label: 'Reserve manpower', missingReason: reply.missing || notRecordedLabel(), tone: 'muted' }],
     };
   }
-  const found = reply.holders.find(item => item.country.id === holder.id) ?? reply.holders[0];
+  const found = reply.holders.find(item => item.country.id === holder.id);
   if (!found) {
+    const segment = segmentAt(history, Math.floor(hour));
+    if (!segment || segment.entries === null) {
+      return {
+        hour,
+        replacesSeries: true,
+        items: [{ label: 'Reserve manpower', missingReason: segment?.unknown ?? notRecordedLabel(), tone: 'muted' }],
+      };
+    }
+    if (!segment.admitted) {
+      return {
+        hour,
+        replacesSeries: true,
+        items: [{ label: 'Reserve manpower', missingReason: 'No occupation settings at this hour', tone: 'muted' }],
+      };
+    }
     return {
       hour,
       replacesSeries: true,
@@ -188,7 +214,7 @@ function buildHoverDetail(
   const negative: TooltipListItem[] = [];
   for (const entry of found.entries) {
     const tag = entry.source.tag;
-    const name = countryNameAt(readView, tag, hour, 'Source country unavailable');
+    const name = countryNameAt(readView, tag, hour, unresolvedSourceLabel(entry.source.id));
     const flagSlot = countryFlagAt(readView, tag, hour);
     const flagUrl = flagSlot?.art.status === 'ready' ? flagSlot.art.url : undefined;
     const swatch = colours.get(entry.source.id);
@@ -226,7 +252,7 @@ function negativeNoteAt(
   if (!negative.length) return null;
   const list = negative.map(entry => {
     const tag = sourceTagAt(history, entry.source, hour);
-    const name = countryNameAt(readView, tag, hour, 'Source country unavailable');
+    const name = countryNameAt(readView, tag, hour, unresolvedSourceLabel(entry.source));
     return `${name} ${formatScalar(entry.amount, 'integer')}`;
   });
   return `Negative entries: ${list.join(' · ')}`;
@@ -238,6 +264,9 @@ export const occupationReserveBreakdownProjection: TimeChartProjection<Occupatio
   variant: 'stacked-area',
   joinMode: 'step',
   measureTitle: 'Reserve manpower by source country',
+  nextChange(readView) {
+    return readView.panel<ReserveHistoryReply>('history')?.nextChange ?? Infinity;
+  },
   project(readView: BoundedReadView, options: OccupationReserveBreakdownOptions) {
     const hour = readView.hour;
     const holder = options.holder;
@@ -276,17 +305,18 @@ export const occupationReserveBreakdownProjection: TimeChartProjection<Occupatio
       };
     }
 
-    const clipped = clipSegments(history.segments, hour);
-    const sources = sourcesUpTo(clipped);
+    const segments = history.segments;
+    const sources = sourcesIn(segments);
     const colours = assignSourceColours(sources, history, readView, hour, options.surface);
-    const hoverDetail = buildHoverDetail(readView, holder, colours);
-    const headSegment = segmentAt({ ...history, segments: clipped }, Math.floor(hour));
+    const hoverDetail = buildHoverDetail(readView, holder, history, colours);
+    const headSegment = segmentAt(history, Math.floor(hour));
     const note = negativeNoteAt(history, headSegment, readView, Math.floor(hour));
-    const holderName = countryNameAt(readView, holder.tag, hour, holder.tag);
+    const holderKey = holder.slot !== undefined ? countryKey(holder.slot) : holder.tag;
+    const holderName = countryNameAt(readView, holderKey, hour, holder.tag);
 
-    const hasRecorded = clipped.some(segment => segment.entries !== null);
+    const hasRecorded = segments.some(segment => segment.entries !== null);
     if (!hasRecorded) {
-      const reason = clipped.find(segment => segment.unknown)?.unknown ?? `Reserve manpower was not recorded for ${holderName} at this date.`;
+      const reason = segments.find(segment => segment.unknown)?.unknown ?? `Reserve manpower was not recorded for ${holderName} at this date.`;
       return {
         kind: 'occupation-reserve-manpower',
         measureTitle: 'Reserve manpower by source country',
@@ -304,6 +334,22 @@ export const occupationReserveBreakdownProjection: TimeChartProjection<Occupatio
     }
 
     if (!sources.length) {
+      if (!headSegment || headSegment.entries === null) {
+        return {
+          kind: 'occupation-reserve-manpower',
+          measureTitle: 'Reserve manpower by source country',
+          mode: 'stack',
+          hour,
+          extent: options.extent,
+          yAxis: baseAxis,
+          series: [],
+          gaps: options.gaps.length > 0 ? options.gaps : undefined,
+          hoverDetail,
+          warnings: history.warnings,
+          empty: { message: headSegment?.unknown ?? notRecordedLabel(), kind: 'unavailable' },
+          auditRows: [],
+        };
+      }
       return {
         kind: 'occupation-reserve-manpower',
         measureTitle: 'Reserve manpower by source country',
@@ -317,7 +363,7 @@ export const occupationReserveBreakdownProjection: TimeChartProjection<Occupatio
         hoverDetail,
         warnings: history.warnings,
         empty: { message: `${holderName} holds no reserve manpower at this date.`, kind: 'empty' },
-        auditRows: [auditRow('__total__', '0')],
+        auditRows: headSegment.admitted ? [auditRow('__total__', '0')] : [],
       };
     }
 
@@ -334,7 +380,7 @@ export const occupationReserveBreakdownProjection: TimeChartProjection<Occupatio
     };
 
     let prevLast: number | null = null;
-    for (const segment of clipped) {
+    for (const segment of segments) {
       if (prevLast !== null && segment.firstHour > prevLast + 1) {
         pushNull(prevLast + 1);
       }
@@ -378,8 +424,8 @@ export const occupationReserveBreakdownProjection: TimeChartProjection<Occupatio
       : null;
 
     const bands: ChartStackBand[] = sources.map((sourceId, index) => {
-      const tag = latestSourceTagUpTo(history, sourceId, hour);
-      const name = countryNameAt(readView, tag, hour, 'Source country unavailable');
+      const tag = latestSourceTag(history, sourceId, hour);
+      const name = countryNameAt(readView, tag, hour, unresolvedSourceLabel(sourceId));
       const flag = countryFlagAt(readView, tag, hour);
       const color = colours.get(sourceId) ?? colour(options.surface, index);
       const headVal = headParts[index];
@@ -450,9 +496,10 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
   },
   sources(ctx: FamilyPlanContext<CountryIdentitiesReply>): SourcePlan {
     const holder = resolveHolder(ctx);
-    const owner = `occupation-reserve:breakdown:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${holder ? `${holder.tag}|${holder.id}` : ''}`;
+    const owner = `occupation-reserve:breakdown:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${holder ? `${holder.slot ?? holder.tag}|${holder.id}` : ''}`;
     if (!holder) return { owner, entries: [], allowEmptyFollow: true };
     const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+    const hoverCountry = holder.slot !== undefined ? holder.slot : countryFromKey(holder.tag);
     return {
       owner,
       entries: [
@@ -461,12 +508,13 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
           ...common,
           read: {
             shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [holder.tag] },
+            coverage: { mode: 'keyed', keys: [holder.slot !== undefined ? countryKey(holder.slot) : holder.tag] },
             product: 'occupation-reserve-history',
             followQuery: null,
             params: { branchId: ctx.branch.id, holder: holder.id },
-            buildSpanParams: params => params,
-            provenInterval: wholeBranchProof,
+            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+            provenInterval: reserveHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateReserveHistory,
           },
         },
@@ -476,7 +524,7 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
           read: {
             shape: 'exact-hover',
             product: 'occupation-reserve-manpower',
-            params: { branchId: ctx.branch.id, countries: [countryFromKey(holder.tag)] },
+            params: { branchId: ctx.branch.id, countries: [hoverCountry] },
             validate: validateOccupationReserve,
           },
         },

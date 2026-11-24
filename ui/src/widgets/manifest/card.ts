@@ -1,8 +1,16 @@
 import { cardHostAdapter } from '../../families/card/hostAdapter.ts';
-import { familyCardLaneView } from '../../families/card/laneView.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
 export const CARD_VIEWS: readonly FamilyViewEntry[] = [
+  {
+    kind: 'faction-upgrades',
+    view: DEFAULT_VIEW,
+    family: 'card',
+    loadSpec: () => import('../faction-upgrades/factionUpgradesProjection.ts').then(m => ({
+      family: 'card', kind: 'faction-upgrades', view: DEFAULT_VIEW,
+      projection: m.factionUpgradesProjection, declaration: m.factionUpgradesDeclaration,
+    })),
+  },
   {
     kind: 'national-focus',
     view: DEFAULT_VIEW,
@@ -45,7 +53,7 @@ export const CARD_VIEWS: readonly FamilyViewEntry[] = [
 
 export const cardFamilyManifest: FamilyManifestModule = {
   family: 'card',
-  laneView: familyCardLaneView,
+  lane: () => import('../../families/card/laneView.ts').then(m => m.cardLane),
   views: CARD_VIEWS,
   hostAdapter: cardHostAdapter,
 };

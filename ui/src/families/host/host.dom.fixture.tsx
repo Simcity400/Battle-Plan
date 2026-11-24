@@ -17,12 +17,14 @@ import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import type { InstalledAction } from '../contract.ts';
-import { familyTableLaneView } from '../table/laneView.ts';
+import { createLaneView } from '../laneRuntime.ts';
+import { tableLane } from '../table/laneView.ts';
 import { tableSettingsOf } from '../table/settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDom.fixture.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
 import TableChrome from '../table/TableChrome.tsx';
 import FamilyHost from './FamilyHost.tsx';
+import type { FamilyStaticSources } from './adapter.ts';
 import '../../styles.css';
 
 const NATIVE = 9;
@@ -107,7 +109,7 @@ function createLane(): LaneWorker {
     },
     {
       views: (_kind, wake) => {
-        const view = familyTableLaneView(wake);
+        const view = createLaneView(tableLane, wake);
         const paint = view.paint.bind(view);
         view.paint = (input, state, content) => {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
@@ -235,7 +237,7 @@ let currentState = {
   genericMounted: false,
   genericBlocked: false,
   genericBodyFocus: false,
-  statics: null as { readonly panels: Readonly<Record<string, unknown>>; readonly hour: number } | null,
+  statics: null as FamilyStaticSources | null,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
@@ -721,7 +723,8 @@ window.hostDom = {
     const frames = async (count: number) => {
       for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     };
-    currentState = { ...currentState, statics: { panels: { main: { round: 0 } }, hour: 40 } };
+    const stamped = (round: number): FamilyStaticSources => ({ stamp: {}, proof: null, panels: { unread: { round } }, hour: 40 });
+    currentState = { ...currentState, statics: stamped(0) };
     renderApp();
     let pipeS = -1;
     await until(() => {
@@ -737,7 +740,7 @@ window.hostDom = {
     staticSupplies = [];
     const rounds = 10;
     for (let round = 1; round <= rounds; round++) {
-      currentState = { ...currentState, statics: { panels: { main: { round } }, hour: 40 } };
+      currentState = { ...currentState, statics: stamped(round) };
       renderApp();
       await frames(2);
     }
@@ -747,6 +750,7 @@ window.hostDom = {
       binds: bindCount,
       staticsSupplied: staticSupplies.filter(item => item.id === pipeS && item.statics).length,
       generationKept: pipeline.binding(pipeS) === generation,
+      mode: `${pipeline.view(pipeS)?.mode} ${pipeline.view(pipeS)?.reason ?? ''}`,
     };
     currentState = { ...currentState, statics: null };
     renderApp();

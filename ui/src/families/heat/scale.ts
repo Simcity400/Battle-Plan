@@ -1,5 +1,5 @@
 import { mix } from '../../shell/appearance/color.ts';
-import { readableColour } from '../../charts/palette.ts';
+import { readableColour, reservedGrey } from '../../charts/palette.ts';
 import type { ArtHandle, BoundedReadView, EntityKind } from '../contract.ts';
 import { flagArtHandle } from '../art/provider.ts';
 
@@ -106,7 +106,7 @@ export function resolveEntityFromReadView(
 
   let color: string | undefined;
   if (identity.colour?.status === 'ready') {
-    color = surface ? readableColour(identity.colour.value, surface) : identity.colour.value;
+    color = surface ? readableOn(identity.colour.value, surface) : identity.colour.value;
   }
 
   let flag: ArtHandle | null | undefined;
@@ -155,9 +155,30 @@ export interface DatedColour {
   readonly through: number;
 }
 
+const HELD_COLOURS = 4096;
+const readable = new Map<string, string>();
+const greys = new Map<string, string>();
+
+function held(cache: Map<string, string>, key: string, make: () => string): string {
+  let made = cache.get(key);
+  if (made === undefined) {
+    if (cache.size >= HELD_COLOURS) cache.clear();
+    cache.set(key, made = make());
+  }
+  return made;
+}
+
+export function readableOn(colour: string, surface: string, minContrast?: number): string {
+  return held(readable, `${colour}|${surface}|${minContrast ?? ''}`, () => readableColour(colour, surface, minContrast));
+}
+
+export function contestedGrey(surface: string, identities: readonly string[]): string {
+  return held(greys, `${surface}|${identities.join(',')}`, () => reservedGrey(surface, identities));
+}
+
 export function countryColourAt(readView: BoundedReadView, key: string, hour: number, surface: string, fallback: string): DatedColour {
   const identity = readView.who('country', key, hour);
-  const colour = identity.colour?.status === 'ready' ? readableColour(identity.colour.value, surface) : fallback;
+  const colour = identity.colour?.status === 'ready' ? readableOn(identity.colour.value, surface) : fallback;
   return { colour, through: identity.validInterval[1] };
 }
 

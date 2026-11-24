@@ -183,7 +183,10 @@ impl<'f> Places<'f> {
     }
 
     fn provinces(&self) -> &HashMap<u32, u32> {
-        self.provinces.get_or_init(|| self.frame.complete::<tables::Provinces>().map(|rows| rows.iter().map(|row| (row.id, row.state)).collect()).unwrap_or_default())
+        self.provinces.get_or_init(|| match self.view(TableId::Provinces) {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<tables::Provinces>().unwrap_or_default().iter().map(|row| (row.id, row.state)).collect(),
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => HashMap::new(),
+        })
     }
 
     fn renames(&self) -> &HashMap<u32, &'f [u8]> {

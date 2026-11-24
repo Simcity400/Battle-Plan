@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
@@ -17,9 +16,12 @@ import {
   missingSpansOf,
   rankEntry,
   rankedOrder,
-  seriesHeadAt,
   spendMarkersOf,
   withinMapOf,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface CommandPowerOptions {
@@ -54,12 +56,19 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
 
     const headByTag = new Map<string, number | null>();
     const ceilingByTag = new Map<string, number | null>();
-    for (let i = 0; i < tags.length; i++) {
-      const tag = tags[i]!;
-      const member = memberAt(options.membership, tag, hour);
-      headByTag.set(tag, member ? seriesHeadAt(readView, 'main', tag, i, 5) : null);
+    const readings: [string, HeadReading | null][] = [];
+    for (const tag of tags) {
+      if (!memberAt(options.membership, tag, hour)) {
+        headByTag.set(tag, null);
+        continue;
+      }
+      const main = headReading(readView, 'main', { tag }, 5);
+      readings.push([tag, main]);
+      headByTag.set(tag, headValueOf(main));
       if (options.showCeiling) {
-        ceilingByTag.set(tag, member ? seriesHeadAt(readView, 'ceiling', tag, i, 5) : null);
+        const ceiling = headReading(readView, 'ceiling', { tag }, 5);
+        readings.push([`${tag}:ceiling`, ceiling]);
+        ceilingByTag.set(tag, headValueOf(ceiling));
       }
     }
 
@@ -160,10 +169,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       series,
       markers: markers.length > 0 ? markers : undefined,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: ordered.slice(0, 8).flatMap(tag => {
-        const v = headByTag.get(tag);
-        return v === null || v === undefined ? [] : [auditRow(tag, formatEndAmount(v))];
-      }),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatEndAmount)),
     };
   },
 });

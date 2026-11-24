@@ -37,6 +37,8 @@ pub struct BreakdownPart {
     #[doc = " Unique among its siblings."]
     pub key: String,
     pub name: String,
+    #[doc = " Why `name` is only an identifier: the recording names it nowhere."]
+    pub name_missing: Option<String>,
     #[doc = " Its place in the recording's own order of the parts at its level: colours follow it, so a"]
     #[doc = " filtered or reordered breakdown keeps them."]
     pub ordinal: u32,
@@ -84,6 +86,7 @@ pub enum Amount {
 pub struct Node {
     pub key: String,
     pub name: String,
+    pub name_missing: Option<String>,
     pub ordinal: u32,
     pub other: bool,
     pub art: Option<SpriteFrame>,
@@ -91,7 +94,12 @@ pub struct Node {
 
 impl Node {
     pub fn new(key: impl Into<String>, name: impl Into<String>, ordinal: u32) -> Self {
-        Self { key: key.into(), name: name.into(), ordinal, other: false, art: None }
+        Self { key: key.into(), name: name.into(), name_missing: None, ordinal, other: false, art: None }
+    }
+
+    pub fn name_missing(mut self, reason: Option<String>) -> Self {
+        self.name_missing = reason;
+        self
     }
 
     pub fn other(mut self) -> Self {
@@ -290,6 +298,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
                 parent_share: share_of(&branch.sum, parent),
                 key: branch.node.key,
                 name: branch.node.name,
+                name_missing: branch.node.name_missing,
                 ordinal: branch.node.ordinal,
                 other: branch.node.other,
                 raw: branch.sum.raw(),

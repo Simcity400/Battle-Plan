@@ -450,6 +450,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         <occupation::detail::OccupationDetail as at_hour::AtHour>::KEY => Ok("No content dependency: occupier totals and collaboration are recorded tables.".into()),
         key if key == dashboard_production::products::stockpile::EquipmentStockpileCatalogue::KEY
             || key == dashboard_production::products::stockpile::EquipmentStockpileChart::KEY
+            || key == dashboard_production::products::stockpile::EquipmentStockpileLines::KEY
             || key == <dashboard_production::products::stockpile::EquipmentStockpileAt as dashboard_base::products::at_hour::AtHour>::KEY
             || key == <dashboard_production::products::stockpile::StockpileArtwork as dashboard_base::products::at_hour::AtHour>::KEY =>
         {
@@ -642,7 +643,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 );
                 match found {
                     FlagSearch::Found { .. } => any = true,
-                    FlagSearch::Unresolvable | FlagSearch::Absent(_) => {}
+                    FlagSearch::Unresolvable | FlagSearch::Refused(_) | FlagSearch::Absent(_) => {}
                 }
             }
         }

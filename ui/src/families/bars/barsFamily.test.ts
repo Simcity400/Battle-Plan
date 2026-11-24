@@ -27,8 +27,9 @@ import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } fro
 import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
+import { barsLane, type FamilyBarsBinding } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
@@ -445,7 +446,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   }
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyBarsLaneView(() => {});
+    const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 0;
     const content = () => `c${++seq}`;
@@ -546,7 +547,7 @@ test('a backward seek drops a cached model from a later hour', () => {
   }
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyBarsLaneView(() => {});
+    const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 0;
     const options: Record<string, never> = {};
@@ -564,8 +565,8 @@ test('a backward seek drops a cached model from a later hour', () => {
   const options: Record<string, never> = {};
   const binding = { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, reducedMotion: true };
   const surface = { width: 480, height: 240, dpr: 1 };
-  assert.equal(assertQuietFrames(() => familyBarsLaneView(() => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
-  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+  assert.equal(assertQuietFrames(() => createLaneView(barsLane, () => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
+  assertFreshPaint(() => createLaneView(barsLane, () => {}), [
     { label: 'before', binding, hour: 5, check: true },
     { label: 'after', binding, hour: 20, speed: 24 },
     { label: 'seek back', binding, hour: 5, check: true },
@@ -582,7 +583,7 @@ test('a backward seek drops a cached model from a later hour', () => {
     nextChange: readView => (readView.hour < 10 ? 10 : Infinity),
   });
   const swapping = { ...binding, kind: 'test-bars-seek-swap', reducedMotion: false };
-  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+  assertFreshPaint(() => createLaneView(barsLane, () => {}), [
     { label: 'swapped later', binding: swapping, hour: 3, speed: 24 },
     { label: 'swapped later', binding: swapping, hour: 20, speed: 24 },
     { label: 'seek back across the swap while playing', binding: swapping, hour: 5, speed: 24, check: true },
@@ -634,7 +635,7 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
   }
   (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyBarsLaneView(() => {});
+    const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     const options: Record<string, never> = {};
     let seq = 0;
@@ -716,4 +717,57 @@ test('at the deepest scroll the extent allows, the last row sits above the axis,
   const lastBottom = layout.rowTops[39]! + layout.rowHeights[39]!;
   assert.ok(lastBottom - deepest <= layout.bodyHeight, 'the last row ends inside the clipped body');
   assert.equal(visibleBarsRange(layout, deepest, 0).last, 40);
+});
+
+test('share rows draw the category legend strip, wrap long category lists cleanly, and draw right-aligned count unit once', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = {
+    form: 'share',
+    hour: h,
+    scaleUnit: 'Battalions',
+    legend: [
+      { key: 'armored', label: 'Armored Battalions', color: '#3b82f6' },
+      { key: 'combat-support', label: 'Combat Support Battalions', color: '#ea580c' },
+      { key: 'infantry', label: 'Infantry Battalions', color: '#16a34a' },
+      { key: 'mobile', label: 'Mobile Battalions', color: '#d97706' },
+      { key: 'mobile-cs', label: 'Mobile Combat Support Battalions', color: '#db2777' },
+      { key: 'support', label: 'Support Companies', color: '#7c3aed' },
+    ],
+    rows: [
+      {
+        kind: 'data',
+        key: 'GER',
+        label: 'German Reich',
+        segments: [
+          { key: 'infantry', label: 'Infantry Battalions', share: 0.7, value: knownValue(280), color: '#16a34a' },
+          { key: 'support', label: 'Support Companies', share: 0.3, value: knownValue(120), color: '#7c3aed' },
+        ],
+        readout: { primary: '400' },
+      },
+    ],
+  };
+  const layout = layoutFamilyBars(model, 840, 390);
+  assert.ok(layout.legendHeight >= 44, 'six long category names wrap onto two legend rows');
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(texts.includes('Armored Battalions'), 'legend includes first category');
+  assert.ok(texts.includes('Support Companies'), 'wrapped legend includes last category');
+  assert.ok(texts.includes('Battalions'), 'legend strip includes count unit once');
+});
+
+test('a bars race view breaks at the exact hour a country enters or leaves selection membership, not midnight', async () => {
+  const { nextSeriesRaceChange } = await import('./seriesRace.ts');
+  const leaveAt = nextSeriesRaceChange(101, {
+    top: null,
+    candidates: ['GER', 'ITA'],
+    membership: { GER: [[100, 102]], ITA: [[100, 200]] },
+  });
+  assert.equal(leaveAt, 103, 'leaves at lastHour + 1 (hour 103), not midnight');
+  const enterAt = nextSeriesRaceChange(101, {
+    top: null,
+    candidates: ['GER', 'ITA'],
+    membership: { GER: [[100, 200]], ITA: [[105, 200]] },
+  });
+  assert.equal(enterAt, 105, 'enters at firstHour (hour 105), not midnight');
 });

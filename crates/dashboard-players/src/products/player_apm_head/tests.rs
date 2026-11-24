@@ -332,3 +332,57 @@ fn multi_hour_apm_tile_preserves_hourly_min_max_endpoints_and_gap_breaks() {
     let tile_reply = tile_from_index(&index, 4, 5, &family, &ask, first, last).unwrap();
     assert!(tile_reply.lines[0].missing.iter().any(|m| m.first_hour == 5 && m.reason == GAP_REASON));
 }
+
+#[test]
+fn apm_head_advances_incrementally_across_sliding_window_and_skips_unchanged_hours() {
+    let index = recording(|hour| (hour % 5) as u64);
+    let mut incremental = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
+        branch_id: "4".into(),
+        group: ApmGroup::Country,
+        tags: None,
+        membership: None,
+        players: Vec::new(),
+        first_hour: 0,
+        last_hour: HOURS - 1,
+        window_hours: 168,
+    })
+    .unwrap();
+    let mut fresh = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
+        branch_id: "4".into(),
+        group: ApmGroup::Country,
+        tags: None,
+        membership: None,
+        players: Vec::new(),
+        first_hour: 0,
+        last_hour: HOURS - 1,
+        window_hours: 168,
+    })
+    .unwrap();
+    let (f0, l0) = incremental.window_at(170).unwrap();
+    incremental.seed_window(f0, l0);
+    let after_seed = incremental.visits();
+    let (f1, l1) = incremental.window_at(171).unwrap();
+    incremental.window_hours.retain(|_, deque| {
+        while deque.front().is_some_and(|&(h, _)| h < f1) {
+            deque.pop_front();
+        }
+        !deque.is_empty()
+    });
+    let slices = incremental.hour_slices(l1);
+    for (series, slice) in slices {
+        incremental.window_hours.entry(series).or_default().push_back((l1, slice));
+    }
+    incremental.cached_window = Some((f1, l1));
+    incremental.cached_whole = incremental.coverage.observed(f1, l1);
+    incremental.rebuild_cached_from_window();
+    let step_visits = incremental.visits() - after_seed;
+    let fresh_map = fresh.amounts(f1, l1);
+    assert_eq!(incremental.cached_entries.len(), fresh_map.len());
+    for (series, _, val) in &incremental.cached_entries {
+        assert_eq!(
+            serde_json::to_value(val).unwrap(),
+            serde_json::to_value(fresh_map[series].amount.value()).unwrap(),
+        );
+    }
+    assert!(step_visits < 20, "single-hour incremental slide should visit O(participants), got {step_visits}");
+}

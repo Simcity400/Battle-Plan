@@ -1,11 +1,10 @@
 import { canvasMeasureText, type MeasureText } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
-import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
+import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
 
@@ -56,14 +55,14 @@ function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayo
   if (!inspect || (hoverHour === null && seriesId === null)) return layout.base;
   const held = hovered.get(layout);
   if (held && held.inspect === inspect) return held.layout;
-  const shown = layoutTimeChart(layout.model, layout.width, layout.height, layout.font, layout.measure, hoverHour, seriesId);
+  const shown = hoverTimeChartLayout(layout.base, layout.model.hour, layout.font, layout.measure, hoverHour, seriesId);
   hovered.set(layout, { inspect, layout: shown });
   return shown;
 }
 
 const shownOf = (frame: ChartFrame) => shownLayout(frame.layout, frame.inspect);
 
-const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> = {
+export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> = {
   family: 'time-chart',
   boundary: (_model, hour) => hour + 1,
   redraw: () => Infinity,
@@ -74,7 +73,7 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
     const model = zoom && projected.view?.x !== zoom ? { ...projected, view: { ...projected.view, x: zoom } } : projected;
     const font = theme.font ?? "'Segoe UI', system-ui, sans-serif";
     const measureText = canvasMeasureText(measure);
-    const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText, null, null);
+    const base = model.empty ? null : layoutTimeChart(model, surface.width, surface.height, font, measureText);
     return { model, base, width: surface.width, height: surface.height, font, measure: measureText };
   },
   paint(ctx, frame) {
@@ -133,7 +132,3 @@ const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLayout> =
   audit: frame => frame.layout.model.auditRows ?? [],
   visibleArt: frame => (frame.layout.base ? collectVisibleChartArt(frame.layout.model, frame.layout.base) : []),
 };
-
-export function timeChartLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(timeChartLane, wake, options);
-}

@@ -83,6 +83,12 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
   return 'loading';
 }
 
+export function forgetProjectionWaiter(onReady: () => void): void {
+  for (const [key, listeners] of waiters) {
+    if (listeners.delete(onReady) && listeners.size === 0) waiters.delete(key);
+  }
+}
+
 export function familyProjectionFailure(family: FamilyId, kind: string, view?: string): string | undefined {
   return failures.get(resolveLookupKey(family, kind, view));
 }
