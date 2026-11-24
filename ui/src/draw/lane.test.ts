@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encode } from '@msgpack/msgpack';
 import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
-import { cropAll, macrotaskSchedule, type WakeChannel } from './laneDispatch.ts';
+import { cropAll, cropSurfaces, macrotaskSchedule, markCanvasPainted, type WakeChannel } from './laneDispatch.ts';
 import { startLaneWorker } from './lane.worker.ts';
 import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
@@ -3536,4 +3536,183 @@ test('a view that is waiting presents nothing and is not painted again until it 
   assert.deepEqual(unmounted, ['loading'], 'the outgoing view is disposed');
   assert.ok(others.length > 0, 'the new view paints');
   assert.ok(others.every(state => !states.includes(state)), 'the new view starts with its own state');
+});
+
+test('N widgets on a lane: when one changes (including same-owner rebind on unchanged widgets and a zero-sized off-screen surface), exactly one crop runs', async () => {
+  const cropped: number[] = [];
+  const view: LaneView = {
+    paint(input): Painted {
+      const surface = input.binding.surfaces[0];
+      if (!surface || surface.width <= 0 || surface.height <= 0) {
+        return { surfaces: [], fields: {}, motion: false, waiting: true };
+      }
+      const val = input.pictures[0]?.parts[0]?.value;
+      const num = val?.kind === 'answer' && val.answer.kind === 'rows' ? String(cellValue(val.answer, 0)) : 'none';
+      const tag = `w${input.widget}:${num}`;
+      return {
+        surfaces: [{ source: { width: surface.width, height: surface.height, widget: input.widget, content: tag } as never, content: tag }],
+        fields: { v: { value: num, content: tag } },
+        motion: false,
+      };
+    },
+  };
+  let lane!: Lane<Fake>;
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+      else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    },
+  });
+  lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    clock: () => 0,
+    views: () => view,
+    crop: async sources => sources.map((source): Fake => {
+      const meta = source as unknown as { widget: number; content: string };
+      cropped.push(meta.widget);
+      return { content: meta.content, width: source.width, closed: false, close() { this.closed = true; } };
+    }),
+    present: presentation => { page.offer(presentation); },
+    release: () => {},
+    fail: reason => { throw new Error(reason); },
+    later: () => {},
+  });
+  for (let i = 1; i <= 5; i++) {
+    const sub = i * 10;
+    lane.follow(sub, 'followed');
+    lane.mount(i, [sub], 'view');
+    lane.bind(i, { generation: 1, owner: `o${i}`, surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null });
+    page.mount(i, { route: ROUTE, lane: 0, owner: `o${i}`, surfaces: [{ install() {}, clear() {} }] });
+    lane.bindRoute(sub, ROUTE, NATIVE, 0);
+  }
+  lane.follow(60, 'followed');
+  lane.mount(6, [60], 'view');
+  lane.bind(6, { generation: 1, owner: 'o6', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null });
+  page.mount(6, { route: ROUTE, lane: 0, owner: 'o6', surfaces: [{ install() {}, clear() {} }] });
+  lane.bindRoute(60, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(10, [1, 2, 3, 4, 5, 6].map(i => ({ id: i * 10, hour: 10, answer: rows([1n], [BigInt(i)]) })), false, NATIVE, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.equal(cropped.length, 5, 'initial frame crops the 5 visible widgets and 0 for the zero-sized widget');
+  assert.notEqual(page.view(6).mode, 'picture', 'zero-sized widget waits without presenting an empty picture');
+  cropped.length = 0;
+
+  page.rebind(2, { owner: 'o2' });
+  lane.bind(2, { generation: 2, owner: 'o2', surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null });
+  lane.receive('follow', message(20, [{ id: 30, hour: 20, answer: rows([1n], [999n]) }], false, NATIVE, 0));
+  page.publish(20, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.deepEqual(cropped, [3], 'only the one changed widget crops; unchanged widgets and same-owner rebind cost 0 crops');
+  assert.equal(page.view(2).mode, 'picture', 'same-owner rebind keeps the installed picture without re-cropping');
+  cropped.length = 0;
+
+  const replacement = { installs: 0, install() { this.installs++; }, clear() {} };
+  page.remount(2, [replacement]);
+  lane.bind(2, { generation: 3, owner: 'o2', surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null }, undefined, false, true);
+  page.publish(20, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.deepEqual(cropped, [2], 'remounting an equal-size page surface forces a fresh crop without kept-content refusal');
+  assert.equal(page.view(2).mode, 'picture');
+  assert.equal(replacement.installs, 1);
+  cropped.length = 0;
+
+  page.rebind(2, { owner: 'o2-next' });
+  lane.bind(2, { generation: 4, owner: 'o2-next', surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null });
+  page.publish(20, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.deepEqual(cropped, [2], 'changing owner forces a fresh crop');
+});
+
+test('cropSurfaces transfers registered canvases synchronously with zero copies, restores on recovery re-crop, handles duplicates, and cleans up on error', async () => {
+  interface MockBmp { pixels: string; width: number; closed: boolean; close(): void }
+  interface MockCanvas {
+    width: number;
+    height: number;
+    pixels: string | null;
+    transfers: number;
+    transferToImageBitmap(): MockBmp;
+  }
+  const makeCanvas = (initial: string): MockCanvas => {
+    const c: MockCanvas = {
+      width: 64,
+      height: 32,
+      pixels: initial,
+      transfers: 0,
+      transferToImageBitmap() {
+        this.transfers++;
+        if (this.pixels === null) throw new Error('blank canvas transferred');
+        const pixels = this.pixels;
+        this.pixels = null;
+        return { pixels, width: this.width, closed: false, close() { this.closed = true; } };
+      },
+    };
+    return c;
+  };
+
+  let fallbacks = 0;
+  const fallback = async (source: { width: number; height: number }): Promise<MockBmp> => {
+    fallbacks++;
+    const c = source as unknown as MockCanvas;
+    if (c.pixels === null) throw new Error('blank canvas in fallback');
+    const bmp: MockBmp = { pixels: c.pixels, width: c.width, closed: false, close() { bmp.closed = true; } };
+    return bmp;
+  };
+
+  const c1 = makeCanvas('v1');
+  let restores = 0;
+  markCanvasPainted(c1, () => { restores++; c1.pixels = 'v1'; });
+
+  const b1 = await cropSurfaces<MockBmp>([c1], fallback);
+  assert.equal(b1[0]!.pixels, 'v1', 'first transfer yields painted pixels');
+  assert.equal(c1.transfers, 1, 'uses transferToImageBitmap');
+  assert.equal(fallbacks, 0, 'no async createImageBitmap fallback on registered canvas');
+  assert.equal(restores, 0, 'no restore needed on freshly painted canvas');
+  assert.equal(c1.pixels, null, 'transferToImageBitmap detached the backing buffer');
+
+  const b2 = await cropSurfaces<MockBmp>([c1], fallback);
+  assert.equal(b2[0]!.pixels, 'v1', 'recovery re-crop restores pixels before transferring');
+  assert.equal(restores, 1, 'restore ran once for recovery re-crop');
+  assert.equal(c1.transfers, 2, 'still transfers without async fallback');
+  assert.equal(fallbacks, 0);
+
+  c1.pixels = 'v2';
+  markCanvasPainted(c1, () => { restores++; c1.pixels = 'v2'; });
+  const dup = await cropSurfaces<MockBmp>([c1, c1], fallback);
+  assert.deepEqual(dup.map(b => b.pixels), ['v2', 'v2'], 'duplicate source in one batch produces two valid bitmaps');
+  assert.equal(fallbacks, 1, 'earlier duplicate uses fallback so canvas stays intact for final transfer');
+  assert.equal(c1.transfers, 3, 'final duplicate uses zero-copy transfer');
+
+  const unregistered = makeCanvas('raw');
+  const rawRes = await cropSurfaces<MockBmp>([unregistered], fallback);
+  assert.equal(rawRes[0]!.pixels, 'raw');
+  assert.equal(unregistered.transfers, 0, 'unregistered canvas is never destructively transferred');
+  assert.equal(unregistered.pixels, 'raw', 'unregistered canvas retains its pixels');
+  assert.equal(fallbacks, 2);
+
+  const ok = makeCanvas('ok');
+  markCanvasPainted(ok, () => { ok.pixels = 'ok'; });
+  const boom: MockCanvas = {
+    width: 10,
+    height: 10,
+    pixels: 'bad',
+    transfers: 0,
+    transferToImageBitmap() { throw new Error('transfer boom'); },
+  };
+  markCanvasPainted(boom, () => { boom.pixels = 'bad'; });
+  let okClosed = false;
+  const origTransfer = ok.transferToImageBitmap.bind(ok);
+  ok.transferToImageBitmap = () => {
+    const bmp = origTransfer();
+    bmp.close = () => { okClosed = true; bmp.closed = true; };
+    return bmp;
+  };
+  await assert.rejects(cropSurfaces<MockBmp>([ok, boom], fallback), /transfer boom/);
+  assert.equal(okClosed, true, 'already-created sibling bitmaps are closed if a synchronous transfer throws');
 });

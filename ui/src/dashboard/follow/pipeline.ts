@@ -570,7 +570,13 @@ export class Pipeline {
     }
     const release = model !== undefined ? this.own(widget, model) : NO_PAYLOADS;
     widget.binding = this.timed(widget, binding);
-    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model: widget.wire } : {} });
+    this.host.lanes[widget.lane]!.postMessage({
+      type: 'bind',
+      widget: id,
+      binding: widget.binding,
+      ...model !== undefined ? { model: widget.wire } : {},
+      ...!same ? { remounted: true } : {},
+    });
     this.payloads[widget.lane]!.release(release);
     this.flush();
   }

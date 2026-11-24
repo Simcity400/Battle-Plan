@@ -360,6 +360,7 @@ const inspectedRow = (inspect: string | null): string | null => (inspect?.starts
 
 export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
+  incremental: true,
   boundary: nextTableChange,
   redraw: () => Infinity,
   status(model) {
