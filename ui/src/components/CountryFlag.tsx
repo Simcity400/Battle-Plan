@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Icon } from './Icons';
 import './CountryFlag.css';
 import type { CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
-import { isFailedFact } from '../dashboard/countryFacts.ts';
-import { flagReadKey, useFlagReads } from '../dashboard/countryFlags';
+import { useContentRevision } from '../dashboard/contentRevision.ts';
+import { urlToArt } from '../families/art/adapters.ts';
+import { useDomArt } from '../families/art/react.ts';
+import { countryTagKey, useIdentity, useIdentityScope } from '../families/identity/react.ts';
 import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentation';
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
@@ -60,6 +62,11 @@ function FlagPlaceholder({ tag, name, pending = false, decorative = false, class
   const who = name?.trim() || tag?.trim();
   const label = who ? `${who} flag ${pending ? 'loading' : 'unavailable'}` : tooltip;
   const named = !!tag?.trim();
+  if (pending) {
+    return <span className={`country-flag country-flag-pending ${className}`.trimEnd()}
+      data-detail={detail} data-tooltip={tooltip}
+      {...decorative || !label ? { 'aria-hidden': true } : { role: 'img', 'aria-label': label }} />;
+  }
   return <span className={`country-flag country-flag-unavailable${named ? ' has-tag' : ''} ${className}`.trimEnd()}
     data-detail={detail} data-tooltip={tooltip}
     {...decorative || !label ? { 'aria-hidden': true } : { role: 'img', 'aria-label': label }}>
@@ -74,7 +81,7 @@ export function CountryFlag({ image, ...placeholder }: { image?: FlagImage } & P
     if (!element || !image) return;
     return showFlag(element, image);
   }, [image]);
-  return image ? <canvas ref={canvas} className="country-flag country-flag-art" width={image.width} height={image.height} aria-hidden="true" />
+  return image ? <canvas ref={canvas} className="country-flag country-flag-art" data-art-origin="Current installation" width={image.width} height={image.height} aria-hidden="true" />
     : <FlagPlaceholder {...placeholder} />;
 }
 
@@ -82,19 +89,28 @@ export function CountryFlagUrl({ url, reason, detail, pending, className = '', t
   url?: string; reason?: string; detail?: string; pending?: boolean; className?: string;
   fixedSize?: boolean; tag?: string | null; name?: string | null;
 }) {
-  const [failed, setFailed] = useState<string>();
-  if (url && failed !== url) return <img className={`country-flag-art ${className}`} src={url} alt="" onError={() => setFailed(url)} />;
-  const { text: tooltip } = countryFlagUnavailable(reason, pending, !!url && failed === url);
-  return <FlagPlaceholder className={className} tag={tag} name={name} pending={pending} detail={detail} tooltip={tooltip} />;
+  const resolution = useMemo(() => urlToArt(url, { pending, reason }), [url, pending, reason]);
+  const art = useDomArt(resolution);
+  if (art.status === 'ready' && art.bitmap) {
+    return <img className={`country-flag-art ${className}`} src={art.bitmap.src} data-art-origin={art.provenance.label} alt="" />;
+  }
+  if (art.status === 'pending' || art.status === 'ready') {
+    const { text: tooltip } = countryFlagUnavailable(reason, true, false);
+    return <FlagPlaceholder className={className} tag={tag} name={name} pending detail={detail} tooltip={tooltip} />;
+  }
+  const { text: tooltip } = countryFlagUnavailable(reason, false, art.status === 'failed');
+  return <FlagPlaceholder className={className} tag={tag} name={name} pending={false} detail={detail ?? (art.status === 'failed' ? art.reason : undefined)} tooltip={tooltip} />;
 }
-
 
 export function SourceFlag({ client, source, tag, size = 'panel' }: { client: DashboardClient; source: DashboardSource; tag: string | null; size?: CountryFlagSize }) {
   const country = tag ? source.metadata.countries.find(item => item.tag === tag) : undefined;
   const branch = source.metadata.branches.find(item => item.id === country?.observedBranchId) ?? source.metadata.branches[0];
   const hour = country && country.observedBranchId === branch?.id ? country.observedHour : branch?.firstHour;
-  const read = tag && branch && hour != null ? { tag, branchId: branch.id, hour } : null;
-  const flags = useFlagReads(client, source, read ? [read] : [], true, size);
-  const flag = read ? flags.get(flagReadKey(read)) : undefined;
-  return <CountryFlag image={flag && !isFailedFact(flag) ? flag.image : undefined} tag={tag} name={country?.name} pending={!!read && flag === undefined} decorative />;
+  const content = useContentRevision(client);
+  void content;
+  const scope = useIdentityScope(client, source, branch?.id ?? null, !!tag && !!branch);
+  const key = useMemo(() => (tag ? countryTagKey(tag) : null), [tag]);
+  const branchBounds = useMemo(() => (branch ? [branch.firstHour, branch.lastHour] as const : undefined), [branch?.firstHour, branch?.lastHour]);
+  const { flag, flagArt } = useIdentity(client, source, scope, key, hour ?? null, { active: !!tag && !!branch, needFlag: true, flagSize: size, branchBounds });
+  return <CountryFlag image={flag?.image} tag={tag} name={country?.name} pending={flagArt.status === 'pending'} decorative />;
 }
