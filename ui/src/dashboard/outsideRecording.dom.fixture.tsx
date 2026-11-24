@@ -2,6 +2,7 @@
 import { createRoot } from 'react-dom/client';
 import '../styles.css';
 import '../widgets';
+import { isPlaybackDatedView } from '../widgets/manifest';
 import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import type { EngineFrame, FrameEngine } from '../engine/frame';
 import { PHASES } from '../engine/frame';
@@ -60,6 +61,14 @@ const renders = new Map<string, number>();
 const counted = (id: string) => () => { renders.set(id, (renders.get(id) ?? 0) + 1); };
 
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const renderTotal = () => [...renders.values()].reduce((sum, count) => sum + count, 0);
+const quiet = async () => {
+  for (let same = 0, round = 0; round < 40 && same < 3; round++) {
+    const before = renderTotal();
+    await settle();
+    same = renderTotal() === before ? same + 1 : 0;
+  }
+};
 const stateOf = (id: string) => {
   const element = document.getElementById(id);
   const state = element?.querySelector<HTMLElement>('.widget-state, .dash-empty');
@@ -77,7 +86,7 @@ async function frames(count: number, ms: number) {
   for (let frame = 0; frame < count; frame++) {
     const before = new Map(renders);
     tick(ms);
-    await settle();
+    await quiet();
     seen.push(shown(before));
   }
   return seen;
@@ -88,26 +97,32 @@ Object.assign(window, { outsideFixture: {
     const definitions = widgetDefinitions();
     await Promise.all(definitions.map(definition => loadWidgetRenderer(definition.kind)));
     clock.seek(hour);
-    mounted = definitions.map((definition, index) => ({ id: `widget-${definition.kind}`, kind: definition.kind, track: index % 2 ? 'late' : 'early',
-      follows: definition.timeModes.includes('follow'), dated: definition.playsBackDated === true && definition.timeModes.includes('follow') }));
-    const specs = mounted.map(item => {
-      const made = createWidget(item.kind, item.track, item.id);
-      return { ...made, campaign: 'tracks', trackIds: [item.track], time: item.follows ? { mode: 'follow' } : made.time } as WidgetSpec;
+    const built = definitions.map((definition, index) => {
+      const track: 'early' | 'late' = index % 2 ? 'late' : 'early';
+      const id = `widget-${definition.kind}`;
+      const follows = definition.timeModes.includes('follow');
+      const made = createWidget(definition.kind, track, id);
+      const spec = { ...made, campaign: 'tracks', trackIds: [track], time: follows ? { mode: 'follow' } : made.time } as WidgetSpec;
+      const item: Mounted = { id, kind: definition.kind, track, follows, dated: follows && isPlaybackDatedView(definition.kind, spec.options, definition) };
+      return { item, spec };
     });
+    mounted = built.map(entry => entry.item);
+    const specs = built.map(entry => entry.spec);
     createRoot(document.body.appendChild(document.createElement('div'))).render(<>{specs.map(widget =>
       <section key={widget.id} id={widget.id} style={{ width: 480, height: 320, overflow: 'hidden', position: 'relative' }}>
         <Profiler id={widget.id} onRender={counted(widget.id)}><WidgetBody widget={widget} runtime={runtime} /></Profiler>
       </section>)}</>);
     for (let turn = 0; turn < 20; turn++) await settle();
+    await quiet();
     return { mounted, ...shown(new Map(renders)) };
   },
   async play(speed: number, count: number, ms: number) {
     clock.setSpeed(speed);
     clock.setPlaying(true);
-    await settle();
+    await quiet();
     const seen = await frames(count, ms);
     clock.setPlaying(false);
-    await settle();
+    await quiet();
     return seen;
   },
 } });
