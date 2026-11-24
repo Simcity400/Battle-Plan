@@ -47,6 +47,7 @@ test('the product order is drawn as given: own losses left, destroyed right, wit
   assert.deepEqual([formatBarsValueField(rows[0]!.left!.value).text, formatBarsValueField(rows[0]!.right!.value).text], ['2,474', '4,453']);
   assert.equal(rows[0]!.readout?.primary, '1.80 : 1');
   assert.equal(rows[1]!.readout?.primary, '0.69 : 1');
+  assert.deepEqual(rows[0]!.meta, { tag: 'GER', identity: '7:1', countedFrom: 0 }, 'a click opens the causes of this holder, counted from the same start');
 });
 
 test('a row whose events may be missing is partial, at least its value, and has no ratio', () => {
