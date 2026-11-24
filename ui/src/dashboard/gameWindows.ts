@@ -34,8 +34,18 @@ export interface EquipmentDesignerSelection {
   variant: string;
 }
 
+export interface AgencyUpgradesSelection {
+  kind: 'agencyUpgrades';
+  sourceId: string;
+  revision: string;
+  branchId: string;
+  hour: number;
+  tag: string;
+}
+
 export type GameWindowSelection =
   | MioPolicySelection
+  | AgencyUpgradesSelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 
