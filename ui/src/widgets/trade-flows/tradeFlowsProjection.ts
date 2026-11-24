@@ -28,6 +28,7 @@ export const tradeFlowProjection: FlowProjection = {
     leftHeader: 'Imports from',
     rightHeader: 'Exports to',
     unitNote: 'per day',
+    unit: 'per day',
     groupLeftHeader: 'Exporters',
     groupRightHeader: 'Importers',
     notRecorded: NOT_RECORDED,

@@ -8,9 +8,8 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   exactHoverReadings,
   memberAt,
   missingSpansOf,
@@ -77,15 +76,14 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
     const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-    const colourMap = assignCountrySeriesColours(
-      ordered,
-      options.holders,
-      readView,
-      hour,
-      options.surface,
-      CHART_MEASURE_COLOURS.commandPower,
-      tag => rowOf.get(tag) ?? 0,
-    );
+    const looks = countrySeriesLooks(ordered, readView, {
+      holders: options.holders,
+      from: options.extent[0],
+      surface: options.surface,
+      withFlag: !single,
+      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+      singleColor: CHART_MEASURE_COLOURS.commandPower,
+    });
 
     const measureIcon: ChartArtSlot | undefined = single
       ? { art: readView.art(measureArtHandle('commandPower')), label: 'Command power' }
@@ -96,8 +94,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
       const bounded = mainMap?.get(tag) ?? null;
-      const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.commandPower);
+      const { name, flag, color, identities } = looks.get(tag)!;
       const headValue = headByTag.get(tag) ?? null;
       const ceilingBounded = options.showCeiling && !isTail ? (ceilingMap?.get(tag) ?? null) : null;
       const ceilingHead = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
@@ -115,6 +112,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         headHour: hour,
         exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
         flag,
+        ...(single ? {} : { identities }),
         icon: single ? measureIcon : undefined,
         missingSpans: missingSpansOf(bounded),
         rank,
@@ -134,6 +132,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
           key: `${tag}:ceiling`,
           name: single ? 'Maximum' : `${name} max`,
           color,
+          ...(single ? {} : { identities: identities.map(run => ({ ...run, name: `${run.name} max` })) }),
           role: 'ceiling',
           step: true,
           dash: [5, 4],
