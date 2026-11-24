@@ -495,7 +495,7 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
     listeners.get('pointermove')!({ clientX: x50, clientY: 100 });
     task!.frame({ now: 250, dt: 16 });
     task!.frame({ now: 450, dt: 16 });
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await Promise.resolve();
     assert.ok(hoveredHours.at(-1) == null || hoveredHours.at(-1)! <= 20);
     listeners.get('contextmenu')!({ clientX: x50, clientY: 100, preventDefault() {} });
     assert.equal(menuHours.at(-1), 20);
