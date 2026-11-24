@@ -23,7 +23,8 @@ import {
   InvalidBarsModelError,
   type BarsModel, type BarsProjection,
 } from './model.ts';
-import { axisCeiling, layoutFamilyBars } from './layout.ts';
+import { axisCeiling, barsScrollHeight, layoutFamilyBars, visibleBarsRange } from './layout.ts';
+import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
@@ -478,8 +479,12 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     assert.equal(first.motion, false);
     const auditField = first.fields.audit?.value as { id: number; rows: readonly { row: string; key: string; value?: string }[] };
     assert.equal(auditField.id, 7);
-    const expectedAudit = deriveBarsAudit({ form: 'ordered', hour: h, rows: rows1500 });
-    assert.deepEqual(auditField.rows, expectedAudit);
+    const exact = (scrollTop: number) => barsHostAdapter.deriveAuditRows!({ form: 'ordered', hour: h, rows: rows1500 }, h, {
+      viewport: { width: 480, height: 240, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings: undefined, expanded: {}, theme: THEME, fields: {},
+    });
+    assert.deepEqual(auditField.rows, exact(0), 'the installed window and the exact read at the same scroll agree');
+    assert.ok(new Set(auditField.rows.map(row => row.row)).size < 20, 'a ten-row viewport audits its visible rows, not 1,500 countries');
+    assert.notDeepEqual(exact(600), auditField.rows, 'a picture scrolled to the wrong window fails its audit');
     const mirror = deriveBarsMirror({ form: 'ordered', hour: h, rows: rows1500 }, { first: 0, count: 10 });
     assert.equal(mirror.total, 1500);
     assert.equal(mirror.rows.length, 10);
@@ -674,4 +679,41 @@ test('a two-sided row can carry a ratio column with its own header', () => {
   drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
   const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(texts.includes('1.80 : 1') && texts.includes('Ratio'));
+});
+
+test('a measure list sits left of the butterfly: the body moves right, a list row hits as a pick with its key, and the audit names the chosen one', async () => {
+  const { hitPickList, pickAudit, pickNav, pickRowTops } = await import('./pickList.ts');
+  const { parseBarsHit } = await import('./hostAdapter.ts');
+  const pickList = {
+    rows: [
+      { key: 'one', label: 'Invented measure one', left: { fraction: 0.25 }, right: { fraction: 0.75 } },
+      { key: 'two', label: 'Invented measure two', left: { fraction: null }, right: { fraction: null }, divided: true },
+    ],
+    selectedKey: 'two',
+  };
+  const model = {
+    form: 'two-sided' as const, twoSidedLayout: 'split-sides' as const, hour: 10, pickList,
+    rows: [{ kind: 'data' as const, key: 'a', label: 'Country A', value: { value: knownValue(0.5), format: 'share' as const }, numeric: 0.5 }],
+  };
+  const wide = layoutFamilyBars(model, 1600, 320);
+  assert.equal(wide.pickWidth, 330);
+  assert.ok(wide.bodyLeft > wide.pickWidth && wide.nameX > wide.bodyLeft && wide.centerX > wide.bodyLeft, 'the butterfly is laid out right of the list');
+  const tops = pickRowTops(pickList);
+  assert.ok(tops[1]! - tops[0]! > 22, 'a divided row keeps its gap');
+  assert.equal(hitPickList(pickList, wide, { x: 40, y: tops[1]! + 4 }), 'pick:two');
+  assert.equal(hitPickList(pickList, wide, { x: wide.bodyLeft + 40, y: tops[0]! + 4 }), null, 'the butterfly is not the list');
+  assert.deepEqual(parseBarsHit('pick:two')?.meta, { pick: 'two' }, 'activation carries the measure');
+  assert.deepEqual(pickNav(pickList).map(item => item[0]), ['pick:one', 'pick:two']);
+  assert.ok(pickAudit(pickList).some(row => row.row === 'pick:two' && JSON.parse(row.value as string)[3] === true));
+  assert.equal(layoutFamilyBars(model, 500, 320).pickWidth, 0, 'too narrow for the list: the butterfly alone');
+});
+
+test('at the deepest scroll the extent allows, the last row sits above the axis, not under it', () => {
+  const rows = Array.from({ length: 40 }, (_, at) => ({ kind: 'data' as const, key: `C${at}`, label: `C${at}`, value: { value: knownValue(100 - at) }, numeric: 100 - at }));
+  const layout = layoutFamilyBars({ form: 'ordered', hour: 0, rows, showAxis: true }, 480, 240);
+  assert.ok(layout.axisHeight > 0);
+  const deepest = barsScrollHeight(layout) - layout.height;
+  const lastBottom = layout.rowTops[39]! + layout.rowHeights[39]!;
+  assert.ok(lastBottom - deepest <= layout.bodyHeight, 'the last row ends inside the clipped body');
+  assert.equal(visibleBarsRange(layout, deepest, 0).last, 40);
 });

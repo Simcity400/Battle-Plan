@@ -14,6 +14,7 @@ import { componentReading } from '../dashboard/follow/useFollowed.ts';
 import { installedEntry } from '../dashboard/follow/store.ts';
 import type { Pipeline } from '../dashboard/follow/pipeline';
 import { PayloadSender } from '../dashboard/follow/payloads.ts';
+import { boundDated } from '../families/host/dated.ts';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
 const NATIVE = 9, ROUTE = 1;
@@ -156,6 +157,30 @@ test('addendum 2: a moving widget stays due, one step per acknowledgement, after
   assert.equal(page.view(1).fields?.step, 1);
   while (later.length) { later.splice(0).forEach(run => run()); await flush(); await flush(); page.frame(); await flush(); }
   assert.equal(page.view(1).fields?.step, 3, 'motion ran to its end, each step a whole install');
+});
+
+test('the host’s dated binding and the lane’s intersection meet: a static proof dates the picture alone or beside a followed stream', async () => {
+  const proof = [100, 140] as const;
+  const alone = rig();
+  alone.mount(1, [], 'fields', 0, { dated: boundDated({ hour: 100, follows: true }, proof, false, false, null)! });
+  await alone.step(99, { playing: false });
+  assert.equal(alone.page.view(1).mode, 'reading', 'nothing before the hour the static read answered');
+  await alone.step(120, { playing: false });
+  assert.deepEqual([alone.page.view(1).mode, alone.page.view(1).h, alone.page.view(1).through, alone.page.view(1).dim], ['picture', 100, 120, false]);
+  await alone.step(150, { playing: false });
+  assert.deepEqual([alone.page.view(1).through, alone.page.view(1).dim], [140, true], 'at rest past the proof the picture is held as not current');
+
+  const beside = rig();
+  const dated = boundDated({ hour: 100, follows: true }, proof, true, false, null);
+  assert.deepEqual(dated, { h: 100, c: 140 }, 'a followed static read is dated by its proof even beside subscriptions');
+  beside.mount(1, [{ id: 5, channel: 'followed' }], 'fields', 0, { dated: dated! });
+  beside.lane.bindRoute(5, ROUTE, NATIVE);
+  beside.lane.receive('follow', message(160, [{ id: 5, hour: 90, answer: rows([1n], [1n]) }], false, NATIVE));
+  await beside.step(130, { playing: false });
+  assert.deepEqual([beside.page.view(1).mode, beside.page.view(1).h, beside.page.view(1).through], ['picture', 100, 130], 'the join starts at the later of the stream and the static read');
+  await beside.step(150, { playing: false });
+  assert.deepEqual([beside.page.view(1).through, beside.page.view(1).dim], [140, true], 'and is confirmed only through the static proof, though the stream confirms 160');
+  assert.equal(boundDated({ hour: 100 }, null, true, false, null), undefined, 'a pinned read beside subscriptions leaves dating to the stream');
 });
 
 test('addendum 3: a widget of two subscriptions installs their join, or waits while either is missing', async () => {

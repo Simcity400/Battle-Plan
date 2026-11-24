@@ -561,6 +561,9 @@ describe('time-chart laneView integration', () => {
         ['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])],
         ['warSupport', new Map([['GER', boundTiledSeries(warLine, displayedHour(until), { headValue: knownValue(0.9) })]])],
       ]),
+      panels: new Map([['markers', { hour: until, nextChange: until + 48, warnings: [], markers: [
+        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
+      ] }]]),
       identity: createSnapshotIdentityProvider(index),
     });
     const model = stabilityProjection.project(readView, {
@@ -571,17 +574,13 @@ describe('time-chart laneView integration', () => {
       showStability: true,
       showWarSupport: true,
       zoom: false,
-      rawMarkers: [
-        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War', otherTag: 'POL', warVerb: 'began', warAlert: true },
-        { id: 'future', hour: until + 48, kind: 'focus', title: 'Future focus' },
-      ],
     });
     assert.equal(model.series.length, 2);
     assert.equal(model.series[0]!.step, true);
     assert.equal(model.series[0]!.valueScale, 100);
     assert.equal(model.series[0]!.endLabel?.value, '100%');
     assert.equal(model.series[1]!.endLabel?.value, '90%');
-    assert.equal(model.markers?.length, 1, 'future marker must be clamped');
+    assert.equal(model.markers?.length, 1, 'the recorded markers are drawn from the plan entry');
     assert.equal(model.markers![0]!.title, 'War with Poland began');
 
     const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
@@ -607,7 +606,7 @@ describe('time-chart laneView integration', () => {
       series: new Map([['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])]]),
       hovers,
       identity: createSnapshotIdentityProvider(index),
-    }), { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111', showStability: true, showWarSupport: false, zoom: false, rawMarkers: [] });
+    }), { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111', showStability: true, showWarSupport: false, zoom: false });
     const hovered = projectHovered(new Map([['hover', { hour: hoverAt, data: breakdown }]]));
     assert.equal(hovered.hoverDetail?.hour, hoverAt);
     const tip = deriveTimeChartTooltip(hovered, layoutTimeChart(hovered, 960, 276, FONT, measure), `plot:${hoverAt}`);

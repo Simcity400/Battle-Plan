@@ -152,7 +152,7 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     assert.equal(valueStateText({ kind: 'zero', unit: 'divisions' }), '0 divisions');
     assert.equal(valueStateText({ kind: 'missing', reason: 'Gap' }), 'Not recorded: Gap');
     assert.equal(valueStateText({ kind: 'notApplicable', reason: 'No navy' }), 'Not applicable: No navy');
-    assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing', atLeast: true }), 'at least 12, partial: 2 countries missing');
+    assert.equal(valueStateText({ kind: 'partial', text: '12', reason: '2 countries missing', atLeast: true }), '12, partial: 2 countries missing');
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /data-value-state="missing"/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'missing', reason: 'Gap', narrow: true })), /is-compact/);
     assert.match(renderToStaticMarkup(createElement(ValueState, { kind: 'partial', text: '12', reason: '2 countries missing' })), /data-value-state="partial"/);

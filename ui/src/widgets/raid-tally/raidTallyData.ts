@@ -15,7 +15,7 @@ export type TallyMetric = RaidMetric;
 export const tallyLabel = (metric: TallyMetric) => metric === 'both' ? 'Raid launches and successes'
   : metric === 'launched' ? 'Raid launches' : 'Raid successes';
 export const tallyValue = (value: number) => usNumber.format(value);
-export const tallyCount = (value: number) => `${tallyValue(value)}+`;
+export const tallyCount = (value: number) => tallyValue(value);
 export const tallyModel = (series: readonly RaidTallySeries[]) => new Map(series.map(item => [item.tag, { ...item, starts: stretchStarts(item.runs) }]));
 export const tallyIdentities = (series: readonly RaidTallySeries[]) => series.every(item => item.identities !== undefined)
   ? countryIdentityIndex(series.map(item => ({ tag: item.tag, identities: item.identities! }))) : null;
@@ -55,7 +55,7 @@ export function tallyLines(series: readonly RaidTallySeries[], metric: TallyMetr
   });
 }
 const tallyBoth = (run: RaidTallyRun) => `${tallyCount(run.launched)} launched · ${tallyCount(run.succeeded)} succeeded`;
-const NOTE = '+ means at least this many. Success includes critical success and excludes limited success.';
+const NOTE = 'Success includes critical success and excludes limited success.';
 
 export function tallyTooltip(series: ReadonlyMap<string, RaidTallySeries>, tag: string, hour: number, name: string): TooltipContent {
   const run = runAt(series.get(tag)?.runs ?? [], Math.floor(hour));

@@ -1507,7 +1507,8 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
   assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
-  assert.ok(tooltipText(tipAtLeast).includes('at least 1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText including atLeast');
+  assert.ok(tooltipText(tipAtLeast).includes('1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText without at least wording');
+  assert.ok(!tooltipText(tipAtLeast).includes('at least'), 'F8: tooltipText omits at least wording');
 
   const auditA = deriveTableAudit({ model: mAtLeast, flatRows: resolveTableRows(mAtLeast, settings), visibleColumns: layouts });
   const auditB = deriveTableAudit({ model: mPlainPartial, flatRows: resolveTableRows(mPlainPartial, settings), visibleColumns: layouts });
@@ -2037,6 +2038,23 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+
+  const withAction: TableColumnSpec[] = [
+    kinds[0]!,
+    { key: 'name', label: 'Organisation', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'size', label: 'Size', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+    { key: 'spare', label: '', as: 'plain', offered: ['plain'], priority: 2 },
+    { key: 'view', label: '', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'action', sortable: false },
+  ];
+  const named = 'Army Ordnance Department';
+  const tipRows = resolveTableRows({ hour: 1, columns: withAction, rows: [{
+    key: 'org', name: named, tooltipAction: 'Open its organisation window',
+    cells: { pic: { value: knownValue(named), iconSlot: true }, name: { value: knownValue(named) }, size: { value: zeroValue(0) }, spare: { value: knownValue('stray') }, view: { value: knownValue('View'), actionLabel: 'View' } },
+  }] }, tableSettingsOf(undefined, withAction, { density: 'normal', sort: { column: 'size', direction: 'descending' } }));
+  const tip = deriveTableTooltip(tipRows, 'org', withAction, 1)!;
+  assert.equal(tip.title, named, 'the name column, not the picture before it, is the title');
+  assert.deepEqual(tip.rows.map(row => row.label), ['Size'], 'no unlabelled row, no repeated name, no action word');
+  assert.equal(tip.note, 'Open its organisation window', 'an action column contributes only its hint');
 });
 
 test('tree rows align whether or not they can open: a level with openable rows gives every row of that level the chevron lane, children start under their parent\'s name', () => {

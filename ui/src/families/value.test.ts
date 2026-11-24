@@ -167,6 +167,10 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(notRecorded('No sensor'), 'integer'), 'Not recorded: No sensor');
   assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
+  const partialAtLeast = formatValueState(partialValue(15, 'Gaps', { atLeast: true }), 'integer');
+  assert.equal(partialAtLeast.kind, 'partial');
+  assert.equal(partialAtLeast.atLeast, true);
+  assert.equal(partialAtLeast.spoken, '15, partial: Gaps');
 
   assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', ['int', '0']]));
   assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));

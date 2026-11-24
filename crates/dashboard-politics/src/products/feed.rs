@@ -9,6 +9,7 @@ pub mod scope;
 mod text;
 #[cfg(test)]
 mod tests;
+mod window;
 
 pub use cards::{
     DecisionsTail, EventChoicesTail, ScriptOccurrenceTailReply,
@@ -93,9 +94,10 @@ pub enum EventFeedKind {
     DecisionCompletionEffect,
     DecisionTimeoutEffect,
     DecisionDurationChanged,
+    EventWindowPresented,
 }
 
-const CODES: [(u8, EventFeedKind); 25] = {
+const CODES: [(u8, EventFeedKind); 26] = {
     use EventFeedKind::*;
     [
         (0, WarDeclared),
@@ -123,6 +125,7 @@ const CODES: [(u8, EventFeedKind); 25] = {
         (23, DecisionDurationChanged),
         (FeedEventRow::CEASED_TO_EXIST, CeasedToExist),
         (FeedEventRow::GUARANTEE_GRANTED, GuaranteeGranted),
+        (FeedEventRow::WINDOW_PRESENTED, EventWindowPresented),
     ]
 };
 
@@ -183,6 +186,83 @@ pub struct EventFeedRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub decision_state: Option<DecisionLifecycleState>,
+    #[doc = " A fired event's window decision, or a presented window's recorded content; absent for"]
+    #[doc = " every other kind."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub window: Option<EventFeedWindow>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum EventWindowDecision {
+    Requested,
+    AiControlled,
+    HiddenOrAiControlled,
+    NotViewingCountry,
+    SenderExcluded,
+    PlayerRestrictedNotMajor,
+    PlayerRestrictedOptionTrigger,
+    ExistingInstance,
+    AlreadyOpen,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum EventWindowKind {
+    Normal,
+    News,
+    Leader,
+    Operative,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventWindowOption {
+    #[doc = " The option's place in the live event's own list; null for the fallback OK button."]
+    pub ordinal: Option<u32>,
+    #[doc = " Null when the label's copy was refused; the button was still offered."]
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventWindowPresented {
+    pub kind: EventWindowKind,
+    #[doc = " False when the user's popup settings hid the built window; null when not recorded."]
+    pub shown: Option<bool>,
+    #[doc = " Built again by an interface reload, with the same scope."]
+    pub rebuilt: bool,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    #[doc = " The resolved picture key; null with `pictureHidden` when the window showed none."]
+    pub picture: Option<String>,
+    pub picture_hidden: bool,
+    #[doc = " The offered options in button order."]
+    pub options: Option<Vec<EventWindowOption>>,
+    #[doc = " The event's options the window did not offer, from the recorded content; null when"]
+    #[doc = " the offered options or the content's option list could not prove it."]
+    pub not_offered: Option<Vec<EventFeedOption>>,
+    #[doc = " Each field the recording does not hold, with why."]
+    pub not_recorded: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedWindow {
+    #[doc = " The native pending instance joining a firing to the window built for it."]
+    pub instance: Option<u32>,
+    #[doc = " On a fired event: whether this client asked for a window, or the gate that refused it."]
+    pub decision: Option<EventWindowDecision>,
+    #[doc = " On a presented window: what it showed."]
+    pub presented: Option<EventWindowPresented>,
+    #[doc = " Why `decision` or `presented` is null where the kind carries one."]
+    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -458,8 +538,15 @@ pub(crate) fn present_all(query: &Query<'_>, events: &[&FeedEvent], names: &Name
 }
 
 pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<Option<EventFeedRow>> {
+    if event.code == FeedEventRow::WINDOWS_UNRECORDED {
+        notices.unavailable("eventWindows", "Event windows", format!("From read {}: {}", event.read_hour, String::from_utf8_lossy(&event.failure)), Some(1));
+        return Ok(None);
+    }
     let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(None) };
     let id = event.id();
+    if kind == EventFeedKind::EventWindowPresented {
+        return window::presented(event, id, names, presenter, notices);
+    }
     if event.derived() {
         return Ok(derived(event, kind, id, names, notices));
     }
@@ -519,6 +606,7 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
         cause: cause::words(event, ally.flatten()),
         strike: None,
         decision_state: None,
+        window: window::decided(event, kind),
     }))
 }
 
@@ -538,6 +626,7 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
         cause: None,
         strike: None,
         decision_state: None,
+        window: None,
     };
     match kind {
         EventFeedKind::CeasedToExist => {
@@ -635,6 +724,11 @@ impl Product for EventFeedTail {
             EventFeedItem::decl(),
             EventFeedCause::decl(),
             DecisionLifecycleState::decl(),
+            EventWindowDecision::decl(),
+            EventWindowKind::decl(),
+            EventWindowOption::decl(),
+            EventWindowPresented::decl(),
+            EventFeedWindow::decl(),
             EventFeedRow::decl(),
             EventFeedStrike::decl(),
             EventFeedUnavailable::decl(),

@@ -1,4 +1,5 @@
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
+import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour, FamilyProjection } from '../contract.ts';
@@ -35,6 +36,7 @@ export interface TimelineLane {
   readonly defaultOpen?: boolean;
   readonly parentKey?: string;
   readonly spans: readonly TimelineSpan[];
+  readonly openedMarker?: { readonly hour: number; readonly label: string };
   readonly ruleColor?: string;
   readonly endText?: string;
   readonly auditValue: string;
@@ -46,6 +48,7 @@ export interface TimelineModel {
   readonly firstHour: number;
   readonly lanes: readonly TimelineLane[];
   readonly unobserved: readonly HourSpan[];
+  readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars: boolean;
   readonly labelWidth: number;
   readonly summaryText?: string | null;

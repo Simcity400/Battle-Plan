@@ -25,7 +25,7 @@ import {
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { formatDateHover, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
-import type { FamilyColumnLayout } from './layout.ts';
+import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
 import { lookAt, nextLookChange, type CountryLook, type CountryLooksMap } from '../looks.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
@@ -1221,14 +1221,17 @@ export function deriveRowTooltip(
 ): TooltipContent {
   const { row } = found;
   const rows: TooltipRow[] = [];
-  const firstCol = allColumns[0];
+  const nameIndex = treeColumnOf(allColumns);
+  const firstCol = allColumns[nameIndex];
   const firstCell = firstCol ? row.cells[firstCol.key] : undefined;
   const firstResolved = firstCell ? resolveCellAtHour(firstCell, hour) : null;
   const firstText = firstResolved && hasMeasuredValue(firstResolved.value) ? String(firstResolved.value.value) : undefined;
   const title = row.tooltipTitle ?? (firstCol?.cellKind === 'date' ? found.name : (firstText ?? found.name));
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (i === 0 && col.cellKind !== 'date' && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
+    if (col.cellKind === 'kind' || col.cellKind === 'action') continue;
+    if (!col.label && col.cellKind !== 'date') continue;
+    if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
     const resolved = resolveCellAtHour(cell, hour);
