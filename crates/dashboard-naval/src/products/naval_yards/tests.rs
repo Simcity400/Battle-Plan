@@ -35,6 +35,9 @@ fn a_countrys_ports_are_the_bases_its_links_hold_and_queues_keep_the_games_order
     let queues = queues(&frame, &ports);
     assert_eq!(queues.get(&100), Some(&vec![(0, 5), (1, 6), (2, 5)]), "a ship queued twice stays twice");
     assert!(!queues.contains_key(&101), "another country's queue is not this one's");
+    let mut partial = super::tests::frame();
+    *partial.tables[TableId::NavalRepairQueue.index()] = TableView::Truncated { rows: tables::NavalRepairQueue::wrap(vec![NavalRepairQueueRow { province: 100, ordinal: 0, ship: 5 }]), missing: 3 };
+    assert_eq!(super::queues(&partial, &ports).get(&100), Some(&vec![(0, 5)]), "a queue read in part keeps the ships it saw");
 }
 
 #[test]
@@ -42,6 +45,9 @@ fn a_refit_line_is_the_owners_by_its_metadata_and_live_only_while_its_progress_r
     let lines = owned_lines(&frame(), &BTreeSet::from([11, 9001]));
     assert_eq!(lines.keys().copied().collect::<Vec<_>>(), [70], "line 72 has metadata but no progress row: not live");
     assert_eq!(lines[&70], [1, 3]);
+    let mut partial = frame();
+    *partial.tables[TableId::NavalRefitShips.index()] = TableView::Truncated { rows: tables::NavalRefitShips::wrap(vec![NavalRefitShipRow { ship: 3, line: 70 }]), missing: 3 };
+    assert_eq!(owned_lines(&partial, &BTreeSet::from([11, 9001]))[&70], [3], "links read in part keep the ships they saw");
     assert!(finite(5) && !finite(i64::MAX) && !finite(i64::MIN) && !finite(i64::MIN + 1));
 }
 

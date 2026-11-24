@@ -1,9 +1,9 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
-import { linearTicks } from '../../charts/valueAxis.ts';
+import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
-import { computeTimeAxisTicks } from '../../draw/kit.ts';
+import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
@@ -20,12 +20,27 @@ function shortMonth(month: number): string {
   return monthNames[month - 1]!.slice(0, 3);
 }
 
-export function formatChartAxisValue(value: number, format: ChartValueFormat): string {
+function axisDecimalPlaces(ticks: readonly number[] | undefined, cap: number): number | null {
+  if (!ticks || ticks.length === 0) return null;
+  let max = 0;
+  for (const tick of ticks) {
+    if (!Number.isFinite(tick)) continue;
+    const scale = exactDecimal(tick).scale;
+    if (scale > max) max = scale;
+  }
+  return Math.min(cap, max);
+}
+
+export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
-  if (format === 'percent') return formatScalar(value, { decimals: 0, maxDecimals: 0, percent: true });
+  if (format === 'percent') {
+    const places = axisDecimalPlaces(ticks, 2) ?? Math.min(2, exactDecimal(value).scale);
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, percent: true });
+  }
   if (format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    return formatScalar(value, { decimals: 0, maxDecimals: 1, signed: true });
+    const places = axisDecimalPlaces(ticks, 1) ?? Math.min(1, exactDecimal(value).scale);
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
@@ -33,9 +48,11 @@ export function formatChartAxisValue(value: number, format: ChartValueFormat): s
   }
   if (format === 'power') {
     if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    return formatScalar(value, { decimals: 0, maxDecimals: 0 });
+    const places = axisDecimalPlaces(ticks, 2) ?? 0;
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
   }
-  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
+  const places = axisDecimalPlaces(ticks, 2) ?? 0;
+  return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
 }
 
 export interface PlacedEndLabel {
@@ -119,6 +136,7 @@ export interface TimeChartLayout {
   readonly dateTabX: number;
   readonly dateTabWidth: number;
   readonly axisTicks: readonly PlacedAxisTick[];
+  readonly rawAxisTicks: readonly TimeAxisTick[];
   readonly endLabels: readonly PlacedEndLabel[];
   readonly markers: readonly PlacedMarker[];
   readonly gaps: readonly PlacedGap[];
@@ -381,15 +399,20 @@ export function layoutTimeChart(
       const h = hours[i]!;
       if (h > model.hour) break;
       if (h < xDomain[0]) continue;
-      let sum = 0;
+      let posSum = 0;
+      let negSum = 0;
       for (const band of bands) {
         const v = band.values[i];
-        if (v !== null && v !== undefined && Number.isFinite(v)) sum += v;
+        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        if (v >= 0) posSum += v;
+        else negSum += v;
       }
       const tv = total?.values[i];
-      const top = tv !== null && tv !== undefined && Number.isFinite(tv) ? Math.max(sum, tv) : sum;
-      if (0 < dataMin) dataMin = 0;
-      if (top > dataMax) dataMax = top;
+      const hasTotal = tv !== null && tv !== undefined && Number.isFinite(tv);
+      const lo = hasTotal ? Math.min(0, negSum, tv) : Math.min(0, negSum);
+      const hi = hasTotal ? Math.max(0, posSum, tv) : Math.max(0, posSum);
+      if (lo < dataMin) dataMin = lo;
+      if (hi > dataMax) dataMax = hi;
     }
   } else {
     for (const s of model.series) {
@@ -425,13 +448,13 @@ export function layoutTimeChart(
   const yDomain: readonly [number, number] = [yLo, yHi];
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
-    : model.yAxis.format === 'percent' && yLo === 0 && yHi === 100
-      ? (small ? [0, 50, 100] : [0, 25, 50, 75, 100])
+    : model.yAxis.fixed
+      ? linearTicks(yLo, yHi, small ? 2 : 4)
       : linearTicks(yLo, yHi, small ? 3 : 5);
 
   let maxYLabelW = 0;
   for (const t of yTicks) {
-    maxYLabelW = Math.max(maxYLabelW, measure(formatChartAxisValue(t, model.yAxis.format), smallFont));
+    maxYLabelW = Math.max(maxYLabelW, measure(formatChartAxisValue(t, model.yAxis.format, yTicks), smallFont));
   }
   const left = Math.ceil(Math.max(30, maxYLabelW + 16));
 
@@ -510,23 +533,27 @@ export function layoutTimeChart(
     const ySpan = Math.max(1e-9, yDomain[1] - yDomain[0]);
     const trailingGap = model.stack.step === true && lastIdx >= 0
       && (model.gaps?.some(g => g.firstHour > model.stack!.hours[lastIdx]! && g.firstHour <= model.hour) ?? false);
+    const lastTotalVal = model.stack.total?.values[lastIdx];
+    const hasTotalAtLast = lastTotalVal !== null && lastTotalVal !== undefined && Number.isFinite(lastTotalVal);
+    const hasAnyBandAtLast = model.stack.bands.some(band => {
+      const v = band.values[lastIdx];
+      return v !== null && v !== undefined && Number.isFinite(v);
+    });
     const lastValid = lastIdx >= 0
       && !trailingGap
       && (model.stack.step === true || Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48)
-      && (model.stack.total
-        ? model.stack.total.values[lastIdx] !== null && model.stack.total.values[lastIdx] !== undefined && Number.isFinite(model.stack.total.values[lastIdx])
-        : model.stack.bands.every(band => {
-          const v = band.values[lastIdx];
-          return v !== null && v !== undefined && Number.isFinite(v);
-        }));
+      && (hasTotalAtLast || hasAnyBandAtLast);
     if (lastValid) {
-      let acc = 0;
+      let posAcc = 0;
+      let negAcc = 0;
       for (const band of model.stack.bands) {
-        const v = band.values[lastIdx] ?? 0;
-        const mid = acc + v / 2;
-        acc += v;
+        const rawV = band.values[lastIdx];
+        if (rawV === null || rawV === undefined || !Number.isFinite(rawV)) continue;
+        const mid = rawV >= 0 ? posAcc + rawV / 2 : negAcc + rawV / 2;
+        if (rawV >= 0) posAcc += rawV;
+        else negAcc += rawV;
         if (!band.endLabel) continue;
-        const bandPx = (Math.abs(v) / ySpan) * estPlotHeight;
+        const bandPx = (Math.abs(rawV) / ySpan) * estPlotHeight;
         if (small && bandPx < 10) continue;
         const rawName = small && band.endLabel.shortName !== undefined
           ? band.endLabel.shortName
@@ -554,8 +581,8 @@ export function layoutTimeChart(
           estWidth: fixedWidth + nameW + 8,
         });
       }
-      if (model.stack.total?.endLabel) {
-        const tv = model.stack.total.values[lastIdx] ?? acc;
+      if (model.stack.total?.endLabel && hasTotalAtLast) {
+        const tv = lastTotalVal!;
         const el = model.stack.total.endLabel;
         const artW = el.icon && el.icon.art.status !== 'noArtExpected' ? 22 : 0;
         const valW = measure(el.value, labelValueFont);
@@ -697,13 +724,15 @@ export function layoutTimeChart(
   }
 
   const axisTicks: PlacedAxisTick[] = [];
+  const rawAxisTicks: TimeAxisTick[] = model.mode !== 'columns'
+    ? computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth)
+    : [];
   if (model.mode !== 'columns') {
-    const rawTicks = computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth);
     let shownFirst = false;
     let lastLabelRight = -1e9;
-    for (const tick of rawTicks) {
+    for (const tick of rawAxisTicks) {
       const x = toX(tick.hour);
-      let label: string | null = tick.label;
+      let label: string | null = tick.label || null;
       if (label) {
         const lw = measure(label, smallFont);
         const hiddenByTab = keepOut.some(([kx, kr]) => Math.abs(x - kx) < kr);
@@ -741,6 +770,7 @@ export function layoutTimeChart(
     dateTabX,
     dateTabWidth,
     axisTicks,
+    rawAxisTicks,
     endLabels,
     markers: placedMarkers,
     gaps: placedGaps,

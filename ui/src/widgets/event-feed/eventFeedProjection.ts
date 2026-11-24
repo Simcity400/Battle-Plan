@@ -12,7 +12,7 @@ import {
   urlArtHandle,
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableModelSlot, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
@@ -78,6 +78,12 @@ function eventItemAndSubtext(
         primary: named,
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
         detail: { value: knownValue('Option chosen') },
+      };
+    case 'eventWindowPresented':
+      return {
+        primary: named,
+        secondary: event.window?.presented?.shown === false ? 'Window (hidden)' : 'Window',
+        missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
       };
     case 'decisionSelected':
       return { primary: named ?? 'Decision selected', secondary: named ? 'Decision' : undefined, missingReason: reasons.nameMissing };
@@ -157,8 +163,8 @@ function eventItemAndSubtext(
     case 'nuclearStrike': {
       const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
-      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(Math.round(event.strike.manpowerLost), 'integer')} casualties`);
-      if (event.strike?.buildingLevels != null) losses.push(`${event.strike.buildingLevels.toFixed(1)} building levels`);
+      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(event.strike.manpowerLost, 'integer')} casualties`);
+      if (event.strike?.buildingLevels != null) losses.push(`${formatScalar(event.strike.buildingLevels, 'decimal1')} building levels`);
       return {
         primary: 'Nuclear strike',
         secondary: targetState,
@@ -276,7 +282,7 @@ function buildFeedTableRow(
   };
 }
 
-export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = registerTableProjection({
+export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = registerFamilyProjection({
   kind: 'event-feed',
   family: 'table',
   project(readView, options): TableModel {

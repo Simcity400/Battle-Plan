@@ -121,7 +121,8 @@ function createControlledLane(): LaneWorker {
       queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
     },
     {
-      views: (_kind, wake) => familyTableLaneView(wake, { cadenceTimers: controlledTimers, clock: controlledClock }),
+      views: (_kind, wake) => familyTableLaneView(wake, { timers: controlledTimers }),
+      clock: controlledClock,
       crop: sources => Promise.all(sources.map(source => createImageBitmap(source as OffscreenCanvas))),
       later: run => requestAnimationFrame(() => run()),
     },

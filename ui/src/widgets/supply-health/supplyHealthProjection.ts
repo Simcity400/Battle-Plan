@@ -1,6 +1,7 @@
 import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { rankReading, validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import {
   FutureDataError,
   type BoundedReadView,
@@ -13,23 +14,10 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, ChartHoverDetail } from '../../families/time-chart/model.ts';
-import {
-  branchGapsOf,
-  buildBoundedStack,
-  seriesHeadValue,
-} from '../../families/time-chart/seriesHelpers.ts';
-import { formatScalar, formatShare as formatDerivedShare, notRecordedLabel } from '../../families/valueFormat.ts';
-import type { SeriesState } from '../../generated/dashboard';
-import {
-  formatShare,
-  SHARE_MEASURES,
-  STATE_LABELS,
-  STATES,
-  SUPPLY_FAMILY,
-  supplyAt,
-  totalDivisions,
-  type SupplyState,
-} from './supplyHealthData.ts';
+import { branchGapsOf, buildBoundedStack, headReading } from '../../families/time-chart/seriesHelpers.ts';
+import { formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
+import type { SeriesRankReply, SeriesState } from '../../generated/dashboard';
+import { SHARE_MEASURES, STATE_LABELS, STATES, SUPPLY_FAMILY, type SupplyState } from './supplyHealthData.ts';
 
 const BAND_COLOURS: Readonly<Record<SupplyState, string>> = {
   noSupply: CHART_MEASURE_COLOURS.supplyNone,
@@ -44,59 +32,53 @@ const BAND_OPACITY: Readonly<Record<SupplyState, number>> = {
 };
 
 const PERCENT_TICKS = [0, 50, 100] as const;
+const SHARE_DECIMALS = 5;
+const DIVISIONS = 'divisions';
 
 export interface SupplyHealthOptions {
-  readonly tag: string | null;
+  readonly subject: string | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
 }
 
-function readHoverStates(readView: BoundedReadView, name: string): { readonly hour: number; readonly states: readonly SeriesState[] } | null {
+function readingValue(reply: SeriesRankReply, state: SeriesState | null, measure: string): number | null {
+  if (!state?.run) return null;
+  const decimals = reply.measures.find(held => held.name === measure)?.decimals ?? 0;
+  const value = Number(state.run.valueRaw) / 10 ** decimals;
+  return Number.isFinite(value) ? value : null;
+}
+
+const missingOf = (state: SeriesState | null) => state?.missing ?? notRecordedLabel();
+
+function supplyHoverDetail(readView: BoundedReadView, subject: string): ChartHoverDetail | null {
   let hover;
   try {
-    hover = readView.hover<{ readonly states?: readonly SeriesState[] } | readonly SeriesState[]>(name);
+    hover = readView.hover<SeriesRankReply>('hover');
   } catch (error) {
     if (error instanceof FutureDataError) return null;
     throw error;
   }
-  if (!hover || !hover.data) return null;
-  const data = hover.data;
-  const states: readonly SeriesState[] | undefined = Array.isArray(data)
-    ? data
-    : 'states' in data
-      ? data.states
-      : undefined;
-  return Array.isArray(states) ? { hour: hover.hour, states } : null;
-}
-
-function supplyHoverDetail(readView: BoundedReadView, tag: string): ChartHoverDetail | null {
-  const reads = STATES.map(state => readHoverStates(readView, `${state}Hover`));
-  if (reads.some(entry => entry === null)) return null;
-  const hour = reads[0]!.hour;
-  if (reads.some(entry => entry!.hour !== hour)) return null;
-  const at = supplyAt(reads.map(entry => entry!.states), tag, hour);
-  if (!at) return null;
-  if ('missing' in at) {
-    return {
-      hour,
-      replacesSeries: true,
-      items: [{ label: 'Supply health', missingReason: at.missing || notRecordedLabel(), tone: 'muted' }],
-    };
-  }
-  const total = totalDivisions(at.counts);
-  if (!total) {
-    return {
-      hour,
-      replacesSeries: true,
-      items: [{ label: 'Divisions', value: '0', tone: 'muted' }],
-    };
-  }
+  if (!hover?.data) return null;
+  const reply = hover.data;
+  const row = reply.rows.find(item => countryKey(item.country) === subject);
+  const hour = hover.hour;
+  if (!row) return { hour, replacesSeries: true, items: [{ label: 'Supply health', missingReason: reply.refused ?? notRecordedLabel(), tone: 'muted' }] };
+  const divisions = rankReading(reply, row, DIVISIONS);
+  const total = readingValue(reply, divisions, DIVISIONS);
+  if (total === null) return { hour, replacesSeries: true, items: [{ label: 'Divisions', missingReason: missingOf(divisions), tone: 'muted' }] };
+  if (total === 0) return { hour, replacesSeries: true, items: [{ label: 'Divisions', value: formatScalar(0, 'integer'), tone: 'muted' }] };
   const items: TooltipListItem[] = [...STATES].reverse().map(state => {
-    const count = at.counts[state];
+    const share = rankReading(reply, row, SHARE_MEASURES[STATES.indexOf(state)]!);
+    const count = rankReading(reply, row, state);
+    const shareValue = readingValue(reply, share, SHARE_MEASURES[STATES.indexOf(state)]!);
+    const countValue = readingValue(reply, count, state);
+    if (shareValue === null || countValue === null) {
+      return { label: STATE_LABELS[state], swatch: BAND_COLOURS[state], missingReason: missingOf(shareValue === null ? share : count), tone: 'muted' };
+    }
     return {
       label: STATE_LABELS[state],
       swatch: BAND_COLOURS[state],
-      value: `${formatShare(count, total)} · ${formatScalar(count, 'integer')} ${count === 1 ? 'division' : 'divisions'}`,
+      value: `${formatShare(shareValue)} · ${formatScalar(countValue, 'integer')} ${countValue === 1 ? 'division' : 'divisions'}`,
     };
   });
   return { hour, replacesSeries: true, items };
@@ -106,9 +88,7 @@ function missingReasonOf(seriesList: readonly (BoundedSeries | null)[], firstHou
   for (const s of seriesList) {
     if (!s) continue;
     for (const span of s.missing) {
-      if (span.firstHour <= hour && span.lastHour >= firstHour && span.reason) {
-        return span.reason;
-      }
+      if (span.firstHour <= hour && span.lastHour >= firstHour && span.reason) return span.reason;
     }
   }
   return null;
@@ -122,52 +102,39 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
   measureTitle: 'Supply health',
   project(readView: BoundedReadView, options: SupplyHealthOptions) {
     const hour = readView.hour;
-    const tag = options.tag;
-    const seriesByState = STATES.map(state => (tag ? readView.series(state)?.get(tag) ?? null : null));
-    const headsByState = STATES.map((state, idx) =>
-      tag ? seriesHeadValue(seriesByState[idx], readView.answer(state), 0, 5, 100) : null,
-    );
-    const allLoaded = seriesByState.every(s => s !== null);
-    const stack = buildBoundedStack(
-      STATES.map((state, idx) => {
-        const headValue = headsByState[idx]!;
-        return {
-          id: state,
-          key: state,
-          name: STATE_LABELS[state],
-          color: BAND_COLOURS[state],
-          opacity: BAND_OPACITY[state],
-          bounded: seriesByState[idx],
-          valueScale: 100,
-          headValue,
-          endLabel: headValue === null
-            ? null
-            : {
-                colorBar: BAND_COLOURS[state],
-                name: STATE_LABELS[state],
-                fullName: STATE_LABELS[state],
-                value: formatDerivedShare(headValue / 100),
-              },
-        };
-      }),
-      hour,
-      { missingMode: 'all-required' },
-    );
+    const subject = options.subject;
+    const seriesByState = STATES.map(state => (subject ? readView.series(state)?.get(subject) ?? null : null));
+    const heads = STATES.map(state => (subject ? headReading(readView, state, { tag: subject }, SHARE_DECIMALS, 100) : null));
+    const stack = buildBoundedStack(STATES.map((state, idx) => {
+      const head = heads[idx]!;
+      const series = seriesByState[idx];
+      const value = head && 'value' in head ? head.value : null;
+      return {
+        id: state,
+        key: state,
+        name: STATE_LABELS[state],
+        color: BAND_COLOURS[state],
+        opacity: BAND_OPACITY[state],
+        parts: [series ? { series } : {}],
+        valueScale: 100,
+        head,
+        endLabel: value === null
+          ? null
+          : { colorBar: BAND_COLOURS[state], name: STATE_LABELS[state], fullName: STATE_LABELS[state], value: formatShare(value / 100) },
+      };
+    }), hour);
 
+    const allLoaded = seriesByState.every(s => s !== null);
     const hasValidPoint = stack.hours.some((_, i) => stack.bands.every(b => b.values[i] != null));
-    let empty: { readonly message: string; readonly kind?: 'empty' | 'unavailable' } | null = null;
-    if (allLoaded && !hasValidPoint) {
-      const reason = missingReasonOf(seriesByState, options.extent[0], hour);
-      empty = reason
-        ? { message: reason, kind: 'unavailable' }
-        : { message: 'No divisions in this period.' };
-    }
+    const reason = allLoaded && !hasValidPoint ? missingReasonOf(seriesByState, options.extent[0], hour) : null;
+    const empty = allLoaded && !hasValidPoint
+      ? { message: reason ?? notRecordedLabel('Supply health'), kind: 'unavailable' as const }
+      : null;
 
     const auditRows = STATES.flatMap((state, idx) => {
-      const head = headsByState[idx];
-      return head === null || head === undefined
-        ? []
-        : [auditRow(state, formatDerivedShare(head / 100))];
+      const head = heads[idx];
+      if (!head) return [];
+      return [auditRow(state, 'value' in head ? formatShare(head.value / 100) : head.missing)];
     });
 
     return {
@@ -176,56 +143,37 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       mode: 'stack',
       hour,
       extent: options.extent,
-      yAxis: {
-        format: 'percent',
-        fixed: [0, 100],
-        ticks: PERCENT_TICKS,
-      },
+      yAxis: { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS },
       series: [],
       stack,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      hoverDetail: tag ? supplyHoverDetail(readView, tag) : null,
+      hoverDetail: subject ? supplyHoverDetail(readView, subject) : null,
       empty,
       auditRows,
     };
   },
 });
 
-function shareEntries(ctx: FamilyPlanContext, state: SupplyState, measure: string, tag: string): SourceEntry[] {
-  const shareFamily = { kind: SUPPLY_FAMILY, measure };
-  const countFamily = { kind: SUPPLY_FAMILY, measure: state };
-  const reads = [{ country: countryFromKey(tag) }];
-  return [
-    {
-      name: state,
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'pixel-binned',
-        coverage: { mode: 'keyed', keys: [tag] },
-        family: shareFamily,
-        tags: [tag],
-        headQuery: {
-          product: 'series-state',
-          coverage: 'row',
-          params: { branchId: ctx.branch.id, family: shareFamily, reads },
-        },
-        exactProduct: 'series-state',
-      },
-    },
-    {
-      name: `${state}Hover`,
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'exact-hover',
+function shareEntry(ctx: FamilyPlanContext, state: SupplyState, measure: string, subject: string): SourceEntry {
+  const family = { kind: SUPPLY_FAMILY, measure };
+  return {
+    name: state,
+    source: ctx.track.source,
+    branch: ctx.branch.id,
+    offset: ctx.track.axisOffset,
+    read: {
+      shape: 'pixel-binned',
+      coverage: { mode: 'keyed', keys: [subject] },
+      family,
+      tags: [subject],
+      headQuery: {
         product: 'series-state',
-        params: { branchId: ctx.branch.id, family: countFamily, reads },
+        coverage: 'row',
+        params: { branchId: ctx.branch.id, family, reads: [{ country: countryFromKey(subject) }] },
       },
+      exactProduct: 'series-state',
     },
-  ];
+  };
 }
 
 export const supplyHealthDeclaration: TimeChartWidgetDeclaration<SupplyHealthOptions> = {
@@ -237,18 +185,35 @@ export const supplyHealthDeclaration: TimeChartWidgetDeclaration<SupplyHealthOpt
   icon: 'shield',
   countries: { mode: 'single', choose: 'Choose a country to see its supply health.' },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const tag = ctx.countryTag;
+    const subject = ctx.countrySubject;
     return {
-      owner: `supply-health:${ctx.track.source.id}:${ctx.branch.id}:${tag ?? ''}`,
-      entries: tag ? STATES.flatMap((state, idx) => shareEntries(ctx, state, SHARE_MEASURES[idx]!, tag)) : [],
+      owner: `supply-health:${ctx.track.source.id}:${ctx.branch.id}:${subject ?? ''}`,
+      entries: subject
+        ? [
+            ...STATES.map((state, idx) => shareEntry(ctx, state, SHARE_MEASURES[idx]!, subject)),
+            {
+              name: 'hover',
+              source: ctx.track.source,
+              branch: ctx.branch.id,
+              offset: ctx.track.axisOffset,
+              read: {
+                shape: 'exact-hover',
+                product: 'series-rank',
+                params: {
+                  branchId: ctx.branch.id,
+                  family: { kind: SUPPLY_FAMILY, measure: DIVISIONS },
+                  measures: [...STATES, ...SHARE_MEASURES],
+                  countries: [countryFromKey(subject)],
+                },
+                validate: validateRankReply,
+              },
+            },
+          ]
+        : [],
     };
   },
   projection: supplyHealthProjection,
   projectionOptions(ctx, { extent }) {
-    return {
-      tag: ctx.countryTag,
-      extent,
-      gaps: branchGapsOf(ctx.branch),
-    };
+    return { subject: ctx.countrySubject, extent, gaps: branchGapsOf(ctx.branch) };
   },
 };

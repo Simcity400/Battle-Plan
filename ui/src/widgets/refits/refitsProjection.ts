@@ -1,13 +1,13 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
-import { fixedText, fraction, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
+import { childCount, fixedText, fraction, refitAmounts, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
 import type { ArtState } from '../../families/table/identityCell.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -39,7 +39,7 @@ const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, nev
     extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
-export const refitsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const refitsProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<NavalRefitsReply, RefitRow, Record<string, never>>({
     kind: 'refits',
     validate: validateRefits,
@@ -76,15 +76,17 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
     rowName: row => row.kind === 'line' ? (row.line.target ?? 'Refit design name unavailable') : shipLabel(row.ship).name,
     children: row => row.kind === 'line' ? row.children : undefined,
     initiallyOpen: () => false,
-    tooltipExtra: (row, reply): TooltipExtraRow[] => row.kind === 'ship'
-      ? shipTooltip(row.ship)
-      : [
-          { label: 'Work done', value: icText(row.line.progress, 'Refit progress not recorded'), divider: true },
+    tooltipExtra: (row, reply, live): TooltipExtraRow[] => {
+      if (row.kind === 'ship') return shipTooltip(row.ship, live);
+      const amounts = refitAmounts(reply, row.line, live);
+      return [
+          { label: 'Work done', value: amounts.done, divider: true },
           { label: 'Cost', value: icText(row.line.cost, 'Refit cost not recorded') },
-          { label: 'Remaining cost', value: icText(row.line.remaining, 'Remaining cost not recorded') },
-          { label: 'Ships', value: knownValue(formatScalar(row.line.ships.length, 'integer')) },
+          { label: 'Remaining cost', value: amounts.remaining },
+          { label: 'Ships', value: childCount(row.line.ships.length, row.line.shipsMissing) },
           ...(reply.costRead === null ? [] : [{ label: 'Cost read', value: knownValue(formatDateOnly(reply.costRead)) }]),
-        ],
+        ];
+    },
   }),
 );
 

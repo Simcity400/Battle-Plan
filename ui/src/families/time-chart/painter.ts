@@ -9,6 +9,7 @@ import {
   drawLegendStrip,
   drawPlayheadLine,
   drawSeriesMissingStrip,
+  drawTimeAxis,
   resolveKitTokens,
 } from '../../draw/kit.ts';
 import { rgbaColor } from '../../shell/appearance/color.ts';
@@ -243,7 +244,7 @@ export function drawTimeChart(
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(formatChartAxisValue(v, model.yAxis.format), layout.left - 8, y);
+    ctx.fillText(formatChartAxisValue(v, model.yAxis.format, layout.yTicks), layout.left - 8, y);
     ctx.restore();
   }
 
@@ -295,7 +296,7 @@ export function drawTimeChart(
     if (count > 0 && step) {
       const gapBetween = (a: number, b: number) =>
         model.gaps?.some(g => g.firstHour > a && g.firstHour < b) ?? false;
-      const isNullAt = (i: number) => total ? total.values[i] == null : bands.every(b => b.values[i] == null);
+      const isNullAt = (i: number) => (total?.values[i] == null) && bands.every(b => b.values[i] == null);
       const runs: { readonly start: number; readonly end: number; readonly endHour: number }[] = [];
       let runStart = -1;
       for (let i = 0; i < count; i++) {
@@ -325,36 +326,56 @@ export function drawTimeChart(
         ctx.clip();
         for (const run of runs) {
           const len = run.end - run.start + 1;
-          const acc = new Float64Array(len);
+          const posAcc = new Float64Array(len);
+          const negAcc = new Float64Array(len);
           const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
+          const xEndAt = (k: number) => (k + 1 < len ? layout.toX(hours[run.start + k + 1]!) : endX);
           for (const band of bands) {
+            const botVals = new Float64Array(len);
             const topVals = new Float64Array(len);
-            let anyValid = false;
+            const sign = new Int8Array(len);
             for (let k = 0; k < len; k++) {
               const v = band.values[run.start + k];
-              if (v != null && Number.isFinite(v)) anyValid = true;
-              topVals[k] = acc[k]! + (v ?? 0);
+              if (v == null || !Number.isFinite(v) || v === 0) continue;
+              if (v > 0) {
+                botVals[k] = posAcc[k]!;
+                topVals[k] = posAcc[k]! + v;
+                posAcc[k] = topVals[k]!;
+                sign[k] = 1;
+              } else {
+                botVals[k] = negAcc[k]!;
+                topVals[k] = negAcc[k]! + v;
+                negAcc[k] = topVals[k]!;
+                sign[k] = -1;
+              }
             }
-            if (anyValid) {
+            let k = 0;
+            while (k < len) {
+              const s = sign[k]!;
+              if (s === 0) { k++; continue; }
+              const subStart = k;
+              while (k < len && sign[k] === s) k++;
+              const subEnd = k - 1;
+              const subEndX = xEndAt(subEnd);
               ctx.beginPath();
-              for (let k = 0; k < len; k++) {
-                const x = layout.toX(hours[run.start + k]!);
-                const y = layout.toY(topVals[k]!);
-                if (k === 0) ctx.moveTo(x, y);
+              for (let j = subStart; j <= subEnd; j++) {
+                const x = layout.toX(hours[run.start + j]!);
+                const y = layout.toY(topVals[j]!);
+                if (j === subStart) ctx.moveTo(x, y);
                 else {
-                  ctx.lineTo(x, layout.toY(topVals[k - 1]!));
+                  ctx.lineTo(x, layout.toY(topVals[j - 1]!));
                   ctx.lineTo(x, y);
                 }
               }
-              if (endX > layout.toX(hours[run.end]!)) {
-                ctx.lineTo(endX, layout.toY(topVals[len - 1]!));
-                ctx.lineTo(endX, layout.toY(acc[len - 1]!));
+              if (subEndX > layout.toX(hours[run.start + subEnd]!)) {
+                ctx.lineTo(subEndX, layout.toY(topVals[subEnd]!));
+                ctx.lineTo(subEndX, layout.toY(botVals[subEnd]!));
               }
-              for (let k = len - 1; k >= 0; k--) {
-                const x = layout.toX(hours[run.start + k]!);
-                const y = layout.toY(acc[k]!);
-                if (k < len - 1) {
-                  ctx.lineTo(layout.toX(hours[run.start + k + 1]!), y);
+              for (let j = subEnd; j >= subStart; j--) {
+                const x = layout.toX(hours[run.start + j]!);
+                const y = layout.toY(botVals[j]!);
+                if (j < subEnd) {
+                  ctx.lineTo(layout.toX(hours[run.start + j + 1]!), y);
                 }
                 ctx.lineTo(x, y);
               }
@@ -367,32 +388,50 @@ export function drawTimeChart(
               ctx.lineWidth = 0.8;
               ctx.stroke();
             }
-            acc.set(topVals);
           }
           if (total) {
-            ctx.beginPath();
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = total.color ?? theme.text;
+            ctx.lineWidth = 1.6;
+            ctx.lineJoin = 'round';
             let started = false;
             let prevY = 0;
+            let lastValidK = -1;
             for (let k = 0; k < len; k++) {
               const tv = total.values[run.start + k];
-              if (tv == null) continue;
+              if (tv == null || !Number.isFinite(tv)) {
+                if (started) {
+                  const breakX = layout.toX(hours[run.start + k]!);
+                  if (breakX > layout.toX(hours[run.start + lastValidK]!)) ctx.lineTo(breakX, prevY);
+                  ctx.stroke();
+                  started = false;
+                }
+                continue;
+              }
               const x = layout.toX(hours[run.start + k]!);
               const y = layout.toY(tv);
-              if (!started) { ctx.moveTo(x, y); started = true; }
+              if (!started) { ctx.beginPath(); ctx.moveTo(x, y); started = true; }
               else { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
               prevY = y;
-            }
-            if (started && endX > layout.toX(hours[run.end]!)) {
-              ctx.lineTo(endX, prevY);
+              lastValidK = k;
             }
             if (started) {
-              ctx.globalAlpha = 1;
-              ctx.strokeStyle = total.color ?? theme.text;
-              ctx.lineWidth = 1.6;
-              ctx.lineJoin = 'round';
+              if (endX > layout.toX(hours[run.start + lastValidK]!)) {
+                ctx.lineTo(endX, prevY);
+              }
               ctx.stroke();
             }
           }
+        }
+        if (layout.yDomain[0] < 0) {
+          const zeroY = Math.round(layout.toY(0)) + 0.5;
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = tokens.hairlineStrong;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(layout.left, zeroY);
+          ctx.lineTo(layout.left + layout.plotWidth, zeroY);
+          ctx.stroke();
         }
         ctx.restore();
       }
@@ -521,10 +560,10 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const topStop = rgbaColor(s.color, Number((0.26 * opacity).toFixed(3)), '');
+          const topStop = rgbaColor(s.color, 0.26 * opacity, '');
           if (topStop) {
             grad.addColorStop(0, topStop);
-            grad.addColorStop(1, rgbaColor(s.color, Number((0.02 * opacity).toFixed(3)), s.color));
+            grad.addColorStop(1, rgbaColor(s.color, 0.02 * opacity, s.color));
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
@@ -728,6 +767,8 @@ export function drawTimeChart(
     drawSeriesMissingStrip(ctx, g.x0, layout.axisY - 2, g.x1 - g.x0, theme.hatch, theme, 5);
   }
 
+  const hoverInPlot = hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour;
+
   if (model.mode === 'columns') {
     for (const col of layout.columns) {
       const cx = col.x + col.width / 2;
@@ -757,46 +798,41 @@ export function drawTimeChart(
         ctx.restore();
       }
     }
+    drawDateTab(ctx, layout.dateTabText, layout.dateTabX, layout.axisY + 3, theme, 'playhead', {
+      left: layout.left,
+      right: layout.width - 6,
+    });
   } else {
-    for (const tick of layout.axisTicks) {
-      ctx.save();
-      ctx.strokeStyle = tokens.zeroLine;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(tick.x + 0.5, layout.axisY);
-      ctx.lineTo(tick.x + 0.5, layout.axisY + (tick.major ? 5 : 3));
-      ctx.stroke();
-      if (tick.label) {
-        ctx.font = smallFont;
-        ctx.fillStyle = tick.major ? textSecondary : theme.muted;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        ctx.fillText(tick.label, tick.x, layout.axisY + 6);
+    if (hoverInPlot) {
+      const xh = layout.toX(hoverHour);
+      drawCrosshairLine(ctx, xh, layout.top - 2, layout.axisY, theme);
+      if (model.mode === 'stack' && model.stack?.total && model.stack.hours.length > 0) {
+        let at = -1;
+        for (let i = 0; i < model.stack.hours.length; i++) {
+          if (model.stack.hours[i]! <= hoverHour) at = i;
+          else break;
+        }
+        const tv = at >= 0 ? model.stack.total.values[at] : null;
+        if (tv != null && Number.isFinite(tv)) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(xh, layout.toY(tv), 3.4, 0, Math.PI * 2);
+          ctx.fillStyle = model.stack.total.color ?? theme.text;
+          ctx.fill();
+          ctx.strokeStyle = theme.surface;
+          ctx.lineWidth = 1.8;
+          ctx.stroke();
+          ctx.restore();
+        }
       }
-      ctx.restore();
-    }
-  }
-
-  drawDateTab(ctx, layout.dateTabText, layout.dateTabX, layout.axisY + 3, theme, 'playhead', {
-    left: layout.left,
-    right: layout.width - 6,
-  });
-
-  if (hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour) {
-    const xh = layout.toX(hoverHour);
-    drawCrosshairLine(ctx, xh, layout.top - 2, layout.axisY, theme);
-    if (model.mode === 'stack' && model.stack?.total && model.stack.hours.length > 0) {
-      let at = -1;
-      for (let i = 0; i < model.stack.hours.length; i++) {
-        if (model.stack.hours[i]! <= hoverHour) at = i;
-        else break;
-      }
-      const tv = at >= 0 ? model.stack.total.values[at] : null;
-      if (tv != null && Number.isFinite(tv)) {
+      for (const s of model.series) {
+        const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
+        if (!sampled) continue;
+        const dotColor = s.negRed && sampled.value < 0 ? tokens.shortage : s.color;
         ctx.save();
         ctx.beginPath();
-        ctx.arc(xh, layout.toY(tv), 3.4, 0, Math.PI * 2);
-        ctx.fillStyle = model.stack.total.color ?? theme.text;
+        ctx.arc(xh, layout.toY(sampled.value), 3.4, 0, Math.PI * 2);
+        ctx.fillStyle = dotColor;
         ctx.fill();
         ctx.strokeStyle = theme.surface;
         ctx.lineWidth = 1.8;
@@ -804,23 +840,25 @@ export function drawTimeChart(
         ctx.restore();
       }
     }
-    for (const s of model.series) {
-      const sampled = sampleSeriesValueAt(s, hoverHour, model.hour);
-      if (!sampled) continue;
-      const dotColor = s.negRed && sampled.value < 0 ? tokens.shortage : s.color;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(xh, layout.toY(sampled.value), 3.4, 0, Math.PI * 2);
-      ctx.fillStyle = dotColor;
-      ctx.fill();
-      ctx.strokeStyle = theme.surface;
-      ctx.lineWidth = 1.8;
-      ctx.stroke();
-      ctx.restore();
-    }
-    drawDateTab(ctx, formatDateOnly(hoverHour), xh, layout.axisY + 3, theme, 'hover', {
-      left: layout.left,
-      right: layout.width - 6,
+    drawTimeAxis(ctx, layout.rawAxisTicks, {
+      plotLeft: layout.left,
+      plotRight: layout.left + layout.plotWidth,
+      startHour: layout.xDomain[0],
+      endHour: layout.xDomain[1],
+      toX: layout.toX,
+      axisTop: layout.axisY,
+      playhead: model.hour,
+      playheadLabel: layout.dateTabText,
+      hover: hoverInPlot ? hoverHour : null,
+      hoverLabel: hoverInPlot ? formatDateOnly(hoverHour) : undefined,
+      playheadLineTop: null,
+      hairline: 'none',
+      tickColor: tokens.zeroLine,
+      firstLabelOnly: layout.small,
+      tabBounds: { left: layout.left, right: layout.width - 6 },
+      tabY: layout.axisY + 3,
+      labelY: layout.axisY + 12,
+      theme,
     });
   }
 }

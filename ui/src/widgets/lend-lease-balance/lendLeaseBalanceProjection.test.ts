@@ -23,7 +23,7 @@ const identity: IdentityProvider = {
 };
 
 const reply = (rows: LendLeaseBalanceReply['rows'], missing: string | null = null): LendLeaseBalanceReply =>
-  ({ holder: null, scale: 100000, rows, missing, warnings: [] });
+  ({ holder: null, scale: 100000, rows, missing, rankMissing: null, unlisted: null, warnings: [] });
 
 const view = (data: LendLeaseBalanceReply) =>
   createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', data]]), identity });

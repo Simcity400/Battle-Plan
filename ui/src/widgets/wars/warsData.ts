@@ -208,13 +208,6 @@ export function participantHoldingAt(participant: PreparedParticipant, at: numbe
   return runAt(participant.holdings, Math.floor(at));
 }
 
-export function joinedAt(war: WarTimeline, tag: string, hour: number, identities: CountryIdentityIndex): { firstHour: number; joinedBy: boolean } | null {
-  const key = identities.keyAt(tag, Math.floor(hour));
-  const participant = key === null ? undefined : prepareWar(war, 0, new Lineage([]), identities).byCountry.get(key);
-  const holding = participant && participantHoldingAt(participant, hour);
-  return holding ? { firstHour: holding.firstHour, joinedBy: holding.joinedBy } : null;
-}
-
 export function countryTagAt(view: PreparedParticipant | PreparedCountry, at: number): string | null {
   return view.identities ? view.identities.aliasesAt(new Set([view.key]), Math.floor(at))[0] ?? null
     : view.lineage.tagOf(view.key, Math.floor(at));

@@ -1,7 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
@@ -21,7 +21,7 @@ export function validateTrainingQueue(value: unknown): TrainingQueueReply {
     || !isArray(reply.orders) || !isArray(reply.warnings) || !(reply.inTraining === null || Number.isSafeInteger(reply.inTraining))
     || (reply.readHour !== null && !Number.isInteger(reply.readHour))
     || reply.orders.some(order => typeof order.order !== 'string' || !Number.isInteger(order.amount) || !isArray(order.divisions)
-      || !Number.isSafeInteger(order.manpower) || !Number.isSafeInteger(order.manpowerNeeded)
+      || !(order.manpower === null || Number.isSafeInteger(order.manpower)) || !(order.manpowerNeeded === null || Number.isSafeInteger(order.manpowerNeeded))
       || order.divisions.some(division => typeof division.trainingRaw !== 'string' || typeof division.maxTrainingRaw !== 'string'
         || !(division.equipmentFillRaw === null || typeof division.equipmentFillRaw === 'string') || !isArray(division.need) || !isArray(division.equipment))))
     throw new Error('Invalid training queue reply');
@@ -50,7 +50,12 @@ export function equipmentShare(division: TrainingDivision): Value<number> {
 
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
 const count = (value: number) => formatScalar(value, 'integer');
-const manpower = (have: number): Value<number> => have === 0 ? zeroValue(0) : knownValue(have);
+const ORDER_MANPOWER_MISSING = 'A division’s manpower was not read whole';
+const manpower = (have: number | null, reason: string): Value<number> => have === null ? notRecorded(reason) : have === 0 ? zeroValue(0) : knownValue(have);
+const neededText = (needed: number | null, reason: string): Value<string> => needed === null ? notRecorded(reason) : knownValue(count(needed));
+const manpowerOf = (row: QueueRow): readonly [number | null, number | null, string] => row.kind === 'order'
+  ? [row.order.manpower, row.order.manpowerNeeded, ORDER_MANPOWER_MISSING]
+  : [row.division.manpower, row.division.manpowerNeeded, row.division.manpowerMissing ?? 'Manpower not recorded'];
 
 function orderLine(order: TrainingOrder): string {
   const parts = [`${count(order.divisions.length)} ${order.divisions.length === 1 ? 'division' : 'divisions'}`];
@@ -77,8 +82,8 @@ const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, nev
     extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(equipmentShare(row.division)) } : null },
   { ...MANPOWER!, priority: 3, numeric: true, cellKind: 'outOf', format: 'integer', widest: ['999,999 / 999,999'],
-    value: row => manpower(row.kind === 'order' ? row.order.manpower : row.division.manpower),
-    extra: row => ({ secondaryValue: knownValue(count(row.kind === 'order' ? row.order.manpowerNeeded : row.division.manpowerNeeded)) }) },
+    value: row => { const [have, , reason] = manpowerOf(row); return manpower(have, reason); },
+    extra: row => { const [, needed, reason] = manpowerOf(row); return { secondaryValue: neededText(needed, reason) }; } },
 ];
 
 function orderIcon(order: TrainingOrder, readView: BoundedReadView): string | undefined {
@@ -102,9 +107,12 @@ function divisionTooltip(division: TrainingDivision): TooltipExtraRow[] {
   const rows: TooltipExtraRow[] = [];
   if (division.needMissing !== null) rows.push({ label: 'Equipment', value: notRecorded(division.needMissing), divider: true });
   else {
+    const heldMissing = division.comparisonMissing;
     division.need.forEach((need, at) => rows.push({
       label: need.name ?? 'Equipment name unavailable',
-      value: knownValue(`${count(Number(BigInt(need.heldRaw) / FIXED))} / ${count(Number(BigInt(need.needRaw) / FIXED))}`),
+      value: heldMissing === null
+        ? knownValue(`${count(Number(BigInt(need.heldRaw) / FIXED))} / ${count(Number(BigInt(need.needRaw) / FIXED))}`)
+        : notRecorded(heldMissing),
       lookupKey: need.archetype,
       ...(at === 0 ? { divider: true } : {}),
     }));
@@ -113,7 +121,7 @@ function divisionTooltip(division: TrainingDivision): TooltipExtraRow[] {
   return rows;
 }
 
-export const trainingQueueProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const trainingQueueProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<TrainingQueueReply, QueueRow, Record<string, never>>({
     kind: 'training-queue',
     validate: validateTrainingQueue,

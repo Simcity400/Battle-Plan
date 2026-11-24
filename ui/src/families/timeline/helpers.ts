@@ -1,3 +1,4 @@
+import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import { flagArtHandle } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
@@ -57,6 +58,7 @@ export interface TimelineModelParts {
   readonly firstHour: number;
   readonly lanes?: readonly TimelineLane[];
   readonly unobserved?: readonly HourSpan[];
+  readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars?: boolean;
   readonly labelWidth: number;
   readonly summaryText?: string | null;
@@ -73,6 +75,7 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     firstHour: parts.firstHour,
     lanes: parts.lanes ?? [],
     unobserved: clipSpansToHour(parts.unobserved, parts.hour),
+    ...(parts.legend?.length ? { legend: parts.legend } : {}),
     iconsOnBars: parts.iconsOnBars ?? false,
     labelWidth: parts.labelWidth,
     ...(parts.summaryText ? { summaryText: parts.summaryText } : {}),

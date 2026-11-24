@@ -7,6 +7,7 @@ import { Lineage } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { HourRange } from '../../charts/timeline/runState';
+import type { RankedCounts } from '../../dashboard/groupCounts.ts';
 import type { HourSpan, SubjectLevel, SubjectReply, SubjectRun } from '../../generated/dashboard';
 
 
@@ -150,6 +151,7 @@ export interface LaneOptions {
   countries: ReadonlySet<string> | null;
   countryIds?: ReadonlySet<string> | null;
   bandColor?: string;
+  counts: RankedCounts | null;
 }
 
 export interface LaneInfo { overlord: OverlordView; subject: SubjectView | null }
@@ -178,22 +180,24 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
   };
   const shownSubjects = (overlord: OverlordView) => overlord.subjects.filter(view => firstHour(view.runs) <= hour
     && (options.ended || runState(stretchesAt(view), hour, unread).kind !== 'ended'));
-  const heldCount = (overlord: OverlordView) => overlord.counts.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
   const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
   const involves = (overlord: OverlordView) => { for (const [key, since] of overlord.countryIds) if (since <= hour && chosen!.has(key)) return true; return false; };
   const overlords = views.filter(view => shownSubjects(view).length && (!chosen || involves(view)));
   const tags = new Map(overlords.map(view => [view, overlordTagAt(view, hour)]));
-  const counts = new Map(overlords.map(view => [view, heldCount(view)]));
+  const rank = (view: OverlordView) => { const tag = tags.get(view); return tag == null ? Infinity : options.counts?.rank.get(tag) ?? Infinity; };
+  const countOf = (view: OverlordView) => { const tag = tags.get(view); return tag == null ? undefined : options.counts?.count(tag); };
+  const first = (a: OverlordView, b: OverlordView) => a.firstSince - b.firstSince || compareTags(a.key, b.key);
   const countryAt = (tag: string | null) => tag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : text.country(tag);
   const name = (tag: string | null) => countryAt(tag).name;
   const overlordName = (view: OverlordView) => name(tags.get(view) ?? null);
   overlords.sort(options.order === 'name' ? (a, b) => overlordName(a).localeCompare(overlordName(b)) || compareTags(a.key, b.key)
-    : options.order === 'subjects' ? (a, b) => counts.get(b)! - counts.get(a)! || firstHour(a.counts) - firstHour(b.counts) || compareTags(a.key, b.key)
-      : (a, b) => a.firstSince - b.firstSince || compareTags(a.key, b.key));
+    : options.order === 'subjects' ? (a, b) => rank(a) - rank(b) || first(a, b)
+      : first);
   for (const overlord of overlords) {
-    const unknown = unread.some(span => span.firstHour <= hour && hour <= span.lastHour);
+    const row = countOf(overlord);
+    const unknown = options.counts === null || options.counts.missing !== null || row?.count === null;
     const country = countryAt(tags.get(overlord) ?? null);
-    const count = counts.get(overlord)!;
+    const count = row?.count ?? 0;
     const headingId = laneId(overlord.key, null);
     info.set(headingId, { overlord, subject: null });
     lanes.push({

@@ -37,7 +37,8 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   private onSettle?: () => void;
   private contentRevision: number;
   private settleVersion = 0;
-  private wanted: ReadonlySet<string> = new Set();
+  private visible: ReadonlySet<string> = new Set();
+  private demanded: ReadonlySet<string> = new Set();
   private queue: readonly string[] = [];
   private cursor = 0;
   private disposed = false;
@@ -133,21 +134,27 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     return this.failed.get(url);
   }
 
-  requestVisible(resolutions: Iterable<ArtResolution | string>): void {
+  requestVisible(visible: Iterable<ArtResolution | string>, offscreen: Iterable<ArtResolution | string> = []): void {
     if (this.disposed) return;
-    const wanted = new Set<string>();
-    for (const item of resolutions) {
-      if (typeof item === 'string') {
-        if (item) wanted.add(item);
-      } else if (item.status === 'ready' && item.url) {
-        wanted.add(item.url);
+    const urls = (items: Iterable<ArtResolution | string>, into: Set<string>) => {
+      for (const item of items) {
+        if (typeof item === 'string') {
+          if (item) into.add(item);
+        } else if (item.status === 'ready' && item.url) {
+          into.add(item.url);
+        }
       }
-    }
-    this.wanted = wanted;
-    this.queue = [...wanted];
+      return into;
+    };
+    const shown = urls(visible, new Set());
+    const demanded = urls(offscreen, new Set());
+    for (const url of shown) demanded.delete(url);
+    this.visible = shown;
+    this.demanded = demanded;
+    this.queue = [...shown, ...demanded];
     this.cursor = 0;
     for (const [url, controller] of this.pending) {
-      if (!wanted.has(url)) {
+      if (!this.wants(url)) {
         this.pending.delete(url);
         controller.abort();
       }
@@ -163,7 +170,8 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     this.onSettle = undefined;
     for (const controller of this.pending.values()) controller.abort();
     this.pending.clear();
-    this.wanted = new Set();
+    this.visible = new Set();
+    this.demanded = new Set();
     this.queue = [];
     for (const bitmap of this.bitmaps.values()) bitmap.close();
     this.bitmaps.clear();
@@ -203,19 +211,20 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     return held;
   }
 
+  private wants(url: string): boolean {
+    return this.visible.has(url) || this.demanded.has(url);
+  }
+
   private pump(): void {
     if (this.disposed) return;
     while (this.cursor < this.queue.length && this.pending.size < this.maxConcurrent) {
       const url = this.queue[this.cursor]!;
-      if (this.bitmaps.has(url) || this.pending.has(url) || this.failed.has(url)) {
-        this.cursor++;
-        continue;
-      }
-      if (this.bitmaps.size + this.pending.size >= this.maxEntries) {
+      this.cursor++;
+      if (this.bitmaps.has(url) || this.pending.has(url) || this.failed.has(url)) continue;
+      if (!this.visible.has(url)) {
         this.evict(this.maxEntries - this.pending.size - 1);
         if (this.bitmaps.size + this.pending.size >= this.maxEntries) return;
       }
-      this.cursor++;
       this.startFetch(url);
     }
   }
@@ -237,7 +246,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
           prev.close();
         }
         this.failed.delete(url);
-        if (this.wanted.has(url)) {
+        if (this.wants(url)) {
           this.bitmaps.set(url, bitmap);
           this.evict();
         } else {
@@ -268,7 +277,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     if (this.bitmaps.size <= limit) return;
     for (const [key, bitmap] of this.bitmaps) {
       if (this.bitmaps.size <= limit) break;
-      if (this.wanted.has(key)) continue;
+      if (this.wants(key)) continue;
       this.bitmaps.delete(key);
       bitmap.close();
     }

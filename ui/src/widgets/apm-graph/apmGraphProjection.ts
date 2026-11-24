@@ -6,15 +6,16 @@ import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
-import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { BoundedReadView, BoundedSeries, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import {
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import type { ChartGap, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf, missingSpansOf } from '../../families/time-chart/seriesHelpers.ts';
-import type { ApmReply, ApmSeries } from '../../generated/dashboard';
-import { playerNames, validateApm } from '../player-apm/apmData.ts';
+import type { ApmPlayer, ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
+import { GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
 import { apmHeadQuery, apmHeadRows } from '../player-apm/apmHead.ts';
 
 const TOP_NAMED = 8;
@@ -28,24 +29,56 @@ export interface ApmGraphOptions {
   readonly yMin: number | null;
   readonly yMax: number | null;
   readonly available: boolean | null;
+  readonly players?: readonly ApmPlayer[];
 }
 
 function formatApm(value: number): string {
   return String(Math.round(value));
 }
 
+function unknownApmReason(value: ApmValue): string {
+  if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
+  if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
+  return 'It is unclear whether some orders count toward eAPM; the rate is unknown.';
+}
+
+function hasRecordedByHour(bounded: BoundedSeries | null, hour: number): boolean {
+  if (!bounded) return false;
+  if (bounded.runs) {
+    for (let i = 0; i < bounded.runs.length; i++) {
+      const r = bounded.runs.at(i);
+      if (r && r.firstHour <= hour) return true;
+    }
+  }
+  for (let i = 0; i < bounded.buckets.length; i++) {
+    const b = bounded.buckets.at(i);
+    if (b && b.firstHour <= hour) return true;
+  }
+  return false;
+}
+
+interface SeriesEntry {
+  readonly id: string;
+  readonly name: string | null;
+  readonly tag: string | null;
+  readonly obsHour: number;
+  readonly headValue: number | null;
+  readonly gaps: boolean;
+  readonly bounded: BoundedSeries | null;
+}
+
 function resolveSeriesColors(
   readView: BoundedReadView,
-  rows: readonly ApmSeries[],
+  entries: readonly SeriesEntry[],
   hour: number,
   surface: string,
 ): string[] {
   const surfaceRgb = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
   const raw: { r: number; g: number; b: number }[] = [];
   const indices: number[] = [];
-  for (let i = 0; i < rows.length; i++) {
-    const tag = rows[i]!.tag;
-    const obsHour = Number.isFinite(rows[i]!.hour) ? Math.min(rows[i]!.hour, hour) : hour;
+  for (let i = 0; i < entries.length; i++) {
+    const tag = entries[i]!.tag;
+    const obsHour = Number.isFinite(entries[i]!.obsHour) ? Math.min(entries[i]!.obsHour, hour) : hour;
     const id = tag ? readView.who('country', tag, obsHour) : null;
     const rgb = id?.colour?.status === 'ready' ? parseColor(readableColour(id.colour.value, surface)) : null;
     if (rgb) {
@@ -55,11 +88,49 @@ function resolveSeriesColors(
   }
   const nudged = raw.length > 0 ? nudgeApart(raw, surfaceRgb) : [];
   const fallbacks = categoricalPalette(surface);
-  const out: string[] = rows.map((_, i) => fallbacks[i % fallbacks.length]!);
+  const out: string[] = entries.map((_, i) => fallbacks[i % fallbacks.length]!);
   for (let j = 0; j < indices.length; j++) {
     out[indices[j]!] = toHex(nudged[j]!);
   }
   return out;
+}
+
+function buildHoverDetail(
+  readView: BoundedReadView,
+  options: ApmGraphOptions,
+  colorById: ReadonlyMap<string, string>,
+  disambiguated: ReadonlyMap<string, string> | null,
+  hour: number,
+): TimeChartModel['hoverDetail'] {
+  const hover = readView.hover<ApmReply>('hover');
+  if (!hover || hover.hour > hour || !hover.data) return null;
+  const reply = hover.data;
+  if (!reply.available) return null;
+  const items: TooltipListItem[] = [];
+  let anyGaps = false;
+  for (const row of reply.series) {
+    if (row.summary.gaps) anyGaps = true;
+    const identity = row.tag ? readView.who('country', row.tag, hover.hour) : null;
+    const flagChoice = identity?.flagChoice?.status === 'ready' ? identity.flagChoice.value : null;
+    const flagRes = flagChoice ? readView.art(flagArtHandle(flagChoice, 'small')) : null;
+    const label = options.group === 'player'
+      ? (disambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
+      : (identity?.name.status === 'ready' ? identity.name.value : row.tag ?? row.id);
+    const swatch = colorById.get(row.id);
+    items.push({
+      label,
+      ...(row.summary.apm !== null
+        ? { value: formatApm(row.summary.apm) }
+        : { missingReason: unknownApmReason(row.summary), tone: 'muted' as const }),
+      ...(swatch ? { swatch } : {}),
+      ...(flagRes?.status === 'ready' && flagRes.url ? { countryFlag: { flag: flagRes.url } } : {}),
+    });
+  }
+  if (anyGaps) {
+    items.push({ label: GAPS_NOTE, tone: 'muted', ...(items.length > 0 ? { divider: true } : {}) });
+  }
+  if (items.length === 0) return null;
+  return { hour: hover.hour, items, replacesSeries: true };
 }
 
 function extractHeadRows(readView: BoundedReadView): { readonly rows: readonly ApmSeries[]; readonly ready: boolean; readonly refusal: string | null; readonly warnings: readonly string[] } {
@@ -116,7 +187,43 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       };
     }
     const tiled = readView.series('apm');
-    if (!rows.length && (!tiled || tiled.size === 0)) {
+    const registryById = new Map<string, ApmPlayer>((options.players ?? []).map(p => [p.id, p]));
+    const entries: SeriesEntry[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      seen.add(row.id);
+      const obsHour = Number.isFinite(row.hour) && row.hour > 0 ? Math.min(row.hour, hour) : hour;
+      entries.push({
+        id: row.id,
+        name: row.name,
+        tag: row.tag,
+        obsHour,
+        headValue: row.summary.apm,
+        gaps: row.summary.gaps,
+        bounded: tiled?.get(row.id) ?? null,
+      });
+    }
+    if (tiled) {
+      const historicalIds = [...tiled.keys()].filter(id => !seen.has(id)).sort();
+      for (const id of historicalIds) {
+        const bounded = tiled.get(id) ?? null;
+        if (!hasRecordedByHour(bounded, hour)) continue;
+        const reg = options.group === 'player' ? registryById.get(id) : undefined;
+        const lastHour = bounded?.buckets.length
+          ? Math.min(bounded.buckets.at(bounded.buckets.length - 1)?.lastHour ?? hour, hour)
+          : hour;
+        entries.push({
+          id,
+          name: options.group === 'player' ? (reg?.name ?? null) : id,
+          tag: options.group === 'player' ? (reg?.tags[0] ?? null) : id,
+          obsHour: lastHour,
+          headValue: null,
+          gaps: false,
+          bounded,
+        });
+      }
+    }
+    if (!entries.length) {
       return {
         kind: 'apm-graph',
         measureTitle: 'eAPM',
@@ -129,46 +236,48 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         ...(ready ? { empty: { message: 'No eAPM is available for these countries, players and dates.', kind: 'empty' as const } } : {}),
       };
     }
-    const disambiguated = options.group === 'player' ? playerNames(rows) : null;
-    const topRows = rows.slice(0, TOP_NAMED);
-    const topColors = resolveSeriesColors(readView, topRows, hour, options.surface);
-    const series: TimeChartSeriesModel[] = rows.map((row, rank) => {
+    const disambiguated = options.group === 'player' ? playerNames(entries, options.players) : null;
+    const topEntries = entries.slice(0, TOP_NAMED);
+    const topColors = resolveSeriesColors(readView, topEntries, hour, options.surface);
+    const colorById = new Map<string, string>();
+    const series: TimeChartSeriesModel[] = entries.map((entry, rank) => {
       const isTop = rank < TOP_NAMED;
-      const obsHour = Number.isFinite(row.hour) && row.hour > 0 ? Math.min(row.hour, hour) : hour;
-      const identity = row.tag ? readView.who('country', row.tag, obsHour) : null;
+      const identity = entry.tag ? readView.who('country', entry.tag, entry.obsHour) : null;
       const flagChoice = identity?.flagChoice?.status === 'ready' ? identity.flagChoice.value : null;
       const flag = flagChoice
-        ? { art: readView.art(flagArtHandle(flagChoice, 'panel')), tag: row.tag ?? undefined, label: row.tag ?? undefined }
+        ? { art: readView.art(flagArtHandle(flagChoice, 'panel')), tag: entry.tag ?? undefined, label: entry.tag ?? undefined }
         : undefined;
       const name = options.group === 'player'
-        ? (disambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
-        : (identity?.name.status === 'ready' ? identity.name.value : row.tag ?? row.id);
-      const bounded = tiled?.get(row.id) ?? null;
-      const headValue = row.summary.apm;
+        ? (disambiguated?.get(entry.id) ?? entry.name ?? 'Name not recorded')
+        : (identity?.name.status === 'ready' ? identity.name.value : entry.tag ?? entry.id);
       const color = isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.mutedFallback;
+      colorById.set(entry.id, color);
       return {
-        id: row.id,
-        key: row.id,
+        id: entry.id,
+        key: entry.id,
         name,
         color,
         role: isTop ? 'primary' : 'tail',
         step: false,
-        bounded,
-        headValue,
-        headHour: obsHour,
+        bounded: entry.bounded,
+        headValue: entry.headValue,
+        headHour: entry.obsHour,
         ...(flag ? { flag } : {}),
-        missingSpans: missingSpansOf(bounded),
+        missingSpans: missingSpansOf(entry.bounded),
         rank,
-        endLabel: isTop && headValue !== null
+        endLabel: isTop && entry.headValue !== null
           ? {
               ...(flag ? { flag } : {}),
               name,
               fullName: name,
-              value: formatApm(headValue),
+              value: formatApm(entry.headValue),
+              ...(entry.gaps ? { valueMuted: true } : {}),
             }
           : null,
       };
     });
+    const anyHeadGaps = entries.some(e => e.gaps);
+    const hoverDetail = buildHoverDetail(readView, options, colorById, disambiguated, hour);
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
       .map(s => (auditRow(s.id, formatApm(s.headValue!))));
@@ -181,6 +290,8 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       yAxis,
       series,
       ...(options.gaps.length > 0 ? { gaps: options.gaps } : {}),
+      ...(anyHeadGaps ? { note: GAPS_NOTE } : {}),
+      ...(hoverDetail ? { hoverDetail } : {}),
       warnings,
       auditRows,
     };
@@ -282,6 +393,18 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
             validate: validateApm,
           },
         },
+        {
+          name: 'hover',
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'exact-hover',
+            product: 'player-apm',
+            params: { ...headParams, registry: false, firstHour: null, lastHour: null, buckets: 1 },
+            validate: validateApm,
+          },
+        },
         ...(ids.length > 0
           ? [{
               name: 'apm',
@@ -321,6 +444,7 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
       yMin,
       yMax,
       available: ctx.aux ? ctx.aux.available : null,
+      ...(ctx.aux ? { players: ctx.aux.players } : {}),
     };
   },
 };

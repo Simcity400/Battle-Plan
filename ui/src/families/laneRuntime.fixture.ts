@@ -13,6 +13,7 @@ export interface RecordedCanvas {
   readonly width: number;
   readonly height: number;
   readonly frames: string[][];
+  readonly marks: Map<string, string>;
 }
 
 const METRICS = (text: unknown) => {
@@ -31,19 +32,44 @@ function recordingContext(canvas: RecordedCanvas): unknown {
   const props = new Map<PropertyKey, unknown>([['canvas', canvas], ['font', '10px sans-serif'], ['globalAlpha', 1], ['lineWidth', 1]]);
   let depth = 0;
   let frame: string[] | null = null;
+  let t = { a: 1, d: 1, e: 0, f: 0 };
+  const stack: (typeof t)[] = [];
+  const px = (x: unknown) => Math.round(t.e + Number(x) * t.a);
+  const py = (y: unknown) => Math.round(t.f + Number(y) * t.d);
+  const cover = (x: unknown, y: unknown, w: unknown, h: unknown) => {
+    const x0 = px(x), y0 = py(y), x1 = px(Number(x) + Number(w)), y1 = py(Number(y) + Number(h));
+    for (const key of [...canvas.marks.keys()]) {
+      const [, mx, my] = key.split(':');
+      const kx = Number(mx), ky = Number(my);
+      if (kx >= Math.min(x0, x1) && kx < Math.max(x0, x1) && ky >= Math.min(y0, y1) && ky < Math.max(y0, y1)) canvas.marks.delete(key);
+    }
+    return [x0, y0, x1 - x0, y1 - y0] as const;
+  };
   const log = (line: string) => { (frame ?? (frame = [], canvas.frames.push(frame), frame)).push(line); };
   const special: Record<string, (...args: unknown[]) => unknown> = {
     measureText: text => METRICS(text),
     save: () => {
       if (depth === 0) { frame = []; canvas.frames.push(frame); }
       depth++;
+      stack.push({ ...t });
       log('save');
     },
     restore: () => {
       log('restore');
+      t = stack.pop() ?? t;
       depth = Math.max(0, depth - 1);
       if (depth === 0) frame = null;
     },
+    setTransform: (a, _b, _c, d, e, f) => { t = { a: Number(a), d: Number(d), e: Number(e), f: Number(f) }; log('setTransform'); },
+    translate: (x, y) => { t = { ...t, e: t.e + Number(x) * t.a, f: t.f + Number(y) * t.d }; log(`translate(${shown(x)},${shown(y)})`); },
+    scale: (x, y) => { t = { ...t, a: t.a * Number(x), d: t.d * Number(y) }; log('scale'); },
+    clearRect: (x, y, w, h) => { cover(x, y, w, h); log('clearRect'); },
+    fillRect: (x, y, w, h) => {
+      const [x0, y0, ww, hh] = cover(x, y, w, h);
+      canvas.marks.set(`r:${x0}:${y0}`, `${String(props.get('fillStyle'))}:${ww}x${hh}`);
+      log('fillRect');
+    },
+    fillText: (text, x, y) => { canvas.marks.set(`t:${px(x)}:${py(y)}`, `${String(props.get('fillStyle'))}|${String(text)}`); log(`fillText(${shown(text)})`); },
     createLinearGradient: (...args) => { log(`gradient(${args.map(shown).join(',')})`); return { addColorStop: (at: number, colour: string) => log(`stop(${shown(at)},${colour})`) }; },
     createRadialGradient: (...args) => { log(`radial(${args.map(shown).join(',')})`); return { addColorStop: (at: number, colour: string) => log(`stop(${shown(at)},${colour})`) }; },
     createPattern: () => { log('pattern'); return {}; },
@@ -73,6 +99,7 @@ export function installRecordingCanvas(): { readonly canvases: RecordedCanvas[];
     width: number;
     height: number;
     frames: string[][] = [];
+    marks = new Map<string, string>();
     private ctx: unknown = null;
     constructor(width: number, height: number) {
       this.width = width;
@@ -96,6 +123,7 @@ export interface LaneStep {
   readonly seek?: number;
   readonly owner?: string;
   readonly generation?: number;
+  readonly now?: number;
   readonly check?: boolean;
 }
 
@@ -123,12 +151,20 @@ export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = 
         speed: step.speed ?? 0,
         binding: { generation: step.generation ?? 1, surfaces: [surface], offset: 0, pin: null, ...(step.owner !== undefined ? { owner: step.owner } : {}) },
         inspect: step.inspect ?? null,
-        now: 1000,
+        now: step.now ?? 1000,
       }, state, () => `c${++seq}`);
       if (canvases.length > before) canvas = canvases[before]!;
       return painted;
     },
-    picture: () => (canvas?.frames.at(-1) ?? []),
+    picture: () => {
+      if (!canvas) return [];
+      const shown: string[] = [];
+      for (const [key, value] of canvas.marks) {
+        const [, x, y] = key.split(':');
+        if (Number(x) >= 0 && Number(x) < canvas.width && Number(y) >= 0 && Number(y) < canvas.height) shown.push(`${key}=${value}`);
+      }
+      return shown.sort();
+    },
   };
 }
 
@@ -154,7 +190,7 @@ export function assertFreshPaint(makeView: () => LaneView, steps: readonly LaneS
       if (!step.check) continue;
       const fresh = driveLane(makeView(), recording.canvases, surface);
       const freshPainted = fresh.paint(step);
-      assert.ok(fresh.picture().length > 0, `${step.label}: a fresh paint draws`);
+      assert.ok(fresh.picture().length > 0, `${step.label}: a fresh paint draws something`);
       assert.deepEqual(played.picture(), fresh.picture(), `${step.label}: the picture equals a fresh paint`);
       assert.deepEqual(fieldValues(painted, step.speed ?? 0), fieldValues(freshPainted, step.speed ?? 0), `${step.label}: the fields equal a fresh paint`);
       assert.equal(painted.mode, freshPainted.mode, `${step.label}: the mode equals a fresh paint`);

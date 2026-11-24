@@ -98,7 +98,7 @@ export const battleWinner = (row: BattleRow) => 'unknown' in row.winner ? row.wi
 export const battleDate = (bound: BattleRow['end'], unknown: string) => bound === null ? unknown
   : 'unknown' in bound ? bound.unknown : `${bound.bound === 'by' ? 'by ' : ''}${dayLabel(bound.hour)}`;
 export const battleValueText = (value: BattleValue) => value.value === null ? value.unknown
-  : `${value.atLeast ? '≥ ' : ''}${Number.isInteger(value.value) ? usNumber.format(value.value) : String(value.value)}`;
+  : Number.isInteger(value.value) ? usNumber.format(value.value) : String(value.value);
 
 export function battleMeasure(row: BattleRow, label: string, unknown: string): BattleValue {
   let value = 0;
