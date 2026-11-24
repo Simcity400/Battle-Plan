@@ -16,7 +16,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'civil-wars', load: () => import('./civil-wars') },
   { kind: 'command-power-spending', load: () => import('./command-power-spending') },
   { kind: 'construction-log', load: () => import('./construction-log') },
-  { kind: 'construction-spending', load: () => import('./construction-spending') },
   { kind: 'decisions', load: () => import('./decisions') },
   { kind: 'division-log', load: () => import('./division-log') },
   { kind: 'division-service-record', load: () => import('./division-service-record') },

@@ -18,7 +18,7 @@ import {
   buildBreakdownTooltip,
   deriveBreakdownAudit,
   deriveBreakdownNavAndMirror,
-  resolveDrillLevel,
+  breakdownLevel,
   type BreakdownModel,
   type BreakdownPart,
   type ResolvedBreakdownLevel,
@@ -222,25 +222,13 @@ export function familyBreakdownLaneView(
   laneOptions?: FamilyBreakdownLaneOptions,
 ): LaneView {
   return {
-    next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
+    next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyBreakdownBinding(bound)) return Infinity;
       const projection = ensureBreakdownProjection(bound.kind, () => wake(scene.widget));
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
-      let soonest = nextLookChange(bound.theme?.countryLooks, hour);
-      const held = state?.get('familyBreakdown') as HeldBreakdown | undefined;
-      if (held?.cachedModel && held.cachedModelKind === bound.kind && held.cachedModel.nextChangeAt !== undefined) {
-        soonest = Math.min(soonest, held.cachedModel.nextChangeAt);
-      }
-      if (projection.nextChange) {
-        const readView = readViewFromScene(scene, bound, hour, {
-          identity: held?.identityProvider,
-          art: held?.artProvider,
-        });
-        soonest = Math.min(soonest, projection.nextChange(readView, bound.options));
-      }
-      return soonest;
+      return nextLookChange(bound.theme?.countryLooks, hour);
     },
     unmount(_widget: number, state: Map<string, unknown>): void {
       const held = state.get('familyBreakdown') as HeldBreakdown | undefined;
@@ -358,13 +346,7 @@ export function familyBreakdownLaneView(
         } else {
           held.identityDemandsField = null;
         }
-        let nextBoundary = Math.min(
-          nextLookChange(bound.theme?.countryLooks, input.hour),
-          model.nextChangeAt ?? Infinity,
-        );
-        if (projection.nextChange) {
-          nextBoundary = Math.min(nextBoundary, projection.nextChange(readView, bound.options));
-        }
+        const nextBoundary = nextLookChange(bound.theme?.countryLooks, input.hour);
         held.prevParts = snapshotPictures(input.pictures);
         held.prevOptions = bound.options;
         held.prevStaticPanels = bound.staticPanels;
@@ -375,9 +357,6 @@ export function familyBreakdownLaneView(
         held.cachedModelKind = bound.kind;
       }
 
-      if (model.refused !== undefined) {
-        return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
-      }
 
       if (held.demandedArtUrls.length) {
         held.art.requestVisible(held.demandedArtUrls);
@@ -391,7 +370,7 @@ export function familyBreakdownLaneView(
         && held.structureKey.length === structureKey.length
         && held.structureKey.every((part, at) => part === structureKey[at]);
       if (!sameStructure) {
-        const level = resolveDrillLevel(model, []);
+        const level = breakdownLevel(model);
         const measure = (text: string, font: string) => {
           const key = `${font}\u0000${text}`;
           let w = held!.measures.get(key);
