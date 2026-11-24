@@ -125,6 +125,42 @@ test('review 5 finding 14: a failed stream stays failed through a resubscription
   } finally { close(); }
 });
 
+test('identity and statics are supplied apart from the binding: one snapshot per lane, no new generation, and pictures in flight are installed', async () => {
+  const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 },
+    content: `snapshot:${JSON.stringify((input.model as { identitySnapshot?: unknown }).identitySnapshot ?? null)}` })), fields: {}, motion: false }) };
+  const { pipeline, clock, settle, posted, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  try {
+    const slow = pipeline.acquire('slow|0', { offset: 0, pin: null });
+    const other = pipeline.acquire('other|0', { offset: 0, pin: null });
+    for (const id of [slow, other]) {
+      pipeline.present(id, 'drawn');
+      pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }], dated: { h: 0, c: 100 } }, {}, { family: 'test', kind: 'test' });
+    }
+    clock.seek(10);
+    assert.ok(await settle(() => pipeline.view(slow)?.mode === 'picture' && pipeline.view(other)?.mode === 'picture'));
+    const generation = pipeline.binding(slow);
+    const installs = pipeline.page.stats.installs;
+    const start = posted.length;
+    for (let notify = 0; notify < 10; notify++) {
+      const snapshot = { version: notify, names: Array.from({ length: 100 }, (_, at) => `T${at}`) };
+      pipeline.supply(other, { identity: snapshot });
+      pipeline.supply(slow, { identity: snapshot });
+      await new Promise(resolve => { setImmediate(resolve); });
+    }
+    assert.ok(await settle(() => pipeline.page.widgets.get(slow)?.content[0]?.includes('"version":9') === true), JSON.stringify(pipeline.page.widgets.get(slow)?.content));
+    assert.equal(pipeline.binding(slow), generation, 'an identity notify from another widget is not a new binding');
+    assert.equal(pipeline.page.stats.rejected.binding ?? 0, 0, 'no picture in flight is retired for the binding');
+    assert.ok(pipeline.page.stats.installs > installs, 'the pictures drawn meanwhile are installed');
+    const sent = posted.slice(start);
+    assert.equal(sent.filter(item => item.type === 'identity' && (item.message as { snapshot: unknown }).snapshot !== null).length, 10, 'each snapshot crosses to the lane once, though two widgets read it');
+    assert.equal(sent.filter(item => item.type === 'bind').length, 0);
+    assert.ok(Math.max(...sent.filter(item => item.type === 'supply').map(item => item.bytes)) < 80, 'a widget names its snapshot; it does not carry a copy');
+    pipeline.unmount(slow);
+    pipeline.unmount(other);
+    assert.ok(posted.some(item => item.type === 'identity' && (item.message as { snapshot: unknown }).snapshot === null), 'a snapshot no widget reads is dropped from the lane');
+  } finally { close(); }
+});
+
 test('review 5 finding 16: each pointer is answered with the row under its own position, never the one whose tooltip is installed', async () => {
   const drawn: LaneView = { paint: input => ({ surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: 'rows' })), fields: {}, motion: false,
     hit: point => point[0] < 5 ? 'race:A' : 'race:B' }) };
