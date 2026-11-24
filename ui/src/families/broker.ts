@@ -503,15 +503,27 @@ interface ExactPart {
   readonly hover?: unknown;
 }
 
+export const NO_ENTRIES: readonly SourceEntry[] = [];
+
+export function readsWithoutFollow(read: SourceTimeShape): boolean {
+  if (read.shape === 'range') return true;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
+}
+
+export function boundedReadable(read: SourceTimeShape): boolean {
+  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
+}
+
 export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   const primary = primaryExactEntry(plan);
   if (!primary) return NO_ENTRIES;
-  const out: SourceEntry[] = [primary];
+  const substituted = plan.exactEntry !== undefined || plan.staticEntry !== undefined;
+  const out = new Map<string, SourceEntry>([[primary.name, primary]]);
   for (const entry of plan.entries) {
-    if (entry === primary || entry.name === primary.name || !readsWithoutFollow(entry.read)) continue;
-    out.push(entry);
+    if (out.has(entry.name)) continue;
+    if (substituted ? readsWithoutFollow(entry.read) : boundedReadable(entry.read)) out.set(entry.name, entry);
   }
-  return out;
+  return [...out.values()];
 }
 
 async function readEntryExact(

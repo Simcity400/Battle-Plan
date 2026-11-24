@@ -8,23 +8,16 @@ import {
   type BrokerSlotHandle,
   type PlaybackBoundedOptions,
   type StaticRequestSpec,
+  boundedReadable,
+  NO_ENTRIES,
+  readsWithoutFollow,
 } from './broker.ts';
-import type { CompiledFollowSubscription, SourceEntry, SourcePlan, SourceTimeShape } from './plan.ts';
+import type { CompiledFollowSubscription, SourceEntry, SourcePlan } from './plan.ts';
 import type { FrozenGate } from './sources.ts';
 
 export type Interval = readonly [lo: number, hi: number];
 
 const EVERY_HOUR: Interval = [-Infinity, Infinity];
-const NO_ENTRIES: readonly SourceEntry[] = [];
-
-function readsWithoutFollow(read: SourceTimeShape): boolean {
-  if (read.shape === 'range') return true;
-  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
-}
-
-function boundedReadable(read: SourceTimeShape): boolean {
-  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
-}
 
 export function unitEntries(
   plan: SourcePlan | null,

@@ -1157,7 +1157,7 @@ test('the exact read answers every entry the picture reads, not only the first',
       buildExactParams: (base: Readonly<Record<string, unknown>>, hour: unknown) => ({ ...base, hour }),
     },
   });
-  const plan: SourcePlan = { owner: 'parts', entries: [point('main', 'total', false), point('part:a', 'a', false), point('live', 'followed', true)] };
+  const plan: SourcePlan = { owner: 'parts', entries: [point('main', 'total', false), point('part:a', 'a', false), point('live', 'followed', true)], staticEntry: point('main', 'total', false) };
   const gate: FrozenGate = {
     recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
     span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
