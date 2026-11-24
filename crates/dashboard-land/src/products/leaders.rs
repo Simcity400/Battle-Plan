@@ -253,8 +253,9 @@ impl Content {
 fn trait_icon(catalogue: &Catalogue, leaders: &Leaders, token: &str) -> Result<String, String> {
     let name = leaders.traits.assignment_sprite(token).map_err(str::to_owned)?.ok_or_else(|| format!("Trait {token} is not registered"))?;
     let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|error| error.to_string())?;
-    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 32).map_err(|error| error.to_string())
+    dashboard_base::products::artwork::resolve_sprite_type(catalogue, sprite, 0, 32)
+        .into_result()?
+        .ok_or_else(|| "Trait icon unavailable".to_owned())
 }
 
 fn world_of<'a, 'w>(frame: &'a DecodedFrame, content: &'a Content, world: &'w mut Option<Result<World<'a>, String>>) -> Result<&'w World<'a>, String> {

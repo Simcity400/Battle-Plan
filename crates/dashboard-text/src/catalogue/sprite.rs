@@ -175,6 +175,7 @@ pub(super) fn load(
     path: &[u8],
     decode: Decode,
 ) -> io::Result<dds::Texture> {
+    super::check_unmounted_texture(layers, path)?;
     resources::stack_texture(layers, path, decode)?
         .map(|texture| texture.image)
         .map_err(|why| {
@@ -195,6 +196,7 @@ pub(super) fn optional(
     path: &[u8],
     decode: Decode,
 ) -> io::Result<Option<dds::Texture>> {
+    super::check_unmounted_texture(layers, path)?;
     match resources::stack_texture(layers, path, decode)? {
         Ok(texture) => Ok(Some(texture.image)),
         Err(why) if why.native_failure() => Ok(None),
