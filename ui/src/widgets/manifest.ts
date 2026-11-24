@@ -17,6 +17,14 @@ import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
 export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 
+export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
+
+export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
+  'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
+  'army-size': () => import('./army-size/armyChoices.ts').then(module => module.useArmyChoices),
+  'equipment-stockpile': () => import('./equipment-stockpile/useEquipmentStockpile').then(module => module.useStockpileChoices),
+};
+
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
   readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
