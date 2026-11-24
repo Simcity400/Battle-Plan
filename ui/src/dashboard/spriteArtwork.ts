@@ -1,4 +1,5 @@
-import type { ArtResolution, SpriteImage } from '../generated/dashboard';
+import type { ArtResolution, LeaderPortraitsReply, SpriteImage } from '../generated/dashboard';
+import type { ArtHandle } from '../families/plan.ts';
 import { spriteImageToArt } from '../families/art/adapters.ts';
 import { artHandleKey } from '../families/art/types.ts';
 import { drawableIcon } from './artwork.ts';
@@ -6,7 +7,9 @@ import { asFailure } from './queryError.ts';
 
 export interface SpriteFrame { key: string; frame: number; recorded?: string; text?: boolean }
 
-export const spriteId = (sprite: SpriteFrame) => artHandleKey({ kind: 'sprite', ...sprite });
+export const spriteHandle = (sprite: SpriteFrame): ArtHandle => ({ kind: 'sprite', ...sprite });
+
+export const spriteId = (sprite: SpriteFrame) => artHandleKey(spriteHandle(sprite));
 
 export const optionalKey = (value: unknown) => value === undefined || typeof value === 'string' && value.length > 0;
 
@@ -61,10 +64,31 @@ export function spriteResolutions(reply: unknown, asked: readonly SpriteFrame[])
   return resolutions;
 }
 
+export function textureResolutions(reply: unknown, asked: readonly ArtHandle[]): Map<string, ArtResolution> {
+  const value = reply as { textures?: unknown };
+  const out = new Map<string, ArtResolution>();
+  if (value.textures === undefined) return out;
+  if (!Array.isArray(value.textures)) throw new Error('The sprite artwork reply is malformed.');
+  const ids = new Set(asked.map(artHandleKey));
+  for (const item of value.textures as { path?: unknown; frame?: unknown; frames?: unknown; resolution?: unknown }[]) {
+    if (!item || typeof item.path !== 'string' || typeof item.frame !== 'number' || typeof item.frames !== 'number' || !item.resolution) {
+      throw new Error('The sprite artwork reply is malformed.');
+    }
+    const id = artHandleKey({ kind: 'path', path: item.path, frame: item.frame, frames: item.frames });
+    if (ids.has(id)) out.set(id, item.resolution as ArtResolution);
+  }
+  return out;
+}
+
+export function portraitResolutions(reply: LeaderPortraitsReply, hour: number): Map<string, ArtResolution> {
+  if (!reply || !Array.isArray(reply.portraits)) throw new Error('The unit leader portraits reply is malformed.');
+  return new Map(reply.portraits.map(portrait => [artHandleKey({ kind: 'portrait', leader: portrait.reference, hour }), portrait.resolution]));
+}
+
 export const SPRITE_BATCH = 64;
 export const MAX_SPRITE_CONCURRENCY = 2;
 
-export type SpriteFetcher = (sprites: readonly SpriteFrame[], signal: AbortSignal) => Promise<unknown>;
+export type ArtFetcher = (handles: readonly ArtHandle[], signal: AbortSignal) => Promise<ReadonlyMap<string, ArtResolution>>;
 
 type SpriteWatcher = (icons: ReadonlyMap<string, string | null>, errors: ReadonlyMap<string, string>) => void;
 
@@ -74,7 +98,7 @@ interface SpriteScope {
   resolutions: Map<string, ArtResolution>;
   errors: Map<string, string>;
   inFlight: Set<string>;
-  queued: Map<string, SpriteFrame>;
+  queued: Map<string, ArtHandle>;
   watchers: Set<SpriteWatcher>;
   controllers: Set<AbortController>;
   scheduled: boolean;
@@ -106,14 +130,14 @@ export class SpriteCaches {
     return () => { held.watchers.delete(watcher); };
   }
 
-  request(scope: string, sprites: readonly SpriteFrame[], fetch: SpriteFetcher): void {
+  request(scope: string, handles: readonly ArtHandle[], fetch: ArtFetcher): void {
     const held = this.held(scope);
     let added = false;
-    for (const sprite of sprites) {
-      const id = spriteId(sprite);
+    for (const handle of handles) {
+      const id = artHandleKey(handle);
       if (held.resolutions.has(id) || held.errors.has(id) || held.inFlight.has(id)) continue;
       held.inFlight.add(id);
-      held.queued.set(id, sprite);
+      held.queued.set(id, handle);
       added = true;
     }
     if (!added || held.scheduled) return;
@@ -125,7 +149,7 @@ export class SpriteCaches {
     });
   }
 
-  private pump(scope: string, held: SpriteScope, fetch: SpriteFetcher): void {
+  private pump(scope: string, held: SpriteScope, fetch: ArtFetcher): void {
     while (held.running < MAX_SPRITE_CONCURRENCY && held.queued.size > 0) {
       const entries = [...held.queued.entries()].slice(0, SPRITE_BATCH);
       for (const [id] of entries) held.queued.delete(id);
@@ -133,19 +157,18 @@ export class SpriteCaches {
       const controller = new AbortController();
       held.controllers.add(controller);
       held.running++;
-      void fetch(batch, controller.signal).then(reply => {
+      void fetch(batch, controller.signal).then(parsed => {
         if (controller.signal.aborted || this.scopes.get(scope) !== held) return;
-        const parsed = parseSpriteItems(reply, batch);
         for (const [id] of entries) {
           held.inFlight.delete(id);
-          const entry = parsed.get(id);
-          if (!entry) {
-            held.errors.set(id, 'The sprite artwork reply left this sprite out.');
+          const resolution = parsed.get(id);
+          if (!resolution) {
+            held.errors.set(id, 'The artwork reply left this handle out.');
             continue;
           }
           held.errors.delete(id);
-          held.icons.set(id, entry.icon);
-          held.resolutions.set(id, entry.resolution);
+          held.icons.set(id, resolution.status === 'ready' ? drawableIcon(resolution.url) : null);
+          held.resolutions.set(id, resolution);
         }
         for (const watcher of [...held.watchers]) watcher(held.icons, held.errors);
       }).catch(error => {

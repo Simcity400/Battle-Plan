@@ -5,7 +5,7 @@ use super::{
     sprites::{self, Plain, SpriteFacts, Sprites},
 };
 use content_reader_image::native;
-use content_reader_layers::ResolvedLayers;
+use content_reader_layers::{ResolvedLayers, content::ArtFileSource};
 use content_reader_layers::textures::texture_within;
 pub use content_reader_layers::textures::{NoTexture, Texture, texture};
 use content_reader_parser::crt::truncate_f32;
@@ -75,6 +75,12 @@ impl Registry {
         }
     }
 
+    pub fn sprite_file(&self, name: &[u8]) -> Option<&str> {
+        self.sprites
+            .get(content_reader_parser::parser::c_string(name))
+            .map(|(file, _)| self.files[*file].0.as_str())
+    }
+
     pub fn sprite(&self, name: &[u8]) -> Option<&SpriteFacts> {
         self.sprites
             .get(content_reader_parser::parser::c_string(name))
@@ -138,9 +144,32 @@ pub fn stack_texture_within(
     decode: native::Decode,
     max_texels: Option<u64>,
 ) -> io::Result<Result<Texture, NoTexture>> {
-    let read = |path: &[u8]| layers.read_uncovered_path(path);
+    let unmounted = std::cell::RefCell::new(None);
+    let read = |path: &[u8]| {
+        if unmounted.borrow().is_some() {
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        }
+        match layers.art_file_source(path)? {
+            ArtFileSource::Mounted { path, .. } => layers.read_uncovered_path(&path),
+            ArtFileSource::Unmounted { layer, reason } => {
+                let layer = layers.layers[layer]
+                    .display_name()
+                    .map_or_else(|| layers.layers[layer].id.clone(), str::to_owned);
+                *unmounted.borrow_mut() = Some(NoTexture::Undefined {
+                    path: String::from_utf8_lossy(path).into_owned(),
+                    reason: format!("the art of layer '{layer}' is not mounted ({reason})"),
+                });
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
+            ArtFileSource::Missing => Err(io::Error::from(io::ErrorKind::NotFound)),
+        }
+    };
+    let found = texture_within(name, &read, decode, max_texels)?;
+    if let Some(refusal) = unmounted.into_inner() {
+        return Ok(Err(refusal));
+    }
     Ok(
-        texture_within(name, &read, decode, max_texels)?.and_then(|texture| {
+        found.and_then(|texture| {
             if texture.image.faces == 1 {
                 return Ok(texture);
             }
@@ -226,6 +255,36 @@ mod tests {
             texture("gfx/\u{FFFD}.png".as_bytes(), &read).unwrap(),
             Err(NoTexture::Missing(_))
         ));
+    }
+
+    #[test]
+    fn a_texture_under_an_unmounted_mod_layer_is_refused_not_taken_from_below() {
+        content_reader_script::test_game::enter();
+        let root = std::env::temp_dir().join(format!(
+            "battleplan-unmounted-art-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let base = root.join("base");
+        let addon = root.join("mod");
+        std::fs::create_dir_all(base.join("gfx")).unwrap();
+        std::fs::create_dir_all(&addon).unwrap();
+        let png = content_reader_image::native::tests_support::png_rgba(1, 1, &[9, 8, 7, 255]);
+        std::fs::write(base.join("gfx/plate.png"), &png).unwrap();
+        let mounted = ResolvedLayers::from_folders(&[(&base, &[][..]), (&addon, &[][..])]).unwrap();
+        let decode = native::Decode::default();
+        assert!(stack_texture(&mounted, b"gfx/plate.png", decode).unwrap().is_ok());
+        let mut layers = mounted.layers;
+        layers[1].art_unmounted = Some("its art folder is missing".to_owned());
+        let unmounted = ResolvedLayers::from_test_layers(layers).unwrap();
+        let refused = stack_texture(&unmounted, b"gfx/plate.png", decode)
+            .unwrap()
+            .unwrap_err();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            matches!(&refused, NoTexture::Undefined { reason, .. } if reason.contains("its art folder is missing")),
+            "{refused:?}"
+        );
     }
 
     #[test]

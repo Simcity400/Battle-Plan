@@ -25,6 +25,37 @@ pub struct LendLeaseBalanceParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub holder: Option<Country>,
+    #[doc = " Orders the rows by this measure's sent plus received, largest first, then by slot;"]
+    #[doc = " without `countries`, a row with neither is left out."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub rank: Option<LendLeaseMeasure>,
+    #[doc = " The first this many ranked rows."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
+    #[doc = " Only these countries' rows, a recorded zero included."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub countries: Option<Vec<Country>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum LendLeaseMeasure {
+    Industry,
+    Fuel,
+}
+
+impl LendLeaseMeasure {
+    fn total(self, values: &[i128; 4]) -> i128 {
+        let at = match self {
+            Self::Industry => 0,
+            Self::Fuel => 1,
+        };
+        values[at] + values[2 + at]
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -73,7 +104,35 @@ impl Slots {
     }
 }
 
-fn reply(frame: &DecodedFrame, holder: Option<(&str, u32)>) -> io::Result<LendLeaseBalanceReply> {
+fn chosen(params: &LendLeaseBalanceParams, slot: u32, tag: Option<&str>) -> bool {
+    params.countries.as_ref().is_none_or(|countries| {
+        countries.iter().any(|country| match country {
+            Country::Slot(wanted) => *wanted == slot,
+            Country::Tag(wanted) => tag == Some(wanted.as_str()),
+        })
+    })
+}
+
+fn ranked(sums: BTreeMap<u32, [i128; 4]>, slots: &Slots, params: &LendLeaseBalanceParams) -> Vec<LendLeaseRow> {
+    let mut rows: Vec<(u32, [i128; 4])> = sums
+        .into_iter()
+        .filter(|(slot, values)| {
+            chosen(params, *slot, slots.tags.get(slot).map(String::as_str))
+                && (params.countries.is_some() || params.rank.is_none_or(|measure| measure.total(values) != 0))
+        })
+        .collect();
+    if let Some(measure) = params.rank {
+        rows.sort_by(|(a_slot, a), (b_slot, b)| measure.total(b).cmp(&measure.total(a)).then(a_slot.cmp(b_slot)));
+    }
+    if let Some(top) = params.top {
+        rows.truncate(usize::try_from(top).unwrap_or(usize::MAX));
+    }
+    rows.into_iter()
+        .map(|(slot, values)| LendLeaseRow { slot, tag: slots.tags.get(&slot).cloned(), values: values.map(|value| value.to_string()) })
+        .collect()
+}
+
+fn reply(frame: &DecodedFrame, params: &LendLeaseBalanceParams, holder: Option<(&str, u32)>) -> io::Result<LendLeaseBalanceReply> {
     let mut out = LendLeaseBalanceReply { holder: holder.map(|(tag, _)| tag.to_owned()), scale: SCALE, rows: Vec::new(), missing: None, warnings: Vec::new() };
     let histories = match frame.complete::<tables::WarLendLeaseHistories>() {
         Ok(rows) => rows,
@@ -137,10 +196,7 @@ fn reply(frame: &DecodedFrame, holder: Option<(&str, u32)>) -> io::Result<LendLe
     if strays > 0 {
         out.warnings.push(format!("{strays} lend-lease histories name a partner with no identity; they are left out"));
     }
-    out.rows = sums
-        .into_iter()
-        .map(|(slot, values)| LendLeaseRow { slot, tag: slots.tags.get(&slot).cloned(), values: values.map(|value| value.to_string()) })
-        .collect();
+    out.rows = ranked(sums, &slots, params);
     Ok(out)
 }
 
@@ -149,18 +205,19 @@ impl AtHour for LendLeaseBalance {
     const TITLE: &'static str = "Lend-lease balance";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LendLeaseBalanceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, rank, top, countries];
     type Reply = LendLeaseBalanceReply;
     type Context = ();
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        params.holder.as_ref().map_or(Ok(()), validate_country)
+        params.holder.as_ref().map_or(Ok(()), validate_country)?;
+        params.countries.iter().flatten().try_for_each(validate_country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![LendLeaseBalanceParams::decl(), LendLeaseBalanceReply::decl(), LendLeaseRow::decl()]
+        vec![LendLeaseBalanceParams::decl(), LendLeaseMeasure::decl(), LendLeaseBalanceReply::decl(), LendLeaseRow::decl()]
     }
 
     fn owner(params: &Self::Params) -> Option<&Country> {
@@ -202,6 +259,6 @@ impl AtHour for LendLeaseBalance {
             (Some(_), None) => return Err(dashboard_core::refused("Lend-lease balance country is unavailable at this hour")),
             (None, _) => None,
         };
-        reply(frame, holder)
+        reply(frame, params, holder)
     }
 }
