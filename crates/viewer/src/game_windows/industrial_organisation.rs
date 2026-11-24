@@ -32,7 +32,7 @@ use viewer_native_gui::native_gui::{
     self, Assets, Layout, Resources, lifecycle::Instance,
 };
 
-use super::compose::{collect_template_assets, disable_by_name, expand_loc_refs, find_child, find_direct, hide_by_name, loc_fill, loc_or, row_size, set_frame_by_name, set_sprite_by_name, set_text_by_name, spell};
+use super::compose::{collect_template_assets, disable_by_name, expand_loc_refs, find_direct, hide_by_name, loc_fill, loc_or, row_size, set_frame_by_name, set_sprite_by_name, set_text_by_name, spell};
 
 #[cfg(test)]
 mod tests;

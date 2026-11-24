@@ -5,7 +5,7 @@ use content_reader_parser::parser::c_string;
 use replay_data::rows::LexicalTokenRow;
 use viewer_native_gui::native_gui::{self, Assets, lifecycle::Instance};
 
-pub(crate) fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
+fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
     if let Some(found) = parent
         .children
         .iter()
