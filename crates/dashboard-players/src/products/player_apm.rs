@@ -225,15 +225,15 @@ fn tag(bytes: &[u8]) -> Option<&str> {
     Some(tag)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Amount {
-    counts: Counts,
-    minutes: f64,
-    incomplete: bool,
-    gaps: bool,
-    paused_incomplete: bool,
-    first_hour: Option<i32>,
-    last_hour: Option<i32>,
+    pub(super) counts: Counts,
+    pub(super) minutes: f64,
+    pub(super) incomplete: bool,
+    pub(super) gaps: bool,
+    pub(super) paused_incomplete: bool,
+    pub(super) first_hour: Option<i32>,
+    pub(super) last_hour: Option<i32>,
 }
 
 impl Amount {
