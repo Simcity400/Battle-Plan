@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { Segmented } from '../../components/Segmented';
-import { contentSet, storableToken, toggleContentSet, UNSTORABLE } from '../options';
+import { addOrderedToken, contentSet, moveOrderedToken, removeOrderedToken, storableToken, toggleContentSet, UNSTORABLE } from '../options';
 import type { OptionField, OptionValue } from '../options';
 import { listedChoices, unavailableChoices } from '../definitions';
 import type { OptionChoices } from '../definitions';
@@ -68,6 +68,39 @@ function OptionRow({ field, value, choices, onChange }: {
         {chips.length ? <ChipSet label={field.label} chips={chips} selected={chosen} max={Number.MAX_SAFE_INTEGER}
           onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next != null) onChange(next); }} />
           : <p className="field-hint">Nothing to choose from yet.</p>}
+      </div>;
+    }
+    case 'ordered-set': {
+      const chosen = contentSet(value);
+      const listed = listedChoices(choices) ?? [];
+      const available = listed.filter(choice => !chosen.includes(choice.value) && storableToken(choice.value));
+      const labelOf = (token: string) => listed.find(choice => choice.value === token)?.label ?? contentTitleHint(token, 'Saved choice unavailable');
+      return <div data-setting={field.key} className="setting-row setting-row-stacked">
+        <SettingLabel label={field.label} hint={chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`} />
+        {chosen.length > 0 && <div className="ordered-set-list" role="list" aria-label={field.label}>
+          {chosen.map((token, index) => {
+            const name = labelOf(token);
+            return <div key={token} className="ordered-set-item" role="listitem">
+              <span className="ordered-set-label">{name}</span>
+              <span className="table-settings-column-move">
+                <button type="button" aria-label={`Move ${name} up`} disabled={index === 0}
+                  onClick={() => onChange(moveOrderedToken(value, index, -1))}>↑</button>
+                <button type="button" aria-label={`Move ${name} down`} disabled={index === chosen.length - 1}
+                  onClick={() => onChange(moveOrderedToken(value, index, 1))}>↓</button>
+                <button type="button" aria-label={`Remove ${name}`}
+                  onClick={() => onChange(removeOrderedToken(value, token))}>×</button>
+              </span>
+            </div>;
+          })}
+        </div>}
+        {available.length > 0 && <Select label={field.addLabel ?? `Add ${field.label.toLowerCase()}`} value=""
+          options={[{ value: '', label: field.addLabel ?? `Add ${field.label.toLowerCase()}…` }, ...available]}
+          onChange={token => {
+            if (!token) return;
+            const next = addOrderedToken(value, token);
+            if (next !== null) onChange(next);
+          }} />}
+        {!chosen.length && !available.length && <p className="field-hint">Nothing to choose from yet.</p>}
       </div>;
     }
     case 'number':

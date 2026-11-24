@@ -9,7 +9,7 @@ import type { SpriteFrame } from './spriteArtwork';
 import { PerClient } from './prepare.ts';
 import { productRequest } from './request.ts';
 import { inFrame } from './frameUpdates.ts';
-import { CURRENT_INSTALL_PROVENANCE, NO_ART, PENDING_ART, failedArt, missingArt, readyArt, type ArtResolution } from '../families/art/types.ts';
+import { NO_ART, PENDING_ART, failedArt, type ArtResolution } from '../families/art/types.ts';
 
 const held = new PerClient<SpriteCaches>();
 
@@ -33,13 +33,14 @@ export function useSpriteArtResolutions(
   const scope = track ? JSON.stringify([track.source.id, track.source.revision, revision]) : '';
   const caches = cachesOf(runtime.client);
   const icons = caches.icons(scope);
+  const resolutions = caches.resolutions(scope);
   const errors = caches.errors(scope);
   const [landed, setLanded] = useState(0);
   const paintRef = useRef(paint);
   paintRef.current = paint;
   const asked = spriteFrames(sprites).filter(sprite => {
     const id = spriteId(sprite);
-    return !icons.has(id) && !errors.has(id);
+    return !resolutions.has(id) && !errors.has(id);
   });
   const wantedIds = useMemo(() => new Set(asked.map(spriteId)), [asked.map(spriteId).join('\0')]);
   const wantedRef = useRef(wantedIds);
@@ -81,10 +82,8 @@ export function useSpriteArtResolutions(
     const id = spriteId(sprite);
     const err = errors.get(id);
     if (err !== undefined) return failedArt(err, true);
-    if (!icons.has(id)) return PENDING_ART;
-    const url = icons.get(id);
-    return url ? readyArt(url, { assetId: id, provenance: CURRENT_INSTALL_PROVENANCE }) : missingArt('Sprite art not found in current installation');
-  }, [icons, errors, landed]);
+    return resolutions.get(id) ?? PENDING_ART;
+  }, [resolutions, errors, landed]);
 }
 
 export function useSpriteArtwork(

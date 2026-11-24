@@ -37,5 +37,6 @@ test('a default-campaign widget is gated by the campaign it renders, not its sav
     assert.match(placeholder, /data-playback-placeholder/);
     assert.doesNotMatch(placeholder, /is-error|role="alert"/);
     assert.match(render('full', 'track-full', true, 'synthetic-dated'), /RENDERED/, 'a playsBackDated widget renders during playback');
+    assert.match(render('full', 'track-full', true, 'campaign-clock'), /RENDERED/, 'a family view plays back live with no placeholder and no playsBackDated flag');
   } finally { await vite.close(); }
 });

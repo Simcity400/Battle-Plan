@@ -90,6 +90,7 @@ test('sprite requests from multiple callers in the same tick coalesce into bound
   assert.deepEqual(calls, [15]);
   assert.equal(aborted, 0);
   assert.equal(caches.icons('s').get(spriteId({ key: 'GFX_14', frame: 0 })), png);
+  assert.equal(caches.resolutions('s').get(spriteId({ key: 'GFX_14', frame: 0 }))?.status, 'ready');
   const large = Array.from({ length: SPRITE_BATCH + 10 }, (_, i) => ({ key: `GFX_L_${i}`, frame: 0 }));
   caches.request('s', large, fetcher);
   await flush();
@@ -108,6 +109,7 @@ test('failed sprite batches record errors without marking sprites as missing and
   const id = spriteId({ key: 'GFX_fail', frame: 0 });
   assert.equal(caches.icons('err').has(id), false);
   assert.equal(caches.errors('err').get(id), 'disk offline');
+  assert.equal(caches.resolutions('err').has(id), false);
   assert.equal(notified, 1);
   stop();
   release();
