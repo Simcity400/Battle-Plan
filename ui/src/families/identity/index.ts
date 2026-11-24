@@ -2,6 +2,7 @@ import type { Failure } from '../../dashboard/queryError';
 import type {
   CountryFactsReply,
   CountryFlagChoice,
+  CountryFlagSize,
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyle,
@@ -10,6 +11,7 @@ import type {
   HourSpan,
 } from '../../generated/dashboard';
 import { compareTags } from '../../dashboard/tagOrder.ts';
+import { artHandleKey } from '../art/types.ts';
 import { resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
 import {
   countryTagKey,
@@ -20,6 +22,7 @@ import {
   type CountryIdentityKey,
   type CountryIdentityResult,
   type DrawnFlagEntry,
+  type EntityIdentityKey,
   type EntityIdentityResult,
   type EntityRunEntry,
   type FactionIdentityKey,
@@ -43,6 +46,10 @@ const NO_NAME = 'Country name unavailable';
 const NO_FLAG = 'flag unavailable';
 const FACTIONS_NOT_RECORDED = 'Factions were not recorded at this hour';
 const FACTION_ABSENT = 'Faction does not exist at this hour';
+
+export function drawnFlagKey(size: CountryFlagSize, choice: CountryFlagChoice): string {
+  return artHandleKey({ kind: 'flag', choice: flagChoiceKey(choice), size });
+}
 
 function nextBoundaryOf(lastHour: number): number {
   return Number.isFinite(lastHour) ? lastHour + 1 : Infinity;
@@ -147,6 +154,7 @@ export class IdentityIndex {
   private factsFailure?: Failure;
 
   private identities?: CountryIdentitiesReply;
+  private identitiesKnown: readonly HourSpan[] | null = null;
   private identitiesUnknown: readonly HourSpan[] = [];
   private slotRuns = new Map<number, readonly HolderRun[]>();
   private tagIdentities = new Map<string, readonly { readonly firstHour: number; readonly lastHour: number; readonly slot: number; readonly countryId: number }[]>();
@@ -186,8 +194,8 @@ export class IdentityIndex {
       }
     }
     if (snapshot.drawnFlags) {
-      for (const [choice, entry] of Object.entries(snapshot.drawnFlags)) {
-        index.drawnFlags.set(choice, entry);
+      for (const [key, entry] of Object.entries(snapshot.drawnFlags)) {
+        index.drawnFlags.set(key, entry);
       }
     }
     return index;
@@ -199,7 +207,7 @@ export class IdentityIndex {
     const entities: Record<string, readonly EntityRunEntry[]> = {};
     for (const [key, entries] of this.entityRuns) entities[key] = entries;
     const drawnFlags: Record<string, DrawnFlagEntry> = {};
-    for (const [choice, entry] of this.drawnFlags) drawnFlags[choice] = entry;
+    for (const [key, entry] of this.drawnFlags) drawnFlags[key] = entry;
     return {
       scope: this.scope,
       ...(Number.isFinite(this.branchBounds[0]) && Number.isFinite(this.branchBounds[1]) ? { branchBounds: this.branchBounds } : {}),
@@ -214,6 +222,10 @@ export class IdentityIndex {
 
   setBranchBounds(bounds: HourInterval): void {
     this.branchBounds = bounds;
+  }
+
+  bounds(): HourInterval {
+    return this.branchBounds;
   }
 
   setFacts(reply: CountryFactsReply, final = true): void {
@@ -247,6 +259,7 @@ export class IdentityIndex {
   setIdentities(reply: CountryIdentitiesReply): void {
     this.identities = reply;
     this.identitiesFailure = undefined;
+    this.identitiesKnown = reply.known?.length ? sortedHourSpans(reply.known) : null;
     this.identitiesUnknown = sortedHourSpans(reply.unknown.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })));
     this.tagIdentities.clear();
     this.tagUnresolved.clear();
@@ -316,32 +329,56 @@ export class IdentityIndex {
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
   }
 
-  setEntityRuns(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, runs: readonly EntityRunEntry[]): void {
+  setEntityRuns(key: EntityIdentityKey, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
     this.entityRuns.set(id, [...runs].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
     this.entityFailures.delete(id);
   }
 
-  setEntityFailure(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, failure: Failure): void {
+  addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
+    const id = identityKeyString(key);
+    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < run.firstHour || item.firstHour > run.lastHour);
+    kept.push(run);
+    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
+    this.entityRuns.set(id, kept);
+    this.entityFailures.delete(id);
+  }
+
+  setEntityFailure(key: EntityIdentityKey, failure: Failure): void {
     this.entityFailures.set(identityKeyString(key), failure);
   }
 
-  setDrawnFlag(choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
-    this.drawnFlags.set(flagChoiceKey(choice), entry);
+  clearEntityFailures(): void {
+    this.entityFailures.clear();
   }
 
-  getDrawnFlag(choice: CountryFlagChoice): DrawnFlagEntry | undefined {
-    return this.drawnFlags.get(flagChoiceKey(choice));
+  setDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
+    this.drawnFlags.set(drawnFlagKey(size, choice), entry);
+  }
+
+  getDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): DrawnFlagEntry | undefined {
+    return this.drawnFlags.get(drawnFlagKey(size, choice));
+  }
+
+  forgetDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): void {
+    this.drawnFlags.delete(drawnFlagKey(size, choice));
   }
 
   slotHolderAt(slot: number, hour: number): { readonly tag: string; readonly countryId: number; readonly valid: HourInterval } | null {
     const at = Math.floor(hour);
+    let bounds: HourInterval | null = null;
+    if (this.identitiesKnown) {
+      const known = enclosingGap(this.identitiesKnown, at, this.branchBounds);
+      if (!known.inside) return null;
+      bounds = known.interval;
+    }
     const runs = this.slotRuns.get(slot);
     if (!runs?.length) return null;
     const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
     const run = idx >= 0 ? runs[idx] : undefined;
     if (!run || run.firstHour > at || at > run.lastHour) return null;
-    return { tag: run.tag, countryId: run.countryId ?? 0, valid: [run.firstHour, run.lastHour] };
+    const valid: HourInterval = bounds ? intersectIntervals([run.firstHour, run.lastHour], bounds) : [run.firstHour, run.lastHour];
+    return { tag: run.tag, countryId: run.countryId ?? 0, valid };
   }
 
   resolve<K extends IdentityKey>(key: K, hour: number): IdentityResult<K> {
@@ -377,15 +414,23 @@ export class IdentityIndex {
       const missing = this.identities.unknown.find(span => span.firstHour <= at && at <= span.lastHour);
       return { field: { kind: 'missing', reason: missing?.reason || 'Country identities were not recorded at this hour' }, interval: unk.interval };
     }
+    let bounds = unk.interval;
+    if (this.identitiesKnown) {
+      const known = enclosingGap(this.identitiesKnown, at, bounds);
+      if (!known.inside) {
+        return { field: { kind: 'missing', reason: 'Country identities were not recorded at this hour' }, interval: known.interval };
+      }
+      bounds = known.interval;
+    }
     const runs = this.tagIdentities.get(tag) ?? [];
     const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
     const hit = idx >= 0 ? runs[idx] : undefined;
     if (hit && hit.firstHour <= at && at <= hit.lastHour) {
-      const valid = intersectIntervals(unk.interval, [hit.firstHour, hit.lastHour]);
+      const valid = intersectIntervals(bounds, [hit.firstHour, hit.lastHour]);
       return { field: { kind: 'known', value: { slot: hit.slot, countryId: hit.countryId, tag } }, interval: valid };
     }
     const unresolved = this.tagUnresolved.get(tag) ?? [];
-    const unres = enclosingGap(unresolved, at, unk.interval);
+    const unres = enclosingGap(unresolved, at, bounds);
     if (unres.inside) {
       return { field: { kind: 'missing', reason: 'Country identity unresolved at this hour' }, interval: unres.interval };
     }
@@ -418,6 +463,25 @@ export class IdentityIndex {
           warnings: this.identities.warnings,
         };
       }
+      let bounds = unk.interval;
+      if (this.identitiesKnown) {
+        const known = enclosingGap(this.identitiesKnown, at, bounds);
+        if (!known.inside) {
+          const field: IdentityField<never> = { kind: 'missing', reason: 'Country identities were not recorded at this hour' };
+          return {
+            kind: 'known',
+            valid: known.interval,
+            nextBoundary: nextBoundaryOf(known.interval[1]),
+            holder: field,
+            tag: field,
+            name: field,
+            color: field,
+            flagChoice: field,
+            warnings: this.identities.warnings,
+          };
+        }
+        bounds = known.interval;
+      }
       const allRuns = this.slotRuns.get(key.slot) ?? [];
       const runs = key.by === 'holder' ? allRuns.filter(run => run.countryId === key.countryId) : allRuns;
       const idx = findRunBeforeOrAt(runs, at, run => run.firstHour);
@@ -425,8 +489,8 @@ export class IdentityIndex {
       if (!run || run.firstHour > at || at > run.lastHour) {
         const prev = idx >= 0 ? runs[idx] : undefined;
         const next = idx + 1 < runs.length ? runs[idx + 1] : undefined;
-        const first = prev ? Math.max(unk.interval[0], prev.lastHour + 1) : unk.interval[0];
-        const last = next ? Math.min(unk.interval[1], next.firstHour - 1) : unk.interval[1];
+        const first = prev ? Math.max(bounds[0], prev.lastHour + 1) : bounds[0];
+        const last = next ? Math.min(bounds[1], next.firstHour - 1) : bounds[1];
         return {
           kind: 'absent',
           valid: [first, last],
@@ -434,7 +498,7 @@ export class IdentityIndex {
           reason: NOT_A_COUNTRY,
         };
       }
-      const holderInterval = intersectIntervals(unk.interval, [run.firstHour, run.lastHour]);
+      const holderInterval = intersectIntervals(bounds, [run.firstHour, run.lastHour]);
       const holder: CountryHolder = { slot: key.slot, countryId: run.countryId ?? 0, tag: run.tag };
       const tagResult = this.resolveCountryByTag(run.tag, at, { field: { kind: 'known', value: holder }, interval: holderInterval });
       if (tagResult.kind === 'known') {
@@ -676,7 +740,7 @@ export class IdentityIndex {
     };
   }
 
-  private resolveEntity(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, at: number): EntityIdentityResult {
+  private resolveEntity(key: EntityIdentityKey, at: number): EntityIdentityResult {
     const id = identityKeyString(key);
     const entry = findCoveringEntity(this.entityRuns.get(id), at);
     if (entry) {

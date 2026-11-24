@@ -458,7 +458,7 @@ pub fn compare_division_status(
         };
         for (name, present) in [
             ("officer_experience", row.officer_experience().is_some()),
-            ("killed", row.career_counter().is_some()),
+            ("casualties_taken (saved killed)", row.casualties_taken().is_some()),
         ] {
             if !present {
                 report.difference(
@@ -485,18 +485,18 @@ pub fn compare_division_status(
             );
         }
         if let Some(expected) = saved.presentation.career_counter {
-            if row.career_counter() != Some(expected) {
+            if row.casualties_taken() != Some(expected) {
                 report.difference(
-                    format!("division status {}.killed", row.division),
-                    format!("{:?}", row.career_counter()),
+                    format!("division status {}.casualties_taken (saved killed)", row.division),
+                    format!("{:?}", row.casualties_taken()),
                     expected,
                 );
             }
-        } else if let Some(actual) = row.career_counter()
+        } else if let Some(actual) = row.casualties_taken()
             && actual > 0
         {
             report.difference(
-                format!("division status {}.killed", row.division),
+                format!("division status {}.casualties_taken (saved killed)", row.division),
                 actual,
                 "omitted nonpositive saved counter",
             );

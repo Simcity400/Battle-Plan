@@ -46,3 +46,43 @@ fn divisions_short_is_not_known_when_no_division_was_compared() {
     assert_eq!(short_count(&Recorded::Value(3), true), Some(3));
     assert_eq!(short_count(&Recorded::NotRecorded, true), None);
 }
+
+#[test]
+fn division_equipment_overview_reads_division_templates_for_template_names() {
+    use super::equipment::{DivisionEquipment, DivisionEquipmentParams};
+    use crate::products::army::ArmyAttribution;
+    use dashboard_base::products::at_hour::{AtHour, Keys, Owner};
+    use dashboard_base::test_fixtures::source;
+    use replay_data::rows::{DivisionEquipmentTemplateRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let params = DivisionEquipmentParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        count_for: ArmyAttribution::Owner,
+        template: None,
+        division: None,
+    };
+    assert!(
+        DivisionEquipment::tables(&params).contains(&TableId::DivisionTemplates),
+        "overview must declare DivisionTemplates so template names resolve"
+    );
+    let mut held = source(1, 100, Some(1_000));
+    held.tables[TableId::DivisionEquipmentByTemplate.index()] = TableView::Complete(
+        TableRows::DivisionEquipmentByTemplate(vec![DivisionEquipmentTemplateRow {
+            slot: 7,
+            side: 0,
+            template: 42,
+            ..Default::default()
+        }]),
+    )
+    .into();
+    let reads = DivisionEquipment::reads(&params, Some(Owner { slot: 7, id: 9001 }), 1, &held);
+    let template_read = reads
+        .iter()
+        .find(|read| read.table == TableId::DivisionTemplates)
+        .expect("step 1 must read DivisionTemplates for overview template names");
+    match &template_read.keys {
+        Keys::These(keys) => assert_eq!(keys, &[42u128]),
+        other => panic!("expected Keys::These([42]), got {other:?}"),
+    }
+}

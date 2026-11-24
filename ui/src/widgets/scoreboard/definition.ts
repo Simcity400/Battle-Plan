@@ -5,7 +5,7 @@ import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 import { tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 
 export const DEFAULT_SORT = { column: '', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'comfortable', overflow: 'tooltip', sort: { column: 'country', direction: 'ascending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: { column: 'factories', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = [
   { key: 'columns', section: 'options', label: 'Columns', kind: 'content-set', default: '',
     automatic: 'Default columns', hint: 'Columns appear in the order you choose.' },
@@ -17,7 +17,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 
 export const definition = {
-  kind: 'scoreboard', version: 1, title: 'Scoreboard', icon: 'grid',
+  kind: 'scoreboard', version: 1, title: 'Scoreboard', icon: 'table',
   description: 'Compare countries across selected measures.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,

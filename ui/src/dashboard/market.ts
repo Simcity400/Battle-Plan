@@ -1,10 +1,9 @@
-import type { LendLeaseHistoryReply, MarketLendLeaseReply } from '../generated/dashboard';
+import type { MarketLendLeaseReply } from '../generated/dashboard';
 import { object } from './validation.ts';
 
 export type MarketAt = MarketLendLeaseReply & { hour: number };
 
 export const MARKET = 'market-lendlease';
-export const LEASE_HISTORY = 'lend-lease-history';
 export const FIXED5 = 100000n;
 export const FUEL_QUANTITY = 32768n;
 export const SHARE = 1000n;
@@ -21,25 +20,6 @@ const named = (value: Record<string, unknown>) => Array.isArray(value.variants) 
 export const isLease = (row: Record<string, unknown>) => typeof row.key === 'string' && typeof row.id === 'string' && text(row.giver) && text(row.receiver) && raw(row.revision)
   && integer(row.activeSince) && integer(row.lastDelivery) && ['monthly', 'percentage', 'once', 'delivered', 'sunk'].every(key => items(row[key]))
   && ['fuelDailyRaw', 'fuelPercentageRaw', 'lastFuelDeliveredRaw'].every(key => raw(row[key]));
-const missingReason = (value: unknown) => typeof value === 'string' && value.length > 0;
-const absent = (value: unknown) => value === undefined || value === null;
-const partyWithOptionalReason = (row: Record<string, unknown>, field: string) => {
-  const value = row[field], reason = row[`${field}Missing`];
-  return value === null ? (absent(reason) || missingReason(reason)) : typeof value === 'string' && absent(reason);
-};
-const fieldWithReason = (row: Record<string, unknown>, field: string, valid: (value: unknown) => boolean) => {
-  const value = row[field], reason = row[`${field}Missing`];
-  return value === null ? missingReason(reason) : valid(value) && absent(reason);
-};
-const isEndedLease = (row: Record<string, unknown>) => typeof row.key === 'string' && typeof row.id === 'string'
-  && partyWithOptionalReason(row, 'giver')
-  && partyWithOptionalReason(row, 'receiver')
-  && fieldWithReason(row, 'revision', raw)
-  && fieldWithReason(row, 'activeSince', integer)
-  && fieldWithReason(row, 'lastDelivery', integer)
-  && ['monthly', 'percentage', 'once', 'delivered', 'sunk'].every(key => fieldWithReason(row, key, items))
-  && ['fuelDailyRaw', 'fuelPercentageRaw', 'lastFuelDeliveredRaw'].every(key => fieldWithReason(row, key, raw));
-
 export function validateMarketReply(value: unknown): MarketLendLeaseReply {
   const nullable = (v: unknown, valid: (row: Record<string, unknown>) => boolean) => v === null || list(v, valid);
   if (!object(value) || typeof value.branchId !== 'string' || !named(value) || !text(value.purchasesMissing) || !integer(value.unattributed)
@@ -48,15 +28,6 @@ export function validateMarketReply(value: unknown): MarketLendLeaseReply {
       && integer(row.speed) && items(row.equipment) && items(row.prices) && levels(row.levels) && grants(row.subsidies) && typeof row.purchase === 'boolean')
     || !nullable(value.agreements, isLease)) throw new Error('Invalid market and lend-lease reply');
   return value as unknown as MarketLendLeaseReply;
-}
-
-export function validateLeaseHistory(value: unknown): LendLeaseHistoryReply {
-  if (!object(value) || typeof value.branchId !== 'string' || !named(value)
-    || !list(value.agreements, row => object(row.terms) && isEndedLease(row.terms)
-      && fieldWithReason(row, 'fuelSentRaw', raw) && fieldWithReason(row, 'fuelSunkRaw', raw)
-      && integer(row.firstHour) && integer(row.lastHour)))
-    throw new Error('Invalid lend-lease history reply');
-  return value as unknown as LendLeaseHistoryReply;
 }
 
 export function fixedText(raw: bigint, denominator = FIXED5): string {

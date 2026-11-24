@@ -1,10 +1,10 @@
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
-import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
+import { useArtHandleResolutions } from '../art/react.ts';
 import { renderFamilyStatus, useFamilyPlan } from '../host/index.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyPlanContext } from '../plan.ts';
@@ -12,7 +12,6 @@ import type { DeclaredTableContext, TableWidgetDeclaration } from './declaration
 import FamilyTableHost from './FamilyTableHost.tsx';
 import type { TableColumnSpec } from './model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
-import { barsBehindOf, rowHeightOf } from '../settingsControls.ts';
 
 export interface DeclaredTableWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
   readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
@@ -36,16 +35,9 @@ function resolveTableSettings<TProjectionOptions, TAux>(
   const sp = declaration.settings;
   if (sp.kind === 'fixed') return tableSettingsOf(undefined, columns, sp.base);
   if (sp.kind === 'table') return tableSettingsOf(options[sp.key ?? TABLE_SETTINGS_KEY], columns, sp.base);
-  if (sp.kind === 'options') {
-    const sort = tableSortOf(options.tableSort as string | undefined, sp.defaultSort);
-    const overflow = narrowTableOf(options as never) === 'scroll' ? 'scroll' as const : 'tooltip' as const;
-    const density = rowHeightOf(options.rowHeight ?? options.density, 'comfortable');
-    const barsBehind = options.barsBehind !== undefined ? barsBehindOf(options.barsBehind) : undefined;
-    return tableSettingsOf(undefined, columns, { density, ...(barsBehind !== undefined ? { barsBehind } : {}), overflow, sort });
-  }
   return ctx
     ? sp.resolve(ctx, columns)
-    : tableSettingsOf(undefined, columns, { density: 'comfortable', overflow: 'tooltip', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
+    : tableSettingsOf(undefined, columns, { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
 }
 
 export default function DeclaredTableWidget<TProjectionOptions, TAux>({
@@ -83,6 +75,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     active,
     setOption,
   });
+  const art = useArtHandleResolutions(runtime, plan.track, active);
 
   const liveColumns = useMemo(
     () => (typeof declaration.columns === 'function' ? (plan.ctx ? declaration.columns(plan.ctx) : []) : declaration.columns),
@@ -110,12 +103,6 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     if (sp.kind === 'fixed') return;
     if (sp.kind === 'table') {
       setOption(sp.key ?? TABLE_SETTINGS_KEY, encodeTableSettings(next));
-      return;
-    }
-    if (sp.kind === 'options') {
-      if (next.sort.column !== liveSettings.sort.column || next.sort.direction !== liveSettings.sort.direction) {
-        setOption('tableSort', tableSortToken(next.sort));
-      }
       return;
     }
     sp.onChange(next, liveSettings, liveCtx, setOption);
@@ -182,6 +169,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     countryLooks={plan.displayedCountryLooks}
     identitySnapshot={plan.identitySnapshot}
     onIdentityDemands={plan.onIdentityDemands}
+    artResolutions={art.resolutions}
+    onArtDemands={art.onArtDemands}
     onViewportSize={plan.measureViewport}
     selectedKey={selectedKey}
     onActivate={onActivate}

@@ -463,7 +463,6 @@ pub fn build_stat_columns(
 ) -> StatColumns {
     let fixed1 = |raw: i64| format_fixed5(raw, 1);
     let fixed2 = |raw: i64| format_fixed5(raw, 2);
-    let fixed0 = |raw: i64| format_fixed5(raw, 0);
     let pct1 = |raw: i64| format_percent_fixed5(raw, 1);
     let km = |raw: i64| format!("{} km", format_fixed5(raw, 0));
     let kmh = |raw: i64| format!("{} km/h", format_fixed5(raw, 1));
@@ -487,7 +486,7 @@ pub fn build_stat_columns(
                     },
                     residual_stat(stats, "STAT_ARMY_SUPPLY_CONSUMPTION", Some("supply_consumption"), fixed2),
                     StatLine {
-                        label_key: "STAT_COMMON_MANPOWER",
+                        label_key: "MANPOWER",
                         value: manpower.map(|value| value.to_string()),
                         detail: manpower.is_none().then(|| {
                             design_state_reason
@@ -562,7 +561,7 @@ pub fn build_stat_columns(
                     },
                 ],
                 misc: vec![
-                    residual_stat(stats, "STAT_ARMY_FUEL_CAPACITY", Some("fuel_capacity"), fixed0),
+                    residual_stat(stats, "STAT_ARMY_FUEL_CAPACITY", Some("fuel_capacity"), fixed1),
                     StatLine {
                         label_key: "STAT_COMMON_FUEL_CONSUMPTION",
                         value: fuel,
@@ -2320,7 +2319,7 @@ fn configure_main_window(
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| data.version_suffix.clone())
     };
-    let mio_role_body = loc_or(localisation, "MILITARY_INDUSTRIAL_ORGANIZATIONS");
+    let mio_role_body = loc_or(localisation, "INDUSTRIAL_ORG_LIST_WINDOW_TITLE");
 
     if data.kind.is_modular() {
         for modal in [
@@ -2362,7 +2361,7 @@ fn configure_main_window(
                 tooltips.insert(
                     res_el.path.clone(),
                     GameWindowTooltip {
-                        title: loc_or(localisation, "RESOURCES"),
+                        title: "Not recorded".to_owned(),
                         body: Some(
                             data.design_state_reason
                                 .clone()
@@ -2382,7 +2381,7 @@ fn configure_main_window(
                 tooltips.insert(
                     res_el.path.clone(),
                     GameWindowTooltip {
-                        title: loc_or(localisation, "RESOURCES"),
+                        title: "Not recorded".to_owned(),
                         body: Some(format!(
                             "Not recorded: resource token(s) {} have no spelling in LexicalTokens.",
                             missing_tokens.join(", ")
@@ -2554,7 +2553,7 @@ fn configure_main_window(
                     tooltips.insert(
                         dom.path.clone(),
                         GameWindowTooltip {
-                            title: loc_or(localisation, "NAVAL_DOMINANCE"),
+                            title: loc_or(localisation, "SHIP_DESIGNER_NAVAL_DOMINANCE_NAME"),
                             body: Some(NOT_RECORDED_TOOLTIP.to_owned()),
                             detail: None,
                         },

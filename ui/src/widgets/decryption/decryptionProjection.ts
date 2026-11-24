@@ -1,0 +1,170 @@
+import { formatDateOnly } from '../../families/valueFormat.ts';
+import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
+import type {
+  MeterChip,
+  MeterChipLine,
+  MeterFlag,
+  MeterModel,
+  MeterProjection,
+  MeterRow,
+  MeterSection,
+} from '../../families/meter/model.ts';
+import { registerMeterProjection } from '../../families/meter/registry.ts';
+import type { CipherPair } from '../../generated/dashboard';
+import { OPTIONS } from './definition.ts';
+import { pairKey, percentOf, progressLabel, workingStatus } from './decryptionData.ts';
+import {
+  decryptionFilterOptions,
+  decryptionNextChange,
+  decryptionSources,
+  pairTooltipItems,
+  readCipherNumbers,
+  readDecryption,
+  type DecryptionFilterOptions,
+  type ResolvedCountry,
+} from './decryptionRead.ts';
+
+const flagOf = (country: ResolvedCountry): MeterFlag => ({ tag: country.tag, result: country.flag });
+
+export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = registerMeterProjection({
+  family: 'meters',
+  kind: 'decryption',
+  nextChange(readView, options): number {
+    return decryptionNextChange(options.filter, readView.hour);
+  },
+  project(readView, options): MeterModel {
+    const layout = 'ciphers';
+    const frame = readDecryption(readView, options);
+    if (frame.kind === 'refused') return { hour: readView.hour, layout, refused: frame.reason };
+    if (frame.kind === 'pending') return { hour: readView.hour, layout, empty: null };
+    if (frame.kind === 'empty') {
+      return {
+        hour: readView.hour,
+        layout,
+        empty: frame.empty,
+        ...(frame.emptyDetail ? { emptyDetail: frame.emptyDetail } : {}),
+        emptyKind: frame.emptyKind,
+        ...(frame.summaryText ? { summaryText: frame.summaryText } : {}),
+        warnings: frame.warnings,
+      };
+    }
+    const country = frame.country;
+    const sections: MeterSection[] = [];
+    if (frame.active.length) {
+      const rows: MeterRow[] = frame.active.map(pair => {
+        const owner = country(pair.owner);
+        const target = country(pair.target);
+        const numbers = readCipherNumbers(frame.live, pair);
+        const percent = percentOf(pair, numbers);
+        const key = `active:${pairKey(pair)}`;
+        const title = `${owner.name} \u2192 ${target.name}`;
+        return {
+          key,
+          name: title,
+          pair: {
+            ownerFlag: flagOf(owner),
+            ownerName: owner.name,
+            targetFlag: flagOf(target),
+            targetName: target.name,
+          },
+          bar: {
+            kind: 'track',
+            fraction: percent === null ? null : percent / 100,
+            color: owner.colour,
+            height: 8,
+          },
+          figure: percent === null ? undefined : `${percent}%`,
+          figureMissing: percent === null,
+          spoken: `${owner.name} decrypting ${target.name}, ${progressLabel(percent)}, ${workingStatus(pair)}`,
+          audit: `${owner.tag}>${target.tag}|${percent === null ? 'not-recorded' : `${percent}%`}`,
+          tooltip: {
+            title,
+            hour: readView.hour,
+            items: pairTooltipItems(pair, frame.reply, numbers, owner, target, percent),
+          },
+        };
+      });
+      sections.push({
+        key: 'decrypting',
+        title: 'Decrypting',
+        count: String(frame.active.length),
+        rows,
+      });
+    }
+
+    if (frame.broken.length) {
+      const grouped = new Map<number, { owner: ResolvedCountry; items: CipherPair[] }>();
+      for (const pair of frame.broken) {
+        const group = grouped.get(pair.owner.id) ?? { owner: country(pair.owner), items: [] };
+        group.items.push(pair);
+        grouped.set(pair.owner.id, group);
+      }
+      const lines = [...grouped.values()].sort((a, b) =>
+        b.items.length - a.items.length || a.owner.name.localeCompare(b.owner.name),
+      );
+      const chipLines: MeterChipLine[] = lines.map(group => {
+        const sortedItems = [...group.items].sort((a, b) =>
+          (b.brokenAt?.hour ?? -Infinity) - (a.brokenAt?.hour ?? -Infinity)
+          || country(a.target).name.localeCompare(country(b.target).name),
+        );
+        const chips: MeterChip[] = sortedItems.map(pair => {
+          const target = country(pair.target);
+          const numbers = readCipherNumbers(frame.live, pair);
+          const percent = percentOf(pair, numbers);
+          const dateText = pair.brokenAt ? formatDateOnly(pair.brokenAt.hour) : null;
+          const title = `${group.owner.name} \u2192 ${target.name}`;
+          return {
+            key: `broken:${pairKey(pair)}`,
+            targetFlag: flagOf(target),
+            targetName: target.name,
+            dateText,
+            spoken: `${group.owner.name} broke ${target.name} cipher${dateText ? ` on ${dateText}` : ', date not recorded'}`,
+            audit: `${group.owner.tag}>${target.tag}|broken|${dateText ?? 'not-recorded'}`,
+            tooltip: {
+              title,
+              hour: readView.hour,
+              items: pairTooltipItems(pair, frame.reply, numbers, group.owner, target, percent),
+            },
+          };
+        });
+        return {
+          key: `owner:${group.owner.key}`,
+          ownerFlag: flagOf(group.owner),
+          ownerName: group.owner.name,
+          chips,
+        };
+      });
+      sections.push({
+        key: 'broken',
+        title: 'Cipher broken',
+        count: String(frame.broken.length),
+        chipLines,
+      });
+    }
+
+    return {
+      hour: readView.hour,
+      layout: 'ciphers',
+      summaryText: frame.summaryText,
+      sections,
+      notes: frame.notes,
+      warnings: frame.reply.warnings,
+    };
+  },
+});
+
+export const decryptionDeclaration: MeterWidgetDeclaration<DecryptionFilterOptions> = {
+  family: 'meters',
+  kind: 'decryption',
+  label: 'Decryption',
+  subject: 'decryption',
+  emptyCampaign: 'Load a campaign to see its decryption races.',
+  icon: 'lock',
+  optionFields: OPTIONS,
+  countries: { mode: 'filter', labels: true, colours: true },
+  sources: decryptionSources,
+  projection: decryptionProjection,
+  projectionOptions: decryptionFilterOptions,
+  jumpToDate: true,
+  keyByBranch: true,
+};

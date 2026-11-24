@@ -16,10 +16,14 @@ import { WidgetFrameContext } from '../../dashboard/widgetFrame.tsx';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { measureWith, PerfRecorder } from '../../shell/perf.ts';
-import { familyTableLaneView } from '../table/laneView.ts';
+import type { InstalledAction } from '../contract.ts';
+import { familyTableLaneView, type FamilyTableBinding } from '../table/laneView.ts';
 import { tableSettingsOf } from '../table/settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDomShared.ts';
 import FamilyTableHost from '../table/FamilyTableHost.tsx';
+import type { FamilyHostAdapter } from './adapter.ts';
+import FamilyHost from './FamilyHost.tsx';
+import { parseDefaultRowHit } from './pointer.ts';
 import '../../styles.css';
 
 const NATIVE = 9;
@@ -78,6 +82,7 @@ const client = {
 } as unknown as DashboardClient;
 
 const clock = new PlaybackController();
+const paintsByWidget = new Map<number, number>();
 clock.setBounds({ firstHour: 0, lastHour: 2000 });
 
 function createLane(): LaneWorker {
@@ -92,7 +97,18 @@ function createLane(): LaneWorker {
       queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
     },
     {
-      views: (_kind, wake) => familyTableLaneView(wake),
+      views: (_kind, wake) => {
+        const view = familyTableLaneView(wake);
+        const paint = view.paint.bind(view);
+        view.paint = (input, state, content) => {
+          paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
+          const painted = paint(input, state, content);
+          return painted.mode === undefined || painted.mode === 'picture'
+            ? { ...painted, fields: { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' } } }
+            : painted;
+        };
+        return view;
+      },
       crop: sources => Promise.all(sources.map(source => createImageBitmap(source as OffscreenCanvas))),
       later: run => requestAnimationFrame(() => run()),
     },
@@ -180,7 +196,49 @@ function subsForPipe(pipeId: number): number[] {
   return [...(internal.widgets.get(pipeId)?.subs.values() ?? [])];
 }
 
+function fixtureTableAdapter(): FamilyHostAdapter<unknown, typeof OPTIONS, FamilyTableBinding<typeof OPTIONS>> {
+  return {
+    family: 'table',
+    skeleton: 'table',
+    scroll: 'vertical',
+    navigation: 'rows',
+    mirror: 'table',
+    parseHit: hit => {
+      const row = parseDefaultRowHit(hit);
+      return row && hit ? { key: row.key, toggle: row.toggle, inspectToken: hit } : null;
+    },
+    inspectToken: key => `row:${key}`,
+    buildBinding: ctx => ({
+      family: 'table',
+      kind: ctx.kind,
+      view: ctx.view,
+      options: ctx.options,
+      settings: SETTINGS,
+      sources: ctx.sources,
+      width: ctx.viewport.width,
+      height: ctx.viewport.height,
+      scrollLeft: ctx.viewport.scrollLeft,
+      scrollTop: ctx.viewport.scrollTop,
+      theme: ctx.theme,
+      selectedKey: ctx.selectedKey,
+      focusedKey: ctx.focusedKey,
+      reducedMotion: ctx.reducedMotion,
+      pauseFlush: ctx.pauseFlush,
+    }),
+  };
+}
+const GENERIC_ADAPTER = fixtureTableAdapter();
+
 let root: Root | null = null;
+let genericCommits = 0;
+let genericActivated: InstalledAction[] = [];
+let genericViewports: number[] = [];
+const installCalls = new Map<number, number>();
+const origOnInstall = pipeline.onInstall.bind(pipeline);
+pipeline.onInstall = ((id: number, listener: () => void) => origOnInstall(id, () => {
+  installCalls.set(id, (installCalls.get(id) ?? 0) + 1);
+  listener();
+})) as typeof pipeline.onInstall;
 let container: HTMLDivElement | null = null;
 let commits = 0;
 let bindCount = 0;
@@ -191,6 +249,8 @@ let currentState = {
   active: true,
   frameToken: 1,
   secondMounted: false,
+  genericMounted: false,
+  genericBlocked: false,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
@@ -267,6 +327,30 @@ function renderApp() {
                 bounds={BOUNDS}
               />
             </div>
+          )}
+          {currentState.genericMounted && (
+            <Profiler id="generic-host" onRender={() => { genericCommits++; }}>
+              <div data-slot="generic" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
+                <FamilyHost
+                  adapter={GENERIC_ADAPTER}
+                  declaration={scoreboardProjection}
+                  view="default"
+                  options={OPTIONS}
+                  label="Scoreboard Generic"
+                  subject="scoreboard"
+                  widget={widget}
+                  runtime={rt}
+                  active
+                  subscriptions={subs}
+                  offset={0}
+                  pin={null}
+                  bounds={BOUNDS}
+                  onActivate={action => { genericActivated.push(action); }}
+                  blockedState={currentState.genericBlocked ? <div data-blocked="true">Not yet</div> : null}
+                  onViewportChange={viewport => { genericViewports.push(viewport.width); }}
+                />
+              </div>
+            </Profiler>
           )}
           <TooltipLayer />
         </Profiler>
@@ -399,6 +483,166 @@ window.hostDom = {
   async waitActivated() {
     await until(() => activated.length > 0, 2000);
     return [...activated];
+  },
+
+  async testGenericHostFrames() {
+    currentState = { ...currentState, genericMounted: true };
+    renderApp();
+    let pipeG = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeG = Number(canvas.dataset.placement);
+      return pipeG > 0;
+    });
+    const subsG = subsForPipe(pipeG);
+    await until(() => subsG.length === 2 && subsG.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(100);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsG, 100, [90n, 70n, 50n, 30n], true);
+    const firstPicture = await until(() => pipeline.view(pipeG)?.mode === 'picture' && !pipeline.view(pipeG)?.dim
+      && container!.querySelectorAll('[data-slot="generic"] table tbody tr').length === 4);
+
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    await frames(4);
+    const mountCommits = genericCommits;
+    genericCommits = 0;
+    bindCount = 0;
+    paintsByWidget.set(pipeG, 0);
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    await frames(2);
+    const startCommits = genericCommits;
+    const startBinds = bindCount;
+    const startPaints = paintsByWidget.get(pipeG) ?? 0;
+    await frames(30);
+    const quiet = {
+      hoursAdvanced: clock.getSnapshot().hour - 100,
+      commits: genericCommits - startCommits,
+      binds: bindCount - startBinds,
+      paints: (paintsByWidget.get(pipeG) ?? 0) - startPaints,
+    };
+
+    const steadyStartCommits = genericCommits;
+    const steadyStartBinds = bindCount;
+    const steadyStartPaints = paintsByWidget.get(pipeG) ?? 0;
+    let factories = 90n;
+    for (let i = 0; i < 20; i++) {
+      factories += 5n;
+      sendHour(subsG, clock.getSnapshot().hour, [factories, 70n, 50n, 30n]);
+      await frames(1);
+    }
+    await frames(4);
+    const steady = {
+      commits: genericCommits - steadyStartCommits,
+      binds: bindCount - steadyStartBinds,
+      paints: (paintsByWidget.get(pipeG) ?? 0) - steadyStartPaints,
+    };
+
+    clock.setPlaying(false);
+    await frames(4);
+    const settledBinds = bindCount;
+    const settledPaints = paintsByWidget.get(pipeG) ?? 0;
+    const settledCommits = genericCommits;
+    await frames(20);
+    const paused = {
+      commits: genericCommits - settledCommits,
+      binds: bindCount - settledBinds,
+      paints: (paintsByWidget.get(pipeG) ?? 0) - settledPaints,
+    };
+
+    sendHour(subsG, clock.getSnapshot().hour, [factories, 70n, 50n, 30n]);
+    await until(() => pipeline.view(pipeG)?.dim === false && pipeline.view(pipeG)?.h === clock.getSnapshot().hour, 2000);
+    genericActivated = [];
+    const box = container!.querySelector<HTMLElement>('[data-slot="generic"] .fh-body')!;
+    box.focus();
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const installed = pipeline.view(pipeG);
+    const activated = genericActivated[0] ?? null;
+
+    currentState = { ...currentState, genericMounted: false };
+    renderApp();
+    return {
+      firstPicture,
+      mountCommits,
+      quiet,
+      steady,
+      paused,
+      activatedSubject: activated?.subject ?? null,
+      activatedMatchesInstalled: !!activated && activated.installedId === installed?.id,
+    };
+  },
+
+  async testGenericInstalledTuple() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    genericViewports = [];
+    currentState = { ...currentState, genericMounted: true, genericBlocked: true };
+    renderApp();
+    await frames(3);
+    const blockedMeasured = genericViewports.some(width => width > 0);
+    const blockedShown = !!container!.querySelector('[data-slot="generic"] [data-blocked="true"]');
+
+    currentState = { ...currentState, genericBlocked: false };
+    renderApp();
+    let pipeG = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeG = Number(canvas.dataset.placement);
+      return pipeG > 0;
+    });
+    const subsG = subsForPipe(pipeG);
+    await until(() => subsG.length === 2 && subsG.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(200);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsG, 200, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeG)?.mode === 'picture' && !pipeline.view(pipeG)?.dim);
+    await frames(4);
+    const body = container!.querySelector<HTMLElement>('[data-slot="generic"] .fh-body')!;
+    const describedBy = body.getAttribute('aria-describedby');
+    const description = describedBy ? document.getElementById(describedBy)?.textContent ?? null : null;
+
+    body.focus();
+    await frames(2);
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    let dateOnly = false;
+    for (let i = 0; i < 40 && !dateOnly; i++) {
+      const idBefore = pipeline.view(pipeG)?.id;
+      const installsBefore = installCalls.get(pipeG) ?? 0;
+      sendHour(subsG, clock.getSnapshot().hour, [90n, 70n, 50n, 30n]);
+      await frames(1);
+      const now = pipeline.view(pipeG);
+      dateOnly = now?.id !== idBefore && now?.dim === false && (installCalls.get(pipeG) ?? 0) === installsBefore;
+    }
+    genericActivated = [];
+    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const view = pipeline.view(pipeG);
+    const activated = genericActivated[0] ?? null;
+    clock.setPlaying(false);
+
+    currentState = { ...currentState, genericBlocked: true };
+    renderApp();
+    await frames(2);
+    const clearedDescription = body.getAttribute('aria-describedby') === null;
+
+    currentState = { ...currentState, genericMounted: false, genericBlocked: false };
+    renderApp();
+    return {
+      blockedMeasured,
+      blockedShown,
+      description,
+      clearedDescription,
+      dateOnly,
+      activatedId: activated?.installedId ?? null,
+      activatedHour: activated?.hour ?? null,
+      viewId: view?.id ?? null,
+      viewHour: view?.painted ?? null,
+    };
   },
 
   async testF12DualPlacementAndTypeahead() {

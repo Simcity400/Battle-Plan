@@ -1,4 +1,3 @@
-import { useSyncExternalStore } from 'react';
 import { auditingDesired, onAuditingChange } from '../dashboard/pulled.ts';
 import type { AuditRow } from '../draw/notifications';
 import type { Scalar, Value } from './value.ts';
@@ -9,14 +8,6 @@ export function isFamilyAuditing(): boolean {
 
 export function subscribeFamilyAuditing(listener: (active: boolean) => void | Promise<void>): () => void {
   return onAuditingChange(listener);
-}
-
-export function useFamilyAuditing(): boolean {
-  return useSyncExternalStore(
-    listener => onAuditingChange(() => { listener(); }),
-    auditingDesired,
-    auditingDesired,
-  );
 }
 
 function isPlainObject(input: object): boolean {

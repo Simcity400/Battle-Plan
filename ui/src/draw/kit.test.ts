@@ -5,31 +5,47 @@ import type { FamilyTheme } from '../families/contract.ts';
 import {
   BEHIND_BAR_HEIGHT,
   BEHIND_BAR_MAX_WIDTH,
+  BEHIND_BAR_MIN_WIDTH,
   BEHIND_BAR_OFFSET,
   FLAG_LOSER_ALPHA,
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   artInitials,
   barCornerRadius,
+  drawActionButton,
   drawArtSlot,
   drawBarBehindFigure,
+  drawChevron,
+  drawClockSummary,
   drawDateColumn,
   drawDateTab,
   drawFlagSlot,
   drawGapBand,
   drawGradientLegend,
+  drawIconStrip,
   drawMissingMark,
   drawNameSlot,
+  drawOutOfFigure,
   drawPartialTab,
+  drawProgressRing,
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
   drawSeriesMissingStrip,
+  drawSkillFigure,
   drawSplitBar,
   drawStatusMark,
+  drawStockpileSumCell,
+  drawThresholdMeter,
   drawTrackBar,
   drawTwoWayBar,
+  drawWinRateCell,
   resolveKitTokens,
+  TIMELINE_LABEL_MIN_WIDTH,
+  computeTimeAxisTicks,
+  drawTimeAxis,
+  drawTimelineBar,
+  winRateColor,
 } from './kit.ts';
 
 const THEME: FamilyTheme = {
@@ -80,6 +96,8 @@ function makeFakeCtx() {
       if (prev) Object.assign(this, prev);
     },
     beginPath() {},
+    closePath() {},
+    quadraticCurveTo() {},
     clip() {},
     moveTo(x: number, y: number) { ops.push({ op: 'moveTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
     lineTo(x: number, y: number) { ops.push({ op: 'lineTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
@@ -246,4 +264,116 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tokens.shortage, '#ff6b6f');
   assert.equal(tokens.dateTabBg, THEME.raised);
   assert.equal(tokens.hoverTabBg, THEME.text);
+
+  const meterCtx = makeFakeCtx();
+  drawThresholdMeter(meterCtx.ctx, 10, 18, 100, 8, 0.5, [
+    { at: 0.25, reached: true },
+    { at: 0.5, reached: true },
+    { at: 0.75, reached: false },
+    { at: 1.0, reached: false },
+  ], '#4f86f7', THEME);
+  assert.equal(meterCtx.ops.filter(op => op.op === 'moveTo').length, 3);
+  const missingMeter = makeFakeCtx();
+  drawThresholdMeter(missingMeter.ctx, 10, 18, 100, 8, null, [{ at: 0.5, reached: false }], '#4f86f7', THEME);
+  assert.equal(missingMeter.ops.filter(op => op.op === 'moveTo').length > 0, true);
+
+  const ringCtx = makeFakeCtx();
+  drawProgressRing(ringCtx.ctx, 12, 12, 6.2, 0.75, '#d0607c', THEME);
+  assert.equal(ringCtx.ops.filter(op => op.op === 'arc').length, 2);
+});
+
+test('timeline bars hide icon and name under the minimum width, mix ended items toward the surface, and the axis labels years or months', () => {
+  const bitmap = { width: 32, height: 32 } as unknown as CanvasImageSource;
+  const icon = { kind: 'ready', bitmap, width: 32, height: 32 } as const;
+  const narrow = makeFakeCtx();
+  const narrowRes = drawTimelineBar(narrow.ctx, { x: 10, y: 10, width: TIMELINE_LABEL_MIN_WIDTH - 1, height: 18, fill: '#3987e5', theme: THEME, open: true, icon, label: 'Free Trade' });
+  assert.deepEqual([narrowRes.showedIcon, narrowRes.label], [false, null]);
+
+  const wide = makeFakeCtx();
+  const wideRes = drawTimelineBar(wide.ctx, { x: 10, y: 10, width: 140, height: 18, fill: '#3987e5', theme: THEME, heldBefore: true, open: true, icon, label: 'Free Trade' });
+  assert.equal(wideRes.showedIcon, true);
+  assert.equal(wideRes.label?.text, 'Free Trade');
+  assert.ok(wide.ops.some(op => op.op === 'drawImage'));
+
+  const open = makeFakeCtx();
+  drawTimelineBar(open.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: true });
+  const ended = makeFakeCtx();
+  drawTimelineBar(ended.ctx, { x: 0, y: 0, width: 40, height: 14, fill: '#3987e5', theme: THEME, open: false });
+  const fillOf = (ops: ReturnType<typeof makeFakeCtx>['ops']) => ops.find(op => op.op === 'fill')?.fillStyle;
+  assert.notEqual(fillOf(open.ops), fillOf(ended.ops), 'an ended item is mixed toward the surface');
+
+  const h1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const h1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
+  const years = computeTimeAxisTicks(h1936, h1941, 600);
+  assert.deepEqual(years.map(tick => tick.label), ['1937', '1938', '1939', '1940', '1941']);
+  const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
+  assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+
+  const axis = makeFakeCtx();
+  drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
+  const texts = axis.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(texts.includes('15 Sep 1941'));
+  assert.ok(!texts.includes('1941'), 'a year label under the playhead tab is dropped');
+});
+
+test('table cell kit primitives handle minimum bar width, win rate tinting, icon strips, actions, stockpile bars and clock summary', () => {
+  const tiny = makeFakeCtx();
+  const tinyRect = drawBarBehindFigure(tiny.ctx, 120, 18, 0.01, '#4f86f7', { density: 'normal', sorted: true, theme: THEME });
+  assert.ok(tinyRect);
+  assert.equal(tinyRect.width, BEHIND_BAR_MIN_WIDTH);
+
+  const chev = makeFakeCtx();
+  drawChevron(chev.ctx, 4, 18, false, THEME);
+  drawChevron(chev.ctx, 4, 18, true, THEME);
+  assert.equal(chev.ops.filter(op => op.op === 'stroke').length, 2);
+
+  assert.equal(winRateColor(0.2, THEME), 'rgb(255, 107, 111)');
+  assert.equal(winRateColor(0.5, THEME), 'rgb(212, 212, 212)');
+  assert.equal(winRateColor(0.8, THEME), 'rgb(111, 212, 150)');
+  const wr = makeFakeCtx();
+  assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 0, 0, THEME), { pct: null });
+  assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 12, 4, THEME), { pct: 75 });
+
+  const outOf = makeFakeCtx();
+  drawOutOfFigure(outOf.ctx, '12', '15', 0, 100, 18, THEME);
+  assert.ok(outOf.ops.some(op => op.op === 'fillText' && op.args[0] === ' / 15'));
+
+  const skill = makeFakeCtx();
+  drawSkillFigure(skill.ctx, 0, 80, 18, '5', { kind: 'missing', resolvedName: 'Attack' }, THEME);
+  assert.ok(skill.ops.some(op => op.op === 'fillText' && op.args[0] === '5'));
+
+  const strip = makeFakeCtx();
+  const res = drawIconStrip(strip.ctx, 0, 90, 18, [
+    { state: { kind: 'missing', resolvedName: 'A' }, name: 'A' },
+    { state: { kind: 'missing', resolvedName: 'B' }, name: 'B' },
+    { state: { kind: 'missing', resolvedName: 'C' }, name: 'C' },
+    { state: { kind: 'missing', resolvedName: 'D' }, name: 'D' },
+  ], THEME, { kind: 'traits' });
+  assert.equal(res.drawnCount + res.overflowCount, 4);
+  assert.ok(res.overflowCount > 0);
+
+  const act = makeFakeCtx();
+  const restBox = drawActionButton(act.ctx, 100, 18, 'View', false, THEME);
+  const hoverBox = drawActionButton(act.ctx, 100, 18, 'View', true, THEME);
+  assert.ok(hoverBox.width > restBox.width);
+  assert.ok(act.ops.some(op => op.op === 'fillText' && op.args[0] === 'View'));
+
+  const stock = makeFakeCtx();
+  drawStockpileSumCell(stock.ctx, 0, 200, 0, 48, -120, 400, '-120', THEME);
+  assert.ok(stock.ops.some(op => op.op === 'fillText' && op.args[0] === '-120'));
+
+  const clock = makeFakeCtx();
+  drawClockSummary(clock.ctx, 320, 180, {
+    totalText: '12:30:00',
+    playingText: '10:00:00',
+    pausedText: '2:30:00',
+    playingFraction: 0.8,
+    pausedFraction: 0.2,
+    playingPct: '80%',
+    pausedPct: '20%',
+    complete: true,
+    coverageLabel: 'Complete',
+    spanText: '1 Jan 1936 – 1 Jan 1940',
+  }, THEME);
+  assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
 });

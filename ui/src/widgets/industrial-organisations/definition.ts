@@ -1,17 +1,21 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
+import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
-export const POLICY = { id: 'organisation', label: 'Industrial organisation' };
-export const SORT_COLUMNS = [{ key: 'size', label: 'Size' }, { key: 'funds', label: 'Funds' }, { key: 'traits', label: 'Traits unlocked' },
-  { key: 'organisation', label: 'Organisation' }] as const;
+export const COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'organisation', label: 'Organisation', as: 'flagName', offered: ['flagName', 'name'] },
+  { key: 'size', label: 'Size', as: 'faint', offered: OFFERED.number },
+  { key: 'funds', label: 'Funds', as: 'faint', offered: OFFERED.number },
+  { key: 'traits', label: 'Traits', as: 'faint', offered: OFFERED.number },
+  { key: 'policy', label: 'Policy', as: 'plain', offered: OFFERED.text },
+];
 export const DEFAULT_SORT = { column: 'size', direction: 'descending' } as const;
-
-export const OPTIONS: readonly OptionField[] = [...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT), ...TABLE_OPTIONS];
+export const TABLE_BASE: TableBase = { density: 'normal', overflow: 'scroll', sort: DEFAULT_SORT };
+export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 
 export const definition = {
   kind: 'industrial-organisations', version: 1, title: 'Industrial organisations', icon: 'factory', category: 'Economy',
   description: 'A country’s industrial organisations: size, funds, traits and policy.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
-  minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 9 }, options: OPTIONS,
+  countries: { max: 1 }, minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 9 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

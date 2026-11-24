@@ -1,5 +1,6 @@
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
 import type { InstalledAction, InstalledPicture, InstalledViewport } from '../plan.ts';
+import type { FamilyPointerMode, ParsedFamilyHit } from './adapter.ts';
 import type { FamilyTooltipController, FamilyTooltipField } from './tooltips.ts';
 
 export const CLICK_CANCEL_PX = 4;
@@ -7,6 +8,14 @@ export const CLICK_CANCEL_PX = 4;
 export interface FamilyPointerHit {
   readonly key: string;
   readonly toggle: boolean;
+}
+
+export interface FamilyPointerGestures {
+  readonly onWheel?: (event: WheelEvent, point: readonly [number, number]) => boolean | void;
+  readonly onDragStart?: (point: readonly [number, number]) => void;
+  readonly onDragMove?: (point: readonly [number, number], delta: readonly [number, number]) => void;
+  readonly onDragEnd?: () => void;
+  readonly onDoubleClick?: (point: readonly [number, number]) => boolean | void;
 }
 
 export function clientPointToInstalled(
@@ -56,34 +65,50 @@ export interface FamilyPointerBindingOptions {
   readonly pipe: number;
   readonly tooltips: FamilyTooltipController;
   readonly inspectedKeyRef: { current: string | null };
+  readonly inspectedHitRef?: { current: ParsedFamilyHit | null };
   readonly lastPointerRef: { current: { x: number; y: number } | null };
   readonly focusInsideRef: { readonly current: boolean };
   readonly focusedKeyRef: { readonly current: string | null };
   readonly focusAnchorRef: { readonly current: { x: number; y: number } };
   readonly accessibleRef: { readonly current: HTMLElement | null };
+  readonly pointerMode?: FamilyPointerMode;
   readonly isBlocked: () => boolean;
   readonly getViewportHeight: () => number;
   readonly getInstalled?: () => InstalledPicture | null;
-  readonly parseHit?: (hitKey: string | null) => FamilyPointerHit | null;
+  readonly parseHit?: (hitKey: string | null, installed: InstalledPicture | null) => ParsedFamilyHit | FamilyPointerHit | null;
   readonly inspectToken?: (key: string) => string;
-  readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction) => void;
-  readonly onContextMenu?: (key: string | null, clientX: number, clientY: number) => boolean;
+  readonly onHoverChange?: (hit: ParsedFamilyHit | null) => void;
+  readonly gestures?: FamilyPointerGestures;
+  readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => void;
+  readonly onContextMenu?: (key: string | null, clientX: number, clientY: number, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => boolean;
 }
 
-interface PointerDownState {
+interface PictureStamp {
+  readonly installedId: number | undefined;
+  readonly owner: string | undefined;
+}
+
+interface PointerDownState extends PictureStamp {
+  picture: InstalledPicture | null;
   key: string | null;
-  installedId: number | undefined;
-  owner: string | undefined;
+  hit: ParsedFamilyHit | null;
   resolved: boolean;
-  pendingUp: boolean;
+  pointerId: number;
   x: number;
   y: number;
+  startPoint: readonly [number, number];
   button: number;
   toggle: boolean;
   cancelled: boolean;
+  dragging: boolean;
 }
 
-export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => void {
+export interface FamilyPointerBinding {
+  (): void;
+  readonly clearHover: () => void;
+}
+
+export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyPointerBinding {
   const {
     bodyNode,
     menuHost,
@@ -91,24 +116,43 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
     pipe,
     tooltips,
     inspectedKeyRef,
+    inspectedHitRef,
     lastPointerRef,
     focusInsideRef,
     focusedKeyRef,
     focusAnchorRef,
     accessibleRef,
+    pointerMode = 'discrete',
     isBlocked,
     getViewportHeight,
     getInstalled,
+    onHoverChange,
+    gestures,
     onActivate,
     onContextMenu,
   } = options;
   const parseHit = options.parseHit ?? parseDefaultRowHit;
   const inspectToken = options.inspectToken ?? ((key: string) => `row:${key}`);
   let pointerDown: PointerDownState | null = null;
+  let lastHoverKey: string | null = null;
+  let lastHoverHour: number | undefined;
 
   const installedNow = (): InstalledPicture | null => getInstalled?.() ?? null;
 
-  const matchesInstalled = (meta: PointerHitMeta | undefined, down?: PointerDownState): boolean => {
+  const tokenFor = (hit: ParsedFamilyHit): string => hit.inspectToken ?? inspectToken(hit.key);
+
+  const notifyHover = (hit: ParsedFamilyHit | null) => {
+    if (inspectedHitRef) inspectedHitRef.current = hit;
+    const nextKey = hit?.key ?? null;
+    const nextHour = hit?.hour;
+    if (nextKey !== lastHoverKey || nextHour !== lastHoverHour) {
+      lastHoverKey = nextKey;
+      lastHoverHour = nextHour;
+      onHoverChange?.(hit);
+    }
+  };
+
+  const matchesInstalled = (meta: PointerHitMeta | undefined, down?: PictureStamp): boolean => {
     const cur = installedNow();
     if (cur) {
       if (meta?.owner !== undefined && meta.owner !== cur.owner) return false;
@@ -129,22 +173,43 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
   };
 
   const dispatchActivate = (key: string, toggle: boolean, down: PointerDownState) => {
-    const cur = installedNow();
     if (getInstalled) {
-      if (!cur) return;
-      if (down.owner !== undefined && cur.owner !== down.owner) return;
-      const action = resolveInstalledAction(cur, key, toggle);
-      if (!action) return;
-      onActivate(action.subject, toggle, action);
+      const cur = installedNow();
+      const picture = down.picture;
+      if (!cur || !picture || cur.owner !== picture.owner) return;
+      const base = resolveInstalledAction(picture, key, toggle);
+      if (!base) return;
+      const hit = down.hit;
+      const action: InstalledAction = {
+        ...base,
+        subject: hit?.subject ?? base.subject,
+        hour: (hit?.hour ?? base.hour) as InstalledAction['hour'],
+        ...(hit?.label !== undefined ? { label: hit.label } : {}),
+        ...(hit?.meta !== undefined ? { meta: hit.meta } : {}),
+      };
+      onActivate(action.subject, toggle, action, hit, picture);
       return;
     }
-    onActivate(key, toggle);
+    onActivate(key, toggle, undefined, down.hit, null);
   };
 
   const onPointerMove = (event: PointerEvent) => {
     if (!event.isTrusted) return;
-    if (pointerDown && !pointerDown.cancelled && Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > CLICK_CANCEL_PX) {
-      pointerDown.cancelled = true;
+    if (pointerDown) {
+      const dx = event.clientX - pointerDown.x;
+      const dy = event.clientY - pointerDown.y;
+      if (!pointerDown.cancelled && Math.hypot(dx, dy) > CLICK_CANCEL_PX) {
+        pointerDown.cancelled = true;
+        if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
+          pointerDown.dragging = true;
+          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
+          gestures.onDragStart?.(pointerDown.startPoint);
+        }
+      }
+      if (pointerDown.dragging) {
+        gestures?.onDragMove?.(toPoint(event.clientX, event.clientY), [dx, dy]);
+        return;
+      }
     }
     if (isBlocked()) return;
     const last = lastPointerRef.current;
@@ -153,17 +218,18 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
     tooltips.cancelHoverLeave();
     pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
       if (isBlocked() || !matchesInstalled(hitMeta)) return;
-      const parsed = parseHit(hitKey);
+      const parsed = parseHit(hitKey, installedNow());
       const nextKey = parsed?.key ?? null;
       const changed = nextKey !== inspectedKeyRef.current;
       inspectedKeyRef.current = nextKey;
-      pipeline.inspect(pipe, nextKey ? inspectToken(nextKey) : null);
+      notifyHover(parsed);
+      pipeline.inspect(pipe, parsed ? tokenFor(parsed) : null);
       if (!nextKey) {
         tooltips.cancelHoverOpen();
         if (!focusInsideRef.current) tooltips.hideIfUnpinned();
         return;
       }
-      if (changed) {
+      if (changed || (pointerMode === 'continuous' && tooltips.isHoverShown())) {
         tooltips.scheduleHoverOpen(() => {
           const tipField = pipeline.view(pipe)?.fields?.tooltip as FamilyTooltipField | undefined;
           const tip = tipField?.text && tipField.text.rowKey === inspectedKeyRef.current ? tipField.text : null;
@@ -182,6 +248,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
     lastPointerRef.current = null;
     tooltips.scheduleHoverLeave(() => {
       inspectedKeyRef.current = null;
+      notifyHover(null);
       pipeline.pointer(pipe, 0, null);
       pipeline.inspect(pipe, null);
       if (!tooltips.isPinned()) {
@@ -205,48 +272,60 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
     const x = event.clientX, y = event.clientY;
     const point = toPoint(x, y);
     const down: PointerDownState = {
-      key: inspectedKeyRef.current,
+      picture: snap,
+      key: null,
+      hit: null,
       installedId: snap?.id,
       owner: snap?.owner,
-      resolved: !!inspectedKeyRef.current,
-      pendingUp: false,
+      resolved: false,
+      pointerId: event.pointerId,
       x,
       y,
+      startPoint: point,
       button: event.button,
       toggle: false,
       cancelled: false,
+      dragging: false,
     };
     pointerDown = down;
     pipeline.pointer(pipe, 0, point, (hitKey, hitMeta) => {
       if (down.cancelled) return;
       if (!matchesInstalled(hitMeta, down)) {
         down.key = null;
+        down.hit = null;
         down.resolved = true;
-        if (pointerDown === down && down.pendingUp) pointerDown = null;
         return;
       }
-      const parsed = parseHit(hitKey);
+      const parsed = parseHit(hitKey, down.picture);
       const rowKey = parsed?.key ?? null;
-      const isToggle = parsed?.toggle === true;
       down.key = rowKey;
-      down.toggle = isToggle;
+      down.hit = parsed;
+      down.toggle = parsed?.toggle === true;
       down.resolved = true;
-      if (rowKey) {
+      if (parsed && rowKey) {
         inspectedKeyRef.current = rowKey;
-        pipeline.inspect(pipe, inspectToken(rowKey));
-      }
-      if (down.pendingUp) {
-        if (pointerDown === down) pointerDown = null;
-        if (!isBlocked() && down.button === 0 && rowKey) {
-          dispatchActivate(rowKey, isToggle, down);
-        }
+        notifyHover(parsed);
+        pipeline.inspect(pipe, tokenFor(parsed));
       }
     });
   };
 
+  const endDrag = (down: PointerDownState) => {
+    if (!down.dragging) return;
+    down.dragging = false;
+    try { bodyNode.releasePointerCapture?.(down.pointerId); } catch {}
+    gestures?.onDragEnd?.();
+  };
+
   const onPointerUp = (event: PointerEvent) => {
     const down = pointerDown;
-    if (!down || down.cancelled || down.button !== 0 || isBlocked()) {
+    if (!down) return;
+    if (down.dragging) {
+      pointerDown = null;
+      endDrag(down);
+      return;
+    }
+    if (down.cancelled || down.button !== 0 || isBlocked()) {
       pointerDown = null;
       return;
     }
@@ -255,42 +334,91 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
       pointerDown = null;
       return;
     }
-    if (!down.resolved) {
-      down.pendingUp = true;
-      return;
-    }
     pointerDown = null;
-    if (!down.key) return;
-    dispatchActivate(down.key, down.toggle, down);
+    const picture = installedNow();
+    if (getInstalled && !picture) return;
+    const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
+    pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
+      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      const released = parseHit(hitKey, picture);
+      if (!released || !down.resolved || released.key !== down.key) return;
+      dispatchActivate(released.key, released.toggle === true, { ...down, picture, hit: released });
+    });
   };
 
   const onPointerCancel = () => {
-    if (pointerDown) pointerDown.cancelled = true;
+    const down = pointerDown;
+    if (down) {
+      down.cancelled = true;
+      endDrag(down);
+    }
     pointerDown = null;
   };
 
   const handleContextMenu = (event: MouseEvent) => {
     if (isBlocked() || !onContextMenu) return;
-    const key = inspectedKeyRef.current
-      ?? (focusInsideRef.current && accessibleRef.current?.contains(event.target as Node) ? focusedKeyRef.current : null);
-    if (onContextMenu(key, event.clientX, event.clientY)) {
-      event.preventDefault();
+    const target = event.target as Node | null;
+    if (focusInsideRef.current && !bodyNode.contains(target) && accessibleRef.current?.contains(target)) {
+      if (onContextMenu(focusedKeyRef.current, event.clientX, event.clientY, null, installedNow())) event.preventDefault();
+      return;
     }
+    const picture = installedNow();
+    if (getInstalled && !picture) return;
+    event.preventDefault();
+    const { clientX, clientY } = event;
+    const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
+    pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
+      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      const parsed = parseHit(hitKey, picture);
+      onContextMenu(parsed?.key ?? null, clientX, clientY, parsed, picture);
+    });
   };
+
+  const onWheel = gestures?.onWheel
+    ? (event: WheelEvent) => {
+        if (isBlocked()) return;
+        if (gestures.onWheel?.(event, toPoint(event.clientX, event.clientY)) === true) {
+          event.preventDefault();
+        }
+      }
+    : null;
+
+  const onDoubleClick = gestures?.onDoubleClick
+    ? (event: MouseEvent) => {
+        if (isBlocked()) return;
+        if (gestures.onDoubleClick?.(toPoint(event.clientX, event.clientY)) === true) {
+          event.preventDefault();
+        }
+      }
+    : null;
 
   bodyNode.addEventListener('pointermove', onPointerMove);
   bodyNode.addEventListener('pointerleave', onPointerLeave);
   bodyNode.addEventListener('pointerdown', onPointerDown);
   bodyNode.addEventListener('pointerup', onPointerUp);
   bodyNode.addEventListener('pointercancel', onPointerCancel);
+  if (onWheel) bodyNode.addEventListener('wheel', onWheel, { passive: false });
+  if (onDoubleClick) bodyNode.addEventListener('dblclick', onDoubleClick);
   menuHost.addEventListener('contextmenu', handleContextMenu);
 
-  return () => {
+  const clearHover = () => {
+    tooltips.cancelHoverOpen();
+    lastPointerRef.current = null;
+    if (inspectedKeyRef.current === null && lastHoverKey === null && lastHoverHour === undefined) return;
+    inspectedKeyRef.current = null;
+    notifyHover(null);
+    pipeline.inspect(pipe, null);
+    if (!focusInsideRef.current) tooltips.hideIfUnpinned();
+  };
+
+  return Object.assign(() => {
+    if (pointerDown) endDrag(pointerDown);
     pointerDown = null;
     tooltips.cancelTimers();
     lastPointerRef.current = null;
-    if (inspectedKeyRef.current !== null) {
+    if (inspectedKeyRef.current !== null || lastHoverKey !== null || lastHoverHour !== undefined) {
       inspectedKeyRef.current = null;
+      notifyHover(null);
       pipeline.pointer(pipe, 0, null);
       pipeline.inspect(pipe, null);
     }
@@ -300,6 +428,8 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
     bodyNode.removeEventListener('pointerdown', onPointerDown);
     bodyNode.removeEventListener('pointerup', onPointerUp);
     bodyNode.removeEventListener('pointercancel', onPointerCancel);
+    if (onWheel) bodyNode.removeEventListener('wheel', onWheel);
+    if (onDoubleClick) bodyNode.removeEventListener('dblclick', onDoubleClick);
     menuHost.removeEventListener('contextmenu', handleContextMenu);
-  };
+  }, { clearHover });
 }

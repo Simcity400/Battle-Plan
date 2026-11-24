@@ -3,7 +3,7 @@ pub mod career;
 #[cfg(test)]
 mod tests;
 
-use dashboard_base::products::{LoadContext, Product, at_hour::{At, AtHour, Read, ReadsAt}, politics_content::{PoliticsContent, recorded_politics_content}};
+use dashboard_base::products::{LoadContext, Product, artwork::ArtResolution, at_hour::{At, AtHour, Read, ReadsAt}, politics_content::{PoliticsContent, recorded_politics_content}};
 use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_query::Query;
@@ -828,6 +828,7 @@ pub struct LeaderPortrait {
     pub reference: String,
     pub image: Option<String>,
     pub missing: Option<String>,
+    pub resolution: ArtResolution,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -838,16 +839,36 @@ pub struct LeaderPortraitsReply {
     pub warnings: Vec<String>,
 }
 
-fn portrait(frame: &DecodedFrame, reference: u64, politics: &PoliticsContent, edge: u32) -> Result<String, String> {
-    let leaders = frame.complete::<tables::UnitLeaders>().map_err(|error| error.to_string())?;
-    let row = leaders.binary_search_by_key(&reference, handle).ok().map(|at| &leaders[at]).ok_or("Leader not recorded at this hour")?;
-    let holders = frame.complete::<tables::CharacterPortraits>().map_err(|error| error.to_string())?;
-    let holder = holders.binary_search_by_key(&row.character_id, |holder| holder.character).ok().map(|at| &holders[at]).ok_or("Character portrait holder not recorded")?;
+fn portrait(frame: &DecodedFrame, reference: u64, politics: &PoliticsContent, edge: u32) -> ArtResolution {
+    let missing = |reason: String| ArtResolution::ConfirmedMissing { reason, origin: None, file: None };
+    let leaders = match frame.complete::<tables::UnitLeaders>() {
+        Ok(leaders) => leaders,
+        Err(error) => return missing(error.to_string()),
+    };
+    let Some(row) = leaders.binary_search_by_key(&reference, handle).ok().map(|at| &leaders[at]) else {
+        return missing("Leader not recorded at this hour".into());
+    };
+    let holders = match frame.complete::<tables::CharacterPortraits>() {
+        Ok(holders) => holders,
+        Err(error) => return missing(error.to_string()),
+    };
+    let Some(holder) = holders.binary_search_by_key(&row.character_id, |holder| holder.character).ok().map(|at| &holders[at]) else {
+        return missing("Character portrait holder not recorded".into());
+    };
     let category = if row.kind == KIND_NAVY { PORTRAIT_NAVY } else { PORTRAIT_ARMY };
-    let entry = replay_data::rows::portrait_entry(&holder.portraits, category, replay_data::rows::PORTRAIT_LARGE)
-        .filter(|entry| entry.is_set != 0)
-        .ok_or("The game generates this portrait from unrecorded inputs")?;
-    politics.recorded_portrait_sized(entry.kind, &entry.identity, edge)
+    match replay_data::rows::portrait_entry(&holder.portraits, category, replay_data::rows::PORTRAIT_LARGE).filter(|entry| entry.is_set != 0) {
+        Some(entry) => politics.recorded_portrait_art(entry.kind, &entry.identity, edge),
+        None => missing("The game generates this portrait from unrecorded inputs".into()),
+    }
+}
+
+fn leader_portrait(reference: &str, resolution: ArtResolution) -> LeaderPortrait {
+    LeaderPortrait {
+        reference: reference.to_owned(),
+        image: resolution.url().map(str::to_owned),
+        missing: resolution.reason().map(str::to_owned),
+        resolution,
+    }
 }
 
 impl Product for LeaderPortraits {
@@ -874,14 +895,18 @@ impl Product for LeaderPortraits {
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let query = dashboard_base::queries::query(source, parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?)?;
-        let missing = |why: &str| params.references.iter().map(|reference| LeaderPortrait { reference: reference.clone(), image: None, missing: Some(why.to_owned()) }).collect();
+        let every = |resolution: ArtResolution| params.references.iter().map(|reference| leader_portrait(reference, resolution.clone())).collect();
         let Some(stretch) = query.timeline.at(params.hour) else {
-            return Ok(LeaderPortraitsReply { portraits: missing("Portrait hour not recorded"), warnings: Vec::new() });
+            let unrecorded = ArtResolution::ConfirmedMissing { reason: "Portrait hour not recorded".into(), origin: None, file: None };
+            return Ok(LeaderPortraitsReply { portraits: every(unrecorded), warnings: Vec::new() });
         };
         let politics = context.content().and_then(|options| recorded_politics_content(source, options));
         let politics = match politics {
             Ok(politics) => politics,
-            Err(error) => return Ok(LeaderPortraitsReply { portraits: missing(&error.to_string()), warnings: Vec::new() }),
+            Err(error) => {
+                let failed = ArtResolution::Failed { reason: error.to_string(), retryable: true };
+                return Ok(LeaderPortraitsReply { portraits: every(failed), warnings: Vec::new() });
+            }
         };
         let keys: Vec<u128> = params.references.iter().filter_map(|reference| reference.parse::<u64>().ok()).map(u128::from).collect();
         let first = replay_lanes::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&{
@@ -897,18 +922,13 @@ impl Product for LeaderPortraits {
         let second = replay_lanes::at::frame(source.replay_ref().recording(), stretch.run, params.hour, &[replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay_lanes::at::Keys::These(&characters) }])?;
         let mut frame = first;
         frame.tables[TableId::CharacterPortraits.index()] = second.tables[TableId::CharacterPortraits.index()].clone();
-        let portraits = params
-            .references
-            .iter()
-            .map(|reference| {
-                let drawn = portrait(&frame, reference.parse().unwrap_or_default(), &politics, params.edge);
-                let (image, missing) = match drawn {
-                    Ok(image) => (Some(image), None),
-                    Err(why) => (None, Some(why)),
-                };
-                LeaderPortrait { reference: reference.clone(), image, missing }
-            })
-            .collect();
-        Ok(LeaderPortraitsReply { portraits, warnings: Vec::new() })
+        let mut portraits = Vec::with_capacity(params.references.len());
+        for reference in &params.references {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            portraits.push(leader_portrait(reference, portrait(&frame, reference.parse().unwrap_or_default(), &politics, params.edge)));
+        }
+        let reply = LeaderPortraitsReply { portraits, warnings: Vec::new() };
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
