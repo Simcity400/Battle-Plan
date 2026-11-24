@@ -3,8 +3,6 @@ import type { FamilyTimelineBinding, TimelineExtentField } from './laneView.ts';
 import { deriveTimelineAudit, type TimelineModel } from './model.ts';
 import { decodeTimelineHit } from './painter.ts';
 
-const DEFAULT_STRIDE = 38;
-
 export function parseTimelineHit(token: string | null): ParsedFamilyHit | null {
   const hit = decodeTimelineHit(token);
   if (!hit) return null;
@@ -35,25 +33,7 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
     const extent = extentOf(fields);
     return extent ? { height: extent.height } : null;
   },
-  getRowStride: () => DEFAULT_STRIDE,
   deriveAuditRows: model => deriveTimelineAudit(model),
   auditOrdered: true,
-  buildBinding: ctx => (ctx.theme ? {
-    family: 'timeline',
-    kind: ctx.kind,
-    options: ctx.options,
-    sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-    width: ctx.viewport.width,
-    height: ctx.viewport.height,
-    scrollTop: ctx.viewport.scrollTop,
-    theme: ctx.theme,
-    identitySnapshot: ctx.identitySnapshot,
-    selectedKey: ctx.selectedKey,
-    focusedKey: ctx.focusedKey,
-    expanded: ctx.expanded,
-    pauseFlush: ctx.pauseFlush,
-    ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
-  } : null),
+  buildBinding: ctx => ({ expanded: ctx.expanded }),
 };

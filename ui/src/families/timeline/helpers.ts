@@ -3,10 +3,6 @@ import { flagArtHandle } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
 import type { TimelineLane, TimelineModel } from './model.ts';
 
-export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
-  return url ? { kind: 'url', url } : null;
-}
-
 export interface CountryLook {
   readonly tag: string;
   readonly name: string;

@@ -560,6 +560,47 @@ mod details {
     }
 
     #[test]
+    fn a_battle_restarted_in_place_keeps_each_battles_sinkings_with_every_hour_read() {
+        use super::super::{
+            sinking_details::ShipSinkingBattle,
+            sunk::{ShipsSunk, ShipsSunkParams},
+        };
+        use replay_data::rows::NavalCombatRow;
+        let entry = |sink_hour: i32, ship: &[u8]| SunkShipEntry {
+            ship_name: ship.to_vec(),
+            attribution_name: b"Killer".to_vec(),
+            victim_country: 9001,
+            attacker_country: 9001,
+            sink_hour,
+            battle: 20,
+            ..SunkShipEntry::default()
+        };
+        let frames = (100..=106)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                set::<tables::NavalCombats>(&mut frame, vec![NavalCombatRow { id: 20, province: if hour < 103 { 600 } else { 601 }, ..NavalCombatRow::default() }]);
+                set::<tables::NavalCombatParticipants>(&mut frame, Vec::new());
+                let entries = [(101, b"Before".as_slice()), (104, b"After".as_slice())].into_iter().filter(|&(sunk, _)| sunk <= hour).map(|(sunk, ship)| entry(sunk, ship)).collect();
+                set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries }]);
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "restarted".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let sunk = ShipsSunk::load(&source, &ShipsSunkParams { branch_id: "1".into(), window: 0 }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        let battle = |name: &str| sunk.rows.iter().find(|row| row.name.as_deref() == Some(name)).map(|row| row.battle.clone());
+        let live = |first: i32| ShipSinkingBattle::Linked {
+            id: format!("combat:20:{first}"),
+            live_id: Some(format!("combat:20:{first}")),
+            result_id: None,
+            first_hour: Some(first),
+            result_hour: None,
+        };
+        assert_eq!(battle("Before"), Some(live(100)), "a sinking before the restart is the first battle's");
+        assert_eq!(battle("After"), Some(live(103)), "a sinking after the restart is the second battle's");
+    }
+
+    #[test]
     fn sinking_cause_and_battle_link_resolve_independently_causally_and_within_branch() {
         use super::super::{
             battles::{NavalBattleDetailRequest, NavalBattleDetails, NavalBattleDetailsParams},

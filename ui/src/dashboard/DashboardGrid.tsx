@@ -31,6 +31,7 @@ import { WidgetFrames } from './widgetClock';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
+import { widgetOptionFields } from '../widgets/manifest.ts';
 import { commitZone } from '../shell/commitCount';
 import { engine } from '../engine/frame.ts';
 
@@ -184,9 +185,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const optionDraft = useRef(new OptionDraft(widget.options));
   optionDraft.current.sync(widget.options);
   const saveOptions = useCallback((values: Readonly<Record<string, OptionValue>>) => {
-    const options = optionDraft.current.updateAll(definition?.options, values);
+    const options = optionDraft.current.updateAll(widgetOptionFields(widget.kind, widget.options), values);
     if (options) applyWidget({ ...widget, options }, true);
-  }, [definition, widget, applyWidget]);
+  }, [widget, applyWidget]);
   const saveOption = useCallback((key: string, value: OptionValue) => saveOptions({ [key]: value }), [saveOptions]);
 
   const defaultTrack = template.tracks[0]?.id;

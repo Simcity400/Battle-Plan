@@ -2,9 +2,7 @@ import { isOrderedSpans } from '../charts/series.ts';
 import { artworkEntry, keepDrawableIcons } from './artwork.ts';
 import { contentTitle } from './contentTitles.ts';
 import { formatDateOnly } from '../families/valueFormat.ts';
-import type { Artwork, IdeaHistoryReply, IdeaHolding, IdeaInfo, IdeaLook, SpendIdeaTooltips } from '../generated/dashboard';
-
-export type IdeaTooltipData = SpendIdeaTooltips;
+import type { Artwork, IdeaHistoryReply, IdeaHolding, IdeaInfo, IdeaLook } from '../generated/dashboard';
 
 export const NAME_NOT_RECORDED = 'Name not recorded';
 
@@ -77,17 +75,6 @@ const formats = (value: unknown) => Array.isArray(value) && value.every(format =
   && Number.isInteger(format.flags) && Number.isInteger(format.precision) && Number.isInteger(format.feature)
   && (format.index === null || Number.isInteger(format.index)) && nullableText(format.label) && nullableText(format.postfix));
 const texts = (value: unknown) => Array.isArray(value) && value.every(item => object(item) && typeof item.key === 'string' && nullableText(item.text));
-
-function isIdeaTooltipData(data: unknown): data is IdeaTooltipData {
-  return object(data) && Array.isArray(data.ideas) && data.ideas.every(info)
-    && Array.isArray(data.artwork) && data.artwork.every(artworkEntry) && formats(data.modifiers) && texts(data.texts);
-}
-
-export function validateIdeaTooltipData(data: unknown): IdeaTooltipData {
-  if (!isIdeaTooltipData(data)) throw new Error('The idea tooltip data is malformed.');
-  keepDrawableIcons(data.artwork);
-  return data;
-}
 
 const STARTS = new Set(['seen', 'heldBefore', 'firstObserved']);
 const ENDS = new Set(['held', 'ended', 'lastSeen']);

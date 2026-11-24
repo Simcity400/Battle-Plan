@@ -9,7 +9,7 @@ import { formatValueState, notRecordedLabel, type ValueFormat } from '../valueFo
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
-export type BarsTwoSidedLayout = 'paired' | 'split-sides';
+export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
 
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';
@@ -299,10 +299,26 @@ export function formatBarsValueField(field: BarsValueField): { readonly text: st
   };
 }
 
+const rowIndexes = new WeakMap<readonly BarsRow[], ReadonlyMap<string, number>>();
+
+export function barsRowIndex(model: BarsModel, key: string): number {
+  let index = rowIndexes.get(model.rows);
+  if (!index) {
+    const built = new Map<string, number>();
+    for (let i = 0; i < model.rows.length; i++) {
+      const row = model.rows[i]!;
+      if (!built.has(row.key)) built.set(row.key, i);
+      if (row.kind === 'data' && row.rightSide && !built.has(row.rightSide.key)) built.set(row.rightSide.key, i);
+    }
+    index = built;
+    rowIndexes.set(model.rows, index);
+  }
+  return index.get(key) ?? -1;
+}
+
 export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left' | 'right'): FamilyTooltipPayload | null {
-  const row = model.rows.find((item): item is BarsDataRow =>
-    item.kind === 'data' && (item.key === rowKey || item.rightSide?.key === rowKey));
-  if (!row) return null;
+  const row = model.rows[barsRowIndex(model, rowKey)];
+  if (row?.kind !== 'data') return null;
   if (side === 'right' && row.rightSide) {
     const formatted = formatBarsValueField(row.rightSide.value);
     return {
@@ -440,8 +456,8 @@ export function deriveBarsMirror(
     pushRow(i);
   }
   if (focusedKey && !hasFocused) {
-    const idx = model.rows.findIndex(r => r.key === focusedKey);
-    if (idx >= 0) pushRow(idx);
+    const idx = barsRowIndex(model, focusedKey);
+    if (idx >= 0 && model.rows[idx]!.key === focusedKey) pushRow(idx);
   }
   return { first, total: model.rows.length, rows };
 }
@@ -475,8 +491,12 @@ export function deriveBarsAudit(
     if (item.segments?.length) {
       for (let s = 0; s < item.segments.length; s++) {
         const seg = item.segments[s]!;
-        cell(item.key, `segment:${seg.key}`, `${Math.round(seg.share * 10000)}:${canonicalAuditValue(seg.value)}`);
+        cell(item.key, `segment:${seg.key}`, `${Math.round(seg.share * 10000)}:${seg.hatched ? 'hatched:' : ''}${canonicalAuditValue(seg.value)}`);
       }
+    }
+    if (item.readout) {
+      const { primary, secondary, shortfall, tone, iconMissing } = item.readout;
+      cell(item.key, 'readout', JSON.stringify([primary, secondary ?? null, shortfall ?? null, tone ?? 'default', iconMissing === true]));
     }
   }
   return rows;

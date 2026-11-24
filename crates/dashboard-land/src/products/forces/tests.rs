@@ -56,23 +56,23 @@ fn recorded_parts_group_under_their_reply_part_in_key_order() {
 fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     use dashboard_base::products::at_hour::{At, AtHour};
     use dashboard_follow::live::Cells;
-    use dashboard_query::identity::{Holder, Holders, Run};
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
     use replay_data::rows::{AirForcePartRow, AirForceTotalRow, Recorded, TableRows};
-    use replay_frame::frame::{DecodedFrame, Metrics, TableView};
+    use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TABLE_COUNT, TableView};
     use std::sync::atomic::AtomicBool;
 
     let mut holders = Holders::default();
-    holders.tags.insert("GER".into(), vec![Run { first: 0, last: 100, holder: Holder::Found { slot: 1, id: 10 } }]);
-    holders.tags.insert("ENG".into(), vec![Run { first: 0, last: 100, holder: Holder::Found { slot: 2, id: 20 } }]);
-    holders.tags.insert("FRA".into(), vec![Run { first: 0, last: 100, holder: Holder::Found { slot: 3, id: 30 } }]);
+    holders.tags.insert("GER".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 1, id: 10 }, starts_segment: true }]);
+    holders.tags.insert("ENG".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 2, id: 20 }, starts_segment: true }]);
+    holders.tags.insert("FRA".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 3, id: 30 }, starts_segment: true }]);
 
-    let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
-    *tables[TableId::AirForceTotals.index()] = TableView::Complete(TableRows::AirForceTotal(vec![
+    let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
+    *tables[TableId::AirForceTotals.index()] = TableView::Complete(TableRows::AirForceTotals(vec![
         AirForceTotalRow { slot: 1, roster_planes: Recorded::Value(50), ..AirForceTotalRow::default() },
         AirForceTotalRow { slot: 2, roster_planes: Recorded::Value(80), ..AirForceTotalRow::default() },
         AirForceTotalRow { slot: 3, roster_planes: Recorded::Value(80), ..AirForceTotalRow::default() },
     ]));
-    *tables[TableId::AirForceParts.index()] = TableView::Complete(TableRows::AirForcePart(vec![
+    *tables[TableId::AirForceParts.index()] = TableView::Complete(TableRows::AirForceParts(vec![
         AirForcePartRow { slot: 2, ownership: 0, variant: Some(100), planes: Recorded::Value(80) },
         AirForcePartRow { slot: 3, ownership: 0, variant: Some(100), planes: Recorded::Value(60) },
     ]));
@@ -97,12 +97,12 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!(reply.rows[1].values, vec![None]);
 
     let truncated_params = AirForceAtParams { countries: vec![Country::from("ENG"), Country::from("GER")], top: None, ..params };
-    let mut trunc_tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
+    let mut trunc_tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
     *trunc_tables[TableId::AirForceTotals.index()] = TableView::Truncated {
-        rows: TableRows::AirForceTotal(vec![AirForceTotalRow { slot: 2, roster_planes: Recorded::Value(80), ..AirForceTotalRow::default() }]),
+        rows: TableRows::AirForceTotals(vec![AirForceTotalRow { slot: 2, roster_planes: Recorded::Value(80), ..AirForceTotalRow::default() }]),
         missing: 1,
     };
-    *trunc_tables[TableId::AirForceParts.index()] = TableView::NotRecorded;
+    *trunc_tables[TableId::AirForceParts.index()] = TableView::NotRecorded { mode: replay_frame::scope::CaptureMode::Map };
     let trunc_frame = DecodedFrame { branch: 1, hour: 10, tables: trunc_tables, metrics: Metrics::default() };
     let trunc_reply = AirForceAt::reply(&trunc_frame, &truncated_params, &at).unwrap();
     assert_eq!(trunc_reply.rows[0].tag, "ENG");

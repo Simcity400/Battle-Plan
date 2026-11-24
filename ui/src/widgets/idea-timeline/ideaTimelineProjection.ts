@@ -2,11 +2,11 @@ import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, ideaNameMissing, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { inHourSpans, timelineModel, urlArtHandle } from '../../families/timeline/helpers.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { IdeaHistoryReply, IdeaHolding } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData.ts';
 
 export interface IdeaTimelineOptions {
@@ -16,7 +16,8 @@ export interface IdeaTimelineOptions {
   readonly surface: string;
 }
 
-export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerTimelineProjection<IdeaTimelineOptions>({
+export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerFamilyProjection<TimelineProjection<IdeaTimelineOptions>>({
+  family: 'timeline',
   kind: 'idea-timeline',
 
   nextChange(readView) {
@@ -93,7 +94,6 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
   subject: 'idea timeline',
   emptyCampaign: 'Load a campaign and choose a country to see its idea history.',
   icon: 'layers',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its idea history.' },
   jumpToDate: true,
   keyByBranch: true,

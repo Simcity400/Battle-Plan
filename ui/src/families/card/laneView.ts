@@ -59,7 +59,7 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
         warnings: model.warnings ?? [],
       },
       rowHours: cardRowHours(model),
-      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.kind === 'hero' || row.title.kind !== 'known' ? row.key : String(row.title.value), index, -1, '', row.subject ?? null] as const])),
+      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.kind === 'hero' || row.title.kind !== 'known' ? row.key : String(row.title.value), index, -1, '', row.subject ?? null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
     };
   },
   mirror: frame => deriveCardMirror(frame.model),

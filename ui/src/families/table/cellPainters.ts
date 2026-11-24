@@ -25,9 +25,9 @@ import {
   type IconStripItem,
 } from '../../draw/kit.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { formatDateParts, formatValueState } from '../valueFormat.ts';
-import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
-import type { FamilyColumnLayout } from './layout.ts';
+import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
+import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
+import { SHARE_FIGURE_SLOT, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -326,17 +326,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.font = font;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${Math.round(sp.produced).toLocaleString()}/d` : '0';
+    const producedText = sp.producedMissing ? '' : sp.produced !== null ? `+${formatScalar(sp.produced, { decimals: 0, maxDecimals: 0 })}/d` : '0';
     ctx.fillStyle = sp.produced && sp.produced > 0 ? theme.text : theme.muted;
     if (producedText) ctx.fillText(fit(producedText, font, partW - 6), left + partW - 4, middle);
     if (sp.needMissing == null && sp.need !== null) {
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fit(Math.round(sp.need).toLocaleString(), font, partW - 6), left + partW * 2 - 4, middle);
+      ctx.fillText(fit(formatScalar(sp.need, { decimals: 0, maxDecimals: 0 }), font, partW - 6), left + partW * 2 - 4, middle);
     }
     if (sp.balanceMissing == null && sp.balance !== null) {
       ctx.fillStyle = sp.balance < 0 ? tokens.shortage : sp.balance > 0 ? theme.text : theme.muted;
-      const sign = sp.balance > 0 ? '+' : '';
-      ctx.fillText(fit(`${sign}${Math.round(sp.balance).toLocaleString()}`, font, partW - 4), right, middle);
+      ctx.fillText(fit(formatScalar(sp.balance, { decimals: 0, maxDecimals: 0, signed: true }), font, partW - 4), right, middle);
     }
     ctx.restore();
     return;
@@ -451,6 +450,11 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       });
       return;
     }
+  }
+
+  if (kind === 'share') {
+    drawShareCell(rc, item, column, left, right, middle, formatted, fraction, paintModel.countryColor);
+    return;
   }
 
   if (kind === 'track' || column.display === 'track' || column.display === 'meterAfter' || column.display === 'meterBefore') {
@@ -639,4 +643,41 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawInlineRuns(rc, cell.inlineSubtext, textLeft + drawnW + gap, middle, rem, inlineFont, theme.muted);
     }
   }
+}
+
+
+function drawShareCell(
+  rc: CellRenderContext,
+  item: Extract<FlatTableRow, { kind: 'data' }>,
+  column: FamilyColumnLayout,
+  left: number,
+  right: number,
+  middle: number,
+  formatted: ReturnType<typeof formatValueState>,
+  fraction: number | null,
+  countryColor: string | null,
+): void {
+  const { ctx, theme, measure, fit } = rc;
+  const muted = item.row.muted === true;
+  if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted }, theme, measure, fit);
+    return;
+  }
+  const font = fontOf(theme, 12, item.isTotal ? 600 : 500);
+  const partial = formatted.kind === 'partial';
+  const tab = partial ? PARTIAL_TAB_GAP + PARTIAL_TAB_WIDTH : 0;
+  const figureRight = right - tab;
+  if (rc.sortedColumn === column.key && !item.isTotal && fraction !== null) {
+    const trackX = figureRight - SHARE_FIGURE_SLOT - SHARE_TRACK_GAP - SHARE_TRACK_WIDTH;
+    if (trackX >= left) drawTrackBar(ctx, trackX, middle, SHARE_TRACK_WIDTH, SHARE_TRACK_HEIGHT, fraction, countryColor ?? theme.grey, theme);
+  }
+  ctx.save();
+  ctx.font = font;
+  ctx.fillStyle = muted || formatted.kind === 'zero' ? theme.muted : theme.text;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const text = fit(formatted.text, font, Math.max(0, figureRight - left));
+  ctx.fillText(text, figureRight, middle);
+  ctx.restore();
+  if (partial) drawHatchRect(ctx, right - PARTIAL_TAB_WIDTH, Math.round(middle - PARTIAL_TAB_HEIGHT / 2), PARTIAL_TAB_WIDTH, PARTIAL_TAB_HEIGHT, 1.5, theme);
 }

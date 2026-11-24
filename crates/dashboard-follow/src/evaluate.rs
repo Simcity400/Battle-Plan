@@ -516,7 +516,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             let source = query.source().expect("a checked series");
             let hour = head(lane);
             table.clear(1, false);
-            let unread = |at: usize| measure_unrecorded(&identity.holders.name(&names[at], hour), measure.name);
+            let unread = |at: usize| identity.holders.say(&names[at], hour, |name| measure_unrecorded(name, measure.name));
             for (at, tag) in tags.rows.iter().enumerate() {
                 let key = match tag {
                     TagRow::Absent(reason) => {

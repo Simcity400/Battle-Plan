@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { holdingSince, holdingUntil, ideaHistoryProof, validateIdeaHistoryReply, validateIdeaTooltipData } from './ideaHistoryReply.ts';
+import { holdingSince, holdingUntil, ideaHistoryProof, validateIdeaHistoryReply } from './ideaHistoryReply.ts';
 import type { IdeaHistoryReply, IdeaHolding } from '../generated/dashboard';
 
 const info = { token: 'mod_idea', category: 'mod_category', slot: null, law: true, designer: false,
@@ -43,13 +43,4 @@ test('a holding’s dates say how much the recording saw: held before, first obs
   assert.deepEqual(holdingUntil(holding), { label: 'Until', value: 'Held now' });
   assert.equal(holdingUntil({ ...holding, end: { kind: 'endedBy', hour: 30 } }).label, 'Ended by');
   assert.equal(holdingUntil({ ...holding, end: { kind: 'lastSeen' } }).label, 'Last seen');
-});
-
-test('shared tooltip data checks effect shapes and keeps mod text when its art cannot be drawn', () => {
-  const sources = { ideas: [info], modifiers: [], texts: [], artwork: [{ ...artwork }] };
-  const data = validateIdeaTooltipData(sources);
-  assert.equal(data.artwork[0]!.name, 'Mod idea');
-  assert.equal(data.artwork[0]!.icon, null);
-  assert.throws(() => validateIdeaTooltipData({ ...sources, ideas: [{ ...info, effects: [{ key: 'broken', fixed5: 'unknown', hidden: false }] }] }), /malformed/);
-  assert.throws(() => validateIdeaTooltipData({ ...sources, artwork: [{ token: 'mod_idea' }] }), /malformed/);
 });

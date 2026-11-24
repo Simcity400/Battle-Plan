@@ -4,8 +4,8 @@ import { breakdownAtHourModel, breakdownAtHourSource, validateBreakdownAtHour } 
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { ConstructionBreakdownReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export interface ConstructionSpendingOptions {
   readonly digits: number;
@@ -13,7 +13,7 @@ export interface ConstructionSpendingOptions {
 
 const validate = validateBreakdownAtHour<ConstructionBreakdownReply>('construction spending breakdown');
 
-const plural = (count: number, one: string) => `${count.toLocaleString('en-US')} ${one}${count === 1 ? '' : 's'}`;
+const plural = (count: number, one: string) => `${formatScalar(count, 'integer')} ${one}${count === 1 ? '' : 's'}`;
 
 export const constructionProjection: BreakdownProjection<ConstructionSpendingOptions> = {
   family: 'breakdown',
@@ -42,7 +42,6 @@ export const constructionBreakdown: BreakdownWidgetSpec<ConstructionSpendingOpti
   subject: 'construction spending',
   emptyCampaign: 'Load a campaign to see construction spending.',
   icon: 'sunburst',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its construction spending.' },
   projection: constructionProjection,
   projectionOptions: ctx => ({ digits: icDecimals(ctx.options, 5) }),

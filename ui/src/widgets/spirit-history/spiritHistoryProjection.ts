@@ -3,11 +3,11 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { inHourSpans, timelineModel, urlArtHandle } from '../../families/timeline/helpers.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { IdeaHistoryReply, IdeaHolding } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export interface SpiritHistoryOptions {
   readonly showEnded: boolean;
@@ -52,7 +52,8 @@ function describe(holding: IdeaHolding): string {
 
 const ended = (holding: IdeaHolding) => holding.end.kind === 'ended' || holding.end.kind === 'endedBy';
 
-export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerTimelineProjection<SpiritHistoryOptions>({
+export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerFamilyProjection<TimelineProjection<SpiritHistoryOptions>>({
+  family: 'timeline',
   kind: 'spirit-history',
 
   nextChange(readView) {
@@ -136,7 +137,6 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   subject: 'national spirits',
   emptyCampaign: 'Load a campaign and choose a country to see its national spirits.',
   icon: 'history',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its national spirits.' },
   jumpToDate: true,
   keyByBranch: true,

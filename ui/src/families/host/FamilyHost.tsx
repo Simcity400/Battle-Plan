@@ -28,7 +28,10 @@ import type {
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import {
+  familyBinding,
+  familyInspectToken,
   lazyActionKeys,
+  parseFamilyHit,
   type FamilyArtDemand,
   type FamilyContextHit,
   type FamilyGestureContext,
@@ -47,6 +50,7 @@ import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
+  navPageStep,
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { NO_EXPANSION, toggleExpansion, type FamilyExpansion } from './expansion.ts';
@@ -70,7 +74,6 @@ import type { FamilyTooltipField } from './tooltips.ts';
 import './familyHost.css';
 
 const DEFAULT_AUDIT_OWNER = -1;
-const DEFAULT_ROW_STRIDE = 28;
 const DEFAULT_POINTS_PAGE = 10;
 const PLAN_VERIFIER = createPlanAuditVerifier<unknown, unknown>() as FamilyAuditVerifier<unknown>;
 const EMPTY_NAV: readonly FamilyNavTuple[] = [];
@@ -488,19 +491,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const h = Math.max(1, vp.height || defH);
     const dpr = currentDpr();
     vp.dpr = dpr;
-    const rows = curAdapter.rowGeometry?.(cur.settings, installedFieldsRef.current) ?? null;
-    if (rows) {
-      const logicalTop = physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current);
-      const first = Math.max(0, Math.floor(logicalTop / rows.rowHeight) - rows.overscan);
-      const count = Math.ceil(h / rows.rowHeight) + rows.overscan * 2;
-      const prevWindow = windowRef.current;
-      if (!prevWindow || prevWindow.first !== first || prevWindow.count !== count) {
-        windowRef.current = { first, count };
-        cur.onWindowChange?.(windowRef.current, installedPictureRef.current?.hour ?? null);
-      }
-    } else {
-      windowRef.current = null;
-    }
     const viewport: FamilyViewportState = {
       width: w,
       height: h,
@@ -512,13 +502,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expansionRef.current, windowRef.current?.first, windowRef.current?.count, cur.theme];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expansionRef.current, cur.theme];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
-        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, window: windowRef.current, theme: cur.theme, fields: installedFieldsRef.current };
+        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: installedFieldsRef.current };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
@@ -533,12 +523,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     const staticPanels = cur.staticSources?.panels;
     const staticAnswers = cur.staticSources?.answers;
-    const binding = curAdapter.buildBinding({
+    const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
       options: cur.options,
       settings: cur.settings,
-      window: windowRef.current,
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
       ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
@@ -626,7 +615,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const dispatch = useCallback((command: HostCommand, input: HostInput): boolean => {
     const current = resolveInstalledRef.current();
     const picture = input.picture;
-    if (heldRef.current || dimRef.current || !current || !picture || picture.id !== current.id || picture.owner !== current.owner) return false;
+    if (heldRef.current || dimRef.current || !current || !picture || picture.owner !== current.owner) return false;
     const activeAdapter = latestRef.current.adapter;
     if (input.key !== null && !input.hit && !keyInPicture(activeAdapter, picture, input.key)) return false;
     if (command === 'menu') {
@@ -659,17 +648,17 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       return true;
     }
     const toggle = command === 'toggle';
-    const action = actionFor(picture, input.hit ?? activeAdapter.parseHit(input.key) ?? { key: input.key }, toggle);
+    const action = actionFor(picture, input.hit ?? parseFamilyHit(activeAdapter, input.key) ?? { key: input.key }, toggle);
     if (!action) return false;
     dispatchAction(toggle ? { ...action, toggle: true } : action);
     return true;
   }, [actionFor, say, dispatchAction, tooltips]);
 
   const revealRow = useCallback((entry: FamilyNavTuple): boolean => {
-    const cur = latestRef.current;
-    const fields = installedFieldsRef.current;
-    const stride = Math.max(1, cur.adapter.rowGeometry?.(cur.settings, fields)?.rowHeight ?? cur.adapter.getRowStride?.(fields) ?? DEFAULT_ROW_STRIDE);
-    return scrollRangeIntoView(bodyRef.current, viewportRef.current, entry[6] ?? entry[2] * stride, entry[7] ?? stride, scrollGeometryRef.current);
+    const top = entry[6];
+    const height = entry[7];
+    if (top === undefined || height === undefined) return false;
+    return scrollRangeIntoView(bodyRef.current, viewportRef.current, top, height, scrollGeometryRef.current);
   }, []);
 
   const focusRowByKey = useCallback((key: string) => {
@@ -787,7 +776,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const frameNode = frameRef.current;
       const cur = latestRef.current;
       const activeAdapter = cur.adapter;
-      dimRef.current = !!shown?.dim && shown.installedBinding === shown.binding;
+      dimRef.current = shown?.expired === true;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       if (lastVisibleRef.current !== visible) {
@@ -860,9 +849,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       PICTURE_FIELDS.set(installed, fields);
       installedPictureRef.current = installed;
+      const range = fields.range as FamilyRowWindow | undefined;
+      const shownWindow = windowRef.current;
+      if (range && (!shownWindow || shownWindow.first !== range.first || shownWindow.count !== range.count)) {
+        windowRef.current = range;
+        cur.onWindowChange?.(range, installedHour);
+      }
       describe(installed.accessibleDescription);
 
-      const extentSize = activeAdapter.getScrollExtent?.(fields, activeAdapter.rowGeometry?.(cur.settings, fields) ?? null);
+      const extentSize = activeAdapter.getScrollExtent?.(fields);
       if (extentSize) {
         if (extentSize.width !== undefined) {
           const width = Math.max(viewportRef.current.width, extentSize.width);
@@ -934,7 +929,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         dim: !!shown.dim,
         held: heldRef.current,
         inspectedKey: inspected,
-        inspectedToken: inspectedHit ? (inspectedHit.inspectToken ?? activeAdapter.inspectToken(inspectedHit.key)) : null,
+        inspectedToken: inspectedHit ? (inspectedHit.inspectToken ?? familyInspectToken(activeAdapter, inspectedHit.key)) : null,
         pointerPos: lastPointerRef.current,
         hoverTip: hoverTip?.text ?? null,
         hoverFieldKey: hoverTip?.key ?? null,
@@ -975,8 +970,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       isBlocked: () => heldRef.current || dimRef.current || !installedPictureRef.current,
       getInstalled: resolveInstalled,
       getViewportHeight: () => latestRef.current.viewportHeight,
-      parseHit: hitKey => latestRef.current.adapter.parseHit(hitKey),
-      inspectToken: key => latestRef.current.adapter.inspectToken(key),
+      parseHit: hitKey => parseFamilyHit(latestRef.current.adapter, hitKey),
+      inspectToken: key => familyInspectToken(latestRef.current.adapter, key),
       onHoverChange: hit => publishHoverHour(hit?.hour ?? null),
       ...(gestures
         ? {
@@ -1114,8 +1109,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         rows: metrics?.rows ?? 0,
         columns: metrics?.columns ?? 0,
         current: parseKey(focusedKeyRef.current) ?? { row: 0, column: 0 },
-        pageStep: activeAdapter.getPageStep?.(fields, viewportRef.current)
-          ?? Math.max(1, Math.floor(Math.max(1, viewportRef.current.height - (metrics?.gridTop ?? 0)) / Math.max(1, metrics?.cellSize ?? DEFAULT_ROW_STRIDE))),
+        pageStep: metrics ? Math.max(1, Math.floor(Math.max(1, viewportRef.current.height - metrics.gridTop) / Math.max(1, metrics.cellSize))) : 1,
         blocked,
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusCell: focusGridCell,
@@ -1131,12 +1125,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       handleFamilyPointsKeyDown(event, {
         nav: navRef.current,
         focusedKey: focusedKeyRef.current,
-        pageStep: activeAdapter.getPageStep?.(fields, viewportRef.current) ?? DEFAULT_POINTS_PAGE,
+        pageStep: DEFAULT_POINTS_PAGE,
         blocked,
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusKey: key => {
           focusedKeyRef.current = key;
-          const hour = activeAdapter.parseHit(key)?.hour;
+          const hour = parseFamilyHit(activeAdapter, key)?.hour;
           if (hour !== undefined) publishHoverHour(hour);
           bindRef.current();
         },
@@ -1148,11 +1142,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       return;
     }
 
-    const stride = Math.max(1, activeAdapter.rowGeometry?.(latestRef.current.settings, fields)?.rowHeight ?? activeAdapter.getRowStride?.(fields) ?? DEFAULT_ROW_STRIDE);
     handleFamilyKeyDown(event, {
       nav: navRef.current,
       focusedKey: focusedKeyRef.current,
-      pageStep: activeAdapter.getPageStep?.(fields, viewportRef.current) ?? Math.max(1, Math.floor(Math.max(1, viewportRef.current.height) / stride) - 1),
+      pageStep: navPageStep(navRef.current, focusedKeyRef.current, viewportRef.current.height),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),

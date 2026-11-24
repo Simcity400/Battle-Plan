@@ -1,6 +1,6 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -10,13 +10,12 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 
 const CONTRIBUTIONS_FAMILY = { kind: 'threat-contributions', measure: 'contribution' } as const;
 
 export type WorldTensionRaceOptions = SeriesRaceBaseOptions;
 
-export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions> = registerBarsProjection({
+export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'bars',
   nextChange(readView, options) {
@@ -49,7 +48,6 @@ export const worldTensionRaceDeclaration: BarsWidgetDeclaration<WorldTensionRace
   subject: 'world tension',
   emptyCampaign: 'Load a campaign to see world tension.',
   icon: 'alert',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

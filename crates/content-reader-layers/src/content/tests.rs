@@ -3959,7 +3959,7 @@ fn playback_and_visual_share_workshop_mod_discovery_with_empty_user_dir() {
     let options = ResolveOptions {
         game_dir: game_dir.clone(),
         user_dir: empty_user.clone(),
-        cache_dir: cache_dir.clone(),
+        cache_dir,
     };
     let installed = visual::installed(&options, &AtomicBool::new(false)).unwrap();
     assert!(

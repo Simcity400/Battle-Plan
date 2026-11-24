@@ -50,12 +50,12 @@ export function resolveInstalledAction(
   };
 }
 
-export function parseDefaultRowHit(hitKey: string | null): FamilyPointerHit | null {
+export function parseDefaultRowHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
   const toggle = hitKey.startsWith('toggle:');
   if (!toggle && !hitKey.startsWith('row:')) return null;
   const key = hitKey.slice(hitKey.indexOf(':') + 1);
-  return key ? { key, toggle } : null;
+  return key ? { key, subject: key, toggle, kind: toggle ? 'toggle' : 'row', inspectToken: `row:${key}` } : null;
 }
 
 export interface FamilyPointerBindingOptions {
@@ -152,19 +152,12 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     }
   };
 
-  const matchesInstalled = (meta: PointerHitMeta | undefined, down?: PictureStamp): boolean => {
+  const acceptsReply = (meta: PointerHitMeta | undefined, stamp: PictureStamp): boolean => {
+    if (meta?.installedId !== undefined && meta.installedId !== stamp.installedId) return false;
+    if (meta?.owner !== undefined && meta.owner !== stamp.owner) return false;
+    if (!getInstalled) return true;
     const cur = installedNow();
-    if (cur) {
-      if (meta?.owner !== undefined && meta.owner !== cur.owner) return false;
-      if (down?.owner !== undefined && down.owner !== cur.owner) return false;
-      if (meta?.installedId !== undefined && meta.installedId !== cur.id) return false;
-    } else if (getInstalled) {
-      return false;
-    }
-    if (down?.installedId !== undefined && meta?.installedId !== undefined && meta.installedId !== down.installedId) {
-      return false;
-    }
-    return true;
+    return cur !== null && cur.owner === stamp.owner;
   };
 
   const toPoint = (clientX: number, clientY: number): [number, number] => {
@@ -216,9 +209,11 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     if (last && last.x === event.clientX && last.y === event.clientY) return;
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
     tooltips.cancelHoverLeave();
+    const moved = installedNow();
+    const stamp: PictureStamp = { installedId: moved?.id, owner: moved?.owner };
     pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !matchesInstalled(hitMeta)) return;
-      const parsed = parseHit(hitKey, installedNow());
+      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
+      const parsed = parseHit(hitKey, moved);
       const nextKey = parsed?.key ?? null;
       const changed = nextKey !== inspectedKeyRef.current;
       inspectedKeyRef.current = nextKey;
@@ -290,7 +285,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     pointerDown = down;
     pipeline.pointer(pipe, 0, point, (hitKey, hitMeta) => {
       if (down.cancelled) return;
-      if (!matchesInstalled(hitMeta, down)) {
+      if (!acceptsReply(hitMeta, down)) {
         down.key = null;
         down.hit = null;
         down.resolved = true;
@@ -338,8 +333,9 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     const picture = installedNow();
     if (getInstalled && !picture) return;
     const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
+    if (stamp.owner !== down.owner) return;
     pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
       const released = parseHit(hitKey, picture);
       if (!released || !down.resolved || released.key !== down.key) return;
       dispatchActivate(released.key, released.toggle === true, { ...down, picture, hit: released });
@@ -368,7 +364,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     const { clientX, clientY } = event;
     const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
     pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
       const parsed = parseHit(hitKey, picture);
       onContextMenu(parsed?.key ?? null, clientX, clientY, parsed, picture);
     });
