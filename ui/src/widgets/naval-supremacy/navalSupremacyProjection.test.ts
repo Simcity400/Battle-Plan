@@ -36,8 +36,17 @@ test('the shares bar splits the score at the playhead between friends and enemie
   const model = projectSupremacyShares(view(60, reply(60)), { surface: SURFACE });
   const row = model.rows.find(item => item.kind === 'data');
   assert.ok(row && row.kind === 'data');
-  assert.deepEqual(row.segments.map(segment => [segment.key, Math.round(segment.share * 100)]), [['friendly', 59], ['enemy', 41]]);
+  assert.deepEqual((row.segments ?? []).map(segment => [segment.key, Math.round(segment.share * 100)]), [['friendly', 59], ['enemy', 41]]);
   assert.equal(row.readout?.primary, '13 v n/a ships');
+});
+
+test('a day with no score on either side is the empty lane, not contested', () => {
+  const data = reply(60);
+  const quiet = { ...data, regions: [{ ...data.regions[0]!, runs: [{ firstDay: 0, lastDay: 2, control: 0, friendly: '0', enemy: '0', share: '0', own: '0' }],
+    readout: { kind: 'control' as const, control: 0, share: '0', friendly: '0', enemy: '0', own: '0', as_of_hour: 60 } }] };
+  const model = projectSupremacyTimeline(view(60, quiet), { surface: SURFACE });
+  assert.equal(model.rows[0]!.runs[0]!.cell.kind, 'clear');
+  assert.deepEqual(model.rows[0]!.readout, { kind: 'clear', label: 'No activity' });
 });
 
 test('the timeline hatches an unknown day with its reason and ends at the displayed hour', () => {
@@ -46,7 +55,7 @@ test('the timeline hatches an unknown day with its reason and ends at the displa
   assert.deepEqual(runs.map(run => [run.firstHour, run.lastHour, run.cell.kind]), [[0, 23, 'solid'], [24, 47, 'missing'], [48, 60, 'solid']]);
   const readout = model.rows[0]!.readout!;
   assert.equal(readout.kind === 'value' && readout.primary, '59%');
-  assert.equal(readout.kind === 'value' && readout.secondary, 'German Reich and friends');
+  assert.equal(readout.kind === 'value' && readout.secondary, 'Friendly control');
 });
 
 test('a reply past the displayed hour draws nothing in either view', () => {

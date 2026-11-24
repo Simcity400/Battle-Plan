@@ -26,6 +26,7 @@ interface Look {
   readonly contested: string;
   readonly friendlyLabel: string;
   readonly enemyLabel: string;
+  readonly viewer: string;
 }
 
 function lookOf(reply: NavalSupremacyReply, surface: string): Look {
@@ -34,8 +35,9 @@ function lookOf(reply: NavalSupremacyReply, surface: string): Look {
     friendly: reply.viewerColor ? readableColour(authoredHex(reply.viewerColor), surface) : readableColour(CHART_MEASURE_COLOURS.bopRight, surface),
     enemy: readableColour(CHART_MEASURE_COLOURS.short, surface),
     contested: mix(surface, LANE_FILL, 0.3),
-    friendlyLabel: `${viewer} and friends`,
-    enemyLabel: `Enemies of ${viewer}`,
+    friendlyLabel: 'Friendly control',
+    enemyLabel: 'Enemy control',
+    viewer,
   };
 }
 
@@ -56,7 +58,7 @@ function shipItems(region: SupremacyRegion, look: Look) {
   const item = (label: string, ships: MissionShips) => ships.kind === 'counted'
     ? { label, value: `${ships.ships}` }
     : { label, missingReason: ships.reason };
-  return [item(`Mission-registered ships, ${look.friendlyLabel}`, region.ownShips), item(`Mission-registered ships, ${look.enemyLabel}`, region.enemyShips)];
+  return [item(`Mission-registered ships, ${look.viewer} and friends`, region.ownShips), item(`Mission-registered ships, enemies of ${look.viewer}`, region.enemyShips)];
 }
 
 function emptyBars(hour: number): BarsModel {
@@ -83,8 +85,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
     }
     const pct = Math.round(share * 100);
     const segments: BarsSegment[] = [
-      { key: 'friendly', label: look.friendlyLabel, share, value: knownValue(share), color: look.friendly, inlineLabel: `${pct}%` },
-      { key: 'enemy', label: look.enemyLabel, share: 1 - share, value: knownValue(1 - share), color: look.enemy, inlineLabel: `${100 - pct}%` },
+      { key: 'friendly', label: `${look.viewer} and friends`, share, value: knownValue(share), color: look.friendly, inlineLabel: `Friendly ${pct}%` },
+      { key: 'enemy', label: `Enemies of ${look.viewer}`, share: 1 - share, value: knownValue(1 - share), color: look.enemy, inlineLabel: `Enemy ${100 - pct}%` },
     ];
     const control = readout.control > 0 ? look.friendlyLabel : readout.control < 0 ? look.enemyLabel : 'Contested';
     return {
@@ -95,8 +97,8 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
         hour: readout.as_of_hour,
         items: [
           { label: 'Control', value: control },
-          { label: look.friendlyLabel, value: `${pct}%`, swatch: look.friendly },
-          { label: look.enemyLabel, value: `${100 - pct}%`, swatch: look.enemy },
+          { label: `${look.viewer} and friends`, value: `${pct}%`, swatch: look.friendly },
+          { label: `Enemies of ${look.viewer}`, value: `${100 - pct}%`, swatch: look.enemy },
           ...shipItems(region, look),
         ],
       },
@@ -112,8 +114,13 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   });
 }
 
+function idle(friendly: string | null, enemy: string | null): boolean {
+  return friendly !== null && enemy !== null && Number(friendly) <= 0 && Number(enemy) <= 0;
+}
+
 function runCell(run: SupremacyRun, look: Look, scale: number): { cell: HeatLaneCell; items: { label: string; value?: string; swatch?: string }[] } {
   if (run.control === null) return { cell: { kind: 'missing', reason: 'Naval region control was not recorded' }, items: [] };
+  if (idle(run.friendly, run.enemy)) return { cell: { kind: 'clear', label: 'No activity' }, items: [{ label: 'No activity' }] };
   const share = shareOf(run.share, scale);
   const pct = share === null ? null : Math.round(share * 100);
   const color = run.control > 0 ? look.friendly : run.control < 0 ? look.enemy : look.contested;
@@ -161,6 +168,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     const readout = region.readout;
     let shown: HeatLaneReadout | undefined;
     if (readout?.kind === 'notRecorded') shown = { kind: 'missing', reason: readout.reason };
+    else if (readout && idle(readout.friendly, readout.enemy)) shown = { kind: 'clear', label: 'No activity' };
     else if (readout) {
       const share = shareOf(readout.share, reply.scale);
       const color = readout.control > 0 ? look.friendly : readout.control < 0 ? look.enemy : look.contested;
