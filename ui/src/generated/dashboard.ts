@@ -4288,9 +4288,22 @@ part: number,
  * A fixed-point decimal string at the reply's `decimals`; null where not recorded.
  */
 amount: string | null, };
+export type FlowEndpoint = {
+/**
+ * The recorded country slot; null where the record names no country the recording can link.
+ */
+slot: number | null,
+/**
+ * The tag the slot holds at the hour.
+ */
+tag: string | null,
+/**
+ * Why the endpoint cannot be named at the hour.
+ */
+unknown: string | null, };
 export type FlowLink = {
 /**
- * Indexes into `countries`; null on the side folded into the others.
+ * Indexes into `endpoints`; null on the side folded into the others.
  */
 from: number | null, to: number | null,
 /**
@@ -4301,48 +4314,49 @@ others: number | null, amounts: Array<FlowAmount>, total: string | null,
  * Why the total is not known, where an amount was not recorded.
  */
 missing: string | null, };
-export type FlowTableRow = { country: number,
+export type FlowSide = {
+/**
+ * Known amounts largest first, ties by slot, the rest of them folded into one link; then every link whose amount or partner is unknown.
+ */
+links: Array<FlowLink>, total: string | null,
+/**
+ * Why the side's total, order or emptiness is not proven at the hour.
+ */
+missing: string | null, };
+export type FlowTableRow = {
+/**
+ * Index into `endpoints`.
+ */
+partner: number,
 /**
  * One signed amount per part (in to the subject positive, out negative, zero where none); null where not recorded.
  */
 cells: Array<string | null>, net: string | null, };
-export type CountryFlowReply = { countries: Array<string>,
+export type CountryFlowReply = { endpoints: Array<FlowEndpoint>,
 /**
- * The centre country, when the subject is one country.
+ * The centre endpoint, when the subject is one country.
  */
-subject: number | null, decimals: number, parts: Array<FlowPart>,
-/**
- * Into the subject, largest first; ties by tag; the rest folded into one last link.
- */
-incoming: Array<FlowLink>,
-/**
- * Out of the subject, in the same order.
- */
-outgoing: Array<FlowLink>, incomingTotal: string | null, outgoingTotal: string | null,
+subject: number | null, decimals: number, parts: Array<FlowPart>, incoming: FlowSide, outgoing: FlowSide,
 /**
  * A group subject: every link between its senders and receivers.
  */
 links: Array<FlowLink>,
 /**
- * A group subject: each sender's total (`from`) and each receiver's (`to`), largest first, the rest folded into one last entry.
+ * A group subject: each sender's total (`from`) and each receiver's (`to`).
  */
-senders: Array<FlowLink>, receivers: Array<FlowLink>,
+senders: FlowSide, receivers: FlowSide,
 /**
  * Partners by part, signed, largest net first; only when asked.
  */
 table: Array<FlowTableRow>,
 /**
- * The largest side or node total, for the scale.
+ * The largest known side or node amount, for the scale.
  */
 largest: string,
 /**
  * The largest single link, for a colour scale.
  */
-largestLink: string, missing: string | null,
-/**
- * Why some of the flows at the hour are left out.
- */
-partial: string | null, warnings: Array<string>, };
+largestLink: string, missing: string | null, warnings: Array<string>, };
 export type TradeFlowParamsAtHour = TradeFlowParams & { hour: number };
 export type CasualtyMatrixParams = { branchId: string,
 /**
