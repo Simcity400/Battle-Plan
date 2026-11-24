@@ -58,7 +58,7 @@ import {
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
 import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
-import { mirrorRowSelector, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
+import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -920,11 +920,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
-      const mirror = fields.mirror as MirrorModel | undefined;
-      const selectedNow = record.selectedKey;
-      if (mirror && (mirror !== lastMirrorObjRef.current || selectedNow !== lastMirrorSelectedRef.current)) {
+      const mirror = mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
+      if (mirror !== undefined) {
         lastMirrorObjRef.current = mirror;
-        lastMirrorSelectedRef.current = selectedNow;
+        lastMirrorSelectedRef.current = record.selectedKey;
         syncMirrorRef.current(mirror);
       }
 

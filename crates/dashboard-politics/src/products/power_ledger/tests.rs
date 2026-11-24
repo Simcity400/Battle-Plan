@@ -1178,7 +1178,7 @@ fn command_power_ground_crews_capped_refunds_and_allocation_clamps_reconcile() {
 }
 
 #[test]
-fn a_payment_is_named_by_the_item_read_at_its_own_charge_and_a_refusal_at_the_spans_end_changes_nothing() {
+fn a_payments_item_is_read_at_its_charge_not_at_a_spans_end_whose_items_are_not_recorded() {
     let frames = (FIRST..=LAST)
         .map(|hour| {
             let mut frame = frame(hour);
@@ -1205,8 +1205,10 @@ fn a_payment_is_named_by_the_item_read_at_its_own_charge_and_a_refusal_at_the_sp
     let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
     let reads: Vec<_> = reply.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
     assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "witnessed spending keeps its amount");
-    let categories: Vec<&str> = reply.payments.iter().map(|payment| reply.items[payment.item as usize].category.as_str()).collect();
-    assert_eq!(categories, ["decisions", "decisions"], "each charge's item is the one read at its own hour; the countries refused at {LAST} are no fact of 104 or 120");
+    let item = &reply.items[reply.payments[1].item as usize];
+    assert_eq!((item.category.as_str(), item.name.as_deref()), ("decisions", None));
+    assert!(item.unknown.as_deref().is_some_and(|why| !why.starts_with("Power items")), "{:?}", item.unknown);
+    assert!(!reply.categories.iter().any(|category| category.id == "notIdentified"));
 }
 
 #[test]

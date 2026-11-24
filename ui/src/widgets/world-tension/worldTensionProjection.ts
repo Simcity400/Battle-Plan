@@ -67,7 +67,7 @@ function scaleDecimals(scale: number): number | null {
 }
 
 function formatEndPct(value: number, mode: 'share' | 'recorded'): string {
-  return mode === 'share' ? formatShare(value / 100) : formatRecordedPercent(value);
+  return mode === 'share' && value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
 }
 
 function formatRawPct(raw: string, scale: number, signed = true): string | null {
@@ -398,6 +398,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       stack: {
         hours: reply.hours,
         bands: orderedBands,
+        bandFormat: 'signedPercent',
         step: true,
         total: {
           color: CHART_MEASURE_COLOURS.lightInk,

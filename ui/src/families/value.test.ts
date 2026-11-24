@@ -399,6 +399,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.throws(() => formatShare(null as unknown as number), InvalidFamilyValueError);
   assert.throws(() => formatShare(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => formatShare(-0.1), InvalidFamilyValueError);
+  assert.throws(() => formatShare(1.25), InvalidFamilyValueError);
   assert.throws(() => formatProgress(null as unknown as number), InvalidFamilyValueError);
   assert.throws(() => formatProgress(Number.NaN), InvalidFamilyValueError);
   assert.throws(() => formatRecordedPercent(Number.NaN), InvalidFamilyValueError);
