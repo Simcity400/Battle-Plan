@@ -5,7 +5,7 @@ import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
 import { FAMILY_VIEW_UI, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
 import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererKinds, setPlaybackActive } from './rendererLoaders.ts';
-import { viewKey } from '../families/manifest.ts';
+import { viewKey, type FamilyViewEntry } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
   assert.deepEqual([...rendererKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
@@ -60,6 +60,15 @@ test('every widget module loads with its registered lazy body and the catalogue 
         if (renderer[slot]) assert.equal(typeof registered[slot], 'function', `${meta.kind} ${slot} is registered`);
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
+    }
+    const { FAMILY_VIEWS: views } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    for (const entry of views as readonly FamilyViewEntry[]) {
+      const renderer = await load(entry.kind, entry.view);
+      const spec = await entry.loadSpec();
+      const drawn = renderer.declaration;
+      const named = `${viewKey(entry.kind, entry.view)} draws the declaration its manifest entry names`;
+      assert.deepEqual([drawn?.family, drawn?.kind], [spec.declaration.family, spec.declaration.kind], named);
+      assert.equal(drawn?.projection, spec.declaration.projection, named);
     }
   } finally { await vite.close(); }
 });

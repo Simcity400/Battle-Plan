@@ -48,6 +48,7 @@ export interface WidgetProps {
   setOption?: (key: string, value: OptionValue) => void;
   setOptions?: (values: Readonly<Record<string, OptionValue>>) => void;
   view?: string;
+  manifestDeclaration?: FamilyWidgetDeclaration;
 }
 
 export interface WidgetViewSwitch {
