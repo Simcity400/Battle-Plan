@@ -52,7 +52,8 @@ import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
-  navPageStep,
+  navPageSteps,
+  usableRowHeight,
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
@@ -683,7 +684,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const top = entry[6];
     const height = entry[7];
     if (top === undefined || height === undefined) return false;
-    return scrollRangeIntoView(bodyRef.current, viewportRef.current, top, height, scrollGeometryRef.current);
+    const vp = viewportRef.current;
+    const rows = { scrollTop: vp.scrollTop, height: usableRowHeight(fieldsNow(), vp.height) };
+    const moved = scrollRangeIntoView(bodyRef.current, rows, top, height, scrollGeometryRef.current);
+    vp.scrollTop = rows.scrollTop;
+    return moved;
   }, []);
 
   const focusRowByKey = useCallback((key: string) => {
@@ -1215,7 +1220,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     handleFamilyKeyDown(event, {
       nav: keyNav,
       focusedKey: focusedKeyRef.current,
-      pageStep: navPageStep(keyNav, focusedKeyRef.current, viewportRef.current.height),
+      pageStep: navPageSteps(keyNav, focusedKeyRef.current, usableRowHeight(fields, viewportRef.current.height)),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
