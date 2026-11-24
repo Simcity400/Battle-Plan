@@ -327,3 +327,13 @@ test('a lone sub-part that repeats its part is not drawn as a split, but its nam
   assert.equal(parts.rows[0]!.segments.length, 0);
   assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'Daily', THEME)).includes('One daily cost'));
 });
+
+test('a lone item under a category is still a row', () => {
+  const single: Breakdown = { decimals: 0, total: { raw: '20', state: 'known', reason: null }, unrecordedHours: 0,
+    parts: [wire('Decisions', 0, '20', { share: 1, parentShare: 1, children: [
+      wire('Group', 0, '12', { share: 0.6, parentShare: 0.6, children: [wire('Only decision', 0, '12', { share: 0.6, parentShare: 1 })] }),
+      wire('Other group', 1, '8', { share: 0.4, parentShare: 0.4 }),
+    ] })] };
+  const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(single)), view: 'parts', userExpanded: { Decisions: true } }) as PartsViewLayout;
+  assert.ok(parts.rows.some(row => row.depth === 2 && row.part.name === 'Only decision'));
+});

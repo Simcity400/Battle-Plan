@@ -405,7 +405,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
     if (!isExpanded) continue;
     const children = drawnChildren(part);
     children.forEach((child, at) => {
-      const grand = drawnChildren(child);
+      const grand = drawnChildren(child, false);
       row(child, part.key, 1, PARTS_CHILD_HEIGHT, childTint(color, child, theme, SEGMENT_TINTS), { isLastChild: at === children.length - 1 && grand.length === 0 });
       grand.forEach((item, index) => {
         row(item, child.key, 2, PARTS_ITEM_HEIGHT, childTint(color, child, theme, SEGMENT_TINTS), { isLastChild: at === children.length - 1 && index === grand.length - 1 });
@@ -667,7 +667,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
       for (const child of drawnChildren(part)) {
         const tint = childTint(color, child, theme, OUTER_TINTS);
         push(child, part.key, 1, RING_SIDE_ROW_HEIGHT - 1, tint, false, false);
-        for (const item of drawnChildren(child)) push(item, child.key, 2, RING_SIDE_ROW_HEIGHT - 2, tint, false, false);
+        for (const item of drawnChildren(child, false)) push(item, child.key, 2, RING_SIDE_ROW_HEIGHT - 2, tint, false, false);
       }
     }
     sideList = { x: listX, top: listTop, width: listW, height: listH, rows, contentHeight: ry + 8 };

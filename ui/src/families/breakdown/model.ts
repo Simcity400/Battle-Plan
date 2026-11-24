@@ -101,9 +101,10 @@ export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
   return { parts: model.parts, total: model.total };
 }
 
-export function drawnChildren(part: BreakdownPart): readonly BreakdownPart[] {
+export function drawnChildren(part: BreakdownPart, first = true): readonly BreakdownPart[] {
   const children = part.notRecorded ? undefined : part.children;
   if (!children?.length) return [];
+  if (!first) return children;
   const [only] = children;
   const repeats = children.length === 1 && !only!.children?.length && only!.value === part.value && !only!.notRecorded === !part.notRecorded && !only!.partial === !part.partial;
   return repeats ? [] : children;
@@ -111,7 +112,7 @@ export function drawnChildren(part: BreakdownPart): readonly BreakdownPart[] {
 
 export function rowsBelow(part: BreakdownPart): number {
   let rows = 0;
-  for (const child of drawnChildren(part)) rows += 1 + drawnChildren(child).length;
+  for (const child of drawnChildren(part)) rows += 1 + drawnChildren(child, false).length;
   return rows;
 }
 
