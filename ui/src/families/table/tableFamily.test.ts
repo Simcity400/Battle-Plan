@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, firstRow, installRecordingCanvas, LaneTransport } from '../laneRuntime.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
@@ -305,16 +305,16 @@ test('scoreboard projection matches followed and exact audits with missing, part
 
 test('apm-table projection matches followed wire answers and exact replies, including partial gaps and notApplicable zero minutes', () => {
   const wire = headTextAnswer([
-    { key: 1n, id: 'GER', values: [floatBits(45.2), floatBits(45.2), 120n, 15n, floatBits(2.6), 1n, 1n, 'GER', 100n, 'GER', null] },
-    { key: 2n, id: 'ITA', values: [null, null, 0n, 0n, floatBits(0), 1n, 0n, 'ITA', 100n, 'ITA', null] },
+    { key: 1n, id: 'GER', values: [floatBits(45.2), floatBits(45.2), 113n, 15n, floatBits(2.5), 1n, 1n, 'GER', 100n, 'GER', null, '113', '5', '2'] },
+    { key: 2n, id: 'ITA', values: [null, null, 0n, 0n, floatBits(0), 1n, 0n, 'ITA', 100n, 'ITA', null, '0', '0', '1'] },
   ]);
   const reply: ApmReply = {
     available: true,
     warnings: [],
     players: [],
     series: [
-      { id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '120', pausedOrders: '15', unpausedMinutes: 2.6, complete: true, gaps: true }, points: [] },
-      { id: 'ITA', name: 'ITA', nameMissing: null, tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', pausedOrders: '0', unpausedMinutes: 0, complete: true, gaps: false }, points: [] },
+      { id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '113', confirmedOrders: '113', pausedOrders: '15', unpausedMinutes: 2.5, unpausedMinutesNum: '5', unpausedMinutesDen: '2', complete: true, gaps: true }, points: [] },
+      { id: 'ITA', name: 'ITA', nameMissing: null, tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', confirmedOrders: '0', pausedOrders: '0', unpausedMinutes: 0, unpausedMinutesNum: '0', unpausedMinutesDen: '1', complete: true, gaps: false }, points: [] },
     ],
   };
   const opts = {
@@ -332,7 +332,7 @@ test('apm-table projection matches followed wire answers and exact replies, incl
   const fAudit = deriveTableAudit({ model: fModel, flatRows: resolveTableRows(fModel, settings), visibleColumns: apmLayouts });
   const eAudit = deriveTableAudit({ model: eModel, flatRows: resolveTableRows(eModel, settings), visibleColumns: apmLayouts });
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('["partial",["num","45.2"],'));
+  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('["partial",["str","45.2"],'));
   assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.includes('["notApplicable",'));
 });
 
@@ -1889,6 +1889,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     const tableSurface = { width: 360, height: 200, dpr: 1 };
     const heldOne = laneBinding(atOne, descending);
     assertQuietFrames(() => createLaneView(tableLane, () => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
+    assertTooltipDated(() => createLaneView(tableLane, () => {}), { label: 'table', binding: heldOne, hour: 1 }, firstRow, 5, tableSurface);
     assertFreshPaint(() => createLaneView(tableLane, () => {}), [
       { label: 'at one', binding: heldOne, hour: 1, check: true },
       { label: 'at two', binding: laneBinding(atTwo, descending), hour: 2, speed: 24 },

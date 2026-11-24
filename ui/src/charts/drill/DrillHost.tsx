@@ -8,7 +8,6 @@ import GateState from '../../dashboard/GateState';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { DrillControl } from './useDrill';
 import { DrillScope, ShownHour, useDrillShown } from '../../dashboard/widgetPerf.ts';
-export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
 export default function DrillHost({ mode, drill, runtime, subject = true, title, day, canFollow, onClose: closed, onPin, pinRefused = null, anchor, returnFocus, root, main, children }: {

@@ -839,6 +839,8 @@ fn a_narrow_range_counts_only_its_own_raids_and_raids_are_available_only_once_on
     assert_eq!(chosen.episodes.len(), 1, "R4-S13: a raid by a chosen slot is kept though no tag names its raider");
 }
 
+mod tail;
+
 #[test]
 fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps_slots_distinct() {
     use super::{RaidTallyAt, RaidTallyAtParams, RaidTallyMetric};

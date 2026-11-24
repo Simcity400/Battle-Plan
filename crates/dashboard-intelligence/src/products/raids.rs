@@ -1727,5 +1727,7 @@ impl Product for RaidTallyAt {
     }
 }
 
+pub mod tail;
+
 #[cfg(test)]
 mod tests;

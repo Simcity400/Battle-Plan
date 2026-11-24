@@ -11,7 +11,6 @@ const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 export const browserTests = [
   'ui/src/charts/live.dom.test.ts',
   'ui/src/charts/paintCost.dom.test.ts',
-  'ui/src/charts/shareDrawing.test.ts',
   'ui/src/charts/table/Table.dom.test.ts',
   'ui/src/components/DateTimePicker.dom.test.ts',
   'ui/src/components/loadable.dom.test.ts',
