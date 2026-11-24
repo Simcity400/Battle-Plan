@@ -85,6 +85,7 @@ import {
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
+  planOwner,
   selectionUnobservedReason,
   trackGate,
   type FrozenGate,
@@ -568,16 +569,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
-    () => JSON.stringify([
-      kind,
-      track?.source.id ?? '',
-      track?.source.revision ?? '',
-      track?.branch.id ?? '',
-      track?.axisOffset ?? 0,
-      widget.time,
-      isSingle ? countryTag : widget.countries,
-    ]),
-    [kind, track?.source.id, track?.source.revision, track?.branch.id, track?.axisOffset, widget.time, isSingle, countryTag, widget.countries],
+    () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
+    [kind, track, widget.time, isSingle, countryTag, widget.countries],
   );
 
   const ctx = useMemo<FamilyPlanContext<TAux> | null>(() => {
