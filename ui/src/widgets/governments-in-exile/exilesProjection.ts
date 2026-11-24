@@ -20,7 +20,8 @@ const optionalText = (value: unknown) => value === null || typeof value === 'str
 
 export function validateExiles(value: unknown): PoliticsStateReply {
   if (!object(value) || typeof value.branchId !== 'string' || value.view !== 'exiles' || !Array.isArray(value.exiles)
-    || !value.exiles.every(exile => object(exile) && typeof exile.id === 'string' && opaqueTag(exile.tag) && (exile.host === null || opaqueTag(exile.host)))
+    || !value.exiles.every(exile => object(exile) && typeof exile.id === 'string' && (exile.tag === null || opaqueTag(exile.tag)) && (exile.host === null || opaqueTag(exile.host)))
+    || !optionalText(value.exilesMissing)
     || !Array.isArray(value.unavailable) || !value.unavailable.every(entry => object(entry) && typeof entry.label === 'string' && optionalText(entry.reason))
     || !Array.isArray(value.warnings) || value.warnings.some(warning => typeof warning !== 'string'))
     throw new Error('The governments in exile reply is malformed.');
@@ -88,7 +89,9 @@ export const exilesProjection: TableProjection<ExilesProjectionOptions> = regist
     if (status) {
       return { columns: EXILE_COLUMNS, rows: [], hour, empty: 'Not recorded', emptyDetail: status.reason ?? 'Exiles are not in this recording at this date', emptyKind: 'unavailable', warnings: reply.warnings };
     }
-    const shown = reply.exiles.filter(exile => passes(options.filter, exile.tag, hour) || passes(options.filter, exile.host, hour));
+    const everyone = options.filter.passing === null;
+    const shown = reply.exiles.filter(exile => everyone || passes(options.filter, exile.tag, hour) || passes(options.filter, exile.host, hour));
+    const unattributed = everyone ? 0 : reply.exiles.filter(exile => exile.tag === null && exile.host === null).length;
     let top = 0;
     for (const exile of shown) top = Math.max(top, valueNumber(count(live, exile.id, 'manpower')) ?? 0);
     const boundary = newIdentityBoundary();
@@ -98,9 +101,9 @@ export const exilesProjection: TableProjection<ExilesProjectionOptions> = regist
       const legitimacyShare = valueNumber(legitimacy);
       return {
         key: exile.id,
-        name: exile.tag,
+        name: exile.tag ?? exile.id,
         cells: {
-          country: identityCell(readView, 'country', exile.tag, { boundary }),
+          country: exile.tag === null ? { value: notRecorded('The country has no identity at this hour'), iconSlot: true } : identityCell(readView, 'country', exile.tag, { boundary }),
           host: exile.host === null ? { value: notRecorded('The host has no identity at this hour'), iconSlot: true } : identityCell(readView, 'country', exile.host, { boundary }),
           legitimacy: {
             value: legitimacy,
@@ -124,7 +127,11 @@ export const exilesProjection: TableProjection<ExilesProjectionOptions> = regist
       ...(rows.length === 0
         ? membership !== null
           ? { empty: 'Not recorded', emptyDetail: membership, emptyKind: 'unavailable' as const }
-          : { empty: 'No governments in exile', emptyKind: 'empty' as const }
+          : reply.exilesMissing !== null
+            ? { empty: 'Not recorded', emptyDetail: reply.exilesMissing, emptyKind: 'unavailable' as const }
+            : unattributed
+              ? { empty: 'Not recorded', emptyDetail: 'Some governments in exile have no country at this date', emptyKind: 'unavailable' as const }
+              : { empty: 'No governments in exile', emptyKind: 'empty' as const }
         : {}),
       warnings: [...reply.warnings, ...warnings],
     };
