@@ -8,7 +8,7 @@ import type { OptionField } from '../../dashboard/options';
 import { useSpriteArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import type { ArtResolution } from '../art/types.ts';
+import { spriteArtKey, type ArtResolution } from '../art/types.ts';
 import type {
   AuxProductSpec,
   CountryPolicy,
@@ -32,10 +32,7 @@ import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
 
 const EMPTY_SPRITES: readonly { readonly key: string; readonly frame: number }[] = [];
-
-function spriteDemandKey(key: string, frame: number): string {
-  return `sprite:${key}:${frame}`;
-}
+const SERIES_PLOT_INSET_PX = 60;
 
 function normalizeSpriteDemand(demand: FamilyArtDemand): { readonly key: string; readonly frame: number } | null {
   if ('kind' in demand) {
@@ -79,10 +76,8 @@ export interface DeclaredFamilyWidgetProps<
   TProjectionOptions = unknown,
   TBinding = unknown,
   TAux = unknown,
-  TSlotState = undefined,
-  TExtra = Record<string, never>,
 > extends WidgetProps {
-  readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSlotState, TExtra>;
+  readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding>;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
@@ -91,8 +86,6 @@ export interface DeclaredFamilyWidgetProps<
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
-  readonly extra?: TExtra;
-  readonly extraVersion?: unknown;
   readonly extraWarnings?: readonly string[];
 }
 
@@ -101,8 +94,6 @@ export default function DeclaredFamilyWidget<
   TProjectionOptions = unknown,
   TBinding = unknown,
   TAux = unknown,
-  TSlotState = undefined,
-  TExtra = Record<string, never>,
 >({
   adapter,
   declaration,
@@ -119,10 +110,8 @@ export default function DeclaredFamilyWidget<
   onViewportChange: externalViewportChange,
   onHoverHour: externalHoverHour,
   onArtDemands: externalArtDemands,
-  extra,
-  extraVersion,
   extraWarnings,
-}: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSlotState, TExtra>) {
+}: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
@@ -184,7 +173,7 @@ export default function DeclaredFamilyWidget<
     if (!demandedSprites.length) return undefined;
     const out: Record<string, ArtResolution> = {};
     for (const s of demandedSprites) {
-      out[spriteDemandKey(s.key, s.frame)] = resolveSprite(s);
+      out[spriteArtKey(s.key, s.frame)] = resolveSprite(s);
     }
     return out;
   }, [demandedSprites, resolveSprite]);
@@ -200,8 +189,6 @@ export default function DeclaredFamilyWidget<
     () => !!plan.plan?.entries.some(e => e.read.shape === 'pixel-binned'),
     [plan.plan],
   );
-  const plotInsetPx = adapter.seriesPlotInsetPx ?? 60;
-
   const pushSeriesViewport = useCallback((vp: FamilyViewportChange) => {
     if (!hasPixelBinned || !plan.track || vp.width <= 0) return;
     const scale = Math.min(2, Math.max(1, vp.dpr));
@@ -211,15 +198,17 @@ export default function DeclaredFamilyWidget<
       from,
       to,
       end: extent[1],
-      width: Math.max(1, Math.round((vp.width - plotInsetPx) * scale)),
+      width: Math.max(1, Math.round((vp.width - SERIES_PLOT_INSET_PX) * scale)),
     });
-  }, [hasPixelBinned, plan.track, extent, plotInsetPx, plan.onSeriesViewport]);
+  }, [hasPixelBinned, plan.track, extent, plan.onSeriesViewport]);
 
+  const measureViewport = plan.measureViewport;
   const handleViewportChange = useCallback((vp: FamilyViewportChange) => {
     lastViewportRef.current = vp;
+    measureViewport(vp.width, vp.height);
     pushSeriesViewport(vp);
     externalViewportChange?.(vp);
-  }, [pushSeriesViewport, externalViewportChange]);
+  }, [measureViewport, pushSeriesViewport, externalViewportChange]);
 
   useEffect(() => {
     if (lastViewportRef.current) pushSeriesViewport(lastViewportRef.current);
@@ -233,9 +222,14 @@ export default function DeclaredFamilyWidget<
   );
 
   const enableJump = declaration.jumpToDate ?? (adapter.pointerMode === 'continuous');
+  const continuous = adapter.pointerMode === 'continuous';
   const defaultContextMenuItems = useCallback(
-    (hit: FamilyContextHit) => (enableJump && plan.track ? [jumpItem(runtime, plan.track.id, hit.hour)] : []),
-    [enableJump, runtime, plan.track],
+    (hit: FamilyContextHit) => {
+      if (!plan.track) return [];
+      if (continuous && hit.hitHour === null) return [];
+      return [jumpItem(runtime, plan.track.id, hit.hour)];
+    },
+    [continuous, runtime, plan.track],
   );
   const resolvedContextMenuItems = customContextMenuItems ?? (enableJump ? defaultContextMenuItems : undefined);
 
@@ -304,7 +298,6 @@ export default function DeclaredFamilyWidget<
       identitySnapshot={plan.identitySnapshot}
       onIdentityDemands={plan.onIdentityDemands}
       onArtDemands={handleArtDemands}
-      onViewportSize={plan.measureViewport}
       onViewportChange={handleViewportChange}
       onHoverHour={handleHoverHour}
       selectedKey={selectedKey}
@@ -317,8 +310,6 @@ export default function DeclaredFamilyWidget<
       blockedState={blockedState}
       held={plan.staticHeld}
       loadingLabel={plan.loadingLabel}
-      extra={extra}
-      extraVersion={extraVersion}
     />
   );
 
@@ -329,43 +320,4 @@ export default function DeclaredFamilyWidget<
       {host}
     </div>
   );
-}
-
-export function createDeclaredFamilyWidget<
-  TModel = unknown,
-  TBinding = unknown,
-  TSlotState = undefined,
-  TExtra = Record<string, never>,
->(adapter: FamilyHostAdapter<TModel, any, TBinding, TSlotState, TExtra>) {
-  return function BoundDeclaredFamilyWidget<TProjectionOptions = unknown, TAux = unknown>(
-    props: Omit<DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSlotState, TExtra>, 'adapter'>,
-  ) {
-    return (
-      <DeclaredFamilyWidget
-        {...(props as DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSlotState, TExtra>)}
-        adapter={adapter as FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSlotState, TExtra>}
-      />
-    );
-  };
-}
-
-export interface ManifestFamilyHostProps extends WidgetProps {
-  readonly spec: { readonly declaration?: unknown };
-}
-
-export function createManifestFamilyHost<
-  TModel = unknown,
-  TBinding = unknown,
-  TSlotState = undefined,
-  TExtra = Record<string, never>,
->(adapter: FamilyHostAdapter<TModel, any, TBinding, TSlotState, TExtra>) {
-  return function ManifestBoundFamilyHost({ spec, ...props }: ManifestFamilyHostProps) {
-    return (
-      <DeclaredFamilyWidget
-        {...props}
-        adapter={adapter}
-        declaration={spec.declaration as DeclaredFamilyWidgetDeclaration<TModel, any, any>}
-      />
-    );
-  };
 }

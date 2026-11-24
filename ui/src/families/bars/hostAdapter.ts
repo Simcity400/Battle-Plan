@@ -22,15 +22,11 @@ export function parseBarsHit(hitKey: string | null): ParsedFamilyHit | null {
 
 export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBinding> = {
   family: 'bars',
-  skeleton: 'chart',
-  pointerMode: 'discrete',
   scroll: 'vertical',
   navigation: 'rows',
   mirror: 'listbox',
-  focusTarget: 'body',
-  bodyRole: 'listbox',
   auditOwnerId: -2,
-  parseHit: hitKey => parseBarsHit(hitKey),
+  parseHit: parseBarsHit,
   inspectToken: key => `row:${key}`,
   getScrollExtent: fields => {
     const meta = fields.meta as { readonly totalHeight?: number } | undefined;
@@ -45,13 +41,9 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
       family: 'bars',
       kind: ctx.kind,
       options: ctx.options,
-      sources: { ...ctx.sources },
-      ...(ctx.staticPanels || ctx.staticAnswers
-        ? {
-            ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-            ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-          }
-        : {}),
+      sources: ctx.sources,
+      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
+      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
       width: ctx.viewport.width,
       height: ctx.viewport.height,
       scrollTop: ctx.viewport.scrollTop,

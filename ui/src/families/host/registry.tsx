@@ -15,7 +15,7 @@ export interface FamilyHostProps extends WidgetProps {
 }
 
 const hosts = new Map<FamilyId, ComponentType<FamilyHostProps>>();
-const adapters = new Map<FamilyId, FamilyHostAdapter<any, any, any, any, any>>();
+const adapters = new Map<FamilyId, FamilyHostAdapter<any, any, any>>();
 
 function AdaptedFamilyHost({ spec, ...props }: FamilyHostProps) {
   const adapter = adapters.get(spec.family);
@@ -29,13 +29,9 @@ function AdaptedFamilyHost({ spec, ...props }: FamilyHostProps) {
   );
 }
 
-export function registerFamilyAdapter(family: FamilyId, adapter: FamilyHostAdapter<any, any, any, any, any>): void {
+export function registerFamilyAdapter(family: FamilyId, adapter: FamilyHostAdapter<any, any, any>): void {
   adapters.set(family, adapter);
   hosts.set(family, AdaptedFamilyHost);
-}
-
-export function familyAdapter(family: FamilyId): FamilyHostAdapter<any, any, any, any, any> | undefined {
-  return adapters.get(family);
 }
 
 export function registerFamilyHost(family: FamilyId, host: ComponentType<FamilyHostProps>): void {

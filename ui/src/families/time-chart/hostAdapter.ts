@@ -61,6 +61,10 @@ function plotRectOf(fields: Readonly<Record<string, unknown>>): PlotRect | null 
   return meta?.plotRect && meta.plotRect.width > 0 ? meta.plotRect : null;
 }
 
+function insidePlot(point: readonly [number, number], plot: PlotRect): boolean {
+  return point[0] >= plot.left && point[0] <= plot.left + plot.width && point[1] >= plot.top && point[1] <= plot.top + plot.height;
+}
+
 function clampWindow(
   from: number,
   to: number,
@@ -83,10 +87,10 @@ function createTimeChartGestures() {
   let dragPlotWidth = 0;
 
   return {
-    onWheel(event: WheelEvent, point: readonly [number, number], ctx: FamilyGestureContext<unknown>) {
+    onWheel(event: WheelEvent, point: readonly [number, number], ctx: FamilyGestureContext) {
       if (!ctx.extent) return false;
       const plot = plotRectOf(ctx.fields);
-      if (!plot) return false;
+      if (!plot || !insidePlot(point, plot)) return false;
       const [extFrom, extTo] = ctx.extent;
       const fullSpan = extTo - extFrom;
       if (fullSpan <= MIN_ZOOM_SPAN_HOURS) return false;
@@ -99,12 +103,13 @@ function createTimeChartGestures() {
       ctx.setZoomWindow(next);
       return true;
     },
-    onDragStart(_point: readonly [number, number], ctx: FamilyGestureContext<unknown>) {
+    onDragStart(point: readonly [number, number], ctx: FamilyGestureContext) {
       const plot = plotRectOf(ctx.fields);
-      dragPlotWidth = plot?.width ?? 0;
-      dragStartWindow = ctx.viewport.zoomWindow;
+      const inside = !!plot && insidePlot(point, plot);
+      dragPlotWidth = inside ? plot.width : 0;
+      dragStartWindow = inside ? ctx.viewport.zoomWindow : null;
     },
-    onDragMove(_point: readonly [number, number], delta: readonly [number, number], ctx: FamilyGestureContext<unknown>) {
+    onDragMove(_point: readonly [number, number], delta: readonly [number, number], ctx: FamilyGestureContext) {
       if (!dragStartWindow || !ctx.extent || dragPlotWidth <= 0) return;
       const span = dragStartWindow[1] - dragStartWindow[0];
       const shiftHours = -(delta[0] / dragPlotWidth) * span;
@@ -115,8 +120,9 @@ function createTimeChartGestures() {
       dragStartWindow = null;
       dragPlotWidth = 0;
     },
-    onDoubleClick(_point: readonly [number, number], ctx: FamilyGestureContext<unknown>) {
-      if (!ctx.viewport.zoomWindow) return false;
+    onDoubleClick(point: readonly [number, number], ctx: FamilyGestureContext) {
+      const plot = plotRectOf(ctx.fields);
+      if (!ctx.viewport.zoomWindow || !plot || !insidePlot(point, plot)) return false;
       ctx.setZoomWindow(null);
       return true;
     },
@@ -125,15 +131,9 @@ function createTimeChartGestures() {
 
 export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, TimeChartBinding> = {
   family: 'time-chart',
-  skeleton: 'chart',
   pointerMode: 'continuous',
-  scroll: 'none',
   navigation: 'points',
-  mirror: 'none',
-  focusTarget: 'body',
-  bodyRole: 'region',
-  seriesPlotInsetPx: 60,
-  parseHit: hitKey => parseTimeChartHit(hitKey),
+  parseHit: parseTimeChartHit,
   inspectToken: key => key,
   gestures: createTimeChartGestures(),
   buildBinding: ctx => {

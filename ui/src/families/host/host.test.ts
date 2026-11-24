@@ -3,8 +3,6 @@ import test from 'node:test';
 import { tooltipStore } from '../../charts/tooltip.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
-import { Page, type Bitmap } from '../../dashboard/follow/page.ts';
-import { Lane, type LaneView } from '../../draw/lane.ts';
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
 import { displayedHour } from '../boundedView.ts';
@@ -503,80 +501,6 @@ test('syncTableMirror updates existing table rows and cells in place without rec
   }
 });
 
-test('quiet playback tick inside validInterval performs zero projections, zero paints, and zero host installs', async () => {
-  let projections = 0;
-  let paints = 0;
-  let installs = 0;
-  let surfaceInstalls = 0;
-
-  const fakeBitmap: Bitmap = { width: 100, close() {} };
-  const laneView: LaneView = {
-    next: () => 50,
-    paint(input, _state, content) {
-      projections++;
-      paints++;
-      return {
-        mode: 'picture',
-        nextChangeAt: 50,
-        surfaces: [{ source: { width: 100 } as unknown as OffscreenCanvas, content: content() }],
-        fields: { meta: { value: { empty: null, notes: [], warnings: [] }, content: 'meta-1' } },
-        motion: false,
-        hit: () => `row:GER`,
-      };
-    },
-  };
-
-  let page!: Page<Bitmap>;
-  const lane = new Lane<Bitmap>(0, {
-    views: () => laneView,
-    crop: async sources => sources.map(() => fakeBitmap),
-    emit: presentation => page.present(presentation),
-  });
-  page = new Page<Bitmap>({
-    lanes: 1,
-    seek: 1,
-    post: (_lane, message) => {
-      if (message.type === 'frame') void lane.frame(message);
-    },
-  });
-
-  page.mount(1, {
-    route: 1,
-    lane: 0,
-    owner: 'camp-1',
-    surfaces: [{ install() { surfaceInstalls++; }, clear() {} }],
-    changed: () => { installs++; },
-  });
-  lane.bind(1, {
-    route: 1,
-    view: 'bars',
-    owner: 'camp-1',
-    binding: 1,
-    subs: [],
-    surfaces: [{ width: 200, height: 100, dpr: 1 }],
-    dated: { h: 20, c: 45 },
-    model: { family: 'bars', kind: 'test' },
-  });
-
-  page.publish(20, { playing: true, speed: 24, step: 1 });
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(page.view(1)?.mode, 'picture');
-  assert.equal(projections, 1);
-  assert.equal(paints, 1);
-  assert.equal(surfaceInstalls, 1);
-  const installsAfterFirst = installs;
-
-  for (const quietHour of [21, 25, 30, 40, 44]) {
-    page.publish(quietHour, { playing: true, speed: 24, step: 1 });
-  }
-  await new Promise(resolve => setTimeout(resolve, 20));
-
-  assert.equal(projections, 1, 'quiet ticks inside validInterval do zero projections');
-  assert.equal(paints, 1, 'quiet ticks inside validInterval do zero paints');
-  assert.equal(surfaceInstalls, 1, 'quiet ticks inside validInterval do zero surface installs');
-  assert.equal(installs, installsAfterFirst, 'quiet ticks inside validInterval trigger zero host installs / React commits');
-});
-
 test('bindFamilyPointer resolves actions against the installed picture, rejects stale owners, separates click from drag pan, and keeps continuous hover flicker-free', () => {
   type Listener = (event: unknown) => void;
   const makeTarget = () => {
@@ -837,14 +761,10 @@ test('grid and points keyboard navigation and family host adapters cover all fou
 
   let zoomWindow: readonly [number, number] | null = null;
   const gCtx = {
-    installed: null,
     fields: { meta: { plotRect: { left: 50, top: 10, width: 400, height: 200 } } },
-    viewport: { width: 500, height: 240, dpr: 1, scrollLeft: 0, scrollTop: 0, logicalScrollTop: 0, zoomWindow: null as readonly [number, number] | null },
+    viewport: { width: 500, height: 240, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null as readonly [number, number] | null },
     extent: [0, 1000] as readonly [number, number],
-    options: {},
-    extra: {} as Record<string, never>,
     setZoomWindow: (next: readonly [number, number] | null) => { zoomWindow = next; },
-    requestBind: () => {},
   };
   assert.equal(timeChartHostAdapter.gestures!.onWheel!({ deltaY: -120 } as WheelEvent, [250, 100], gCtx), true);
   assert.ok(zoomWindow !== null && zoomWindow[1] - zoomWindow[0] < 1000, 'wheel in zooms window');

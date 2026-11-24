@@ -58,16 +58,12 @@ export function parseHeatLanesHit(hitKey: string | null): ParsedFamilyHit | null
 
 export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, FamilyHeatMatrixBinding> = {
   family: 'heat-matrix',
-  skeleton: 'chart',
-  pointerMode: 'discrete',
   scroll: 'both',
   navigation: 'grid',
   mirror: 'table',
-  focusTarget: 'body',
-  bodyRole: 'grid',
   auditOwnerId: -2,
   defaultSize: [320, 240],
-  parseHit: hitKey => parseHeatMatrixHit(hitKey),
+  parseHit: parseHeatMatrixHit,
   inspectToken: key => `cell:${key}`,
   getScrollExtent: fields => {
     const ext = fields.extent as MatrixExtentField | undefined;
@@ -134,16 +130,12 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
 
 export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, FamilyHeatLanesBinding> = {
   family: 'heat-lanes',
-  skeleton: 'chart',
-  pointerMode: 'discrete',
   scroll: 'vertical',
   navigation: 'rows',
   mirror: 'table',
-  focusTarget: 'body',
-  bodyRole: 'region',
   auditOwnerId: -3,
   defaultSize: [360, 220],
-  parseHit: hitKey => parseHeatLanesHit(hitKey),
+  parseHit: parseHeatLanesHit,
   inspectToken: key => `lane:${key}`,
   getScrollExtent: fields => {
     const ext = fields.extent as LanesExtentField | undefined;
