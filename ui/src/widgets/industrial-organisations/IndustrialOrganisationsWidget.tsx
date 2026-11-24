@@ -1,11 +1,13 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import WidgetState from '../../components/WidgetState';
 import ArtFallback from '../../components/ArtFallback';
 import { contentTitleHint } from '../../dashboard/contentTitles';
-import DrillHost from '../../charts/drill/DrillHost';
+import FollowControl from '../../charts/drill/FollowControl';
 import { useDrill } from '../../charts/drill/useDrill';
+import { DetailWindowHost } from '../../families/host/DetailWindowHost';
+import GateState from '../../dashboard/GateState';
 import { dayLabel } from '../../charts/draw';
 import { liveAt, liveByColumn, liveKey, mapLive } from '../../charts/live';
 import type { Live, LiveValues } from '../../charts/live';
@@ -19,8 +21,16 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { reporting } from '../../dashboard/follow/liveCells.ts';
-import { gameWindow, windowDayLabel, withWindowDiagnostics } from '../../dashboard/gameWindows';
-import type { MioPolicySelection, ShownWindow } from '../../dashboard/gameWindows';
+import {
+  claimGameWindowSlot,
+  gameWindow,
+  releaseGameWindowSlot,
+  subscribeGameWindows,
+  updateGameWindowSlotPosition,
+  windowDayLabel,
+  withWindowDiagnostics,
+} from '../../dashboard/gameWindows';
+import type { IndustrialOrganisationSelection, ShownWindow, WindowPosition } from '../../dashboard/gameWindows';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
@@ -31,16 +41,27 @@ import { failureDetails } from '../../dashboard/queryError.ts';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { DEFAULT_SORT, OPTIONS, POLICY } from './definition';
-import { cooldownDays, cooldownValues, exactFundsText, fundsRaw, fundsText, organisationNumbers, organisationRevision, organisationRows, policyText,
-  validateOrganisations } from './organisationsData';
+import {
+  cooldownDays,
+  cooldownValues,
+  exactFundsText,
+  fundsRaw,
+  fundsText,
+  organisationNumbers,
+  organisationRevision,
+  organisationRows,
+  policyText,
+  validateOrganisations,
+} from './organisationsData';
 import type { OrganisationRow } from './organisationsData';
 import './industrialOrganisations.css';
-import { useRegion, useRegionHour, useRegionCoverage } from '../../dashboard/widgetTime.ts';
+import { TimeRegion, useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const NO_ROWS: readonly OrganisationRow[] = [];
 const NO_WARNINGS: readonly string[] = [];
 const NAME_UNAVAILABLE = 'Organisation name unavailable';
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
+const organisationWindow = () => gameWindow('industrialOrganisation');
 
 export default function IndustrialOrganisationsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -53,21 +74,34 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const head = useHeadProduct(runtime, useGate(runtime, widget), 'industrial-organisations', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateOrganisations });
   const data = head.data;
   const hour = head.at ?? head.hour ?? track?.branch.lastHour ?? 0;
+  const slotOwnerId = useId();
+  const [inheritedPos, setInheritedPos] = useState<WindowPosition | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
   const drillControl = useDrill(runtime, useRegion(widget));
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
-  const [stored, setPicked] = useState<{ owner: object; selection: MioPolicySelection } | null>(null);
-  const picked = stored?.owner === owner ? stored.selection : null;
-  useEffect(() => dispatch({ type: 'close' }), [owner]);
-  const Chooser = gameWindow('mioPolicyChooser');
-  const windowOpen = drill.breakdown !== null && !!picked && !!Chooser;
+  const [stored, setPicked] = useState<{ owner: object; selection: IndustrialOrganisationSelection; title: string } | null>(null);
+  const picked = stored?.owner === owner ? stored : null;
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
   const [windowShown, setWindowShown] = useState<ShownWindow | null>(null);
+  const closeForHandover = useCallback(() => {
+    dispatch({ type: 'close' });
+    setWindowLines(NO_WARNINGS);
+    setWindowShown(null);
+    setInheritedPos(null);
+  }, [dispatch]);
+  const closeDrill = useCallback(() => {
+    releaseGameWindowSlot('industrialOrganisation', slotOwnerId);
+    closeForHandover();
+  }, [slotOwnerId, closeForHandover]);
+  useEffect(() => closeDrill(), [owner, closeDrill]);
+  useEffect(() => () => releaseGameWindowSlot('industrialOrganisation', slotOwnerId), [slotOwnerId]);
+  const OrgWindow = useSyncExternalStore(subscribeGameWindows, organisationWindow, organisationWindow);
+  const windowOpen = drill.breakdown !== null && !!picked && !!OrgWindow;
   const own = useMemo(() => [...data?.warnings ?? NO_WARNINGS, ...data?.detailsMissing ? [data.detailsMissing] : []], [data]);
   const diagnostics = useMemo(() => withWindowDiagnostics(own, windowOpen ? windowLines : NO_WARNINGS), [own, windowLines, windowOpen]);
   useDiagnostics(onDiagnostics, diagnostics);
@@ -109,17 +143,36 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
       { label: 'Traits unlocked', value: row.traits === null ? 'Not recorded' : row.traits.toString() },
       { label: 'Policy', value: policyText(row, days), lookupKey: row.policyToken ?? undefined },
     ];
-    if (!Chooser) lines.push({ label: 'The game’s policy screen is not available yet', tone: 'muted' });
+    if (!OrgWindow) lines.push({ label: 'The game’s organisation screen is not available yet', tone: 'muted' });
     return fitTooltip([{ title: row.name ?? NAME_UNAVAILABLE, subtitle: dayLabel(shownHour), rows: lines }], viewport);
-  }, [viewport, Chooser, live, runtime.clock]);
+  }, [viewport, OrgWindow, live, runtime.clock]);
   const open = (row: OrganisationRow) => {
-    if (!track || !tag || !Chooser) return;
-    setPicked({ owner, selection: { kind: 'mioPolicyChooser', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, organisation: row.key } });
-    dispatch({ type: 'open', breakdown: POLICY.id, hour, follow: drillControl.followsAt(hour) });
+    if (!track || !tag || !OrgWindow) return;
+    const openHour = hourAt.current(runtime.clock.getHour());
+    const inherited = claimGameWindowSlot('industrialOrganisation', slotOwnerId, closeForHandover);
+    setInheritedPos(inherited);
+    setPicked({
+      owner,
+      title: row.name ?? NAME_UNAVAILABLE,
+      selection: {
+        kind: 'industrialOrganisation',
+        sourceId: track.source.id,
+        revision: track.source.revision,
+        branchId: track.branch.id,
+        hour: openHour,
+        organisation: row.key,
+        tag: data?.tag ?? countryFromKey(tag),
+      },
+    });
+    dispatch({ type: 'open', breakdown: POLICY.id, hour: openHour, follow: drillControl.followsAt(openHour) });
   };
+  const onPositionChange = useCallback((pos: WindowPosition) => {
+    updateGameWindowSlotPosition('industrialOrganisation', slotOwnerId, pos);
+  }, [slotOwnerId]);
   const drillRegion = drillControl.region;
   const at = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const drillCoverage = useRegionCoverage(runtime, drillRegion);
+  const shut = drillControl.gate.stage.stage !== 'open' && drillControl.gate.stage.stage !== 'unbound';
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see organisations." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
@@ -133,16 +186,43 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
       : <Table rowRevision={organisationRevision} key={`${track.source.id}:${track.branch.id}:${tag}`} label="Industrial organisations" rows={rows} columns={columns}
         rowKey={row => row.key} sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
         rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} hoursPerSecond={hoursPerSecond}
-        onRowClick={Chooser ? open : undefined} tooltip={tooltip} live={tableLive} />;
+        onRowClick={OrgWindow ? open : undefined} tooltip={tooltip} live={tableLive} />;
   const main = <div ref={head.root} className="industrial-organisations-main">{body}</div>;
+  const activeRow = picked ? rows.find(row => row.key === picked.selection.organisation) : undefined;
+  const title = activeRow?.name ?? picked?.title ?? POLICY.label;
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="industrial-organisations">
     {header}
-    <DrillHost drill={drillControl} runtime={runtime} subject={windowOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
-      title={POLICY.label} day={windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)} canFollow
-      onClose={() => dispatch({ type: 'close' })} main={main}>
-      {picked && Chooser && at === null && <WidgetState kind="outside" read={drillCoverage} />}
-      {picked && Chooser && at !== null && <Chooser selection={{ ...picked, hour: at }} active={active} client={runtime.client}
-        onDiagnostics={onWindowDiagnostics} onShown={setWindowShown} />}
-    </DrillHost>
+    {main}
+    <DetailWindowHost
+      open={windowOpen}
+      subject={picked ? picked.selection.organisation : null}
+      hour={at}
+      title={title}
+      day={shut ? '' : windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)}
+      placement="center"
+      anchor={anchor}
+      returnFocus={picked && typeof CSS !== 'undefined' ? `tr[data-table-row="${CSS.escape(picked.selection.organisation)}"]` : undefined}
+      initialPosition={inheritedPos}
+      settled={windowShown !== null}
+      onPositionChange={onPositionChange}
+      headerActions={<FollowControl following={drillControl.following} onFollow={drillControl.follow} onPause={drillControl.pause} />}
+      className="detail-window-game"
+      closeLabel={`Close ${title}`}
+      onClose={closeDrill}
+    >
+      <TimeRegion runtime={runtime} region={drillRegion}>
+        {shut ? <GateState gate={drillControl.gate} loading="Loading…" />
+          : picked && OrgWindow && at === null ? <WidgetState kind="outside" read={drillCoverage} />
+          : picked && OrgWindow && at !== null ? <OrgWindow
+            selection={{ ...picked.selection, hour: at }}
+            active={active}
+            client={runtime.client}
+            onDiagnostics={onWindowDiagnostics}
+            onShown={setWindowShown}
+            onClose={closeDrill}
+          />
+          : null}
+      </TimeRegion>
+    </DetailWindowHost>
   </div>;
 }

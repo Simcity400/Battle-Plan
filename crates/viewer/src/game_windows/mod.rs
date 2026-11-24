@@ -36,6 +36,7 @@ use viewer_native_gui::{
 mod tests;
 
 pub mod equipment_designer;
+pub mod industrial_organisation;
 
 pub const SETTLE_TICK: Tick = Tick {
     time: 10.0,
@@ -1892,6 +1893,22 @@ impl Service {
         let language = dashboard_base::content::recorded_language(source.replay_ref());
         match request.kind.as_str() {
             "equipmentDesigner" => equipment_designer::render(
+                self,
+                equipment_designer::RenderContext {
+                    source,
+                    content: &content,
+                    layers: &layers,
+                    resolve: &resolve,
+                    visual_revision: &visual_revision,
+                    language: &language,
+                    decode,
+                    admitted_gen,
+                    extra_warnings: visual_warnings,
+                },
+                request,
+                cancel,
+            ),
+            "industrialOrganisation" | "mioPolicyChooser" => industrial_organisation::render(
                 self,
                 equipment_designer::RenderContext {
                     source,
