@@ -55,7 +55,7 @@ test('retained ships name and flag countries from the supplying read, with dated
   assert.deepEqual(mixed.attacker, labelAt(read + 1)('mod attacker'));
   const groups: CountryGroupReply = { branchId: 'branch', warnings: [], identityChanges: [], factions: [], wars: [],
     countryIdentities: [{ tag: 'victim tag', identities: [{ firstHour: read, lastHour: read + 2, slot: 1, countryId: 10 }] }],
-    warStarts: [], capitulations: [], unobserved: { humans: [], factions: [], wars: [] },
+    warStarts: [], capitulations: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     humans: [{ tag: 'victim tag', firstHour: read, lastHour: read }] };
   const match = countryMatch({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], groups, data.lastHour);
   assert.deepEqual(shipLogRows(data, read + 2, [], 'victim', (tag, hour) => tag !== null && match.matches(tag, hour), null)

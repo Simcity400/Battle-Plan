@@ -13,16 +13,16 @@ const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstH
 const holder = (tag: string, slot: number, firstHour = 100, lastHour = 500, countryId = slot) => ({ tag, identities: [{ slot, countryId, firstHour, lastHour }] });
 
 const factions: FactionGroup[] = [
-  { id: '4294967384', name: null, recordedName: '', firstHour: 100, lastHour: 400, nameReason: 'Faction template not recorded', names: [{ firstHour: 100, lastHour: 400, name: null, reason: 'Faction template not recorded' }],
+  { id: '4294967384', name: null, recordedName: '', firstHour: 100, lastHour: 400, nameReason: 'Faction template not recorded', names: [{ firstHour: 100, lastHour: 400, name: null, reason: 'Faction template not recorded', token: null }],
     members: [run('D01', 100, 400), run('ITA', 150, 249), run('ITA', 300, 400), run('HUN', 120, 400)],
     leaders: [run('D01', 100, 299), run('HUN', 300, 400)], incomplete: [{ firstHour: 350, lastHour: 350 }] },
-  { id: '25769803864', name: 'Pact of Steel Reforged', recordedName: 'Pact of Steel Reforged', firstHour: 200, lastHour: 299, nameReason: null, names: [{ firstHour: 200, lastHour: 299, name: 'Pact of Steel Reforged', reason: null }],
+  { id: '25769803864', name: 'Pact of Steel Reforged', recordedName: 'Pact of Steel Reforged', firstHour: 200, lastHour: 299, nameReason: null, names: [{ firstHour: 200, lastHour: 299, name: 'Pact of Steel Reforged', reason: null, token: null }],
     members: [run('MY TAG', 200, 299), run('A:B', 220, 299)], leaders: [run('MY TAG', 200, 299)], incomplete: [] },
 ];
 const reply: CountryGroupReply = {
   branchId: '1', humans: [], factions, wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: ['D01', 'ITA', 'HUN', 'MY TAG', 'A:B'].map((tag, slot) => holder(tag, slot)),
-  unobserved: { humans: [], factions: [{ firstHour: 260, lastHour: 269 }], wars: [] }, warnings: [],
+  unobserved: { humans: [], factions: [{ firstHour: 260, lastHour: 269 }], wars: [], unattributed: [] }, warnings: [],
 };
 const names: Record<string, string> = { D01: 'Free Republic', ITA: 'Italy', HUN: 'Hungary', 'MY TAG': 'Modded Realm', 'A:B': 'Colon Land' };
 const text = { country: (tag: string) => ({ name: names[tag] ?? tag, flag: `flag:${tag}` }), day: (hour: number) => `day ${hour}` };
@@ -46,9 +46,9 @@ test('a late recorded name outside the window moves its member from Zulu to Aard
   const metadata = new Map(tags.map((tag, index) => [tag, index === 49 ? 'Zulu' : `Member ${String(index).padStart(2, '0')}`]));
   const recorded = new Map<string, string>();
   const labels = { ...text, country: (tag: string) => ({ name: recorded.get(tag) ?? metadata.get(tag) ?? tag }) };
-  const views = factionViews({ ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [] },
+  const views = factionViews({ ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     countryIdentities: tags.map((tag, slot) => holder(tag, slot, 0, 20)),
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null }], incomplete: [], leaders: [],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null, token: null }], incomplete: [], leaders: [],
       members: tags.map(tag => run(tag, 0, 20)) }],
   }, summaryName, id => id);
   for (const members of ['name', 'joined'] as const) {
@@ -68,8 +68,8 @@ test('end membership keeps the human member’s faction visible before its chang
   const humans = [run('AAA', 0, 9), run('BBB', 10, 20)];
   const renamed: CountryGroupReply = { ...reply, humans,
     countryIdentities: [holder('AAA', 1, 0, 9), holder('BBB', 1, 10, 20)],
-    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null }], members: humans, leaders: [], incomplete: [] }],
+    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null, token: null }], members: humans, leaders: [], incomplete: [] }],
   };
   const views = factionViews(renamed, summaryName, id => id);
   const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], renamed, 5);
@@ -82,8 +82,8 @@ test('after members swap tags and one leaves, the remaining member has the recor
     countryIdentities: [{ tag: 'AAA', identities: [...holder('AAA', 1, 0, 9).identities, ...holder('AAA', 2, 10, 20).identities] },
       { tag: 'BBB', identities: [...holder('BBB', 2, 0, 9).identities, ...holder('BBB', 1, 10, 20).identities] }],
     identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }, { hour: 10, from: 'BBB', to: 'AAA' }],
-    unobserved: { humans: [], factions: [], wars: [] },
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null }], incomplete: [], leaders: [],
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null, token: null }], incomplete: [], leaders: [],
       members: [run('AAA', 0, 20), run('BBB', 0, 14)] }],
   };
   const [view] = factionViews(swapped, summaryName, id => id);
@@ -139,9 +139,9 @@ test('dissolved factions and former members can be hidden, and chosen countries 
 
 test('a member whose tag changes stays one member, neither leaving nor joining', () => {
   const renamed: CountryGroupReply = {
-    ...reply, identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
+    ...reply, identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     countryIdentities: [holder('AAA', 1, 100, 199), holder('BBB', 1, 200, 300), holder('CCC', 2, 100, 300)],
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 300, nameReason: null, names: [{ firstHour: 100, lastHour: 300, name: 'Pact', reason: null }], incomplete: [],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 300, nameReason: null, names: [{ firstHour: 100, lastHour: 300, name: 'Pact', reason: null, token: null }], incomplete: [],
       members: [run('AAA', 100, 199), run('BBB', 200, 300), run('CCC', 100, 300)], leaders: [run('AAA', 100, 199), run('BBB', 200, 300)] }],
   };
   const [view] = factionViews(renamed, summaryName, id => id);
@@ -157,9 +157,9 @@ test('a member whose tag changes stays one member, neither leaving nor joining',
 
 test('two countries that held one tag at different times are two members with their own lanes', () => {
   const reused: CountryGroupReply = {
-    ...reply, identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
+    ...reply, identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     countryIdentities: [{ tag: 'AAA', identities: [...holder('AAA', 1, 100, 199).identities, ...holder('AAA', 2, 400, 450).identities] }, holder('BBB', 1, 200, 450)],
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 450, nameReason: null, names: [{ firstHour: 100, lastHour: 450, name: 'Pact', reason: null }], incomplete: [], leaders: [],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 450, nameReason: null, names: [{ firstHour: 100, lastHour: 450, name: 'Pact', reason: null, token: null }], incomplete: [], leaders: [],
       members: [run('AAA', 100, 199), run('BBB', 200, 450), run('AAA', 400, 450)] }],
   };
   const [view] = factionViews(reused, summaryName, id => id);
@@ -173,9 +173,9 @@ test('two countries that held one tag at different times are two members with th
 
 test('a former member is named by its current alias and manual tags keep every holder', () => {
   const renamed: CountryGroupReply = {
-    ...reply, identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
+    ...reply, identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     countryIdentities: [{ tag: 'AAA', identities: [...holder('AAA', 1, 100, 199).identities, ...holder('AAA', 2, 400, 500).identities] }, holder('BBB', 1, 200, 500), holder('CCC', 3)],
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 500, nameReason: null, names: [{ firstHour: 100, lastHour: 500, name: 'Pact', reason: null }], incomplete: [], leaders: [],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 500, nameReason: null, names: [{ firstHour: 100, lastHour: 500, name: 'Pact', reason: null, token: null }], incomplete: [], leaders: [],
       members: [run('AAA', 100, 150), run('CCC', 100, 500)] }],
   };
   const [view] = factionViews(renamed, summaryName, id => id);
@@ -187,7 +187,7 @@ test('a former member is named by its current alias and manual tags keep every h
 });
 
 test('a country chosen before it joins admits no faction yet', () => {
-  const chosen: CountryGroupReply = { ...reply, countryIdentities: [holder('A', 1, 0), holder('C', 2, 0)], unobserved: { humans: [], factions: [], wars: [] },
+  const chosen: CountryGroupReply = { ...reply, countryIdentities: [holder('A', 1, 0), holder('C', 2, 0)], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     factions: [{ ...factions[0], id: '1', firstHour: 0, lastHour: 300, members: [run('A', 0, 300), run('C', 200, 300)], leaders: [], incomplete: [] }] };
   const identities = countryIdentityIndex(chosen.countryIdentities);
   const views = factionViews(chosen, summaryName, id => id);
@@ -199,7 +199,7 @@ test('a country chosen before it joins admits no faction yet', () => {
 test('manual X includes every native holder and its aliases, while unrelated Y and unknown spans stay excluded', () => {
   const countries = [{ tag: 'X', identities: [...holder('X', 1, 0, 9, 10).identities, ...holder('X', 1, 20, 30, 20).identities] },
     { tag: 'Y', identities: [...holder('Y', 1, 10, 19, 10).identities, ...holder('Y', 2, 20, 30, 30).identities] }];
-  const chosen: CountryGroupReply = { ...reply, countryIdentities: countries, unobserved: { humans: [], factions: [], wars: [] },
+  const chosen: CountryGroupReply = { ...reply, countryIdentities: countries, unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     factions: [run('Y', 10, 19), run('X', 20, 30), run('Y', 20, 30), run('X', 15, 16)].map((member, index) => ({
       ...factions[0], id: String(index + 1), firstHour: 0, lastHour: 30, members: [member], leaders: [], incomplete: [],
     })) };
@@ -211,9 +211,9 @@ test('manual X includes every native holder and its aliases, while unrelated Y a
 
 test('a membership continued across unrecorded hours is not said to have ended', () => {
   const gap: CountryGroupReply = {
-    ...reply, identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 200, lastHour: 209 }], wars: [] },
+    ...reply, identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 200, lastHour: 209 }], wars: [], unattributed: [] },
     countryIdentities: [holder('AAA', 1, 100, 300), holder('CCC', 2, 100, 300)],
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 300, nameReason: null, names: [{ firstHour: 100, lastHour: 300, name: 'Pact', reason: null }], incomplete: [],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 300, nameReason: null, names: [{ firstHour: 100, lastHour: 300, name: 'Pact', reason: null, token: null }], incomplete: [],
       members: [run('AAA', 100, 199), run('AAA', 210, 300), run('CCC', 100, 150), run('CCC', 250, 300)], leaders: [] }],
   };
   const [view] = factionViews(gap, summaryName, id => id);
@@ -228,9 +228,9 @@ test('a membership continued across unrecorded hours is not said to have ended',
 });
 
 test('hours the rosters were not recorded after a faction was last seen are not a dissolution, a departure or an empty roster', () => {
-  const unrecorded = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 10, lastHour: 19 }], wars: [] },
+  const unrecorded = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 10, lastHour: 19 }], wars: [], unattributed: [] },
     countryIdentities: [holder('AAA', 1, 0, 19)],
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 9, nameReason: null, names: [{ firstHour: 0, lastHour: 9, name: 'Pact', reason: null }],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 9, nameReason: null, names: [{ firstHour: 0, lastHour: 9, name: 'Pact', reason: null, token: null }],
       incomplete: [], members: [run('AAA', 0, 9)], leaders: [] }] } as CountryGroupReply;
   assert.deepEqual(factionGaps(unrecorded), [{ firstHour: 10, lastHour: 19 }]);
   const [view] = factionViews(unrecorded, summaryName, id => id);
@@ -250,7 +250,7 @@ test('the widget renders only when the head passes a faction, name, roster, lead
 });
 
 test('a same-tag native replacement starts its own membership without a rename event', () => {
-  const replaced: CountryGroupReply = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [] },
+  const replaced: CountryGroupReply = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     countryIdentities: [{ tag: 'X', identities: [...holder('X', 1, 0, 9, 10).identities, ...holder('X', 1, 10, 19, 20).identities] }],
     factions: [{ ...factions[0], id: '1', firstHour: 0, lastHour: 19, members: [run('X', 0, 19)], leaders: [], incomplete: [] }],
   };
@@ -266,7 +266,7 @@ test('a same-tag native replacement starts its own membership without a rename e
 });
 
 test('a native alias across a missing identity hour retains one membership and an unknown look', () => {
-  const renamed: CountryGroupReply = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [] },
+  const renamed: CountryGroupReply = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     countryIdentities: [holder('X', 1, 0, 9, 10), holder('Y', 1, 11, 19, 10)],
     factions: [{ ...factions[0], id: '1', firstHour: 0, lastHour: 19, members: [run('X', 0, 10), run('Y', 11, 19)], leaders: [run('X', 0, 10), run('Y', 11, 19)], incomplete: [] }],
   };
@@ -291,7 +291,7 @@ test('a native alias across a missing identity hour retains one membership and a
 });
 
 test('a member with a missing native suffix stays an unknown roster rather than a zero count', () => {
-  const [view] = factionViews({ ...reply, countryIdentities: [], unobserved: { humans: [], factions: [], wars: [] },
+  const [view] = factionViews({ ...reply, countryIdentities: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     factions: [{ ...factions[0], firstHour: 0, lastHour: 19, members: [run('X', 0, 19)], leaders: [run('X', 0, 19)], incomplete: [] }],
   }, summaryName, id => id);
   assert.equal(view.members.length, 0);
@@ -307,12 +307,12 @@ test('a world of 1,500 countries in factions lays out a lane per member and fact
     const factions: FactionGroup[] = Array.from({ length: count }, (_, faction) => {
       const members = Array.from({ length: Math.ceil((size - faction) / count) }, (_, index) => `F${faction}M${index}`);
       return { id: String(faction + 1), name: null, recordedName: '', firstHour: 0, lastHour: 2000, incomplete: [],
-        nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 2000, name: null, reason: 'Faction template not recorded' }],
+        nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 2000, name: null, reason: 'Faction template not recorded', token: null }],
         members: members.flatMap((tag, index) => [run(tag, index, 900), run(tag, 1000 + index, 2000)]),
         leaders: [run(members[0], 0, 900), run(members[1], 1001, 2000)] };
     });
     const tags = [...new Set(factions.flatMap(faction => faction.members.map(member => member.tag)))];
-    return { ...reply, factions, countryIdentities: tags.map((tag, slot) => holder(tag, slot, 0, 2000)), unobserved: { humans: [], factions: [], wars: [] } };
+    return { ...reply, factions, countryIdentities: tags.map((tag, slot) => holder(tag, slot, 0, 2000)), unobserved: { humans: [], factions: [], wars: [], unattributed: [] } };
   };
   const big = factionViews(world(1500), summaryName, id => id);
   assert.equal(factionLanes(big, 1500, options, text, [], 0).lanes.length, 1500 + 50);
@@ -322,9 +322,9 @@ test('a world of 1,500 countries in factions lays out a lane per member and fact
 
 test('heading, band and hover labels use their own hour after a template rename', () => {
   const faction = { ...factions[0], name: 'Later pact', nameReason: null, names: [
-    { firstHour: 100, lastHour: 199, name: 'Opening pact', reason: null },
-    { firstHour: 210, lastHour: 299, name: null, reason: 'Template missing from content' },
-    { firstHour: 300, lastHour: 400, name: 'Later pact', reason: null },
+    { firstHour: 100, lastHour: 199, name: 'Opening pact', reason: null, token: null },
+    { firstHour: 210, lastHour: 299, name: null, reason: 'Template missing from content', token: null },
+    { firstHour: 300, lastHour: 400, name: 'Later pact', reason: null, token: null },
   ] };
   const data = { ...reply, factions: [faction], unobserved: { ...reply.unobserved, factions: [] } };
   const [view] = factionViews(data, factionNameAt, id => id);

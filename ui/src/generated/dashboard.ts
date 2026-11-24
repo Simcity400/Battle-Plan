@@ -879,7 +879,11 @@ reason?: string,
 flagChoice?: CountryFlagChoice, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
 export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
-export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };
+export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null,
+/**
+ * This run's recorded engine literal, unchanged; null when empty or not valid text.
+ */
+token: string | null, };
 export type FactionGroup = {
 /**
  * The recorded faction id, as a decimal string.
@@ -917,7 +921,12 @@ export type Capitulation = { hour: number, tag: string, };
 export type IdentityChange = { hour: number, from: string, to: string, };
 export type CountryIdentityHistory = { tag: string, identities: Array<CountryIdentityRun>, };
 export type HourSpan = { firstHour: number, lastHour: number, };
-export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>, };
+export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>,
+/**
+ * The hour of each war start or capitulation read whose country no link resolved, in hour order:
+ * it is left out, and who it was is not known.
+ */
+unattributed: Array<number>, };
 export type CountryGroupReply = { branchId: string, humans: Array<MembershipRun>, factions: Array<FactionGroup>, wars: Array<WarPairRun>,
 /**
  * Every war start the recorded war relations name, in hour order.

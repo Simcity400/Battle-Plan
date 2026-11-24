@@ -63,7 +63,7 @@ test('a late recorded name outside the window reorders both overlords and subjec
 test('end membership keeps the human subject’s overlord visible before its change of tag', () => {
   const groups: CountryGroupReply = { branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [],
     countryIdentities: [holder('AAA', 1, 0, 9), holder('BBB', 1, 10, 20), holder('OVR', 2)],
-    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
+    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 20 }],
   };
   const views = overlordViews({ ...reply, unobserved: [], runs: [

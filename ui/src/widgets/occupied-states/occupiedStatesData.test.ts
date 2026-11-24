@@ -47,7 +47,7 @@ const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', a
 const gapGroups = (tags: readonly string[], gap = { firstHour: 110, lastHour: 120 }): CountryGroupReply => ({ branchId: '1', warnings: [],
   humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })), factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),
-  unobserved: { humans: [gap], factions: [], wars: [] } });
+  unobserved: { humans: [gap], factions: [], wars: [], unattributed: [] } });
 const GAP = 'Group membership is unavailable at this time.';
 
 test('a state left out where the chosen group’s membership was not recorded makes the hour unknown, never no occupied states', () => {
