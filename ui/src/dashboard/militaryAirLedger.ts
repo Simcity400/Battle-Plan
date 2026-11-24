@@ -277,7 +277,7 @@ export function ledgerPinnedIdentity(value: unknown, campaign: string, branch: s
 }
 
 export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, metric: 'dealt' | 'taken' | 'total' = 'total', countries: readonly MilitaryAirCountry[] = []): { rows: LedgerRow[]; reason: string | null } {
+  hour: number, metric: 'dealt' | 'taken' | 'total' = 'total', countries: readonly MilitaryAirCountry[] = []): { rows: LedgerRow[]; reason: string | null } {
   const ranked = [...rows].sort((a, b) => {
     const av = metric === 'total' ? a.dealt + a.taken : a[metric], bv = metric === 'total' ? b.dealt + b.taken : b[metric];
     return av === bv ? compareTags(a.tag, b.tag) : av > bv ? -1 : 1;
@@ -290,7 +290,7 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
     return { rows: ranked.filter(row => identities.has(row.identity)),
       reason: identities.size ? null : 'Selected countries are unavailable in this campaign.' };
   }
-  const filter = worldFilter(selection, fallback, groups, hour, lastHour);
+  const filter = worldFilter(selection, fallback, groups, hour);
   return { rows: ranked.filter(row => filter.tags === null || filter.tags.has(row.tag)), reason: filter.reason };
 }
 
