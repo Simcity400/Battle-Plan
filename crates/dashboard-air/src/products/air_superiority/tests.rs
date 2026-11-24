@@ -176,27 +176,3 @@ fn sides_are_assigned_once_per_stretch_of_unchanged_groups() {
     assert_eq!(pact.members, ["ENG", "FRA"], "FRA left the faction but fights GER beside it");
     assert_eq!(pact.co_belligerents, 1);
 }
-
-#[test]
-fn solo_faction_keeps_its_own_anchor_when_another_faction_shares_a_later_enemy() {
-    let groups = Groups {
-        factions: [
-            (10, FactionHistory { first_hour: 0, members: vec![run("GER", 0, 100)], leaders: vec![run("GER", 0, 100)], incomplete: vec![] }),
-            (20, FactionHistory { first_hour: 30, members: vec![run("USA", 30, 100)], leaders: vec![run("USA", 30, 100)], incomplete: vec![] }),
-        ]
-        .into(),
-        wars: vec![
-            WarRun { first: "USA".into(), second: "FRA".into(), first_hour: 30, last_hour: 100 },
-            WarRun { first: "GER".into(), second: "ENG".into(), first_hour: 50, last_hour: 100 },
-            WarRun { first: "USA".into(), second: "ENG".into(), first_hour: 80, last_hour: 100 },
-        ],
-        unobserved_factions: vec![],
-        unobserved_wars: vec![],
-        identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: 100, slot: *id, country_id: *id }])).collect(),
-    };
-    let index = index::build(groups, 0, 100);
-    let early = index.epoch(10).unwrap().sides.as_ref().unwrap();
-    let ger = early.iter().find(|side| side.factions == [10]).unwrap();
-    assert_eq!(ger.key, "f:10");
-    assert_eq!(index.anchor(ger), Some(("GER".into(), 0)));
-}

@@ -25,13 +25,14 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { airSummaryTooltip, airTooltip, momentRows, regionLabel, sideOrder, validateAirSuperiority } from '../../dashboard/airSuperiority';
 import { airMode, airParams, useAirLooks } from '../../dashboard/useAirSuperiority';
-import type { AirRankingReply, AirTimelineReply } from '../../generated/dashboard';
-import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, mergeTimelineSides, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
+import type { AirRankingReply, AirSide, AirTimelineReply } from '../../generated/dashboard';
+import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
 import { OPTIONS } from './definition';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import './airSuperiorityTimeline.css';
 import { productRequest } from '../../dashboard/request.ts';
 
+const NO_SIDES: AirSide[] = [];
 const RANKING_MOVES = ['lastHour'] as const;
 
 export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
@@ -82,7 +83,11 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const moment = momentParams ? head.data : undefined;
   const newest = head.current;
   const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);
-  const sides = useMemo(() => mergeTimelineSides(replies, moment), [replies, moment]);
+  const sides = useMemo(() => {
+    const held: AirSide[] = [];
+    for (const side of [...replies.flatMap(reply => reply?.sides ?? NO_SIDES), ...(moment?.sides ?? NO_SIDES)]) if (!held.some(known => known.key === side.key)) held.push(side);
+    return held;
+  }, [replies, moment]);
   const viewpoint = useMemo(() => {
     const side = data?.viewpoint == null ? null : data.sides[data.viewpoint];
     const at = side ? sides.findIndex(held => held.key === side.key) : -1;

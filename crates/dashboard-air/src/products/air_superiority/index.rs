@@ -33,13 +33,7 @@ impl AirIndex {
         let (tag, hour) = if let Some(identity) = side.key.strip_prefix("w:") {
             self.anchors.country_reads.get(identity)?
         } else {
-            let faction = side
-                .colour_faction
-                .filter(|id| side.factions.contains(id))
-                .or_else(|| side.faction.filter(|id| side.factions.contains(id)))
-                .or_else(|| side.factions.first().copied())
-                .or(side.faction)?;
-            self.anchors.faction_reads.get(&faction)?
+            self.anchors.faction_reads.get(&side.faction?)?
         };
         self.groups.identity_run(tag, *hour).map(|_| (tag.clone(), *hour))
     }
