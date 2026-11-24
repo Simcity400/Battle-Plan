@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleState, navalBattleWarnings, navalBattleWindows,
   navalSideText, navalWindowPlaces, rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
   NAVAL_BATTLE_DEFAULT_MEASURE } from './navalBattlesData.ts';

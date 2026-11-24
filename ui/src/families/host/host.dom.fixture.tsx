@@ -19,7 +19,7 @@ import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import type { InstalledAction } from '../contract.ts';
 import { familyTableLaneView, type FamilyTableBinding } from '../table/laneView.ts';
 import { tableSettingsOf } from '../table/settings.ts';
-import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDomShared.ts';
+import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDom.fixture.ts';
 import FamilyTableHost from '../table/FamilyTableHost.tsx';
 import type { FamilyHostAdapter } from './adapter.ts';
 import FamilyHost from './FamilyHost.tsx';
