@@ -176,6 +176,7 @@ export interface ChartYAxisSpec {
 
 export interface TimeChartModel {
   readonly kind: string;
+  readonly subject?: string;
   readonly measureTitle: string;
   readonly mode: 'lines' | 'stack' | 'columns';
   readonly hour: number;

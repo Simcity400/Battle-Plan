@@ -4,7 +4,7 @@ import { airCauseName } from '../air-kills-losses/lossCauses.ts';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsValueField, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import { formatCompactScalar } from '../../families/valueFormat.ts';
+import { formatCompactScalar, formatShare } from '../../families/valueFormat.ts';
 import type { MilitaryAirAtReply, MilitaryAirAtRow, MilitaryAirFamily, MilitaryAirMetric } from '../../generated/dashboard';
 
 export const MILITARY_AIR_AT = 'military-air-at';
@@ -184,7 +184,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
         hour: readView.hour,
         items: [
           { label: options.leftHeader, value: formatBarsValueField({ value: total.value, format: total.format }).text },
-          ...segments.map(segment => ({ label: segment.label, swatch: segment.color, value: `${formatBarsValueField({ value: segment.value, format: segment.format }).text} (${Math.round(segment.share * 100)}%)` })),
+          ...segments.map(segment => ({ label: segment.label, swatch: segment.color, value: `${formatBarsValueField({ value: segment.value, format: segment.format }).text} (${formatShare(segment.share)})` })),
         ],
       },
     });

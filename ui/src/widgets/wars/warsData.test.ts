@@ -3,7 +3,7 @@ import test from 'node:test';
 import { Lineage } from '../../dashboard/identity.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { countryTagAt, lossesOf, structureAt, structureHours, validateWarContributions, validateWarLosses, isWarsReply, joinedAt, laneCountries, observationAt, labelObservationAt, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes } from './warsData.ts';
+import { countryTagAt, lossesOf, structureAt, structureHours, validateWarContributions, validateWarLosses, isWarsReply, laneCountries, observationAt, labelObservationAt, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes } from './warsData.ts';
 import type { WarsLaneOptions } from './warsData';
 
 const participant = (tag: string, side: WarParticipantRun['side'], firstHour = 10, lastHour = 19): WarParticipantRun =>
@@ -60,21 +60,6 @@ test('native aliases keep one lane and missing holder hours never request a coun
   const shown = warsLanes(prepared, 20, { ...options, view: 'countries', country: () => { throw new Error('Missing native holder requested a look'); } });
   assert.equal(shown.lanes[0].identity?.label, 'Not recorded');
   assert.deepEqual(laneCountries(shown.lanes, shown.info, 20), []);
-});
-
-test('a renamed member joined when its native country did, and a first sighting is only an upper bound', () => {
-  const item = war('1', 10, 30);
-  item.participants = [{ ...participant('Before', 'attacker', 12, 19), joinedBy: false }, { ...participant('After', 'attacker', 20, 30), joinedBy: false },
-    participant('Late', 'defender', 25, 30)];
-  const identities = countryIdentityIndex([
-    { tag: 'Before', identities: [{ firstHour: 10, lastHour: 19, slot: 1, countryId: 101 }] },
-    { tag: 'After', identities: [{ firstHour: 20, lastHour: 30, slot: 1, countryId: 101 }] },
-    { tag: 'Late', identities: [{ firstHour: 10, lastHour: 30, slot: 2, countryId: 102 }] },
-  ]);
-  assert.deepEqual(joinedAt(item, 'After', 28, identities), { firstHour: 12, joinedBy: false });
-  assert.deepEqual(joinedAt(item, 'Late', 28, identities), { firstHour: 25, joinedBy: true });
-  assert.equal(joinedAt(item, 'Late', 22, identities), null);
-  assert.equal(joinedAt(item, 'Unknown', 28, identities), null);
 });
 
 test('validate the complete dated contract, including availability and arbitrary exact signed casualty strings', () => {

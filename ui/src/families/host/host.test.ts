@@ -11,7 +11,16 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
-import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
+import { familyBinding, lazyActionKeys, requestedRowWindow, type FamilyBindingContext, type ParsedFamilyHit } from './adapter.ts';
+import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import { readPlanExact } from '../broker.ts';
+import type { SourcePlan } from '../contract.ts';
+import type { FrozenGate } from '../sources.ts';
+import { tableHostAdapter } from '../table/hostAdapter.ts';
+import { pagedTailEntry } from '../table/logHelpers.ts';
+import { DEFAULT_TAIL_PAGE_SIZE } from '../table/rowSource.ts';
+import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
+import type { TableModel } from '../table/model.ts';
 import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
@@ -991,4 +1000,57 @@ test('a followed bounded read dates its picture by its proof even when the widge
   assert.equal(boundDated({ hour: 120 }, null, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
   assert.deepEqual(boundDated({ hour: 120 }, null, false, false, null), { h: 120, c: 120 });
   assert.deepEqual(boundDated(null, null, false, true, [0, 500]), { h: 0, c: 500 });
+});
+
+test('R3-S1: a paged table scrolled past its head asks the absolute rows under the viewport before projection, of the lane, the page broker and the exact audit read alike', async () => {
+  const source = { id: 'log-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 5000 }] } } as unknown as DashboardSource;
+  const HEAD = 64;
+  const TOTAL = 1000;
+  const entry = pagedTailEntry('main', source, '1', 0, { product: 'event-choices-tail', branchId: '1', facets: [], from: null, limit: HEAD }, true);
+  const plan: SourcePlan = { owner: 'log', entries: [entry] };
+  const columns = [{ key: 'event', label: 'Event', as: 'plain', offered: ['plain'], priority: 0 }] as never;
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'event', direction: 'descending' } });
+  const rowHeight = ROW_HEIGHT.normal;
+  const installed = { table: { count: TOTAL, totalHeight: TOTAL * rowHeight }, meta: {} };
+  const viewport = { width: 600, height: 10 * rowHeight, dpr: 1, scrollLeft: 0, scrollTop: 600 * rowHeight, zoomWindow: null };
+
+  const window = requestedRowWindow(tableHostAdapter, plan, viewport, settings, installed);
+  assert.deepEqual(window, { first: 596, count: 18 }, 'the ordinals under the scroll position with overscan, far beyond the 64-row head');
+  assert.equal(requestedRowWindow(tableHostAdapter, { owner: 'log', entries: [] }, viewport, settings, installed), null, 'a table with no paged read asks no window');
+  assert.deepEqual(
+    requestedRowWindow(tableHostAdapter, plan, { ...viewport, scrollTop: (TOTAL - 10) * rowHeight }, settings, installed),
+    { first: 986, count: 14 },
+    'the deepest scroll asks the last rows the recording holds, not past them',
+  );
+
+  const ctx: FamilyBindingContext<unknown, typeof settings> = {
+    kind: 'event-choices', view: 'default', options: {}, settings, sources: {}, extent: null, plan, viewport,
+    theme: {} as never, reducedMotion: false, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+    window,
+  };
+  assert.deepEqual((familyBinding(tableHostAdapter, ctx) as { window?: unknown } | null)?.window, window, 'the lane is bound to the requested window, so the projection reads those rows');
+
+  const asked: [number, number][] = [];
+  const client = {
+    product: async (request: { params: Record<string, unknown> }) => {
+      const offset = Number(request.params.offset ?? 0);
+      const limit = Number(request.params.limit);
+      asked.push([offset, limit]);
+      const rows = Array.from({ length: Math.max(0, Math.min(limit, TOTAL - offset)) }, (_, i) => ({ key: `e${offset + i}`, hour: 100 }));
+      return { data: { total: String(TOTAL), offset: String(offset), baseOrdinal: '0', firstOrdinal: '0', rows, missing: [], facetTotals: [] } };
+    },
+  } as unknown as DashboardClient;
+  const gate: FrozenGate = { recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never, span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never) };
+  const exact = await readPlanExact(plan, 200, { client, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 5000 }, window: null, staticSpan: null, gate, rowWindow: window });
+  assert.deepEqual(asked, [[0, HEAD], [HEAD + 2 * DEFAULT_TAIL_PAGE_SIZE, DEFAULT_TAIL_PAGE_SIZE]], 'the exact read takes the head and the one page holding rows 596 to 613');
+  assert.deepEqual(exact?.rowWindow, window, 'and projects the same window the lane painted');
+  assert.deepEqual(exact?.rows('main')?.sliceAt(200, 596, 2).map(slot => (slot.kind === 'data' ? slot.row.key : slot.kind)), ['e596', 'e597']);
+
+  const model: TableModel = { columns, hour: 200, rows: Array.from({ length: 18 }, (_, i) => ({ key: `e${596 + i}`, name: `e${596 + i}`, cells: { event: { value: { kind: 'known', value: `e${596 + i}` } } } })) as never, windowOffset: 596, totalRows: TOTAL };
+  const audited = tableHostAdapter.deriveAuditRows!(model, 200, { viewport, settings, expanded: {}, theme: undefined, fields: { ...installed, range: { first: 4, count: 10 } } });
+  assert.deepEqual(
+    [...new Set(audited.map(row => row.key.split(':')[0]!).filter(key => key.startsWith('e')))].sort(),
+    Array.from({ length: 10 }, (_, i) => `e${600 + i}`),
+    'the audit covers the painted local slice the installed picture names, not rows found from the absolute scroll offset',
+  );
 });

@@ -409,6 +409,7 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
     plotRight: layout.plotLeft + layout.plotWidth,
     startHour: layout.firstHour,
     endHour: layout.lastHour,
+    toX: hour => hourToLaneX(hour, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth),
     axisTop: bodyBottom,
     labelY: bodyBottom + layout.axisHeight / 2,
     tabY: bodyBottom + 1,
