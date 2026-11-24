@@ -10,6 +10,7 @@ import {
   drawMissingMark,
   drawOutOfFigure,
   drawSkillFigure,
+  drawSplitBar,
   drawStatusMark,
   drawStockpileSumCell,
   drawTwoWayBar,
@@ -23,8 +24,8 @@ import {
   type IconStripItem,
 } from '../../draw/kit.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { formatValueState } from '../valueFormat.ts';
-import { drawFormattedValue } from '../valueCanvas.ts';
+import { formatDateParts, formatValueState } from '../valueFormat.ts';
+import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import type { FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
@@ -149,6 +150,70 @@ function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   if (column.trackTone === 'red' || column.tone === 'red') return '#e5484d';
   if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.dark ? '#c4c4c4' : '#64748b';
   return theme.accent;
+}
+
+const BOUNDED_DATE_WORDS: Readonly<Record<'by' | 'since' | 'after' | 'before', string>> = {
+  by: 'by',
+  since: 'since',
+  after: 'after',
+  before: 'before',
+};
+
+function drawInlineRuns(
+  rc: CellRenderContext,
+  text: string,
+  x: number,
+  middle: number,
+  maxWidth: number,
+  font: string,
+  color: string,
+): number {
+  const { ctx, theme, measure, fit } = rc;
+  if (maxWidth <= 0 || !text) return 0;
+  if (text.indexOf('\uFFFC') < 0) {
+    const fitted = fit(text, font, maxWidth);
+    if (!fitted) return 0;
+    ctx.save();
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(fitted, x, middle);
+    ctx.restore();
+    return measure(fitted, font);
+  }
+  const parts = text.split('\uFFFC');
+  const boxSize = MISSING_BOX_SIZE;
+  const boxPad = 3;
+  let cursor = x;
+  const limit = x + maxWidth;
+  ctx.save();
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!;
+    if (part) {
+      const rem = limit - cursor;
+      if (rem <= 0) break;
+      const fitted = fit(part, font, rem);
+      if (fitted) {
+        ctx.fillText(fitted, cursor, middle);
+        cursor += measure(fitted, font);
+      }
+      if (fitted !== part) break;
+    }
+    if (i + 1 < parts.length) {
+      const lead = cursor > x ? boxPad : 0;
+      if (cursor + lead + boxSize > limit) break;
+      cursor += lead;
+      drawHatchRect(ctx, cursor, Math.round(middle - boxSize / 2), boxSize, boxSize, 2, theme);
+      cursor += boxSize + (parts[i + 1] ? boxPad : 0);
+    }
+  }
+  ctx.restore();
+  return cursor - x;
 }
 
 export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): void {
@@ -303,17 +368,61 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'date') {
-    const hourVal = paintModel.value.kind === 'known' || paintModel.value.kind === 'zero' ? Number(paintModel.value.value) : null;
-    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width: Math.max(0, right - left), align: column.numeric ? 'right' : 'left' });
+    if (item.showDate === false) return;
+    if (formatted.kind === 'notApplicable') {
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
+      return;
+    }
+    const hourVal = paintModel.value.kind === 'known' || paintModel.value.kind === 'zero' || paintModel.value.kind === 'partial'
+      ? Number(paintModel.value.value)
+      : null;
+    const width = Math.max(0, right - left);
+    if (cell?.boundedDate && hourVal !== null) {
+      const parts = formatDateParts(hourVal);
+      if (parts) {
+        const prefix = `${BOUNDED_DATE_WORDS[cell.boundedDate]} `;
+        const dayFont = fontOf(theme, rowHeight >= 32 ? 12.5 : 11.5, 500);
+        const yearFont = fontOf(theme, 10.5, 400);
+        const prefixW = measure(prefix, dayFont);
+        const dayY = rowHeight >= 32 ? middle - 6 : middle;
+        ctx.save();
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = dayFont;
+        if (prefixW < width - 8) {
+          ctx.fillStyle = theme.muted;
+          ctx.fillText(prefix, left, dayY);
+          ctx.fillStyle = theme.text;
+          ctx.fillText(fit(parts.dayMonth, dayFont, Math.max(0, width - prefixW)), left + prefixW, dayY);
+        } else {
+          ctx.fillStyle = theme.text;
+          ctx.fillText(fit(`${prefix}${parts.dayMonth}`, dayFont, width), left, dayY);
+        }
+        if (rowHeight >= 32) {
+          ctx.font = yearFont;
+          ctx.fillStyle = theme.muted;
+          ctx.fillText(fit(parts.year, yearFont, width), left, middle + 7);
+        }
+        ctx.restore();
+        return;
+      }
+    }
+    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width, align: column.numeric ? 'right' : 'left' });
     return;
   }
 
-  if (kind === 'status' && cell?.statusKind) {
-    drawStatusMark(ctx, left, middle, cell.statusKind, theme, {
-      label: formatted.kind === 'known' ? formatted.text : undefined,
-      maxWidth: Math.max(0, right - left),
-    });
-    return;
+  if (kind === 'status') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: false, muted: item.row.muted }, theme, measure, fit);
+      return;
+    }
+    if (cell?.statusKind) {
+      drawStatusMark(ctx, left, middle, cell.statusKind, theme, {
+        label: formatted.kind === 'known' ? formatted.text : undefined,
+        maxWidth: Math.max(0, right - left),
+      });
+      return;
+    }
   }
 
   if (kind === 'track' || column.display === 'track' || column.display === 'meterAfter' || column.display === 'meterBefore') {
@@ -408,51 +517,98 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const font = fontOf(theme, 13, 500);
-    ctx.save();
-    ctx.font = font;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = cell?.shortage
+    const hasSplit = Boolean(cell?.splitBar && cell.splitBar.length > 0);
+    const textMid = hasSplit ? middle - 3 : middle;
+    const avail = Math.max(0, right - left);
+    const figureColor = cell?.shortage
       ? tokens.shortage
       : (isZero || item.row.muted)
         ? theme.muted
         : theme.text;
-    const avail = Math.max(0, right - left);
-    ctx.fillText(fit(formatted.text, font, avail), right, middle);
+    let numRight = right;
+    if (cell?.unitSuffix) {
+      const suffixFont = fontOf(theme, 11.5, 400);
+      const suffix = ` ${cell.unitSuffix}`;
+      const suffixW = measure(suffix, suffixFont);
+      if (suffixW + 12 <= avail) {
+        ctx.save();
+        ctx.font = suffixFont;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = theme.muted;
+        ctx.fillText(suffix, right, textMid);
+        ctx.restore();
+        numRight = right - suffixW;
+      }
+    }
+    const numAvail = Math.max(0, numRight - left);
+    const shownNum = fit(formatted.text, font, numAvail);
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = figureColor;
+    ctx.fillText(shownNum, numRight, textMid);
     ctx.restore();
+    if (cell?.unitIcon || cell?.unitIconPending) {
+      const iconSize = 14;
+      const numW = measure(shownNum, font);
+      const iconX = Math.round(numRight - numW - iconSize - 5);
+      if (iconX >= left) {
+        const state = resolveArtState(cell.unitIcon, cell.unitIconPending === true, cell.unitSuffix ?? column.label, rc);
+        drawArtSlot(ctx, iconX, Math.round(textMid - iconSize / 2), iconSize, iconSize, state, theme, { radius: 2 });
+      }
+    }
+    if (hasSplit && cell?.splitBar) {
+      const barW = Math.min(56, avail);
+      if (barW >= 12) {
+        drawSplitBar(ctx, right - barW, y + rowHeight - 7, barW, 3, cell.splitBar, theme);
+      }
+    }
     return;
   }
 
   const isPrimary = colIndex === 0 || kind === 'item' || column.display === 'flagName';
   const isChild = item.level > 1;
   const subtext = density !== 'compact' ? cell?.subtext : undefined;
-  const avail = Math.max(0, right - left);
+  let textLeft = left;
+  if (cell?.inlinePrefix) {
+    const prefixFont = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
+    const prefixW = measure(cell.inlinePrefix, prefixFont);
+    if (prefixW + 10 < Math.max(0, right - textLeft)) {
+      ctx.save();
+      ctx.font = prefixFont;
+      ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cell.inlinePrefix, textLeft, middle);
+      ctx.restore();
+      textLeft += prefixW + 8;
+    }
+  }
+  const avail = Math.max(0, right - textLeft);
   if (subtext && rowHeight >= 36) {
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
-    ctx.save();
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.font = titleFont;
-    ctx.fillStyle = item.row.muted ? theme.muted : (isChild ? (tokens.dark ? '#d4d4d4' : theme.text) : theme.text);
-    ctx.fillText(fit(formatted.text, titleFont, avail), left, middle - 8);
-    ctx.font = subFont;
-    ctx.fillStyle = theme.muted;
-    ctx.fillText(fit(subtext, subFont, avail), left, middle + 9);
-    ctx.restore();
+    const titleColor = item.row.muted ? theme.muted : (isChild ? (tokens.dark ? '#d4d4d4' : theme.text) : theme.text);
+    drawInlineRuns(rc, formatted.text, textLeft, middle - 8, avail, titleFont, titleColor);
+    drawInlineRuns(rc, subtext, textLeft, middle + 9, avail, subFont, theme.muted);
     return;
   }
 
   const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, isChild ? 500 : (isPrimary ? 600 : 400));
-  ctx.save();
-  ctx.font = textFont;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = item.row.muted
+  const textColor = item.row.muted
     ? theme.muted
     : isChild
       ? (tokens.dark ? '#d4d4d4' : theme.text)
       : theme.text;
-  ctx.fillText(fit(formatted.text, textFont, avail), left, middle);
-  ctx.restore();
+  const drawnW = drawInlineRuns(rc, formatted.text, textLeft, middle, avail, textFont, textColor);
+  if (cell?.inlineSubtext) {
+    const gap = 8;
+    const rem = avail - drawnW - gap;
+    if (rem >= 20) {
+      const inlineFont = fontOf(theme, 12.5, 400);
+      drawInlineRuns(rc, cell.inlineSubtext, textLeft + drawnW + gap, middle, rem, inlineFont, theme.muted);
+    }
+  }
 }

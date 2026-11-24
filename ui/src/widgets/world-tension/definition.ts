@@ -1,7 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
-import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
 import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const TENSION_BREAKDOWN = { id: 'breakdown', label: 'Country contributions' };
@@ -28,7 +27,6 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'markers', section: 'options', label: 'Event markers', kind: 'toggle', default: true, visibleWhen: stacked },
   { key: 'list', section: 'options', label: 'Values beside the chart', kind: 'toggle', default: true, visibleWhen: stacked },
   { ...DRILL_OPTION, visibleWhen: stacked },
-  { ...DATE_OVERLAY_OPTION, visibleWhen: options => options.view === 'race' },
 ];
 
 export const definition = {

@@ -43,6 +43,7 @@ import {
   resolveKitTokens,
   TIMELINE_LABEL_MIN_WIDTH,
   computeTimeAxisTicks,
+  contrastInkForFill,
   drawTimeAxis,
   drawTimelineBar,
   winRateColor,
@@ -376,4 +377,9 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
     spanText: '1 Jan 1936 – 1 Jan 1940',
   }, THEME);
   assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
+
+  assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
+  assert.equal(contrastInkForFill('#3987e5', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
+  assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
 });

@@ -350,15 +350,16 @@ function cachedField(held: HeldFamilyTable, name: string, text: string, content:
   return next.content;
 }
 
-function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined): string {
+function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined, hideHeader = false): string {
   return JSON.stringify([
+    hideHeader,
     theme?.font ?? '',
     theme?.fontSize.small ?? 0,
     theme?.fontSize.body ?? 0,
     settings.order,
     columns.map(c => {
       const own = settings.columns[c.key];
-      return [c.key, c.label, c.as, own?.show ?? true, own?.as ?? '', own?.width ?? null, c.numeric ? 1 : 0];
+      return [c.key, c.label, c.as, own?.show ?? true, own?.as ?? '', own?.width ?? null, c.numeric ? 1 : 0, c.cellKind ?? ''];
     }),
   ]);
 }
@@ -686,8 +687,11 @@ export function familyTableLaneView(
             if (item.kind === 'group-header') {
               hasGroups = true;
               hasVariableHeights = true;
+            } else if (item.kind !== 'data') {
+              hasVariableHeights = true;
+              if (item.kind === 'gap' || item.kind === 'refused') rowIndex.set(item.key, i);
             } else {
-              if (item.level > 1) hasVariableHeights = true;
+              if (item.level > 1 || item.isLiveEnd === true) hasVariableHeights = true;
               rowIndex.set(item.key, i);
             }
           }
@@ -745,7 +749,7 @@ export function familyTableLaneView(
         allLayouts = held.cachedAllLayouts;
         layout = held.cachedLayout!;
       } else {
-        const configKey = `${widthConfigOf(model.columns, bound.settings, bound.theme)}${held.sampleSig}`;
+        const configKey = `${widthConfigOf(model.columns, bound.settings, bound.theme, model.hideHeader === true)}${held.sampleSig}`;
         if (bound.theme && held.widthConfigKey !== configKey) {
           const baseCols = buildColumnLayouts(model.columns, bound.settings);
           const measure = (text: string, font: string) => {
@@ -758,17 +762,11 @@ export function familyTableLaneView(
             }
             return w;
           };
-          held.fixedWidths = measureFixedColumnWidths(baseCols, bound.settings, bound.theme, measure, initialTextSamples(baseCols, flatRows));
+          held.fixedWidths = measureFixedColumnWidths(baseCols, bound.settings, bound.theme, measure, initialTextSamples(baseCols, flatRows), { hideHeader: model.hideHeader === true });
           held.widthConfigKey = configKey;
         }
         allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
-        const protectedKeys = new Set<string>();
-        if (!model.unsorted && bound.settings.sort.column) protectedKeys.add(bound.settings.sort.column);
-        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), bound.settings.overflow, {
-          rankShown,
-          rankWidth,
-          protectedKeys,
-        });
+        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), { rankShown, rankWidth });
         held.layoutCols = model.columns;
         held.layoutSettings = bound.settings;
         held.layoutWidth = bound.width;
@@ -784,11 +782,9 @@ export function familyTableLaneView(
         const widthsPayload = {
           widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...layout.columns].map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
-          hidden: layout.hidden,
           totalWidth: layout.totalWidth,
           scrollable: layout.scrollable,
           pinnedCount: layout.pinnedCount,
-          moreWidth: layout.moreWidth,
         };
         const widthsText = JSON.stringify(widthsPayload);
         held.widthsField = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
@@ -890,8 +886,25 @@ export function familyTableLaneView(
         held.cachedMaximaCols = maximaCols;
       }
 
-      const visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
-      const visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+      let visibleFirst = 0;
+      let visibleLast = flatRows.length;
+      if (rowGeom) {
+        let lo = 0;
+        let hi = flatRows.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= bound.scrollTop) lo = mid + 1;
+          else hi = mid;
+        }
+        visibleFirst = lo;
+        let end = visibleFirst;
+        const bottomEdge = bound.scrollTop + bound.height;
+        while (end < flatRows.length && rowGeom.tops[end]! < bottomEdge) end++;
+        visibleLast = Math.min(flatRows.length, end + (held.glide.size && glideMs > 0 ? 2 : 0));
+      } else {
+        visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
+        visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+      }
       const visibleIcons = collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast);
       held.art.requestVisible(held.demandedArtUrls.length ? [...visibleIcons, ...held.demandedArtUrls] : visibleIcons);
 
@@ -922,6 +935,7 @@ export function familyTableLaneView(
           artCache: held.art,
           dpr,
           hasGroupHeaders: held.cachedHasGroupHeaders,
+          dateGrouped: model.dateGrouped === true,
           precomputedMaxima: maxima,
           staticRowLooks: model.rowTimeBoundaries === false,
           rowIndex: held.cachedRowIndex,
@@ -973,8 +987,8 @@ export function familyTableLaneView(
               empty: model.empty ?? null,
               emptyDetail: model.emptyDetail ?? null,
               emptyKind: model.emptyKind ?? 'empty',
-              titleSummary: model.titleSummary ?? null,
-              titleSummaryPartial: model.titleSummaryPartial ?? null,
+              summaryText: model.titleSummary ?? null,
+              summaryPartial: model.titleSummaryPartial ?? null,
               hideHeader: model.hideHeader === true,
               rowHeightMode,
               notes: model.notes ?? [],
@@ -1029,13 +1043,12 @@ export function familyTableLaneView(
       }
       if (held.mirrorField) fields.mirror = held.mirrorField;
 
-      const hiddenSet = (inspectedKey || focusedKey) ? new Set(layout.hidden) : null;
       let builtTipKey: string | null = null;
       let builtTip: ReturnType<typeof deriveTableTooltip> = null;
       const getTip = (rowKey: string) => {
         if (builtTipKey === rowKey) return builtTip;
         builtTipKey = rowKey;
-        builtTip = deriveTableTooltip(flatRows, rowKey, model.columns, hiddenSet!, model.hour);
+        builtTip = deriveTableTooltip(flatRows, rowKey, model.columns, model.hour);
         return builtTip;
       };
 
@@ -1083,7 +1096,6 @@ export function familyTableLaneView(
             model,
             flatRows,
             visibleColumns: layout.columns,
-            hiddenKeys: new Set(layout.hidden),
             rankShown,
             maxima,
             window: bound.window,
@@ -1122,7 +1134,7 @@ export function familyTableLaneView(
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      const handledPicture = model.rows.length > 0 || model.empty !== undefined || model.clockSummary !== undefined;
+      const handledPicture = model.rows.length > 0 || (model.slots?.length ?? 0) > 0 || model.empty !== undefined || model.clockSummary !== undefined;
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),

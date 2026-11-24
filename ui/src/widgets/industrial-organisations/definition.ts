@@ -12,7 +12,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'view', label: '', as: 'plain', offered: OFFERED.text, hideable: false },
 ];
 export const DEFAULT_SORT = { column: 'size', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 
 export const definition = {

@@ -1,16 +1,10 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
-import { runAt } from '../../charts/series.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
 import type { HourSpan, LeaderRun, PartyHistoryReply } from '../../generated/dashboard';
-import { keyId } from '../../dashboard/keyedSeriesData.ts';
-import type { ReachedKeyLine, SeriesKey } from '../../dashboard/keyedSeriesData';
-import { mergeSummaries } from '../../charts/chartSummary.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
-import type { LedgerGovernment } from './partyTypes';
-
+import type { SeriesKey } from '../../dashboard/keyedSeriesData';
 
 export const POPULARITY_FAMILY = { kind: 'party-popularity', measure: 'popularity' } as const;
 export const POPULARITY_PART_BITS = 32;
@@ -42,16 +36,20 @@ export function bands(reply: PartyHistoryReply, tag: string, palette: readonly s
   let fallback = 0;
   return sorted.map(series => {
     const ideology = reply.ideologies.find(item => item.token === series.token);
-    const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)];
-    return { token: series.token, name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'), color,
-      keys: series.parts.map(part => ({ tag, part: String(part) })) };
+    const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)]!;
+    return {
+      token: series.token,
+      name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'),
+      color,
+      keys: series.parts.map(part => ({ tag, part: String(part) })),
+    };
   });
 }
 
 export function paletteTone(palette: readonly string[]): { l: number; c: number } | null {
   const tones = palette.flatMap(hex => { const colour = parseColor(hex); return colour ? [rgbToOklch(colour)] : []; });
   if (!tones.length) return null;
-  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
   return { l: median(tones.map(tone => tone.l)), c: median(tones.map(tone => tone.c)) };
 }
 
@@ -63,57 +61,26 @@ export function ideologyColour([r, g, b]: readonly [number, number, number], ton
 
 export function rulingFirst(list: readonly Band[], ruling: string | null): Band[] {
   const index = list.findIndex(band => band.token === ruling);
-  return index <= 0 ? [...list] : [list[index], ...list.slice(0, index), ...list.slice(index + 1)];
+  return index <= 0 ? [...list] : [list[index]!, ...list.slice(0, index), ...list.slice(index + 1)];
 }
 
 export const bandKeys = (list: readonly Band[]): SeriesKey[] => list.flatMap(band => band.keys);
-
-export function rawAt(band: Band, reached: readonly ReachedKeyLine[], hour: number): string | null | undefined {
-  let read = false;
-  for (const line of reached) {
-    if (!band.keys.some(key => key.tag === line.key.tag && key.part === line.key.part)) continue;
-    const run = runAt(line.runs, hour);
-    if (run) return run.valueRaw;
-    read ||= line.missing.has(hour);
-  }
-  return read ? null : undefined;
-}
 
 export const formatPopularity = (raw: string, decimals: number) => `${formatFixed(raw, decimals, 1)}%`;
 
 export const formatShare = (value: number) => `${value.toFixed(1)}%`;
 
-export function bandSummary(band: Band, summaryOf: (id: string) => ChartSummary | undefined): ChartSummary | undefined {
-  const held = band.keys.flatMap(key => { const summary = summaryOf(keyId(key)); return summary ? [summary] : []; });
-  if (held.length < 2) return held[0];
-  try { return mergeSummaries(held); } catch { return held[0]; }
-}
-
-export function bandSummaries(): (band: Band, summaryOf: (id: string) => ChartSummary | undefined) => ChartSummary | undefined {
-  const made = new Map<string, { parts: (ChartSummary | undefined)[]; summary: ChartSummary | undefined }>();
-  return (band, summaryOf) => {
-    const parts = band.keys.map(key => summaryOf(keyId(key)));
-    const held = made.get(band.token);
-    if (held && held.parts.length === parts.length && held.parts.every((part, at) => part === parts[at])) return held.summary;
-    const summary = bandSummary(band, summaryOf);
-    made.set(band.token, { parts, summary });
-    return summary;
-  };
-}
-
 export function rulingAt(reply: PartyHistoryReply, hour: number): string | null {
   return reply.ruling.find(run => run.firstHour <= hour && hour <= run.lastHour)?.token ?? null;
 }
 
-export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, leaders = false, governments: readonly LedgerGovernment[] = []): EventBadge[] {
+export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, leaders = false): EventBadge[] {
   const hidden = (hour: number, unobserved: readonly HourSpan[]) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const badges: EventBadge[] = [];
   reply.ruling.forEach((run, index) => {
     const previous = reply.ruling[index - 1];
     if (previous && !run.startsSegment && previous.lastHour + 1 === run.firstHour && previous.token !== run.token && !hidden(run.firstHour - 1, reply.unobserved)) {
-      const captured = governments.some(change => change.readHour === run.firstHour
-        && change.beforeToken === previous.token && change.afterToken === run.token);
-      if (!captured) badges.push({ hour: run.firstHour, glyph: '⇆', label: `${name(run.token)} took power from ${name(previous.token)}` });
+      badges.push({ hour: run.firstHour, glyph: '⇆', label: `${name(run.token)} took power from ${name(previous.token)}` });
     }
   });
   for (const hour of reply.elections) badges.push({ hour, glyph: '✓', label: 'Election held' });
@@ -121,7 +88,7 @@ export function partyBadges(reply: PartyHistoryReply, name: (token: string) => s
     reply.leaders.forEach((run, index) => {
       const previous = reply.leaders[index - 1];
       if (!previous || run.startsSegment || previous.lastHour + 1 !== run.firstHour || run.person == null || previous.person == null) return;
-      if (reply.people[run.person].character.id === reply.people[previous.person].character.id) return;
+      if (reply.people[run.person]!.character.id === reply.people[previous.person]!.character.id) return;
       const was = leaderShown(reply, previous);
       const now = leaderShown(reply, run);
       badges.push({ hour: run.firstHour, glyph: '♔', label: now.known && was.known ? `${now.name} succeeded ${was.name} as leader` : 'The leader changed' });
@@ -130,29 +97,12 @@ export function partyBadges(reply: PartyHistoryReply, name: (token: string) => s
   return badges.sort((a, b) => a.hour - b.hour);
 }
 
-export function partyChangeHours(reply: Pick<PartyHistoryReply, 'ruling' | 'leaders' | 'partyNameRuns' | 'unobserved'>): number[] {
-  const hours = new Set<number>();
-  for (const run of [...reply.ruling, ...reply.leaders, ...reply.partyNameRuns, ...reply.unobserved]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
-  return [...hours].sort((a, b) => a - b);
-}
-
-export function stepHour(hours: readonly number[], key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null,
-  bounds: readonly [number, number]): number | null {
-  const inside = hours.filter(hour => hour >= bounds[0] && hour <= bounds[1]);
-  switch (key) {
-    case 'Home': return inside[0] ?? null;
-    case 'End': return inside.at(-1) ?? null;
-    case 'ArrowRight': return inside.find(hour => from === null || hour > from) ?? null;
-    case 'ArrowLeft': return [...inside].reverse().find(hour => from === null || hour < from) ?? null;
-  }
-}
-
 export function leaderAt(reply: PartyHistoryReply, hour: number): LeaderRun | null {
   let low = 0;
   let high = reply.leaders.length - 1;
   while (low <= high) {
     const middle = (low + high) >> 1;
-    const run = reply.leaders[middle];
+    const run = reply.leaders[middle]!;
     if (hour < run.firstHour) high = middle - 1;
     else if (hour > run.lastHour) low = middle + 1;
     else return run;
@@ -165,7 +115,7 @@ export function partyNameAt(reply: PartyHistoryReply, hour: number): string | nu
   let high = reply.partyNameRuns.length - 1;
   while (low <= high) {
     const middle = (low + high) >> 1;
-    const run = reply.partyNameRuns[middle];
+    const run = reply.partyNameRuns[middle]!;
     if (hour < run.firstHour) high = middle - 1;
     else if (hour > run.lastHour) low = middle + 1;
     else return reply.partyNames[run.name];
