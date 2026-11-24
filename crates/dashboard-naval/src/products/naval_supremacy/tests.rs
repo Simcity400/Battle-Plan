@@ -225,4 +225,5 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     let region = reply.regions.iter().find(|r| r.id == "7").unwrap();
     assert_eq!(region.own_ships, MissionShips::Counted { ships: 2 });
     assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
+    assert_ne!(reply.viewer_name_missing.as_deref(), Some("The recording holds no hour here"), "the viewer is named at the readout's hour, not inside the gap");
 }

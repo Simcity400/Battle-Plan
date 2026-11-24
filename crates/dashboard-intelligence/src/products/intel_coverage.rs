@@ -135,9 +135,8 @@ pub(crate) fn build_matrix(
     measure: IntelCoverageMeasure,
     basis: IntelCoverageBasis,
 ) -> (Vec<Country>, Vec<IntelCoverageCell>, i64, i64) {
-    let mut by_pair: HashMap<(&str, &str), &IntelNetworkSummaryRow> = HashMap::new();
     let mut counts: HashMap<&str, usize> = countries.iter().filter_map(|c| Some((c.tag.as_deref()?, 0))).collect();
-    let mut pairs_by_tag: Vec<(String, String)> = Vec::new();
+    let mut pairs_by_tag: Vec<(String, String, &IntelNetworkSummaryRow)> = Vec::new();
     for row in rows {
         let owner = Country::of(tags, row.owner_country);
         let target = Country::of(tags, row.target_country);
@@ -148,7 +147,7 @@ pub(crate) fn build_matrix(
             if let Some(entry) = counts.get_mut(t.as_str()) {
                 *entry += 1;
             }
-            pairs_by_tag.push((o, t));
+            pairs_by_tag.push((o, t, row));
         }
     }
     let mut chosen: Vec<Country> = if let Some(filter) = selected_tags {
@@ -167,7 +166,7 @@ pub(crate) fn build_matrix(
     if touching && !chosen.is_empty() {
         let kept: HashSet<String> = chosen.iter().filter_map(|c| c.tag.clone()).collect();
         let mut linked: HashSet<&str> = HashSet::new();
-        for (o, t) in &pairs_by_tag {
+        for (o, t, _) in &pairs_by_tag {
             if kept.contains(o.as_str()) {
                 linked.insert(t.as_str());
             }
@@ -185,13 +184,10 @@ pub(crate) fn build_matrix(
         }
     }
     let displayed_tags: HashSet<&str> = chosen.iter().filter_map(|c| c.tag.as_deref()).collect();
-    let tag_lookup: HashMap<u32, &str> = countries.iter().filter_map(|c| Some((c.id, c.tag.as_deref()?))).collect();
-    for row in rows {
-        if let (Some(&o), Some(&t)) = (tag_lookup.get(&row.owner_country), tag_lookup.get(&row.target_country))
-            && displayed_tags.contains(o)
-            && displayed_tags.contains(t)
-        {
-            by_pair.insert((o, t), row);
+    let mut by_pair: HashMap<(&str, &str), &IntelNetworkSummaryRow> = HashMap::new();
+    for (o, t, row) in &pairs_by_tag {
+        if displayed_tags.contains(o.as_str()) && displayed_tags.contains(t.as_str()) {
+            by_pair.insert((o.as_str(), t.as_str()), row);
         }
     }
     let scale = match measure {
@@ -366,6 +362,26 @@ mod tests {
 
         let (ranked, _, _, _) = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
         assert_eq!(ranked.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
+    }
+
+    #[test]
+    fn a_network_counted_for_the_ranking_is_the_one_the_matrix_draws_when_two_raw_ids_share_a_slot() {
+        let mut frame = DecodedFrame { branch: 1, hour: 100, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+            CountryRow { id: 1, canonical_slot: 1, tag: b"AAA".to_vec(), ..CountryRow::default() },
+            CountryRow { id: 2, canonical_slot: 2, tag: b"BBB".to_vec(), ..CountryRow::default() },
+        ]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 1, canonical_slot: 1 },
+            CountryLinkRow { id: 2, canonical_slot: 2 },
+            CountryLinkRow { id: 10, canonical_slot: 1 },
+        ]));
+        let tags = Tags::read(&frame).unwrap();
+        let countries = tags.present();
+        let rows = vec![IntelNetworkSummaryRow { owner_country: 10, target_country: 2, covered_controlled_states: 4, covered_core_states: 4, controlled_strength_sum: 0, core_strength_sum: 0, max_state_strength: 0, covered_worth: 0, ordinal: 0 }];
+        let (displayed, cells, _, _) = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
+        assert_eq!(displayed.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
+        assert!(matches!(cells[1], IntelCoverageCell::Present { value: 4, .. }), "the second raw id's network is drawn, not shown as absent: {:?}", cells[1]);
     }
 }
 
