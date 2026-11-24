@@ -1,4 +1,4 @@
-import { gameWindow } from '../../dashboard/gameWindows';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';

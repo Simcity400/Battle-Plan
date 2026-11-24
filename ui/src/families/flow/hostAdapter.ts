@@ -25,8 +25,6 @@ export const flowHostAdapter: FamilyHostAdapter<FlowModel, unknown, FamilyFlowBi
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'flow',
-      kind: ctx.kind,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

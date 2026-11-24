@@ -1,6 +1,7 @@
 import {
   DEFAULT_VIEW,
-  ensureFamilyProjection,
+  ensureBoundProjection,
+  type BoundProjectionKey,
   familyProjection,
   registerFamilyProjection,
   registeredFamilyProjections,
@@ -19,11 +20,10 @@ export function heatLanesProjection(kind: string, view?: string): HeatLanesProje
 }
 
 export function ensureHeatLanesProjection(
-  kind: string,
-  view: string | undefined,
+  binding: BoundProjectionKey,
   onReady: () => void,
 ): HeatLanesProjection<unknown> | 'loading' | 'unknown' {
-  return ensureFamilyProjection<HeatLanesModel, unknown>('heat-lanes', kind, view, onReady) as HeatLanesProjection<unknown> | 'loading' | 'unknown';
+  return ensureBoundProjection<HeatLanesModel, unknown>(binding, onReady) as HeatLanesProjection<unknown> | 'loading' | 'unknown';
 }
 
 export function registeredHeatLanesKinds(): readonly string[] {

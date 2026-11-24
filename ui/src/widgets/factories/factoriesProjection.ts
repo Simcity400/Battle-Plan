@@ -295,7 +295,7 @@ export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = r
     if (refused) return { ...baseModel, rows: [], empty: refused, emptyKind: 'unavailable' };
     return { ...baseModel, rows: [] };
   },
-});
+}, 'race');
 
 function factoriesSources(ctx: FamilyPlanContext<FactoryGroupsReply>): SourcePlan {
   const mode = countMode(ctx.options.count);

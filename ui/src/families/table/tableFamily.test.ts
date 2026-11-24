@@ -1151,6 +1151,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
+        view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: { main: 7 },
@@ -1176,6 +1177,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
+        view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
@@ -1215,6 +1217,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
+        view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
