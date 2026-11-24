@@ -3711,7 +3711,11 @@ nameMissing: string | null, pinned: boolean, readout?: AirReadout,
  * Runs of days: how many, and their cell; none for days the recording holds no hour of.
  */
 cells: Array<[number, AirDayCell | null]>, };
-export type AirDayCell = { "kind": "reason", reason: string, } | { "kind": "sides" } & AirDaySides | { "kind": "view", side: number | null, leader: string | null, friendly: string, enemy: string, };
+export type AirDayCell = { "kind": "reason", reason: string, } | { "kind": "sides" } & AirDaySides | { "kind": "view", side: number | null, leader: string | null, friendly: string, enemy: string,
+/**
+ * The friendly share in basis points, from exact integers; none without activity.
+ */
+share_bp: number | null, };
 export type AirDaySides = { parts: Array<AirDayPart>,
 /**
  * A leaderless side and the country whose read it shows.
@@ -3720,7 +3724,12 @@ viewpoints: Array<[number, string]>, unknown: Array<number>, noAirObject: Array<
 /**
  * Only the chosen sides are compared.
  */
-filtered: boolean, };
+filtered: boolean,
+/**
+ * Who leads the day, compared in exact integers.
+ */
+lead: AirLead, };
+export type AirLead = { "kind": "leading", side: number, share_bp: number, } | { "kind": "contested" } | { "kind": "noActivity" } | { "kind": "unknown" };
 export type AirDayPart = { side: number, tag: string, friendly: string, };
 export type AirReadout = { "kind": "leading", side: number, share_bp: number, as_of_hour: number, } | { "kind": "contested", as_of_hour: number, } | { "kind": "viewpoint", side: number | null, share_bp: number, as_of_hour: number, } | { "kind": "noActivity", as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
 export type OperationTypeTokens = {

@@ -235,11 +235,11 @@ pub(crate) fn history(source: &Source, params: &ConstructionSpendingParams, cont
     }
     let recorded = super::recorded(&query)?;
     if recorded && leaves.is_empty() {
-        warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name}: no recorded construction in this branch")));
+        warnings.push(format!("{}: no recorded construction in this branch", query.holders.nearest_name(&params.country, query.timeline.last)));
     }
     let reply = ConstructionSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         cost_scale: COST_SCALE,
         recorded,
         types: content.types,

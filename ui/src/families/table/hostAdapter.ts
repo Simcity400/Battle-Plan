@@ -3,7 +3,7 @@ import type { FamilyHostAdapter, FamilySettingsPolicy, ParsedFamilyHit } from '.
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, tableRowWindow } from './layout.ts';
-import { deriveTableAudit, resolveTableRows, type TableColumnSpec, type TableModel } from './model.ts';
+import { deriveTableAudit, resolveTableRows, tableRank, type TableColumnSpec, type TableModel } from './model.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 interface TableWidthsField {
@@ -31,7 +31,7 @@ export function parseTableHit(hitKey: string | null): ParsedFamilyHit | null {
   const toggle = hitKey.startsWith('toggle:');
   if (!toggle && !hitKey.startsWith('row:')) return null;
   const key = hitKey.slice(hitKey.indexOf(':') + 1);
-  return key ? { key, toggle, inspectToken: hitKey } : null;
+  return key ? { key, toggle, inspectToken: `row:${key}` } : null;
 }
 
 export const tableSettingsPolicy: FamilySettingsPolicy<TableSettings> = {
@@ -86,8 +86,7 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};
     const flatRows = resolveTableRows(model, settings, expanded);
     const mode = model.rowHeightMode ?? 'standard';
-    const rankShown = model.rank === true;
-    const rankWidth = rankShown ? (model.rankMarkers ? 64 : 36) : 0;
+    const { shown: rankShown, width: rankWidth } = tableRank(model, settings);
     const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, viewport.width), {
       rankShown,
       rankWidth,

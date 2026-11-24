@@ -490,6 +490,12 @@ export function keepsProductOrder(model: Pick<TableModel, 'unsorted' | 'populati
   return model.unsorted === true || model.populationPartial !== undefined;
 }
 
+export function tableRank(model: TableModel, settings: TableSettings): { readonly shown: boolean; readonly markers: boolean; readonly width: number } {
+  const shown = model.rank === true && model.populationPartial === undefined && (settings.showRank === true || model.defaultRankShown === true);
+  const markers = shown && model.rankMarkers === true;
+  return { shown, markers, width: shown ? (markers ? 64 : 36) : 0 };
+}
+
 export function resolveTableRows(
   model: TableModel,
   settings: TableSettings,

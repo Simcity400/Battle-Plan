@@ -169,7 +169,7 @@ fn a_regions_days_are_the_moments_composition_at_each_days_end() {
     let keys: Vec<&str> = shown.sides.iter().map(|side| side.key.as_str()).collect();
     let ger = keys.iter().position(|key| *key == "c:GER").unwrap() as u32;
     let eng = keys.iter().position(|key| *key == "f:7").unwrap() as u32;
-    let sides = |parts: Vec<AirDayPart>| Some(AirDayCell::Sides(AirDaySides { parts, viewpoints: vec![], unknown: vec![], no_air_object: vec![], filtered: false }));
+    let sides = |parts: Vec<AirDayPart>| Some(AirDayCell::Sides(AirDaySides::new(parts, vec![], vec![], vec![], false)));
     let ger_part = sides(vec![AirDayPart { side: ger, tag: "GER".into(), friendly: "150".into() }]);
     let none = sides(vec![]);
     assert_eq!(shown.cells[0], [(5, ger_part.clone()), (1, None), (4, ger_part), (2, none.clone())], "region 2: GER's days, a day not read, then no activity");
@@ -192,12 +192,12 @@ fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
     let country = params(AirMode::Viewpoint, Some("GER"), true, None);
     let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params: &country, theatres: None };
     let shown = timeline.shown(&[2], &index, &cancelled).unwrap();
-    let view = |friendly: &str, enemy: &str| Some(AirDayCell::View { side: None, leader: Some("GER".into()), friendly: friendly.into(), enemy: enemy.into() });
+    let view = |friendly: &str, enemy: &str| Some(AirDayCell::View { side: None, leader: Some("GER".into()), friendly: friendly.into(), enemy: enemy.into(), share_bp: view_share(friendly, enemy) });
     assert_eq!(shown.cells[0], [(10, view("150", "20")), (2, view("0", "0"))]);
     let filtered = params(AirMode::Sides, None, false, Some(&["c:GER"]));
     let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params: &filtered, theatres: None };
     let shown = timeline.shown(&[3], &index, &cancelled).unwrap();
-    assert_eq!(shown.cells[0], [(DAYS as u32, Some(AirDayCell::Sides(AirDaySides { parts: vec![], viewpoints: vec![], unknown: vec![], no_air_object: vec![], filtered: true })))], "ENG's part is not a chosen side's");
+    assert_eq!(shown.cells[0], [(DAYS as u32, Some(AirDayCell::Sides(AirDaySides::new(vec![], vec![], vec![], vec![], true))))], "ENG's part is not a chosen side's");
 }
 
 #[test]
@@ -388,6 +388,9 @@ fn acceptance_case_8_two_founding_hours_of_same_tag_keep_distinct_colours() {
 
 #[test]
 fn a_known_side_beside_an_unknown_one_is_not_a_leader() {
-    let cell = AirDayCell::Sides(AirDaySides { parts: vec![AirDayPart { side: 0, tag: "GER".into(), friendly: "71".into() }], viewpoints: vec![], unknown: vec![1], no_air_object: vec![], filtered: false });
+    let cell = AirDayCell::Sides(AirDaySides::new(vec![AirDayPart { side: 0, tag: "GER".into(), friendly: "71".into() }], vec![], vec![1], vec![], false));
     assert_eq!(readout_of(Some(&cell), Some(100)), AirReadout::NotRecorded { reason: "A side's air score was not recorded".into() });
+    let big = 1u64 << 53;
+    let close = AirDaySides::new(vec![AirDayPart { side: 0, tag: "GER".into(), friendly: (big + 1).to_string() }, AirDayPart { side: 1, tag: "ENG".into(), friendly: big.to_string() }], vec![], vec![], vec![], false);
+    assert_eq!(close.lead, AirLead::Leading { side: 0, share_bp: 5000 }, "one point ahead at 2^53 leads, compared in exact integers");
 }

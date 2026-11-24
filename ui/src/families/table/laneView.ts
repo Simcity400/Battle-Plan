@@ -24,6 +24,7 @@ import {
   nextTableChange,
   resolveTableRows,
   resolveTableRowsIncremental,
+  tableRank,
   updateColumnMaximaIncremental,
   type FlatTableRow,
   type TableColumnSpec,
@@ -59,7 +60,6 @@ export interface FamilyTableBinding<TOptions = unknown> {
   readonly theme?: TableTheme;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly artResolutions?: ArtResolutions;
-  readonly rankWidth?: number;
   readonly selectedKey?: string | null;
   readonly focusedKey?: string | null;
   readonly expanded?: Readonly<Record<string, boolean>>;
@@ -733,9 +733,7 @@ export function familyTableLaneView(
       }
 
       if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
-      const rankShown = model.rank === true && model.populationPartial === undefined && (bound.settings.showRank === true || model.defaultRankShown === true);
-      const rankMarkersOn = rankShown && model.rankMarkers === true;
-      const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
+      const { shown: rankShown, markers: rankMarkersOn, width: rankWidth } = tableRank(model, bound.settings);
       const layoutSame = held.cachedLayout !== null
         && sameColumnSpecs(held.layoutCols, model.columns)
         && held.layoutSettings === bound.settings

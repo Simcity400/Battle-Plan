@@ -32,7 +32,7 @@ import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { computeColumnMaxima, declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
+import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
@@ -2324,4 +2324,12 @@ test('the table host adapter stores and resolves table settings through its decl
   assert.equal(policy.editable!({ ...declaration, settings: { kind: 'fixed', base: declaration.settings.base } }), false);
 
   assert.deepEqual(tableHostAdapter.getScrollExtent!({ widths: { widths: {}, totalWidth: 640 }, table: { count: 10, totalHeight: 280 } }), { width: 640, height: 280 });
+
+  const ranked: TableModel = { columns: [{ key: 'a', label: 'A', as: 'number', offered: ['number'], numeric: true }] as never, hour: 5, rank: true, rows: [{ key: 'GER', name: 'Germany', cells: { a: { value: { kind: 'known', value: 3 } } } }] as never };
+  const auditCtx = { viewport: { width: 320, height: 200, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, settings: round, expanded: {}, theme: undefined, fields: {} };
+  const rankOf = (settings: TableSettings) => JSON.parse(tableHostAdapter.deriveAuditRows!(ranked, 5, { ...auditCtx, settings }).find(row => row.key === 'GER:_row')!.value!).rank;
+  assert.equal(tableRank(ranked, { ...round, showRank: false }).shown, false);
+  assert.equal(rankOf({ ...round, showRank: false }), null, 'ranks hidden on the canvas are absent from the exact audit too');
+  assert.notEqual(rankOf({ ...round, showRank: true }), null, 'and present when shown');
+  assert.deepEqual(tableHostAdapter.parseHit!('toggle:GER'), { key: 'GER', toggle: true, inspectToken: 'row:GER' }, 'hovering a tree chevron inspects its row, so the row tooltip shows');
 });
