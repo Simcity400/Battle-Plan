@@ -58,7 +58,7 @@ import {
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
 import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
-import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
+import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -697,7 +697,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
-      const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(key)}"]`);
+      const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(key));
       if (tr) {
         for (const sibling of mirrorBodyRef.current!.querySelectorAll<HTMLTableRowElement>('tr[tabindex="0"]')) {
           if (sibling !== tr) sibling.tabIndex = -1;
@@ -920,11 +920,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
-      const mirror = fields.mirror as MirrorModel | undefined;
-      const selectedNow = record.selectedKey;
-      if (mirror && (mirror !== lastMirrorObjRef.current || selectedNow !== lastMirrorSelectedRef.current)) {
+      const mirror = mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
+      if (mirror !== undefined) {
         lastMirrorObjRef.current = mirror;
-        lastMirrorSelectedRef.current = selectedNow;
+        lastMirrorSelectedRef.current = record.selectedKey;
         syncMirrorRef.current(mirror);
       }
 
@@ -943,7 +942,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const hoverTip = inspected ? (fields.tooltip as FamilyTooltipField | undefined) : undefined;
       const focusTip = focusInside ? (fields.focusTooltip as FamilyTooltipField | undefined) : undefined;
       if (focusTip?.text && (activeAdapter.mirrorFocus ?? 'body') === 'rows' && focusTip.text.rowKey === focusedKeyRef.current) {
-        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(focusTip.text.rowKey)}"]`);
+        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(focusTip.text.rowKey));
         tr?.setAttribute('aria-description', tooltips.describeFocused(focusTip.text, installedHour, cur.viewportHeight));
       }
       const inspectedHit = inspectedHitRef.current;

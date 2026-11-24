@@ -782,12 +782,6 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().filter(|id| !pin_rank.contains_key(id)).collect();
     let mut ids: BTreeSet<u32> = scores.pairs.keys().chain(&scores.active).copied().collect();
     ids.extend(wings.iter().flat_map(|wings| wings.iter().filter(|(_, count)| **count != 0).map(|(region, _)| *region)));
-    if params.order == Some(AirRegionOrder::Name)
-        && theatres.is_none()
-        && let Ok(all) = &context.names.regions
-    {
-        ids.extend(all.regions.keys().copied());
-    }
     let hidden_active = ids.iter().filter(|region| hidden.contains(region) && (scores.active.contains(region) || wings.as_ref().is_some_and(|wings| wings.get(region).is_some_and(|count| *count != 0)))).count() as u32;
     ids.retain(|region| !hidden.contains(region));
     ids.extend(pinned.iter().copied());
@@ -823,8 +817,8 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         let wing_count = wings.as_ref().and_then(|map| map.get(&region)).copied().unwrap_or(0);
         let active = scores.active.contains(&region);
         let is_pinned = pin_rank.contains_key(&region);
-        if let Some(order) = params.order {
-            let idle = order != AirRegionOrder::Name && !active && total <= 0 && wing_count <= 0;
+        if params.order.is_some() {
+            let idle = !active && total <= 0 && wing_count <= 0;
             if !is_pinned && matches!(cell, compose::Cell::Reason("outside-theatres")) {
                 outside += u32::from(active || wing_count != 0);
                 continue;
