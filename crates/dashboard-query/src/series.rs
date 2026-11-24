@@ -199,7 +199,7 @@ pub const FIELDS: crate::fields::Fields = {
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
-        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("rankBy", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("rankBy", Undated), ("group", Undated),
     ]
 };
 
@@ -231,6 +231,7 @@ struct Params {
     width: Option<u32>,
     #[serde(default)]
     within: Vec<(Country, Vec<Span>)>,
+    group: Option<ranked::GroupSelection>,
     #[serde(rename = "binHours")]
     _bin_hours: Option<i64>,
     #[serde(rename = "index")]
@@ -316,6 +317,10 @@ pub fn hour_of(value: Option<f64>, name: &str) -> io::Result<i32> {
 }
 
 pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> io::Result<Option<serde_json::Value>> {
+    answer_grouped(query, product, params, &|_, _| Err(invalid("Group membership is not read for this request")))
+}
+
+pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Value, resolve: ranked::Resolve<'_>) -> io::Result<Option<serde_json::Value>> {
     let Some(kind) = params.get("family").and_then(|family| family.get("kind")).and_then(serde_json::Value::as_str) else {
         return Ok(None);
     };
@@ -344,13 +349,14 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
                 let detail = series.measure(name).ok_or_else(|| invalid(format!("{} has no measure {name}", series.kind)))?;
                 details.push(Line::new(query, series, detail)?);
             }
-            let ask = ranked::Ask { hour: params.hour, top: params.top, least: params.least == Some(true), countries: &params.countries };
+            let ask = ranked::Ask { hour: params.hour, top: params.top, least: params.least == Some(true), countries: &params.countries, group: params.group.as_ref().map(|group| (group, resolve)) };
             serde_json::to_value(ranked::rank(&line, &details, &params.branch_id, ask)?)?
         }
         "series-summary" => {
             let n = ranked::top(&line, params.top)?.ok_or_else(|| invalid(format!("A chart of chosen {} lines is served as tiles", series.kind)))?;
             serde_json::to_value(ranked::summary(&line, &params.branch_id, params.from, params.to, params.width, n)?)?
         }
+        _ if params.group.is_some() => return Err(invalid(format!("{product} does not take a group: a group is read by {}", ranked::PRODUCT))),
         "series-next-change" => {
             let key = params.key.ok_or_else(|| invalid("The request names no key"))?;
             let bounds = (hour_of(params.first_hour, "firstHour")?, hour_of(params.last_hour, "lastHour")?);
