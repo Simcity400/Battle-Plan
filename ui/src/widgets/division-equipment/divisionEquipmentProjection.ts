@@ -7,7 +7,7 @@ import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../..
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
 import { artState, urlArtHandle, type ArtState } from '../../families/table/identityCell.ts';
-import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY, OPTIONS } from './definition.ts';
+import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -232,7 +232,6 @@ export const equipmentTypeDeclaration: TableWidgetDeclaration<Record<string, nev
   subject: 'division equipment',
   emptyCampaign: 'Load a campaign to see division equipment.',
   icon: 'cube',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
   sources: ctx => sources(ctx),
   projection: equipmentTypeProjection,

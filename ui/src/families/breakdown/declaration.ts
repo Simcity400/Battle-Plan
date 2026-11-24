@@ -1,5 +1,4 @@
 import type { IconName } from '../../components/Icons';
-import type { OptionField } from '../../dashboard/options';
 import type { CountryPolicy, FamilyPlanContext, FamilyViewportRequest, SourcePlan } from '../plan.ts';
 import type { BreakdownProjection } from './model.ts';
 import { breakdownView, type BreakdownViewMode } from './options.ts';
@@ -15,7 +14,6 @@ export interface BreakdownWidgetSpec<TOptions> {
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly sources: (ctx: FamilyPlanContext, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: BreakdownProjection<TOptions & BreakdownViewOptions>;

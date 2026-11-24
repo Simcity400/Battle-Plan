@@ -15,7 +15,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
 import type { ProductionLinesAtReply } from '../../generated/dashboard';
-import { OPTIONS, PRODUCTION_LINES_BASE, PRODUCTION_LINES_COLUMNS } from './definition.ts';
+import { PRODUCTION_LINES_BASE, PRODUCTION_LINES_COLUMNS } from './definition.ts';
 import {
   efficiencyFraction,
   efficiencyPercent,
@@ -229,7 +229,6 @@ export const productionLinesDeclaration: TableWidgetDeclaration<ProductionLinesP
   subject: 'production lines',
   emptyCampaign: 'Load a campaign and choose a country to see its production lines.',
   icon: 'grid',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its production lines.' },
   sources: productionLinesSources,
   projection: productionLinesProjection,

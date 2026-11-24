@@ -12,7 +12,6 @@ import { regionLabel } from '../../families/heat/scale.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { MinedRegion } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
 
 const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
@@ -247,7 +246,6 @@ export const minefieldsDeclaration: BarsWidgetDeclaration<MinefieldsProjectionOp
   subject: 'minefields',
   emptyCampaign: 'Load a campaign to see minefields.',
   icon: 'anchor',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: minefieldsSources,
   projection: minefieldsProjection,

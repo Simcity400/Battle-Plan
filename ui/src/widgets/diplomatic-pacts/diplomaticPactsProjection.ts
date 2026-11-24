@@ -7,7 +7,6 @@ import { countryLook, nextBoundaryAfter, timelineModel, clipSpansToHour, wholeBr
 import { laneByKey, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, changeHours, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
 
 export interface DiplomaticPactsOptions {
@@ -79,7 +78,6 @@ export const diplomaticPactsDeclaration: TimelineWidgetDeclaration<DiplomaticPac
   subject: 'diplomacy',
   emptyCampaign: 'Load a campaign to see diplomacy.',
   icon: 'link',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its diplomatic agreements.' },
   jumpToDate: true,
   keyByBranch: true,

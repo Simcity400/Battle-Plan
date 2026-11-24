@@ -9,7 +9,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { NukeCountry, NukeType } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -199,7 +198,6 @@ export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenal
   subject: 'nuclear stockpiles',
   emptyCampaign: 'Load a campaign to see nuclear stockpiles.',
   icon: 'target',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

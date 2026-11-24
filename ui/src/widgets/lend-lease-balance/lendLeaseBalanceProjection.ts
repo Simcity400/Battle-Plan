@@ -6,7 +6,7 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import { nextMembershipChange, nextRangesChange, type HourRanges } from '../../families/holders.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import type { LendLeaseBalanceReply, LendLeaseMeasure, LendLeaseRow } from '../../generated/dashboard';
-import { MEASURES, OPTIONS } from './definition.ts';
+import { MEASURES } from './definition.ts';
 
 export const LEND_LEASE_BALANCE = 'lend-lease-balance';
 const SCALE = 100000;
@@ -170,7 +170,6 @@ export const lendLeaseBalanceDeclaration: BarsWidgetDeclaration<LendLeaseBalance
   subject: 'lend-lease',
   emptyCampaign: 'Load a campaign to see lend-lease.',
   icon: 'chart-bars',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,
