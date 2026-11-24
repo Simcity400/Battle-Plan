@@ -7,6 +7,12 @@ import { nationalSpiritsProjection } from '../../widgets/national-spirits/nation
 import { warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { CARD_VIEWS } from '../../widgets/manifest/card.ts';
+import { DEFAULT_VIEW } from '../manifest.ts';
+import type { FamilyBindingContext } from '../host/adapter.ts';
+import { cardHostAdapter } from './hostAdapter.ts';
+import type { FamilyCardBinding } from './laneView.ts';
+import { ensureCardProjection } from './registry.ts';
 import { layoutCards } from './layout.ts';
 import { assertCardModelValid, deriveCardAudit, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
 
@@ -167,4 +173,22 @@ test('special projects follow the product’s order: running with progress and s
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
   assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
   assert.equal(radar!.art?.art.status, 'confirmedMissing');
+});
+
+test('every card view in the manifest reaches its projection through the binding the card adapter builds', async () => {
+  for (const entry of CARD_VIEWS) {
+    const ctx = {
+      kind: entry.kind, view: entry.view ?? DEFAULT_VIEW, options: {}, settings: undefined, window: null, sources: {}, extent: null, plan: null,
+      viewport: { width: 400, height: 300, scrollLeft: 0, scrollTop: 0 }, theme: {} as FamilyBindingContext<unknown>['theme'], reducedMotion: false,
+      identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+    } as FamilyBindingContext<unknown>;
+    const binding = cardHostAdapter.buildBinding(ctx) as FamilyCardBinding;
+    assert.equal(binding.view, ctx.view, `${entry.kind} keeps its view in the binding`);
+    const found = await new Promise<ReturnType<typeof ensureCardProjection>>(resolve => {
+      const first = ensureCardProjection(binding.kind, binding.view, () => resolve(ensureCardProjection(binding.kind, binding.view, () => {})));
+      if (first !== 'loading') resolve(first);
+    });
+    assert.notEqual(found, 'unknown', `${entry.kind}/${ctx.view} is found by the worker`);
+    assert.notEqual(found, 'loading');
+  }
 });
