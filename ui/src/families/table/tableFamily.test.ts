@@ -9,7 +9,7 @@ import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from
 import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
-import { familyTableLaneView } from './laneView.ts';
+import { tableLane } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, EventFeedPageRow, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
 import { pictureError } from '../../shell/perf.ts';
@@ -40,10 +40,12 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
+import { createLaneView } from '../laneRuntime.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
@@ -624,7 +626,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
   }
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const view = familyTableLaneView(() => {});
+    const view = createLaneView(tableLane, () => {});
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
@@ -692,7 +694,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   let wakes = 0;
   try {
-    const view = familyTableLaneView(() => { wakes++; });
+    const view = createLaneView(tableLane, () => { wakes++; });
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
@@ -951,7 +953,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   }
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const laneView = familyTableLaneView(() => {});
+    const laneView = createLaneView(tableLane, () => {});
     const laneState = new Map<string, unknown>();
     let seq = 1;
     const mk = (designer: string, priority: number) => laneView.paint({
@@ -981,7 +983,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     }, laneState, () => `c${seq++}`);
     const firstPaint = mk('ordinary', 1);
     const secondPaint = mk('headquarters', 4);
-    assert.equal(firstPaint.mode, 'picture', 'N4: familyTableLaneView returns explicit mode picture');
+    assert.equal(firstPaint.mode, 'picture', 'N4: tableLane returns explicit mode picture');
     assert.notEqual(firstPaint.fields.nav!.content, secondPaint.fields.nav!.content, 'row.meta change invalidates nav field');
     assert.notEqual(firstPaint.fields.meta!.content, secondPaint.fields.meta!.content, 'column priority change invalidates meta field');
   } finally {
@@ -1156,7 +1158,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   }
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    const laneView = familyTableLaneView(() => {});
+    const laneView = createLaneView(tableLane, () => {});
     const laneState = new Map<string, unknown>();
     let seq = 1;
     const refusedPaint = laneView.paint({
@@ -1401,7 +1403,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     const closedArt: string[] = [];
     const artResolvers = new Map<string, (bmp: ImageBitmap) => void>();
 
-    const tableView = familyTableLaneView(() => {}, {
+    const tableView = createLaneView(tableLane, () => {}, {
       artMaxEntries: 40,
       fetchBitmap: (url, signal) => new Promise<ImageBitmap>((resolve, reject) => {
         requestedArt.push(url);
@@ -1700,7 +1702,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
       rowName: r => r.id,
     }));
     let clockNow = 1000;
-    const laneView = familyTableLaneView(() => { wakes++; }, {
+    const laneView = createLaneView(tableLane, () => { wakes++; }, {
       timers: {
         set: (fn, ms) => { timerCb = fn; scheduledMs = ms; return 1 as unknown as ReturnType<typeof setTimeout>; },
         clear: () => { timerCb = null; },
@@ -1819,7 +1821,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
   try {
     const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction } });
     const lane = () => {
-      const view = familyTableLaneView(() => {});
+      const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
       const transport = new LaneTransport();
       let seq = 1;
@@ -1881,8 +1883,8 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     });
     const tableSurface = { width: 360, height: 200, dpr: 1 };
     const heldOne = laneBinding(atOne, descending);
-    assertQuietFrames(() => familyTableLaneView(() => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
-    assertFreshPaint(() => familyTableLaneView(() => {}), [
+    assertQuietFrames(() => createLaneView(tableLane, () => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
+    assertFreshPaint(() => createLaneView(tableLane, () => {}), [
       { label: 'at one', binding: heldOne, hour: 1, check: true },
       { label: 'at two', binding: laneBinding(atTwo, descending), hour: 2, speed: 24 },
       { label: 'seek back', binding: heldOne, hour: 1, check: true },
@@ -1920,7 +1922,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       },
     });
     const paneLane = () => {
-      const view = familyTableLaneView(() => {});
+      const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const before = contexts.length;
@@ -2049,7 +2051,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     transferToImageBitmap() { return { close() {} }; }
   };
   try {
-    const view = familyTableLaneView(() => {});
+    const view = createLaneView(tableLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 1;
     const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
@@ -2378,7 +2380,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   };
   try {
     const createLane = () => {
-      const view = familyTableLaneView(() => {});
+      const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
       let seq = 1;
       const idx = grids.length;
@@ -2736,4 +2738,127 @@ test('the audit compares which art a cell shows, never whether its bytes have ar
   assert.equal(pictureError('table', arrived, { values: new Map(arriving.map(row => [row.key, row.value!])), ordered: true }), null);
   const other = audit({ ...base, rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_other', 0, null, false]), iconPending: true } } })) });
   assert.notEqual(pictureError('table', arrived, { values: new Map(other.map(row => [row.key, row.value!])), ordered: true }), null, 'a different picture is still a difference');
+});
+
+test('cold table art and flag slots waiting behind the fetch concurrency limit paint as pending, not confirmed missing', () => {
+  const artCache = new LaneArtCache({
+    maxConcurrent: 6,
+    fetchBitmap: () => new Promise<ImageBitmap>(() => {}),
+  });
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, widest: ['Country 7'] },
+    { key: 'badge', label: 'Kind', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'kind', widest: ['Kind'] },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'country', direction: 'ascending' } });
+  const baseCols = buildColumnLayouts(columns, settings);
+  const fixedWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7);
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fixedWidths), 320, { rankShown: false, rankWidth: 0 });
+
+  const flagUrls = Array.from({ length: 7 }, (_, i) => `art://flag-${i + 1}`);
+  const iconUrls = Array.from({ length: 7 }, (_, i) => `art://icon-${i + 1}`);
+  artCache.requestVisible([...flagUrls, ...iconUrls]);
+  assert.equal(artCache.stateOfUrl(flagUrls[0]!), 'pending');
+  assert.equal(artCache.stateOfUrl(flagUrls[6]!), 'unrequested');
+  assert.equal(artCache.stateOfUrl(iconUrls[6]!), 'unrequested');
+
+  const rows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: Array.from({ length: 7 }, (_, i) => ({
+      key: `R${i + 1}`,
+      name: `Country ${i + 1}`,
+      cells: {
+        country: {
+          value: knownValue(`Country ${i + 1}`),
+          country: `T0${i + 1}`,
+          iconSlot: true,
+          icon: flagUrls[i]!,
+        },
+        badge: {
+          value: knownValue(`Icon ${i + 1}`),
+          iconSlot: true,
+          icon: iconUrls[i]!,
+          artName: `Icon ${i + 1}`,
+        },
+      },
+    })),
+  }, settings);
+
+  const texts: string[] = [];
+  let roundRectCalls = 0;
+  const base = instrumentedContext().ctx;
+  const recordingCtx = {
+    ...base,
+    measureText(text: string) {
+      return { width: text.length * 5 };
+    },
+    fillText(text: string) {
+      texts.push(text);
+    },
+    roundRect() {
+      roundRectCalls++;
+    },
+  } as unknown as CanvasRenderingContext2D;
+
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 400,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+
+  assert.equal(texts.includes('T07'), false, '7th queued flag waiting behind concurrency limit must not draw missing tag text');
+  assert.equal(roundRectCalls, 0, 'queued unrequested art and flag slots must stay pending with no hatched missing box');
+
+  const missingRows = resolveTableRows({
+    columns,
+    hour: 10,
+    rows: [{
+      key: 'M1',
+      name: 'No Art',
+      cells: {
+        country: { value: knownValue('No Art'), country: 'MIS', iconSlot: true },
+        badge: { value: knownValue('Missing'), iconSlot: true, artName: 'Missing' },
+      },
+    }],
+  }, settings);
+  texts.length = 0;
+  roundRectCalls = 0;
+  drawFamilyTable(recordingCtx, {
+    layout,
+    rows: missingRows,
+    settings,
+    hour: 10,
+    width: 320,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 2,
+    glideDuration: 0,
+    glide: new Map(),
+    artCache,
+    icons: artCache.map,
+    iconVersion: artCache.version,
+    dpr: 1,
+  });
+  assert.ok(roundRectCalls > 0, 'confirmed-unavailable table art and flag slots still paint the hatched missing box');
+  assert.ok(texts.includes('MIS'), 'confirmed-unavailable flag slot still paints the country tag');
+  artCache.dispose();
 });

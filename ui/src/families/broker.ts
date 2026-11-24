@@ -210,7 +210,7 @@ export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
   return plan.entries[0] ?? null;
 }
 
-function producePointParams(
+export function producePointParams(
   read: Extract<SourceTimeShape, { shape: 'point' }>,
   hour: GatedHour,
   mode: 'static' | 'exact',
@@ -223,7 +223,7 @@ function producePointParams(
   return { ...read.params, [read.hourParam ?? 'hour']: hour };
 }
 
-function produceSpanParams(
+export function produceSpanParams(
   base: Readonly<Record<string, unknown>> | null,
   span: BoundWindow,
   builder?: (base: Readonly<Record<string, unknown>>, span: BoundWindow) => Readonly<Record<string, unknown>> | null,

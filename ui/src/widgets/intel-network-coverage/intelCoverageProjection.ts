@@ -1,6 +1,7 @@
 import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
@@ -40,6 +41,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   const reply = readView.panel<IntelCoverageReply>('coverage');
   if (!reply || !options.surface) return emptyModel(hour, {});
   if (reply.missing) return emptyModel(hour, { empty: 'Intel networks were not recorded at this date.', emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
+  if (reply.chosenMissing) return emptyModel(hour, { empty: 'The countries to show are not known at this date.', emptyDetail: reply.chosenMissing, emptyKind: 'unavailable', warnings: reply.warnings });
   const displayed = reply.displayed;
   if (displayed.length < 2) {
     return emptyModel(hour, { empty: displayed.length === 1 ? 'No intel networks of or in this country at this date.' : 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
@@ -133,11 +135,12 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
     const measure = measureOf(ctx.options.measure);
     const basis = basisOf(ctx.options.basis);
     const shown = typeof ctx.options.mostCountries === 'number' ? Math.max(2, ctx.options.mostCountries) : INTEL_TOP_DEFAULT;
-    const tags = ctx.countries.all || ctx.countries.top !== null ? [] : ctx.countries.tags;
-    const top = tags.length ? undefined : ctx.countries.top ?? shown;
+    const group = ctx.countries.all || ctx.countries.top !== null ? null : groupSelection(ctx.widget.countries);
+    const tags = group || ctx.countries.all || ctx.countries.top !== null ? [] : ctx.countries.tags;
+    const top = tags.length || group ? undefined : ctx.countries.top ?? shown;
     const params = {
       branchId: ctx.branch.id,
-      ...(tags.length ? { countries: tags.map(countryFromKey) } : {}),
+      ...(group ? { group } : tags.length ? { countries: tags.map(countryFromKey) } : {}),
       ...(top !== undefined ? { top } : {}),
       touching: tags.length === 1,
       measure,
@@ -153,7 +156,7 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
         read: {
           shape: 'point',
           channel: 'followed',
-          coverage: tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit: top ?? shown },
+          coverage: group ? { mode: 'population', form: 'all' } : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit: top ?? shown },
           product: 'intel-network-coverage',
           followQuery: null,
           params,

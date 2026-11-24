@@ -224,6 +224,33 @@ test('R3-S2: a finite static proof is never left open to a later confirmation, o
   assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
 });
 
+test('R4-S6: an open picture closes when a finite static bound is supplied later, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }]);
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(28, [{ id: 5, hour: 28, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(28, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).through], ['picture', 28], 'an open followed picture confirmed at 28');
+  followed.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await followed.step(28, { playing: false });
+  followed.lane.receive('follow', message(30, [], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.equal(followed.page.view(1).through, 28, 'a route confirmation of 30 does not extend it once the static read proves only 28');
+  assert.equal(followed.page.view(1).dim, true);
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 28, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 28, kind: 'completed' }]));
+  await panel.step(28, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).through], ['picture', 28]);
+  panel.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await panel.step(28, { playing: false });
+  panel.lane.receive('panels', panels([{ id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
+});
+
 const at: LaneView = {
   next: (_scene, hour) => (Math.floor(hour / 24) + 1) * 24,
   paint: (input): Painted => ({ surfaces: [], fields: { at: { value: input.hour, content: `at:${input.hour}` } }, motion: false }),

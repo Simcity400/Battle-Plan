@@ -1,9 +1,8 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
 import { collectArtUrls } from '../art/provider.ts';
 import type { MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
 import {
   buildBreakdownTooltip,
@@ -44,7 +43,7 @@ function drawnArtOf(frame: BreakdownFrameLayout): readonly string[] {
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, BreakdownFrameLayout> = {
+export const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, BreakdownFrameLayout> = {
   family: 'breakdown',
   boundary: () => Infinity,
   redraw: () => Infinity,
@@ -103,7 +102,3 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
   audit: frame => deriveBreakdownAudit(frame.model, frame.layout.layout),
   visibleArt: frame => drawnArtOf(frame.layout),
 };
-
-export function familyBreakdownLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(breakdownLane, wake, options);
-}
