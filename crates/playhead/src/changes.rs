@@ -595,6 +595,7 @@ pub struct Changes {
     pub(crate) inserted: Lives,
     pub(crate) status: Option<(Status, Option<Hour>)>,
     pub(crate) status_left: Option<Hour>,
+    pub(crate) read_rows_changed: bool,
     pub(crate) renumbered: bool,
     pub(crate) renumber: Vec<u32>,
     pub(crate) texts: Texts,
@@ -642,6 +643,10 @@ impl Changes {
 
     pub fn status_left(&self) -> Option<Hour> {
         self.status_left
+    }
+
+    pub fn read_rows_changed(&self) -> bool {
+        self.read_rows_changed
     }
 
     pub fn renumber(&self) -> Option<&[u32]> {
@@ -699,6 +704,7 @@ impl Changes {
         self.inserted.clear(keyed);
         self.status = None;
         self.status_left = None;
+        self.read_rows_changed = false;
         self.renumbered = false;
         self.renumber.clear();
         self.texts.clear();

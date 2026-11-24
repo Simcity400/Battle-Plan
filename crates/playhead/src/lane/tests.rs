@@ -580,6 +580,68 @@ fn a_lane_holds_the_rows_an_hour_read_in_part() {
 }
 
 #[test]
+fn read_rows_changed_signals_swapped_truncated_witnesses_with_zero_complete_compares() {
+    let kinds = vec![KINDS.to_vec()];
+    let mut store = Store::new(kinds.clone(), vec![false]);
+    store.attach(Encoder::new(&kinds, Settings { cap: 64, restore_blocks: 1, ..Settings::at(3) }).unwrap());
+    let mut memory = Memory::default();
+    store.begin_run(0);
+    for at in 0..8_u32 {
+        store.begin_hour(at as i32, &[]).unwrap();
+        let status = if (3..=5).contains(&at) { Status::Truncated { missing: 1 } } else { Status::Complete };
+        store.status(0, status, true, Some(at as i32), true).unwrap();
+        let mut changes = store.table(0).unwrap();
+        if at == 0 {
+            for slot in 0..2 {
+                changes.insert_at(slot, 100 + u128::from(slot)).unwrap();
+                changes.write(slot, 0, Cell::I32(10 + slot as i32)).unwrap();
+            }
+        }
+        match at {
+            3 | 4 => {
+                changes.read_rows(&[0]).unwrap();
+                changes.read_done();
+            }
+            5 => {
+                changes.read_rows(&[1]).unwrap();
+                changes.read_done();
+            }
+            _ => {}
+        }
+        store.end_hour(&mut memory).unwrap();
+    }
+    store.end_run(&mut memory).unwrap();
+    let recording = Arc::new(Recording { bytes: memory.bytes, runs: vec![Run::new(0, memory.pages).unwrap()], kinds });
+    let mut lane = lane(&recording);
+    lane.seek(0).unwrap();
+    give_all(&mut lane);
+    let mut changes = Changes::default();
+
+    lane.step(1, &mut changes).unwrap();
+    lane.step(2, &mut changes).unwrap();
+    assert_eq!(lane.read_compares, 0, "complete hours never compare witness sets");
+    assert!(!changes.read_rows_changed());
+
+    lane.step(3, &mut changes).unwrap();
+    assert!(changes.status().is_some(), "Complete -> Truncated is a status change");
+    assert_eq!(lane.read_compares, 0);
+
+    lane.step(4, &mut changes).unwrap();
+    assert!(changes.status().is_none());
+    assert!(!changes.read_rows_changed(), "identical truncated witness sets do not invalidate");
+    assert_eq!(lane.read_compares, 1);
+
+    lane.step(5, &mut changes).unwrap();
+    assert!(changes.status().is_none(), "same missing count keeps status equal");
+    assert!(changes.read_rows_changed(), "swapped truncated witness sets invalidate downstream queries");
+    assert_eq!(lane.read_compares, 2);
+
+    lane.step(6, &mut changes).unwrap();
+    lane.step(7, &mut changes).unwrap();
+    assert_eq!(lane.read_compares, 2, "returning to complete hours performs no further compares");
+}
+
+#[test]
 fn a_seek_equals_stepping_to_the_same_hour() {
     let settings = Settings { restore_blocks: 1, ..Settings::at(3) };
     let (recording, states) = record_hours(settings, 2 * BLOCK + 27, busy);

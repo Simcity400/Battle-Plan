@@ -2,7 +2,6 @@
 use crate::{
     answer::{State, Table},
     evaluate::{Find, number},
-    live::NO_ROW,
 };
 use replay_columnar::store::TableState;
 
@@ -53,19 +52,21 @@ impl LiveRows {
         self.list.clear();
     }
 
-    pub(crate) fn evaluate(&mut self, keys: &[u128], columns: &[usize], cells: &TableState, find: &dyn Find, scratch: &mut Table, body: &mut Vec<u8>) -> (Answer, usize) {
+    #[allow(clippy::too_many_arguments, reason = "live row evaluation takes keys, columns, state, index, witness set, absent reason and output buffers")]
+    pub(crate) fn evaluate(&mut self, keys: &[u128], columns: &[usize], cells: &TableState, find: &dyn Find, read_rows: Option<&[u32]>, absent_reason: &str, scratch: &mut Table, body: &mut Vec<u8>) -> (Answer, usize) {
+        let slot_of = |key: u128| find.slot(key).filter(|slot| read_rows.is_none_or(|read| read.binary_search(slot).is_ok()));
         let mut read = 0;
         if self.rows.is_none() {
             let mut rows = Table::default();
             rows.clear(columns.len(), false);
             for &key in keys {
                 rows.row(key);
-                match find.slot(key) {
+                match slot_of(key) {
                     Some(slot) => {
                         read += row_cells(&mut self.cells, columns, cells, Some(slot));
                         self.cells.iter().for_each(|&(value, state)| rows.cell(value, state));
                     }
-                    None => rows.absent(NO_ROW),
+                    None => rows.absent(absent_reason),
                 }
             }
             self.rows = Some(rows);
@@ -83,9 +84,9 @@ impl LiveRows {
             let rows = self.rows.as_mut().expect("rows built");
             for &row in &self.touched {
                 let row = row as usize;
-                let slot = find.slot(keys[row]);
+                let slot = slot_of(keys[row]);
                 read += row_cells(&mut self.cells, columns, cells, slot);
-                if rows.set_row(row, &self.cells, slot.is_none().then_some(NO_ROW)) && !self.changed[row] {
+                if rows.set_row(row, &self.cells, slot.is_none().then_some(absent_reason)) && !self.changed[row] {
                     self.changed[row] = true;
                     self.list.push(row as u32);
                 }

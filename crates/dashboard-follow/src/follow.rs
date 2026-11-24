@@ -863,6 +863,8 @@ impl Engine {
         {
             index.status = Some(status);
             index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+        } else if changes.read_rows_changed() {
+            index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
         }
         if let Some(log) = changes.log() {
             let head = evaluate::head(lane);
@@ -1099,14 +1101,16 @@ impl Engine {
             }
             stats.evaluated += 1;
             if let Query::Cells { columns, rows: Rows::Live(keys), .. } = &followed.query {
-                if let Some(reason) = self.reasons.unrecorded(lane) {
+                if let Some(reason) = self.reasons.table_unrecorded(lane) {
                     followed.live.unrecorded();
                     self.body.clear();
                     answer::not_recorded(&reason, &mut self.body);
                     stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
                     continue;
                 }
-                let (answer, read) = followed.live.evaluate(keys, columns, lane.cells(), &*index, &mut self.delta, &mut self.body);
+                let trunc_reason = self.reasons.truncated_reason(lane);
+                let absent_reason = trunc_reason.as_deref().unwrap_or(crate::live::NO_ROW);
+                let (answer, read) = followed.live.evaluate(keys, columns, lane.cells(), &*index, lane.read_rows(), absent_reason, &mut self.delta, &mut self.body);
                 stats.cells += read as u32;
                 match answer {
                     live_rows::Answer::Same => followed.has_pending = false,
