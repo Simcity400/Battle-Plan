@@ -19,7 +19,7 @@ import { TableSettingsField } from './TableSettingsField.tsx';
 
 const SEGMENTED_MAX = 4;
 
-export interface RegionSource { readonly client: DashboardClient; readonly track: BoundTrack | undefined }
+export interface RegionSource { readonly client: DashboardClient; readonly track: BoundTrack | undefined; readonly hour: number | null }
 
 export function OptionFields({ fields, values, choices, regionSource, onChange }: {
   fields: readonly OptionField[]; values: Readonly<Record<string, OptionValue>>; choices?: OptionChoices; regionSource?: RegionSource;
@@ -76,7 +76,7 @@ function OptionRow({ field, value, choices, regionSource, onChange }: {
       </div>;
     }
     case 'regions':
-      return regionSource ? <RegionsField field={field} value={value} onChange={onChange} client={regionSource.client} track={regionSource.track} /> : null;
+      return regionSource ? <RegionsField field={field} value={value} onChange={onChange} client={regionSource.client} track={regionSource.track} hour={regionSource.hour} /> : null;
     case 'number':
       return <NumberRow field={field} value={typeof value === 'number' ? value : null} caption={caption} onChange={onChange} />;
     case 'table':

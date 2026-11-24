@@ -35,6 +35,7 @@ export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
     family: 'bombing',
     scale: 10_000_000,
     digits: 7,
+    shownDecimals: 7,
     leftHeader: 'Damage suffered',
     rightHeader: 'Damage inflicted',
     unit: 'Building levels',

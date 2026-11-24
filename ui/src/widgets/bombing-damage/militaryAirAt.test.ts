@@ -23,7 +23,7 @@ const identity: IdentityProvider = {
 };
 
 const AIR: MilitaryAirAtOptions = {
-  family: 'airLosses', scale: 100_000, digits: 5, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true,
+  family: 'airLosses', scale: 100_000, digits: 5, shownDecimals: 0, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true,
   group: false, none: 'No aircraft lost yet.', filters: { regions: [], causes: [] },
 };
 const PAIRED: MilitaryAirAtOptions = { ...AIR, leftHeader: 'Own losses', rightHeader: 'Destroyed', paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' } };
@@ -56,11 +56,13 @@ test('the product order and ratio are drawn as given, each row keyed and drawn b
   assert.deepEqual(rows.map(item => item.readout?.primary), ['1.80 : 1', '0.69 : 1'], 'the ratio is the product\'s');
 });
 
-test('figures stay exact: 1.23456 aircraft is not 1.23, and 0.4 is never drawn as zero', () => {
+test('R2-K6: aircraft are cut whole on screen from the recorded integer, 0.4 is never drawn as zero, and the tooltip keeps 1.23456', () => {
   const drawn = model(reply({ rows: [row({ tag: 'GER', identity: '7:1', dealt: '40000', taken: '123456' })] }), PAIRED);
   const first = drawn.rows[0] as BarsDataRow;
-  assert.equal(formatBarsValueField(first.left!.value).text, '1.23456');
-  assert.equal(first.readout?.primary, '0.4 / 1.23456');
+  assert.deepEqual([formatBarsValueField(first.left!.value).text, formatBarsValueField(first.left!.value).exact], ['1', '1.23456']);
+  assert.equal(first.readout?.primary, '<1 / 1');
+  const lost = lossCausesModel(view(reply({ rows: [row({ tag: 'GER', identity: '7:1', taken: '60000', causes: [cause(1, '60000')] })] })), AIR);
+  assert.equal((lost.rows[0] as BarsDataRow).readout?.primary, '<1 lost');
 });
 
 test('a partial row carries its reason through every display, with no lower-bound wording and no shares', () => {

@@ -42,12 +42,12 @@ function regionRows(model: HeatLanesModel, layout: HeatLanesLayout): RegionRowsF
       picked: row.pinned === true,
       top: layout.plotTop + layout.rowTops[index]!,
       height: layout.rowHeight,
-      ...(row.readout?.kind === 'value'
-        ? { activity: { ...(typeof row.readout.swatch === 'string' && row.readout.swatch !== 'hollow' ? { color: row.readout.swatch } : {}), text: [row.readout.primary, row.readout.secondary].filter(Boolean).join(' ') } }
-        : {}),
+      active: row.pinned !== true || row.readout?.kind === 'value',
     }])),
     add: layout.addTop === null ? null : { top: layout.plotTop + layout.addTop, height: layout.rowHeight },
     nameLeft: LANE_PAD,
+    nameRight: layout.plotLeft,
+    ...(model.regions.active ? { active: model.regions.active } : {}),
   };
 }
 
@@ -111,12 +111,12 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
     if (focus) {
       const row = model.rows.findIndex(item => item.id === key);
       const payload = row >= 0 ? deriveLanesTooltip(model, row, model.hour) : null;
-      return payload ? { hour: model.hour, rowKey: key, payload } : null;
+      return payload ? { rowKey: key, payload } : null;
     }
     const hovered = inspectedLane(key);
     if (!hovered) return null;
     const payload = deriveLanesTooltip(model, hovered.rowIndex, hovered.hour);
-    return payload ? { hour: hovered.hour ?? model.hour, rowKey: laneInspectKey(hovered.rowIndex, hovered.hour), payload } : null;
+    return payload ? { ...(hovered.hour !== null ? { hour: hovered.hour } : {}), rowKey: laneInspectKey(hovered.rowIndex, hovered.hour), payload } : null;
   },
   structure({ model, layout }) {
     const regions = regionRows(model, layout);

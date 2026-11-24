@@ -991,6 +991,7 @@ PowerSpendDays = 518 => PowerSpendDay(PowerSpendDayRow),
 }
 recorded {
 CombatEngagementRefreshes = 519 => CombatEngagementRefresh(CombatEngagementRefreshRow),
+LandCombatEdges = 520 => LandCombatEdge(LandCombatEdgesRow),
 }
 }
 const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [

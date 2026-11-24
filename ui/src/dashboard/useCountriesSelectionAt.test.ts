@@ -9,7 +9,7 @@ import { at } from './regionTime.ts';
 const native = (firstHour: number, lastHour: number, countryId: number) => ({ firstHour, lastHour,
   slot: countryId === 10 ? 1 : countryId === 11 ? 2 : 3, countryId });
 const catalogue = (): CountryGroupReply => ({ branchId: 'branch', humans: [{ tag: 'Y', firstHour: 120, lastHour: 127 }],
-  factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [], warnings: [], unobserved: { humans: [], factions: [], wars: [] },
+  factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [], warnings: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
   countryIdentities: [
     { tag: 'A', identities: [native(90, 99, 10)] },
     { tag: 'X', identities: [native(100, 109, 10), native(140, 160, 11)] },

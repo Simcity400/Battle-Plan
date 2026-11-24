@@ -1,7 +1,7 @@
 use super::{ArmyAttribution, group_info};
 use crate::products::forces::{
     ForceAtReply, ForcePart, Named,
-    at_hour::{Chosen, ForceContext, attach_parts, chosen, frame_literals, frame_rows, load_context, load_context_for, recorded_value, select_explicit, select_population, validate_group},
+    at_hour::{Chosen, ForceContext, attach_parts, chosen, chosen_reads, chosen_set, frame_literals, frame_rows, load_context, load_context_for, parts_keys, recorded_value, select_explicit, select_population, validate_group},
     validate_selection,
 };
 use content_reader_script::sub_units::SubUnits;
@@ -10,7 +10,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Clock, Owner, Read},
+        at_hour::{At, AtHour, Clock, Owner, Read, ReadsAt},
     },
 };
 use dashboard_query::{coverage::population, series::ranked::GroupSelection};
@@ -134,6 +134,13 @@ impl AtHour for ArmyAt {
         load_context_for(source, load, "Unit-group content", &params.branch_id, params.group.as_ref())
     }
 
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match (step, chosen_set(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, at.hour)) {
+            (0, Some(slots)) => chosen_reads(&slots, TableId::ArmyTotals, &[(TableId::ArmyMix, 40)]),
+            _ => Self::reads(params, owner, step, held),
+        }
+    }
+
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
         at.context.groups.valid_through(params.group.as_ref(), at.hour)
     }
@@ -162,7 +169,7 @@ impl AtHour for ArmyAt {
         let attr_code = u8::from(params.count_for == ArmyAttribution::Host);
         let mut met = BTreeSet::new();
         let mut by_slot: HashMap<u32, Vec<(u128, Option<i64>)>> = HashMap::new();
-        let parts_error = match population::<tables::ArmyMix>(frame, &Keys::All) {
+        let parts_error = match population::<tables::ArmyMix>(frame, &parts_keys(&params.countries, params.group.as_ref(), at, 40)) {
             Ok(rows) => {
                 for row in rows {
                     let row: &ArmyMixRow = row;

@@ -228,8 +228,8 @@ export function createLaneArtProvider(
   };
 }
 
-function withoutBitmap(result: ArtResult): ArtResult {
-  if (result.status !== 'ready' || result.bitmap === undefined) return result;
+function withoutBitmap<TBitmap>(result: ArtResult<TBitmap>): ArtResult<never> {
+  if (result.status !== 'ready') return result;
   const { bitmap: _decoded, ...address } = result;
   return address;
 }

@@ -27,7 +27,6 @@ import {
   type OccupiedStatesReply,
 } from './occupiedStatesData.ts';
 
-export type { HourRanges };
 export type OccupiedFilter = DeclaredCountryFilter;
 
 export interface OccupiedProjectionOptions {

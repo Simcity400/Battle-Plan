@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
+import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import CountryPicker from '../../components/CountryPicker';
 import DrillParts from '../drill/DrillParts';
@@ -9,14 +10,18 @@ import LiveText, { liveTexts } from '../LiveText';
 import { dayLabel } from '../draw';
 import type { Span } from '../series';
 import { useChartTokens } from '../useChartTokens';
+import { useIdentityKey } from '../../dashboard/atHead.ts';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { partsRaceAt, partsRaceModel, partsRacePartName, partsRaceTooltips } from '../../dashboard/partsRace.ts';
+import { failureText } from '../../dashboard/queryError.ts';
+import type { Failure } from '../../dashboard/queryError';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import type { ForceSizeReply } from '../../generated/dashboard';
 import { useFrameWindows } from '../../widgets/army-size/frameWindows.ts';
 import { useHeadHour } from '../../widgets/army-size/headHour.ts';
-import { BreakdownHeader } from '../../widgets/army-size/ArmyBreakdown';
 import CountryRaceView from './CountryRaceView';
 import { partColours } from './countryRace';
 import { breakdownValue, breakdownWindows, joinForceWindows } from './forceRace.ts';
@@ -25,6 +30,27 @@ import { bindCountryParts } from './countryPartsDrillData';
 import { partsRaceDrillData, UNATTRIBUTED_PART } from './partsRaceDrill';
 import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
 import type { ParamsFor } from '../../dashboard/regionTime';
+
+function BreakdownHeader({ runtime, track, active, countrySlot, live, hour: givenHour, actorAt, error, saved }: {
+  runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; countrySlot: HTMLElement; live: boolean; hour: number;
+  actorAt: (hour: number) => string | null; error: Failure | undefined; saved: boolean;
+}) {
+  const offset = track?.axisOffset ?? 0;
+  const identity = useIdentityKey(runtime.client, track, live);
+  const shown = useHeadHour(runtime.clock, live, at => {
+    const head = Math.floor(at) + offset, of = actorAt(head);
+    return `${of}|${identity(head, of ? [of] : []) ?? at}`;
+  });
+  const hour = live ? Math.floor(shown) + offset : givenHour;
+  const liveDate = useMemo(() => live ? { read: () => runtime.clock.getHour() + offset, subscribe: runtime.clock.subscribeFrame } : undefined,
+    [live, runtime.clock, offset]);
+  const actor = actorAt(hour);
+  const wanted = useMemo(() => actor ? [{ tag: actor, hour }] : [], [actor, hour]);
+  const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
+  return createPortal(<DatedCountryChip failure={error} label={actor ? labels.labelAt(hour)(actor) : null} hour={hour} live={liveDate}
+    reason={error ? failureText(error, 'Couldn’t load the breakdown.') : (!saved ? 'Saved country unavailable.'
+      : !actor ? 'Country unavailable at this time.' : null)} />, countrySlot);
+}
 
 export interface PartsRaceDetailProps { runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number; following: boolean; active: boolean }
 

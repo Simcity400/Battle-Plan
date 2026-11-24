@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { classifyAgainstBase, formatReport, runCheckAtCommit, runDeadCodeCheck } from './check-dead-code.mjs';
+import { classifyAgainstBase, compareWithBase, formatReport, parseAgainstArg, resolveBaseCommit, runCheckAtCommit, runDeadCodeCheck } from './check-dead-code.mjs';
 
 async function withRepo(files, fn) {
   const root = mkdtempSync(join(tmpdir(), 'bp-dead-code-'));
@@ -29,11 +29,12 @@ function baseFiles(overrides = {}) {
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS);
     `,
     'ui/src/styles.css': "@import './theme.css'; body {}",
     'ui/src/theme.css': ':root {}',
@@ -250,11 +251,12 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { live } from './mod.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, live];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 2}',
   }), runDeadCodeCheck);
@@ -268,11 +270,12 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { live } from './mod.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, live];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 3}',
   }), runDeadCodeCheck);
@@ -290,11 +293,12 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { live } from './mod.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, live];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 1}',
   }), runDeadCodeCheck);
@@ -312,11 +316,12 @@ test('D2: resolves mapped shorthand kind entries and fails on unresolvable runti
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS);
     `,
     'ui/src/charts/OldChart.tsx': 'export const OldChart = () => null;',
     'ui/src/widgets/power/powerProjection.ts': "import { OldChart } from '../../charts/OldChart.tsx'; export const projA = () => OldChart(); export const projB = () => OldChart();",
@@ -366,11 +371,12 @@ test('D3: detects old charts through family helpers, ignores pure chart utils, a
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
       import { FAMILY_VIEW_UI } from './widgets/manifest.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
     `,
     'ui/src/charts/pureUtil.ts': 'export const pureMath = () => 1;',
     'ui/src/charts/OldChart.tsx': 'export const OldChart = () => null;',
@@ -483,11 +489,12 @@ test('D5: uses vite shipping entries, separates type/runtime/test reachability, 
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline & UsefulType;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, liveFromBarrel(), fx()];
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline & UsefulType;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, liveFromBarrel(), fx());
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
   }), async root => {
@@ -535,12 +542,13 @@ test('D6: resolves template/commented dynamic imports, ignores unused named impo
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { runChart, shadow, useNs } from './consumer.ts';
-      export const Lazy = lazy(() => import('./lazyComp.ts'));
-      export const loadLazy = async () => (await import('./lazy.ts')).value;
-      export const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      export type Ref = import('./inlineType.ts').Inline;
-      export const used: SharedType = { product: 'live-product', head: 'live-head' };
-      export const refs = [REQUEST_PATHS, LEGACY_WIDGETS, Lazy, runChart(), shadow(1), useNs()];
+      const Lazy = lazy(() => import('./lazyComp.ts'));
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(REQUEST_PATHS, LEGACY_WIDGETS, Lazy, loadLazy, worker, used, ref, runChart(), shadow(1), useNs());
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
   }), async root => {
@@ -590,5 +598,309 @@ export const REQUEST_PATHS = {
     assert.equal(cmp.newIssues, 1);
     assert.equal(cmp.inheritedIssues, 0);
     assert.equal(cmp.deadProducts[0].inherited, false);
+  });
+});
+
+test('missing ratchet file at base commit is read as no ratchet instead of throwing', async () => {
+  const files = baseFiles({
+    'ui/src/inheritedOrphan.ts': 'export const old = 1;',
+  });
+  delete files['tools/legacy-widgets-ratchet.json'];
+  delete files['ui/src/widgets/legacyManifest.ts'];
+  files['ui/src/main.tsx'] = `
+    import './styles.css';
+    import type { SharedType } from './types.ts';
+    import { REQUEST_PATHS } from './generated/dashboard.ts';
+    const loadLazy = async () => (await import('./lazy.ts')).value;
+    const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+    type Ref = import('./inlineType.ts').Inline;
+    const used: SharedType = { product: 'live-product', head: 'live-head' };
+    const ref: Ref = { ok: true };
+    console.log(loadLazy, worker, used, ref, REQUEST_PATHS);
+  `;
+  await withRepo(files, async root => {
+    const git = args => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').trim();
+    git(['init', '-q', '-b', 'main']);
+    git(['add', '-A']);
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'pre-ratchet base']);
+    const baseSha = git(['rev-parse', 'HEAD']);
+
+    const baseResult = await runCheckAtCommit(root, baseSha);
+    assert.equal(baseResult.ratchetMissing, true);
+    assert.deepEqual(baseResult.ui.deadProduction, ['ui/src/inheritedOrphan.ts']);
+
+    writeFileSync(
+      join(root, 'tools/legacy-widgets-ratchet.json'),
+      '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 1}',
+      'utf8',
+    );
+    mkdirSync(join(root, 'ui/src/widgets'), { recursive: true });
+    writeFileSync(
+      join(root, 'ui/src/widgets/legacyManifest.ts'),
+      'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }];',
+      'utf8',
+    );
+    writeFileSync(
+      join(root, 'ui/src/main.tsx'),
+      `
+        import './styles.css';
+        import type { SharedType } from './types.ts';
+        import { REQUEST_PATHS } from './generated/dashboard.ts';
+        import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+        import { live } from './mod.ts';
+        const loadLazy = async () => (await import('./lazy.ts')).value;
+        const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+        type Ref = import('./inlineType.ts').Inline;
+        const used: SharedType = { product: 'live-product', head: 'live-head' };
+        const ref: Ref = { ok: true };
+        console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
+      `,
+      'utf8',
+    );
+    writeFileSync(
+      join(root, 'ui/src/mod.ts'),
+      'export const live = 1; export const unusedAtHead = 2;',
+      'utf8',
+    );
+
+    const headResult = await runDeadCodeCheck(root);
+    assert.equal(headResult.ratchetMissing, false);
+    assert.equal(headResult.totalIssues, 1);
+
+    const compared = compareWithBase(headResult, baseResult, baseSha);
+    assert.equal(compared.comparison, null);
+    assert.match(compared.notice, new RegExp(baseSha.slice(0, 9)));
+
+    rmSync(join(root, 'ui/src/inheritedOrphan.ts'));
+    const cleanHead = await runDeadCodeCheck(root);
+    assert.equal(cleanHead.totalIssues, 0);
+    const cleanCompared = compareWithBase(cleanHead, baseResult, baseSha);
+    assert.equal(cleanCompared.comparison, null);
+    assert.match(cleanCompared.notice, /legacy-widgets-ratchet\.json/);
+
+    const cmp = classifyAgainstBase(headResult, baseResult, baseSha);
+    assert.deepEqual(cmp.ratchetRaises, []);
+    assert.deepEqual(cmp.addedLegacyPairs, ['a:default']);
+    assert.deepEqual(cmp.addedUnusedExports.map(e => e.key), ['ui/src/mod.ts:unusedAtHead']);
+    assert.equal(cmp.deadProduction[0].inherited, true);
+    assert.equal(cmp.newIssues, 2);
+  });
+});
+
+test('R2-D1: walks every target in Promise.all loaders and fails unresolved dynamic imports', async () => {
+  await withRepo(baseFiles({
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS);
+    `,
+    'ui/src/charts/OldChart.tsx': 'export const OldChart = () => null;',
+    'ui/src/widgets/multi-imp/cleanHelper.ts': 'export const helper = 1;',
+    'ui/src/widgets/multi-imp/badProjection.ts': "import { OldChart } from '../../charts/OldChart.tsx'; export const proj = () => OldChart();",
+    'ui/src/widgets/manifest/table.ts': `
+      const dynPath = '../multi-imp/badProjection.ts';
+      export const TABLE_VIEWS = [
+        {
+          kind: 'hidden-behind-helper',
+          view: 'default',
+          family: 'table',
+          loadSpec: () => Promise.all([import('../multi-imp/cleanHelper.ts'), import('../multi-imp/badProjection.ts')]).then(([, m]) => m.proj),
+        },
+        {
+          kind: 'mixed-unresolved',
+          view: 'default',
+          family: 'table',
+          loadSpec: () => Promise.all([import('../multi-imp/cleanHelper.ts'), import(dynPath)]),
+        },
+      ];
+    `,
+    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
+    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.convertedLegacy.violations.map(v => v.pair), ['hidden-behind-helper:default']);
+    assert.deepEqual(
+      result.convertedLegacy.violations[0].chain,
+      ['ui/src/widgets/multi-imp/badProjection.ts', 'ui/src/charts/OldChart.tsx'],
+    );
+    assert.deepEqual(result.convertedLegacy.unresolvedFamilyViews.map(v => v.pair), ['mixed-unresolved:default']);
+  });
+});
+
+test('R2-D2: catches converted views calling loadWidgetRenderer or LEGACY_WIDGETS and allows theme hooks', async () => {
+  await withRepo(baseFiles({
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
+      import { FAMILY_VIEW_UI } from './widgets/manifest.ts';
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
+    `,
+    'ui/src/charts/useChartTokens.ts': "import { useState } from 'react'; export const useChartTokens = () => useState(0);",
+    'ui/src/widgets/rendererLoaders.ts': 'export const loadWidgetRenderer = (kind: string) => kind; export const preloadStatus = () => 1;',
+    'ui/src/widgets/manifest.ts': `
+      export { LEGACY_WIDGETS } from './legacyManifest.ts';
+      export const widgetViewOptions = () => ({});
+      export const FAMILY_VIEW_UI = {};
+    `,
+    'ui/src/widgets/via-loader/proj.ts': "import { loadWidgetRenderer } from '../rendererLoaders.ts'; export const proj = () => loadWidgetRenderer('wars');",
+    'ui/src/widgets/via-manifest/proj.ts': "import { LEGACY_WIDGETS } from '../manifest.ts'; export const proj = () => LEGACY_WIDGETS;",
+    'ui/src/widgets/clean-hook/proj.ts': "import { useChartTokens } from '../../charts/useChartTokens.ts'; import { widgetViewOptions } from '../manifest.ts'; export const proj = () => [useChartTokens, widgetViewOptions];",
+    'ui/src/widgets/clean-telemetry/proj.ts': "export const proj = async () => (await import('../rendererLoaders.ts')).preloadStatus();",
+    'ui/src/widgets/manifest/table.ts': `
+      export const TABLE_VIEWS = [
+        { kind: 'via-loader', view: 'default', family: 'table', loadSpec: () => import('../via-loader/proj.ts').then(m => m.proj) },
+        { kind: 'via-manifest', view: 'default', family: 'table', loadSpec: () => import('../via-manifest/proj.ts').then(m => m.proj) },
+        { kind: 'clean-hook', view: 'default', family: 'table', loadSpec: () => import('../clean-hook/proj.ts').then(m => m.proj) },
+        { kind: 'clean-telemetry', view: 'default', family: 'table', loadSpec: () => import('../clean-telemetry/proj.ts').then(m => m.proj) },
+      ];
+    `,
+    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
+    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(
+      result.convertedLegacy.violations.map(v => v.pair),
+      ['via-loader:default', 'via-manifest:default'],
+    );
+    assert.deepEqual(
+      result.convertedLegacy.violations[0].chain,
+      ['ui/src/widgets/via-loader/proj.ts', 'ui/src/widgets/rendererLoaders.ts'],
+    );
+    assert.deepEqual(
+      result.convertedLegacy.violations[1].chain,
+      ['ui/src/widgets/via-manifest/proj.ts', 'ui/src/widgets/manifest.ts'],
+    );
+  });
+});
+
+test('R2-D3: does not seed uncalled functions in main.tsx and keeps side-effecting initializers live', async () => {
+  await withRepo(baseFiles({
+    'ui/src/onlyUncalled.ts': 'export const deadHelper = () => 1;',
+    'ui/src/registrar.ts': 'export const register = (fn: () => number) => fn;',
+    'ui/src/handler.ts': 'export const handler = () => 42;',
+    'ui/src/feature.ts': `
+      import { register } from './registrar.ts';
+      import { handler } from './handler.ts';
+      const off = register(handler);
+      export const liveValue = 7;
+    `,
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+      import { deadHelper } from './onlyUncalled.ts';
+      import { liveValue } from './feature.ts';
+      function uncalledInMain() { return deadHelper(); }
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, liveValue);
+    `,
+    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.ui.deadProduction, ['ui/src/onlyUncalled.ts']);
+    assert.ok(result.ui.runtimeLive.has('ui/src/registrar.ts'));
+    assert.ok(result.ui.runtimeLive.has('ui/src/handler.ts'));
+    assert.deepEqual(result.exports.unusedExports, []);
+  });
+});
+
+test('R2-D4: tracks computed string namespace access and exported dynamic-import loader member usage via compiler symbols', async () => {
+  await withRepo(baseFiles({
+    'ui/src/nsTarget.ts': 'export const draw = () => 1; export const unusedNs = () => 2;',
+    'ui/src/chart.ts': 'export const draw = () => 3; export const unusedChart = () => 4;',
+    'ui/src/chartLoader.ts': "export const loadChart = () => import('./chart.ts');",
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
+      import * as ns from './nsTarget.ts';
+      import { loadChart } from './chartLoader.ts';
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      const a = ns['draw']();
+      async function run() {
+        const mod = await loadChart();
+        return mod.draw() + a;
+      }
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, run());
+    `,
+    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.ui.deadProduction, []);
+    assert.deepEqual(
+      result.exports.unusedExports.map(e => e.key),
+      ['ui/src/chart.ts:unusedChart', 'ui/src/nsTarget.ts:unusedNs'],
+    );
+  });
+});
+
+test('R2-D6: base snapshot scans the same non-dashboard Rust caller paths as head (including examples)', async () => {
+  await withRepo(baseFiles({
+    'ui/src/generated/dashboard.ts': `
+export const REQUEST_PATHS = {
+  "live-product": {},
+  "head:live-head": {},
+  "tool-product": {},
+  "crate-product": {},
+  "example-product": {},
+};
+`,
+    'crates/desktop/examples/tool.rs': 'fn main() { let _ = "example-product"; }',
+  }), async root => {
+    const git = args => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').trim();
+    git(['init', '-q', '-b', 'main']);
+    git(['add', '-A']);
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'base']);
+    const baseSha = git(['rev-parse', 'HEAD']);
+
+    const baseResult = await runCheckAtCommit(root, baseSha);
+    assert.deepEqual(baseResult.rust.deadProducts, []);
+
+    rmSync(join(root, 'crates/desktop/examples/tool.rs'));
+    const headResult = await runDeadCodeCheck(root);
+    assert.deepEqual(headResult.rust.deadProducts.map(p => p.product), ['example-product']);
+
+    const cmp = classifyAgainstBase(headResult, baseResult, baseSha);
+    assert.equal(cmp.newIssues, 1);
+    assert.equal(cmp.inheritedIssues, 0);
+    assert.equal(cmp.deadProducts[0].inherited, false);
+  });
+});
+
+test('R2-D7: invalid explicit --against ref fails instead of silently skipping base comparison', async () => {
+  await withRepo(baseFiles(), async root => {
+    const git = args => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').trim();
+    git(['init', '-q', '-b', 'main']);
+    git(['add', '-A']);
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'base']);
+    assert.throws(() => resolveBaseCommit(root, 'nonexistent-ref-xyz'), /Cannot resolve --against ref/);
+    assert.throws(() => parseAgainstArg(['--against']), /--against requires a commit or ref/);
+    assert.throws(() => parseAgainstArg(['--against=']), /--against requires a commit or ref/);
   });
 });

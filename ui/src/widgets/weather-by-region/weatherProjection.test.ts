@@ -128,6 +128,21 @@ test('a temperature column shows the mean of its days and a missing reading name
   const smallModel = projectWeather(view(48, smallNeg), { show: 'temperature', modifier: null, surface: SURFACE });
   assert.equal(deriveLanesTooltip(smallModel, 0, 0)!.items![0]!.value, '−<0.1 °C');
   assert.equal(smallModel.rows[0]!.readout?.kind === 'value' ? smallModel.rows[0]!.readout.primary : '', '2.5 °C');
+
+  const meanOfTwo = reply(48, {
+    columns: {
+      days: 2,
+      columns: [{ firstHour: 0, lastHour: 47, sampledHour: 47, readHour: 47, recorded: 2 }],
+      regions: [{
+        id: '5', pinned: false,
+        measures: [{ id: 'temp', days: [2], values: [['-1', '-1', '0']] }],
+        readout: { kind: 'value', value: '0', as_of_hour: 47 },
+      }],
+    },
+    extrema: ['-1', '0'],
+  });
+  const meanModel = projectWeather(view(48, meanOfTwo), { show: 'temperature', modifier: null, surface: SURFACE });
+  assert.equal(deriveLanesTooltip(meanModel, 0, 0)!.items![0]!.value, '−<0.1 °C (−<0.1 °C to 0.0 °C)', 'R2-K5: the mean is cut after dividing, not divided after cutting');
 });
 
 test('a folded column with unrecorded days keeps them unknown instead of spreading the known days over the column', () => {
@@ -145,9 +160,10 @@ test('a folded column with unrecorded days keeps them unknown instead of spreadi
 });
 
 test('conditions take their colour from the identity register, and an unknown one from the palette, never a registered colour', async () => {
-  const { identityColour, readableColour, IDENTITY_COLOURS } = await import('../../charts/palette.ts');
-  assert.equal(identityColour(SURFACE, 'weather', 'heavy_rain', 0), readableColour(IDENTITY_COLOURS.weather.heavy_rain, SURFACE), 'heavy rain is the storm violet whatever its order');
-  assert.equal(identityColour(SURFACE, 'weather', 'light_rain', 5), readableColour(IDENTITY_COLOURS.weather.light_rain, SURFACE));
-  const registered = new Set(Object.values(IDENTITY_COLOURS.weather).map(hex => readableColour(hex, SURFACE)));
+  const { identityColour } = await import('../../charts/palette.ts');
+  assert.equal(identityColour(SURFACE, 'weather', 'heavy_rain', 0), identityColour(SURFACE, 'weather', 'heavy_rain', 5), 'heavy rain keeps its colour whatever its order');
+  assert.equal(identityColour(SURFACE, 'weather', 'light_rain', 0), identityColour(SURFACE, 'weather', 'light_rain', 5));
+  const registered = new Set((['light_rain', 'heavy_rain', 'snow', 'sandstorm'] as const).map(token => identityColour(SURFACE, 'weather', token, 0)));
+  assert.equal(registered.size, 4);
   for (let ordinal = 0; ordinal < 12; ordinal++) assert.ok(!registered.has(identityColour(SURFACE, 'weather', 'mod_acid_rain', ordinal)), 'a mod condition gets its own colour');
 });

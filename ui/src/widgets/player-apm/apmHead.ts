@@ -5,7 +5,22 @@ import { CELL, cellState, cellValue, rowName, textAt } from '../../dashboard/fol
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';
 
-const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
+const APM = {
+  apm: 0,
+  confirmedApm: 1,
+  orders: 2,
+  pausedOrders: 3,
+  minutes: 4,
+  complete: 5,
+  gaps: 6,
+  tag: 7,
+  hour: 8,
+  name: 9,
+  nameMissing: 10,
+  confirmedOrders: 11,
+  minutesNum: 12,
+  minutesDen: 13,
+} as const;
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
 
 const bits = new DataView(new ArrayBuffer(8));
@@ -31,8 +46,19 @@ const rowsOf = (answer: FollowedAnswer | undefined): FollowedRows | null => answ
 function valueAt(answer: FollowedRows, row: number): ApmValue {
   const at = row * answer.columns;
   const count = (column: number) => whole(answer, at + column)?.toString() ?? null;
-  return { apm: float(answer, at + APM.apm), confirmedApm: float(answer, at + APM.confirmedApm), orders: count(APM.orders), pausedOrders: count(APM.pausedOrders),
-    unpausedMinutes: float(answer, at + APM.minutes), complete: whole(answer, at + APM.complete) === 1n, gaps: whole(answer, at + APM.gaps) === 1n };
+  const optText = (column: number) => (answer.columns > column ? textCell(answer, at + column) : null);
+  return {
+    apm: float(answer, at + APM.apm),
+    confirmedApm: float(answer, at + APM.confirmedApm),
+    orders: count(APM.orders),
+    confirmedOrders: optText(APM.confirmedOrders),
+    pausedOrders: count(APM.pausedOrders),
+    unpausedMinutes: float(answer, at + APM.minutes),
+    unpausedMinutesNum: optText(APM.minutesNum),
+    unpausedMinutesDen: optText(APM.minutesDen),
+    complete: whole(answer, at + APM.complete) === 1n,
+    gaps: whole(answer, at + APM.gaps) === 1n,
+  };
 }
 
 export function apmHeadRows(answer: FollowedAnswer | undefined): ApmSeries[] {
@@ -65,7 +91,7 @@ export function apmFromSort(value: bigint): { apm: number; gaps: boolean } {
 
 function apmReason(value: ApmValue): string {
   if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
-  if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
+  if (value.unpausedMinutesNum === '0' || value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
   return 'It is unclear whether some orders count toward eAPM; the rate is unknown.';
 }
 

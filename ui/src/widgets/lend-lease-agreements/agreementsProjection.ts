@@ -2,8 +2,8 @@ import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { FIXED5, fixedText, FUEL_QUANTITY, MARKET, SHARE, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
-import { filterCandidates } from '../../families/holders.ts';
-import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { occurrenceSelection } from '../../families/table/logHelpers.ts';
+import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artNameCell, identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
@@ -16,7 +16,6 @@ import { COLUMNS, TABLE_BASE } from './definition.ts';
 export type Direction = 'sent' | 'received';
 
 export interface AgreementsProjectionOptions {
-  readonly filter: DeclaredCountryFilter;
   readonly direction: Direction;
 }
 
@@ -32,16 +31,6 @@ export const AGREEMENT_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column 
   ...(column.key === 'last' || column.key === 'since' ? { cellKind: 'date' as const, widest: ['30 Sep'] } : {}),
 }));
 
-const passes = (filter: DeclaredCountryFilter, tag: string | null, hour: number): boolean =>
-  filter.passing === null || (tag !== null && !!filter.passing[tag]?.some(([first, last]) => first <= hour && hour <= last));
-
-const unrecordedAt = (filter: DeclaredCountryFilter, hour: number): string | null =>
-  filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
-
-function filterNext(filter: DeclaredCountryFilter, hour: number): number {
-  for (const bound of filter.bounds) if (bound > hour) return bound;
-  return Infinity;
-}
 
 const whole = (raw: bigint, denominator: bigint): Value => {
   const units = raw / denominator;
@@ -151,7 +140,6 @@ function agreementRows(
 export const agreementsProjection: TableProjection<AgreementsProjectionOptions> = registerFamilyProjection({
   kind: 'lend-lease-agreements',
   family: 'table',
-  nextChange: (readView: BoundedReadView, options: AgreementsProjectionOptions) => filterNext(options.filter, readView.hour),
   project(readView, options): TableModel {
     const hour = readView.hour;
     const refused = readView.refused('main');
@@ -159,6 +147,9 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const raw = readView.panel('main');
     if (raw === undefined) return { columns: AGREEMENT_COLUMNS, rows: [], hour };
     const reply = validateMarketReply(raw);
+    if (reply.refused !== null) {
+      return { columns: AGREEMENT_COLUMNS, rows: [], hour, empty: 'Not recorded', emptyDetail: reply.refused, emptyKind: 'unavailable', warnings: reply.warnings };
+    }
     if (reply.agreements === null) {
       return { columns: AGREEMENT_COLUMNS, rows: [], hour, empty: 'Not recorded', emptyDetail: 'Lend-lease terms are not in this recording at this date', emptyKind: 'unavailable', warnings: reply.warnings };
     }
@@ -166,11 +157,7 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const boundary = newIdentityBoundary();
     const rows: TableRow[] = [];
     const lookups: Lookups = { variants: new Map(reply.variants.map(variant => [variant.id, variant])), images: new Map(reply.icons.map(icon => [icon.key, icon.image])) };
-    for (const terms of reply.agreements) {
-      if (!passes(options.filter, options.direction === 'sent' ? terms.giver : terms.receiver, hour)) continue;
-      rows.push(...agreementRows(readView, lookups, terms, live, boundary));
-    }
-    const membership = unrecordedAt(options.filter, hour);
+    for (const terms of reply.agreements) rows.push(...agreementRows(readView, lookups, terms, live, boundary));
     const side = options.direction === 'sent' ? 'givers' : 'receivers';
     const unattributed = reply.unattributed;
     const warnings = reply.warnings;
@@ -181,11 +168,9 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(rows.length === 0
-        ? membership !== null
-          ? { empty: 'Not recorded', emptyDetail: membership, emptyKind: 'unavailable' as const }
-          : unattributed
-            ? { empty: 'Not recorded', emptyDetail: `Some agreements' ${side} are not in this recording at this date`, emptyKind: 'unavailable' as const }
-            : { empty: options.direction === 'sent' ? 'No lend-lease sent' : 'No lend-lease received', emptyKind: 'empty' as const }
+        ? unattributed
+          ? { empty: 'Not recorded', emptyDetail: `Some agreements' ${side} are not in this recording at this date`, emptyKind: 'unavailable' as const }
+          : { empty: options.direction === 'sent' ? 'No lend-lease sent' : 'No lend-lease received', emptyKind: 'empty' as const }
         : {}),
       warnings,
     };
@@ -201,9 +186,11 @@ export const agreementsDeclaration: TableWidgetDeclaration<AgreementsProjectionO
   icon: 'link',
   countries: { mode: 'filter' },
   sources: ctx => {
+    const selection = occurrenceSelection(ctx);
     const params = {
       branchId: ctx.branch.id,
-      countries: filterCandidates(ctx.countries.filter.passing) ?? [],
+      countries: selection?.countries ?? [],
+      ...(selection?.group ? { group: selection.group } : {}),
       only: 'agreements',
       leaseSide: ctx.options.direction === 'received' ? 'received' : 'sent',
     };
@@ -229,5 +216,5 @@ export const agreementsDeclaration: TableWidgetDeclaration<AgreementsProjectionO
   projection: agreementsProjection,
   columns: AGREEMENT_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
-  projectionOptions: ctx => ({ filter: ctx.countries.filter, direction: ctx.options.direction === 'received' ? 'received' : 'sent' }),
+  projectionOptions: ctx => ({ direction: ctx.options.direction === 'received' ? 'received' : 'sent' }),
 };

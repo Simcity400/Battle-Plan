@@ -20,7 +20,6 @@ import {
   type IdentityKey,
   type IdentityResult,
   type IdentityScope,
-  type IdentitySnapshot,
 } from './types.ts';
 
 const NO_SUBSCRIBE = () => () => {};
@@ -427,49 +426,15 @@ export function useIdentityAtHead(
   return { hour, results, flagFor: state.flagFor, flagArtFor: state.flagArtFor, retry: state.retry };
 }
 
-export function useIdentitySnapshot(
-  client: DashboardClient,
-  recording: DashboardSource | null | undefined,
-  scope: IdentityScope | null,
-  asks: readonly IdentityAsk[],
-  options: {
-    readonly active?: boolean;
-    readonly flagSize?: CountryFlagSize;
-    readonly needFlags?: boolean;
-    readonly needIdentities?: boolean;
-    readonly needGroups?: boolean;
-    readonly branchBounds?: HourInterval;
-  } = {},
-): IdentitySnapshot | null {
-  const broker = identityBrokerFor(client);
-  const { version } = useIdentities(client, recording, scope, asks, options);
-  return useMemo(() => {
-    void version;
-    return scope ? broker.snapshotOf(scope, recording ?? undefined, options.branchBounds) : null;
-  }, [broker, scope, recording, options.branchBounds, version]);
-}
-
 export {
-  countryHolderKey,
   countryKeyFromString,
-  countrySlotKey,
   countryTagKey,
-  designKey,
   factionKey,
   flagChoiceKey,
-  leaderKey,
   regionKey,
-  stateKey,
-  type CountryIdentityKey,
   type CountryIdentityResult,
-  type DrawnFlagEntry,
-  type EntityIdentityResult,
-  type FactionIdentityKey,
   type FactionIdentityResult,
   type IdentityAsk,
-  type IdentityField,
   type IdentityKey,
-  type IdentityResult,
-  type IdentityScope,
   type IdentitySnapshot,
 } from './types.ts';

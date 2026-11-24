@@ -141,6 +141,12 @@ export interface GameWindowRegion {
   scroll?: GameWindowScroll | null;
 }
 
+export interface GameWindowPlaceholder {
+  readonly path: string;
+  readonly rect: readonly [number, number, number, number];
+  readonly label: string;
+}
+
 export interface GameWindowRender {
   title?: string | null;
   pngBase64: string;
@@ -153,6 +159,7 @@ export interface GameWindowRender {
   regions: readonly GameWindowRegion[];
   warnings: readonly string[];
   text: readonly GameWindowText[];
+  placeholders: readonly GameWindowPlaceholder[];
 }
 
 export interface DashboardClient {

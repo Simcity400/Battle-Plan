@@ -1,11 +1,10 @@
-import type { HolderTag, HourSpan, PoliticsHistoryMode, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../generated/dashboard';
+import type { HolderTag, HourSpan, PoliticsHistoryMode, PoliticsHistoryReply, PoliticsRun } from '../generated/dashboard';
 import type { Span } from '../charts/series';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
 import { object, opaqueTag } from './validation.ts';
 
 export const POLITICS_HISTORY = 'politics-state-history';
 
-export type PoliticsStateAt = PoliticsStateReply & { hour: number };
 
 export const integerText = (value: string): boolean => /^-?\d{1,16}$/.test(value) && Number.isSafeInteger(Number(value));
 export const fixed5Text = (value: string): boolean => /^-?\d{1,19}$/.test(value)
@@ -76,4 +75,3 @@ export function unknownHours(gaps: readonly HourSpan[], known: readonly HourSpan
   return merged;
 }
 
-export const holderKey = (tags: readonly HolderTag[]): string | null => tags.length ? JSON.stringify([tags[0].hour, tags[0].tag]) : null;

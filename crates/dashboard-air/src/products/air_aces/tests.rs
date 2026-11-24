@@ -1,5 +1,5 @@
 use super::*;
-use replay_data::rows::{AceDeath, AirWingRow, Recorded, TableRows, WingEquipmentRow};
+use replay_data::rows::{AceDeath, AirWingRow, CountryLinkRow, Recorded, TableRows, WingEquipmentRow};
 use replay_frame::frame::{Metrics, TableView};
 
 fn dates(runs: &[(i32, i32, Option<i64>)], reads: &[(i32, i32)]) -> Dates {
@@ -45,7 +45,12 @@ fn history() -> History {
         ]
         .into(),
         slots: [(1, vec![("JAP".to_owned(), 0, 1_000)]), (2, vec![("CHI".to_owned(), 0, 1_000)])].into(),
+        links: links(&[(7, vec![(0, 1_000, Some(1))]), (8, vec![(0, 1_000, Some(2))])]),
     }
+}
+
+fn links(raw: &[(u32, read::Runs)]) -> Vec<(i32, i32, Arc<RunLinks>)> {
+    vec![(0, 1_000, Arc::new(RunLinks { slots: raw.iter().cloned().collect() }))]
 }
 
 #[test]
@@ -90,4 +95,23 @@ fn the_roster_names_and_dates_each_ace_from_its_row_and_history() {
     *frame.tables[TableId::AirAces.index()] = TableView::Unavailable { reason: "air aces was not read".into() }.into();
     let (missing, aces) = roster(&frame, &history(), None, &mut Vec::new());
     assert!(aces.is_empty() && missing.is_some_and(|why| why.contains("air aces was not read")));
+}
+
+#[test]
+fn a_killer_s_country_is_its_recorded_link_and_holder_at_the_hour_it_was_seen_dead() {
+    let mut frame = frame(310);
+    *frame.tables[TableId::AirAces.index()] = TableView::Complete(TableRows::AirAces(vec![
+        AirAceRow { id: 11, country: 7, alive: 1, ..Default::default() },
+        AirAceRow { id: 12, country: 8, alive: 0, death: Some(AceDeath { killer_ace: 11, killer_country: 7 }), ..Default::default() },
+    ]));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 7, canonical_slot: 2 }, CountryLinkRow { id: 8, canonical_slot: 2 }]));
+    let mut moved = history();
+    moved.links = links(&[(7, vec![(0, 304, Some(1)), (305, 1_000, Some(2))]), (8, vec![(0, 1_000, Some(2))])]);
+    let (missing, aces) = roster(&frame, &moved, None, &mut Vec::new());
+    assert_eq!(missing, None);
+    let death = aces[1].death.as_ref().expect("dead");
+    assert_eq!((aces[0].tag.as_deref(), death.seen_dead, death.killer_tag.as_deref()), (Some("CHI"), Some(300), Some("JAP")), "the raw country's link moved after the death: the killer keeps the slot and holder of hour 300");
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links unread at the displayed hour".into() }.into();
+    let (missing, aces) = roster(&frame, &moved, None, &mut Vec::new());
+    assert_eq!((missing, aces[1].death.as_ref().and_then(|death| death.killer_tag.as_deref())), (None, Some("JAP")), "an unread displayed-hour link table neither refuses the roster nor the dated killer");
 }

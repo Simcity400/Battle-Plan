@@ -1,3 +1,4 @@
+import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
 import type { CountryRef, GroupSelection, MissingSpan } from '../../generated/dashboard';
@@ -5,7 +6,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
-import { identityFlags, identityName, type IdentityBoundary, type IdentityOptions } from './identityCell.ts';
+import { identityName, resolveIdentity, type IdentityBoundary } from './identityCell.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   return url ? { kind: 'url', url } : null;
@@ -165,15 +166,10 @@ export function logStatusCell(label: string, statusKind: StatusMarkKind, tone?: 
 
 export function logCountryCell(
   readView: BoundedReadView,
-  entries: readonly { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string }[],
+  entries: readonly { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string; readonly atHour?: number }[],
   atHour: number,
   boundary?: IdentityBoundary,
 ): TableCell {
-  const presentTags = entries.map(e => e.tag).filter((t): t is string => t !== null);
-  const resolvedFlags = presentTags.length
-    ? identityFlags(readView, 'country', presentTags, { atHour, boundary } as IdentityOptions)
-    : [];
-  const byTag = new Map(resolvedFlags.map(f => [f.tag, f]));
   const flags: TableCellFlag[] = [];
   const names: string[] = [];
   for (const entry of entries) {
@@ -181,9 +177,15 @@ export function logCountryCell(
       flags.push({ tag: '?', art: unavailableArt(entry.missingLabel ?? 'Country not recorded'), ...(entry.dimmed ? { dimmed: true } : {}) });
       names.push(entry.missingLabel ?? 'Country not recorded');
     } else {
-      const f = byTag.get(entry.tag)!;
-      flags.push({ ...f, ...(entry.dimmed ? { dimmed: true } : {}) });
-      names.push(identityName(readView, 'country', entry.tag, atHour));
+      const hour = entry.atHour ?? atHour;
+      const who = resolveIdentity(readView, 'country', entry.tag, { atHour: hour, boundary });
+      flags.push({
+        tag: entry.tag,
+        art: who.art ?? flagChoiceArt(readView, undefined),
+        ...(who.artKey ? { artKey: who.artKey } : {}),
+        ...(entry.dimmed ? { dimmed: true } : {}),
+      });
+      names.push(who.name || identityName(readView, 'country', entry.tag, hour));
     }
   }
   const value: Value = names.length ? knownValue(names.join(' · ')) : notApplicable('No country');

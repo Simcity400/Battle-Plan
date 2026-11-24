@@ -5,10 +5,10 @@ import { factionFounders, founderReads, leaderColours } from './factionLeaders.t
 import { factionColours } from '../charts/factionColours.ts';
 
 const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstHour, lastHour });
-const faction = (id: string, leaders: FactionGroup['leaders']): FactionGroup => ({ id, name: null, recordedName: '', firstHour: 0, lastHour: 999, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 999, name: null, reason: 'Faction template not recorded' }], members: [], leaders, incomplete: [] });
+const faction = (id: string, leaders: FactionGroup['leaders']): FactionGroup => ({ id, name: null, recordedName: '', firstHour: 0, lastHour: 999, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 999, name: null, reason: 'Faction template not recorded', token: null }], members: [], leaders, incomplete: [] });
 const reply = (branchId: string, factions: FactionGroup[]): CountryGroupReply => ({
   branchId, humans: [], factions, wars: [], warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [],
-  unobserved: { humans: [], factions: [], wars: [] }, warnings: [],
+  unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [],
 });
 
 test('a faction keeps the colour of the leader it had when first recorded, over every branch', () => {

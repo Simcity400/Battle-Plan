@@ -17,7 +17,7 @@ import type { WidgetProps } from './definitions';
 import type { WidgetSpec } from './model';
 import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import type AirLossDrill from './AirLossDrill.tsx';
-import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { militaryAirIndex } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
 import type { Leaf } from './militaryAirParts.fixture';
@@ -52,7 +52,7 @@ const hooks = `const state = () => globalThis.__airDrill;
   export { createContext, createElement, useContext } from 'react';`;
 
 function fixture() {
-  return { hooks: [] as unknown[], cursor: 0, data: validateMilitaryAirReply(data()),
+  return { hooks: [] as unknown[], cursor: 0, data: data(),
     track: { id: 'track', axisOffset: 1000, source: { id: 'source', revision: 1, metadata: { countries: [], campaignKey: 'campaign' } },
       branch: { id: 'branch', firstHour: 10, lastHour: 20, gaps: [span(17)] } }, hour: -988, playing: false, added: [] as WidgetSpec[],
     groups: { retry() {} } as { retry(): void; data?: unknown },

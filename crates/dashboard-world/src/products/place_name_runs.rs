@@ -353,7 +353,15 @@ mod tests {
         assert_eq!(missing.len(), 2, "an absent stretch is its own run with its reason");
     }
 
+    fn walked_dirty_states(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32, states: &[u32]) -> Vec<(i32, Vec<u32>)> {
+        walked(frames, first, last, states, &[]).into_iter().map(|(hour, states, _)| (hour, states)).collect()
+    }
+
     fn walked_dirty(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32) -> Vec<(i32, Vec<u32>, Vec<u32>)> {
+        walked(frames, first, last, &[7], &[3])
+    }
+
+    fn walked(frames: Vec<replay_frame::frame::DecodedFrame>, first: i32, last: i32, states: &[u32], provinces: &[u32]) -> Vec<(i32, Vec<u32>, Vec<u32>)> {
         let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), dashboard_core::test_fixtures::CAMPAIGN.into(), &[dashboard_core::test_fixtures::records(1, frames)])
             .unwrap()
             .into_timelines(&Default::default())
@@ -364,7 +372,7 @@ mod tests {
         let mut inputs = PlaceInputs::default();
         let mut seen = Vec::new();
         read::walk(query.replay.recording(), run, &PLACE_TABLES, first, last, |hour, readers| {
-            let (states, provinces) = inputs.dirty(readers, hour == first, &[7], &[3]);
+            let (states, provinces) = inputs.dirty(readers, hour == first, states, provinces);
             if !states.is_empty() || !provinces.is_empty() {
                 seen.push((hour, states, provinces));
             }
@@ -393,6 +401,24 @@ mod tests {
         assert_eq!(presence(&truncated, 8), Presence::Unknown, "a truncated read without the row proves nothing");
         let unread = dashboard_core::test_fixtures::source(1, 1_000, Some(1));
         assert_eq!(witnessed_answer::<tables::Provinces>(&unread, 3, named).presence, Presence::Unknown);
+    }
+
+    #[test]
+    fn a_state_that_drops_out_of_a_truncated_read_is_named_again_though_the_missing_count_stays_the_same() {
+        use replay_data::rows::{StateRow, TableRows};
+        use replay_frame::frame::TableView;
+        let frame = |hour: i32| {
+            let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+            let state = |id: u32| StateRow { id, custom_name: b"Sample State".to_vec(), ..StateRow::default() };
+            *frame.tables[TableId::States.index()] = match hour {
+                1_000 => TableView::Complete(TableRows::States(vec![state(7), state(8)])),
+                1_001 => TableView::Truncated { rows: TableRows::States(vec![state(7)]), missing: 1 },
+                _ => TableView::Truncated { rows: TableRows::States(vec![state(8)]), missing: 1 },
+            };
+            frame
+        };
+        let seen = walked_dirty_states((1_000..=1_003).map(frame).collect(), 1_000, 1_003, &[7, 8]);
+        assert_eq!(seen, vec![(1_000, vec![7, 8]), (1_001, vec![7, 8]), (1_002, vec![7, 8])], "at 1002 the witnessed row changed with no value write and the same missing count; both states are named again, and 1003 changes nothing");
     }
 
     #[test]

@@ -6,7 +6,6 @@ import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
 import { VIEWS } from '../dockyard-spending/definition.ts';
 
 export const EQUIPMENT = [{ value: 'air', label: 'Air' }, { value: 'land', label: 'Land' }] as const;
-export type FactoryEquipmentChoice = typeof EQUIPMENT[number]['value'];
 
 const circle = (options: Readonly<Record<string, OptionValue>>) => options.view !== 'months';
 

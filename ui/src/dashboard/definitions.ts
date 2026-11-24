@@ -94,6 +94,7 @@ export interface WidgetMeta {
   captureModes?: readonly CaptureMode[];
   availability?: { product: DeclaredProduct; params: Readonly<Record<string, unknown>> };
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
+  retired?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   variants?: readonly WidgetPreset[];
 }
 
@@ -116,7 +117,7 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 export interface WidgetSubjectMenuProps {
   readonly widget: WidgetSpec;
   readonly runtime: WidgetRuntime;
-  readonly onApply: (widget: WidgetSpec) => void;
+  readonly setOption: (key: string, value: OptionValue) => void;
 }
 
 export type FamilyViewProps = Omit<WidgetProps, 'widget' | 'options'> & {
@@ -129,11 +130,16 @@ export type FamilyViewCountryChipProps = Omit<WidgetCountryChipProps, 'widget'> 
   readonly options: ResolvedViewOptions;
 };
 
+export type FamilyViewSubjectMenuProps = Omit<WidgetSubjectMenuProps, 'widget'> & {
+  readonly widget: RenderedWidget;
+  readonly options: ResolvedViewOptions;
+};
+
 export interface FamilyViewRenderer {
   readonly render?: ComponentType<FamilyViewProps>;
   readonly declaration?: FamilyWidgetDeclaration;
   readonly countryChip?: ComponentType<FamilyViewCountryChipProps>;
-  readonly subjectMenu?: ComponentType<WidgetSubjectMenuProps>;
+  readonly subjectMenu?: ComponentType<FamilyViewSubjectMenuProps>;
   readonly useOptionChoices?: WidgetDefinition['useOptionChoices'];
   readonly usePresets?: WidgetDefinition['usePresets'];
 }
@@ -162,5 +168,10 @@ export function widgetUnavailable(widget: WidgetSpec): string | null {
   if (!definition) return `Widget type “${widget.kind}” is not installed. Its saved settings are retained.`;
   if (widget.configVersion !== definition.version) return `Widget settings version ${widget.configVersion} is unsupported. Its saved settings are retained.`;
   if (!definition.timeModes.includes(widget.time.mode)) return 'This widget does not support that time mode. Choose a supported mode in its settings.';
+  for (const [key, values] of Object.entries(definition.retired ?? {})) {
+    const saved = widget.options?.[key];
+    const name = typeof saved === 'string' && Object.hasOwn(values, saved) ? values[saved] : undefined;
+    if (name !== undefined) return `This widget was saved showing ${name}, which is no longer offered. Its saved settings are retained.`;
+  }
   return null;
 }

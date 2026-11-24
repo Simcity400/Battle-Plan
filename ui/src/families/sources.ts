@@ -4,12 +4,9 @@ import type { Gate } from '../dashboard/regionGate';
 import { coverageSpan, recordedHour, type BoundWindow, type GatedHour } from '../dashboard/regionTime.ts';
 import { authoredHex } from '../charts/palette.ts';
 import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
-import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
+import { type FamilyFactionRun, type HourRanges } from './holders.ts';
 import { countryTagKey, type DrawnFlagEntry, type IdentityIndex } from './identity/index.ts';
 import type { CountryLook, CountryLooksMap } from './looks.ts';
-
-export { nextFactionsChange };
-export type { FamilyFactionRun };
 
 export interface FrozenGate {
   readonly recorded: Gate['recorded'];

@@ -63,6 +63,7 @@ export interface TimelineModelParts {
   readonly labelWidth: number;
   readonly outcomeWidth?: number;
   readonly summaryText?: string | null;
+  readonly summaryPartial?: string | null;
   readonly empty?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly warnings?: readonly string[];
@@ -81,6 +82,7 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     labelWidth: parts.labelWidth,
     ...(parts.outcomeWidth ? { outcomeWidth: parts.outcomeWidth } : {}),
     ...(parts.summaryText ? { summaryText: parts.summaryText } : {}),
+    ...(parts.summaryText && parts.summaryPartial ? { summaryPartial: parts.summaryPartial } : {}),
     ...(parts.empty ? { empty: parts.empty, emptyKind: parts.emptyKind ?? 'empty' } : {}),
     warnings: parts.warnings ?? [],
     ...(parts.notes?.length ? { notes: parts.notes } : {}),

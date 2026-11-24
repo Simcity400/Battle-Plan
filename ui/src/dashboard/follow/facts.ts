@@ -47,10 +47,7 @@ let versions = 0;
 export const samePicture = <V>(a: Picture<V> | null | undefined, b: Picture<V> | null | undefined) => a === b
   || (!!a && !!b && a.parts.length === b.parts.length && a.parts.every((part, at) => part === b.parts[at]));
 
-
 export const followsChannel = <V>(picture: Picture<V>) => picture.parts.some(part => part.channel === 'followed');
-
-export const contentVersion = <V>(picture: Picture<V>) => picture.parts.map(part => part.version).join('.');
 
 export class Facts<V> {
   readonly stats = { completionVisits: 0 };

@@ -6,19 +6,21 @@ import { SettingLabel } from '../../dashboard/settings/SettingLabel';
 import RegionChooser from './RegionChooser.tsx';
 import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice } from './regionChoice.ts';
 import { useRegionList } from './useRegionList.ts';
+import { savedRegionName } from './regionRows.ts';
 import { formatScalar } from '../valueFormat.ts';
 
-export default function RegionsField({ field, value, onChange, client, track }: {
+export default function RegionsField({ field, value, onChange, client, track, hour }: {
   readonly field: Extract<OptionField, { kind: 'regions' }>;
   readonly value: OptionValue;
   readonly onChange: (value: OptionValue) => void;
   readonly client: DashboardClient;
   readonly track: BoundTrack | undefined;
+  readonly hour: number | null;
 }) {
   const choice = readRegionChoice(value);
   const menu = usePopover('start');
-  const list = useRegionList(client, track, true);
-  const nameOf = (id: number) => (list.kind === 'ready' ? list.regions.find(region => region.id === id)?.label : undefined) ?? `Region ${id} · not in this recording`;
+  const list = useRegionList(client, track, true, hour);
+  const nameOf = (id: number) => savedRegionName(list, id);
   const inChart = choice.picks.map(id => ({ id, label: nameOf(id) }));
   const hint = isAutomatic(choice) ? field.automatic : choice.hidden.length
     ? `${formatScalar(choice.hidden.length)} removed from the most active`
@@ -47,7 +49,7 @@ export default function RegionsField({ field, value, onChange, client, track }: 
       {!isAutomatic(choice) && <button type="button" className="button small quiet" onClick={() => onChange(writeRegionChoice(AUTOMATIC_REGIONS))}>Reset to automatic</button>}
     </div>
     <Popover menu={menu} className="region-chooser-popover" aria-label="Add region">
-      {menu.open && <RegionChooser list={list} inChart={inChart} seaOnly={field.sea === true} automatic={isAutomatic(choice)}
+      {menu.open && <RegionChooser list={list} inChart={inChart} active={null} seaOnly={field.sea === true} automatic={isAutomatic(choice)}
         onChoose={(id, charted) => { onChange(writeRegionChoice(charted ? removeRegion(choice, id) : addRegion(choice, id))); menu.close(); }}
         onReset={() => { onChange(writeRegionChoice(AUTOMATIC_REGIONS)); menu.close(); }} />}
     </Popover>

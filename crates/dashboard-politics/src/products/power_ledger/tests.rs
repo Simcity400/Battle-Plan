@@ -1284,6 +1284,13 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
         let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(super::HOLDER_UNRESOLVED), "R4-S6: an unresolved holder in {from}..{to} is not \"not held\"");
     }
+    let refused = Holders::new([("GER".to_owned(), vec![run(FIRST, 139, GER), run(144, LAST, GER)])].into(), vec![(140, 140, "Countries were not read".to_owned())]);
+    let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(refused) };
+    for (from, to) in [(140, 140), (140, 143)] {
+        let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
+        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.reconciliation.reason.as_deref(), Some(super::HOLDER_UNRESOLVED), "R5-S2: an hour whose country tables were unread in {from}..{to} is not \"not held\"");
+    }
 }
 
 #[test]

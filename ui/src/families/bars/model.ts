@@ -1,4 +1,5 @@
 import { artTooltipItem } from '../art/adapters.ts';
+import type { ActiveRegions } from '../../generated/dashboard';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
@@ -210,6 +211,7 @@ export interface BarsModel {
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
+  readonly regionsActive?: ActiveRegions;
   readonly notes?: readonly string[];
   readonly warnings?: readonly string[];
   readonly nextChangeAt?: number;

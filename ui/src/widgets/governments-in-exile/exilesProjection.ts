@@ -40,6 +40,8 @@ export const EXILE_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => (
   ...(column.key === 'air' || column.key === 'leaders' ? { barEligible: true } : {}),
 }));
 
+const UNATTRIBUTED = 'Some governments in exile have no country or host at this date';
+
 const passes = (filter: DeclaredCountryFilter, tag: string | null, hour: number): boolean =>
   tag !== null && (filter.passing === null || !!filter.passing[tag]?.some(([first, last]) => first <= hour && hour <= last));
 
@@ -91,7 +93,7 @@ export const exilesProjection: TableProjection<ExilesProjectionOptions> = regist
     }
     const everyone = options.filter.passing === null;
     const shown = reply.exiles.filter(exile => everyone || passes(options.filter, exile.tag, hour) || passes(options.filter, exile.host, hour));
-    const unattributed = everyone ? 0 : reply.exiles.filter(exile => exile.tag === null && exile.host === null).length;
+    const unattributed = everyone ? 0 : reply.exiles.filter(exile => (exile.tag === null || exile.host === null) && !passes(options.filter, exile.tag, hour) && !passes(options.filter, exile.host, hour)).length;
     let top = 0;
     for (const exile of shown) top = Math.max(top, valueNumber(count(live, exile.id, 'manpower')) ?? 0);
     const boundary = newIdentityBoundary();
@@ -130,9 +132,9 @@ export const exilesProjection: TableProjection<ExilesProjectionOptions> = regist
           : reply.exilesMissing !== null
             ? { empty: 'Not recorded', emptyDetail: reply.exilesMissing, emptyKind: 'unavailable' as const }
             : unattributed
-              ? { empty: 'Not recorded', emptyDetail: 'Some governments in exile have no country at this date', emptyKind: 'unavailable' as const }
+              ? { empty: 'Not recorded', emptyDetail: UNATTRIBUTED, emptyKind: 'unavailable' as const }
               : { empty: 'No governments in exile', emptyKind: 'empty' as const }
-        : {}),
+        : unattributed ? { populationPartial: UNATTRIBUTED } : {}),
       warnings: [...reply.warnings, ...warnings],
     };
   },

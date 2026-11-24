@@ -49,11 +49,11 @@ function countryGroup(value: unknown): CountryGroup | null {
 function selection(value: unknown, dropped?: (count: number) => void): CountrySelection | null {
   if (!object(value)) return null;
   if (value.kind === 'selected' || value.kind === 'all') return { kind: value.kind };
-  if (value.kind === 'factions') return integer(value.count, 1, Number.MAX_SAFE_INTEGER) && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever')
+  if (value.kind === 'factions') return integer(value.count, 1, Number.MAX_SAFE_INTEGER) && (value.membership === 'hour' || value.membership === 'ever')
     ? { kind: 'factions', count: value.count, membership: value.membership } : null;
   if (value.kind === 'group') {
     const group = countryGroup(value.group);
-    return group && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
+    return group && (value.membership === 'hour' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
       ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
   }
   if (value.kind !== 'tags' || !Array.isArray(value.tags)) return null;
@@ -211,11 +211,6 @@ type Merge = (template: DashboardTemplate) => DashboardTemplate;
 function draftUnsaved({ library, template }: PageDraft, merge: Merge): boolean {
   const active = library.layouts.find(entry => entry.id === library.activeId)?.template;
   return !active || stableJson(merge(template)) !== stableJson(merge(active));
-}
-
-export function layoutsUnsaved(pages: Iterable<PageDraft>, merge: Merge = template => template): boolean {
-  for (const page of pages) if (draftUnsaved(page, merge)) return true;
-  return false;
 }
 
 export function unsavedLayoutPages<K>(pages: Iterable<readonly [K, PageDraft]>, merge: Merge = template => template): K[] {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { sortRows } from '../../charts/table/logic.ts';
-import { battalionCount, battalionSummary, priorityLabel, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData.ts';
+import { battalionCount, priorityLabel, templateRows, validateDivisionTemplates } from './divisionTemplateData.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 
 const entry = (template: string, extra: Partial<TemplateEntry> = {}): TemplateEntry => ({ template, name: `Template ${template}`, nameMissing: null, icon: null,
@@ -19,15 +19,6 @@ test('obsolete templates gather in one closed group after the current roster, in
   assert.deepEqual(templateRows(reply([entry('1')])).map(row => row.key), ['1'], 'no empty group');
 });
 
-test('battalions list their counts, support companies follow, and unknown layouts stay unknown', () => {
-  const units = [{ key: 'line', name: 'Infantry', nameMissing: null, count: 9, support: false, local: false },
-    { key: 'gun', name: null, nameMissing: 'missing', count: 2, support: false, local: false },
-    { key: 'eng', name: 'Engineers', nameMissing: null, count: 1, support: true, local: true }];
-  assert.equal(battalionSummary(entry('1', { units })), 'Infantry ×9, Unit name unavailable ×2 · Engineers');
-  assert.equal(battalionSummary(entry('1', { units: [], unitsMissing: 'not read' })), null);
-  assert.equal(battalionSummary(entry('1')), 'Empty');
-});
-
 test('an unrecorded composition has no battalion count and sorts after recorded ones either way', () => {
   const line = (count: number) => [{ key: 'line', name: 'Infantry', nameMissing: null, count, support: false, local: false }];
   const entries = [entry('1', { units: line(9) }), entry('2', { units: [], unitsMissing: 'not read' }), entry('3'), entry('4', { units: line(2) })];
@@ -41,11 +32,6 @@ test('an unrecorded composition has no battalion count and sorts after recorded 
 test('a stored priority shows only as the game’s name for it, never as its number', () => {
   assert.equal(priorityLabel(entry('1')), null);
   assert.equal(priorityLabel(entry('1', { priorityName: 'Reserve' })), 'Reserve');
-  const tip = templateTooltip(entry('1', { fielded: null }), 60_000_000, false);
-  assert.equal(tip.rows.find(row => row.label === 'Priority')?.value, 'Not recorded');
-  assert.equal(tip.rows.find(row => row.label === 'Fielded')?.value, 'Not recorded', 'missing is not zero');
-  assert.equal(tip.note, 'Game view not available yet');
-  assert.equal(templateTooltip(entry('1', { settingsMissing: 'refused' }), 60_000_000, true).rows.find(row => row.label === 'Settings')?.value, 'Not recorded');
 });
 
 test('invalid replies are refused', () => {

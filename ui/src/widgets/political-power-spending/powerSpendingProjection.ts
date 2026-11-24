@@ -81,6 +81,7 @@ function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): {
   const reasons = [
     ...(total.state !== 'known' && total.reason ? [total.reason] : []),
     ...(reply.gainedReason ? [reply.gainedReason] : reply.gainedRaw === null ? ['Gains were not recorded'] : []),
+    ...(currency === 'Command' && reply.lostAtCapReason && reply.lostAtCapReason !== reply.gainedReason ? [reply.lostAtCapReason] : []),
   ];
   return { text: parts.join(' · '), partial: reasons.length ? reasons.join('; ') : null };
 }

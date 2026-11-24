@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CLOSED, drillAction, reduceDrill } from '../../charts/drill/drillState.ts';
 import type { DrillState } from '../../charts/drill/drillState';
-import type { AgencyUpgradesSelection } from '../../dashboard/gameWindows';
+import type { IntelligenceAgencySelection } from '../../dashboard/gameWindows';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { axisAt, regionHour } from '../../dashboard/regionTime.ts';
 import { gameWindowSelectionAt, openGameWindow } from './gameWindowOpen.ts';
@@ -13,8 +13,8 @@ const windowHour = (state: DrillState, playhead: number) =>
   regionHour({ widget: FOLLOWING, action: drillAction(state) }, TRACK, [TRACK], axisAt(playhead));
 
 test('a window opened from a row during playback keeps the clicked subject and hour until the user follows', () => {
-  const clicked: AgencyUpgradesSelection = {
-    kind: 'agencyUpgrades', sourceId: 'src', revision: 'rev', branchId: 'wide', hour: 1000, tag: 'GER',
+  const clicked: IntelligenceAgencySelection = {
+    kind: 'intelligenceAgency', sourceId: 'src', revision: 'rev', branchId: 'wide', hour: 1000, country: 7,
   };
   const { opened, drill } = openGameWindow('scope', 'agency:7', clicked, 'window');
   let state = reduceDrill(CLOSED, drill);

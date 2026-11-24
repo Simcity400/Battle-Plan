@@ -16,14 +16,19 @@ import { LANE_THEME } from '../laneRuntime.fixture.ts';
 import type { ArtHandle, ArtResult } from '../plan.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from '../table/layout.ts';
 import { ART_STATUS_ROW, deriveTableTooltip, resolveTableRows, type TableColumnSpec, type TableModel } from '../table/model.ts';
-import { createTablePicture, drawFamilyTable } from '../table/painter.ts';
+import { createTablePicture, drawFamilyTable, NO_GLIDE } from '../table/painter.ts';
 import { OFFERED, tableSettingsOf, type TableTheme } from '../table/settings.ts';
 import { knownValue } from '../value.ts';
 import { artHoverText } from './adapters.ts';
 import { LaneArtCache } from './laneCache.ts';
 import { createLaneArtProvider, flagArtHandle } from './provider.ts';
-import { fetchArtHandles } from './transport.ts';
-import { readyArt, refusedArt, failedArt, unavailableArt } from './types.ts';
+import { artCalls, settleCall } from './transport.ts';
+import { readyArt, refusedArt, failedArt, unavailableArt, type ArtResolution } from './types.ts';
+
+async function answerHandles(...args: Parameters<typeof artCalls>): Promise<ReadonlyMap<string, ArtResolution>> {
+  const settled = await Promise.all(artCalls(...args).map(call => settleCall(call, args[3])));
+  return new Map(settled.flatMap(map => [...map]));
+}
 
 const THEME: FamilyTheme = { ...LANE_THEME, hatch: '#aa0001', muted: '#aa0002' };
 const BITMAP = { width: 8, height: 8, close() {} };
@@ -77,7 +82,7 @@ function slotForm(ops: readonly Op[], label: string): string {
 const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
 const TRACK = { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never;
 
-async function artAtLane(): Promise<{ readonly resolve: (handle: ArtHandle) => ArtResult; readonly handles: Readonly<Record<string, Readonly<Record<Status, ArtHandle>>>> }> {
+async function artAtLane(): Promise<{ readonly resolve: (handle: ArtHandle) => ArtResult; readonly handles: Readonly<Record<string, Readonly<Record<Status, ArtHandle>>>>; readonly cache: LaneArtCache }> {
   const handles: Record<string, Record<Status, ArtHandle>> = { portrait: {} as Record<Status, ArtHandle>, sprite: {} as Record<Status, ArtHandle>, textIcon: {} as Record<Status, ArtHandle>, flag: {} as Record<Status, ArtHandle> };
   for (const status of STATUSES) {
     handles.portrait![status] = { kind: 'portrait', leader: status, hour: 300 };
@@ -85,7 +90,7 @@ async function artAtLane(): Promise<{ readonly resolve: (handle: ArtHandle) => A
     handles.textIcon![status] = { kind: 'sprite', key: `GFX_text_${status}`, frame: 0, text: true };
   }
   const asked = STATUSES.filter(status => status !== 'pending').flatMap(status => [handles.portrait![status]!, handles.sprite![status]!, handles.textIcon![status]!]);
-  const answered = await fetchArtHandles(async request => request.product === 'unit-leader-portraits'
+  const answered = await answerHandles(async request => request.product === 'unit-leader-portraits'
     ? { portraits: STATUSES.filter(status => status !== 'pending').map(status => {
         const resolution = replyOf(status as Exclude<Status, 'pending'>, status);
         return { reference: status, image: resolution.status === 'ready' ? resolution.url : null, missing: resolution.status === 'ready' ? null : resolution.reason, resolution };
@@ -121,11 +126,11 @@ async function artAtLane(): Promise<{ readonly resolve: (handle: ArtHandle) => A
   cache.requestVisible(['art://ready', 'art://GFX_ready', 'art://GFX_text_ready', 'art://flag']);
   await flush();
   const provider = createLaneArtProvider(cache, { index, resolutions: Object.fromEntries(answered) });
-  return { resolve: handle => provider.resolve(handle), handles };
+  return { resolve: handle => provider.resolve(handle), handles, cache };
 }
 
 test('one art status travels from the product reply to the painted slot and the tooltip: flag, portrait, sprite and text icon, through a table cell, a bars row and a card', async () => {
-  const { resolve, handles } = await artAtLane();
+  const { resolve, handles, cache } = await artAtLane();
   for (const [kind, byStatus] of Object.entries(handles)) {
     const flag = kind === 'flag';
     const label = flag ? 'QQA' : 'HT';
@@ -157,7 +162,7 @@ test('one art status travels from the product reply to the painted slot and the 
       const table = recorder();
       const widths = measureFixedColumnWidths(buildColumnLayouts(columns, tableSettings), tableSettings, THEME as TableTheme, text => text.length * 6);
       const layout = layoutFamilyTable(buildColumnLayouts(columns, tableSettings, widths), 480, { rankShown: false, rankWidth: 0 });
-      drawFamilyTable(table.ctx, { layout, rows, settings: tableSettings, hour: 300, width: 480, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: THEME as TableTheme, now: 0, glideDuration: 0, glide: new Map(), markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, createTablePicture());
+      drawFamilyTable(table.ctx, { layout, rows, settings: tableSettings, hour: 300, width: 480, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: THEME as TableTheme, now: 0, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, artCache: cache, dpr: 1 }, createTablePicture());
       assert.equal(slotForm(table.ops, label), FORM[status], `${at}: table cell slot`);
       const tip = deriveTableTooltip(rows, 'r', columns)!;
       if (flag) {
@@ -172,7 +177,7 @@ test('one art status travels from the product reply to the painted slot and the 
         rows: [{ kind: 'data', key: 'r', label: 'Sample Country', media: flag ? { kind: 'flag', art, tag: 'QQA' } : { kind: 'art', art, resolvedName: 'Heavy Tank' }, color: '#888888', value: { value: knownValue(5), format: 'integer' }, numeric: 5 }],
       };
       const barsDraw = recorder();
-      drawFamilyBars(barsDraw.ctx, { model: bars, layout: layoutFamilyBars(bars, 540, 200, THEME), theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+      drawFamilyBars(barsDraw.ctx, { model: bars, layout: layoutFamilyBars(bars, 540, 200, THEME), theme: THEME, scrollTop: 0, now: 0, glideDuration: 0, artCache: cache });
       assert.equal(slotForm(barsDraw.ops, label), FORM[status], `${at}: bars row slot`);
       const barsTip = deriveBarsTooltip(bars, 'r')?.items?.find(item => item.label === (flag ? 'Flag' : 'Art'))?.missingReason ?? null;
       assert.equal(barsTip, hover, `${at}: bars tooltip`);
@@ -183,7 +188,7 @@ test('one art status travels from the product reply to the painted slot and the 
         rows: [{ kind: 'item', key: 'r', title: knownValue('Sample'), ...(flag ? { flag: { kind: 'flag', art, tag: 'QQA' } } : { art: { kind: 'art', art, name: 'Heavy Tank' } }) }],
       };
       const cardDraw = recorder();
-      drawCards(cardDraw.ctx, { model: card, layout: layoutCards(card, 600, 200), theme: THEME, scrollTop: 0 });
+      drawCards(cardDraw.ctx, { model: card, layout: layoutCards(card, 600, 200), theme: THEME, scrollTop: 0, artCache: cache });
       assert.equal(slotForm(cardDraw.ops, label), FORM[status], `${at}: card slot`);
       const cardTip = deriveCardTooltip(card, 'r')?.items?.find(item => item.label === (flag ? 'Flag' : 'Art'))?.missingReason ?? null;
       assert.equal(cardTip, hover, `${at}: card tooltip`);
