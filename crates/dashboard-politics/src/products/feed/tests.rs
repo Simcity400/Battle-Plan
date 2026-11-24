@@ -999,8 +999,9 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
 
 #[test]
 fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
+    use super::{EventFeedCategory, EventFeedTail, EventFeedTailParams};
     use dashboard_base::{
-        products::LoadContext,
+        products::{LoadContext, Product},
         test_fixtures::{CAMPAIGN, records, source},
     };
     use replay::campaign::Replay;
@@ -1012,11 +1013,9 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             let factions = if hour >= 101 {
-                vec![FactionRow {
-                    id: 1,
-                    name: if hour >= 103 { b"Axis".to_vec() } else { Vec::new() },
-                    ..Default::default()
-                }]
+                let axis = FactionRow { id: 1, name: if hour >= 103 { b"Axis".to_vec() } else { Vec::new() }, ..Default::default() };
+                let templated = FactionRow { id: 2, template_token: Some(77), ..Default::default() };
+                if hour >= 103 { vec![axis, templated] } else { vec![axis] }
             } else {
                 Vec::new()
             };
@@ -1042,10 +1041,31 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     )
     .unwrap();
     let query = dashboard_base::queries::query(&replay_source, 1).unwrap();
-    let (rows, _) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 104, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
+    let (rows, notes, _) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 104, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
     let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
     assert_eq!(joined.hour, 101);
     let item = joined.item.as_ref().expect("faction item");
     assert_eq!(item.name, None, "must not fall back to the faction's later name when unrecorded at the join hour");
+    assert_eq!(item.token, None, "the content identity is the join hour's recorded literal, never the branch's last");
     assert!(item.name_missing.is_some(), "missing dated faction name must carry a reason");
+    assert!(notes.iter().any(|(hour, note)| *hour == 103 && note.contains("template token 77")), "{notes:?}");
+    let ask = |hour: i32| EventFeedTailParams {
+        branch_id: "1".into(),
+        hour: Some(hour),
+        from: None,
+        to: None,
+        countries: None,
+        group: None,
+        search: None,
+        sort: None,
+        offset: None,
+        limit: 64,
+        categories: vec![EventFeedCategory::Diplomacy],
+        exclude: None,
+    };
+    let at = |hour: i32| EventFeedTail::load(&replay_source, &ask(hour), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let early = at(101);
+    assert!(!early.warnings.iter().any(|warning| warning.contains("template token 77")), "a refusal first read at 103 is not in the reply at 101: {:?}", early.warnings);
+    assert!(early.next_change.is_some_and(|next| next <= 103));
+    assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
 }
