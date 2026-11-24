@@ -9,16 +9,22 @@ import { readyArt } from '../art/types.ts';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
-import { knownValue } from '../value.ts';
+import { knownValue, notRecorded } from '../value.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
+import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
 import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
+import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { message } from '../../dashboard/follow/messages.fixture.ts';
+import { seriesHeadValue } from './seriesHelpers.ts';
+import { sampleSeriesValueAt } from './hitTest.ts';
+import { politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 
 const measure: MeasureText = (text: string) => text.length * 6.5;
 const FONT = 'Segoe UI, sans-serif';
@@ -355,7 +361,7 @@ describe('time-chart laneView integration', () => {
       joinMode: 'join',
       measureTitle: 'Political power',
       project: readView => {
-        const icon = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0 });
+        const icon = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true });
         return {
           kind: 'test-pp',
           measureTitle: 'Political power',
@@ -415,8 +421,28 @@ describe('time-chart laneView integration', () => {
 
     assert.equal(painted.surfaces.length, 1);
     assert.ok(painted.fields.audit);
-    assert.ok(painted.fields.artDemands);
+    assert.deepEqual(painted.fields.artDemands?.value, [{ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true }],
+      'the full sprite handle goes to the art request');
     assert.ok(created.ops.some(op => op.startsWith('text:120')));
+    assert.equal((painted.fields.audit?.value as { id?: number }).id, 7, 'the audit field names its id where the host reads it');
+    const stops = painted.fields.nav?.value as readonly (readonly [string, string, number])[];
+    assert.ok(stops.length >= 2, 'the chart publishes navigation stops');
+    assert.equal(stops[stops.length - 1]![0], `plot:${H1936 + 100 * 24}`, 'the last stop is the playhead');
+    assert.ok(stops.every((stop, index) => stop[2] === index));
+    assert.deepEqual(timeChartHostAdapter.deriveAuditRows?.({ auditRows: [{ row: 'GER', key: 'GER', value: '120' }] } as unknown as TimeChartModel, 0, { viewport: {} as never }),
+      [{ row: 'GER', key: 'GER', value: '120' }]);
+    const focused = view.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: { ...binding, focusedKey: `plot:${H1936 + 100 * 24}` },
+      hour: H1936 + 100 * 24,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 0,
+    }, state, () => `c${seq++}`);
+    assert.equal((focused.fields.focusTooltip?.value as { key: string }).key, `focus:plot:${H1936 + 100 * 24}`, 'a focused stop has its tooltip');
     const hit = painted.hit?.([300, 100]);
     assert.ok(hit && (hit.startsWith('plot:') || hit.startsWith('line:')));
 
@@ -570,5 +596,238 @@ describe('time-chart laneView integration', () => {
 
     const afterSeekBack = projectHovered(new Map([['hover', { hour: until + 24, data: breakdown }]]));
     assert.equal(afterSeekBack.hoverDetail, null, 'a hover read after the displayed hour is never shown');
+  });
+});
+
+describe('time-chart picture authority', () => {
+  const plotRect = { left: 0, top: 0, width: 100, height: 100 };
+  const gestureContext = (shown: readonly [number, number], axis: readonly [number, number], zoomWindow: readonly [number, number] | null) => {
+    const asked: (readonly [number, number] | null)[] = [];
+    const setZoomWindow = (next: readonly [number, number] | null) => { asked.push(next); };
+    return {
+      asked,
+      ctx: {
+        fields: { meta: { plotRect, transform: { xFrom: shown[0], xTo: shown[1], axisFrom: axis[0], axisTo: axis[1] } } },
+        viewport: { zoomWindow } as never,
+        extent: [0, 1000] as const,
+        setZoomWindow,
+      },
+    };
+  };
+
+  it('zooms within the drawn axis, not the branch extent', () => {
+    const gestures = createTimeChartGestures();
+    const { ctx, asked } = gestureContext([0, 100], [0, 100], null);
+    assert.equal(gestures.onWheel({ deltaY: -1 } as WheelEvent, [50, 50], ctx), true);
+    assert.deepEqual(asked, [[10, 90]]);
+  });
+
+  it('keeps drag state per mounted chart', () => {
+    const gestures = createTimeChartGestures();
+    const a = gestureContext([10, 40], [0, 100], [10, 40]);
+    const b = gestureContext([0, 100], [0, 100], null);
+    gestures.onDragStart([50, 50], a.ctx);
+    gestures.onDragStart([50, 50], b.ctx);
+    gestures.onDragMove([60, 50], [-10, 0], a.ctx);
+    assert.deepEqual(a.asked, [[13, 43]], 'a second chart starting a drag does not clear the first');
+    gestures.onDragMove([60, 50], [-10, 0], b.ctx);
+    assert.deepEqual(b.asked, [], 'an unzoomed chart does not pan');
+  });
+
+  const pictureModel = (hour: number, extra: Partial<TimeChartModel> = {}): TimeChartModel => ({
+    kind: 'command-power',
+    measureTitle: 'Command power',
+    mode: 'lines',
+    hour,
+    extent: [H1936, H1936 + 1000],
+    yAxis: { format: 'number' },
+    series: [{ id: 'cp', key: 'cp', name: 'Command power', color: '#c76a90', role: 'primary', points: [{ hour: H1936, value: 5 }, { hour, value: 5 }] }],
+    ...extra,
+  });
+
+  it('gives a marker hit its recorded hour', () => {
+    const hour = H1936 + 400;
+    const model = pictureModel(hour, { markers: [{ id: 'spend', hour: H1936 + 200, title: 'Command power spent' }] });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    const placed = layout.markers[0]!;
+    const key = hitTestTimeChart(model, layout, [placed.x, placed.y]);
+    assert.equal(key, `marker:0@${H1936 + 200}`);
+    assert.equal(parseTimeChartHit(key)?.hour, H1936 + 200);
+  });
+
+  it('names a gap by its own identity and never by its future end', () => {
+    const hour = H1936 + 400;
+    const model = pictureModel(hour, {
+      view: { x: [H1936 + 100, hour] },
+      gaps: [
+        { firstHour: H1936 + 10, lastHour: H1936 + 20, reason: 'Earlier gap' },
+        { firstHour: H1936 + 300, lastHour: H1936 + 900, reason: 'Ongoing gap' },
+      ],
+    });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    assert.equal(layout.gaps.length, 1, 'the earlier gap is outside the window');
+    const placed = layout.gaps[0]!;
+    const key = hitTestTimeChart(model, layout, [(placed.x0 + placed.x1) / 2, 100]);
+    assert.equal(key, 'gap:1');
+    const tip = deriveTimeChartTooltip(model, layout, key);
+    assert.equal(tip?.payload?.note, 'Ongoing gap');
+    assert.equal(tip?.payload?.subtitle, `From ${formatDateOnly(H1936 + 300)}`, 'no end after the displayed hour');
+  });
+  it('scales and draws a historical zoom from its own window, never from the current head', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 40 * 24;
+    const line = makeTiledLine('GER', [makeBucket(base, base + 95, 10)]);
+    const bounded = boundTiledSeries(line, displayedHour(hour), { headPoint: { hour, value: 999 }, headValue: knownValue(999) });
+    const model = pictureModel(hour, {
+      view: { x: [base, base + 8] },
+      series: [{ id: 'pp', key: 'pp', name: 'Political power', color: '#e3a83b', role: 'primary', bounded, headValue: 999, headHour: hour,
+        endLabel: { value: '999' } }],
+    });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    assert.ok(layout.yDomain[1] < 100, `y axis from the window: ${layout.yDomain[1]}`);
+    assert.equal(layout.endLabels.length, 0, 'no end label when the playhead is outside the window');
+    const { subpaths } = buildLineSubpaths(model.series[0]!, layout, hour);
+    assert.ok(subpaths.flat().every(([, y]) => y >= layout.top - 1), 'no point drawn at the head value');
+  });
+  it('never turns a missing head or an unwitnessed hour into an exact reading', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 40;
+    const line = makeTiledLine('GER', [makeBucket(base, base + 30, 10, 10, 30, 10, base + 30)]);
+    const missingHead = boundTiledSeries(line, displayedHour(hour), { headValue: notRecorded('Countries not read at this hour') });
+    assert.equal(seriesHeadValue(missingHead, undefined, 0, 0), null, 'an explicitly missing head stays missing');
+    const model = politicalPowerProjection.project(createBoundedReadView({
+      hour,
+      series: new Map([['main', new Map([['GER', missingHead]])]]),
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(model.series[0]!.endLabel, null);
+    assert.deepEqual(model.auditRows, []);
+
+    const gapAfter = boundTiledSeries({ ...line, missing: [{ firstHour: base + 31, lastHour: hour, reason: 'Recording gap' }] }, displayedHour(hour), {});
+    assert.equal(seriesHeadValue(gapAfter, undefined, 0, 0), null, 'a gap after the last reading leaves the head unknown');
+
+    const withHead = { id: 'pp', key: 'pp', name: 'PP', color: '#e3a83b', role: 'primary' as const,
+      bounded: boundTiledSeries(line, displayedHour(base + 30), { headPoint: { hour: base + 30, value: 35 }, headValue: knownValue(35) }), headValue: 35, headHour: base + 30 };
+    const inside = sampleSeriesValueAt(withHead, base + 25, base + 30);
+    assert.notEqual(inside?.value, 35, 'an hour inside the bin is not the head');
+  });
+
+  it('shows the declared exact hover reading, or its missing reason', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 90;
+    const hoverAt = base + 50;
+    const line = { ...makeTiledLine('GER', [makeBucket(base, base + 95, 10, 10, 30, 20, base + 89)]), decimals: 5 };
+    const project = (state: unknown) => {
+      const model = politicalPowerProjection.project(createBoundedReadView({
+        hour,
+        series: new Map([['main', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(20) })]])]]),
+        hovers: new Map([['hover', { hour: hoverAt, data: [state] }]]),
+      }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+      return deriveTimeChartTooltip(model, layoutTimeChart(model, 600, 260, FONT, measure), `plot:${hoverAt}`)?.payload?.items?.[0];
+    };
+    assert.equal(project({ hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
+    assert.equal(project({ hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
+  });
+  it('shows a group member only from the hour it joins, and keeps colours by recorded order', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 50;
+    const line = (tag: string, value: number) => boundTiledSeries(makeTiledLine(tag, [makeBucket(base, base + 50, value)]), displayedHour(hour), { headValue: knownValue(value) });
+    const project = (ger: number, ita: number, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
+      politicalPowerProjection.project(createBoundedReadView({
+        hour,
+        series: new Map([['main', new Map([['GER', line('GER', ger)], ['ITA', line('ITA', ita)]])]]),
+      }), { tags: ['GER', 'ITA'], membership, extent: [base, base + 95], gaps: [], surface: '#111111' });
+
+    const joinsLater = project(50, 100, { GER: [[base, base + 95]], ITA: [[hour + 10, base + 95]] });
+    const ita = joinsLater.series.find(s => s.id === 'ITA')!;
+    assert.equal(ita.headValue, null);
+    assert.equal(ita.endLabel, null);
+    assert.deepEqual(joinsLater.auditRows?.map(row => row.key), ['GER']);
+
+    const gerAhead = project(80, 20, null).series.find(s => s.id === 'GER')!.color;
+    const itaAhead = project(20, 80, null).series.find(s => s.id === 'GER')!.color;
+    assert.equal(itaAhead, gerAhead, 'a country keeps its colour when another overtakes it');
+  });
+  it('repaints a same-hour correction of history', () => {
+    registerTimeChart({
+      kind: 'test-correction',
+      family: 'series',
+      variant: 'line',
+      joinMode: 'join',
+      measureTitle: 'Correction',
+      project: readView => ({
+        kind: 'test-correction',
+        measureTitle: 'Correction',
+        mode: 'lines',
+        hour: readView.hour,
+        extent: [H1936, H1936 + 95],
+        yAxis: { format: 'number' },
+        series: [{ id: 'ger', key: 'GER', name: 'German Reich', color: '#e3a83b', role: 'primary', bounded: readView.series('main')?.get('GER') ?? null }],
+      }),
+    });
+    const created = mockCanvas(600, 240);
+    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const state = new Map<string, unknown>();
+    let seq = 1;
+    const hour = H1936 + 95;
+    const tiled = (rev: number, first: number, last: number) => ({
+      rev, source: 'main', tag: 'GER', head: 'h', decimals: 0, binHours: 96, from: H1936, to: H1936 + 95, width: 1,
+      buckets: [makeBucket(H1936, H1936 + 95, first, 10, 30, last, H1936 + 95)], missing: [], parts: [], marks: null,
+    });
+    const paint = (rev: number, first: number, last: number) => view.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240,
+        tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
+      } satisfies TimeChartBinding,
+      hour,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 0,
+    }, state, () => `c${seq++}`);
+    paint(1, 10, 30);
+    const before = created.ops.filter(op => op === 'clearRect').length;
+    paint(2, 30, 10);
+    assert.equal(created.ops.filter(op => op === 'clearRect').length, before + 1, 'the corrected history is drawn');
+  });
+  it('reads head rows by an index, not a scan per tag', () => {
+    registerTimeChart({
+      kind: 'test-head-index',
+      family: 'series',
+      variant: 'line',
+      joinMode: 'join',
+      measureTitle: 'Index',
+      project: readView => {
+        const bounded = readView.series('main')?.get('ITA') ?? null;
+        const head = bounded?.headValue;
+        return {
+          kind: 'test-head-index', measureTitle: 'Index', mode: 'lines', hour: readView.hour, extent: [H1936, H1936 + 95], yAxis: { format: 'number' },
+          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head && head.kind === 'known' ? String(head.value) : 'none' }],
+        };
+      },
+    });
+    const tags = ['GER', 'ITA'];
+    Object.defineProperty(tags, 'indexOf', { value: () => { throw new Error('scanned the tag list'); } });
+    const answer = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 7n] } }])).answers[0]!.answer;
+    const created = mockCanvas(600, 240);
+    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const hour = H1936 + 95;
+    const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
+      buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
+    const painted = view.paint({
+      widget: 1, subs: [], pictures: [],
+      model: {
+        family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, audit: true, auditId: 1,
+        tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
+        headSourceBySeries: { main: { answerName: 'main', tags } },
+        staticAnswers: { main: answer },
+      } satisfies TimeChartBinding,
+      hour, speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+      inspect: null, now: 0,
+    }, new Map(), () => 'c');
+    assert.deepEqual((painted.fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value), ['7']);
   });
 });
