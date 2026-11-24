@@ -535,6 +535,9 @@ describe('time-chart laneView integration', () => {
 
     const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
     assert.deepEqual(fullLayout.yTicks, [0, 25, 50, 75, 100]);
+    const [first, second] = fullLayout.endLabels;
+    assert.equal(first!.y, first!.anchorY, 'a label at the top of the plot centres on its line');
+    assert.ok(second!.y - first!.y >= 17, 'the next label keeps at least 17 px');
     const minLayout = layoutTimeChart(model, 476, 186, FONT, measure);
     assert.deepEqual(minLayout.yTicks, [0, 50, 100]);
 

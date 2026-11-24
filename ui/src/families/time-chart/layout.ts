@@ -597,7 +597,7 @@ export function layoutTimeChart(
   const endLabels: PlacedEndLabel[] = [];
   if (rawEndLabels.length > 0) {
     const anchors = rawEndLabels.map(l => ({ id: l.id, y: toY(l.anchorVal), height: END_LABEL_HEIGHT }));
-    const placedY = layoutEndLabels(anchors, top + 2, baseY + 4, END_LABEL_GAP);
+    const placedY = layoutEndLabels(anchors, Math.max(2, top - END_LABEL_HEIGHT / 2), baseY + 4, END_LABEL_GAP);
     const lx = playheadX + 10;
     for (const l of rawEndLabels) {
       const anchorY = toY(l.anchorVal);

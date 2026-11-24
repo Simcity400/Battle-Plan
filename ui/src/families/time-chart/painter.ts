@@ -513,14 +513,14 @@ export function drawTimeChart(
     }
     if (label.name) {
       ctx.font = labelNameFont;
-      ctx.fillStyle = textSecondary;
+      ctx.fillStyle = label.valueMuted ? theme.muted : textSecondary;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(label.name, cursorX, label.y + 0.5);
       cursorX += ctx.measureText(label.name).width + 6;
     }
     ctx.font = labelValueFont;
-    ctx.fillStyle = label.valueMuted ? textSecondary : (label.valueColor ?? theme.text);
+    ctx.fillStyle = label.valueMuted ? theme.muted : (label.valueColor ?? theme.text);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(label.value, cursorX, label.y + 0.5);
