@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import type { TrainingDivision, TrainingQueueReply } from '../../generated/dashboard';
+import { trainingQueueProjection, validateTrainingQueue } from './trainingQueueProjection.ts';
+
+const division = (line: string, extra: Partial<TrainingDivision> = {}): TrainingDivision => ({
+  line, ordinal: 0, name: `${line}. Infanterie-Division`, nameMissing: null, trainingRaw: '92000', maxTrainingRaw: '100000',
+  manpower: 11760, manpowerNeeded: 11760, maxManpower: 11760, contributors: [], equipment: [], need: [], needMissing: null,
+  comparisonMissing: null, equipmentFillRaw: '100000', halted: false, ...extra,
+});
+
+const reply = (extra: Partial<TrainingQueueReply> = {}): TrainingQueueReply => ({
+  tag: 'GER', readHour: 40, missing: null, inTraining: 34, warnings: [],
+  orders: [{
+    order: '1', ordinal: 0, template: '5', templateName: 'Infantry 1940 A', templateMissing: null, icon: null, iconMissing: 'Template icon not recorded',
+    amount: 6, priority: 1, priorityName: 'Medium equipment priority', priorityMissing: null, location: 9, locationName: 'Brandenburg', locationMissing: null,
+    closed: false, exile: null, manpower: 23520, manpowerNeeded: 23520,
+    divisions: [division('197'), division('198', { equipmentFillRaw: null, comparisonMissing: 'A held design’s equipment type is unresolved' })],
+  }],
+  ...extra,
+});
+
+const project = (raw: unknown) => trainingQueueProjection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), {});
+
+test('a template row carries the product’s manpower total and the title its divisions in training; its divisions their own figures', () => {
+  const model = project(reply());
+  const [order] = model.rows;
+  assert.deepEqual(order!.cells.division!.value, knownValue('Infantry 1940 A'));
+  assert.deepEqual(order!.cells.manpower!.value, knownValue('23,520 / 23,520'));
+  assert.deepEqual(order!.cells.training!.value, notApplicable('Shown on each division'));
+  assert.equal(model.summaryPill, '34 in training');
+  const [first, second] = order!.children!;
+  assert.deepEqual([first!.cells.training!.value, first!.cells.equipment!.value], [knownValue(92), knownValue(100)]);
+  assert.deepEqual(second!.cells.equipment!.value, notRecorded('A held design’s equipment type is unresolved'), 'an unmeasurable fill is missing with its reason, never 0');
+});
+
+test('a queue not read near the hour is unavailable with the reason, and an old reply without the product totals is refused', () => {
+  const missing = project(reply({ orders: [], inTraining: null, missing: 'The training queue was not read within a day of this hour' }));
+  assert.deepEqual([missing.rows.length, missing.emptyKind, missing.summaryPill], [0, 'unavailable', undefined]);
+  const { inTraining: _total, ...old } = reply();
+  assert.throws(() => validateTrainingQueue(old));
+});

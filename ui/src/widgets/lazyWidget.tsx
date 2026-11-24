@@ -1,35 +1,30 @@
-import { useMemo, type ComponentType } from 'react';
+import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
 import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
-import { useFamilyViewSpec } from '../families/host/useFamilyViewSpec';
 import type { FamilyViewModule } from '../families/manifest';
-import { activeFamilyView } from './manifest';
+import type { WidgetSpec } from '../dashboard/model';
+import { resolveWidgetActiveView } from './manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
 const nothing = () => null;
 const declaredRenderers = new WeakMap<object, ComponentType<WidgetProps>>();
 
-function rendererForDeclaration(declaration: FamilyWidgetDeclaration): ComponentType<WidgetProps> {
+function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<WidgetProps> {
   let held = declaredRenderers.get(declaration);
   if (!held) {
     const spec: FamilyViewModule = {
       family: declaration.family,
       kind: declaration.kind,
+      view,
       projection: declaration.projection,
       declaration,
     };
     held = (props: WidgetProps) => {
-      const entry = useMemo(() => activeFamilyView(spec.kind, props.widget.options), [props.widget.options]);
-      const active = useFamilyViewSpec(entry);
-      if (entry && !active.spec) {
-        return active.failed ? <WidgetState kind="unavailable" message="Widget renderer unavailable." /> : <WidgetState kind="loading" label="Loading widget…" />;
-      }
-      const shown = active.spec ?? spec;
-      const Host = familyHost(shown.family);
-      return Host ? <Host spec={shown} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${shown.family}`} />;
+      const Host = familyHost(spec.family);
+      return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
     };
     declaredRenderers.set(declaration, held);
   }
@@ -39,18 +34,30 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration): Component
 export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer {
   const renderer: WidgetRenderer = {};
   for (const slot of slots) {
-    const pick = (loaded: WidgetRenderer | undefined) => {
+    const pick = (view: string, loaded: WidgetRenderer | undefined) => {
       if (slot === 'render' && !loaded?.render && loaded?.declaration) {
-        return rendererForDeclaration(loaded.declaration) as ComponentType<object>;
+        return rendererForDeclaration(loaded.declaration, view) as ComponentType<object>;
       }
       return (loaded?.[slot] as ComponentType<object> | undefined) ?? nothing;
     };
-    const wrapper = loadable<object>(
-      async () => pick(await loadWidgetRenderer(kind)),
-      () => slot === 'render' ? <WidgetState kind="loading" label="Loading widget…" /> : null,
-      () => { const loaded = loadedWidgetRenderer(kind); return loaded && pick(loaded); },
-    );
-    Object.assign(renderer, { [slot]: wrapper });
+    const byView = new Map<string, ComponentType<object>>();
+    const forView = (view: string) => {
+      let held = byView.get(view);
+      if (!held) {
+        held = loadable<object>(
+          async () => pick(view, await loadWidgetRenderer(kind, view)),
+          () => slot === 'render' ? <WidgetState kind="loading" label="Loading widget…" /> : null,
+          () => { const loaded = loadedWidgetRenderer(kind, view); return loaded && pick(view, loaded); },
+        );
+        byView.set(view, held);
+      }
+      return held;
+    };
+    const ViewSlot = (props: { readonly widget?: WidgetSpec }) => {
+      const Slot = forView(resolveWidgetActiveView(kind, props.widget?.options));
+      return <Slot {...props} />;
+    };
+    Object.assign(renderer, { [slot]: ViewSlot });
   }
   return renderer;
 }

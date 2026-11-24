@@ -79,17 +79,20 @@ export interface FamilyPointerBindingOptions {
   readonly inspectToken?: (key: string) => string;
   readonly onHoverChange?: (hit: ParsedFamilyHit | null) => void;
   readonly gestures?: FamilyPointerGestures;
-  readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction, hit?: ParsedFamilyHit | null) => void;
-  readonly onContextMenu?: (key: string | null, clientX: number, clientY: number, hit?: ParsedFamilyHit | null) => boolean;
+  readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => void;
+  readonly onContextMenu?: (key: string | null, clientX: number, clientY: number, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => boolean;
 }
 
-interface PointerDownState {
+interface PictureStamp {
+  readonly installedId: number | undefined;
+  readonly owner: string | undefined;
+}
+
+interface PointerDownState extends PictureStamp {
+  picture: InstalledPicture | null;
   key: string | null;
   hit: ParsedFamilyHit | null;
-  installedId: number | undefined;
-  owner: string | undefined;
   resolved: boolean;
-  pendingUp: boolean;
   pointerId: number;
   x: number;
   y: number;
@@ -149,7 +152,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     }
   };
 
-  const matchesInstalled = (meta: PointerHitMeta | undefined, down?: PointerDownState): boolean => {
+  const matchesInstalled = (meta: PointerHitMeta | undefined, down?: PictureStamp): boolean => {
     const cur = installedNow();
     if (cur) {
       if (meta?.owner !== undefined && meta.owner !== cur.owner) return false;
@@ -170,11 +173,11 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   };
 
   const dispatchActivate = (key: string, toggle: boolean, down: PointerDownState) => {
-    const cur = installedNow();
     if (getInstalled) {
-      if (!cur) return;
-      if (down.owner !== undefined && cur.owner !== down.owner) return;
-      const base = resolveInstalledAction(cur, key, toggle);
+      const cur = installedNow();
+      const picture = down.picture;
+      if (!cur || !picture || cur.owner !== picture.owner) return;
+      const base = resolveInstalledAction(picture, key, toggle);
       if (!base) return;
       const hit = down.hit;
       const action: InstalledAction = {
@@ -184,10 +187,10 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
         ...(hit?.label !== undefined ? { label: hit.label } : {}),
         ...(hit?.meta !== undefined ? { meta: hit.meta } : {}),
       };
-      onActivate(action.subject, toggle, action, hit);
+      onActivate(action.subject, toggle, action, hit, picture);
       return;
     }
-    onActivate(key, toggle, undefined, down.hit);
+    onActivate(key, toggle, undefined, down.hit, null);
   };
 
   const onPointerMove = (event: PointerEvent) => {
@@ -268,20 +271,19 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     if (getInstalled && !snap) return;
     const x = event.clientX, y = event.clientY;
     const point = toPoint(x, y);
-    const currentHit = inspectedHitRef?.current ?? null;
     const down: PointerDownState = {
-      key: inspectedKeyRef.current,
-      hit: currentHit,
+      picture: snap,
+      key: null,
+      hit: null,
       installedId: snap?.id,
       owner: snap?.owner,
-      resolved: !!inspectedKeyRef.current,
-      pendingUp: false,
+      resolved: false,
       pointerId: event.pointerId,
       x,
       y,
       startPoint: point,
       button: event.button,
-      toggle: currentHit?.toggle === true,
+      toggle: false,
       cancelled: false,
       dragging: false,
     };
@@ -292,26 +294,18 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
         down.key = null;
         down.hit = null;
         down.resolved = true;
-        if (pointerDown === down && down.pendingUp) pointerDown = null;
         return;
       }
-      const parsed = parseHit(hitKey, installedNow());
+      const parsed = parseHit(hitKey, down.picture);
       const rowKey = parsed?.key ?? null;
-      const isToggle = parsed?.toggle === true;
       down.key = rowKey;
       down.hit = parsed;
-      down.toggle = isToggle;
+      down.toggle = parsed?.toggle === true;
       down.resolved = true;
       if (parsed && rowKey) {
         inspectedKeyRef.current = rowKey;
         notifyHover(parsed);
         pipeline.inspect(pipe, tokenFor(parsed));
-      }
-      if (down.pendingUp) {
-        if (pointerDown === down) pointerDown = null;
-        if (!isBlocked() && down.button === 0 && rowKey) {
-          dispatchActivate(rowKey, isToggle, down);
-        }
       }
     });
   };
@@ -340,13 +334,16 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       pointerDown = null;
       return;
     }
-    if (!down.resolved) {
-      down.pendingUp = true;
-      return;
-    }
     pointerDown = null;
-    if (!down.key) return;
-    dispatchActivate(down.key, down.toggle, down);
+    const picture = installedNow();
+    if (getInstalled && !picture) return;
+    const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
+    pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
+      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      const released = parseHit(hitKey, picture);
+      if (!released || !down.resolved || released.key !== down.key) return;
+      dispatchActivate(released.key, released.toggle === true, { ...down, picture, hit: released });
+    });
   };
 
   const onPointerCancel = () => {
@@ -360,12 +357,21 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
 
   const handleContextMenu = (event: MouseEvent) => {
     if (isBlocked() || !onContextMenu) return;
-    const key = inspectedKeyRef.current
-      ?? (focusInsideRef.current && accessibleRef.current?.contains(event.target as Node) ? focusedKeyRef.current : null);
-    const hit = inspectedKeyRef.current !== null ? (inspectedHitRef?.current ?? null) : null;
-    if (onContextMenu(key, event.clientX, event.clientY, hit)) {
-      event.preventDefault();
+    const target = event.target as Node | null;
+    if (focusInsideRef.current && !bodyNode.contains(target) && accessibleRef.current?.contains(target)) {
+      if (onContextMenu(focusedKeyRef.current, event.clientX, event.clientY, null, installedNow())) event.preventDefault();
+      return;
     }
+    const picture = installedNow();
+    if (getInstalled && !picture) return;
+    event.preventDefault();
+    const { clientX, clientY } = event;
+    const stamp: PictureStamp = { installedId: picture?.id, owner: picture?.owner };
+    pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
+      if (isBlocked() || !matchesInstalled(hitMeta, stamp)) return;
+      const parsed = parseHit(hitKey, picture);
+      onContextMenu(parsed?.key ?? null, clientX, clientY, parsed, picture);
+    });
   };
 
   const onWheel = gestures?.onWheel
