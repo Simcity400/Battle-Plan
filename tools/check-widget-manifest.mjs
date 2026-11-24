@@ -99,12 +99,12 @@ for (const meta of widgetMetas) {
   if (familyEntries.length > 0 && legacyEntries.length === 0 && meta.playsBackDated !== undefined) {
     errors.push(`family kind "${meta.kind}" must not set playsBackDated in definition.ts`);
   }
-  if (familyEntries.length > 0 && legacyEntries.length > 0) {
+  if (familyEntries.length + legacyEntries.length > 1) {
     if (familyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
-      errors.push(`partially ported kind "${meta.kind}" cannot use default view in FAMILY_VIEWS`);
+      errors.push(`multi-view kind "${meta.kind}" cannot use default view in FAMILY_VIEWS`);
     }
     if (legacyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
-      errors.push(`partially ported kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
+      errors.push(`multi-view kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
     }
     const viewOptionKey = familyEntries.find(entry => entry.viewOption)?.viewOption ?? meta.viewSwitch?.option ?? 'view';
     const viewField = meta.options?.find(field => field.key === viewOptionKey);
