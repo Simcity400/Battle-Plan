@@ -153,15 +153,19 @@ export interface MediaSlotSpec {
   readonly dimmed?: boolean;
 }
 
+export interface ArtIconLookup {
+  get(url: string): ImageBitmap | null | undefined;
+}
+
 export interface MediaSlotDrawOptions {
   readonly artCache?: LaneArtCache;
-  readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
+  readonly icons?: ArtIconLookup;
   readonly radius?: number;
 }
 
 export function resolveCachedArt(
   art: ArtResult,
-  options?: { readonly artCache?: LaneArtCache; readonly icons?: ReadonlyMap<string, ImageBitmap | null>; readonly iconUrl?: string | null },
+  options?: { readonly artCache?: LaneArtCache; readonly icons?: ArtIconLookup; readonly iconUrl?: string | null },
 ): ArtResult {
   if (art.status === 'ready' && !art.bitmap) {
     const cached = options?.artCache?.resolve(art);

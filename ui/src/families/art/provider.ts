@@ -44,7 +44,8 @@ export function artUrlOf(
     if (input.iconUrl) return input.iconUrl;
     return input.art?.status === 'ready' && input.art.url ? input.art.url : null;
   }
-  return artUrlForHandle(input, index, resolutions);
+  if ('kind' in input) return artUrlForHandle(input, index, resolutions);
+  return null;
 }
 
 export function collectArtUrls(
