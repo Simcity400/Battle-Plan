@@ -882,12 +882,12 @@ impl FrameEncoder {
                         "untracked slice update does not name the current encoder state",
                     ));
                 }
-                if !update.fits_untracked(table) {
+                if !update.ranges.is_empty() || !update.fits_meta(table) {
                     return Err(invalid("untracked slice update is invalid"));
                 }
                 validate_rows(table, update.rows()).map_err(row_validation)?;
                 validate_recorded(update.rows()).map_err(row_encoding)?;
-                update.owners.is_empty() && update.rows.is_empty()
+                update.owners.is_empty() && update.keys.is_empty() && update.rows.is_empty()
             }
             TableInput::SliceUpdate { token, update } => {
                 self.validate_comparison(*token, table, branch, hour, keyframe)?;

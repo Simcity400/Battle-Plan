@@ -13,6 +13,13 @@ use std::{
 
 const SITES: usize = MUTATIONS.len();
 const CAPACITY_SITE: usize = 24;
+const STAT_BUILDING_NAMED: usize = 0;
+const STAT_BUILDING_UNNAMED: usize = 1;
+const STAT_UNCHANGED_CAPACITIES: usize = 2;
+const STAT_DAILY_CERTIFIED: usize = 3;
+const STAT_DAILY_PER_CALL: usize = 4;
+const STAT_UNTIMED_CAPACITIES: usize = 5;
+const STATS: usize = 6;
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 static DAILY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -44,10 +51,7 @@ pub struct Watches {
     calls: CallCounters<SITES>,
     origin_calls: AtomicU64,
     unnamed: AtomicU64,
-    buildings: [AtomicU64; 2],
-    unchanged_capacities: AtomicU64,
-    daily_passes: [AtomicU64; 2],
-    untimed_capacities: AtomicU64,
+    stats: CallCounters<STATS>,
     hooks: AtomicBool,
     forwarder: AtomicBool,
 }
@@ -80,10 +84,7 @@ impl Watches {
             calls: CallCounters::new(),
             origin_calls: AtomicU64::new(0),
             unnamed: AtomicU64::new(0),
-            buildings: [const { AtomicU64::new(0) }; 2],
-            unchanged_capacities: AtomicU64::new(0),
-            daily_passes: [const { AtomicU64::new(0) }; 2],
-            untimed_capacities: AtomicU64::new(0),
+            stats: CallCounters::new(),
             hooks: AtomicBool::new(false),
             forwarder: AtomicBool::new(false),
         }
@@ -164,7 +165,7 @@ impl Watches {
         if changed {
             return self.notify(site, target());
         }
-        self.unchanged_capacities.fetch_add(1, Ordering::Relaxed);
+        self.stats.increment(STAT_UNCHANGED_CAPACITIES);
         None
     }
 
@@ -172,12 +173,12 @@ impl Watches {
         if flags & engine_native::cprovince::buildings::STATE_FLAG == 0 {
             return None;
         }
-        self.buildings[0].fetch_add(1, Ordering::Relaxed);
+        self.stats.increment(STAT_BUILDING_NAMED);
         Some(self.mark(&self.states, (location != 0).then_some(location as usize)))
     }
 
     fn building_unnamed(&self) -> Dirty<'_> {
-        self.buildings[1].fetch_add(1, Ordering::Relaxed);
+        self.stats.increment(STAT_BUILDING_UNNAMED);
         self.states.notify_every()
     }
 
@@ -687,20 +688,20 @@ unsafe extern "system" fn daily_refresh_base_capacities(
             )
         })
         .flatten();
-    WATCHES.daily_passes[usize::from(unchanged.is_none())].fetch_add(1, Ordering::Relaxed);
+    WATCHES.stats.increment(if unchanged.is_none() {
+        STAT_DAILY_PER_CALL
+    } else {
+        STAT_DAILY_CERTIFIED
+    });
     let _pass = unchanged.map(|stores| {
-        WATCHES
-            .unchanged_capacities
-            .fetch_add(stores, Ordering::Relaxed);
+        WATCHES.stats.add(STAT_UNCHANGED_CAPACITIES, stores);
         CertifiedPass::enter()
     });
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(DAILY_ORIGINAL.load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
     if let Some(stores) = unchanged {
-        WATCHES
-            .untimed_capacities
-            .fetch_add(stores, Ordering::Relaxed);
+        WATCHES.stats.add(STAT_UNTIMED_CAPACITIES, stores);
     }
     result
 }
@@ -1155,7 +1156,7 @@ mod tests {
         assert_eq!(take(&watches, Family::Sites), (epoch, vec![]));
         drop(watches.capacity(site, true, || Target::Site(Some(5))));
         assert_eq!(take(&watches, Family::Sites), (epoch, vec![5]));
-        assert_eq!(watches.unchanged_capacities.load(Ordering::Relaxed), 1);
+        assert_eq!(watches.stats.total(STAT_UNCHANGED_CAPACITIES), 1);
         drop(watches.notify(site, Target::EverySite));
         assert_ne!(take(&watches, Family::Sites).0, epoch);
     }
@@ -1317,23 +1318,23 @@ mod tests {
         assert!(epoch.is_some());
         let counts = || {
             (
-                WATCHES
-                    .daily_passes
-                    .each_ref()
-                    .map(|n| n.load(Ordering::Relaxed)),
-                WATCHES.unchanged_capacities.load(Ordering::Relaxed),
+                [
+                    WATCHES.stats.total(STAT_DAILY_CERTIFIED),
+                    WATCHES.stats.total(STAT_DAILY_PER_CALL),
+                ],
+                WATCHES.stats.total(STAT_UNCHANGED_CAPACITIES),
             )
         };
         let ([certified, per_call], unchanged) = counts();
         let timed = || crate::hook_timing::counts(crate::hook_timing::Family::RaidChanges).calls;
         let timed_before = timed();
-        let untimed_before = WATCHES.untimed_capacities.load(Ordering::Relaxed);
+        let untimed_before = WATCHES.stats.total(STAT_UNTIMED_CAPACITIES);
         let world = DailyWorld::new();
         collector_extended_support::hourly::in_tick(|| world.pass());
         assert_eq!(counts(), ([certified + 1, per_call], unchanged + 4));
         assert_eq!(timed(), timed_before + 1);
         assert_eq!(
-            WATCHES.untimed_capacities.load(Ordering::Relaxed),
+            WATCHES.stats.total(STAT_UNTIMED_CAPACITIES),
             untimed_before + 4
         );
         assert_eq!(FLIGHTS_SEEN.load(Ordering::SeqCst), 1);
@@ -1347,7 +1348,7 @@ mod tests {
         assert_eq!(counts(), ([certified + 1, per_call + 1], unchanged + 8));
         assert_eq!(timed(), timed_before + 6);
         assert_eq!(
-            WATCHES.untimed_capacities.load(Ordering::Relaxed),
+            WATCHES.stats.total(STAT_UNTIMED_CAPACITIES),
             untimed_before + 4
         );
         assert_eq!(FLIGHTS_SEEN.load(Ordering::SeqCst), 1);
@@ -1359,7 +1360,7 @@ mod tests {
         assert_eq!(counts(), ([certified + 1, per_call + 2], unchanged + 8 + 3));
         assert_eq!(timed(), timed_before + 11);
         assert_eq!(
-            WATCHES.untimed_capacities.load(Ordering::Relaxed),
+            WATCHES.stats.total(STAT_UNTIMED_CAPACITIES),
             untimed_before + 4
         );
         assert_eq!(FLIGHTS_SEEN.load(Ordering::SeqCst), 1);

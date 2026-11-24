@@ -85,11 +85,15 @@ pub struct FrameWriter {
     order: Vec<usize>,
     retried: Vec<u64>,
     owners: Vec<Option<Owners>>,
-    slice_same: Vec<bool>,
+    slice_same: Vec<SliceCheck>,
     last: Option<(BranchId, i32)>,
     dense: Vec<AtomicI32>,
     intern_until: Vec<i32>,
-    quiet_hours: Vec<u8>,
+    recycle_tables: Vec<TableHour>,
+    recycle_shared: Vec<Option<Arc<TableRows>>>,
+    recycle_slices: Vec<Option<Slice>>,
+    recycle_statuses: Vec<Status>,
+    recycle_read: Vec<u64>,
 }
 
 enum Owners {
@@ -144,6 +148,30 @@ impl Owners {
         rows.visit(Extract(id))
     }
 
+    fn from_owner_rows(id: TableId, rows: &TableRows, slice_owners: &[u32]) -> io::Result<Self> {
+        struct Extract<'a>(TableId, &'a [u32]);
+        impl RowsVisit for Extract<'_> {
+            type Output = io::Result<Owners>;
+
+            fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+                let id = self.0;
+                let owners = self.1;
+                let count = rows
+                    .iter()
+                    .filter(|row| owners.binary_search(&owner_of(id, row.key())).is_ok())
+                    .count();
+                Owners::from_keys(
+                    id,
+                    count,
+                    rows.iter()
+                        .map(RowCodec::key)
+                        .filter(|&key| owners.binary_search(&owner_of(id, key)).is_ok()),
+                )
+            }
+        }
+        rows.visit(Extract(id, slice_owners))
+    }
+
     fn sort_unstable(&mut self) {
         match self {
             Self::U64(keys) => keys.sort_unstable(),
@@ -152,9 +180,16 @@ impl Owners {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct SliceCheck {
+    same: bool,
+    keys_unchanged: bool,
+}
+
 enum Slice {
     Same,
     Update { owners: Vec<u32>, keys: Owners },
+    Rebuild,
 }
 
 pub struct FrameHour {
@@ -260,13 +295,17 @@ impl FrameWriter {
             order: engine_allocation::collect_vec(0..TABLE_COUNT)?,
             retried: engine_allocation::filled(TABLE_COUNT, 0)?,
             owners: engine_allocation::default_vec(TABLE_COUNT)?,
-            slice_same: engine_allocation::filled(TABLE_COUNT, false)?,
+            slice_same: engine_allocation::filled(TABLE_COUNT, SliceCheck::default())?,
             last: None,
             dense: engine_allocation::collect_vec(
                 (0..TABLE_COUNT).map(|_| AtomicI32::new(i32::MIN)),
             )?,
             intern_until: engine_allocation::filled(TABLE_COUNT, i32::MIN)?,
-            quiet_hours: engine_allocation::filled(TABLE_COUNT, 0)?,
+            recycle_tables: Vec::new(),
+            recycle_shared: Vec::new(),
+            recycle_slices: Vec::new(),
+            recycle_statuses: Vec::new(),
+            recycle_read: Vec::new(),
         })
     }
 
@@ -321,12 +360,19 @@ impl FrameWriter {
         if lanes.count() > 1 {
             self.side_by_side(input, recorded, &previous, changed, keyframe, &read, mode, lanes)?;
         }
-        let mut tables = Vec::new();
+        let mut tables = std::mem::take(&mut self.recycle_tables);
+        tables.clear();
         engine_allocation::reserve(&mut tables, TABLE_COUNT)?;
-        let mut shared = Vec::new();
+        let mut shared = std::mem::take(&mut self.recycle_shared);
+        shared.clear();
         engine_allocation::reserve(&mut shared, TABLE_COUNT)?;
-        let mut slices = Vec::new();
+        let mut slices = std::mem::take(&mut self.recycle_slices);
+        slices.clear();
         engine_allocation::reserve(&mut slices, TABLE_COUNT)?;
+        let mut held_statuses = std::mem::take(&mut self.recycle_statuses);
+        held_statuses.clear();
+        let mut held_read = std::mem::take(&mut self.recycle_read);
+        held_read.clear();
         let mut statuses = Vec::new();
         engine_allocation::reserve(&mut statuses, TABLE_COUNT)?;
         let mut samples = Vec::new();
@@ -427,16 +473,28 @@ impl FrameWriter {
             });
             slices.push(match table {
                 TableInput::SliceUpdate { update, .. }
-                    if owner_slice(update) && previous.get(index).copied().flatten().is_none() =>
+                    if update.ranges.is_empty()
+                        && previous.get(index).copied().flatten().is_none() =>
                 {
-                    if slice_same[index] && owners[index].is_some() {
+                    let check = slice_same[index];
+                    if update.owners.is_empty() {
+                        (owners[index].is_some() && check.same).then_some(Slice::Same)
+                    } else if check.same && owners[index].is_some() {
                         Some(Slice::Same)
-                    } else {
+                    } else if update.keys.is_empty() {
                         let id = TableId::ALL[index];
                         Some(Slice::Update {
                             owners: engine_allocation::copy_vec(update.owners())?,
                             keys: Owners::from_rows(id, update.rows())?,
                         })
+                    } else if check.keys_unchanged && owners[index].is_some() {
+                        let id = TableId::ALL[index];
+                        Some(Slice::Update {
+                            owners: engine_allocation::copy_vec(update.owners())?,
+                            keys: Owners::from_owner_rows(id, update.rows(), update.owners())?,
+                        })
+                    } else {
+                        Some(Slice::Rebuild)
                     }
                 }
                 _ => None,
@@ -446,8 +504,10 @@ impl FrameWriter {
             table_ns[index] += wall;
         }
         let appended = dictionary.take_appended_range();
-        let held_statuses = engine_allocation::copy_vec(&statuses)?;
-        let held_read = engine_allocation::copy_vec(&read)?;
+        engine_allocation::reserve(&mut held_statuses, statuses.len())?;
+        held_statuses.extend_from_slice(&statuses);
+        engine_allocation::reserve(&mut held_read, read.len())?;
+        held_read.extend_from_slice(&read);
         let Metrics {
             total_ns,
             pool_bytes,
@@ -602,15 +662,27 @@ impl FrameWriter {
         let FrameHour {
             branch,
             hour: at,
-            tables: hours,
-            shared,
-            slices,
+            tables: mut hours,
+            mut shared,
+            mut slices,
+            mut statuses,
+            mut read,
             ..
         } = hour;
-        if let Err(error) = self.apply(at, hours, shared, slices, lanes) {
+        if let Err(error) = self.apply(at, &mut hours, &mut shared, &mut slices, lanes) {
             self.poisoned = true;
             return Err(error);
         }
+        hours.clear();
+        self.recycle_tables = hours;
+        shared.clear();
+        self.recycle_shared = shared;
+        slices.clear();
+        self.recycle_slices = slices;
+        statuses.clear();
+        self.recycle_statuses = statuses;
+        read.clear();
+        self.recycle_read = read;
         self.last = Some((branch, at));
         self.starting = false;
         self.pending = false;
@@ -631,9 +703,9 @@ impl FrameWriter {
     fn apply(
         &mut self,
         at: i32,
-        mut hours: Vec<TableHour>,
-        mut shared: Vec<Option<Arc<TableRows>>>,
-        mut slices: Vec<Option<Slice>>,
+        hours: &mut [TableHour],
+        shared: &mut [Option<Arc<TableRows>>],
+        slices: &mut [Option<Slice>],
         lanes: &dyn Lanes,
     ) -> io::Result<()> {
         let Self {
@@ -644,7 +716,6 @@ impl FrameWriter {
             order,
             costs,
             table_ns,
-            quiet_hours,
             ..
         } = self;
         let failed = Mutex::new(None);
@@ -653,21 +724,19 @@ impl FrameWriter {
             let held = Disjoint::new(held);
             let owners = Disjoint::new(owners);
             let wall_slots = Disjoint::new(walls);
-            let quiet_slots = Disjoint::new(quiet_hours);
-            let hours = Disjoint::new(&mut hours);
-            let shared = Disjoint::new(&mut shared);
-            let slices = Disjoint::new(&mut slices);
+            let hours = Disjoint::new(hours);
+            let shared = Disjoint::new(shared);
+            let slices = Disjoint::new(slices);
             let next = AtomicUsize::new(0);
             let order = &**order;
             let commit = |index: usize| {
                 // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
-                let (writer, held, owners, wall, quiet, hour, shared, slice) = unsafe {
+                let (writer, held, owners, wall, hour, shared, slice) = unsafe {
                     (
                         writers.get_mut(index),
                         held.get_mut(index),
                         owners.get_mut(index),
                         wall_slots.get_mut(index),
-                        quiet_slots.get_mut(index),
                         hours.get_mut(index),
                         shared.get_mut(index),
                         slices.get_mut(index),
@@ -696,17 +765,13 @@ impl FrameWriter {
                             hold_slice(&mut known, &slice_owners, &keys, id)?;
                             Some(known)
                         }
-                        (Some(_), None) => Some(held_owners(&*writer, id)?),
+                        (Some(Slice::Rebuild), _) | (Some(_), None) => {
+                            Some(held_owners(&*writer, id)?)
+                        }
                         (None, known) => known.filter(|_| kept),
                     };
-                    if sectioned {
-                        *quiet = 0;
-                    } else {
-                        let streak = quiet.saturating_add(1);
-                        *quiet = streak;
-                        if streak == 2 {
-                            writer.drop_scratch();
-                        }
+                    if !sectioned {
+                        writer.drop_scratch();
                     }
                     Ok(())
                 });
@@ -887,9 +952,9 @@ impl Part<'_> {
         writer: &mut TableWriter,
         strings: Strings<'_>,
         lane: &mut Lane,
-        slice_same: &mut bool,
+        slice_same: &mut SliceCheck,
     ) -> io::Result<TableHour> {
-        *slice_same = false;
+        *slice_same = SliceCheck::default();
         let id = TableId::ALL[index];
         let input = &self.input.tables[index];
         let read = self.read[index / 64] & (1 << (index % 64)) != 0;
@@ -905,8 +970,12 @@ impl Part<'_> {
             && written.is_none()
             && previous.is_none()
         {
-            let same = removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
-            *slice_same = known && same;
+            let check = removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
+            *slice_same = if known {
+                check
+            } else {
+                SliceCheck::default()
+            };
         }
         let carried_complete = source.is_none()
             && !self.starting
@@ -1233,15 +1302,20 @@ fn hold_slice(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "owner-slice removal scan compares old keys, target owners, incoming rows and expected row count in one pass"
+)]
 fn scan_owner_removed<T: Copy, R: RowCodec>(
     id: TableId,
     old_keys: &[T],
     slice_owners: &[u32],
     rows: &[R],
+    expected_owner_rows: usize,
     owner_of_old: impl Fn(T) -> u32,
     widen: impl Fn(T) -> u128,
     out: &mut Vec<u128>,
-) -> io::Result<bool> {
+) -> io::Result<(bool, bool)> {
     let mut same_keys = true;
     let mut old_at = 0usize;
     let mut new_at = 0usize;
@@ -1287,7 +1361,8 @@ fn scan_owner_removed<T: Copy, R: RowCodec>(
             same_keys = false;
         }
     }
-    Ok(same_keys && matched_rows == rows.len())
+    let all_matched = matched_rows == expected_owner_rows;
+    Ok((same_keys && all_matched, all_matched))
 }
 
 fn removed(
@@ -1296,20 +1371,119 @@ fn removed(
     update: &SliceUpdate,
     owners: Option<&Owners>,
     out: &mut Vec<u128>,
-) -> io::Result<bool> {
+) -> io::Result<SliceCheck> {
     out.clear();
     if update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty() {
-        return Ok(false);
+        let empty = update.rows.is_empty();
+        return Ok(SliceCheck {
+            same: empty,
+            keys_unchanged: empty,
+        });
     }
     if !update.keys.is_empty() && update.owners.is_empty() && update.ranges.is_empty() {
         let table = writer.table();
+        let keys_asc = update.keys.windows(2).all(|pair| pair[0] < pair[1]);
+        let mut keys_same = true;
+        let mut matched_present = 0_usize;
         for &key in &update.keys {
-            if !update.rows.contains_key(key) && table.slot(key).is_some() {
+            let present = update.rows.contains_key(key);
+            let existed = table.slot(key).is_some();
+            if !present && existed {
                 engine_allocation::reserve(out, 1)?;
                 out.push(key);
             }
+            matched_present += usize::from(present);
+            keys_same &= present == existed;
         }
-        return Ok(false);
+        let unchanged = keys_asc && keys_same && matched_present == update.rows.len();
+        return Ok(SliceCheck {
+            same: unchanged,
+            keys_unchanged: unchanged,
+        });
+    }
+    if !update.owners.is_empty() && !update.keys.is_empty() && update.ranges.is_empty() {
+        let slice_owners = update.owners();
+        let owners_asc = slice_owners.windows(2).all(|pair| pair[0] < pair[1]);
+        let keys_asc = update.keys.windows(2).all(|pair| pair[0] < pair[1]);
+        if let Some(owners) = owners
+            && owners_asc
+            && keys_asc
+            && update
+                .keys
+                .iter()
+                .all(|&key| slice_owners.binary_search(&owner_of(id, key)).is_err())
+        {
+            let table = writer.table();
+            let mut keys_same = true;
+            let mut keyed_present = 0_usize;
+            for &key in &update.keys {
+                let present = update.rows.contains_key(key);
+                let existed = table.slot(key).is_some();
+                if !present && existed {
+                    engine_allocation::reserve(out, 1)?;
+                    out.push(key);
+                }
+                keyed_present += usize::from(present);
+                keys_same &= present == existed;
+            }
+            struct MixedOwnerRemoved<'a> {
+                id: TableId,
+                owners: &'a Owners,
+                slice_owners: &'a [u32],
+                expected_owner_rows: usize,
+                out: &'a mut Vec<u128>,
+            }
+            impl RowsVisit for MixedOwnerRemoved<'_> {
+                type Output = io::Result<Option<(bool, bool)>>;
+
+                fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+                    if !rows.windows(2).all(|pair| pair[0].key() < pair[1].key()) {
+                        return Ok(None);
+                    }
+                    let result = match self.owners {
+                        Owners::U64(keys) => scan_owner_removed(
+                            self.id,
+                            keys,
+                            self.slice_owners,
+                            rows,
+                            self.expected_owner_rows,
+                            |key| owner_of_u64(self.id, key),
+                            u128::from,
+                            self.out,
+                        )?,
+                        Owners::U128(keys) => scan_owner_removed(
+                            self.id,
+                            keys,
+                            self.slice_owners,
+                            rows,
+                            self.expected_owner_rows,
+                            |key| owner_of(self.id, key),
+                            |key| key,
+                            self.out,
+                        )?,
+                    };
+                    Ok(Some(result))
+                }
+            }
+            if let Some(expected_owner_rows) = update.rows.len().checked_sub(keyed_present)
+                && let Some((owners_same, all_matched)) = update.rows.visit(MixedOwnerRemoved {
+                    id,
+                    owners,
+                    slice_owners,
+                    expected_owner_rows,
+                    out,
+                })?
+            {
+                if out.len() > 1 {
+                    out.sort_unstable();
+                }
+                return Ok(SliceCheck {
+                    same: owners_same && keys_same,
+                    keys_unchanged: keys_same && all_matched,
+                });
+            }
+            out.clear();
+        }
     }
     if let Some(owners) = owners.filter(|_| owner_slice(update)) {
         let slice_owners = update.owners();
@@ -1327,12 +1501,13 @@ fn removed(
                     if !rows.windows(2).all(|pair| pair[0].key() < pair[1].key()) {
                         return Ok(None);
                     }
-                    let same = match self.owners {
+                    let (same, _) = match self.owners {
                         Owners::U64(keys) => scan_owner_removed(
                             self.id,
                             keys,
                             self.slice_owners,
                             rows,
+                            rows.len(),
                             |key| owner_of_u64(self.id, key),
                             u128::from,
                             self.out,
@@ -1342,6 +1517,7 @@ fn removed(
                             keys,
                             self.slice_owners,
                             rows,
+                            rows.len(),
                             |key| owner_of(self.id, key),
                             |key| key,
                             self.out,
@@ -1356,7 +1532,10 @@ fn removed(
                 slice_owners,
                 out,
             })? {
-                return Ok(same);
+                return Ok(SliceCheck {
+                    same,
+                    keys_unchanged: true,
+                });
             }
             out.clear();
         }
@@ -1391,7 +1570,10 @@ fn removed(
                 }
             }
         }
-        return Ok(false);
+        return Ok(SliceCheck {
+            same: false,
+            keys_unchanged: true,
+        });
     }
     let table = writer.table();
     let live = table.live();
@@ -1408,7 +1590,7 @@ fn removed(
         }
     }
     out.sort_unstable();
-    Ok(false)
+    Ok(SliceCheck::default())
 }
 
 #[derive(Clone, Copy)]
@@ -1824,59 +2006,71 @@ impl RowsPairVisit for SliceDiff<'_> {
                     removed,
                 )?;
             }
-        } else if !update.keys.is_empty() {
+        } else if !update.keys.is_empty() || !update.owners.is_empty() {
             let (mut old_cursor, mut new_cursor) = (0, 0);
-            for &key in &update.keys {
-                old_cursor += gallop(&last[old_cursor..], |row| row.key() < key);
-                let before =
-                    (old_cursor < last.len() && last[old_cursor].key() == key).then_some(old_cursor);
-                new_cursor += gallop(&rows[new_cursor..], |row| row.key() < key);
-                let at =
-                    (new_cursor < rows.len() && rows[new_cursor].key() == key).then_some(new_cursor);
-                match (at, before) {
-                    (Some(at), Some(before)) => {
-                        if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
-                            push_item(
-                                pairs,
-                                Pair {
-                                    row: index(at)?,
-                                    previous: Some(index(before)?),
-                                    diff,
-                                },
-                            )?;
+            let (mut owner_at, mut key_at) = (0, 0);
+            loop {
+                let next_owner = update.owners.get(owner_at).copied();
+                let next_key = update.keys.get(key_at).copied();
+                let take_owner = match (next_owner, next_key) {
+                    (None, None) => break,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (Some(owner), Some(key)) => owner < owner_of(id, key),
+                };
+                if take_owner {
+                    let owner = update.owners[owner_at];
+                    owner_at += 1;
+                    let old_start = old_cursor
+                        + gallop(&last[old_cursor..], |row| owner_of(id, row.key()) < owner);
+                    let old_end = old_start
+                        + gallop(&last[old_start..], |row| owner_of(id, row.key()) <= owner);
+                    old_cursor = old_end;
+                    let new_start = new_cursor
+                        + gallop(&rows[new_cursor..], |row| owner_of(id, row.key()) < owner);
+                    let new_end = new_start
+                        + gallop(&rows[new_start..], |row| owner_of(id, row.key()) <= owner);
+                    new_cursor = new_end;
+                    merge_slice_diff(
+                        rows,
+                        new_start..new_end,
+                        last,
+                        old_start..old_end,
+                        narrow,
+                        pairs,
+                        removed,
+                    )?;
+                } else {
+                    let key = update.keys[key_at];
+                    key_at += 1;
+                    old_cursor += gallop(&last[old_cursor..], |row| row.key() < key);
+                    let before = (old_cursor < last.len() && last[old_cursor].key() == key)
+                        .then_some(old_cursor);
+                    new_cursor += gallop(&rows[new_cursor..], |row| row.key() < key);
+                    let at = (new_cursor < rows.len() && rows[new_cursor].key() == key)
+                        .then_some(new_cursor);
+                    match (at, before) {
+                        (Some(at), Some(before)) => {
+                            if let Some(diff) = row_diff(&rows[at], &last[before], narrow) {
+                                push_item(
+                                    pairs,
+                                    Pair {
+                                        row: index(at)?,
+                                        previous: Some(index(before)?),
+                                        diff,
+                                    },
+                                )?;
+                            }
                         }
+                        (Some(at), None) => {
+                            push_item(pairs, Pair::new(index(at)?, None))?;
+                        }
+                        (None, Some(_)) => {
+                            push_item(removed, key)?;
+                        }
+                        (None, None) => {}
                     }
-                    (Some(at), None) => {
-                        push_item(pairs, Pair::new(index(at)?, None))?;
-                    }
-                    (None, Some(_)) => {
-                        push_item(removed, key)?;
-                    }
-                    (None, None) => {}
                 }
-            }
-        } else if !update.owners.is_empty() {
-            let (mut old_cursor, mut new_cursor) = (0, 0);
-            for &owner in &update.owners {
-                let old_start = old_cursor
-                    + gallop(&last[old_cursor..], |row| owner_of(id, row.key()) < owner);
-                let old_end = old_start
-                    + gallop(&last[old_start..], |row| owner_of(id, row.key()) <= owner);
-                old_cursor = old_end;
-                let new_start = new_cursor
-                    + gallop(&rows[new_cursor..], |row| owner_of(id, row.key()) < owner);
-                let new_end = new_start
-                    + gallop(&rows[new_start..], |row| owner_of(id, row.key()) <= owner);
-                new_cursor = new_end;
-                merge_slice_diff(
-                    rows,
-                    new_start..new_end,
-                    last,
-                    old_start..old_end,
-                    narrow,
-                    pairs,
-                    removed,
-                )?;
             }
         }
         held.paired(rows, last, pairs, removed, uniform_optional_i32)

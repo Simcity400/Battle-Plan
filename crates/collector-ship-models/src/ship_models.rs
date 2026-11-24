@@ -1,6 +1,6 @@
 use crate::{
     clock::qpc,
-    projection::{Projection, Witness, held_input, project_table},
+    projection::{Projection, Witness, held_input, ledger_table},
     ship_model_changes::{self, Certificate, Changes, Counts, NO_SLOTS, Slots},
     table_capture::{CaptureRows, grow_capacity},
 };
@@ -223,6 +223,7 @@ struct Hot {
     modifier_guard: u16,
     criticals: bool,
     roster_ordinal: u32,
+    accumulators_len: u32,
     row_version: u64,
 }
 
@@ -272,11 +273,11 @@ struct ShipStore {
     tasks: Vec<HeldTask>,
     variants: Vec<Variant>,
     accumulators: Vec<[u8; 16]>,
+    next_live_accumulators: usize,
     next: Vec<Option<Box<Held>>>,
     next_hot: Vec<Hot>,
     next_tasks: Vec<HeldTask>,
     next_variants: Vec<Variant>,
-    next_accumulators: Vec<[u8; 16]>,
     next_variant_head: std::collections::HashMap<usize, usize>,
     quiet: Option<(u64, u64)>,
     variant_quiet: Option<(u64, u64)>,
@@ -498,6 +499,9 @@ impl ShipStore {
             modifier_guard: held.organisation.map_or(0, |own| own.modifier_guard()),
             criticals: held.organisation.is_some_and(|own| own.has_criticals()),
             roster_ordinal: held.row.as_ref().map_or(0, |(row, _)| row.roster_ordinal),
+            accumulators_len: held.accumulators[0]
+                .2
+                .saturating_add(held.accumulators[1].2),
             row_version: held.row_version,
         })
     }
@@ -563,45 +567,56 @@ impl ShipStore {
 
     fn push_accumulators(&mut self, held: &mut Held, arrays: [&[[u8; 16]]; 2]) -> bool {
         let total = arrays[0].len().saturating_add(arrays[1].len());
-        if reserve(&mut self.next_accumulators, total).is_err() {
+        if reserve(&mut self.accumulators, total).is_err() {
             return false;
         }
         for (slot, array) in held.accumulators.iter_mut().zip(arrays) {
-            let Ok(start) = u32::try_from(self.next_accumulators.len()) else {
+            let Ok(start) = u32::try_from(self.accumulators.len()) else {
                 return false;
             };
             let Ok(len) = u32::try_from(array.len()) else {
                 return false;
             };
-            self.next_accumulators.extend_from_slice(array);
+            self.accumulators.extend_from_slice(array);
             slot.1 = start;
             slot.2 = len;
         }
         true
     }
 
-    fn carry_accumulators(&mut self, held: &mut Held) -> bool {
-        let total = (held.accumulators[0].2 as usize).saturating_add(held.accumulators[1].2 as usize);
-        if reserve(&mut self.next_accumulators, total).is_err() {
-            return false;
+    fn compact_accumulators(&mut self) {
+        let mut compacted = Vec::new();
+        if reserve(&mut compacted, self.next_live_accumulators).is_err() {
+            return;
         }
-        for slot in &mut held.accumulators {
-            let old_start = slot.1 as usize;
-            let old_len = slot.2 as usize;
-            let Ok(new_start) = u32::try_from(self.next_accumulators.len()) else {
-                return false;
-            };
-            self.next_accumulators
-                .extend_from_slice(&self.accumulators[old_start..old_start + old_len]);
-            slot.1 = new_start;
+        for held in self.held.iter_mut().flatten() {
+            for slot in &mut held.accumulators {
+                let old_start = slot.1 as usize;
+                let old_len = slot.2 as usize;
+                if old_len == 0 {
+                    slot.1 = 0;
+                    continue;
+                }
+                let Ok(new_start) = u32::try_from(compacted.len()) else {
+                    return;
+                };
+                if reserve(&mut compacted, old_len).is_err() {
+                    return;
+                }
+                compacted.extend_from_slice(&self.accumulators[old_start..old_start + old_len]);
+                slot.1 = new_start;
+            }
         }
-        true
+        self.accumulators = compacted;
     }
 
     fn push_next(&mut self, held: Box<Held>, hot: Hot) -> bool {
         if reserve(&mut self.next, 1).is_err() || reserve(&mut self.next_hot, 1).is_err() {
             return false;
         }
+        self.next_live_accumulators = self
+            .next_live_accumulators
+            .saturating_add(hot.accumulators_len as usize);
         self.next.push(Some(held));
         self.next_hot.push(hot);
         true
@@ -617,20 +632,14 @@ impl ShipStore {
         self.push_next(held, hot)
     }
 
-    fn keep_held(&mut self, mut held: Box<Held>) -> bool {
-        if !self.carry_accumulators(&mut held) {
-            return false;
-        }
+    fn keep_held(&mut self, held: Box<Held>) -> bool {
         let Some(hot) = self.hot(&held) else {
             return false;
         };
         self.push_next(held, hot)
     }
 
-    fn keep_hot(&mut self, mut held: Box<Held>, hot: Hot) -> bool {
-        if !self.carry_accumulators(&mut held) {
-            return false;
-        }
+    fn keep_hot(&mut self, held: Box<Held>, hot: Hot) -> bool {
         self.push_next(held, hot)
     }
 
@@ -646,13 +655,22 @@ impl ShipStore {
         std::mem::swap(&mut self.hot, &mut self.next_hot);
         std::mem::swap(&mut self.tasks, &mut self.next_tasks);
         std::mem::swap(&mut self.variants, &mut self.next_variants);
-        std::mem::swap(&mut self.accumulators, &mut self.next_accumulators);
         self.next.clear();
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
-        self.next_accumulators.clear();
         self.next_variant_head.clear();
+        if self.next_live_accumulators == 0 {
+            self.accumulators.clear();
+        } else if self.accumulators.len()
+            > self
+                .next_live_accumulators
+                .saturating_mul(2)
+                .saturating_add(4096)
+        {
+            self.compact_accumulators();
+        }
+        self.next_live_accumulators = 0;
         if same_order {
             return true;
         }
@@ -678,11 +696,11 @@ impl ShipStore {
         self.tasks.clear();
         self.variants.clear();
         self.accumulators.clear();
+        self.next_live_accumulators = 0;
         self.next.clear();
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
-        self.next_accumulators.clear();
         self.next_variant_head.clear();
         self.quiet = None;
         self.variant_quiet = None;
@@ -700,7 +718,7 @@ impl ShipStore {
                 .flatten()
                 .count()
                 * std::mem::size_of::<Held>()
-            + (self.accumulators.capacity() + self.next_accumulators.capacity()) * 16
+            + self.accumulators.capacity() * 16
             + (self.hot.capacity() + self.next_hot.capacity()) * std::mem::size_of::<Hot>()
             + (self.index.capacity() + self.next_variant_head.capacity())
                 * std::mem::size_of::<(usize, usize)>()
@@ -1612,7 +1630,9 @@ impl Captured {
             let unchanged =
                 hot.roster_ordinal == source.roster_ordinal && air_capacity.is_none();
             hot.row_version = next_version;
-            held.row_version = next_version;
+            if next_version != old_version {
+                held.row_version = next_version;
+            }
             hot.roster_ordinal = source.roster_ordinal;
             if let Some(kind) = air_capacity {
                 held.row.as_mut().expect("a carried row").0.air_capacity_kind = kind;
@@ -2428,6 +2448,8 @@ impl Captured {
             for row in &mut self.rows.rows[..self.len] {
                 self.optional_refusals[14] += u64::from(row.naval_power.take().is_some());
             }
+            let len = self.len.min(self.row_versions.len());
+            self.row_versions[..len].fill(0);
             self.naval_power.prepare(None);
             self.store.forget();
         }
@@ -2561,61 +2583,111 @@ impl Captured {
     fn project(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         if self.split > 1 && self.terminal_failure.is_none() {
             let parts = &self.extra[..self.split - 1];
-            let mut refs: Vec<&cship::ModelRow> = Vec::new();
+            let mut refs: Vec<(&cship::ModelRow, u64)> = Vec::new();
             if reserve(&mut refs, self.len).is_err() {
                 return crate::table_conversion::unavailable("collector allocation failed").into();
             }
-            refs.extend(self.rows.rows[..self.part_len.min(self.rows.rows.len())].iter());
+            let own_len = self.part_len.min(self.rows.rows.len());
+            refs.extend(
+                self.rows.rows[..own_len]
+                    .iter()
+                    .enumerate()
+                    .map(|(at, row)| (row, self.row_versions.get(at).copied().unwrap_or(0))),
+            );
             for part in parts {
-                refs.extend(part.rows.rows[..part.part_len.min(part.rows.rows.len())].iter());
+                let len = part.part_len.min(part.rows.rows.len());
+                refs.extend(
+                    part.rows.rows[..len]
+                        .iter()
+                        .enumerate()
+                        .map(|(at, row)| (row, part.row_versions.get(at).copied().unwrap_or(0))),
+                );
             }
-            Self::project_slice(projection, self.outcomes()[0], &refs)
+            Self::project_slice(
+                projection,
+                self.outcomes()[0],
+                &refs,
+                |entry| entry.0,
+                |_, entry| entry.1,
+            )
         } else {
-            Self::project_slice(projection, self.outcomes()[0], &self.rows.rows[..])
+            Self::project_slice(
+                projection,
+                self.outcomes()[0],
+                &self.rows.rows[..],
+                |row| row,
+                |at, _| self.row_versions.get(at).copied().unwrap_or(0),
+            )
         }
     }
 
-    fn project_slice<R: std::borrow::Borrow<cship::ModelRow>>(
+    fn project_slice<R>(
         projection: Option<&mut Projection<'_>>,
         outcome: Outcome,
         rows: &[R],
+        row_of: impl Fn(&R) -> &cship::ModelRow,
+        version_of: impl Fn(usize, &R) -> u64,
     ) -> TableInput {
-        project_table::<tables::ShipModels, _>(
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ShipLedger {
+            Versioned {
+                version: u64,
+                roster_ordinal: u32,
+            },
+            Full {
+                variant: u64,
+                model_number: i32,
+                formation_flags: u64,
+                roster_ordinal: u32,
+                definition_valid: u8,
+                carrier_air_base: u64,
+                maximum_strength: i64,
+                anti_air_base: i64,
+                maximum_organisation: i64,
+                has_criticals: Option<u32>,
+                air_capacity_kind: Option<u32>,
+                positive_equipment_flags: u64,
+                subunit_index: Option<i32>,
+                hull_variant: Option<cship::HullVariantInputs>,
+                naval_power: Option<[i64; 5]>,
+            },
+        }
+        ledger_table::<tables::ShipModels, _, ShipLedger>(
             projection,
             outcome,
             rows,
-            |row| u128::from(row.borrow().ship),
-            |row, previous| {
-                let row = row.borrow();
-                row.ship == previous.ship
-                    && row.variant == previous.variant
-                    && row.hull_sprite.as_bytes() == previous.hull_sprite
-                    && row.fallback_sprite.as_bytes() == previous.fallback_sprite
-                    && row.model_number == previous.model_number
-                    && row.formation_flags == previous.formation_flags
-                    && replay_data::rows::Recorded::Value(row.has_criticals)
-                        == previous.has_criticals
-                    && replay_data::rows::Recorded::Value(row.air_capacity_kind)
-                        == previous.air_capacity_kind
-                    && previous.subunit_index
-                        == replay_data::rows::Recorded::Value(row.subunit_index)
-                    && previous.naval_power == replay_data::rows::Recorded::Value(row.naval_power)
-                    && previous.hull_variant
-                        == replay_data::rows::Recorded::Value(
-                            row.hull_variant.map(hull_variant_inputs),
-                        )
-                    && previous.counter.as_ref().is_some_and(|counter| {
-                        row.roster_ordinal == counter.roster_ordinal
-                            && row.definition_valid == counter.definition_valid
-                            && row.carrier_air_base == counter.carrier_air_base
-                            && row.maximum_strength == counter.maximum_strength
-                            && row.anti_air_base == counter.anti_air_base
-                            && row.maximum_organisation == counter.maximum_organisation
-                            && row.positive_equipment_flags == counter.positive_equipment_flags
-                    })
+            |entry| u128::from(row_of(entry).ship),
+            |at, entry, record| {
+                let r = row_of(entry);
+                let version = version_of(at, entry);
+                if version != 0 {
+                    return Some(ShipLedger::Versioned {
+                        version,
+                        roster_ordinal: r.roster_ordinal,
+                    });
+                }
+                record.bytes(Some(r.hull_sprite.as_bytes()));
+                record.bytes(Some(r.fallback_sprite.as_bytes()));
+                Some(ShipLedger::Full {
+                    variant: r.variant,
+                    model_number: r.model_number,
+                    formation_flags: r.formation_flags,
+                    roster_ordinal: r.roster_ordinal,
+                    definition_valid: r.definition_valid,
+                    carrier_air_base: r.carrier_air_base,
+                    maximum_strength: r.maximum_strength,
+                    anti_air_base: r.anti_air_base,
+                    maximum_organisation: r.maximum_organisation,
+                    has_criticals: r.has_criticals,
+                    air_capacity_kind: r.air_capacity_kind,
+                    positive_equipment_flags: r.positive_equipment_flags,
+                    subunit_index: r.subunit_index,
+                    hull_variant: r.hull_variant,
+                    naval_power: r.naval_power,
+                })
             },
-            |r| {
-                let r = r.borrow();
+            |entry| {
+                let r = row_of(entry);
                 ShipModelRow {
                     ship: r.ship,
                     variant: r.variant,

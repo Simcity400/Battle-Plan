@@ -120,6 +120,26 @@ impl Store {
         pointers: &mut Vec<usize>,
         start: usize,
     ) -> Carried<usize> {
+        self.carry_technologies_with_assigned(
+            memory, base, owner, country, rows, pointers, start, None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one country's technologies are carried into separate row, pointer and assigned outputs"
+    )]
+    pub fn carry_technologies_with_assigned(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        owner: u32,
+        country: usize,
+        rows: &mut Vec<ctechnology::Row>,
+        pointers: &mut Vec<usize>,
+        start: usize,
+        mut assigned: Option<(&mut Vec<ctechnology::Row>, &mut bool)>,
+    ) -> Carried<usize> {
         let Some(held) = self
             .technologies
             .get(&owner)
@@ -175,6 +195,15 @@ impl Store {
                 value
             };
             rows[start + row].progress_raw = value;
+            if let Some((out, ok)) = assigned.as_mut()
+                && **ok
+            {
+                if engine_allocation::advisory(|| engine_allocation::reserve(*out, 1)).is_ok() {
+                    out.push(rows[start + row]);
+                } else {
+                    **ok = false;
+                }
+            }
         }
         Carried::Rows(len)
     }

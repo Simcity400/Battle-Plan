@@ -2289,6 +2289,14 @@ impl Captured {
             .map(|family| self.family_selection(family))
     }
 
+    pub fn research_carried_owners(&self) -> Option<&[u32]> {
+        self.governance.research_carried_owners()
+    }
+
+    pub fn technology_carried_owners(&self) -> Option<&[u32]> {
+        self.governance.technology_carried_owners()
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the governance request takes ownership of its fingerprints and each store separately"

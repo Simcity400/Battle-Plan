@@ -377,37 +377,49 @@ impl Captured {
             Role::Advisor(ordinal) => (CharacterRoleTraitRow::ADVISOR, ordinal),
             Role::Scientist => (CharacterRoleTraitRow::SCIENTIST, 0),
         };
-        collector_projection::projection::ledger_table::<tables::CharacterRoleTraits, _, _>(
+        let witness = self
+            .held
+            .filter(|_| matches!(self.traits.outcome, Outcome::Rows { .. }))
+            .map(|(content, _)| collector_projection::projection::Witness::generation(content));
+        collector_projection::projection::held_input::<tables::CharacterRoleTraits>(
             projection,
-            self.traits.outcome,
-            rows,
-            |row| {
-                let (kind, role) = role_key(row);
-                (u128::from(row.character) << 40) | (u128::from(kind) << 32) | u128::from(role)
-            },
-            |_, row, record| {
-                let traits = span(values, row.start, row.len).unwrap();
-                record.word(traits.len() as i64);
-                for value in traits {
-                    record.word(i64::from(value.token));
-                    record.word(value.ordinal.map_or(-1, i64::from));
-                }
-                Some(())
-            },
-            |row| {
-                let (kind, role) = role_key(row);
-                let traits = span(values, row.start, row.len).unwrap();
-                CharacterRoleTraitRow {
-                    character: row.character,
-                    kind,
-                    role,
-                    tokens: owned_vec(map_slice(traits, |value| value.token)),
-                    definitions: owned_vec((|| {
-                        let mut definitions = vec(traits.len())?;
-                        definitions.extend(traits.iter().filter_map(|value| value.ordinal));
-                        Ok(definitions)
-                    })()),
-                }
+            witness,
+            |projection| {
+                collector_projection::projection::ledger_table::<tables::CharacterRoleTraits, _, _>(
+                    projection,
+                    self.traits.outcome,
+                    rows,
+                    |row| {
+                        let (kind, role) = role_key(row);
+                        (u128::from(row.character) << 40)
+                            | (u128::from(kind) << 32)
+                            | u128::from(role)
+                    },
+                    |_, row, record| {
+                        let traits = span(values, row.start, row.len).unwrap();
+                        record.word(traits.len() as i64);
+                        for value in traits {
+                            record.word(i64::from(value.token));
+                            record.word(value.ordinal.map_or(-1, i64::from));
+                        }
+                        Some(())
+                    },
+                    |row| {
+                        let (kind, role) = role_key(row);
+                        let traits = span(values, row.start, row.len).unwrap();
+                        CharacterRoleTraitRow {
+                            character: row.character,
+                            kind,
+                            role,
+                            tokens: owned_vec(map_slice(traits, |value| value.token)),
+                            definitions: owned_vec((|| {
+                                let mut definitions = vec(traits.len())?;
+                                definitions.extend(traits.iter().filter_map(|value| value.ordinal));
+                                Ok(definitions)
+                            })()),
+                        }
+                    },
+                )
             },
         )
     }
@@ -768,5 +780,63 @@ mod tests {
                 "hour {hour}"
             );
         }
+    }
+
+    #[test]
+    fn held_traits_republish_on_quiet_hours_and_stay_sparse_on_changes() {
+        use collector_projection::projection::{Projection, ProjectionScratch};
+        use replay_frame::frame::{BaselineRetention, FrameEncoder, FrameInput, Metrics};
+        let mut captured = captured();
+        captured.held = Some((10, captured.held_traits()));
+        let mut encoder = FrameEncoder::new();
+        let scratch = ProjectionScratch::default();
+        let commit = |encoder: &mut FrameEncoder, hour: i32, input: TableInput| {
+            let mut tables = std::array::from_fn(|_| unavailable("fixture table").into());
+            tables[TableId::CharacterRoleTraits.index()] = input;
+            let frame = FrameInput {
+                branch: 1,
+                hour,
+                tables,
+                metrics: Metrics::default(),
+            };
+            let prepared = encoder
+                .prepare_contained_keeping(
+                    frame,
+                    false,
+                    &mut std::array::from_fn(|_| None),
+                    |_| false,
+                    |_, error| Err(error),
+                )
+                .unwrap();
+            encoder
+                .commit_retiring_mode(prepared, |table| {
+                    if table == TableId::CharacterRoleTraits {
+                        BaselineRetention::Meta
+                    } else {
+                        BaselineRetention::Drop
+                    }
+                })
+                .unwrap();
+        };
+        let mut p0 = Projection::new(&encoder, 1, 0, false, &scratch);
+        let first = captured.traits_input(Some(&mut p0));
+        assert!(matches!(first, TableInput::SharedComplete(_)));
+        commit(&mut encoder, 0, first);
+
+        let mut p1 = Projection::new(&encoder, 1, 1, false, &scratch);
+        let quiet = captured.traits_input(Some(&mut p1));
+        assert!(matches!(quiet, TableInput::ComparedEqual(_)));
+        assert_eq!(scratch.republish_counts(TableId::CharacterRoleTraits)[0], 1);
+        commit(&mut encoder, 1, quiet);
+
+        captured.values.first[0].token = 999;
+        captured.held = Some((11, captured.held_traits()));
+        let mut p2 = Projection::new(&encoder, 1, 2, false, &scratch);
+        let updated = captured.traits_input(Some(&mut p2));
+        let TableInput::SliceUpdate { update, .. } = &updated else {
+            panic!("traits_input must emit a sparse SliceUpdate after a quiet held hour");
+        };
+        assert_eq!(update.rows.len(), 1);
+        commit(&mut encoder, 2, updated);
     }
 }

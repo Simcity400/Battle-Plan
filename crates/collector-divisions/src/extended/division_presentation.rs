@@ -175,6 +175,7 @@ struct StatusInputs {
     division: u64,
     supply_sample_id: u64,
     naming_held_stamp: u64,
+    attack_stamp: u64,
     movement_organisation: [i64; 2],
     entrenchment_cap: i64,
     supply_grace_maximum: i64,
@@ -2438,7 +2439,13 @@ impl Captured {
                         0
                     }
                 };
-                attack.record(record);
+                let attack_stamp = match attack.panel_stamp() {
+                    Some(stamp) => stamp,
+                    None => {
+                        attack.record(record);
+                        0
+                    }
+                };
                 if self.attack.has_witness(r.division) {
                     return None;
                 }
@@ -2583,6 +2590,7 @@ impl Captured {
                     division: r.division,
                     supply_sample_id,
                     naming_held_stamp,
+                    attack_stamp,
                     movement_organisation,
                     entrenchment_cap: r.entrenchment_cap,
                     supply_grace_maximum: r.supply_grace_maximum,

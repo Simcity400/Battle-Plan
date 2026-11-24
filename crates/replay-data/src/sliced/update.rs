@@ -56,7 +56,8 @@ macro_rules! keyed_pair {
             Fleets, TaskForces, UnitLeaders, PoliticalParties, ActiveIdeas, Politics,
             ResearchSlots, DecisionCounts, Decisions, DynamicModifiers, PreferredTactics,
             NavalCombatShips, OrdersGroupCounterInputs, CountryAppearance,
-            TaskForceCounterInputs, ProvinceBuildings, StateBuildings, BuildingConstruction)
+            TaskForceCounterInputs, ProvinceBuildings, StateBuildings, BuildingConstruction,
+            StateResistance)
     };
 }
 
@@ -120,6 +121,7 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
             | TableId::ProvinceBuildings
             | TableId::StateBuildings
             | TableId::BuildingConstruction
+            | TableId::StateResistance
     )
 }
 
@@ -396,10 +398,26 @@ impl SliceUpdate {
         read: impl Fn(u32) -> bool,
         live: impl Fn(u32) -> bool,
     ) -> io::Result<(Self, Vec<u32>)> {
-        fn validate<R: SlicedRow>(fresh: &[R], read: impl Fn(u32) -> bool) -> io::Result<Vec<u32>> {
+        Self::for_owners_and_carried(previous_owners, fresh, read, |_| false, live)
+    }
+
+    pub fn for_owners_and_carried(
+        previous_owners: &[u32],
+        fresh: TableRows,
+        read: impl Fn(u32) -> bool,
+        carried: impl Fn(u32) -> bool,
+        live: impl Fn(u32) -> bool,
+    ) -> io::Result<(Self, Vec<u32>)> {
+        fn validate<R: SlicedRow>(
+            fresh: &[R],
+            read: impl Fn(u32) -> bool,
+            is_carried: impl Fn(u32) -> bool,
+        ) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u128>)> {
             let mut prev_key: Option<u128> = None;
-            let mut last_owner: Option<u32> = None;
-            let mut fresh_owners = Vec::new();
+            let mut last_owner: Option<(u32, bool)> = None;
+            let mut fresh_all = Vec::new();
+            let mut fresh_read = Vec::new();
+            let mut keys = Vec::new();
             for row in fresh {
                 let key = row.key();
                 if prev_key.is_some_and(|prev| prev >= key) {
@@ -409,36 +427,50 @@ impl SliceUpdate {
                 }
                 prev_key = Some(key);
                 let owner = row.owner();
-                if last_owner != Some(owner) {
-                    if !read(owner) {
-                        return Err(invalid(
-                            "sliced read holds an unread owner's row or is not in key order",
-                        ));
+                let carried_owner = match last_owner {
+                    Some((last, flag)) if last == owner => flag,
+                    _ => {
+                        if !read(owner) {
+                            return Err(invalid(
+                                "sliced read holds an unread owner's row or is not in key order",
+                            ));
+                        }
+                        let flag = is_carried(owner);
+                        last_owner = Some((owner, flag));
+                        allocation::reserve_push_batch(&mut fresh_all, 1)?;
+                        fresh_all.push(owner);
+                        if !flag {
+                            allocation::reserve_push_batch(&mut fresh_read, 1)?;
+                            fresh_read.push(owner);
+                        }
+                        flag
                     }
-                    last_owner = Some(owner);
-                    allocation::reserve_push_batch(&mut fresh_owners, 1)?;
-                    fresh_owners.push(owner);
+                };
+                if carried_owner {
+                    allocation::reserve_push_batch(&mut keys, 1)?;
+                    keys.push(key);
                 }
             }
-            Ok(fresh_owners)
+            Ok((fresh_all, fresh_read, keys))
         }
-        let fresh_owners = sliced_pair!(
+        let is_carried = |owner| carried(owner) && live(owner);
+        let (fresh_all, fresh_read, keys) = sliced_pair!(
             &fresh,
             &fresh,
-            |rows, _other, _wrap| validate(rows, &read)?,
+            |rows, _other, _wrap| validate(rows, &read, &is_carried)?,
             return Err(invalid("table does not support owner slice updates"))
         );
-        let replaced = merge_owner_lists(previous_owners, &fresh_owners, |owner| {
-            read(owner) || !live(owner)
+        let replaced = merge_owner_lists(previous_owners, &fresh_read, |owner| {
+            (read(owner) && !is_carried(owner)) || !live(owner)
         })?;
-        let next = merge_owner_lists(previous_owners, &fresh_owners, |owner| {
-            !read(owner) && live(owner)
+        let next = merge_owner_lists(previous_owners, &fresh_all, |owner| {
+            (!read(owner) || is_carried(owner)) && live(owner)
         })?;
         Ok((
             Self {
                 owners: replaced,
                 ranges: Vec::new(),
-                keys: Vec::new(),
+                keys,
                 rows: fresh,
             },
             next,
@@ -506,8 +538,10 @@ impl SliceUpdate {
             return self.rows.visit(Check(&self.ranges));
         }
         if !self.keys.is_empty() {
-            return self.owners.is_empty()
-                && self.keys.windows(2).all(|pair| pair[0] < pair[1])
+            if !self.owners.is_empty() {
+                return self.fits_mixed(table);
+            }
+            return self.keys.windows(2).all(|pair| pair[0] < pair[1])
                 && keyed_pair!(
                     &self.rows,
                     &self.rows,
@@ -516,6 +550,28 @@ impl SliceUpdate {
                 );
         }
         self.fits_untracked(table)
+    }
+
+    fn fits_mixed(&self, table: TableId) -> bool {
+        if !self.owners.windows(2).all(|pair| pair[0] < pair[1])
+            || !self.keys.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return false;
+        }
+        let shift = table.key_bits().saturating_sub(32);
+        let mut owner_cursor = 0;
+        let disjoint = self.keys.iter().all(|&key| {
+            let owner = (key >> shift) as u32;
+            owner_cursor += gallop(&self.owners[owner_cursor..], |&candidate| candidate < owner);
+            self.owners.get(owner_cursor) != Some(&owner)
+        });
+        disjoint
+            && sliced_pair!(
+                &self.rows,
+                &self.rows,
+                |new, _other, _wrap| mixed_fits(new, &self.owners, &self.keys),
+                false
+            )
     }
 
     pub fn owners(&self) -> &[u32] {
@@ -537,8 +593,10 @@ impl SliceUpdate {
             return self.owners.is_empty() && self.rows.range_update_fits(previous, &self.ranges);
         }
         if !self.keys.is_empty() {
-            return self.owners.is_empty()
-                && self.keys.windows(2).all(|pair| pair[0] < pair[1])
+            if !self.owners.is_empty() {
+                return self.rows.table() == previous.table() && self.fits_mixed(previous.table());
+            }
+            return self.keys.windows(2).all(|pair| pair[0] < pair[1])
                 && keyed_pair!(
                     previous,
                     &self.rows,
@@ -713,6 +771,17 @@ impl SliceUpdate {
             if !self.fits(previous) {
                 return Err(invalid("invalid key update"));
             }
+            if !self.owners.is_empty() {
+                let Self {
+                    owners, keys, rows, ..
+                } = self;
+                return sliced_pair!(
+                    &mut *previous,
+                    rows,
+                    |old, new, wrap| apply_mixed(old, new, &owners, &keys).map(wrap),
+                    Err(invalid("slice update rows differ from the baseline type"))
+                );
+            }
             return keyed_pair!(
                 &mut *previous,
                 self.rows,
@@ -785,6 +854,96 @@ impl SliceUpdate {
             Err(invalid("slice update rows differ from the baseline type"))
         )
     }
+}
+
+fn mixed_fits<R: SlicedRow>(fresh: &[R], listed: &[u32], keys: &[u128]) -> bool {
+    let mut prev: Option<u128> = None;
+    let mut owner_cursor = 0;
+    let mut key_cursor = 0;
+    for row in fresh {
+        let key = row.key();
+        if prev.is_some_and(|before| before >= key) {
+            return false;
+        }
+        prev = Some(key);
+        let owner = row.owner();
+        owner_cursor += gallop(&listed[owner_cursor..], |&candidate| candidate < owner);
+        if listed.get(owner_cursor) == Some(&owner) {
+            continue;
+        }
+        key_cursor += gallop(&keys[key_cursor..], |&candidate| candidate < key);
+        if keys.get(key_cursor) != Some(&key) {
+            return false;
+        }
+        key_cursor += 1;
+    }
+    true
+}
+
+fn apply_mixed<R: SlicedRow>(
+    old: &mut Vec<R>,
+    fresh: Vec<R>,
+    owners: &[u32],
+    keys: &[u128],
+) -> io::Result<Vec<R>> {
+    let mut removed = 0_usize;
+    let mut owner_cursor = 0;
+    let mut key_cursor = 0;
+    for row in old.iter() {
+        let owner = row.owner();
+        while owners
+            .get(owner_cursor)
+            .is_some_and(|&candidate| candidate < owner)
+        {
+            owner_cursor += 1;
+        }
+        if owners.get(owner_cursor) == Some(&owner) {
+            removed += 1;
+            continue;
+        }
+        let key = row.key();
+        while keys
+            .get(key_cursor)
+            .is_some_and(|&candidate| candidate < key)
+        {
+            key_cursor += 1;
+        }
+        if keys.get(key_cursor) == Some(&key) {
+            removed += 1;
+        }
+    }
+    let mut rebuilt = allocation::vec(allocation::add(old.len() - removed, fresh.len())?)?;
+    let mut replaced = allocation::vec(removed)?;
+    let mut fresh = fresh.into_iter().peekable();
+    let mut owner_cursor = 0;
+    let mut key_cursor = 0;
+    for row in std::mem::take(old) {
+        let owner = row.owner();
+        while owners
+            .get(owner_cursor)
+            .is_some_and(|&candidate| candidate < owner)
+        {
+            owner_cursor += 1;
+        }
+        let key = row.key();
+        while keys
+            .get(key_cursor)
+            .is_some_and(|&candidate| candidate < key)
+        {
+            key_cursor += 1;
+        }
+        if owners.get(owner_cursor) == Some(&owner) || keys.get(key_cursor) == Some(&key) {
+            replaced.push(row);
+            continue;
+        }
+        while let Some(new) = fresh.next_if(|new| new.key() < key) {
+            rebuilt.push(new);
+        }
+        rebuilt.push(row);
+    }
+    rebuilt.extend(fresh);
+    *old = rebuilt;
+    Ok(replaced)
 }
 
 fn key_fits<R: crate::rows::RowCodec>(fresh: &[R], keys: &[u128]) -> bool {
@@ -1160,5 +1319,53 @@ mod tests {
         assert!(empty.rows.is_empty());
         assert!(empty.fits(&previous));
         assert_eq!(empty.merged(&previous).unwrap(), previous);
+    }
+
+    #[test]
+    fn for_owners_and_carried_updates_read_owners_and_carried_keys_disjointly() {
+        let previous = TableRows::ResearchInputs(vec![
+            input(1, 0, 10),
+            input(1, 1, 20),
+            input(2, 0, 30),
+            input(2, 1, 40),
+            input(3, 0, 50),
+            input(4, 0, 60),
+        ]);
+        let fresh = TableRows::ResearchInputs(vec![
+            input(1, 1, 25),
+            input(2, 0, 35),
+            input(2, 2, 45),
+        ]);
+        let (update, next_owners) = SliceUpdate::for_owners_and_carried(
+            &[1, 2, 3, 4],
+            fresh,
+            |owner| owner == 1 || owner == 2,
+            |owner| owner == 1,
+            |owner| owner != 4,
+        )
+        .unwrap();
+        assert_eq!(update.owners, vec![2, 4]);
+        assert_eq!(update.keys, vec![input(1, 1, 25).key()]);
+        assert_eq!(next_owners, vec![1, 2, 3]);
+        assert!(update.fits_meta(TableId::ResearchInputs));
+        assert!(update.fits(&previous));
+        assert_eq!(
+            update.merged(&previous).unwrap(),
+            TableRows::ResearchInputs(vec![
+                input(1, 0, 10),
+                input(1, 1, 25),
+                input(2, 0, 35),
+                input(2, 2, 45),
+                input(3, 0, 50),
+            ])
+        );
+        let overlapping = SliceUpdate {
+            owners: vec![1, 2],
+            keys: vec![input(1, 1, 25).key()],
+            ranges: Vec::new(),
+            rows: TableRows::ResearchInputs(vec![input(1, 1, 25)]),
+        };
+        assert!(!overlapping.fits_meta(TableId::ResearchInputs));
+        assert!(!overlapping.fits(&previous));
     }
 }

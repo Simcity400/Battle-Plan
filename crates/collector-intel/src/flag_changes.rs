@@ -19,7 +19,7 @@ static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
 pub struct Watches {
     registry: WatchRegistry,
     structure: WatchRegistry,
-    calls: [AtomicU64; SITES],
+    calls: crate::hook_timing::CallCounters<SITES>,
     #[cfg(any(test, feature = "test-support"))]
     roster: WatchRegistry,
 }
@@ -35,14 +35,14 @@ impl Watches {
         Self {
             registry: WatchRegistry::marking(),
             structure: WatchRegistry::new(),
-            calls: [const { AtomicU64::new(0) }; SITES],
+            calls: crate::hook_timing::CallCounters::new(),
             #[cfg(any(test, feature = "test-support"))]
             roster: WatchRegistry::new(),
         }
     }
 
     pub fn notify(&self, manager: usize, site: usize) -> Notifications<'_> {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         Notifications(
             self.registry.notify(manager),
             STRUCTURE_SITES

@@ -594,10 +594,6 @@ unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offse
     let _guard = Guard::enter();
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { LiveMemory::new() };
-    let signal = || {
-        engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
-            .and_then(|at| read::<i64>(&memory, at))
-    };
     let mut bindings = match ENABLED
         .load(Ordering::SeqCst)
         .then(bound)
@@ -614,16 +610,31 @@ unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offse
     let original: unsafe extern "system-unwind" fn(usize, i64, u32) =
         unsafe { std::mem::transmute(WRITE.load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(record, balance, archetype) });
-    let signal = signal();
-    let mut read = None;
-    let mut value = || {
-        *read.get_or_insert_with(|| {
-            native::balance_write(&memory, record, balance, archetype, stack, offset)
+    let expected_values = bindings.iter().flatten().find_map(|binding| match binding {
+        Binding::Cell(cell) => Some(cell.values),
+        Binding::Unidentified(_) => None,
+    });
+    let mut post = None;
+    let mut read_post = || {
+        *post.get_or_insert_with(|| {
+            native::balance_write_with_signal(
+                &memory,
+                base,
+                record,
+                balance,
+                archetype,
+                (stack, offset),
+                expected_values,
+            )
         })
     };
     for binding in bindings.iter_mut().flatten() {
         match binding {
-            Binding::Cell(binding) => binding.finish(signal, &mut value),
+            Binding::Cell(binding) => {
+                let (signal, result) = read_post();
+                let mut value = || result;
+                binding.finish(signal, &mut value);
+            }
             Binding::Unidentified(write) => write.complete = true,
         }
     }

@@ -672,6 +672,74 @@ pub fn balance_write(
     })
 }
 
+pub fn balance_write_with_signal(
+    memory: &impl Memory,
+    base: usize,
+    record: usize,
+    balance: i64,
+    archetype: u32,
+    stack_operand: (usize, usize),
+    expected_values: Option<usize>,
+) -> (Option<i64>, Result<BalanceWrite, &'static str>) {
+    let (stack, available_offset) = stack_operand;
+    let signal_addr = engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA);
+    let avail_addr = stack.checked_add(available_offset);
+    let actual_addr = expected_values.and_then(|v| v.checked_add(archetype as usize * 8));
+    if let (Some(sig_at), Some(av_at), Some(act_at)) = (signal_addr, avail_addr, actual_addr) {
+        let mut sig_bytes = [0_u8; 8];
+        let mut rec_bytes = [0_u8; RECORD_BYTES];
+        let mut av_bytes = [0_u8; 8];
+        let mut act_bytes = [0_u8; 8];
+        let copied = memory.copy_scattered(
+            [sig_at, record, av_at, act_at],
+            &mut [
+                &mut sig_bytes[..],
+                &mut rec_bytes[..],
+                &mut av_bytes[..],
+                &mut act_bytes[..],
+            ],
+        );
+        if copied == 4 {
+            let signal = Some(i64::from_le_bytes(sig_bytes));
+            let result = (|| {
+                let values = Array::from_header(rec_bytes[..16].try_into().unwrap(), 8)
+                    .ok_or("logistics balance write values invalid")?;
+                if archetype > i32::MAX as u32 || values.element(archetype, 8).is_none() {
+                    return Err("logistics balance write index outside record");
+                }
+                let history = usize::try_from(u64_at(&rec_bytes, record_fields::HISTORY))
+                    .map_err(|_| "logistics history pointer exceeds usize")?;
+                let actual = if Some(values.data) == expected_values {
+                    Some(i64::from_le_bytes(act_bytes))
+                } else {
+                    values
+                        .data
+                        .checked_add(archetype as usize * 8)
+                        .and_then(|address| read::<i64>(memory, address))
+                };
+                if actual != Some(balance) {
+                    return Err("logistics balance write did not store its operand");
+                }
+                let available_raw = i64::from_le_bytes(av_bytes);
+                if available_raw < 0 {
+                    return Err("logistics native available operand is negative");
+                }
+                Ok(BalanceWrite {
+                    history,
+                    values: values.data,
+                    archetype,
+                    balance_raw: balance,
+                    available_raw,
+                })
+            })();
+            return (signal, result);
+        }
+    }
+    let signal = signal_addr.and_then(|at| read::<i64>(memory, at));
+    let result = balance_write(memory, record, balance, archetype, stack, available_offset);
+    (signal, result)
+}
+
 pub const HISTORY_CALLS: [(Rva, Rva); 3] = [
     (Rva(0x0140_ba58), Rva(0x015b_1de0)),
     (Rva(0x0140_7d68), Rva(0x015b_2420)),

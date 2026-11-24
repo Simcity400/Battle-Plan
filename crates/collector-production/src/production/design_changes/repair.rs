@@ -1,7 +1,7 @@
 use super::*;
 use collector_certificates::watch_registry::WatchRegistry;
 
-static MARKS: WatchRegistry = WatchRegistry::marking();
+static MARKS: WatchRegistry = WatchRegistry::marks_only();
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REPAIRING: AtomicBool = AtomicBool::new(false);
 static ADDED: AtomicBool = AtomicBool::new(false);
@@ -35,7 +35,7 @@ pub(super) fn mark(pointer: usize) {
         unknown_receiver!();
         return;
     }
-    drop(MARKS.notify(pointer));
+    MARKS.touch(pointer);
     PENDING.store(true, Ordering::Release);
 }
 pub(super) struct Repairs {

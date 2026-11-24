@@ -1599,3 +1599,139 @@ fn compact_owners_merge_narrow_and_wide_slices_in_key_order() {
     };
     assert_eq!(keys, [(1 << 32) | 9, (2 << 32) | 5, (3 << 32) | 4]);
 }
+
+#[test]
+fn mixed_and_keyed_slice_updates_keep_owner_cache_and_match_full_rows() {
+    let mut cached = FrameWriter::new().unwrap();
+    let mut full = FrameWriter::new().unwrap();
+    let mut encoder = FrameEncoder::new();
+    let research = |entries: &[(u32, u32, i64)]| {
+        TableRows::ResearchInputs(
+            entries
+                .iter()
+                .map(|&(country, index, progress_raw)| input(country, index, progress_raw))
+                .collect(),
+        )
+    };
+    let index = TableId::ResearchInputs.index();
+
+    let h1 = frame(
+        1,
+        [
+            (countries(vec![country(1, 10)]), true),
+            (divisions(vec![division(1, 1_000_000)]), true),
+            (
+                TableInput::Sampled(TableView::Complete(research(&[
+                    (1, 0, 10),
+                    (1, 1, 20),
+                    (2, 0, 30),
+                    (2, 1, 40),
+                    (3, 0, 50),
+                ]))),
+                true,
+            ),
+        ],
+    );
+    let p_cached = cached.hour(&h1).unwrap();
+    let p_full = full.hour(&h1).unwrap();
+    cached.commit(p_cached).unwrap();
+    full.commit(p_full).unwrap();
+    let prepared = encoder.prepare_bytes(h1, true).unwrap();
+    encoder.commit(prepared).unwrap();
+
+    let steps: [(i32, SliceUpdate, Vec<(u32, u32, i64)>); 4] = [
+        (
+            2,
+            SliceUpdate::for_owners_and_carried(
+                &[1, 2, 3],
+                research(&[(1, 1, 25), (2, 0, 35), (2, 2, 45)]),
+                |o| o == 1 || o == 2,
+                |o| o == 1,
+                |o| o != 3,
+            )
+            .unwrap()
+            .0,
+            vec![(1, 0, 10), (1, 1, 25), (2, 0, 35), (2, 2, 45)],
+        ),
+        (
+            3,
+            SliceUpdate::for_owners_and_carried(
+                &[1, 2],
+                research(&[(1, 1, 26), (2, 0, 36), (2, 3, 46)]),
+                |o| o == 1 || o == 2,
+                |o| o == 1,
+                |_| true,
+            )
+            .unwrap()
+            .0,
+            vec![(1, 0, 10), (1, 1, 26), (2, 0, 36), (2, 3, 46)],
+        ),
+        (
+            4,
+            SliceUpdate::for_owners_and_carried(
+                &[1, 2],
+                research(&[(1, 1, 27)]),
+                |o| o == 1 || o == 2,
+                |o| o == 1 || o == 2,
+                |_| true,
+            )
+            .unwrap()
+            .0,
+            vec![(1, 0, 10), (1, 1, 27), (2, 0, 36), (2, 3, 46)],
+        ),
+        (
+            5,
+            SliceUpdate::for_owners_and_carried(
+                &[1, 2],
+                research(&[(1, 1, 28), (2, 0, 37), (2, 3, 47)]),
+                |o| o == 1 || o == 2,
+                |o| o == 1,
+                |_| true,
+            )
+            .unwrap()
+            .0,
+            vec![(1, 0, 10), (1, 1, 28), (2, 0, 37), (2, 3, 47)],
+        ),
+    ];
+
+    for (hour, update, expected_rows) in steps {
+        let token = encoder
+            .untracked_slice_token(TableId::ResearchInputs, 1, hour, false)
+            .unwrap();
+        let slice_frame = frame(
+            hour,
+            [
+                (countries(vec![country(1, 10)]), true),
+                (divisions(vec![division(1, 1_000_000)]), true),
+                (
+                    TableInput::SliceUpdate {
+                        token,
+                        update: Arc::new(update),
+                    },
+                    true,
+                ),
+            ],
+        );
+        let full_frame = frame(
+            hour,
+            [
+                (countries(vec![country(1, 10)]), true),
+                (divisions(vec![division(1, 1_000_000)]), true),
+                (
+                    TableInput::Sampled(TableView::Complete(research(&expected_rows))),
+                    true,
+                ),
+            ],
+        );
+        let p_cached = cached.hour(&slice_frame).unwrap();
+        let p_full = full.hour(&full_frame).unwrap();
+        assert_eq!(p_cached.manifest, p_full.manifest, "hour {hour}");
+        assert!(p_cached.sections().eq(p_full.sections()), "hour {hour}");
+        cached.commit(p_cached).unwrap();
+        full.commit(p_full).unwrap();
+        assert!(cached.owners[index].is_some(), "owners lost at hour {hour}");
+        let prepared = encoder.prepare_bytes(full_frame, false).unwrap();
+        encoder.commit(prepared).unwrap();
+    }
+    same_restarts(&mut [&mut cached, &mut full]);
+}
