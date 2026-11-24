@@ -148,6 +148,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const manifest = stores.manifest.update(sourceScope, incomingMetadata.data, reply => reply);
   const metadata = { ...incomingMetadata, data: manifest };
   const measure = !pinned && view === 'mix' ? 'battalions'
+    : pinned && !options.measure && metadata.data?.measures.includes('battalions') ? 'battalions'
     : armyMeasure(options.measure, metadata.data?.measures);
   const byType = measure === 'battalions' && (pinned || view === 'mix' || (view === 'race' && options.byType === true));
   const liveRaceView = active && widget.time.mode === 'follow' && view === 'race' && !pinned;
