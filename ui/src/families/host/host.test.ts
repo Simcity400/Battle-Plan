@@ -345,6 +345,8 @@ test('toggleExpansion flips the installed tree state of a row and ignores rows t
   assert.deepEqual(opened?.next, { 'war:1': false, 'war:2': true });
   assert.equal(toggleExpansion(NO_EXPANSION, nav, 'war:2:GER'), null);
   assert.equal(toggleExpansion(NO_EXPANSION, nav, 'missing'), null);
+  assert.deepEqual(toggleExpansion(NO_EXPANSION, nav, 'war:2', true)?.next, { 'war:1': false, 'war:2': true }, 'exclusive: opening one closes the one that was open');
+  assert.deepEqual(toggleExpansion(NO_EXPANSION, nav, 'war:1', true)?.next, { 'war:1': false }, 'closing touches nothing else');
 });
 
 test('reportFamilyShownHour prefers explicit installedHour over view.through', () => {

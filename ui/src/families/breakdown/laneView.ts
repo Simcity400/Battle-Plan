@@ -102,7 +102,7 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
     const tip = rowKey ? buildBreakdownTooltip(frame.model, frame.layout.level, rowKey, frame.theme) : null;
     return tip && rowKey ? { hour: frame.model.hour, rowKey, content: tip } : null;
   },
-  structure({ model, layout }) {
+  structure({ binding, model, layout }) {
     return {
       meta: {
         empty: model.empty ?? null,
@@ -110,6 +110,7 @@ const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, Breakdow
         emptyKind: model.emptyKind ?? 'empty',
         warnings: model.warnings ?? [],
         contentHeight: layout.contentHeight,
+        view: binding.options.view,
       },
       nav: layout.nav,
     };

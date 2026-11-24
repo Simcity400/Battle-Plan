@@ -39,7 +39,7 @@ import {
 
 export const TREE_INDENT_PX = 16;
 export const TWO_WAY_SLOT = 72;
-export const TWO_WAY_FIGURE = 56;
+export const TWO_WAY_GAP = 8;
 
 function signedText(text: string, signed: number): string {
   if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
@@ -54,6 +54,7 @@ export interface CellRenderContext {
   readonly density: TableDensity;
   readonly barsMode: TableBarsMode;
   readonly sortedColumn: string;
+  readonly treeColumn: number;
   readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
@@ -228,7 +229,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (column.notRecordedReason || cell?.blank) return;
 
-  if (colIndex === 0) {
+  if (colIndex === rc.treeColumn) {
     if (item.level > 1) left += (item.level - 1) * TREE_INDENT_PX;
     if (item.isTreeGroup) {
       drawChevron(ctx, left - 2, middle, item.isOpen, theme);
@@ -259,11 +260,10 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       return;
     }
     const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
-    const slotRight = right - TWO_WAY_FIGURE;
-    if (slotRight - TWO_WAY_SLOT >= left) {
+    if (right - left >= TWO_WAY_SLOT + TWO_WAY_GAP) {
       const grey = tokens.dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)';
       const share = fraction === null ? 0 : (signed < 0 ? -fraction : fraction);
-      drawTwoWayBar(ctx, slotRight - TWO_WAY_SLOT / 2, middle, TWO_WAY_SLOT / 2, 12, share, grey, grey, theme);
+      drawTwoWayBar(ctx, left + TWO_WAY_SLOT / 2, middle, TWO_WAY_SLOT / 2, 12, share, grey, grey, theme);
     }
     const font = fontOf(theme, 13, 500);
     ctx.save();
@@ -568,7 +568,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
-  const isPrimary = colIndex === 0 || kind === 'item' || column.display === 'flagName';
+  const isPrimary = colIndex === rc.treeColumn || kind === 'item' || column.display === 'flagName';
   const isChild = item.level > 1;
   const subtext = density !== 'compact' ? cell?.subtext : undefined;
   let textLeft = left;

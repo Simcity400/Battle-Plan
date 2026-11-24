@@ -9,7 +9,7 @@ import type { PowerSpendingReply } from '../generated/dashboard';
 const day = (month: number, date: number) => engineHour({ year: 1937, month, day: date, hour: 1 })!;
 const item = (id: string, category: string, recurring: boolean, name: string | null) => ({ id, groupId: `g-${id}`, cause: recurring ? 'DailyGain' : 'Decision',
   category, recurring, firstHour: day(1, 1), firstRead: day(1, 1), name, action: name ?? 'Not identified', icon: null, character: null, targetTag: null,
-  targetName: null, unknown: null, tooltipToken: null });
+  targetName: null, unknown: null, tooltipToken: null, kind: null });
 const categories = [{ id: 'decisions', name: 'Decisions', identified: true }, { id: 'dailyCosts', name: 'Daily costs', identified: true }];
 
 function chunks(): PowerSpendingReply[] {
