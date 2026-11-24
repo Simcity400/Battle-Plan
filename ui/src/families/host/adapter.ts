@@ -245,4 +245,5 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly AuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
+  readonly exclusiveExpansion?: (fields: Readonly<Record<string, unknown>>) => boolean;
 }
