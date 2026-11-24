@@ -14,8 +14,8 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, ChartHoverDetail } from '../../families/time-chart/model.ts';
-import { branchGapsOf, buildBoundedStack, headReading } from '../../families/time-chart/seriesHelpers.ts';
-import { formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
+import { branchGapsOf, buildBoundedStack, headReading, type KnownHeadReading } from '../../families/time-chart/seriesHelpers.ts';
+import { formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { SeriesRankReply, SeriesState } from '../../generated/dashboard';
 import { SHARE_MEASURES, STATE_LABELS, STATES, SUPPLY_FAMILY, type SupplyState } from './supplyHealthData.ts';
 
@@ -41,11 +41,19 @@ export interface SupplyHealthOptions {
   readonly gaps: readonly ChartGap[];
 }
 
-function readingValue(reply: SeriesRankReply, state: SeriesState | null, measure: string): number | null {
+const PERCENT_SCALE = { numerator: 100n } as const;
+
+function readingRaw(reply: SeriesRankReply, state: SeriesState | null, measure: string): { readonly raw: bigint; readonly decimals: number } | null {
   if (!state?.run) return null;
   const decimals = reply.measures.find(held => held.name === measure)?.decimals ?? 0;
-  const value = Number(state.run.valueRaw) / 10 ** decimals;
-  return Number.isFinite(value) ? value : null;
+  return { raw: BigInt(state.run.valueRaw), decimals };
+}
+
+function formatSupplyShare(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatShareRatio(reading.raw, reading.denominator * 100n);
+  }
+  return formatShare(reading.value / 100);
 }
 
 const missingOf = (state: SeriesState | null) => state?.missing ?? notRecordedLabel();
@@ -64,21 +72,26 @@ function supplyHoverDetail(readView: BoundedReadView, subject: string): ChartHov
   const hour = hover.hour;
   if (!row) return { hour, replacesSeries: true, items: [{ label: 'Supply health', missingReason: reply.refused ?? notRecordedLabel(), tone: 'muted' }] };
   const divisions = rankReading(reply, row, DIVISIONS);
-  const total = readingValue(reply, divisions, DIVISIONS);
+  const total = readingRaw(reply, divisions, DIVISIONS);
   if (total === null) return { hour, replacesSeries: true, items: [{ label: 'Divisions', missingReason: missingOf(divisions), tone: 'muted' }] };
-  if (total === 0) return { hour, replacesSeries: true, items: [{ label: 'Divisions', value: formatScalar(0, 'integer'), tone: 'muted' }] };
+  if (total.raw === 0n) return { hour, replacesSeries: true, items: [{ label: 'Divisions', value: formatScalar(0, 'integer'), tone: 'muted' }] };
   const items: TooltipListItem[] = [...STATES].reverse().map(state => {
-    const share = rankReading(reply, row, SHARE_MEASURES[STATES.indexOf(state)]!);
+    const shareMeasure = SHARE_MEASURES[STATES.indexOf(state)]!;
+    const share = rankReading(reply, row, shareMeasure);
     const count = rankReading(reply, row, state);
-    const shareValue = readingValue(reply, share, SHARE_MEASURES[STATES.indexOf(state)]!);
-    const countValue = readingValue(reply, count, state);
-    if (shareValue === null || countValue === null) {
-      return { label: STATE_LABELS[state], swatch: BAND_COLOURS[state], missingReason: missingOf(shareValue === null ? share : count), tone: 'muted' };
+    const shareRaw = readingRaw(reply, share, shareMeasure);
+    const countRaw = readingRaw(reply, count, state);
+    if (shareRaw === null || countRaw === null) {
+      return { label: STATE_LABELS[state], swatch: BAND_COLOURS[state], missingReason: missingOf(shareRaw === null ? share : count), tone: 'muted' };
     }
+    const unit = countRaw.decimals === 0 && countRaw.raw === 1n ? 'division' : 'divisions';
+    const countText = countRaw.decimals > 0
+      ? formatScalar(countRaw.raw, { decimals: countRaw.decimals, maxDecimals: 0 })
+      : formatScalar(countRaw.raw, 'integer');
     return {
       label: STATE_LABELS[state],
       swatch: BAND_COLOURS[state],
-      value: `${formatShare(shareValue)} · ${formatScalar(countValue, 'integer')} ${countValue === 1 ? 'division' : 'divisions'}`,
+      value: `${formatShareRatio(shareRaw.raw, 10n ** BigInt(shareRaw.decimals))} · ${countText} ${unit}`,
     };
   });
   return { hour, replacesSeries: true, items };
@@ -104,11 +117,10 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
     const hour = readView.hour;
     const subject = options.subject;
     const seriesByState = STATES.map(state => (subject ? readView.series(state)?.get(subject) ?? null : null));
-    const heads = STATES.map(state => (subject ? headReading(readView, state, { tag: subject }, SHARE_DECIMALS, 100) : null));
+    const heads = STATES.map(state => (subject ? headReading(readView, state, { tag: subject }, SHARE_DECIMALS, PERCENT_SCALE) : null));
     const stack = buildBoundedStack(STATES.map((state, idx) => {
       const head = heads[idx]!;
       const series = seriesByState[idx];
-      const value = head && 'value' in head ? head.value : null;
       return {
         id: state,
         key: state,
@@ -118,9 +130,9 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
         parts: [series ? { series } : {}],
         valueScale: 100,
         head,
-        endLabel: value === null
+        endLabel: !head || !('value' in head)
           ? null
-          : { colorBar: BAND_COLOURS[state], name: STATE_LABELS[state], fullName: STATE_LABELS[state], value: formatShare(value / 100) },
+          : { colorBar: BAND_COLOURS[state], name: STATE_LABELS[state], fullName: STATE_LABELS[state], value: formatSupplyShare(head) },
       };
     }), hour);
 
@@ -134,7 +146,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
     const auditRows = STATES.flatMap((state, idx) => {
       const head = heads[idx];
       if (!head) return [];
-      return [auditRow(state, 'value' in head ? formatShare(head.value / 100) : head.missing)];
+      return [auditRow(state, 'value' in head ? formatSupplyShare(head) : head.missing)];
     });
 
     return {
@@ -143,7 +155,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       mode: 'stack',
       hour,
       extent: options.extent,
-      yAxis: { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS },
+      yAxis: { format: 'share', fixed: [0, 100], ticks: PERCENT_TICKS },
       series: [],
       stack,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,

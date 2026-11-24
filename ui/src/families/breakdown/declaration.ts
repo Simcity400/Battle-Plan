@@ -18,6 +18,7 @@ export interface BreakdownWidgetSpec<TOptions> {
   readonly sources: (ctx: FamilyPlanContext, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: BreakdownProjection<TOptions & BreakdownViewOptions>;
   readonly projectionOptions: (ctx: FamilyPlanContext) => TOptions;
+  readonly unavailable?: (ctx: FamilyPlanContext) => string | null;
   readonly jumpToDate?: boolean;
 }
 
