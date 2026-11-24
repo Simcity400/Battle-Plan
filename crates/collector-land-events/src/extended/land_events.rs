@@ -815,6 +815,9 @@ mod tests {
                 Outcome::Rows { len: 0 },
                 Outcome::Rows { len: 1 },
                 Outcome::Rows { len: 1 },
+                Outcome::Unavailable {
+                    reason: EDGES_WITHHELD
+                },
             ]
         );
         let TableView::Complete(TableRows::DestroyedDivisions(rows)) = &refreshed[1] else {
@@ -1208,7 +1211,8 @@ mod tests {
                 reason: "overflow",
             }),
         };
-        let [a, b, coverage] = c.tables();
+        let [a, b, coverage, edges] = c.tables();
+        assert!(matches!(edges, TableView::Unavailable { .. }));
         assert!(matches!(a, TableView::Unavailable { .. }));
         assert!(matches!(b, TableView::Unavailable { .. }));
         let TableView::Complete(TableRows::LandEventCoverage(rows)) = coverage else {
@@ -1406,6 +1410,7 @@ mod tests {
                         complete: true,
                         lost_events: 1,
                     }])),
+                    TableView::Complete(TableRows::LandCombatEdges(vec![])),
                 ]
             } else {
                 std::array::from_fn(|_| TableView::Unavailable {
