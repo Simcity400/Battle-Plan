@@ -169,8 +169,9 @@ export function buildLineSubpaths(
       }
       if (cur.length) subpaths.push(cur);
     }
-    if (series.headValue != null && Number.isFinite(series.headValue)) {
-      const hx = layout.toX(Math.min(series.headHour ?? until, layout.xDomain[1]));
+    const headHour = series.headHour ?? until;
+    if (series.headValue != null && Number.isFinite(series.headValue) && headHour >= layout.xDomain[0] && headHour <= layout.xDomain[1]) {
+      const hx = layout.toX(headHour);
       const hy = layout.toY(series.headValue);
       const last = subpaths[subpaths.length - 1];
       if (last && last.length > 0 && hx >= last[last.length - 1]![0]) {

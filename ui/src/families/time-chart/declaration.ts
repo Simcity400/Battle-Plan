@@ -96,6 +96,7 @@ export interface TimeChartBinding<TOptions = unknown> {
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly directModel?: TimeChartModel;
   readonly audit?: boolean;
+  readonly focusedKey?: string | null;
   readonly auditId?: number;
 }
 
