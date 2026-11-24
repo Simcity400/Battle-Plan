@@ -1178,7 +1178,7 @@ fn command_power_ground_crews_capped_refunds_and_allocation_clamps_reconcile() {
 }
 
 #[test]
-fn a_payment_whose_item_is_not_witnessed_at_the_spans_end_keeps_its_amount_with_an_unrecorded_item() {
+fn a_payments_item_is_read_at_its_charge_not_at_a_spans_end_whose_items_are_not_recorded() {
     let frames = (FIRST..=LAST)
         .map(|hour| {
             let mut frame = frame(hour);
@@ -1206,9 +1206,9 @@ fn a_payment_whose_item_is_not_witnessed_at_the_spans_end_keeps_its_amount_with_
     let reads: Vec<_> = reply.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
     assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "witnessed spending keeps its amount");
     let item = &reply.items[reply.payments[1].item as usize];
-    assert_eq!((item.category.as_str(), item.name.as_deref()), ("notIdentified", None));
-    assert!(item.unknown.as_deref().is_some_and(|why| why.starts_with("Power items")), "{:?}", item.unknown);
-    assert!(reply.categories.iter().any(|category| category.id == "notIdentified" && !category.identified));
+    assert_eq!((item.category.as_str(), item.name.as_deref()), ("decisions", None));
+    assert!(item.unknown.as_deref().is_some_and(|why| !why.starts_with("Power items")), "{:?}", item.unknown);
+    assert!(!reply.categories.iter().any(|category| category.id == "notIdentified"));
 }
 
 #[test]
