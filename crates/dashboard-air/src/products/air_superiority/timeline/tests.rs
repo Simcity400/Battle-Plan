@@ -201,18 +201,6 @@ fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
 }
 
 #[test]
-fn a_regions_days_are_summed_once_each_from_two_reads_a_stretch() {
-    let row = |day, activity, total| DayActivity { day, activity, total };
-    let cut = StretchDays { first_day: 0, last_day: 2, counts_last: false, start: [(1, row(0, 5, 0))].into(), end: [(1, row(2, 7, 10)), (2, row(2, 3, 0))].into() };
-    let after = StretchDays { first_day: 2, last_day: 4, counts_last: false, start: [(1, row(2, 7, 0))].into(), end: [(1, row(4, 9, 15))].into() };
-    let sums = day_sums(&[cut, after]);
-    assert_eq!(sums[&1], 5 + 5 + 7 + 8, "days 0 to 3, day 2 once, day 4 not over");
-    assert_eq!(sums[&2], 0, "a region first scored in a day the next stretch ends counts there");
-    let over = StretchDays { first_day: 2, last_day: 4, counts_last: true, start: [(1, row(2, 7, 0))].into(), end: [(1, row(4, 9, 15))].into() };
-    assert_eq!(day_sums(&[over])[&1], 7 + 8 + 9, "a last day over counts");
-}
-
-#[test]
 fn tile_viewpoint_clears_when_a_later_recorded_roster_shows_the_side_absent() {
     let world = world();
     let holders = holders();

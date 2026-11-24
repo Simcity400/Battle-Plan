@@ -15,7 +15,7 @@ use dashboard_query::{
     identity::{Holder, Holders},
 };
 use replay_data::rows::{AirForcePartRow, AirForceWingKindRow, NavyClassRow, Recorded, TableId, tables};
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::{DecodedFrame, Keys, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -551,7 +551,7 @@ impl AtHour for AirForceAt {
             AirForceMeasure::Wings => "air wings",
         };
         let selected = if params.countries.is_empty() {
-            let totals = match population::<tables::AirForceTotals>(frame) {
+            let totals = match population::<tables::AirForceTotals>(frame, &Keys::All) {
                 Ok(rows) => rows,
                 Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             };
@@ -567,7 +567,7 @@ impl AtHour for AirForceAt {
         let mut met = BTreeSet::new();
         let mut by_slot: HashMap<u32, Vec<(u128, Option<i64>)>> = HashMap::new();
         let parts_error = match params.measure {
-            AirForceMeasure::Planes => match population::<tables::AirForceParts>(frame) {
+            AirForceMeasure::Planes => match population::<tables::AirForceParts>(frame, &Keys::All) {
                 Ok(rows) => {
                     for row in rows {
                         let row: &AirForcePartRow = row;
@@ -582,7 +582,7 @@ impl AtHour for AirForceAt {
                 }
                 Err(reason) => Some(reason),
             },
-            AirForceMeasure::Wings => match population::<tables::AirForceWingKinds>(frame) {
+            AirForceMeasure::Wings => match population::<tables::AirForceWingKinds>(frame, &Keys::All) {
                 Ok(rows) => {
                     for row in rows {
                         let row: &AirForceWingKindRow = row;
@@ -676,7 +676,7 @@ impl AtHour for NavyAt {
             NavyMeasure::Strength => "hull strength",
         };
         let selected = if params.countries.is_empty() {
-            let totals = match population::<tables::NavyTotals>(frame) {
+            let totals = match population::<tables::NavyTotals>(frame, &Keys::All) {
                 Ok(rows) => rows,
                 Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             };
@@ -691,7 +691,7 @@ impl AtHour for NavyAt {
         let owner_code = if params.ownership == NavyOwnership::Logical { 1 } else { 0 };
         let mut met = BTreeSet::new();
         let mut by_slot: HashMap<u32, Vec<(u128, Option<i64>)>> = HashMap::new();
-        let parts_error = match population::<tables::NavyClasses>(frame) {
+        let parts_error = match population::<tables::NavyClasses>(frame, &Keys::All) {
             Ok(rows) => {
                 for row in rows {
                     let row: &NavyClassRow = row;

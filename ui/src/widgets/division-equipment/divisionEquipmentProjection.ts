@@ -6,7 +6,8 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { encodeTableSettings, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
+import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
+import { artState, urlArtHandle, type ArtState } from '../../families/table/identityCell.ts';
 import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY, OPTIONS } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
@@ -57,9 +58,39 @@ function bodyState(reply: DivisionEquipmentReply): { readonly empty?: string; re
 
 const asOf = (reply: DivisionEquipmentReply) => reply.poolHour === null ? undefined : `Equipment as of ${formatDateOnly(reply.poolHour)}`;
 
-const [TYPE, HELD, NEEDED, MISSING, TYPE_FILL, DIVISIONS_SHORT] = TYPE_COLUMNS;
+const [PICTURE, TYPE, HELD, NEEDED, MISSING, TYPE_FILL, DIVISIONS_SHORT] = TYPE_COLUMNS;
 
-const TYPE_SPEC: readonly DeclarativeColumnSpec<EquipmentType, Record<string, never>>[] = [
+type TypeRow = EquipmentType & { readonly picture: ArtState };
+
+export function validateTypePictures(value: unknown): StockpileArtworkReply {
+  const reply = value as StockpileArtworkReply;
+  if (!reply || typeof reply !== 'object' || !Array.isArray(reply.entries) || !Array.isArray(reply.warnings)
+    || !reply.entries.every(entry => entry && typeof entry.key === 'string' && (entry.icon === null || typeof entry.icon === 'string')))
+    throw new Error('The equipment pictures reply is malformed.');
+  return reply;
+}
+
+const TYPE_PREFIX = 'type:';
+const pictureCache = new WeakMap<StockpileArtworkReply, ReadonlyMap<string, string>>();
+function typePictures(reply: StockpileArtworkReply | undefined): ReadonlyMap<string, string> {
+  if (!reply) return new Map();
+  let held = pictureCache.get(reply);
+  if (!held) {
+    const map = new Map<string, string>();
+    for (const entry of reply.entries) if (entry.icon && entry.key.startsWith(TYPE_PREFIX)) map.set(entry.key.slice(TYPE_PREFIX.length).toLowerCase(), entry.icon);
+    pictureCache.set(reply, held = map);
+  }
+  return held;
+}
+
+function typePicture(type: EquipmentType, pictures: ReadonlyMap<string, string>, readView: BoundedReadView): ArtState {
+  return type.archetype === null ? {} : artState(readView, urlArtHandle(pictures.get(type.archetype.toLowerCase())));
+}
+
+const TYPE_SPEC: readonly DeclarativeColumnSpec<TypeRow, Record<string, never>>[] = [
+  { ...PICTURE!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.picture.icon, iconPending: row => row.picture.iconPending === true,
+    extra: row => ({ artShape: 'equipment', ...(row.name ? { artName: row.name } : {}) }),
+    value: row => row.archetype === null ? knownValue('Unclassified equipment') : textValue(row.name, row.nameMissing ?? 'Equipment name unavailable') },
   { ...TYPE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Equipment'],
     value: row => row.archetype === null ? knownValue('Unclassified equipment') : textValue(row.name, row.nameMissing ?? 'Equipment name unavailable') },
   { ...HELD!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.heldRaw, 'Holdings not recorded') },
@@ -88,14 +119,16 @@ function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
   return rows;
 }
 
-const typeProjection: TableProjection<Record<string, never>> = declareTableProjection<DivisionEquipmentReply, EquipmentType, Record<string, never>>({
+const typeProjection: TableProjection<Record<string, never>> = declareTableProjection<DivisionEquipmentReply, TypeRow, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TYPE_SPEC,
-    rows: reply => {
+    rows: (reply, _live, _hour, _options, readView) => {
       const blocked = bodyState(reply);
       if (blocked) return { rows: [], ...blocked, warnings: reply.warnings };
-      return { rows: reply.types, titleSummary: summary(reply), titleSummaryPartial: partial(reply), warnings: reply.warnings };
+      const pictures = typePictures(readView.panel<StockpileArtworkReply>('pictures'));
+      const rows = reply.types.map(type => ({ ...type, picture: typePicture(type, pictures, readView) }));
+      return { rows, titleSummary: summary(reply), titleSummaryPartial: partial(reply), warnings: reply.warnings };
     },
     rowKey: row => JSON.stringify([row.archetype]),
     rowName: row => row.name ?? 'Equipment name unavailable',
@@ -187,6 +220,20 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
             followQuery: { panel: 'division-equipment', ...params },
             params,
             validate: validateDivisionEquipment,
+          },
+        }, {
+          name: 'pictures',
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'point',
+            channel: 'panel',
+            coverage: { mode: 'keyed', keys: [ctx.countryTag!] },
+            product: 'stockpile-artwork',
+            followQuery: { panel: 'stockpile-artwork', branchId: ctx.branch.id, country: params.country, variants: [] },
+            params: { branchId: ctx.branch.id, country: params.country, variants: [] },
+            validate: validateTypePictures,
           },
         }]
       : [],

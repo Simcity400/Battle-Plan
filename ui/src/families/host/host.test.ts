@@ -11,6 +11,7 @@ import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHe
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
 import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
   handleFamilyGridKeyDown,
@@ -344,6 +345,8 @@ test('toggleExpansion flips the installed tree state of a row and ignores rows t
   assert.deepEqual(opened?.next, { 'war:1': false, 'war:2': true });
   assert.equal(toggleExpansion(NO_EXPANSION, nav, 'war:2:GER'), null);
   assert.equal(toggleExpansion(NO_EXPANSION, nav, 'missing'), null);
+  assert.deepEqual(toggleExpansion(NO_EXPANSION, nav, 'war:2', true)?.next, { 'war:1': false, 'war:2': true }, 'exclusive: opening one closes the one that was open');
+  assert.deepEqual(toggleExpansion(NO_EXPANSION, nav, 'war:1', true)?.next, { 'war:1': false }, 'closing touches nothing else');
 });
 
 test('reportFamilyShownHour prefers explicit installedHour over view.through', () => {
@@ -905,4 +908,12 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
 
   stop();
   tooltips.dispose();
+});
+
+test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
+  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
+  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
 });

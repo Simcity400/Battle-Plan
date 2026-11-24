@@ -669,6 +669,22 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
     }
 }
 
+#[test]
+fn a_keyed_read_names_the_rows_it_chose() {
+    let (source, _) = recording();
+    let pool = placed::Pool::of(&source).unwrap();
+    let mut count = 0;
+    let run = pool.pages.run_of(0).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    let reads = [Read::these(TableId::Countries, [9001, 9002]), Read::all(TableId::CountryLinks)];
+    for hour in [FIRST, ITA_LEAVES] {
+        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None };
+        let frame = input.frame(&reads, |_| None, 1).unwrap();
+        assert_eq!(*frame.tables[TableId::Countries.index()].keys(), Keys::These(vec![9001, 9002]), "hour {hour}");
+        assert_eq!(*frame.tables[TableId::CountryLinks.index()].keys(), Keys::All, "hour {hour}");
+    }
+}
+
 struct Stepped {
     hour: i32,
     fresh: bool,

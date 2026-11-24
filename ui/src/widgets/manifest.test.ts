@@ -233,7 +233,7 @@ test('shared data-driven settings controls expose bars-behind, three row heights
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'name'] },
     { key: 'factories', label: 'Factories', as: 'faint', offered: ['plain', 'faint'] },
   ];
-  const base: TableBase = { density: 'normal', barsBehind: 'sorted', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } };
+  const base: TableBase = { density: 'normal', barsBehind: 'sorted', sort: { column: 'factories', direction: 'descending' } };
   const fields = [
     viewSwitchControl([{ value: 'rows', label: 'Rows' }, { value: 'bars', label: 'Bars' }], 'rows'),
     rowHeightControl('normal'),
@@ -328,4 +328,23 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],
   });
+});
+
+test('two table views of one kind each draw their own projection, and a missing view is refused, never the first view', async () => {
+  const projection = (view: string) => ({ family: 'table' as const, kind: 'synthetic-same-family', project: () => ({ columns: [], rows: [], hour: 0, empty: view }) });
+  const shares = projection('shares');
+  const totals = projection('totals');
+  bindFamilyManifest([
+    { kind: 'synthetic-same-family', view: 'shares', family: 'table', loadSpec: async () => ({ family: 'table', kind: 'synthetic-same-family', view: 'shares', projection: shares }) },
+    { kind: 'synthetic-same-family', view: 'totals', family: 'table', loadSpec: async () => ({ family: 'table', kind: 'synthetic-same-family', view: 'totals', projection: totals }) },
+  ]);
+  const drain = async (done: () => boolean) => { for (let i = 0; i < 16 && !done(); i++) await Promise.resolve(); };
+  let woken = 0;
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'totals', () => { woken++; }), 'loading');
+  await drain(() => woken > 0);
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'totals', () => {}), totals, 'the totals view draws the totals projection');
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => { woken++; }), 'loading', 'switching to the shares view loads its own projection');
+  await drain(() => woken > 1);
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => {}), shares);
+  assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
 });

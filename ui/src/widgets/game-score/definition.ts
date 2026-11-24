@@ -8,7 +8,7 @@ import { SCORE_LABELS, SCORE_PARTS } from './gameScoreData.ts';
 
 export const DEFAULT_SORT = { column: 'total', direction: 'descending' } as const;
 const inTable = (options: Readonly<Record<string, unknown>>) => (options.view ?? 'table') === 'table';
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 const COLUMN_DEFAULTS: readonly TableColumnDefaults[] = [
   { key: 'country', label: SCORE_LABELS.country, as: 'flagName', offered: OFFERED.country, showNamesDefault: true, hideable: false },
   ...SCORE_PARTS.map((part): TableColumnDefaults => ({ key: part, label: SCORE_LABELS[part], as: 'faint', offered: OFFERED.number })),

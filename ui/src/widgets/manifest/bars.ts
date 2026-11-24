@@ -22,7 +22,7 @@ const GAME_SCORE_RACE_OPTION_KEYS = new Set(['view', 'topMeasure', 'split']);
 const GAME_SCORE_RACE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_RACE_OPTION_KEYS.has(field.key));
 const NAVAL_LOSSES_RACE_OPTION_KEYS = new Set(['view', 'kind', 'attribution', 'period', 'split']);
 const NAVAL_LOSSES_RACE_OPTIONS = raceScopedOptions(NAVAL_LOSSES_OPTIONS, NAVAL_LOSSES_RACE_OPTION_KEYS)
-  .map(field => (field.key === 'split' ? { ...field, visibleWhen: options => options.kind === 'both' } : field));
+  .map((field): OptionField => (field.key === 'split' ? { ...field, visibleWhen: options => options.kind === 'both' } : field));
 const NAVY_SIZE_RACE_OPTION_KEYS = new Set(['view', 'measure', 'ownership', 'grouping', 'split']);
 const NAVY_SIZE_RACE_OPTIONS = raceScopedOptions(NAVY_SIZE_OPTIONS, NAVY_SIZE_RACE_OPTION_KEYS);
 const NUCLEAR_ARSENAL_RACE_OPTION_KEYS = new Set(['view', 'split']);
@@ -45,12 +45,32 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'air-kills-losses',
+    view: 'butterfly',
+    label: 'Butterfly',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../air-kills-losses/airKillsLossesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-kills-losses', view: 'butterfly',
+      projection: mod.airKillsLossesProjection, declaration: mod.airKillsLossesDeclaration,
+    })),
+  },
+  {
     kind: 'air-superiority-region',
     view: DEFAULT_VIEW,
     family: 'bars',
     loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
       family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
       projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    })),
+  },
+  {
+    kind: 'bombing-damage',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../bombing-damage/bombingDamageProjection.ts').then(mod => ({
+      family: 'bars', kind: 'bombing-damage', view: DEFAULT_VIEW,
+      projection: mod.bombingDamageProjection, declaration: mod.bombingDamageDeclaration,
     })),
   },
   {

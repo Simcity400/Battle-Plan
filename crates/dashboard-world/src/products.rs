@@ -6,6 +6,7 @@ pub mod country_flags;
 pub mod land_owners;
 pub mod subjects;
 pub mod territory;
+pub mod place_name_runs;
 pub mod place_names;
 pub mod sea_regions;
 pub mod scalars;

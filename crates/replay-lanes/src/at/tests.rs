@@ -186,6 +186,15 @@ fn a_frame_of_some_keys_is_the_whole_table_filtered() {
                 let filtered = frame(&recording, run, hour, &reads).unwrap();
                 let expected: Vec<CountryRow> = countries(&whole).into_iter().filter(|row| wanted(u128::from(row.id))).collect();
                 assert_eq!(countries(&filtered), expected, "run {run} hour {hour} {keys:?}");
+                let chosen = filtered.tables[TableId::Countries.index()].keys();
+                let asked = |key: u128| match keys {
+                    Keys::All => true,
+                    Keys::These(these) => these.contains(&key),
+                    Keys::Range(low, high) => (low..=high).contains(&key),
+                    Keys::Ranges(ranges) => ranges.iter().any(|&(low, high)| (low..=high).contains(&key)),
+                };
+                assert!((0..12).all(|key| chosen.contains(key) == asked(key)), "the frame names the rows its read chose: {chosen:?} for {keys:?}");
+                assert_eq!(*whole.tables[TableId::Countries.index()].keys(), replay_frame::frame::Keys::All);
                 assert_eq!(filtered.tables[TableId::WorldTension.index()], whole.tables[TableId::WorldTension.index()]);
                 assert_eq!(filtered.metrics, whole.metrics);
                 compared += 1;

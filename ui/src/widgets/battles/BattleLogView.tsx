@@ -71,6 +71,8 @@ export interface BattleDetails<Row, Window> {
 export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply> {
   definition: WidgetMeta;
   product: 'land-battles' | 'naval-battles';
+  manifestProduct: 'land-battles-manifest' | 'naval-battles-manifest';
+  rankingProduct: 'land-battles-ranking' | 'naval-battles-ranking';
   landPlaceNames?: boolean;
   validateManifest: (data: unknown) => ManifestReply;
   validateWindow: (data: unknown) => Window;
@@ -132,7 +134,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const manifestRequest = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-manifest`, params: { branchId: track.branch.id } }) : null;
+    product: adapter.manifestProduct, params: { branchId: track.branch.id } }) : null;
   const manifest = useProduct<ManifestReply>(runtime.client, manifestRequest, active, adapter.validateManifest);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const windows = manifest.data?.windows;
@@ -183,7 +185,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const rankingSpan = hour !== null ? gate.span(Math.min(first, hour), hour) : null;
   const rankingRequest = track && rankingSpan && inBranch ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, ...rankingSpan, topN, measure,
+    product: adapter.rankingProduct, params: { branchId: track.branch.id, ...rankingSpan, topN, measure,
       countries: { countries: countries.tags?.map(countryFromKey) ?? null,
         membership: countries.membership?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) ?? null,
         unobserved: countries.unobserved.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } } }) : null;

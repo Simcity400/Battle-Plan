@@ -7,7 +7,7 @@ use engine_native_air::raid_tooltip_operands::{
 };
 use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{NukeRow, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Keys};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::Arc};
 #[cfg(any(test, feature = "export-types"))]
@@ -206,7 +206,7 @@ impl AtHour for NuclearArsenal {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = NuclearArsenalReply { types: Vec::new(), countries: Vec::new(), missing: None, warnings: Vec::new() };
-        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame) {
+        let nukes = match dashboard_query::coverage::population::<tables::Nukes>(frame, &Keys::All) {
             Ok(nukes) => nukes,
             Err(reason) => {
                 reply.missing = Some(format!("Nuclear stockpiles are not known at this hour: {reason}"));

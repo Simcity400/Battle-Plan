@@ -11,7 +11,7 @@ const division = (id: string, extra: Partial<CareerRow['facts']> = {}): CareerRo
 });
 
 const reply = (divisions: CareerRow[]): DivisionCareersReply => ({
-  divisions, medals: [{ key: 'medal_a', name: 'Order of the Cloud' }], templates: [{ template: '4', name: 'Infantry', icon: null }], missing: null, warnings: [],
+  divisions, medals: [{ key: 'medal_a', name: 'Order of the Cloud', icon: { key: 'GFX_medal_strip', frame: 2 }, iconMissing: null }], templates: [{ template: '4', name: 'Infantry', icon: null }], missing: null, warnings: [],
 });
 
 const project = (raw: unknown) => mostDecoratedProjection.project(
@@ -25,6 +25,8 @@ test('a division shows its recorded medals, experience word and casualties dealt
   assert.deepEqual([decorated!.cells.medals!.value, decorated!.cells.experience!.value, decorated!.cells.casualtiesTaken!.value], [knownValue(2), knownValue('Trained'), knownValue(13671)]);
   assert.deepEqual(unread!.cells.medals!.value, notRecorded('Medal history was not read'));
   assert.deepEqual(unread!.cells.casualtiesTaken!.value, zeroValue(0));
+  const strip = decorated!.cells.medals!.icons ?? [];
+  assert.deepEqual(strip.map(item => [item.name, item.count, Boolean(item.url) || item.pending === true]), [['Order of the Cloud', 2, true]], 'each medal draws its own sprite');
   const tip = typeof decorated!.tooltipExtra === 'function' ? decorated!.tooltipExtra() : decorated!.tooltipExtra;
   assert.deepEqual(tip?.map(row => [row.label, row.value]), [['Order of the Cloud', knownValue('×2')]]);
 });

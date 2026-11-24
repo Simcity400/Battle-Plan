@@ -20,6 +20,7 @@ import {
   deriveTableAudit,
   deriveTableMirror,
   deriveTableTooltip,
+  keepsProductOrder,
   nextTableChange,
   resolveTableRows,
   resolveTableRowsIncremental,
@@ -414,7 +415,7 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.notes ?? [],
     model.warnings ?? [],
     hasTree,
-    model.unsorted === true,
+    keepsProductOrder(model),
     rankShown,
     rankWidth,
     model.columns.map(c => [c.key, c.label, c.unit ?? '', c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '', c.notRecordedReason ?? '', c.cellKind ?? '', c.pinned ? 1 : 0]),
@@ -426,7 +427,6 @@ export interface FamilyTableLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
-  readonly artMaxConcurrent?: number;
 }
 
 export function familyTableLaneView(
@@ -502,7 +502,6 @@ export function familyTableLaneView(
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const art = new LaneArtCache({
           maxEntries: laneOptions?.artMaxEntries,
-          maxConcurrent: laneOptions?.artMaxConcurrent,
           fetchBitmap: laneOptions?.fetchBitmap,
         });
         state.set('familyTable', held = {
@@ -730,7 +729,7 @@ export function familyTableLaneView(
       }
 
       if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
-      const rankShown = model.rank === true && (bound.settings.showRank === true || model.defaultRankShown === true);
+      const rankShown = model.rank === true && model.populationPartial === undefined && (bound.settings.showRank === true || model.defaultRankShown === true);
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
       const layoutSame = held.cachedLayout !== null
@@ -766,13 +765,7 @@ export function familyTableLaneView(
           held.widthConfigKey = configKey;
         }
         allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
-        const protectedKeys = new Set<string>();
-        if (!model.unsorted && bound.settings.sort.column) protectedKeys.add(bound.settings.sort.column);
-        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), bound.settings.overflow, {
-          rankShown,
-          rankWidth,
-          protectedKeys,
-        });
+        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), { rankShown, rankWidth });
         held.layoutCols = model.columns;
         held.layoutSettings = bound.settings;
         held.layoutWidth = bound.width;
@@ -788,11 +781,9 @@ export function familyTableLaneView(
         const widthsPayload = {
           widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...layout.columns].map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
-          hidden: layout.hidden,
           totalWidth: layout.totalWidth,
           scrollable: layout.scrollable,
           pinnedCount: layout.pinnedCount,
-          moreWidth: layout.moreWidth,
         };
         const widthsText = JSON.stringify(widthsPayload);
         held.widthsField = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
@@ -995,14 +986,14 @@ export function familyTableLaneView(
               empty: model.empty ?? null,
               emptyDetail: model.emptyDetail ?? null,
               emptyKind: model.emptyKind ?? 'empty',
-              titleSummary: model.titleSummary ?? null,
-              titleSummaryPartial: model.titleSummaryPartial ?? null,
+              summaryText: model.titleSummary ?? null,
+              summaryPartial: model.titleSummaryPartial ?? null,
               hideHeader: model.hideHeader === true,
               rowHeightMode,
               notes: model.notes ?? [],
               warnings: model.warnings ?? [],
               hasTree,
-              unsorted: model.unsorted === true,
+              unsorted: keepsProductOrder(model),
               rankShown,
               rankWidth,
               columns: model.columns,
@@ -1051,13 +1042,12 @@ export function familyTableLaneView(
       }
       if (held.mirrorField) fields.mirror = held.mirrorField;
 
-      const hiddenSet = (inspectedKey || focusedKey) ? new Set(layout.hidden) : null;
       let builtTipKey: string | null = null;
       let builtTip: ReturnType<typeof deriveTableTooltip> = null;
       const getTip = (rowKey: string) => {
         if (builtTipKey === rowKey) return builtTip;
         builtTipKey = rowKey;
-        builtTip = deriveTableTooltip(flatRows, rowKey, model.columns, hiddenSet!, model.hour);
+        builtTip = deriveTableTooltip(flatRows, rowKey, model.columns, model.hour);
         return builtTip;
       };
 
@@ -1105,7 +1095,6 @@ export function familyTableLaneView(
             model,
             flatRows,
             visibleColumns: layout.columns,
-            hiddenKeys: new Set(layout.hidden),
             rankShown,
             maxima,
             window: bound.window,
