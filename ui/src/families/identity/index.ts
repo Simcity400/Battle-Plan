@@ -22,6 +22,7 @@ import {
   type CountryIdentityKey,
   type CountryIdentityResult,
   type DrawnFlagEntry,
+  type EntityIdentityKey,
   type EntityIdentityResult,
   type EntityRunEntry,
   type FactionIdentityKey,
@@ -223,6 +224,10 @@ export class IdentityIndex {
     this.branchBounds = bounds;
   }
 
+  bounds(): HourInterval {
+    return this.branchBounds;
+  }
+
   setFacts(reply: CountryFactsReply, final = true): void {
     this.facts = reply;
     this.factsFinal = final;
@@ -324,14 +329,27 @@ export class IdentityIndex {
     this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
   }
 
-  setEntityRuns(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, runs: readonly EntityRunEntry[]): void {
+  setEntityRuns(key: EntityIdentityKey, runs: readonly EntityRunEntry[]): void {
     const id = identityKeyString(key);
     this.entityRuns.set(id, [...runs].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
     this.entityFailures.delete(id);
   }
 
-  setEntityFailure(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, failure: Failure): void {
+  addEntityRun(key: EntityIdentityKey, run: EntityRunEntry): void {
+    const id = identityKeyString(key);
+    const kept = (this.entityRuns.get(id) ?? []).filter(item => item.lastHour < run.firstHour || item.firstHour > run.lastHour);
+    kept.push(run);
+    kept.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
+    this.entityRuns.set(id, kept);
+    this.entityFailures.delete(id);
+  }
+
+  setEntityFailure(key: EntityIdentityKey, failure: Failure): void {
     this.entityFailures.set(identityKeyString(key), failure);
+  }
+
+  clearEntityFailures(): void {
+    this.entityFailures.clear();
   }
 
   setDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
@@ -722,7 +740,7 @@ export class IdentityIndex {
     };
   }
 
-  private resolveEntity(key: Exclude<IdentityKey, CountryIdentityKey | FactionIdentityKey>, at: number): EntityIdentityResult {
+  private resolveEntity(key: EntityIdentityKey, at: number): EntityIdentityResult {
     const id = identityKeyString(key);
     const entry = findCoveringEntity(this.entityRuns.get(id), at);
     if (entry) {

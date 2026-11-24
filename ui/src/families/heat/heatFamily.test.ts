@@ -206,6 +206,27 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
     focusedCell: { row: 1, column: 0 },
   }, picture);
   assert.equal(repeatDraw.drew, false);
+
+  const marked: HeatMatrixModel = {
+    hour: 1,
+    corner: 'Reads',
+    rows: rows.map((row, i) => ({ ...row, trailing: `Broken ${i} · Decrypting 1` })),
+    columns,
+    cell: (_r, c) => (c === 0
+      ? { kind: 'value', mark: 'square', color: '#d0607c' }
+      : c === 1
+        ? { kind: 'value', mark: 'ring', fraction: 0.4, color: '#d0607c' }
+        : { kind: 'empty', mark: 'dot' }),
+  };
+  const markedLayout = layoutHeatMatrix({ width: 640, height: 260, scrollLeft: 0, scrollTop: 0, rows: marked.rows, columns, widestTrailing: 120 });
+  assert.ok(markedLayout.trailingWidth > 120);
+  assert.ok(markedLayout.totalWidth >= markedLayout.gridLeft + columns.length * markedLayout.cellSize + markedLayout.trailingWidth);
+  const markedCtx = makeFakeCtx();
+  drawHeatMatrix(markedCtx.ctx, { model: marked, layout: markedLayout, theme: THEME, scrollLeft: 0, scrollTop: 0, hoveredCell: null, focusedCell: null });
+  const texts = markedCtx.ops.filter(op => op.op === 'fillText').map(op => op.args[0]);
+  assert.ok(texts.includes('Reads'));
+  assert.ok(texts.includes('Broken 0 · Decrypting 1') && texts.includes('Broken 1 · Decrypting 1'));
+  assert.equal(markedCtx.ops.filter(op => op.op === 'arc').length, rows.length * 3, 'each row draws a ring (track and arc) and a dot');
 });
 
 test('heat matrix scales to 1,500 countries with bounded visible row and column windows', () => {

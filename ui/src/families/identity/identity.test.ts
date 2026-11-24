@@ -7,6 +7,9 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
+  PlaceNamesReply,
+  StrategicRegionsReply,
+  UnitLeadersReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
@@ -117,6 +120,12 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNames' | 'loadLeaders'> = {
+  loadRegions: () => deferred<StrategicRegionsReply>().promise,
+  loadPlaceNames: () => deferred<PlaceNamesReply>().promise,
+  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+};
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -183,6 +192,7 @@ test('point style answer without interval proves only its point; interval style 
   let includeValid = false;
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -244,6 +254,7 @@ test('picker opened at hour 100 stays pending rather than borrowing hour 300, an
   const flagHoldB = deferred<CountryFlagReply>();
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -387,6 +398,7 @@ test('1,500 countries use one facts request, batched flags, zero requests advanc
   };
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => { factsCalls++; return factsReply; },
     loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
     loadGroups: async () => sampleGroups(),
@@ -465,6 +477,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const factsHold = deferred<CountryFactsReply>();
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -497,6 +510,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
 test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots when scope is null or keys are empty', async () => {
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => sampleFacts(),
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -568,6 +582,60 @@ test('an identity key and an art handle keep their whole identity from demand to
   assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
   assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
   assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
+});
+
+test('leader, state, province and region asks each start their product read and answer with its validity', async () => {
+  const calls: string[] = [];
+  const transport: IdentityTransport = {
+    loadFacts: () => deferred<CountryFactsReply>().promise,
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: () => deferred<CountryFlagReply>().promise,
+    loadRegions: async () => {
+      calls.push('regions');
+      return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
+    },
+    loadPlaceNames: async (_scope, hour, states, provinces) => {
+      calls.push(`places ${hour} ${states.join(',')} ${provinces.join(',')}`);
+      return {
+        states: states.map(stateId => ({ stateId, hour, name: `State ${stateId}`, missing: null })),
+        places: provinces.map(provinceId => ({ provinceId, hour, name: null, missing: 'Province unnamed in this map' })),
+        warnings: [],
+      };
+    },
+    loadLeaders: async (_scope, owner, hour) => {
+      calls.push(`leaders ${owner} ${hour}`);
+      return {
+        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
+        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
+  const view = createBoundedReadView({ hour: 200, identity: provider });
+  const ask = () => [
+    view.who('region', '3', 150), view.who('region', '9', 150),
+    view.who('state', '64', 150), view.who('province', '7', 150), view.who('leader', 'ALP:L1', 150), view.who('leader', 'ALP:L2', 150),
+  ];
+  assert.ok(ask().every(result => result.name.status === 'pending'));
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  ask();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 150 64 7', 'regions']);
+
+  const [region, unknownRegion, state, province, leader, otherLeader] = ask();
+  assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
+  assert.deepEqual(region!.validInterval, [0, 500]);
+  assert.equal(unknownRegion!.name.status, 'absent');
+  assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
+  assert.deepEqual(state!.validInterval, [150, 150]);
+  assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
+  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
+  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
+  broker.dispose();
 });
 
 test('coalesced sparse identity runs stay missing on unrecorded gaps outside known spans', () => {
