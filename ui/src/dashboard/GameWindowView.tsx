@@ -153,6 +153,21 @@ export default function GameWindowView({
 
   useEffect(() => () => { hideTooltip(ownerId); }, [ownerId]);
 
+  useEffect(() => {
+    if (!active || !onClose) return;
+    const onWindowKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== 'Escape') return;
+      if (typeof document !== 'undefined' && document.querySelector('[popover]:popover-open:not([role="tooltip"])')) {
+        return;
+      }
+      event.preventDefault();
+      hideTooltip(ownerId);
+      onClose();
+    };
+    window.addEventListener('keydown', onWindowKeyDown);
+    return () => { window.removeEventListener('keydown', onWindowKeyDown); };
+  }, [active, onClose, ownerId]);
+
   const render = completed?.render ?? null;
   const error = failed && failed.key === requestKey ? failed.error : null;
 
@@ -206,6 +221,15 @@ export default function GameWindowView({
     }
   }, [onClose, ownerId]);
 
+  const handleRegionPointer = useCallback((region: GameWindowRegion, event: MouseEvent<HTMLElement>) => {
+    const tooltip = regionTooltipContent(region);
+    if (tooltip) {
+      showTooltip(ownerId, tooltip, event.clientX, event.clientY, region.path);
+    } else {
+      hideTooltip(ownerId);
+    }
+  }, [ownerId]);
+
   const handleRegionFocus = useCallback((region: GameWindowRegion, event: FocusEvent<HTMLElement>) => {
     const tooltip = regionTooltipContent(region);
     if (!tooltip) {
@@ -233,9 +257,9 @@ export default function GameWindowView({
   }
 
   const [logicalWidth, logicalHeight] = render.logicalSize;
-  return <div className="game-window-host" onKeyDown={handleKeyDown}>
+  return <div className="game-window-host" tabIndex={-1} onKeyDown={handleKeyDown}>
     <div className="game-window-stage">
-      <div className="game-window-canvas">
+      <div className="game-window-canvas" onMouseLeave={handleLeave}>
         <img
           ref={imgRef}
           className={`game-window-image${hoveredClose ? ' is-close-hover' : ''}`}
@@ -245,7 +269,6 @@ export default function GameWindowView({
           height={logicalHeight}
           draggable={false}
           onMouseMove={handleMove}
-          onMouseLeave={handleLeave}
           onClick={handleClick}
         />
         <div className="game-window-regions" aria-label={`${label} controls`}>
@@ -260,12 +283,16 @@ export default function GameWindowView({
               return <button
                 key={`${region.path}:${index}`}
                 type="button"
-                className="game-window-region-focus"
+                className="game-window-region-focus is-close"
                 style={style}
                 aria-label={regionLabel}
+                onMouseEnter={event => handleRegionPointer(region, event)}
+                onMouseMove={event => handleRegionPointer(region, event)}
+                onMouseLeave={handleRegionBlur}
                 onFocus={event => handleRegionFocus(region, event)}
                 onBlur={handleRegionBlur}
-                onClick={() => {
+                onClick={event => {
+                  event.stopPropagation();
                   hideTooltip(ownerId);
                   onClose();
                 }}
@@ -278,6 +305,9 @@ export default function GameWindowView({
               className="game-window-region-focus"
               style={style}
               aria-label={regionLabel}
+              onMouseEnter={event => handleRegionPointer(region, event)}
+              onMouseMove={event => handleRegionPointer(region, event)}
+              onMouseLeave={handleRegionBlur}
               onFocus={event => handleRegionFocus(region, event)}
               onBlur={handleRegionBlur}
             />;

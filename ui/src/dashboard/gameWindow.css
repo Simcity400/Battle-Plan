@@ -11,6 +11,10 @@
   box-sizing: border-box;
 }
 
+.game-window-host:focus {
+  outline: none;
+}
+
 .game-window-stage {
   display: flex;
   align-items: flex-start;
@@ -48,7 +52,12 @@
   padding: 0;
   border: 0;
   background: transparent;
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.game-window-region-focus.is-close {
+  cursor: pointer;
+  z-index: 1;
 }
 
 .game-window-region-focus:focus-visible {

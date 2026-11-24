@@ -491,23 +491,22 @@ fn a_cornered_tile_button_uses_its_declared_size() {
         .fold(f32::NEG_INFINITY, f32::max);
     assert_eq!([left, top, right, bottom], [45.0, 51.0, 155.0, 109.0]);
 
-    let standard_gui = native::read(
-        br#"guiTypes = { windowType = { name = "w" size = { x = 400 y = 300 }
-            guiButtonType = { name = "std_centered" quadTextureSprite = "GFX_cornered"
-                position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes scale = 2.0 } } }"#,
+    let standard_gui = read(
+        b"guiTypes = { windowType = { name = \"w\" size = { x = 400 y = 300 } \
+          guiButtonType = { name = \"std_centered\" spriteType = \"GFX_cornered\" \
+          position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes scale = 2.0 } } }",
     );
-    let standard_window = standard_gui.template("w").unwrap();
-    let standard_centered = layout(
-        standard_window,
-        None,
-        &fixture(),
-        &Bindings {
-            regions: true,
-            ..Bindings::default()
-        },
-    )
-    .unwrap()
-    .unwrap();
+    let standard_resources = fixture_with(standard_gui);
+    let standard_window = standard_resources.gui_type(b"w").unwrap();
+    let standard_bindings = Bindings {
+        viewport: Some([800, 600]),
+        regions: true,
+        ..Bindings::default()
+    };
+    let standard_centered =
+        fixed_window_layout(standard_window, &standard_resources, &standard_bindings)
+            .unwrap()
+            .unwrap();
     let PartKind::Tiles { ref quads, .. } = standard_centered.parts[0].kind else {
         panic!("not a tile");
     };
@@ -528,6 +527,15 @@ fn a_cornered_tile_button_uses_its_declared_size() {
         .map(|(rect, _)| rect[1] + rect[3])
         .fold(f32::NEG_INFINITY, f32::max);
     assert_eq!([left, top, right, bottom], [45.0, 51.0, 155.0, 109.0]);
+    assert_eq!(
+        drawable_extent(
+            &standard_window.children[0],
+            &standard_resources,
+            &standard_bindings,
+        )
+        .unwrap(),
+        Some([110, 58])
+    );
 
     let checkbox = laid(
         "checkboxType = { name = \"cb\" quadTextureSprite = \"GFX_cornered\" \
