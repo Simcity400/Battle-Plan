@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveOptions } from '../../dashboard/options';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
@@ -8,7 +7,6 @@ import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/inde
 import type { InstalledAction } from '../../families/plan.ts';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
-import { OPTIONS } from './definition';
 import NavyManagement from './NavyManagement';
 import { navyLinesDeclaration } from './navyLinesProjection.ts';
 import { navySizeMixDeclaration } from './navySizeMixProjection.ts';
@@ -16,8 +14,8 @@ import { navySizeRaceDeclaration } from './navySizeRaceProjection.ts';
 
 export default function NavySizeWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
-  const options = resolveOptions(OPTIONS, widget.options);
-  const view = options.view === 'lines' ? 'lines' : options.view === 'mix' ? 'mix' : 'race';
+  const rawView = widget.options?.view;
+  const view = rawView === 'lines' ? 'lines' : rawView === 'mix' ? 'mix' : 'race';
   const isLines = view === 'lines';
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
@@ -73,11 +71,9 @@ export default function NavySizeWidget(props: WidgetProps) {
         {detail && track ? (
           <NavyManagement
             runtime={runtime}
-            widget={widget}
             track={track}
             tag={detail.tag}
             hour={detail.hour}
-            following={false}
             active={active}
           />
         ) : null}

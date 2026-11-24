@@ -13,7 +13,7 @@ import {
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import type { ArmyAttribution, ArmyMeasure } from '../../generated/dashboard';
-import { armyMeasure, armyMetadataRequest, measureName, validateArmySizeReply, type ArmySizeReply } from './armySizeData.ts';
+import { armyMeasure, armyMetadataParams, measureName, validateArmyMetadata, type ArmyMetadataReply } from './armySizeMeta.ts';
 
 export interface ArmySizeRaceOptions extends SeriesRaceBaseOptions, ForceAtRaceBaseOptions {
   readonly measure: ArmyMeasure;
@@ -101,7 +101,7 @@ export const armySizeRaceProjection: BarsProjection<ArmySizeRaceOptions> = regis
   },
 }, 'race');
 
-function armySizeRaceSources(ctx: FamilyPlanContext<ArmySizeReply>): SourcePlan {
+function armySizeRaceSources(ctx: FamilyPlanContext<ArmyMetadataReply>): SourcePlan {
   const measure = armyMeasure(ctx.options.measure, ctx.aux?.measures);
   const countFor = armyCountFor(ctx.options.countFor);
   const byType = measure === 'battalions' && ctx.options.byType === true;
@@ -146,7 +146,7 @@ function armySizeRaceSources(ctx: FamilyPlanContext<ArmySizeReply>): SourcePlan 
   };
 }
 
-export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions, ArmySizeReply> = {
+export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions, ArmyMetadataReply> = {
   family: 'bars',
   kind: 'army-size',
   label: 'Army size',
@@ -163,8 +163,8 @@ export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions,
   },
   aux: {
     product: 'army-size',
-    params: track => armyMetadataRequest(track)!.params,
-    validate: validateArmySizeReply,
+    params: track => ({ ...armyMetadataParams(track.branch.id) }),
+    validate: validateArmyMetadata,
   },
   sources: armySizeRaceSources,
   projection: armySizeRaceProjection,

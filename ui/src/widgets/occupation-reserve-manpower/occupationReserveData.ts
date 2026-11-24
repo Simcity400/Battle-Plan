@@ -64,7 +64,6 @@ export function historySources(history: ReserveHistoryReply): number[] {
   return [...most].sort((a, b) => b[1] - a[1] || a[0] - b[0]).map(([source]) => source);
 }
 
-export const holderToken = (holder: { tag: string; id: number }) => `${holder.tag}|${holder.id}`;
 export function holderOf(token: unknown): { tag: string; id: number } | null {
   if (typeof token !== 'string') return null;
   const [tag, id] = token.split('|');

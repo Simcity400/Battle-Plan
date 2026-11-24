@@ -166,7 +166,7 @@ export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRa
       ...(!rows.length ? { empty: 'No reserve manpower is held at this date.', emptyKind: 'empty' as const } : {}),
     };
   },
-});
+}, 'main');
 
 function occupationReserveSources(ctx: FamilyPlanContext): SourcePlan {
   const top = ctx.countries.top;

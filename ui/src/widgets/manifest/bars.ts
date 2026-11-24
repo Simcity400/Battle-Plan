@@ -287,10 +287,12 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   },
   {
     kind: 'occupation-reserve-manpower',
-    view: DEFAULT_VIEW,
+    view: 'main',
+    label: 'Holders',
     family: 'bars',
+    viewOption: 'show',
     loadSpec: () => import('../occupation-reserve-manpower/occupationReserveRaceProjection.ts').then(mod => ({
-      family: 'bars', kind: 'occupation-reserve-manpower', view: DEFAULT_VIEW,
+      family: 'bars', kind: 'occupation-reserve-manpower', view: 'main',
       projection: mod.occupationReserveRaceProjection, declaration: mod.occupationReserveRaceDeclaration,
     })),
   },

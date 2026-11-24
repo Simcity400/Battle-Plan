@@ -1,7 +1,7 @@
 import { useGate } from '../../dashboard/regionGate';
-import { SPEC, type GatedHour } from '../../dashboard/regionTime';
+import { SPEC } from '../../dashboard/regionTime';
 import { asFailure } from '../../dashboard/queryError.ts';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CLOSED_PARTS_RACE, reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 import CountryPicker from '../../components/CountryPicker';
@@ -34,14 +34,6 @@ import { useDrill } from '../../charts/drill/useDrill';
 import type { PartsRaceDrillAction, PartsRaceDrillState } from '../../charts/race/partsRaceDrill';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
-import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
-import type { InstalledAction } from '../../families/plan.ts';
-import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
-import { armyLinesDeclaration } from './armyLinesProjection.ts';
-import { armySizeMixDeclaration } from './armySizeMixProjection.ts';
-import { armySizeRaceDeclaration } from './armySizeRaceProjection.ts';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 
 const sameWarnings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((warning, at) => warning === b[at]);
@@ -50,109 +42,7 @@ const NO_WARNINGS: string[] = [];
 
 const HOLDERS = { holders: true };
 
-export default function ArmySizeWidget(props: WidgetProps) {
-  const options = resolveOptions(OPTIONS, normaliseArmyOptions(props.widget.options));
-  if (options.view === 'breakdown') {
-    return <ArmyBreakdownWidget {...props} />;
-  }
-  const familyView = options.view === 'lines' ? 'lines' : options.view === 'mix' ? 'mix' : 'race';
-  return <ArmySizeFamilyWidget {...props} familyView={familyView} />;
-}
-
-function ArmySizeFamilyWidget(props: WidgetProps & { readonly familyView: 'race' | 'mix' | 'lines' }) {
-  const { widget, runtime, active, familyView } = props;
-  const options = resolveOptions(OPTIONS, normaliseArmyOptions(widget.options));
-  const isLines = familyView === 'lines';
-  const anchorRef = useRef<HTMLDivElement>(null);
-  const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
-  const [detailWarnings, setDetailWarnings] = useChangedState<string[]>([], sameWarnings);
-  const gate = useGate(runtime, widget, SPEC, active);
-  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const countFor = options.countFor as ArmyAttribution;
-  const metadataRequest = armyMetadataRequest(track);
-  const metadata = useProduct<ArmySizeReply>(runtime.client, metadataRequest, active && detail !== null, validateArmySizeReply, track?.source);
-  const measure = familyView === 'mix' ? 'battalions' : armyMeasure(options.measure, metadata.data?.measures);
-  const extent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
-
-  const onActivate = useCallback((action: InstalledAction) => {
-    if (isLines && parseChartInspect(action.subject) !== null) return;
-    const gated = gate.recorded(Math.floor(action.hour));
-    if (gated === null) return;
-    const meta = action.meta as { readonly tag?: string; readonly key?: string } | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
-  }, [gate, isLines]);
-
-  return (
-    <div ref={anchorRef} className="fh-frame">
-      {isLines ? (
-        <DeclaredFamilyWidget
-          {...props}
-          adapter={timeChartHostAdapter}
-          view="lines"
-          declaration={armyLinesDeclaration}
-          extraWarnings={detailWarnings}
-          onActivate={onActivate}
-        />
-      ) : familyView === 'mix' ? (
-        <DeclaredFamilyWidget
-          {...props}
-          adapter={barsHostAdapter}
-          view="mix"
-          declaration={armySizeMixDeclaration}
-          selectedKey={detail?.key ?? null}
-          extraWarnings={detailWarnings}
-          onActivate={onActivate}
-        />
-      ) : (
-        <DeclaredFamilyWidget
-          {...props}
-          adapter={barsHostAdapter}
-          view="race"
-          declaration={armySizeRaceDeclaration}
-          selectedKey={detail?.key ?? null}
-          extraWarnings={detailWarnings}
-          onActivate={onActivate}
-        />
-      )}
-      <DetailWindowHost
-        open={detail !== null}
-        subject={detail?.tag ?? null}
-        hour={detail?.hour ?? null}
-        title={detail ? `${detail.tag} army breakdown` : 'Army breakdown'}
-        anchor={anchorRef}
-        returnFocus=".fh-body"
-        onClose={() => { setDetail(null); setDetailWarnings(NO_WARNINGS); }}
-      >
-        {detail && track ? (
-          <ArmyBreakdown
-            runtime={runtime}
-            gate={gate}
-            track={track}
-            active={active}
-            options={options}
-            extent={extent}
-            countrySlot={null}
-            headerSelection={{ tag: detail.tag, hour: detail.hour }}
-            playhead={detail.hour}
-            tag={detail.tag}
-            hour={detail.hour}
-            measure={measure}
-            countFor={countFor}
-            manifest={metadata.data}
-            originHour={detail.hour}
-            following={false}
-            pinned={false}
-            onWarnings={setDetailWarnings}
-            onPick={() => {}}
-            onFollow={() => {}}
-          />
-        ) : null}
-      </DetailWindowHost>
-    </div>
-  );
-}
-
-function ArmyBreakdownWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
+export default function ArmySizeWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, normaliseArmyOptions(widget.options));
   const drillControl = useDrill<PartsRaceDrillState, PartsRaceDrillAction>(runtime, useRegion(widget), null, reducePartsRaceDrill, CLOSED_PARTS_RACE, HOLDERS);
   const gate = useGate(runtime, widget, SPEC, active);
