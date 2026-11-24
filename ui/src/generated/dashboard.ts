@@ -773,7 +773,23 @@ name: string | null,
 /**
  * The recorded map colour as sRGB bytes; null when not recorded this hour.
  */
-color: [number, number, number] | null, };
+color: [number, number, number] | null,
+/**
+ * The inclusive `[first, last]` hour interval this style or absence is proven for.
+ */
+valid?: [number, number],
+/**
+ * True when the tag is proven not to exist as a country across `valid`.
+ */
+absent?: boolean,
+/**
+ * Why the style or part of it is missing at this hour.
+ */
+reason?: string,
+/**
+ * The dated flag choice for this country across `valid`.
+ */
+flagChoice?: CountryFlagChoice, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
 export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
 export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };

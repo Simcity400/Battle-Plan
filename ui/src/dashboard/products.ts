@@ -6,6 +6,7 @@ import { ResourceCache } from './resourceCache.ts';
 import { forgetFlags } from './countryFlags.ts';
 import { forgetFacts } from './sharedFacts.ts';
 import { forgetTimelines } from './countryTimeline.ts';
+import { forgetIdentitySource } from '../families/identity/broker.ts';
 import { forgetReplySizes } from './replySizes.ts';
 import { tileCache } from './tiles/view.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
@@ -174,6 +175,7 @@ export function forgetProducts(client: DashboardClient, sourceId: string): void 
   forgetFlags(client, sourceId);
   forgetFacts(client, sourceId);
   forgetTimelines(client, sourceId);
+  forgetIdentitySource(client, sourceId);
   forgetReplySizes(client, sourceId);
   tileCache(client).forget(`${sourceId}|`);
 }

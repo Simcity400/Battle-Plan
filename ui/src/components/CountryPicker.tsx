@@ -7,23 +7,38 @@ import { Icon } from './Icons';
 import { CountryFlag } from './CountryFlag';
 import { FailureLine } from './FailureLine';
 import { loadProduct } from '../dashboard/products';
-import { isFailedFact } from '../dashboard/countryFacts.ts';
-import { flagReadKey, retryFlags, useFlagReads } from '../dashboard/countryFlags';
 import { useContentRevision } from '../dashboard/contentRevision';
-import { nameKey, useCountryNamesAt } from '../dashboard/countryNamesAt.ts';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import type { CountryFlagImage, CountryFlagSize, LandOwners } from '../generated/dashboard';
-import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, nameAskHour, revealRow, visibleRange } from './countryList';
+import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList';
 import type { CountryOption } from './countryList';
 import { productRequest } from '../dashboard/request.ts';
+import { identityBrokerFor } from '../families/identity/broker.ts';
+import {
+  countryTagKey,
+  useIdentities,
+  useIdentity,
+  useIdentityScope,
+  type CountryIdentityResult,
+  type IdentityAsk,
+} from '../families/identity/react.ts';
 
 const LIST_HEIGHT = 340;
-const NO_NAMES: ReadonlyMap<string, NameRead> = new Map();
-const NO_NAME_READS: readonly { tag: string; hour: number }[] = [];
+const NO_ASKS: readonly IdentityAsk[] = [];
 const listView = (scrollTop: number, height: number) => (before: { scrollTop: number; height: number }) =>
   before.scrollTop === scrollTop && before.height === height ? before : { scrollTop, height };
 
 export interface CountryPickerRead { tag: string; branchId: string; hour: number }
+
+function nameReadFromIdentity(result: CountryIdentityResult | null | undefined): NameRead {
+  if (!result || result.kind === 'pending') return { kind: 'loading' };
+  if (result.kind === 'absent') return ABSENT_NAME;
+  if (result.kind === 'failed') return { kind: 'failed', failure: result.failure };
+  if (result.name.kind === 'known') return { kind: 'value', value: result.name.value };
+  if (result.name.kind === 'pending') return { kind: 'loading' };
+  if (result.name.kind === 'missing') return ABSENT_NAME;
+  return { kind: 'failed', failure: result.name.failure };
+}
 
 export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
@@ -50,64 +65,67 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const [retry, setRetry] = useState(0);
   const content = useContentRevision(client);
   const sourceKey = source ? JSON.stringify([source.id, source.revision, content]) : '';
-  const nameContext = useMemo(() => ({ sourceKey, client, branchId: flagAt?.branchId, hour: flagAt?.hour, choiceReads }),
-    [sourceKey, client, flagAt?.branchId, flagAt?.hour, choiceReads]);
-  const [capturedNames, setCapturedNames] = useState<{ context: typeof nameContext | null; names: ReadonlyMap<string, NameRead> }>({ context: null, names: NO_NAMES });
-  const heldNames = capturedNames.context === nameContext ? capturedNames.names : NO_NAMES;
   const [roster, setRoster] = useState<{ key: string; countries: CountryMetadata[]; error: Failure | null }>({ key: '', countries: [], error: null });
   const loading = !!source && !allowedTags && roster.key !== sourceKey;
+  const datedMode = choiceReads !== undefined || !!flagAt;
   const choiceTrack = useMemo(() => {
     const branch = source?.metadata.branches.find(branch => branch.id === flagAt?.branchId);
     return source && branch ? { source, branch } : undefined;
   }, [source, flagAt?.branchId]);
   const choiceRead = (tag: string): CountryPickerRead | null => {
-    const read = choiceReads === undefined ? flagAt ? { tag, ...flagAt } : null : choiceReads.get(tag);
+    const read = choiceReads === undefined ? (flagAt ? { tag, ...flagAt } : null) : choiceReads.get(tag);
     return read && choiceTrack && read.branchId === choiceTrack.branch.id && Number.isSafeInteger(read.hour)
       && read.hour >= choiceTrack.branch.firstHour && read.hour <= choiceTrack.branch.lastHour ? read : null;
   };
   const choices = useMemo(() => {
-    const choices = allowedTags ? allowedCountryChoices(countries, allowedTags, flagAt, heldNames)
+    const base = allowedTags
+      ? allowedCountryChoices(countries, allowedTags, null)
       : roster.key === sourceKey ? countryChoices(roster.countries) : [];
-    return choiceReads === undefined ? choices : choices.map(({ country }) => {
-      const name = nameReadMetadata(heldNames.get(country.tag)).name;
-      return { country: { ...country, name }, search: `${name} ${country.tag}`.toLowerCase() };
-    });
-  }, [countries, roster, sourceKey, allowedTags, flagAt?.branchId, flagAt?.hour, heldNames, choiceReads, choiceTrack]);
+    if (!datedMode) return base;
+    return base.map(({ country }) => ({ country, search: country.tag.toLowerCase() }));
+  }, [countries, roster, sourceKey, allowedTags, datedMode]);
   const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
   const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
     : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);
   const searching = !!query.trim();
   const unfiltered = visibleRange(choices.length, view.scrollTop, view.height);
   const named = !open ? [] : searching ? choices : choices.slice(unfiltered.start, unfiltered.end);
-  const datedRoster = !allowedTags && choiceReads === undefined && !!flagAt;
-  const wantedChoices = allowedTags || choiceReads !== undefined || datedRoster ? [...new Set([...named.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
-    .flatMap(displayTag => { const read = choiceRead(displayTag); return read ? [{ displayTag, ...read }] : []; }) : [];
-  const wantedNames = wantedChoices.map(({ tag, hour }) => ({ tag, hour }));
-  const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined || datedRoster) && (!!flagAt || choiceReads !== undefined),
-    new Set(wantedNames.map(read => read.hour)).size);
-  useEffect(() => {
-    if ((!allowedTags || !flagAt) && choiceReads === undefined && !datedRoster) return;
-    setCapturedNames(previous => {
-      const held = previous.context === nameContext ? previous.names : NO_NAMES;
-      const added = wantedChoices.flatMap(({ displayTag, tag, hour }) => {
-        const name = names.get(nameKey(hour, tag));
-        return name !== undefined && name.kind !== 'loading' && held.get(displayTag) !== name ? [[displayTag, name] as const] : [];
-      });
-      return previous.context === nameContext && !added.length ? previous : { context: nameContext, names: new Map([...held, ...added]) };
-    });
-  }, [names, nameContext, allowedTags]);
-  const datedName = (country: CountryOption): NameRead | undefined => {
-    const read = choiceRead(country.tag);
-    const dated = read ? names.get(nameKey(read.hour, read.tag)) ?? heldNames.get(country.tag) : undefined;
-    return dated?.kind === 'value' ? dated : undefined;
-  };
+  const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
+
+  const choiceScope = useIdentityScope(client, source, choiceTrack?.branch.id ?? null, datedMode && !!choiceTrack);
+  const choiceBounds = useMemo(
+    () => (choiceTrack ? [choiceTrack.branch.firstHour, choiceTrack.branch.lastHour] as const : undefined),
+    [choiceTrack?.branch.firstHour, choiceTrack?.branch.lastHour],
+  );
+  const datedAsks = useMemo<readonly IdentityAsk[]>(() => {
+    if (!datedMode || !choiceTrack) return NO_ASKS;
+    const tags = new Set<string>(named.map(choice => choice.country.tag));
+    if (displayHeaderTag) tags.add(displayHeaderTag);
+    const seen = new Set<string>();
+    const out: IdentityAsk[] = [];
+    for (const tag of tags) {
+      const read = choiceRead(tag);
+      if (!read) continue;
+      const key = `${read.hour}\u0000${read.tag}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key: countryTagKey(read.tag), hour: read.hour });
+    }
+    return out;
+  }, [datedMode, choiceTrack, named, displayHeaderTag, choiceReads, flagAt?.branchId, flagAt?.hour]);
+
+  const datedIdentities = useIdentities(client, source, datedMode ? choiceScope : null, datedAsks, {
+    active: datedMode && !!choiceScope && datedAsks.length > 0,
+    needFlags: open,
+    flagSize: 'panel',
+    branchBounds: choiceBounds,
+  });
+
   const countryNameRead = (country: CountryOption): NameRead => {
-    if (datedRoster) return datedName(country) ?? { kind: 'value', value: country.name };
-    if (choiceReads === undefined && !(allowedTags && flagAt)) return { kind: 'value', value: country.name };
+    if (!datedMode) return { kind: 'value', value: country.name };
     const read = choiceRead(country.tag);
     if (!read) return ABSENT_NAME;
-    const current = names.get(nameKey(read.hour, read.tag)), held = heldNames.get(country.tag);
-    return current?.kind === 'loading' ? held ?? current : current ?? held ?? ABSENT_NAME;
+    return nameReadFromIdentity(datedIdentities.resolve(countryTagKey(read.tag), read.hour));
   };
   const countryName = (country: CountryOption) => nameReadMetadata(countryNameRead(country)).name;
   const filtered = filterChoices(choices, query, choice => countryName(choice.country));
@@ -115,59 +133,102 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const visible = open ? filtered.slice(range.start, range.end) : [];
   const sole = searching && filtered.length === 1 ? 0 : -1;
   const shownActive = active >= 0 ? active : sole;
-  const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
-  const headerRead = displayHeaderTag ? choiceRead(displayHeaderTag) : null;
-  const headerTag = choiceReads === undefined ? displayHeaderTag : headerRead?.tag ?? null;
-  const headerSize: CountryFlagSize = field ? 'panel' : 'shield';
-  const countryAt = (country: CountryOption) => choiceReads !== undefined ? choiceRead(country.tag)
-    : allowedTags && flagAt ? choiceRead(country.tag)
-    : datedRoster && datedName(country) ? choiceRead(country.tag)
-    : country.observedBranchId != null && country.observedHour != null ? { tag: country.tag, branchId: country.observedBranchId, hour: country.observedHour } : null;
-  const listReads = source ? visible.flatMap(({ country }) => { const at = countryAt(country); return at ? [at] : []; }) : [];
-  const listFlags = useFlagReads(client, source ?? undefined, listReads, true, 'panel');
-  const flagOf = (country: CountryOption) => {
-    const at = countryAt(country);
-    const flag = at ? listFlags.get(flagReadKey(at)) : undefined;
-    return flag && !isFailedFact(flag) ? flag.image : undefined;
+
+  const defaultBranch = source?.metadata.branches[0] ?? null;
+  const undatedScope = useIdentityScope(client, source, defaultBranch?.id ?? null, !datedMode && open && !!defaultBranch);
+  const undatedBounds = useMemo(
+    () => (defaultBranch ? [defaultBranch.firstHour, defaultBranch.lastHour] as const : undefined),
+    [defaultBranch?.firstHour, defaultBranch?.lastHour],
+  );
+  const undatedAsks = useMemo<readonly IdentityAsk[]>(() => {
+    if (datedMode || !open || !defaultBranch) return NO_ASKS;
+    const out: IdentityAsk[] = [];
+    const seen = new Set<string>();
+    for (const { country } of visible) {
+      if (country.observedBranchId !== defaultBranch.id || country.observedHour == null) continue;
+      const key = `${country.observedHour}\u0000${country.tag}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key: countryTagKey(country.tag), hour: country.observedHour });
+    }
+    return out;
+  }, [datedMode, open, defaultBranch, visible]);
+  const undatedIdentities = useIdentities(client, source, !datedMode && open ? undatedScope : null, undatedAsks, {
+    active: !datedMode && open && !!undatedScope && undatedAsks.length > 0,
+    needFlags: true,
+    flagSize: 'panel',
+    branchBounds: undatedBounds,
+  });
+
+  const rowFlagState = (country: CountryOption): { readonly image?: CountryFlagImage; readonly pending: boolean; readonly failure?: Failure } => {
+    if (datedMode) {
+      const read = choiceRead(country.tag);
+      if (!read) return { pending: false };
+      const res = datedIdentities.resolve(countryTagKey(read.tag), read.hour);
+      if (res.kind === 'pending') return { pending: true };
+      if (res.kind !== 'known') return { pending: false };
+      if (res.flagChoice.kind === 'pending') return { pending: true };
+      if (res.flagChoice.kind !== 'known') return { pending: false };
+      const drawn = datedIdentities.flagFor(res.flagChoice.value);
+      if (!drawn) return { pending: true };
+      if (drawn.failed) return { pending: false, failure: drawn.failed };
+      return { image: drawn.image, pending: false };
+    }
+    if (!defaultBranch || country.observedBranchId !== defaultBranch.id || country.observedHour == null) return { pending: false };
+    const res = undatedIdentities.resolve(countryTagKey(country.tag), country.observedHour);
+    if (res.kind === 'pending') return { pending: true };
+    if (res.kind !== 'known' || res.flagChoice.kind !== 'known') return { pending: res.kind === 'known' && res.flagChoice.kind === 'pending' };
+    const drawn = undatedIdentities.flagFor(res.flagChoice.value);
+    if (!drawn) return { pending: true };
+    if (drawn.failed) return { pending: false, failure: drawn.failed };
+    return { image: drawn.image, pending: false };
   };
+
   const flagContext = useMemo(() => {
     if (!source?.metadata.branches.length) return null;
     const witness = selected ?? source.metadata.countries.find((country) => country.id === source.metadata.playerCountryId) ?? source.metadata.countries[0];
     const branch = source.metadata.branches.find((branch) => branch.id === witness?.observedBranchId) ?? source.metadata.branches[0];
-    return { sourceId: source.id, revision: source.revision, branchId: branch.id,
-      hour: witness?.observedBranchId === branch.id ? witness.observedHour ?? branch.firstHour : branch.firstHour };
-  }, [source?.id, source?.revision, source?.metadata.branches, selected]);
-  const live = (choiceReads !== undefined || (!field || !!allowedTags) && !!flagAt) && !!source;
-  const headerContext = useMemo(() => choiceReads !== undefined ? source && headerRead
-    ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null
-    : live ? source && headerRead ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null : flagContext,
-    [choiceReads !== undefined, source?.id, source?.revision, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]);
-  const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
-    : JSON.stringify([sourceKey, headerTag, headerSize, choiceTrack?.branch.id]);
-  const flagOwner = `${headerIdentity}:${headerContext?.branchId}`;
-  const wantedNameHour = live && choiceReads === undefined && !allowedTags && headerTag ? flagAt!.hour : null;
-  const [askedName, setAskedName] = useState<{ identity: string; hour: number } | null>(null);
-  const askedHour = wantedNameHour === null ? null : askedName?.identity === headerIdentity ? askedName.hour : wantedNameHour;
-  const headerNameAt = useMemo(() => askedHour !== null && headerTag ? [{ tag: headerTag, hour: askedHour }] : NO_NAME_READS, [askedHour, headerTag]);
-  const headerNameReads = useCountryNamesAt(client, choiceTrack, headerNameAt, headerNameAt.length > 0);
-  const headerNameRead = headerNameAt.length ? headerNameReads.get(nameKey(headerNameAt[0].hour, headerNameAt[0].tag)) : undefined;
-  const [headerName, setHeaderName] = useState<{ identity: string; name: NameRead } | null>(null);
-  useEffect(() => {
-    if (headerNameRead !== undefined && headerNameRead.kind !== 'loading') setHeaderName({ identity: headerIdentity, name: headerNameRead });
-    const next = nameAskHour(askedName?.identity === headerIdentity ? askedName.hour : null, wantedNameHour, headerNameRead !== undefined && headerNameRead.kind !== 'loading');
-    if (next !== null && (askedName?.identity !== headerIdentity || askedName.hour !== next)) setAskedName({ identity: headerIdentity, hour: next });
-  }, [headerNameRead, headerIdentity, wantedNameHour, askedName]);
-  const datedHeaderName = !headerNameAt.length ? undefined
-    : nameReadMetadata(headerName?.identity === headerIdentity ? headerName.name : headerNameRead).name;
-  const headerFlagAt = headerContext && headerTag ? { tag: headerTag, branchId: headerContext.branchId, hour: headerContext.hour } : null;
-  const headerFlags = useFlagReads(client, source ?? undefined, headerFlagAt ? [headerFlagAt] : [], !!headerFlagAt, headerSize);
-  const headerFlag = headerFlagAt ? headerFlags.get(flagReadKey(headerFlagAt)) : undefined;
-  const shownHeader = useRef<{ owner: string; client: DashboardClient | null; image?: CountryFlagImage }>({ owner: '', client: null });
-  if (headerFlag !== undefined || shownHeader.current.owner !== flagOwner || shownHeader.current.client !== client)
-    shownHeader.current = { owner: flagOwner, client, image: headerFlag && !isFailedFact(headerFlag) ? headerFlag.image : undefined };
-  const headerImage = shownHeader.current.image;
-  const flagFailure = [headerFlag, ...listFlags.values()].find((flag): flag is Error => flag instanceof Error);
+    return {
+      branchId: branch.id,
+      hour: witness?.observedBranchId === branch.id ? witness.observedHour ?? branch.firstHour : branch.firstHour,
+    };
+  }, [source?.id, source?.revision, source?.metadata.branches, source?.metadata.countries, source?.metadata.playerCountryId, selected]);
+
+  const headerRead = displayHeaderTag && datedMode ? choiceRead(displayHeaderTag) : null;
+  const headerTag = datedMode ? headerRead?.tag ?? null : displayHeaderTag;
+  const headerSize: CountryFlagSize = field ? 'panel' : 'shield';
+  const headerBranchId = datedMode ? headerRead?.branchId ?? null : flagContext?.branchId ?? null;
+  const headerHour = datedMode ? headerRead?.hour ?? null : flagContext?.hour ?? null;
+  const headerBranch = useMemo(
+    () => source?.metadata.branches.find(branch => branch.id === headerBranchId) ?? null,
+    [source?.metadata.branches, headerBranchId],
+  );
+  const headerBounds = useMemo(
+    () => (headerBranch ? [headerBranch.firstHour, headerBranch.lastHour] as const : undefined),
+    [headerBranch?.firstHour, headerBranch?.lastHour],
+  );
+  const headerActive = !addLabel && !!source && !!headerTag && headerHour !== null && !!headerBranch;
+  const headerScope = useIdentityScope(client, source, headerBranchId, headerActive);
+  const headerKey = useMemo(() => (headerTag ? countryTagKey(headerTag) : null), [headerTag]);
+  const headerIdentity = useIdentity(client, source, headerActive ? headerScope : null, headerKey, headerHour, {
+    active: headerActive && !!headerScope && !!headerKey,
+    needFlag: true,
+    flagSize: headerSize,
+    branchBounds: headerBounds,
+  });
+
+  const headerImage = headerActive ? headerIdentity.flag?.image : undefined;
+  const headerNameRead: NameRead | undefined = addLabel
+    ? undefined
+    : datedMode
+      ? (!displayHeaderTag ? undefined : !headerRead ? ABSENT_NAME : nameReadFromIdentity(headerIdentity.result))
+      : (selected ? { kind: 'value', value: selected.name } : undefined);
+  const headerFlagPending = headerActive && headerIdentity.flagArt.kind === 'pending';
+
+  const visibleFlagStates = visible.map(({ country }) => rowFlagState(country));
+  const flagFailure = headerIdentity.flag?.failed ?? visibleFlagStates.find(item => item.failure)?.failure;
   const flagFailed = !!flagFailure;
+
   useEffect(() => {
     if (!source || allowedTags) return;
     const controller = new AbortController();
@@ -206,7 +267,14 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   };
   const retryCountries = () => {
     if (onReconnect && roster.error?.message.includes('source is unavailable or changed')) onReconnect();
-    else { if (source && flagFailed) retryFlags(client, source.id); setRetry(value => value + 1); }
+    else {
+      if (flagFailed) {
+        datedIdentities.retry();
+        undatedIdentities.retry();
+        if (headerScope) identityBrokerFor(client).retry(headerScope);
+      }
+      setRetry(value => value + 1);
+    }
   };
   const choose = (country: CountryOption | null) => {
     const slot = country?.id === undefined ? NaN : Number(country.id);
@@ -241,11 +309,13 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
             {visible.map(({ country }, offset) => {
               const index = range.start + offset;
               const ticked = chosen ? chosen.includes(country.tag) : selected?.tag === country.tag;
-              const name = countryName(country).trim();
+              const read = countryNameRead(country);
+              const name = nameReadMetadata(read).name.trim();
+              const flagState = visibleFlagStates[offset]!;
               return <div key={country.tag} id={optionId(index)} role="option" aria-selected={ticked} aria-setsize={filtered.length} aria-posinset={index + 1}
-                data-detail={nameReadFailure(countryNameRead(country))?.message} data-tooltip-overflow={name || undefined} className="country-picker-option" data-active={index === shownActive || undefined} data-sole={index === sole && active < 0 || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
+                data-detail={nameReadFailure(read)?.message} data-tooltip-overflow={name || undefined} className="country-picker-option" data-active={index === shownActive || undefined} data-sole={index === sole && active < 0 || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
                 onClick={() => choose(country)}>
-                <CountryFlag image={flagOf(country)} tag={country.tag} decorative />
+                <CountryFlag image={flagState.image} tag={country.tag} pending={flagState.pending} decorative />
                 {name ? <span data-overflow-label>{name}</span> : <span className="country-picker-unnamed">{country.tag}<small>name not recorded</small></span>}
                 {name && <small>{country.tag}</small>}
                 {ticked && <Icon name="check" className="country-selected-mark" />}
@@ -261,16 +331,16 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   if (inline) return <div className="country-picker country-picker-inline">{body}</div>;
   const triggerDisabled = !source || disabled;
   const shownTag = selected?.tag ?? selectedTag;
-  const shownName = (field ? selected ? countryName(selected) : '' : datedHeaderName ?? (selected ? countryName(selected) : '')).trim();
-  const flagPending = !!headerFlagAt && headerFlag === undefined && !headerImage;
-  return <div data-detail={failureDetails([...heldNames.values(), headerNameRead, headerName?.name].map(nameReadFailure))} className={field ? 'field widget-country-field' : 'header-control header-country'}>
+  const shownName = headerNameRead ? nameReadMetadata(headerNameRead).name.trim() : '';
+  const detailReads = [headerNameRead, ...visible.map(({ country }) => countryNameRead(country))];
+  return <div data-detail={failureDetails(detailReads.map(nameReadFailure))} className={field ? 'field widget-country-field' : 'header-control header-country'}>
     <span className={field ? undefined : 'sr-only'}>Country</span>
     <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={triggerDisabled} popoverTarget={id}
       aria-label={addLabel ?? `${field ? 'Widget country' : 'Choose country'}${shownName || shownTag ? `, currently ${shownName || shownTag}` : ''}`} aria-haspopup="dialog" aria-expanded={open}
-      aria-description={!addLabel && (field || source) && !headerImage ? `Flag ${flagPending ? 'loading' : 'unavailable'}` : undefined}
+      aria-description={!addLabel && (field || source) && !headerImage ? `Flag ${headerFlagPending ? 'loading' : 'unavailable'}` : undefined}
       data-tooltip-overflow={!addLabel && shownName ? shownName : undefined}>
       {addLabel ? <Icon name="plus" /> : (field || source) && <CountryFlag image={headerImage} tag={shownTag} name={shownName || null}
-        pending={flagPending} decorative />}
+        pending={headerFlagPending} decorative />}
       {addLabel ? <span>{addLabel}</span> : field ? <span data-overflow-label>{shownName || shownTag || 'Choose country'}</span>
         : <span className="header-country-text"><strong data-overflow-label>{shownName || shownTag || (source ? 'Choose country' : 'No campaign')}</strong>
           {!shownName && shownTag && <small>name not recorded</small>}</span>}

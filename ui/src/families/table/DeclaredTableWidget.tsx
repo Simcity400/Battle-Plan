@@ -1,14 +1,10 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
-import { useContentRevision } from '../../dashboard/contentRevision';
-import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
-import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
-import { lookStarts } from '../../dashboard/countryTimeline';
 import type { DashboardClient } from '../../dashboard/client';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { Channel } from '../../dashboard/follow/facts';
@@ -31,8 +27,17 @@ import { perfLog } from '../../shell/perf.ts';
 import type { FamilySources, FamilySourceSubscription } from '../contract.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import type { CountryLooksMap } from '../looks.ts';
+import type { CountryFlagChoice } from '../../generated/dashboard';
+import { identityBrokerFor } from '../identity/broker.ts';
 import {
-  buildDatedCountryLooks,
+  countryTagKey,
+  flagChoiceKey,
+  useIdentities,
+  useIdentityScope,
+  type IdentityAsk,
+} from '../identity/react.ts';
+import {
+  buildCountryLooksFromIdentity,
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
@@ -347,15 +352,53 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     return effectiveMulti?.tags ?? allTags;
   }, [wantsLabels, isFilter, isMulti, policy, allTags, effectiveMulti?.top, effectiveMulti?.tags, holders]);
 
-  const timeline = useHeldTimeline(runtime.client, wantsLabels ? track : undefined, useContentRevision(runtime.client, active && wantsLabels), active && wantsLabels);
-  const startsText = wantsLabels ? JSON.stringify(labelTags.map(tag => [tag, lookStarts(timeline, tag, firstHour, lastHour)])) : '[]';
-  const starts = useMemo(() => JSON.parse(startsText) as [string, [number, boolean][]][], [startsText]);
-  const wantedLabels = useMemo(
-    () => (wantsLabels ? starts.flatMap(([tag, hours]) => hours.flatMap(([at, held]) => (held ? [{ tag, hour: at }] : []))) : []),
-    [wantsLabels, starts],
+  const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && wantsLabels);
+  const branchBounds = useMemo(
+    () => (track ? [track.branch.firstHour, track.branch.lastHour] as const : undefined),
+    [track?.branch.firstHour, track?.branch.lastHour],
   );
-  const { exactAt } = useCountryLabelsAt(runtime.client, wantsLabels ? track : undefined, wantedLabels, active && wantsLabels, Infinity, true);
-  const builtLooks = wantsLabels ? buildDatedCountryLooks(timeline, labelTags, firstHour, lastHour, exactAt, wantsColours) : NO_LOOKS;
+  const labelAskHour = pinHour ?? moment;
+  const labelAsks = useMemo<readonly IdentityAsk[]>(() => {
+    if (!wantsLabels || !track) return [];
+    const asks: IdentityAsk[] = [];
+    const at = Math.max(firstHour, Math.min(lastHour, Math.floor(labelAskHour)));
+    for (const tag of labelTags) asks.push({ key: countryTagKey(tag), hour: at });
+    return asks;
+  }, [wantsLabels, track, labelTags, firstHour, lastHour, labelAskHour]);
+  const identityState = useIdentities(runtime.client, track?.source, wantsLabels ? identityScope : null, labelAsks, {
+    active: active && wantsLabels,
+    needFlags: true,
+    flagSize: 'panel',
+    branchBounds,
+  });
+  useEffect(() => {
+    if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
+    const seen = new Set<string>();
+    const choices: CountryFlagChoice[] = [];
+    const limit = Math.floor(lastHour);
+    for (const tag of labelTags) {
+      const key = countryTagKey(tag);
+      let cursor = Math.floor(firstHour);
+      while (cursor <= limit) {
+        const res = identityState.index.resolve(key, cursor);
+        if (res.kind === 'known' && res.flagChoice.kind === 'known') {
+          const id = flagChoiceKey(res.flagChoice.value);
+          if (!seen.has(id)) {
+            seen.add(id);
+            choices.push(res.flagChoice.value);
+          }
+        }
+        cursor = (res.kind === 'known' || res.kind === 'absent') && Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor
+          ? res.nextBoundary
+          : limit + 1;
+      }
+    }
+    if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityState.version, labelTags, firstHour, lastHour]);
+  const builtLooks = useMemo(
+    () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
+    [wantsLabels, identityState.index, identityState.version, identityState.flagFor, labelTags, firstHour, lastHour, wantsColours],
+  );
   const labelsText = wantsLabels ? JSON.stringify(builtLooks) : '{}';
   const labels = useMemo<CountryLooksMap>(
     () => (wantsLabels ? JSON.parse(labelsText) as CountryLooksMap : NO_LOOKS),

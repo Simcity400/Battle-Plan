@@ -4,7 +4,7 @@ import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
-import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
+import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
@@ -77,7 +77,7 @@ interface HeldFamilyTable {
   ctx: OffscreenCanvasRenderingContext2D;
   picture: FamilyTablePicture;
   content: string;
-  art: FamilyArtLoader;
+  art: LaneArtCache;
   widthConfigKey: string;
   fixedWidths: Record<string, number>;
   priorRows: readonly FlatTableRow[];
@@ -371,7 +371,7 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
 export interface FamilyTableLaneOptions {
   readonly cadenceTimers?: CadenceTimers;
   readonly clock?: () => number;
-  readonly fetchBitmap?: FamilyArtFetcher;
+  readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
 }
 
@@ -436,7 +436,7 @@ export function familyTableLaneView(
         const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
         const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
-        const art = new FamilyArtLoader({
+        const art = new LaneArtCache({
           maxEntries: laneOptions?.artMaxEntries,
           fetchBitmap: laneOptions?.fetchBitmap,
         });
@@ -497,7 +497,7 @@ export function familyTableLaneView(
           phasesField: null,
         });
         const holder = held;
-        art.setOnLoad(() => {
+        art.setOnSettle(() => {
           holder.picture = createTablePicture();
           holder.wake?.();
         });
@@ -706,6 +706,7 @@ export function familyTableLaneView(
           focusedKey,
           empty: model.empty,
           icons: held.art.map,
+          artCache: held.art,
           dpr,
           hasGroupHeaders: held.cachedHasGroupHeaders,
         }, held.picture);
