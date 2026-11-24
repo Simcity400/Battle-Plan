@@ -1,5 +1,5 @@
-import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetViewSwitch } from '../dashboard/definitions.ts';
-import { resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
+import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
+import { resolveOptions, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
   manifestViewSwitch,
@@ -16,6 +16,14 @@ import { FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
 export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
+
+export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
+
+export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
+  'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
+  'equipment-stockpile': () => import('./equipment-stockpile/useEquipmentStockpile').then(module => module.useStockpileChoices),
+  'resource-balance': () => import('./resource-balance/resourceChoices.ts').then(module => module.useResourceChoices),
+};
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: FamilyViewRenderer }>;
@@ -148,10 +156,6 @@ export function presetStoredOptions(kind: string, chosen: WidgetOptions): Widget
   const stored: Record<string, OptionValue> = {};
   for (const [key, value] of Object.entries(chosen)) stored[fields.find(field => field.key === key)?.storeAs ?? key] = value;
   return stored;
-}
-
-export function setWidgetViewOption(kind: string, storedOptions: WidgetOptions | undefined, key: string, value: OptionValue): WidgetOptions | null {
-  return setOption(widgetOptionFields(kind, storedOptions), storedOptions, key, value);
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {

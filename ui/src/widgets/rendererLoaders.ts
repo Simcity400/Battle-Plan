@@ -2,7 +2,7 @@ import { registerWidgets } from '../dashboard/definitions.ts';
 import type { FamilyViewRenderer, WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
 import { normalizeView, viewKey, type FamilyViewEntry, type LegacyWidgetEntry } from '../families/manifest.ts';
-import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS } from './manifest.ts';
+import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS, OPTION_CHOICES } from './manifest.ts';
 
 type RendererLoader = () => Promise<{ default: WidgetRenderer }>;
 
@@ -59,12 +59,13 @@ export function loadWidgetRenderer(kind: string, view?: string): Promise<WidgetR
   if (key === undefined || !entry) return Promise.resolve(undefined);
   let held = loaded.get(key);
   if (!held) {
-    held = entry.load().then(module => {
+    const choices = Object.hasOwn(OPTION_CHOICES, kind) ? OPTION_CHOICES[kind]!() : Promise.resolve(undefined);
+    held = Promise.all([entry.load(), choices]).then(([module, kindChoices]) => {
       const meta = widgetMetas.find(meta => meta.kind === kind)!;
-      const choices = (module.default as WidgetRenderer).useOptionChoices;
-      if (choices && !choiceKinds.has(kind)) {
+      const useOptionChoices = kindChoices ?? (module.default as WidgetRenderer).useOptionChoices;
+      if (useOptionChoices && !choiceKinds.has(kind)) {
         choiceKinds.add(kind);
-        registerWidgets([{ ...meta, useOptionChoices: choices }]);
+        registerWidgets([{ ...meta, useOptionChoices }]);
       }
       ready.set(key, module.default);
       return module.default;

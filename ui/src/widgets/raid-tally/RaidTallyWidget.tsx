@@ -9,7 +9,7 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { raidTally, useRaidLog } from '../../dashboard/raids';
+import { raidTally, unattributedAt, useRaidLog } from '../../dashboard/raids';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame, useShownHour } from '../../dashboard/widgetPerf';
@@ -69,8 +69,9 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   const liveHead = useMemo(() => widget.time.mode === 'follow' && track
     ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
   [widget.time.mode, runtime.clock, track]);
+  const unattributed = tally ? unattributedAt(tally, moment) : 0;
   useDiagnostics(onDiagnostics, data || groups.data ? [...data?.warnings ?? [], ...groups.data?.warnings ?? [],
-    ...tally?.unattributed ? [`${tally.unattributed} raids have no named raider and are not counted.`] : []] : null);
+    ...unattributed ? [`${unattributed} raids have no named raider and are not counted.`] : []] : null);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
   if (read && readBlocked(read)) return <ReadView read={read} loading="">{() => null}</ReadView>;
