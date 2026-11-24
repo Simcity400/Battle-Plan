@@ -430,19 +430,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (closeOpen) {
           this.pendingClosed.add(wid);
           const widget = this.widgets.get(wid);
-          if (widget) {
-            const route = this.routeOf(widget);
-            if (widget.installed) {
-              if (widget.installed.open === 'followed' && route !== null) {
-                widget.installed.c = Math.max(widget.installed.c, this.routeConfirmedFollowed.get(route) ?? -Infinity);
-              } else if (widget.installed.open === 'panel' && route !== null) {
-                widget.installed.c = Math.max(widget.installed.c, this.routeConfirmedPanel.get(route) ?? -Infinity);
-              }
-              widget.installed.open = undefined;
-            }
-            if (widget.inflight) widget.inflight.open = undefined;
-            this.syncOpenTracking(widget);
-          }
+          if (widget) this.closeOpen(widget);
         }
       }
     } else {
@@ -599,6 +587,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (ownerChanged) held.supplied = { stamp: undefined, statics: null, identity: held.supplied.identity };
     if (model !== undefined) held.own = this.store.resolve(model);
     if (model !== undefined || ownerChanged) held.model = this.compose(held);
+    this.bounded(held);
     held.sent = {};
     held.forceFull = false;
     held.inflight = null;
@@ -637,11 +626,33 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     else this.earlySupply.set(widget, { ...this.earlySupply.get(widget), ...resolved });
   }
 
+  private closeOpen(widget: Widget) {
+    const route = this.routeOf(widget);
+    if (widget.installed) {
+      if (widget.installed.open === 'followed' && route !== null) {
+        widget.installed.c = Math.max(widget.installed.c, this.routeConfirmedFollowed.get(route) ?? -Infinity);
+      } else if (widget.installed.open === 'panel' && route !== null) {
+        widget.installed.c = Math.max(widget.installed.c, this.routeConfirmedPanel.get(route) ?? -Infinity);
+      }
+      widget.installed.open = undefined;
+    }
+    if (widget.inflight) widget.inflight.open = undefined;
+    this.syncOpenTracking(widget);
+  }
+
+  private bounded(widget: Widget) {
+    if (!widget.binding.dated || !Number.isFinite(widget.binding.dated.c)) return;
+    if (!widget.installed?.open && !widget.inflight?.open) return;
+    this.pendingClosed.add(widget.id);
+    this.closeOpen(widget);
+  }
+
   private supplied(held: Widget, change: Resolved) {
     if (change.statics === undefined && change.dated !== undefined && change.stamp !== held.supplied.stamp) return;
     if (change.statics !== undefined) held.supplied = { ...held.supplied, stamp: change.stamp, statics: change.statics };
     if (change.identity !== undefined) held.supplied = { ...held.supplied, identity: change.identity };
     if (change.dated !== undefined) held.binding = change.dated ? { ...withoutDated(held.binding), dated: change.dated } : withoutDated(held.binding);
+    this.bounded(held);
     if (change.statics !== undefined || change.identity !== undefined) {
       held.model = this.compose(held);
       held.supply++;

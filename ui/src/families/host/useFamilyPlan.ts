@@ -1078,7 +1078,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   useLayoutEffect(() => {
     const common = { inputs, entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
     if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
-    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
+    else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned, ...(playback ? { track: playback } : {}) });
     else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
   }, [readTarget, inputs, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
   const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
