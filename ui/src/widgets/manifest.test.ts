@@ -246,7 +246,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), 51);
+  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), Infinity, 'a loading projection answers no boundary, so the lane walks no history');
   for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
