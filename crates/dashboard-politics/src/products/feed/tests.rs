@@ -1,6 +1,6 @@
 use super::{
     EventFeedKind, Names,
-    cards::{List, ScriptCurrency, edge},
+    cards::{ScriptCurrency, edge},
     cause, derived, families,
     row::{Columns, FeedEvent, Party, Slot},
     text::Notices,
@@ -732,7 +732,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     )
     .unwrap();
     let cancel = AtomicBool::new(false);
-    let context = LoadContext::default();
+    let context = LoadContext { content: None };
     let ask = |branch_id: &str| FeedPageParams {
         branch_id: branch_id.into(),
         facets: Vec::new(),
