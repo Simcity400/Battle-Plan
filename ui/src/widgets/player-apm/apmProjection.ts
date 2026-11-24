@@ -124,6 +124,7 @@ export function apmTableColumns(players: boolean, showPaused: boolean): TableCol
       key: 'name',
       label: players ? 'Player' : 'Country',
       as: players ? 'plain' : 'flagName',
+      ...(players ? { cellKind: 'item' as const } : {}),
       offered: players ? OFFERED.text : OFFERED.country,
       ...(players ? {} : { showNamesDefault: true }),
       pinned: true,

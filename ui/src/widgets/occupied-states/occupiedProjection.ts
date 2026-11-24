@@ -75,7 +75,7 @@ export const OCCUPIED_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(col => (
   ...col,
   priority: PRIORITIES[col.key] ?? 9,
   pinned: col.key === 'owner' || col.key === 'state',
-  cellKind: col.key === 'resistance' || col.key === 'compliance' ? 'track' : undefined,
+  cellKind: col.key === 'resistance' || col.key === 'compliance' ? 'track' : col.key === 'state' ? 'item' : undefined,
   trackTone: col.key === 'resistance' ? 'red' : col.key === 'compliance' ? 'grey' : undefined,
   barEligible: col.key === 'garrison',
   numeric: col.key === 'resistance' || col.key === 'compliance' || col.key === 'garrison',
