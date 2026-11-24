@@ -61,7 +61,7 @@ import type {
   SourcePlan,
 } from './plan.ts';
 import { planOwner, type FrozenGate } from './sources.ts';
-import { TailWindowController, type DatedLogRow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, validateGenericTailReply, type DatedLogRow, type TableRowSource } from './table/rowSource.ts';
 import { knownValue } from './value.ts';
 
 function fakeSource(id = 'src-1', revision = 'rev-1'): DashboardSource {
@@ -146,7 +146,7 @@ test('BoundedSeriesCursor advances over a 10-year history in O(what changed) wit
   const initialCounter: BoundedWorkCounter = { visits: 0, allocations: 0 };
   const initial = cursor.advance(line, 4_800, { prefixRuns: runs, counter: initialCounter });
   assert.ok(initialCounter.allocations <= 8, `binding a 10-year line copies no history: ${initialCounter.allocations} allocations`);
-  for (const slice of [initial.buckets, initial.missing, initial.marks]) {
+  for (const slice of [initial.buckets, initial.missing]) {
     assert.ok(Object.values(slice).every(value => !Array.isArray(value)), 'a bounded slice exposes no backing array');
   }
 
@@ -268,11 +268,9 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
   const rowSource: TableRowSource<DatedLogRow> = {
     identity: 'log:test',
     total: 2,
-    liveCount: 2,
     at: 100,
     missing: [{ firstHour: 50, lastHour: 150, reason: 'unobserved' }],
     refused: null,
-    frozen: null,
     sliceAt: (_h, _f, _c) => [],
   };
   const futureRowSource: TableRowSource<DatedLogRow> = {
@@ -1118,14 +1116,11 @@ test('a family cannot reach data after the displayed hour through a slice, a til
   assert.deepEqual(boundedUnrecorded([recordedLater, reasons], 4).validInterval, [0, 10]);
   assert.deepEqual(boundedUnrecorded([], 4), { reason: null, validInterval: [-Infinity, Infinity] });
 
-  const rows = new TailWindowController<{ key: string; hour: number }>('log', 2);
-  const reply = (hour: number) => ({ total: 10, offset: 0, baseOrdinal: 0, firstOrdinal: 0, rows: [{ key: `a${hour}`, hour }, { key: `b${hour}`, hour }], facetTotals: new Map<string, number>(), missing: [] });
-  rows.applyHead(100, reply(100), 3);
-  rows.setWindow({ first: 0, count: 5 });
-  rows.applyHead(200, reply(200), 9);
-  const frozen = createBoundedReadView({ hour: 150, rows: new Map([['log', rows.snapshot()]]) }).rows('log')!;
+  const reply = (hour: number, total: number) => ({ total: String(total), offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: `a${hour}`, hour }, { key: `b${hour}`, hour }], missing: [], counts: [] });
+  const snapshot = { 0: { hour: 100, offset: 0, limit: 2, raw: reply(100, 3), reply: validateGenericTailReply(reply(100, 3), 100) } };
+  const frozen = createBoundedReadView({ hour: 150, rows: new Map([['log', buildRowSourceFromHead('log', reply(150, 9), undefined, 150, snapshot)!]]) }).rows('log')!;
   assert.equal(frozen.at, 100);
-  assert.equal(frozen.liveCount, 3, 'a source frozen at 100 counts what its own hour held, not a later head');
+  assert.equal(frozen.total, 3, 'a source frozen at 100 counts what its own hour held, not a later head');
 });
 
 test('the exact read of a pixel-binned chart asks its exact product at the hour, in the shape of its head read', async () => {
@@ -1214,8 +1209,6 @@ test('the exact read answers every entry the picture reads, not only the first',
 test('advancing through an open bucket and a growing mark cluster costs what changed, and replaced prefix points are never served from the cache', () => {
   const runs: Run[] = [];
   for (let h = 0; h < 1024; h++) runs.push({ firstHour: h, lastHour: h, value: h % 97 });
-  const bins: [number, number][] = [];
-  for (let h = 0; h < 1024; h++) bins.push([h, 1]);
   const line: TiledLine = {
     tag: 'GER',
     head: 'GER',
@@ -1223,7 +1216,7 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
     summary: { from: 0, to: 1023, width: 1, buckets: [makeBucket(0, 1023, 0, 0, 0, 96)], runs, tiles: { binHours: 1024, valueAt: () => null } },
     missing: [],
     parts: [],
-    marks: { from: 0, to: 1023, width: 1, clusters: [{ firstHour: 0, lastHour: 1023, firstOrdinal: '0', count: '1024', bins }] },
+    marks: null,
   };
   const cursor = new BoundedSeriesCursor();
   cursor.advance(line, 100);
@@ -1235,10 +1228,6 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
     if (h === 900) {
       const cut = bounded.buckets.at(0)!;
       assert.deepEqual([cut.lastHour, cut.maxValue], [900, 96], 'the resumed cut equals a fresh one');
-      const tail = bounded.marks.at(0)!;
-      assert.equal(tail.count, '901');
-      assert.equal(tail.bins?.length, 901);
-      assert.ok(!Array.isArray(tail.bins), 'the clipped cluster shares its bins rather than copying them');
     }
   }
   assert.ok(worst <= 48, `one more hour inside an open bucket visits a constant number of items, not the bucket: ${worst}`);

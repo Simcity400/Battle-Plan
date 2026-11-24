@@ -22,7 +22,8 @@ import { ownerKeys, useKeyedSeries } from '../../dashboard/keyedSeries';
 import { mostNamed } from '../../dashboard/tiles/view.ts';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import ResourceDeals from './ResourceDealsView';
-import { RESOURCE_BALANCE, RESOURCE_PARTS, balanceOf, poolsAt, poolsMissing, resourceName, resourcePartGroups, resourceParts } from './resourceData';
+import { RESOURCE_PARTS, balanceOf, poolsAt, poolsMissing, resourcePartGroups, resourceParts } from './resourceData';
+import { RESOURCE_BALANCE, resourceName } from './resourceReply.ts';
 
 const family = (measure: string) => ({ kind: RESOURCE_BALANCE, measure });
 const PART_FAMILIES = RESOURCE_PARTS.map(part => family(part.measure));

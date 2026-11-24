@@ -1,5 +1,5 @@
 use super::super::{PowerSpendingReply, SpendCategory, SpendCoverage, SpendCurrency, SpendDay, SpendGain, SpendItem, SpendKind, SpendPayment, SpendReconciliation};
-use super::{holes, index};
+use super::{holes, index, unrecorded};
 use dashboard_base::products::breakdown::BreakdownState;
 
 fn item(group: &str, category: &str, name: Option<&str>) -> SpendItem {
@@ -110,9 +110,50 @@ fn hours_between_coverage_runs_are_not_claimed_and_gains_need_their_own_coverage
     let unread_gains = index(&reply(), &[], &[(0, 100, "Power changes were not read".to_owned())]).at(20);
     assert_eq!(unread_gains.gained_raw.as_deref(), Some("530600000"), "what was read is the figure");
     assert!(unread_gains.gained_reason.is_some(), "hours whose gains were not read make it partial, never exact");
+}
+
+#[test]
+fn hours_when_no_holder_is_known_are_unrecorded_never_a_zero() {
+    use dashboard_query::{identity::{Holder, HolderRun, Holders}, timeline::{Join, Stretch, Timeline}};
+    let run = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot: 1, id: 10 }, starts_segment: true };
+    let holders = Holders::new([("AAA".to_owned(), vec![run(0, 39), run(60, 100)])].into(), vec![(40, 59, "No holder is known at these hours".to_owned())]);
+    let timeline = Timeline { id: 1, first: 0, last: 100, stretches: vec![Stretch { run: 0, first: 0, last: 100, join: Join::Start }], unheld: Vec::new() };
+    let gaps = unrecorded(&timeline, &holders, &"AAA".into(), &[covered(0, 39), covered(60, 100)], 0, 100);
+    assert_eq!(gaps, [(40, 59, "No holder is known at these hours".to_owned())], "a hole with no run for the tag while no holder is known is not a recorded zero");
+}
+
+#[test]
+fn an_unmatched_daily_cost_qualifies_each_measure_and_keeps_what_was_witnessed() {
     let mut unmatched = reply();
     unmatched.gains[0].unmatched = 1;
-    assert_eq!(index(&unmatched, &[], &[]).at(20).gained_raw, None, "a daily cost whose application was not recorded leaves the gain unknown");
+    unmatched.gains[0].capped_raw = None;
+    let index = index(&unmatched, &[], &[]);
+    let at = index.at(20);
+    assert_eq!(at.gained_raw.as_deref(), Some("530600000"), "the witnessed gain stays the figure");
+    assert_eq!(at.gained_reason.as_deref(), Some("Some gains were not recorded."));
+    assert_eq!((at.lost_at_cap_raw.as_deref(), at.lost_at_cap_reason.as_deref()), (Some("0"), Some("Some losses at the cap were not recorded.")), "the loss is qualified by its own reason");
+    assert_eq!(index.at(35).gained_raw.as_deref(), Some("530600001"), "a later witnessed gain still adds to the running sum");
+}
+
+#[test]
+fn no_gain_is_claimed_before_the_first_hour_power_changes_were_read() {
+    let mut held = reply();
+    held.gains.retain(|gain| gain.read >= 30);
+    let index = index(&held, &[], &[(0, 19, "Power changes were not read".to_owned())]);
+    let early = index.at(10);
+    assert_eq!(early.gained_raw, None, "an entirely unread stretch is not a gain of zero");
+    assert!(early.gained_reason.as_deref().is_some_and(|reason| reason.contains("Power changes were not read")));
+    assert_eq!(index.at(20).gained_raw.as_deref(), Some("0"), "from the first read hour the witnessed sum is the figure, partial");
+    assert!(index.at(20).gained_reason.is_some());
+}
+
+#[test]
+fn spending_whose_item_was_not_recorded_names_the_reason_from_its_read() {
+    let mut held = reply();
+    held.items[3].unknown = Some("Power items were not read at this hour".into());
+    let index = index(&held, &unread(), &[]);
+    assert!(index.at(6).warnings.is_empty(), "the payment is read at 7");
+    assert_eq!(index.at(7).warnings, ["The item of some spending was not recorded: Power items were not read at this hour"]);
 }
 
 #[test]

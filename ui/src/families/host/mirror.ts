@@ -44,11 +44,13 @@ export function syncTableMirror(
   options: TableMirrorSyncOptions,
 ): boolean {
   if (!tbody) return false;
+  const table = tbody.parentElement instanceof HTMLTableElement ? tbody.parentElement : null;
   if (!mirror) {
     if (options.lastMirrorKeyRef.current !== '') {
       options.lastMirrorKeyRef.current = '';
       options.restoringFocusRef.current = true;
       try {
+        if (document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement)) table?.focus({ preventScroll: true });
         tbody.replaceChildren();
       } finally {
         options.restoringFocusRef.current = false;
@@ -78,7 +80,8 @@ export function syncTableMirror(
   ]);
   if (key === options.lastMirrorKeyRef.current) return false;
   options.lastMirrorKeyRef.current = key;
-  const wasFocused = options.rowsFocusable && options.focusInsideRef.current && document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement);
+  const active = document.activeElement;
+  const wasFocused = options.rowsFocusable && options.focusInsideRef.current && active instanceof HTMLElement && (tbody.contains(active) || active === table);
   let restore: HTMLTableRowElement | null = null;
   const canReuseInPlace = typeof tbody.children?.length === 'number' && typeof tbody.lastElementChild !== 'undefined';
 

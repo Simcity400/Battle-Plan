@@ -6,11 +6,10 @@ export interface ValueStateProps {
   unit?: string;
   reason?: string;
   narrow?: boolean;
-  atLeast?: boolean;
   className?: string;
 }
 
-export function valueStateText({ kind, text, unit, reason }: Pick<ValueStateProps, 'kind' | 'text' | 'unit' | 'reason' | 'atLeast'>): string {
+export function valueStateText({ kind, text, unit, reason }: Pick<ValueStateProps, 'kind' | 'text' | 'unit' | 'reason'>): string {
   switch (kind) {
     case 'known':
       return unit ? `${text ?? ''} ${unit}` : (text ?? '');

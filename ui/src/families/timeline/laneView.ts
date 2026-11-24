@@ -171,6 +171,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
         emptyDetail: null,
         emptyKind: model.emptyKind ?? 'empty',
         summaryText: model.summaryText ?? null,
+        summaryPartial: model.summaryPartial ?? null,
         notes: model.notes ?? [],
         warnings: model.warnings,
       },

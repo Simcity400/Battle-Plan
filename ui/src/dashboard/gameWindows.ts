@@ -2,45 +2,30 @@ import type { ComponentType } from 'react';
 import type { DesignerKind } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
+import type { RowSource } from '../families/table/rowSelection.ts';
 import { dayLabel } from '../charts/draw.ts';
 
-export interface IndustrialOrganisationSelection {
+export interface IndustrialOrganisationSelection extends RowSource {
   kind: 'industrialOrganisation';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   organisation: string;
   subView?: 'traits' | 'history' | 'policy';
 }
 
-export interface DivisionDesignerSelection {
+export interface DivisionDesignerSelection extends RowSource {
   kind: 'divisionDesigner';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   tag: string;
   template: string;
   designer: DesignerKind;
 }
 
-export interface EquipmentDesignerSelection {
+export interface EquipmentDesignerSelection extends RowSource {
   kind: 'equipmentDesigner';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   tag: string;
   variant: string;
 }
 
-export interface IntelligenceAgencySelection {
+export interface IntelligenceAgencySelection extends RowSource {
   kind: 'intelligenceAgency';
-  sourceId: string;
-  revision: string;
-  branchId: string;
-  hour: number;
   country: number;
 }
 

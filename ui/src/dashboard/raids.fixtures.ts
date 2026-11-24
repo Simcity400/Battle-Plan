@@ -28,12 +28,12 @@ export function syntheticEpisode(id: string, firstHour: number, raider: string |
     launchedRaider: launchedHour !== null ? raider : null,
     victim, victimMissing, victimSource, victims,
     raidTypeHour: firstHour, raidType: 'mod/sky_raid', raidTypeName: 'Sky raid from a mod',
-    icon: 'GFX_mod_raid_target', iconMissing: null, placeHour: firstHour, province: null, state: 7,
+    iconHour: firstHour, icon: 'GFX_mod_raid_target', iconMissing: null, placeHour: firstHour, province: null, stateHour: firstHour, state: 7,
     phase: runs[runs.length - 1].phase, phaseName: null, outcome: runs[runs.length - 1].outcome, outcomeName: null, outcomeMissing: null, runs,
     preparation: preparingTo >= firstHour ? [[firstHour, preparingTo, 0, 1]] : [],
     launchedHour, launchedExact: launchedHour !== null, launched: launchedHour !== null,
     ends: endedHour !== null ? [observedEnd(endedHour, raider)] : [], succeededHour: succeeded ? endedHour : null,
-    disappearedHour: null, disappearedExact: false,
+    disappearedHour: null, disappearedExact: false, memberHour: null,
     ...changes,
   };
 }
