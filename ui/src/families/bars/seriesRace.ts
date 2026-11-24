@@ -4,7 +4,6 @@ import type { GatedHour } from '../../dashboard/regionTime';
 import type { GroupSelection, SeriesRankRow } from '../../generated/dashboard';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
-import { nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../holders.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, valueFromRawBigInt, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
@@ -94,20 +93,6 @@ export function seriesRaceSources(ctx: FamilyPlanContext, config: SeriesRaceConf
       },
     }],
   };
-}
-
-export interface HeldSelection {
-  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership?: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved?: HourRanges;
-}
-
-export function nextSeriesRaceChange(hour: number, options: HeldSelection): number {
-  return Math.min(
-    nextHoldersChange(options.holders, hour),
-    nextRangesChange(options.unobserved, hour),
-    nextMembershipChange(options.membership, hour),
-  );
 }
 
 export function seriesRaceUnavailable(ctx: FamilyPlanContext): string | null {
