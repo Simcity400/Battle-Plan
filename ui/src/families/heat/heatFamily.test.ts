@@ -17,7 +17,10 @@ import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } fr
 import { createMatrixPicture, drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
 import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
-import { createLanesPicture, drawHeatLanes } from './lanesPainter.ts';
+import { drawHeatLanes } from './lanesPainter.ts';
+import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import { familyHeatLanesLaneView } from './lanesLaneView.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
@@ -388,8 +391,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.ok(ticks.length >= 2);
 
   const fake = makeFakeCtx();
-  const picture = createLanesPicture();
-  const res = drawHeatLanes(fake.ctx, {
+  drawHeatLanes(fake.ctx, {
     model,
     layout,
     theme: THEME,
@@ -398,10 +400,25 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
     hoveredHour: 96,
     selectedRowId: null,
     focusedRowId: '10',
-  }, picture);
-  assert.equal(res.drew, true);
+  });
   assert.ok(fake.ops.some(op => op.op === 'fillText' && op.args[0] === '70%'));
   assert.ok(fake.ops.some(op => op.op === 'stroke'));
+
+  registerFamilyProjection({ kind: 'test-heat-lanes', family: 'heat-lanes', project: view => view.panel('main') as HeatLanesModel });
+  const lane = (panel: HeatLanesModel, scrollTop = 0) => ({ family: 'heat-lanes', kind: 'test-heat-lanes', options: {}, sources: {}, staticPanels: { main: panel }, scrollTop, theme: THEME, width: 720, height: 220 });
+  const held = lane(model);
+  const renamed = { ...model, rows: model.rows.map(row => (row.id === '11' ? { ...row, label: 'Normandy' } : row)) };
+  const reordered = { ...renamed, rows: [...renamed.rows].reverse() };
+  const surface = { width: 720, height: 220, dpr: 1 };
+  assertQuietFrames(() => familyHeatLanesLaneView(() => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
+  assertFreshPaint(() => familyHeatLanesLaneView(() => {}), [
+    { label: 'held', binding: held, hour: 119, check: true },
+    { label: 'later', binding: held, hour: 140, speed: 24 },
+    { label: 'seek back', binding: held, hour: 119, check: true },
+    { label: 'correction', binding: lane(renamed), hour: 119, check: true },
+    { label: 'reorder', binding: lane(reordered), hour: 119, check: true },
+    { label: 'scrolled', binding: lane(reordered, 12), hour: 119, check: true },
+  ], surface);
 });
 
 test('heat scale helpers preserve zero neutrality, signed extremes, margin blend, and proportional stripes', () => {
@@ -465,7 +482,7 @@ test('stripes draw the fractions they are given and leave an unknown remainder u
 
 test('a stable row id is never read as a row position, and a reorder refreshes the published rows', async () => {
   const { heatLanesHostAdapter } = await import('./hostAdapter.ts');
-  const { lanesExtentSignature, laneIdentities } = await import('./lanesModel.ts');
+  const { laneIdentities } = await import('./lanesModel.ts');
   const { matrixExtentSignature } = await import('./matrixLaneView.ts');
   const rows = [{ id: '1', label: 'One', runs: [] }, { id: '0', label: 'Zero', runs: [] }];
   const installed = { id: 7, owner: 'w', hour: 50 } as unknown as Parameters<NonNullable<typeof heatLanesHostAdapter.resolveHitAction>>[1];
@@ -474,8 +491,6 @@ test('a stable row id is never read as a row position, and a reorder refreshes t
   assert.equal(byId?.subject, '1', 'Enter on stable id "1" activates "1", not the row at position 1');
   const byPointer = heatLanesHostAdapter.resolveHitAction!({ key: '#1@40' } as never, installed, fields as never);
   assert.equal(byPointer?.subject, '0', 'a pointer token names a position');
-  const layout = { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100 };
-  assert.notEqual(lanesExtentSignature(layout, rows), lanesExtentSignature(layout, [rows[1]!, rows[0]!]));
   const grid = { totalWidth: 100, totalHeight: 100, cellSize: 20, gridLeft: 10, gridTop: 10 };
   const a = { id: 'A', label: 'A' }, b = { id: 'B', label: 'B' };
   assert.notEqual(matrixExtentSignature(grid, { rows: [a, b], columns: [a, b] }), matrixExtentSignature(grid, { rows: [b, a], columns: [b, a] }));

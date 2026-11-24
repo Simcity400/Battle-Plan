@@ -4,19 +4,11 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../test-support/frozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, completions, currentProjects, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentProjects, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runtimeProject, shownCard, statusRead, episodeBound, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
-import { effectsStructure } from './projectDetailsData.ts';
-
-test('project effects render again when their game text changes, never only because the hour moved', () => {
-  const record = (hour: number, amount: number) => ({ hour, readHour: 12, pending: null, warnings: [], unavailable: null,
-    output: { runs: [{ kind: 'text' as const, text: 'Amount ' + amount, tone: null }], refusals: { 'Unknown effect': 1 } } });
-  assert.equal(effectsStructure(record(12, 3)), effectsStructure(record(24, 3)));
-  assert.notEqual(effectsStructure(record(24, 3)), effectsStructure(record(24, 8)));
-});
 
 const marker = (date: number, readHour: number, counted = true): ProjectEntry => ({ ordinal: 3, date, completion: true, readHour, counted, presentation: counted ? 0 : null });
 
@@ -406,19 +398,6 @@ test('a project window joins its runtime project on the owner and local id, read
   assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), joined(runtime(9,3,'Mod project name',160)),
     'a running project the list still covers takes its later read');
   assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'a project no longer listed keeps its last status');
-});
-
-test('the live pop-up names a read past the list it was joined on, and wakes when the list reaches it', () => {
-  const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
-  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],statuses:[data.projects[0].statuses[0]],entries:[]}]};
-  const running=shownCard(open,147,open.projects[0].id)!;
-  const read:ProjectRuntimeDetails={owner:9,id:3,label:{token:'mod_project',name:null},readHour:160,pendingKnown:true,pending:null,seed:null,variables:null,choices:null,historyReadHour:null};
-  const details:SpecialProjectDetails={hour:160,scientists:null,programs:null,breakthroughs:null,projects:[read],unavailable:[],warnings:[]};
-  const listed=147, shown=Math.max(147, listed), bound=episodeBound(open,running.project,listed);
-  assert.equal(runtimeProject(details,running,shown,bound), `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`);
-  assert.deepEqual(joinDue(details,running,shown,bound), { hour: 160, list: true }, 'it wakes on the list reaching the read, not on the frozen hour');
-  assert.deepEqual(joinDue({...details,projects:[{...read,readHour:140}]},running,shown,bound), { hour: 160, list: false }, 'a reply ahead of the shown hour waits on the clock');
-  assert.equal(joinDue({...details,hour:147,projects:[{...read,readHour:140}]},running,shown,bound), null);
 });
 
 test('a pop-up joins only reads and choices made while the project was recorded', () => {

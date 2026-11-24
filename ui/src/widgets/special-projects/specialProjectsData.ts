@@ -197,12 +197,6 @@ export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard
   return { project: found, choices: recordedChoices(card.project, bound, found) };
 }
 
-export function joinDue(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound): { hour: number; list: boolean } | null {
-  const found = joined(details, card);
-  if (listStale(found, bound)) return { hour: found!.readHour, list: true };
-  return details.hour > hour ? { hour: details.hour, list: false } : null;
-}
-
 const shownRuns = (project: ProjectRecord, hour: number, membership?: readonly HourSpan[]) => {
   const shown = membership ? clipToSpans(project.statuses, membership) : project.statuses;
   return shown.filter(run => run.firstHour <= hour);
