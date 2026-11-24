@@ -5,7 +5,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
@@ -49,7 +49,7 @@ export function equipmentShare(division: TrainingDivision): Value<number> {
 }
 
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
-const count = (value: number) => value.toLocaleString('en-US');
+const count = (value: number) => formatScalar(value, 'integer');
 const manpower = (have: number): Value<number> => have === 0 ? zeroValue(0) : knownValue(have);
 
 function orderLine(order: TrainingOrder): string {

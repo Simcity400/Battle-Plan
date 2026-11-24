@@ -1,6 +1,7 @@
 import {
   DEFAULT_VIEW,
-  ensureFamilyProjection,
+  ensureBoundProjection,
+  type BoundProjectionKey,
   familyProjection,
   registerFamilyProjection,
   registeredFamilyProjections,
@@ -19,11 +20,10 @@ export function heatMatrixProjection(kind: string, view?: string): HeatMatrixPro
 }
 
 export function ensureHeatMatrixProjection(
-  kind: string,
-  view: string | undefined,
+  binding: BoundProjectionKey,
   onReady: () => void,
 ): HeatMatrixProjection<unknown> | 'loading' | 'unknown' {
-  return ensureFamilyProjection<HeatMatrixModel, unknown>('heat-matrix', kind, view, onReady) as HeatMatrixProjection<unknown> | 'loading' | 'unknown';
+  return ensureBoundProjection<HeatMatrixModel, unknown>(binding, onReady) as HeatMatrixProjection<unknown> | 'loading' | 'unknown';
 }
 
 export function registeredHeatMatrixKinds(): readonly string[] {
