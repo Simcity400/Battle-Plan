@@ -190,7 +190,7 @@ mod tests {
     use replay_data::rows::TradeFlowRow;
 
     fn row(seller: u32, buyer: u32, resource: u32, delivered: Recorded<i64>) -> TradeFlowRow {
-        TradeFlowRow { seller_slot: seller, seller: seller * 10, buyer_slot: buyer, buyer: buyer * 10, resource, delivered, ..TradeFlowRow::default() }
+        TradeFlowRow { seller_slot: seller, seller: seller.saturating_mul(10), buyer_slot: buyer, buyer: buyer.saturating_mul(10), resource, delivered, ..TradeFlowRow::default() }
     }
 
     #[test]
