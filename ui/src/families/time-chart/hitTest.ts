@@ -3,7 +3,7 @@ import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatDateOnly, formatRecordedPercent, formatScalar, formatShare, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
+import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
@@ -242,7 +242,7 @@ function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?
   return slot?.art.status === 'ready' ? slot.art.url : undefined;
 }
 
-function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListItem[] {
+function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string): TooltipListItem[] {
   const entries: { readonly sortVal: number; readonly item: TooltipListItem }[] = [];
   if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
     let at = -1;
@@ -256,6 +256,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
         ? { label: model.measureTitle, value: formatExactFigure(totalVal, model), strong: true }
         : null;
       for (const band of model.stack.bands) {
+        if (only !== undefined && band.id !== only) continue;
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
         const flagUrl = artUrlOf(band.flag);
@@ -271,7 +272,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
       }
       entries.sort((a, b) => b.sortVal - a.sortVal);
       const bandItems = entries.map(e => e.item);
-      if (totalItem) {
+      if (totalItem && only === undefined) {
         if (bandItems.length > 0) bandItems[0] = { ...bandItems[0]!, divider: true };
         return [totalItem, ...bandItems];
       }
@@ -279,16 +280,18 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
     }
   } else {
     for (const s of model.series) {
-      const flagUrl = artUrlOf(s.flag);
+      if (only !== undefined && s.id !== only) continue;
+      const look = seriesLookAt(s, hour);
+      const flagUrl = artUrlOf(look.flag);
       const iconUrl = artUrlOf(s.icon);
       if (s.exact && s.exact.hour === hour) {
         if (s.exact.value === null) {
           entries.push({
             sortVal: -Infinity,
             item: {
-              label: s.name,
+              label: look.name,
               missingReason: s.exact.reason ?? notRecordedLabel(),
-              swatch: s.color,
+              swatch: look.color,
               tone: 'muted',
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
             },
@@ -298,9 +301,9 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
           entries.push({
             sortVal: s.exact.value,
             item: {
-              label: s.name,
+              label: look.name,
               value: formatExactFigure(s.exact.value, model),
-              swatch: negative ? CHART_MEASURE_COLOURS.shortInk : s.color,
+              swatch: negative ? CHART_MEASURE_COLOURS.shortInk : look.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
               ...(iconUrl ? { icon: iconUrl } : {}),
@@ -314,9 +317,9 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
         entries.push({
           sortVal: -Infinity,
           item: {
-            label: s.name,
+            label: look.name,
             missingReason: missingSpan.reason,
-            swatch: s.color,
+            swatch: look.color,
             tone: 'muted',
             ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
@@ -329,9 +332,9 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
           entries.push({
             sortVal: -Infinity,
             item: {
-              label: s.name,
+              label: look.name,
               missingReason: s.absentReason,
-              swatch: s.color,
+              swatch: look.color,
               tone: 'muted',
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
             },
@@ -345,9 +348,9 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
       entries.push({
         sortVal: sampled.value,
         item: {
-          label: s.name,
+          label: look.name,
           value: text,
-          swatch: s.negRed && sampled.value < 0 ? CHART_MEASURE_COLOURS.shortInk : s.color,
+          swatch: s.negRed && sampled.value < 0 ? CHART_MEASURE_COLOURS.shortInk : look.color,
           tone: s.negRed && sampled.value < 0 ? 'negative' : undefined,
           ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           ...(iconUrl ? { icon: iconUrl } : {}),
@@ -499,7 +502,7 @@ export function deriveTimeChartTooltip(
       }
       const band = model.stack.bands.find(b => b.id === parsed.seriesId);
       if (!band) return null;
-      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
+      const items = seriesTooltipItemsAt(model, model.hour, band.id);
       return {
         hour: model.hour,
         rowKey: inspectKey,
@@ -512,7 +515,7 @@ export function deriveTimeChartTooltip(
     }
     const s = model.series.find(item => item.id === parsed.seriesId);
     if (s) {
-      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+      const items = seriesTooltipItemsAt(model, model.hour, s.id);
       return {
         hour: model.hour,
         rowKey: inspectKey,
@@ -525,7 +528,7 @@ export function deriveTimeChartTooltip(
     }
     const band = model.mode === 'stack' ? model.stack?.bands.find(item => item.id === parsed.seriesId) : undefined;
     if (!band) return null;
-    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
+    const items = seriesTooltipItemsAt(model, model.hour, band.id);
     return {
       hour: model.hour,
       rowKey: inspectKey,

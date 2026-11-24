@@ -1052,6 +1052,39 @@ describe('several countries, one measure', () => {
       { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(model.series.find(s => s.id === 'A10')!.exact, null, 'not a member at the hovered hour: no reading shown');
   });
+
+  it('names, flags and colours a historical hit by the identity at the hit hour, never the playhead’s', () => {
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [base, base + 95]);
+    index.setFacts({
+      branchId: 'b',
+      known: [[base, base + 95]],
+      names: ['Germany', 'German Reich', 'Italy'],
+      reasons: [],
+      flags: [{ keys: ['GER', null, null], reasons: [null, null, null] }, { keys: ['GER_fascism', null, null], reasons: [null, null, null] }, { keys: ['ITA', null, null], reasons: [null, null, null] }],
+      countries: [
+        { tag: 'A07', runs: [[base, 0, 0x3366cc, -1, 0], [base + 30, 1, 0xcc3333, -1, 1]] },
+        { tag: 'A01', runs: [[base, 2, 0x33aa55, -1, 2]] },
+      ],
+      warnings: [],
+    });
+    const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), identity: createSnapshotIdentityProvider(index) }),
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    const layout = layoutTimeChart(model, 600, 220, FONT, measure);
+    const item = (at: number) => deriveTimeChartTooltip(model, layout, `plot:${at}`)?.payload?.items?.find(entry => entry.value === '7,000');
+    const early = item(base + 10)!;
+    const now = item(hour)!;
+    assert.equal(early.label, 'Germany', 'an earlier hit is named as the country was named then');
+    assert.equal(now.label, 'German Reich');
+    assert.notEqual(early.swatch, now.swatch, 'and coloured as it was coloured then');
+    assert.equal(model.series[0]!.endLabel?.name, 'German Reich', 'the end label stays at the displayed hour');
+
+    const { ctx } = mockCanvas(600, 220);
+    const strokes: string[] = [];
+    (ctx as unknown as { stroke: () => void }).stroke = function (this: { strokeStyle: string }) { strokes.push(this.strokeStyle); };
+    drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
+    assert.ok(strokes.includes(early.swatch!) && strokes.includes(now.swatch!), 'the line is drawn in each stretch’s own colour');
+  });
 });
 
 describe('stacked bounded series, supply health, and ruling party', () => {
