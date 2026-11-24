@@ -8,7 +8,6 @@ import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
 import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import type { ArmyAttribution } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export interface ArmySizeMixOptions extends ForceAtMixOptions {
   readonly countFor: ArmyAttribution;
@@ -90,7 +89,6 @@ export const armySizeMixDeclaration: BarsWidgetDeclaration<ArmySizeMixOptions> =
   subject: 'armies',
   emptyCampaign: 'Load a campaign to see its army sizes.',
   icon: 'shield',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

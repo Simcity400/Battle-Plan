@@ -1,7 +1,7 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { researchNumber } from '../research/researchBreakdown.ts';
 import { validGameRuns } from '../research/gameRuns.ts';
-import type { ProjectEffects, ProjectLabel, ProjectPerson, ProjectRuntimeDetails, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration } from '../../generated/dashboard';
+import type { ProjectEffects, ProjectRuntimeDetails, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
@@ -86,8 +86,6 @@ export function validateProjectIteration(value: unknown, hour: number): SpecialP
   return value as unknown as SpecialProjectIteration;
 }
 
-export const effectsStructure = (reply: SpecialProjectEffects) => JSON.stringify([reply.unavailable, reply.readHour, reply.pending, reply.output, reply.warnings]);
-
 const number = (value: string) => researchNumber(BigInt(value));
 const read = (hour: number | null) => hour === null ? '' : ` · read ${dayLabel(hour)}`;
 
@@ -122,23 +120,3 @@ export function detailTexts(details: SpecialProjectDetails): Map<string, string>
   }
   return out;
 }
-
-export function detailsStructure(details: SpecialProjectDetails): string {
-  const label = (v: ProjectLabel | null) => v && [v.token, v.name];
-  const person = (v: ProjectPerson) => [v.assigned, v.id, v.name, v.portrait, v.missing];
-  return JSON.stringify([details.warnings, details.unavailable,
-    details.scientists?.map(s => [s.character, person(s.person), Object.entries(s.stateRefusals).sort(),
-      s.skills?.map(skill => label(skill.specialization)), s.traits?.map(label)]),
-    details.breakthroughs?.map(b => label(b.specialization)),
-    details.programs?.map(p => [p.id, p.province, p.assignments?.map(a => [a.ordinal, a.reference, person(a.person), a.timed]),
-      p.facility && [p.facility.unavailable, p.facility.sources.map(s => [s.kind, s.unit, label(s.label), label(s.modifier), s.assignment, s.scientistReference])]]),
-    details.projects?.map(p => [p.owner, p.id, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
-      p.pending && [label(p.pending.label), p.pending.ordinal, p.pending.description, p.pending.unavailable, p.pending.options.map(o => label(o.label))],
-      p.choices?.map(c => [c.ordinal, c.date, label(c.reward), label(c.option), c.province, c.progress, c.characterReference, c.country, c.scientist, c.state])]),
-  ]);
-}
-
-export const REWARDS_PANEL = 'special-project-rewards';
-
-export const rewardsStructure = (details: SpecialProjectDetails) =>
-  JSON.stringify([detailsStructure(details), details.projects?.map(p => [p.owner, p.id, p.readHour, p.historyReadHour])]);

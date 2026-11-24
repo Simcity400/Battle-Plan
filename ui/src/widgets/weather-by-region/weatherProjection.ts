@@ -2,18 +2,19 @@ import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/pale
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
-import type {
-  HeatLaneCell,
-  HeatLaneReadout,
-  HeatLaneRow,
-  HeatLaneRun,
-  HeatLanesModel,
-  HeatLanesProjection,
+import {
+  spanIndexAt,
+  type HeatLaneCell,
+  type HeatLaneReadout,
+  type HeatLaneRow,
+  type HeatLaneRun,
+  type HeatLanesModel,
+  type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionIds } from '../../families/regionTokens.ts';
-import { formatDateParts } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatDateParts, formatScalar } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
   RegionalWeatherColumnRegion,
@@ -21,7 +22,7 @@ import type {
   WeatherReadout,
 } from '../../generated/dashboard';
 import { surfaceMix } from '../../shell/appearance/color.ts';
-import { OPTIONS, type WeatherShow } from './definition.ts';
+import { type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
 export const WEATHER_TOP = 7;
@@ -39,13 +40,11 @@ export function weatherShow(options: Readonly<Record<string, unknown>>): Weather
 }
 
 export function temperatureText(raw: number): string {
-  const value = raw / FIXED;
-  return `${value < 0 ? '−' : ''}${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`;
+  return formatScalar(raw / FIXED, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' });
 }
 
 export function modifierText(raw: number): string {
-  const value = (raw / FIXED) * 100;
-  return `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
+  return formatScalar((raw / FIXED) * 100, { decimals: 0, maxDecimals: 1, percent: true, signed: true });
 }
 
 interface Palette {
@@ -160,10 +159,26 @@ function readoutOf(readout: WeatherReadout | undefined, show: WeatherShow, modif
   return { kind: 'value', form: 'value', primary: text, secondary, swatch };
 }
 
+function columnCell(
+  reply: RegionalWeatherReply,
+  region: RegionalWeatherColumnRegion,
+  c: number,
+  options: WeatherProjectionOptions,
+  modifier: string | null,
+  colours: Palette,
+): ColumnCell {
+  if (reply.columns.columns[c]!.recorded === 0) {
+    const missing = 'Weather was not recorded on these days';
+    return { key: 'unrecorded', cell: { kind: 'missing', reason: missing }, items: [], missing };
+  }
+  return options.show === 'conditions'
+    ? conditionCell(reply, region, c, colours)
+    : valueCell(reply, region, c, options.show, modifier, colours);
+}
+
 function lane(
   reply: RegionalWeatherReply,
   region: RegionalWeatherColumnRegion,
-  name: string,
   shownThrough: number,
   options: WeatherProjectionOptions,
   modifier: string | null,
@@ -176,28 +191,34 @@ function lane(
     const column = columns[c]!;
     if (column.firstHour > shownThrough) break;
     const lastHour = Math.min(column.lastHour, shownThrough);
-    const made = column.recorded === 0
-      ? { key: 'unrecorded', cell: { kind: 'missing', reason: 'Weather was not recorded on these days' } as HeatLaneCell, items: [], missing: 'Weather was not recorded on these days' }
-      : options.show === 'conditions'
-        ? conditionCell(reply, region, c, colours)
-        : valueCell(reply, region, c, options.show, modifier, colours);
+    const made = columnCell(reply, region, c, options, modifier, colours);
     const previous = runs[runs.length - 1];
     if (previous && made.key === key && previous.lastHour + 1 >= column.firstHour) {
-      runs[runs.length - 1] = {
-        ...previous,
-        lastHour,
-        readHour: column.readHour ?? previous.readHour,
-        tooltip: { ...previous.tooltip!, hour: column.readHour ?? previous.tooltip!.hour },
-      };
+      runs[runs.length - 1] = { ...previous, lastHour, readHour: column.readHour ?? previous.readHour };
       continue;
     }
     key = made.key;
-    const tooltip: FamilyTooltipPayload = made.missing
-      ? { title: name, hour: column.readHour ?? column.firstHour, missingReason: made.missing }
-      : { title: name, hour: column.readHour ?? column.firstHour, items: made.items };
-    runs.push({ firstHour: column.firstHour, lastHour, readHour: column.readHour, cell: made.cell, tooltip });
+    runs.push({ firstHour: column.firstHour, lastHour, readHour: column.readHour, cell: made.cell });
   }
   return runs;
+}
+
+function inspectColumn(
+  reply: RegionalWeatherReply,
+  region: RegionalWeatherColumnRegion,
+  title: string,
+  hour: number,
+  options: WeatherProjectionOptions,
+  modifier: string | null,
+  colours: Palette,
+): FamilyTooltipPayload | null {
+  const columns = reply.columns.columns;
+  const c = spanIndexAt(columns, hour, column => column.firstHour);
+  const column = columns[c];
+  if (!column || hour > column.lastHour) return null;
+  const made = columnCell(reply, region, c, options, modifier, colours);
+  const dated = column.readHour === null ? { subtitle: formatDateOnly(column.firstHour) } : { hour: column.readHour };
+  return made.missing ? { title, ...dated, missingReason: made.missing } : { title, ...dated, items: made.items };
 }
 
 function emptyModel(hour: number, extra: Partial<HeatLanesModel>): HeatLanesModel {
@@ -214,7 +235,8 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
   const colours = palette(reply, options.surface);
   const modifier = options.show === 'modifiers' ? options.modifier ?? reply.modifiers[0]?.id ?? null : null;
   const names = new Map(reply.regions.map(region => [region.id, region.name]));
-  const rows: HeatLaneRow[] = reply.columns.regions.map(region => {
+  const regions = reply.columns.regions;
+  const rows: HeatLaneRow[] = regions.map(region => {
     const { label, nameMissing } = regionLabel(readView, region.id, names.get(region.id) ?? null);
     const readout = readoutOf(region.readout, options.show, modifier, reply, colours);
     return {
@@ -222,7 +244,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
-      runs: lane(reply, region, label, through, options, modifier, colours),
+      runs: lane(reply, region, through, options, modifier, colours),
       ...(readout ? { readout } : {}),
     };
   });
@@ -234,6 +256,10 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    inspect: (rowIndex, at) => {
+      const region = regions[rowIndex];
+      return region ? inspectColumn(reply, region, rows[rowIndex]!.label, at, options, modifier, colours) : null;
+    },
     ...(rows.length ? {} : { empty: 'No weather recorded for these regions at this date.' }),
     warnings: reply.temperature === 'available' || options.show !== 'temperature' ? reply.warnings : [...reply.warnings, reply.temperature],
   };
@@ -252,7 +278,6 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
   subject: 'weather',
   emptyCampaign: 'Load a campaign to see weather.',
   icon: 'sun',
-  optionFields: OPTIONS,
   countries: { mode: 'none' },
   sources: (ctx, view): SourcePlan => {
     const show = weatherShow(ctx.options);

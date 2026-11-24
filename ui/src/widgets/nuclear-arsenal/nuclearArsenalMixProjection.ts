@@ -1,4 +1,4 @@
-import { colour } from '../../charts/palette.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
@@ -8,11 +8,11 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } f
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { NuclearArsenalReply, NukeCountry, NukeType } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
-const PART_SURFACE = '#1e1e1e';
+const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface NuclearArsenalMixOptions {
   readonly top: number | null;
@@ -87,7 +87,7 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
     const rows: ShareRowEntry[] = [];
     for (const row of selected) {
       const pres = countryRowPresentation(readView, row.tag);
-      const countText = row.total.toLocaleString('en-US');
+      const countText = formatScalar(row.total, { decimals: 0 });
       const tooltipItems: TooltipListItem[] = [{ label: 'Nuclear stockpile', value: countText }];
       if (row.total <= 0) {
         rows.push({
@@ -141,7 +141,7 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
         tooltipItems.push({
           label,
           swatch: color,
-          value: `${count.value.toLocaleString('en-US')} (${sharePct(share)})`,
+          value: `${formatScalar(count.value, { decimals: 0 })} (${sharePct(share)})`,
         });
       }
 
@@ -208,7 +208,6 @@ export const nuclearArsenalMixDeclaration: BarsWidgetDeclaration<NuclearArsenalM
   subject: 'nuclear arsenals',
   emptyCampaign: 'Load a campaign to see its nuclear arsenal.',
   icon: 'target',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

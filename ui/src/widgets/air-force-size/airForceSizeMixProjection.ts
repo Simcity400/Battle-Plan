@@ -8,7 +8,6 @@ import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
 import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import type { AirForceMeasureOption, AirForceOwnershipOption } from './airForceSizeRaceProjection.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface AirForceSizeMixOptions extends ForceAtMixOptions {
   readonly measure: AirForceMeasureOption;
@@ -98,7 +97,6 @@ export const airForceSizeMixDeclaration: BarsWidgetDeclaration<AirForceSizeMixOp
   subject: 'air forces',
   emptyCampaign: 'Load a campaign to see its air forces.',
   icon: 'layers',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

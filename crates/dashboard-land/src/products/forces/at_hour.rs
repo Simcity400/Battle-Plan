@@ -479,7 +479,7 @@ impl AtHour for AirForceAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AirForceAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl()]
+        vec![AirForceAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl(), AirForceMeasure::decl(), AirForceOwnership::decl(), ForcePart::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -624,7 +624,7 @@ impl AtHour for NavyAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![NavyAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl()]
+        vec![NavyAtParams::decl(), ForceAtRow::decl(), ForceAtReply::decl(), NavyMeasure::decl(), NavyOwnership::decl(), NavyGrouping::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

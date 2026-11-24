@@ -1,14 +1,13 @@
-import { useGate } from '../../dashboard/regionGate';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
+import { createContext, useContext, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { useDrawnPanel } from '../../dashboard/DrawnPanel';
-import { panelFeed } from '../../dashboard/panelFeed';
-import { useHeadProduct } from '../../dashboard/headProduct';
 import type { WidgetSpec } from '../../dashboard/model';
-import { detailsStructure, detailTexts, validateProjectDetails } from './projectDetailsData';
+import type { GatedHour } from '../../dashboard/regionTime';
+import { useProduct } from '../../dashboard/products';
+import { productRequest } from '../../dashboard/request.ts';
+import { detailTexts, validateProjectDetails } from './projectDetailsData';
 import type { ProgramDetails, ProjectLabel, SpecialProjectDetails } from '../../generated/dashboard';
 
 export const Name = ({ label }: { label: ProjectLabel }) => <span data-tooltip={contentTitleHint(label.token)}>{contentTitle(label.name, label.token, 'Name unavailable')}</span>;
@@ -30,7 +29,14 @@ function Facility({ program }: { program: ProgramDetails }) {
   </div>;
 }
 
-export interface Asked { runtime: WidgetRuntime; widget: WidgetSpec; tag: string; active: boolean }
+export interface Asked { runtime: WidgetRuntime; widget: WidgetSpec; tag: string; active: boolean; readHour: GatedHour }
+
+export function usePinnedDetails({ runtime, widget, tag, active, readHour }: Asked) {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const request = useMemo(() => (track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'special-project-details',
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: readHour } }) : null), [track, tag, readHour]);
+  return useProduct<SpecialProjectDetails>(runtime.client, request, active, validateProjectDetails, track?.source);
+}
 
 function Shown({ details }: { details: SpecialProjectDetails }) {
   return <>
@@ -64,18 +70,13 @@ function Shown({ details }: { details: SpecialProjectDetails }) {
   </>;
 }
 
-export default function ProjectDetails({ runtime, widget, tag, active, onWarnings }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
-  const box = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct(runtime, useGate(runtime, widget), 'special-project-details', { country: countryFromKey(tag) },
-    { active, validate: validateProjectDetails, structure: detailsStructure });
-  const { data, error, retry, root } = head;
-  useDrawnPanel(box, runtime.clock, panelFeed('special-project-details', head, detailsStructure, widget, runtime), active);
+export default function ProjectDetails({ onWarnings, ...asked }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
+  const { data, error, retry } = usePinnedDetails(asked);
   const values = useMemo(() => data ? detailTexts(data) : new Map<string, string>(), [data]);
   const warnings = JSON.stringify(data?.warnings ?? []);
   useEffect(() => onWarnings(JSON.parse(warnings) as string[]), [warnings, onWarnings]);
   useEffect(() => () => onWarnings([]), [onWarnings]);
-  const ref = useCallback((element: HTMLDivElement | null) => { box.current = element; root(element); }, [root]);
-  return <div className="project-details" ref={ref} data-structure={data ? detailsStructure(data) : undefined}>
+  return <div className="project-details">
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data ? <WidgetState kind="loading" label="Loading project details…" /> : <DetailValues.Provider value={values}><Shown details={data} /></DetailValues.Provider>}
   </div>;
 }

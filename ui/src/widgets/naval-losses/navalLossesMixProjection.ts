@@ -10,7 +10,6 @@ import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from 
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import { inHourRanges, type HourRanges } from '../../families/holders.ts';
 import type { NavalAttribution, NavalKind, NavalLossesAtReply, NavalPeriod } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { navalAttribution, navalKind, navalMeasure, navalPeriod } from './navalLossesData.ts';
 
 const NOTE = 'Counted when the game lists a sinking; a country is named as it was when the sinking was read.';
@@ -151,7 +150,6 @@ export const navalLossesMixDeclaration: BarsWidgetDeclaration<NavalLossesMixOpti
   subject: 'naval losses',
   emptyCampaign: 'Load a campaign to see its naval losses.',
   icon: 'shield',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

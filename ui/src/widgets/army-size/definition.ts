@@ -18,7 +18,6 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'owner', label: 'Owner' }, { value: 'host', label: 'Host' }] },
   { key: 'byType', section: 'options', label: 'Battalions by unit group', kind: 'toggle', default: false,
     visibleWhen: options => (options.view ?? 'race') === 'race' && options.measure === 'battalions' },
-  { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS.map(field => ({ ...field, visibleWhen: options => field.visibleWhen?.(options.view === 'breakdown' ? { ...options, view: 'mix' } : options) ?? true } satisfies OptionField)),
   ...RACE_AXIS_OPTIONS.map(field => ({ ...field, visibleWhen: options => field.visibleWhen?.(options.view === 'breakdown' ? { ...options, view: 'mix' } : options) ?? true } satisfies OptionField)),
 ];

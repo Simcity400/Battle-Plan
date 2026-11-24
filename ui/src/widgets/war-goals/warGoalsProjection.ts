@@ -60,14 +60,17 @@ function justificationRow(reply: WargoalsReply, readView: BoundedReadView, entry
     ? (total > 0 ? knownValue(Math.max(0, Math.min(1, Number(points.value) / total))) : notRecorded('The justification cost was not recorded'))
     : notRecorded(points.kind === 'notRecorded' || points.kind === 'notApplicable' ? points.reason : 'Justification progress was not recorded');
   const days = Math.max(0, Math.ceil((entry.completion - readView.hour) / 24));
+  const running = entry.paused === false;
   return {
     kind: 'item',
     key: `justify:${entry.id}`,
     ...titled(readView, entry.recipient, entry.name, options),
     place: placeOf(reply, readView, entry.states, [], []),
     meter: { fraction },
-    figure: { value: knownValue(dayCount(days)), figure: 'Days left' },
-    state: { mark: 'running', label: 'Justifying' },
+    figure: running
+      ? { value: knownValue(dayCount(days)), figure: 'Days left' }
+      : { value: notRecorded(entry.paused ? 'A paused justification has no completion date' : 'Whether the justification is paused was not recorded'), figure: 'Days left' },
+    ...(entry.paused === null ? {} : { state: running ? { mark: 'running' as const, label: 'Justifying' } : { mark: 'waiting' as const, label: 'Paused' } }),
   };
 }
 

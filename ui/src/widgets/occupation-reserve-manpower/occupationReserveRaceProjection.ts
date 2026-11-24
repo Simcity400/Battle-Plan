@@ -1,4 +1,5 @@
 import { dayLabel } from '../../charts/draw.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
@@ -8,10 +9,9 @@ import { inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, zeroValue } from '../../families/value.ts';
 import type { Country, OccupationReserveReply, ReserveHolder } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { persons, validateOccupationReserve } from './occupationReserveData.ts';
 
-const FALLBACK_SOURCE_COLOUR = '#8b95a5';
+const FALLBACK_SOURCE_COLOUR = colour(DEFAULT_CARD_SURFACE, 0);
 
 export interface OccupationReserveRaceOptions {
   readonly top: number | null;
@@ -210,7 +210,6 @@ export const occupationReserveRaceDeclaration: BarsWidgetDeclaration<OccupationR
   subject: 'occupation manpower',
   emptyCampaign: 'Load a campaign to see occupation manpower.',
   icon: 'flag',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

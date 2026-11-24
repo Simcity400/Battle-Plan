@@ -10,7 +10,6 @@ import {
   type SeriesRaceBaseOptions,
 } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 import { measureName, rankingMeasure, SERIES, type OccupationMeasure, type ShownMeasure } from './occupationTrendData.ts';
 
 export interface OccupationTrendRaceOptions extends SeriesRaceBaseOptions {
@@ -63,7 +62,6 @@ export const occupationTrendRaceDeclaration: BarsWidgetDeclaration<OccupationTre
   subject: 'occupation',
   emptyCampaign: 'Load a campaign to see occupation trends.',
   icon: 'globe',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

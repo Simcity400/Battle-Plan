@@ -1,6 +1,6 @@
 import { liveKey } from '../../charts/live.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { gameWindow } from '../../dashboard/gameWindows';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, urlArtHandle } from '../../families/table/identityCell.ts';
@@ -8,8 +8,9 @@ import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExt
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { IndustrialOrganisationsReply, OrganisationNow } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface OrganisationsProjectionOptions {
   readonly canOpen: boolean;
@@ -93,7 +94,7 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
       const meta: OrganisationMeta = { organisation: row.id, name };
       const extra = (): readonly TooltipExtraRow[] => [
         { label: 'Unspent points', value: valueFromLive(live, liveKey(row.id, 'points')), format: 'integer', divider: true },
-        ...(days !== null ? [{ label: 'Policy cooldown', value: knownValue(`${days.toLocaleString('en-US')} days`) }] : []),
+        ...(days !== null ? [{ label: 'Policy cooldown', value: knownValue(`${formatScalar(days, 'integer')} days`) }] : []),
       ];
       return {
         key: row.id,
@@ -127,6 +128,7 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
 export const organisationsDeclaration: TableWidgetDeclaration<OrganisationsProjectionOptions> = {
   family: 'table',
   kind: 'industrial-organisations',
+  optionFields: OPTIONS,
   label: 'Industrial organisations',
   subject: 'organisations',
   emptyCampaign: 'Load a campaign to see organisations.',

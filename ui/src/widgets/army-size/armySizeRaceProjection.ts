@@ -14,7 +14,6 @@ import {
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import type { ArmyAttribution, ArmyMeasure } from '../../generated/dashboard';
 import { armyMeasure, armyMetadataRequest, measureName, validateArmySizeReply, type ArmySizeReply } from './armySizeData.ts';
-import { OPTIONS } from './definition.ts';
 
 export interface ArmySizeRaceOptions extends SeriesRaceBaseOptions, ForceAtRaceBaseOptions {
   readonly measure: ArmyMeasure;
@@ -154,7 +153,6 @@ export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions,
   subject: 'armies',
   emptyCampaign: 'Load a campaign to see its army sizes.',
   icon: 'shield',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

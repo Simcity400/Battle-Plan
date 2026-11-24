@@ -225,7 +225,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Sprite declarations and texture decode settings load through the shared catalogue; the keys come from the products that return them, such as doctrine mastery, and are drawn on request.".into())
         }
-        army::ArmySize::KEY => {
+        army::ArmySize::KEY | <army::ArmyAt as at_hour::AtHour>::KEY => {
             findings.extend(army::check_content(content.catalogue()?).map_err(|why| why.to_string())?);
             Ok("Authored sub-unit groups checked through the army composition; totals, template grids, country identities and supplying dates require the recorded army tables.".into())
         }
@@ -235,11 +235,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         "factory-parts" => Ok("No content dependency: the three factory groups are the game's own, read from the recorded CountryFactories row.".into()),
         "world-tension" | "threat-events" => Ok("No content dependency: tension, contributions and the game's own threat text are the recorded WorldTension, ThreatCountryAggregates, ThreatSources and ThreatEvents rows; display text only loses its presentation controls.".into()),
         "nuclear-arsenal" => Ok("Nuclear type names localise the token spellings recorded in LexicalTokens; amounts and type ordinals are the recorded Nukes rows. A type the game names no token for is counted and shown unnamed.".into()),
-        forces::AirForceSize::KEY => {
+        <forces::AirForceAt as at_hour::AtHour>::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Air parts group recorded variants under their equipment's archetype through the equipment database ({} types); totals and parts require the recorded air force tables.", units.equipment.len()))
         }
-        forces::NavySize::KEY => {
+        <forces::NavyAt as at_hour::AtHour>::KEY => {
             content_reader_key_names::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
@@ -316,8 +316,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         key if key == <faction_state::details::FactionDetails as at_hour::AtHour>::KEY
             || key == <faction_state::country_goals::CountryFactionGoals as at_hour::AtHour>::KEY
-            || key == faction_state::history::FactionState::KEY
-            || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
+            || key == faction_state::history::FactionState::KEY =>
         {
             let layers = &content.resolved.layers;
             let goals = content_reader_politics::faction_goals::cached(layers)?;

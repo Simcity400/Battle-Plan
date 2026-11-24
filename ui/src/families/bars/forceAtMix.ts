@@ -1,4 +1,4 @@
-import { colour } from '../../charts/palette.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BoundedReadView } from '../contract.ts';
@@ -11,7 +11,7 @@ import { forcePartLabel } from './forceAtRace.ts';
 import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
 
-const PART_SURFACE = '#1e1e1e';
+const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface ForceAtMixOptions {
   readonly top: number | null;

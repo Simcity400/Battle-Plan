@@ -1,5 +1,5 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { gameWindow } from '../../dashboard/gameWindows';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, urlArtHandle } from '../../families/table/identityCell.ts';
@@ -8,7 +8,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import type { EquipmentDesignsReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface DesignsProjectionOptions {
   readonly canOpen: boolean;
@@ -90,6 +90,7 @@ export const designsProjection: TableProjection<DesignsProjectionOptions> = regi
 export const designsDeclaration: TableWidgetDeclaration<DesignsProjectionOptions> = {
   family: 'table',
   kind: 'equipment-designs',
+  optionFields: OPTIONS,
   label: 'Equipment designs',
   subject: 'designs',
   emptyCampaign: 'Load a campaign to see designs.',

@@ -1,13 +1,11 @@
 import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
-  { kind: 'air-force-size', view: 'lines', label: 'Lines', load: () => import('./air-force-size') },
   { kind: 'air-kills-losses', view: 'breakdown', label: 'Loss causes', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
   { kind: 'apm-graph', load: () => import('./apm-graph') },
   { kind: 'army-losses-by-month', load: () => import('./army-losses-by-month') },
-  { kind: 'army-size', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', load: () => import('./autonomy') },
   { kind: 'balance-of-power', load: () => import('./balance-of-power') },
@@ -29,7 +27,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'faction-pooled-strength', load: () => import('./faction-pooled-strength') },
   { kind: 'faction-strength', load: () => import('./faction-strength') },
   { kind: 'faction-upgrades', load: () => import('./faction-upgrades') },
-  { kind: 'factories', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./factories') },
   { kind: 'factories', view: 'mix', label: 'Mix', slots: ['render', 'countryChip'], load: () => import('./factories') },
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
   { kind: 'game-score', view: 'lines', label: 'Lines over time', playsBackDated: true, load: () => import('./game-score') },
@@ -41,7 +38,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'military-factory-spending', load: () => import('./military-factory-spending') },
   { kind: 'naval-battles', load: () => import('./naval-battles') },
   { kind: 'naval-losses', view: 'lines', label: 'Lines', load: () => import('./naval-losses') },
-  { kind: 'navy-size', view: 'lines', label: 'Lines', load: () => import('./navy-size') },
   { kind: 'nuclear-arsenal', view: 'lines', label: 'Lines', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
   { kind: 'occupation-trend', view: 'lines', label: 'Lines', load: () => import('./occupation-trend') },
   { kind: 'occupation-trend', view: 'mix', label: 'Mix', load: () => import('./occupation-trend') },

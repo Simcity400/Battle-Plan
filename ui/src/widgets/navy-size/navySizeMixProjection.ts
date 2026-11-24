@@ -7,7 +7,6 @@ import { registerBarsProjection } from '../../families/bars/registry.ts';
 import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
 import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
-import { OPTIONS } from './definition.ts';
 import type { NavyGroupingOption, NavyMeasureOption, NavyOwnershipOption } from './navySizeRaceProjection.ts';
 
 export interface NavySizeMixOptions extends ForceAtMixOptions {
@@ -100,7 +99,6 @@ export const navySizeMixDeclaration: BarsWidgetDeclaration<NavySizeMixOptions> =
   subject: 'navies',
   emptyCampaign: 'Load a campaign to see its navies.',
   icon: 'flows',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

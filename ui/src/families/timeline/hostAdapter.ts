@@ -39,8 +39,6 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
   deriveAuditRows: model => deriveTimelineAudit(model),
   auditOrdered: true,
   buildBinding: ctx => (ctx.theme ? {
-    family: 'timeline',
-    kind: ctx.kind,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

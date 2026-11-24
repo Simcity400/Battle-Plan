@@ -1,9 +1,8 @@
 dashboard_base::register_products! {
     DOCTRINES_DOCTRINES => crate::products::doctrines::Doctrines,
     ARMY_ARMYSIZE => crate::products::army::ArmySize,
-    FORCES_AIRFORCESIZE => crate::products::forces::AirForceSize,
-    FORCES_NAVYSIZE => crate::products::forces::NavySize,
     LEADERS_LEADERPORTRAITS => crate::products::leaders::LeaderPortraits,
+    LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
     DIVISION_LOG_DIVISIONLOG => crate::products::division_log::DivisionLog,
