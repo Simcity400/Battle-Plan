@@ -88,11 +88,27 @@ fn typed(read: &Read<'_>, cells: &replay_columnar::store::TableView<'_>, status:
         Err(error) => return Err(error),
     };
     let complete = matches!(made, TableView::Complete(_));
-    let mut made = SharedView::from(made);
+    let mut made = SharedView::from(made).with_keys(selection(read.keys));
     if complete {
         made = made.with_sampled_at(sampled_at);
     }
     Ok(made)
+}
+
+fn selection(keys: Keys<'_>) -> Option<std::sync::Arc<replay_frame::frame::Keys>> {
+    use replay_frame::frame::Keys as Selected;
+    let selected = match keys {
+        Keys::All => return None,
+        Keys::These(keys) => {
+            let mut keys = keys.to_vec();
+            keys.sort_unstable();
+            keys.dedup();
+            Selected::These(keys)
+        }
+        Keys::Range(low, high) => Selected::Range(low, high),
+        Keys::Ranges(ranges) => Selected::Ranges(ranges.to_vec()),
+    };
+    Some(std::sync::Arc::new(selected))
 }
 
 pub struct Cursor<'r, 'a> {

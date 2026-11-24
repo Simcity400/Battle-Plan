@@ -11,7 +11,6 @@ pub const SERIES_PRODUCTS: &[&str] = &[
     "series-state",
     "series-summary",
     "series-next-change",
-    "events-page",
     dashboard_query::tile::PRODUCT,
     dashboard_query::series::PARTS,
 ];

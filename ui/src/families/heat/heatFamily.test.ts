@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
+import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
@@ -15,7 +16,7 @@ import {
 import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
 import { createMatrixPicture, drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
-import { computeAxisTicks, hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
+import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { createLanesPicture, drawHeatLanes } from './lanesPainter.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
@@ -383,7 +384,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.equal(mirror.rows[0]!.name, 'English Channel');
   assert.equal(mirror.rows[0]!.cells[0]!.spoken, 'English Channel');
 
-  const ticks = computeAxisTicks(0, 167, 24, layout.plotLeft, layout.plotWidth);
+  const ticks = computeTimeAxisTicks(0, 167, layout.plotWidth, 24);
   assert.ok(ticks.length >= 2);
 
   const fake = makeFakeCtx();
