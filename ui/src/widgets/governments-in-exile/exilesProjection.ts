@@ -10,7 +10,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromLive, valueNumber, zeroValue, type Value } from '../../families/value.ts';
 import { object, opaqueTag } from '../../dashboard/validation.ts';
 import type { PoliticsStateReply } from '../../generated/dashboard';
-import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface ExilesProjectionOptions {
   readonly filter: DeclaredCountryFilter;
@@ -141,7 +141,6 @@ export const exilesProjection: TableProjection<ExilesProjectionOptions> = regist
 export const exilesDeclaration: TableWidgetDeclaration<ExilesProjectionOptions> = {
   family: 'table',
   kind: 'governments-in-exile',
-  optionFields: OPTIONS,
   label: 'Governments in exile',
   subject: 'governments in exile',
   emptyCampaign: 'Load a campaign to see governments in exile.',

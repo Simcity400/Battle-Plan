@@ -8,7 +8,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { TerritoryTransfersReply } from '../../generated/dashboard';
-import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface TransfersProjectionOptions {
   readonly filter: DeclaredCountryFilter;
@@ -104,7 +104,6 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
 export const transfersDeclaration: TableWidgetDeclaration<TransfersProjectionOptions> = {
   family: 'table',
   kind: 'territory-transfers',
-  optionFields: OPTIONS,
   label: 'Territory transfers',
   subject: 'territory transfers',
   emptyCampaign: 'Load a campaign to see territory transfers.',
