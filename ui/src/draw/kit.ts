@@ -970,3 +970,57 @@ export function drawDateTab(
   ctx.restore();
   return { x, y, width, height };
 }
+
+export function drawGradientLegend(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  lowLabel: string,
+  highLabel: string,
+  stops: readonly string[],
+  theme: FamilyTheme,
+  options?: { readonly barWidth?: number; readonly barHeight?: number; readonly gap?: number },
+): { readonly width: number } {
+  const barWidth = options?.barWidth ?? 64;
+  const barHeight = options?.barHeight ?? 8;
+  const gap = options?.gap ?? 6;
+  const fontSize = theme.fontSize.small;
+  ctx.save();
+  ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const lowW = lowLabel ? textWidth(ctx, lowLabel) : 0;
+  const highW = highLabel ? textWidth(ctx, highLabel) : 0;
+  let cursor = x;
+  if (lowLabel) {
+    ctx.fillText(lowLabel, cursor, middleY);
+    cursor += lowW + gap;
+  }
+  const barY = Math.round(middleY - barHeight / 2);
+  if (stops.length >= 2 && barWidth > 0) {
+    const gradient = ctx.createLinearGradient(cursor, 0, cursor + barWidth, 0);
+    const last = stops.length - 1;
+    for (let i = 0; i < stops.length; i++) {
+      gradient.addColorStop(i / last, stops[i]!);
+    }
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.roundRect(cursor, barY, barWidth, barHeight, 2);
+    ctx.fill();
+  } else if (stops.length === 1 && barWidth > 0) {
+    ctx.fillStyle = stops[0]!;
+    ctx.beginPath();
+    ctx.roundRect(cursor, barY, barWidth, barHeight, 2);
+    ctx.fill();
+  }
+  cursor += barWidth;
+  if (highLabel) {
+    cursor += gap;
+    ctx.fillStyle = theme.muted;
+    ctx.fillText(highLabel, cursor, middleY);
+    cursor += highW;
+  }
+  ctx.restore();
+  return { width: cursor - x };
+}

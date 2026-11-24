@@ -17,6 +17,7 @@ import {
   drawDateTab,
   drawFlagSlot,
   drawGapBand,
+  drawGradientLegend,
   drawMissingMark,
   drawNameSlot,
   drawPartialTab,
@@ -237,5 +238,7 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   drawSeriesMissingStrip(chromeCtx.ctx, 20, 115, 40, '#4f86f7', THEME);
   const tab = drawDateTab(chromeCtx.ctx, '14 Sep 1941', 5, 120, THEME, 'playhead', { left: 10, right: 200 });
   assert.equal(tab.x, 10);
+  const grad = drawGradientLegend(chromeCtx.ctx, 20, 14, '-100', '+100', ['#d95926', '#444444', '#199e70'], THEME);
+  assert.ok(grad.width > 64);
   assert.equal(resolveKitTokens(THEME).shortage, '#ff6b6f');
 });
