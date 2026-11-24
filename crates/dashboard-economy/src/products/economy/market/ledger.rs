@@ -1,9 +1,8 @@
 use dashboard_base::{
     Source,
-    catalogue::Catalogue,
     products::{
         LoadContext, Product,
-        log_page::{self as logs, LogCaches, LogCell, LogPageParams, LogPageReply, LogPageRow, TailPanelReply, dated_tail_panel, quiet_tail_missing},
+        log_page::{self as logs, LogCaches, TailPanelReply, dated_tail_panel, quiet_tail_missing},
     },
     queries::country_ids::Names,
 };
@@ -17,9 +16,9 @@ use dashboard_world::products::equipment_names::{self as names, Named};
 use replay_data::rows::{MarketEventRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -49,7 +48,6 @@ pub const COLUMNS: [&str; 15] = [
 ];
 
 struct Columns {
-    occurrence: usize,
     agreement: usize,
     country: usize,
     receiver: usize,
@@ -58,16 +56,12 @@ struct Columns {
     ordinal: usize,
     variant: usize,
     amount: usize,
-    auxiliary: usize,
-    total: usize,
-    lost_total: usize,
 }
 
 impl Columns {
     fn read() -> io::Result<Self> {
         let field = |name| dashboard_declare::field(TableId::MarketEvents, name);
         Ok(Self {
-            occurrence: field("occurrence")?,
             agreement: field("agreement")?,
             country: field("country")?,
             receiver: field("receiver")?,
@@ -76,9 +70,6 @@ impl Columns {
             ordinal: field("ordinal")?,
             variant: field("variant")?,
             amount: field("amount_raw")?,
-            auxiliary: field("auxiliary_raw")?,
-            total: field("total_raw")?,
-            lost_total: field("lost_total_raw")?,
         })
     }
 }
@@ -87,330 +78,6 @@ fn number(cells: &[Cell], column: usize) -> Option<i64> {
     match cells.get(column) {
         Some(Cell::Number(value)) => Some(*value),
         _ => None,
-    }
-}
-
-fn number_cell(value: Option<i64>) -> LogCell {
-    value.map_or(LogCell::NotRecorded, |value| LogCell::Number { value: value.to_string() })
-}
-
-fn text_cell(value: Option<String>) -> LogCell {
-    value.map_or(LogCell::Missing, |value| LogCell::Text { value })
-}
-
-struct Mapped {
-    cells: Vec<LogCell>,
-    variant: Option<u64>,
-}
-
-const EQUIPMENT: usize = 8;
-
-fn map_legacy(key: u128, cells: &[Cell], columns: &Columns, tag: impl Fn(u32) -> Option<String>) -> Mapped {
-    let kind = number(cells, columns.kind).and_then(|kind| u8::try_from(kind).ok());
-    let ordinal = number(cells, columns.ordinal).and_then(|ordinal| u32::try_from(ordinal).ok());
-    let reason = match kind {
-        Some(34) => match ordinal {
-            Some(ordinal) => MarketEventRow { kind: 34, ordinal, ..MarketEventRow::default() }.delivery_unavailable_reason().map(str::to_owned),
-            None => Some("Delivery amount unavailable: refusal reason not recorded".to_owned()),
-        },
-        _ => None,
-    };
-    let party = |column: usize| match number(cells, column) {
-        None => LogCell::NotRecorded,
-        Some(0) => LogCell::Missing,
-        Some(raw) => u32::try_from(raw).ok().and_then(&tag).map_or(LogCell::Missing, |value| LogCell::Text { value }),
-    };
-    let variant = number(cells, columns.variant).map(|variant| variant as u64);
-    let raw = |column: usize| if reason.is_some() { LogCell::Missing } else { number_cell(number(cells, column)) };
-    Mapped {
-        cells: vec![
-            LogCell::Text { value: key.to_string() },
-            number_cell(number(cells, columns.occurrence)),
-            kind.map_or(LogCell::NotRecorded, |kind| LogCell::Number { value: kind.to_string() }),
-            number_cell(number(cells, columns.mode)),
-            number(cells, columns.agreement).map_or(LogCell::NotRecorded, |agreement| LogCell::Text { value: format!("{:016x}", agreement as u64) }),
-            party(columns.country),
-            party(columns.receiver),
-            variant.map_or(LogCell::NotRecorded, |variant| LogCell::Text { value: variant.to_string() }),
-            LogCell::Missing,
-            match variant {
-                None => LogCell::Text { value: "Equipment design not recorded".into() },
-                Some(0) => LogCell::Missing,
-                Some(_) => LogCell::Text { value: "Equipment not named yet".into() },
-            },
-            raw(columns.amount),
-            raw(columns.auxiliary),
-            number_cell(number(cells, columns.total)),
-            number_cell(number(cells, columns.lost_total)),
-            text_cell(reason),
-        ],
-        variant,
-    }
-}
-
-pub struct MarketLedger;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MarketLedgerParams {
-    pub branch_id: String,
-    #[serde(default)]
-    pub facets: Vec<FacetFilter>,
-    pub from: Option<f64>,
-    pub to: f64,
-    pub cursor: Option<String>,
-    pub page_size: u32,
-}
-
-fn validate_legacy_facets(facets: &[FacetFilter]) -> Result<(), &'static str> {
-    let kinds = facets.iter().find(|facet| facet.name == "kind").ok_or("A market ledger page names the occurrences it shows")?;
-    if kinds.values.is_empty() || kinds.values.iter().any(|kind| !KINDS.contains(kind)) {
-        return Err("Invalid market occurrence kind");
-    }
-    Ok(())
-}
-
-const VARIANT_CACHE_CAPACITY: usize = 4_096;
-
-struct VariantNameCache {
-    capacity: usize,
-    entries: Option<(Arc<Catalogue>, VecDeque<(u32, i32, u64)>, HashMap<(u32, i32, u64), Option<String>>)>,
-}
-
-impl Default for VariantNameCache {
-    fn default() -> Self {
-        Self { capacity: VARIANT_CACHE_CAPACITY, entries: None }
-    }
-}
-
-impl VariantNameCache {
-    fn clear(cache: &Mutex<Self>) {
-        cache.lock().unwrap_or_else(PoisonError::into_inner).entries = None;
-    }
-
-    fn resolve<'a>(
-        cache: &Mutex<Self>,
-        recording: &'a replay_recording::columnar_frames::Recording,
-        seeker: &mut Option<replay_lanes::at::Seeker<'a>>,
-        run: u32,
-        hour: i32,
-        variants: &[u64],
-        content: &names::Content,
-        context: &names::Context,
-    ) -> io::Result<BTreeMap<u64, Option<String>>> {
-        let mut out = BTreeMap::new();
-        let mut missing = Vec::new();
-        {
-            let guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((cat, _, map)) = guard.entries.as_ref()
-                && Arc::ptr_eq(cat, &content.catalogue)
-            {
-                for &variant in variants {
-                    if let Some(found) = map.get(&(run, hour, variant)) {
-                        out.insert(variant, found.clone());
-                    } else {
-                        missing.push(variant);
-                    }
-                }
-            } else {
-                missing.extend_from_slice(variants);
-            }
-        }
-        if !missing.is_empty() {
-            let resolved = plain_names_with_seeker(recording, seeker, run, hour, &missing, context)?;
-            {
-                let mut guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
-                let cap = guard.capacity;
-                let reuse = guard.entries.as_ref().is_some_and(|(cat, _, _)| Arc::ptr_eq(cat, &content.catalogue));
-                if !reuse {
-                    guard.entries = Some((Arc::clone(&content.catalogue), VecDeque::new(), HashMap::new()));
-                }
-                let (_, order, map) = guard.entries.as_mut().unwrap();
-                for &variant in &missing {
-                    let value = resolved.get(&variant).cloned().flatten();
-                    let key = (run, hour, variant);
-                    if map.insert(key, value.clone()).is_none() {
-                        order.push_back(key);
-                        while map.len() > cap {
-                            let Some(evicted) = order.pop_front() else { break };
-                            map.remove(&evicted);
-                        }
-                    }
-                    out.insert(variant, value);
-                }
-            }
-        }
-        Ok(out)
-    }
-}
-
-fn plain_names_with_seeker<'r>(
-    recording: &'r replay_recording::columnar_frames::Recording,
-    seeker: &mut Option<replay_lanes::at::Seeker<'r>>,
-    run: u32,
-    hour: i32,
-    variants: &[u64],
-    context: &names::Context,
-) -> io::Result<BTreeMap<u64, Option<String>>> {
-    let held_seeker = match seeker.as_mut() {
-        Some(held) => held,
-        None => seeker.insert(replay_lanes::at::Seeker::new(recording)?),
-    };
-    let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
-    let mut reads: Vec<replay_lanes::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance].into_iter().map(replay_lanes::at::Read::all).collect();
-    reads.push(replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: replay_lanes::at::Keys::These(&keys) });
-    let mut frame = dashboard_query::cost::storage(|| held_seeker.frame(run, hour, &reads))?;
-    let tokens: Vec<u128> = names::variant_tokens(&frame).collect::<BTreeSet<_>>().into_iter().map(u128::from).collect();
-    let token_read = [replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&tokens) }];
-    let lexical = dashboard_query::cost::storage(|| held_seeker.frame(run, hour, &token_read))?;
-    frame.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
-    Ok(names::plain_names(&frame, variants, context))
-}
-
-fn enrich_legacy_rows(
-    query: &Query<'_>,
-    links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
-    context: &names::Context,
-    name_cache: Option<&Mutex<VariantNameCache>>,
-    rows: Vec<(dashboard_query::log::Row, u64, u64, Option<dashboard_query::identity::Country>)>,
-    tagged: bool,
-    cancelled: &AtomicBool,
-) -> io::Result<(Vec<LogPageRow>, Vec<String>)> {
-    let columns = Columns::read()?;
-    let tags = Names::new(&query.holders);
-    let mut by_run_hour: BTreeMap<(u32, i32), Vec<usize>> = BTreeMap::new();
-    let mut mapped = Vec::with_capacity(rows.len());
-    for (at, (row, ..)) in rows.iter().enumerate() {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let Some(stretch) = query.timeline.at(row.hour) else {
-            mapped.push(map_legacy(row.key, &row.cells, &columns, |_| None));
-            continue;
-        };
-        let run_links = links.get(&stretch.run);
-        mapped.push(map_legacy(row.key, &row.cells, &columns, |raw| run_links.and_then(|held| tags.tag_at(held, raw, row.hour)).map(str::to_owned)));
-        by_run_hour.entry((stretch.run, row.hour)).or_default().push(at);
-    }
-    let mut warnings = Vec::new();
-    match context {
-        Err(why) => {
-            for row in &mut mapped {
-                if row.variant.is_some_and(|variant| variant != 0) {
-                    row.cells[EQUIPMENT + 1] = LogCell::Text { value: why.clone() };
-                }
-            }
-            warnings.push(why.clone());
-        }
-        Ok(content) => {
-            let recording = query.replay.recording();
-            let mut seeker: Option<replay_lanes::at::Seeker<'_>> = None;
-            for ((run, hour), ats) in by_run_hour {
-                dashboard_text::metadata::check_cancel(cancelled)?;
-                let variants: Vec<u64> = ats.iter().filter_map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect::<BTreeSet<_>>().into_iter().collect();
-                if variants.is_empty() {
-                    continue;
-                }
-                let batch = match name_cache {
-                    Some(cache) => VariantNameCache::resolve(cache, recording, &mut seeker, run, hour, &variants, content, context)?,
-                    None => plain_names_with_seeker(recording, &mut seeker, run, hour, &variants, context)?,
-                };
-                for &at in &ats {
-                    let row = &mut mapped[at];
-                    if let Some(variant) = row.variant.filter(|&variant| variant != 0) {
-                        match batch.get(&variant).and_then(|name| name.as_ref()) {
-                            Some(name) => {
-                                row.cells[EQUIPMENT] = LogCell::Text { value: name.clone() };
-                                row.cells[EQUIPMENT + 1] = LogCell::Missing;
-                            }
-                            None => row.cells[EQUIPMENT + 1] = LogCell::Text { value: "The recording does not name this design at the ledger's reads".into() },
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let unavailable = mapped.iter().filter(|row| !matches!(row.cells[14], LogCell::Missing)).count();
-    if unavailable > 0 {
-        warnings.push(format!("{unavailable} deliveries on this page have no recorded amount; each keeps its reason"));
-    }
-    let reply_rows = rows
-        .into_iter()
-        .zip(mapped)
-        .map(|((row, ordinal, own, tag), mapped)| LogPageRow {
-            hour: row.hour,
-            key: row.key.to_string(),
-            ordinal: ordinal.to_string(),
-            country: tag,
-            own_ordinal: tagged.then(|| own.to_string()),
-            cells: mapped.cells,
-        })
-        .collect();
-    Ok((reply_rows, warnings))
-}
-
-impl Product for MarketLedger {
-    const KEY: &'static str = "market-ledger";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = MarketLedgerParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        facets,
-        from: Start,
-        to: End,
-        cursor,
-        pageSize,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = LogPageReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![MarketLedgerParams::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_legacy_facets(&params.facets)
-    }
-
-    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let asked = LogPageParams {
-            branch_id: params.branch_id.clone(),
-            log: LOG.to_owned(),
-            facets: params.facets.clone(),
-            from: params.from,
-            to: params.to,
-            cursor: params.cursor.clone(),
-            page_size: params.page_size,
-            columns: None,
-        };
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
-        let caches = dashboard_base::queries::log_caches(source);
-        let (page, rows, missing) = logs::page_with(&query, &asked, Some(&caches), |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
-        let links = links_by_run(source, &query)?;
-        let context = names::context(source, load)?;
-        let cache = source.state::<VariantNameCache>();
-        let (reply_rows, warnings) = enrich_legacy_rows(&query, &links, &context, Some(&cache), rows, tagged, cancelled)?;
-        Ok(LogPageReply {
-            branch_id: params.branch_id.clone(),
-            log: LOG.to_owned(),
-            columns: COLUMNS.iter().map(|column| (*column).to_owned()).collect(),
-            first_ordinal: page.first.to_string(),
-            total: page.total().to_string(),
-            cursor: page.cursor().map(|cursor| cursor.to_string()),
-            rows: reply_rows,
-            missing,
-            warnings,
-        })
     }
 }
 
@@ -570,10 +237,6 @@ fn links_by_run(source: &Source, query: &Query<'_>) -> io::Result<BTreeMap<u32, 
         }
     }
     Ok(out)
-}
-
-pub(crate) fn forget(source: &Source) {
-    VariantNameCache::clear(&source.state::<VariantNameCache>());
 }
 
 #[derive(Clone)]

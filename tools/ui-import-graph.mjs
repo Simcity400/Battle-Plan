@@ -26,6 +26,16 @@ export function stripSpecifierSuffix(specifier) {
   return specifier.split(/[?#]/, 1)[0];
 }
 
+export function staticStringLiteral(node) {
+  if (!node || typeof node !== 'object') return null;
+  if (node.type === 'Literal' && typeof node.value === 'string') return node.value;
+  if (node.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis.length === 1) {
+    const cooked = node.quasis[0]?.value?.cooked;
+    return typeof cooked === 'string' ? cooked : null;
+  }
+  return null;
+}
+
 export function resolveLocalImport(fromFile, specifier, root) {
   const clean = stripSpecifierSuffix(specifier);
   if (!clean) return null;
@@ -126,30 +136,31 @@ export function extractImportSpecifiers(filePath, options = {}) {
 
   const visitNode = node => {
     if (node.type === 'ImportDeclaration') {
-      const spec = node.source?.value;
-      if (typeof spec !== 'string') return;
+      const spec = staticStringLiteral(node.source);
+      if (spec === null) return;
       const isType = node.importKind === 'type'
         || (node.specifiers.length > 0 && node.specifiers.every(item => item.importKind === 'type'));
       if (includeTypes || !isType) out.push({ specifier: spec, kind: 'import', isType });
       return;
     }
     if (node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
-      const spec = node.source?.value;
-      if (typeof spec !== 'string') return;
+      const spec = staticStringLiteral(node.source);
+      if (spec === null) return;
       const isType = node.exportKind === 'type'
         || (node.type === 'ExportNamedDeclaration' && node.specifiers.length > 0 && node.specifiers.every(item => item.exportKind === 'type'));
       if (includeTypes || !isType) out.push({ specifier: spec, kind: 'export', isType });
       return;
     }
     if (includeDynamic && node.type === 'ImportExpression') {
-      if (node.source?.type === 'Literal' && typeof node.source.value === 'string') {
-        out.push({ specifier: node.source.value, kind: 'dynamic', isType: false });
+      const spec = staticStringLiteral(node.source);
+      if (spec !== null) {
+        out.push({ specifier: spec, kind: 'dynamic', isType: false });
       }
       return;
     }
     if (includeTypes && node.type === 'TSImportType') {
-      const spec = node.source?.value ?? node.argument?.literal?.value;
-      if (typeof spec === 'string') {
+      const spec = staticStringLiteral(node.source) ?? staticStringLiteral(node.argument?.literal);
+      if (spec !== null) {
         out.push({ specifier: spec, kind: 'type-import', isType: true });
       }
       return;
@@ -157,9 +168,11 @@ export function extractImportSpecifiers(filePath, options = {}) {
     if (includeWorkerUrls && node.type === 'NewExpression'
       && node.callee?.type === 'Identifier' && node.callee.name === 'URL'
       && node.arguments.length >= 2
-      && node.arguments[0]?.type === 'Literal' && typeof node.arguments[0].value === 'string'
       && isImportMetaUrl(node.arguments[1])) {
-      out.push({ specifier: node.arguments[0].value, kind: 'url', isType: false });
+      const spec = staticStringLiteral(node.arguments[0]);
+      if (spec !== null) {
+        out.push({ specifier: spec, kind: 'url', isType: false });
+      }
       return;
     }
     if (includeTestStringRefs) {
@@ -174,15 +187,7 @@ export function extractImportSpecifiers(filePath, options = {}) {
     }
   };
 
-  const needsDeepWalk = ((includeDynamic || includeTypes) && source.includes('import('))
-    || (includeWorkerUrls && source.includes('import.meta.url'))
-    || (includeTestStringRefs && source.includes('src/'));
-
-  if (!needsDeepWalk) {
-    for (const node of ast.body) visitNode(node);
-  } else {
-    walkAst(ast, visitNode);
-  }
+  walkAst(ast, visitNode);
   return out;
 }
 
