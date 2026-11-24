@@ -136,6 +136,19 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.rosterProjection, declaration: mod.rosterDeclaration }),
     ),
   },
+  ...(['political-power-spending', 'command-power-spending'] as const).map((kind): FamilyViewEntry => ({
+    kind,
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      kind,
+      DEFAULT_VIEW,
+      () => import('../political-power-spending/powerSpendingProjection.ts'),
+      mod => (kind === 'political-power-spending'
+        ? { projection: mod.politicalSpendingProjection, declaration: mod.politicalSpendingDeclaration }
+        : { projection: mod.commandSpendingProjection, declaration: mod.commandSpendingDeclaration }),
+    ),
+  })),
   {
     kind: 'industrial-organisations',
     view: DEFAULT_VIEW,

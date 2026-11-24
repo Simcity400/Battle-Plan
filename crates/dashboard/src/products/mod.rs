@@ -70,7 +70,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_air::registrations::AIR_SUPERIORITY_AIRSUPERIORITYAT,
     dashboard_production::registrations::EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD,
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
-    dashboard_politics::registrations::POWER_LEDGER_DAY_POWERDAY,
     dashboard_wars::registrations::FACTION_STATE_REWARDS_FACTIONGOALREWARDS,
 ];
 
@@ -185,7 +184,6 @@ const OWN: &[Registered] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT,
-    dashboard_politics::registrations::POWER_LEDGER_POWERSPENDING,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN,
     dashboard_politics::registrations::STABILITY_READS_STABILITYREADS,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE,
@@ -299,7 +297,6 @@ const MOVED_OWN: &[&str] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES.key,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY.key,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT.key,
-    dashboard_politics::registrations::POWER_LEDGER_POWERSPENDING.key,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN.key,
     dashboard_politics::registrations::STABILITY_READS_STABILITYREADS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.key,
