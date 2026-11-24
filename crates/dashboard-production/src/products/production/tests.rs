@@ -1,11 +1,11 @@
 use dashboard_world::products::equipment_names as names;
 use super::{
-    catalogue::{EquipmentDesigns, EquipmentDesignsParams, IndustrialOrganisations, ProductionLicences},
+    catalogue::{EquipmentDesigns, IndustrialOrganisations, ProductionLicences},
     lines::{ProductionDetailParams, ProductionLinesParams, detail_reply, lines_reply},
     live::ProductionLinesAt,
     *,
 };
-use dashboard_base::{Source, products::{LoadContext, Product, at_hour::entry}, test_fixtures::{CAMPAIGN, records, source}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::entry}, test_fixtures::{CAMPAIGN, records, source}};
 use replay::campaign::Replay;
 use replay_data::rows::{
     CountryLinkRow, CountryRow, IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, ProductionLicenseRecordRow, ProductionLineOutputRow, ProductionLineRow, Recorded, TableRows,
@@ -295,17 +295,15 @@ fn licences_name_both_parties_by_their_countries_and_organisations_say_when_thei
 }
 
 #[test]
-fn a_countrys_designs_are_its_creators_hours_with_their_obsolete_flags() {
+fn a_countrys_designs_at_the_hour_are_its_creators_with_their_obsolete_flags_current_first() {
     let source = recording();
-    let params = EquipmentDesignsParams { branch_id: "1".into(), country: "GER".into() };
-    let reply = EquipmentDesigns::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
-    let designs: Vec<(&str, Vec<(i32, i32)>, Vec<(i32, i32)>)> = reply
-        .designs
-        .iter()
-        .map(|design| (design.id.as_str(), design.lives.iter().map(|span| (span.first_hour, span.last_hour)).collect(), design.obsolete.iter().map(|span| (span.first_hour, span.last_hour)).collect()))
-        .collect();
-    assert_eq!(designs, [("500", vec![(FIRST, LAST)], vec![(1_200, LAST)]), ("502", vec![(1_100, LAST)], vec![])]);
-    assert!(reply.designs.iter().all(|design| design.name.name.is_none() && design.name.name_unknown.is_some()));
+    let designs = |hour: i32| {
+        let reply = asked(&source, entry::<EquipmentDesigns>(), json!({ "branchId": "1", "country": "GER", "hour": hour }));
+        assert!(reply["designs"].as_array().unwrap().iter().all(|design| design["name"]["name"].is_null() && design["name"]["nameUnknown"].is_string()));
+        reply["designs"].as_array().unwrap().iter().map(|design| (design["name"]["id"].as_str().unwrap().to_owned(), design["obsolete"].as_bool().unwrap())).collect::<Vec<_>>()
+    };
+    assert_eq!(designs(1_050), [("500".to_owned(), false)], "502 is not saved yet; ITA's 501 is not GER's");
+    assert_eq!(designs(1_250), [("502".to_owned(), false), ("500".to_owned(), true)]);
 }
 
 #[test]

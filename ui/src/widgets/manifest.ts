@@ -22,9 +22,12 @@ export interface FamilyViewUiLoader {
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
+  'agency-comparison': { load: () => import('./agency-comparison') },
   'apm-table': { load: () => import('./apm-table') },
   'division-template': { load: () => import('./division-template') },
+  'equipment-designs': { load: () => import('./equipment-designs') },
   'game-score': { load: () => import('./game-score') },
+  'industrial-organisations': { load: () => import('./industrial-organisations') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },

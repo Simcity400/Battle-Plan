@@ -133,6 +133,39 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.rosterProjection, declaration: mod.rosterDeclaration }),
     ),
   },
+  {
+    kind: 'industrial-organisations',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'industrial-organisations',
+      DEFAULT_VIEW,
+      () => import('../industrial-organisations/organisationsProjection.ts'),
+      mod => ({ projection: mod.organisationsProjection, declaration: mod.organisationsDeclaration }),
+    ),
+  },
+  {
+    kind: 'agency-comparison',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'agency-comparison',
+      DEFAULT_VIEW,
+      () => import('../agency-comparison/agencyProjection.ts'),
+      mod => ({ projection: mod.agencyProjection, declaration: mod.agencyDeclaration }),
+    ),
+  },
+  {
+    kind: 'equipment-designs',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'equipment-designs',
+      DEFAULT_VIEW,
+      () => import('../equipment-designs/designsProjection.ts'),
+      mod => ({ projection: mod.designsProjection, declaration: mod.designsDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
