@@ -73,7 +73,7 @@ fn an_empty_queue_read_in_full_certifies_only_itself() {
 fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     let mut held = facts();
     held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, gaps: vec![(12, SpendingGap::InexactOutput), (40, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
-    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, SpendingGap::LinkedOutput)], before_first_read: None });
+    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, SpendingGap::LinkedOutput), (80, SpendingGap::InexactOutput)], before_first_read: None });
     held.unattributed.push(35);
     let index = index(&held);
     let state_of = |hour: i32| index.at(hour).breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").map(|part| part.state);
@@ -87,8 +87,12 @@ fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     assert_eq!(after.unattributed, 1);
     assert!(after.breakdown.total.reason.as_deref().is_some_and(|reason| reason.contains("not traced to a country")), "output no country can be given leaves the total partial");
     assert!(index.at(65).breakdown.parts.iter().all(|part| part.key != "repair" || part.children.iter().all(|child| child.name != "Building name unavailable")));
-    let repairs = |hour: i32| index.at(hour).breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.children.len());
-    assert_eq!((repairs(65), repairs(75)), (Some(1), Some(2)), "repair work's gap is dated from the repair, never from the project's first read");
+    let ninth = |hour: i32, kind: &str| {
+        index.at(hour).breakdown.parts.iter().find(|part| part.key == kind).and_then(|part| part.children.iter().find(|child| child.key == "type:9")).map(|child| child.state)
+    };
+    assert_eq!(ninth(65, "new"), Some(BreakdownState::Partial), "the gap read at 61 belongs to the new work witnessed then");
+    assert_eq!(ninth(75, "repair"), None, "a new-build gap at 61 never qualifies repairs first seen at 70");
+    assert_eq!(ninth(85, "repair"), Some(BreakdownState::Partial), "a gap read during the repair is the repair's");
 }
 
 #[test]

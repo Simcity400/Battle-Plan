@@ -7,7 +7,7 @@ use dashboard_base::products::{
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::series::{Ask, MissingSpan};
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,24 +30,10 @@ pub struct ResourceContext {
 pub struct ResourceBalanceParams {
     pub branch_id: String,
     pub country: Country,
-    #[doc = " The order `shown` lists the resources in; the game's when absent."]
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub order: Option<ResourceOrder>,
-    #[doc = " Leave out of `shown` the resources with nothing in either bar."]
+    #[doc = " Leave out of `rows` the resources recorded with nothing in or out."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hide_empty: Option<bool>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub enum ResourceOrder {
-    #[default]
-    Game,
-    Shortfall,
-    Volume,
 }
 
 pub const POOL_CELLS: [(&str, &str); 8] = [
@@ -85,6 +71,22 @@ pub struct ResourceDeal {
     pub convoys_required: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceNet {
+    #[doc = " The resource's native index, as in `resources`."]
+    pub resource: u32,
+    #[doc = " What is left a day after special projects and production lines, fixed-point at `decimals`; null when not recorded."]
+    pub net: Option<String>,
+    #[doc = " In a day: produced, from subjects and imported."]
+    pub supply: Option<String>,
+    #[doc = " Out a day: special projects, production lines, to the overlord and the export reserve."]
+    pub demand: Option<String>,
+    #[doc = " Why the figures are not recorded for this resource at the hour."]
+    pub missing: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -96,8 +98,12 @@ pub struct ResourceBalanceReply {
     #[doc = " The resources the country has a row of, in `resources` order: each a row of live cells"]
     #[doc = " (`POOL_CELLS`)."]
     pub pools: Vec<u32>,
-    #[doc = " The resources the bars show, in the asked order (those with no row last, in the game's)."]
-    pub shown: Vec<u32>,
+    #[doc = " The balance of each resource: shortages first (largest first), then surpluses (largest first), then the"]
+    #[doc = " balanced, then those not recorded; a tie keeps the game's order."]
+    pub rows: Vec<ResourceNet>,
+    #[doc = " How many recorded rows are short; rows not recorded are counted in `unrecorded`, never here."]
+    pub short: u32,
+    pub unrecorded: u32,
     #[doc = " Why the pools are not known at the hour."]
     pub pools_missing: Option<String>,
     #[doc = " Its deals, largest delivery first."]
@@ -145,6 +151,7 @@ fn recorded_resources(frame: &DecodedFrame) -> io::Result<(Vec<(u32, String)>, u
     Ok((out, unnamed))
 }
 
+#[derive(Clone, Copy)]
 struct Bars {
     supply: i128,
     demand: i128,
@@ -163,21 +170,50 @@ impl Bars {
     }
 }
 
-fn shown_order(order_of: &BTreeMap<u32, usize>, bars: &BTreeMap<u32, Bars>, order: ResourceOrder, hide_empty: bool) -> Vec<u32> {
-    let mut ids: Vec<u32> = order_of
-        .keys()
-        .copied()
-        .filter(|id| !hide_empty || bars.get(id).is_some_and(|bars| bars.supply != 0 || bars.demand != 0))
-        .collect();
-    ids.sort_by_key(|id| {
-        let key = bars.get(id).map(|bars| match order {
-            ResourceOrder::Game => 0,
-            ResourceOrder::Shortfall => bars.net,
-            ResourceOrder::Volume => -bars.supply.max(bars.demand),
-        });
-        (key.is_none(), key.unwrap_or(0), order_of[id])
+fn net_rows(frame: &DecodedFrame, owner: u32, resources: &[ResourceInfo], hide_empty: bool) -> (Vec<ResourceNet>, u32, u32) {
+    let mut held: Vec<(usize, u32, Result<Bars, String>)> = Vec::with_capacity(resources.len());
+    for (at, info) in resources.iter().enumerate() {
+        let key = u128::from(owner) << 32 | u128::from(info.id);
+        let bars = match dashboard_query::coverage::witnessed::<tables::CountryResources>(frame, key) {
+            dashboard_query::coverage::Witness::Row(row) => Ok(Bars::of(row)),
+            dashboard_query::coverage::Witness::Absent => Err("No row of this resource was recorded for this country at this hour".to_owned()),
+            dashboard_query::coverage::Witness::NotRecorded(reason) => Err(reason),
+        };
+        if hide_empty && bars.as_ref().is_ok_and(|bars| bars.supply == 0 && bars.demand == 0) {
+            continue;
+        }
+        held.push((at, info.id, bars));
+    }
+    held.sort_by_key(|(at, _, bars)| match bars {
+        Ok(bars) if bars.net < 0 => (0, bars.net, *at),
+        Ok(bars) if bars.net > 0 => (1, -bars.net, *at),
+        Ok(_) => (2, 0, *at),
+        Err(_) => (3, 0, *at),
     });
-    ids
+    let short = held.iter().filter(|(_, _, bars)| bars.as_ref().is_ok_and(|bars| bars.net < 0)).count();
+    let unrecorded = held.iter().filter(|(_, _, bars)| bars.is_err()).count();
+    let rows = held
+        .into_iter()
+        .map(|(_, resource, bars)| match bars {
+            Ok(bars) => ResourceNet { resource, net: Some(bars.net.to_string()), supply: Some(bars.supply.to_string()), demand: Some(bars.demand.to_string()), missing: None },
+            Err(reason) => ResourceNet { resource, net: None, supply: None, demand: None, missing: Some(reason) },
+        })
+        .collect();
+    (rows, u32::try_from(short).unwrap_or(u32::MAX), u32::try_from(unrecorded).unwrap_or(u32::MAX))
+}
+
+pub(super) fn deals_through(index: &crate::products::convoys::RunConvoys, owner: u32, hour: i32) -> (Vec<u128>, i32) {
+    let mut through = i32::MAX;
+    for owned in [&index.deals, &index.exports] {
+        for &(_, first, last) in owned.get(&owner).map(Vec::as_slice).unwrap_or_default() {
+            if first > hour {
+                through = through.min(first - 1);
+            } else if hour <= last {
+                through = through.min(last);
+            }
+        }
+    }
+    (index.deals_at(owner, hour), through)
 }
 
 fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u32, naming: &ResourceNaming, live: &Cells, cancelled: &AtomicBool) -> io::Result<ResourceBalanceReply> {
@@ -195,7 +231,7 @@ fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u3
     let (resources, named) = naming.infos(&recorded, cancelled)?;
     warnings.extend(named);
     let order: BTreeMap<u32, usize> = resources.iter().enumerate().map(|(at, info)| (info.id, at)).collect();
-    let (mut bars, mut pools_missing) = (BTreeMap::new(), None);
+    let (mut pools, mut pools_missing) = (Vec::new(), None);
     match frame.complete::<tables::CountryResources>() {
         Ok(rows) => {
             let mut columns = [0; POOL_CELLS.len()];
@@ -212,7 +248,7 @@ fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u3
                 for ((name, _), column) in POOL_CELLS.iter().zip(columns) {
                     live.value(&cell, name, Cell { table: TableId::CountryResources, column, key }, 1.0);
                 }
-                bars.insert(row.resource, Bars::of(row));
+                pools.push(row.resource);
             }
             if left_out > 0 {
                 warnings.push(format!("{left_out} recorded rows name a resource the recorded definitions do not; they are left out."));
@@ -220,9 +256,9 @@ fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u3
         }
         Err(error) => pools_missing = Some(format!("Resources are not recorded at this hour: {error}")),
     }
-    let mut pools: Vec<u32> = bars.keys().copied().collect();
     pools.sort_by_key(|id| order[id]);
-    let shown = shown_order(&order, &bars, params.order.unwrap_or_default(), params.hide_empty.unwrap_or(false));
+    let refused = matches!(&*frame.tables[TableId::CountryResources.index()], TableView::Unavailable { .. } | TableView::NotRecorded { .. });
+    let (rows, short, unrecorded) = if refused { (Vec::new(), 0, 0) } else { net_rows(frame, id, &resources, params.hide_empty.unwrap_or(false)) };
     let (mut deals, mut deals_missing) = (Vec::new(), None);
     let delivered = dashboard_declare::field(TableId::ResourceExchanges, "delivered")?;
     match deals_of(frame, id) {
@@ -261,16 +297,16 @@ fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u3
         warnings.push(format!("{tag}: no recorded resources at this hour"));
     }
     let deals = deals.into_iter().map(|(_, deal)| deal).collect();
-    Ok(ResourceBalanceReply { tag: tag.to_owned(), decimals: RESOURCE_DECIMALS, resources, pools, shown, pools_missing, deals, deals_missing, warnings })
+    Ok(ResourceBalanceReply { tag: tag.to_owned(), decimals: RESOURCE_DECIMALS, resources, pools, rows, short, unrecorded, pools_missing, deals, deals_missing, warnings })
 }
 
 impl AtHour for ResourceBalance {
     const KEY: &'static str = "resource-balance";
     const TITLE: &'static str = "Resource balance";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stage-0 reads_in queries ConvoyIndex::deals_at(owner, hour) without retained_reads expiry");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = ResourceBalanceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, order, hideEmpty];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hideEmpty];
     type Reply = ResourceBalanceReply;
     type Context = ResourceContext;
 
@@ -285,7 +321,7 @@ impl AtHour for ResourceBalance {
             ResourceBalanceParams::decl(),
             ResourceBalanceReply::decl(),
             ResourceInfo::decl(),
-            ResourceOrder::decl(),
+            ResourceNet::decl(),
             ResourceDeal::decl(),
             TradeDirection::decl(),
         ]
@@ -320,12 +356,19 @@ impl AtHour for ResourceBalance {
     }
 
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        let (0, Some(owner)) = (step, owner) else { return Self::reads(params, owner, step, held) };
-        let deals = match at.context.deals.run(at.run) {
-            Ok(index) => Read::these(TableId::ResourceExchanges, index.deals_at(owner.id, at.hour)),
-            Err(_) => Read::all(TableId::ResourceExchanges),
+        Self::retained_reads(params, owner, step, held, at).0
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let (0, Some(owner)) = (step, owner) else { return (Self::reads(params, owner, step, held), i32::MAX) };
+        let (deals, through) = match at.context.deals.run(at.run) {
+            Ok(index) => {
+                let (keys, through) = deals_through(&index, owner.id, at.hour);
+                (Read::these(TableId::ResourceExchanges, keys), through)
+            }
+            Err(_) => (Read::all(TableId::ResourceExchanges), i32::MAX),
         };
-        vec![Read::all(TableId::ResourceDefinitions), deals, Read { table: TableId::CountryResources, keys: range(owner.id) }]
+        (vec![Read::all(TableId::ResourceDefinitions), deals, Read { table: TableId::CountryResources, keys: range(owner.id) }], through)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

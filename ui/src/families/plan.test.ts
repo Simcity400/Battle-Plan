@@ -61,7 +61,7 @@ import type {
   SourcePlan,
 } from './plan.ts';
 import { planOwner, type FrozenGate } from './sources.ts';
-import { TailWindowController, type DatedLogRow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, validateGenericTailReply, type DatedLogRow, type TableRowSource } from './table/rowSource.ts';
 import { knownValue } from './value.ts';
 
 function fakeSource(id = 'src-1', revision = 'rev-1'): DashboardSource {
@@ -268,11 +268,9 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
   const rowSource: TableRowSource<DatedLogRow> = {
     identity: 'log:test',
     total: 2,
-    liveCount: 2,
     at: 100,
     missing: [{ firstHour: 50, lastHour: 150, reason: 'unobserved' }],
     refused: null,
-    frozen: null,
     sliceAt: (_h, _f, _c) => [],
   };
   const futureRowSource: TableRowSource<DatedLogRow> = {
@@ -1118,14 +1116,11 @@ test('a family cannot reach data after the displayed hour through a slice, a til
   assert.deepEqual(boundedUnrecorded([recordedLater, reasons], 4).validInterval, [0, 10]);
   assert.deepEqual(boundedUnrecorded([], 4), { reason: null, validInterval: [-Infinity, Infinity] });
 
-  const rows = new TailWindowController<{ key: string; hour: number }>('log', 2);
-  const reply = (hour: number) => ({ total: 10, offset: 0, baseOrdinal: 0, firstOrdinal: 0, rows: [{ key: `a${hour}`, hour }, { key: `b${hour}`, hour }], facetTotals: new Map<string, number>(), missing: [] });
-  rows.applyHead(100, reply(100), 3);
-  rows.setWindow({ first: 0, count: 5 });
-  rows.applyHead(200, reply(200), 9);
-  const frozen = createBoundedReadView({ hour: 150, rows: new Map([['log', rows.snapshot()]]) }).rows('log')!;
+  const reply = (hour: number, total: number) => ({ total: String(total), offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: `a${hour}`, hour }, { key: `b${hour}`, hour }], missing: [], counts: [] });
+  const snapshot = { 0: { hour: 100, offset: 0, limit: 2, raw: reply(100, 3), reply: validateGenericTailReply(reply(100, 3), 100) } };
+  const frozen = createBoundedReadView({ hour: 150, rows: new Map([['log', buildRowSourceFromHead('log', reply(150, 9), undefined, 150, snapshot)!]]) }).rows('log')!;
   assert.equal(frozen.at, 100);
-  assert.equal(frozen.liveCount, 3, 'a source frozen at 100 counts what its own hour held, not a later head');
+  assert.equal(frozen.total, 3, 'a source frozen at 100 counts what its own hour held, not a later head');
 });
 
 test('the exact read of a pixel-binned chart asks its exact product at the hour, in the shape of its head read', async () => {

@@ -9,6 +9,8 @@ import type { LogRow } from '../../charts/log/logData';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 
 import { placeKey } from '../../dashboard/placeNamesData.ts';
+import { PARTIAL_LABEL } from '../../families/valueFormat.ts';
+import { valueStateText } from '../../components/valueStateText.ts';
 import type { BattleRow, BattleSide, BattleValue, BattleWarning, BattleWindow, PlaceNamesReply } from '../../generated/dashboard';
 export type { BattleRow, BattleSide, BattleValue, BattleWindow, BattleWarning } from '../../generated/dashboard';
 
@@ -99,6 +101,12 @@ export const battleDate = (bound: BattleRow['end'], unknown: string) => bound ==
   : 'unknown' in bound ? bound.unknown : `${bound.bound === 'by' ? 'by ' : ''}${dayLabel(bound.hour)}`;
 export const battleValueText = (value: BattleValue) => value.value === null ? value.unknown
   : Number.isInteger(value.value) ? usNumber.format(value.value) : String(value.value);
+export const BATTLE_PARTIAL_REASON = 'Part of this battle was not recorded.';
+export const battlePartial = (value: BattleValue) => value.value !== null && value.atLeast === true;
+export const markPartial = (text: string, partial: boolean) => partial ? `${text} ${PARTIAL_LABEL}` : text;
+export const battleValueTitle = (value: BattleValue, text: string) => battlePartial(value) ? valueStateText({ kind: 'partial', text, reason: BATTLE_PARTIAL_REASON }) : text;
+export const battleValueRow = (label: string, value: BattleValue, text: string, extra: Omit<TooltipRow, 'label' | 'value' | 'valueState'> = {}): TooltipRow =>
+  battlePartial(value) ? { ...extra, label, valueState: { kind: 'partial', text, reason: BATTLE_PARTIAL_REASON } } : { ...extra, label, value: text };
 
 export function battleMeasure(row: BattleRow, label: string, unknown: string): BattleValue {
   let value = 0;
@@ -171,15 +179,15 @@ export function battleTooltip<T extends BattleRow>(row: T, labels: BattleLabels,
   const rows: TooltipRow[] = [
     { label: labels.start, value: battleDate(row.start, labels.unknownStart) },
     { label: labels.end, value: battleDate(row.end, labels.ongoing) },
-    ...measures.map(measure => ({ label: measure.title, value: (measure.tooltipFormat ?? measure.format ?? battleValueText)(measure.value(row), row) })),
+    ...measures.map(measure => { const value = measure.value(row); return battleValueRow(measure.title, value, (measure.tooltipFormat ?? measure.format ?? battleValueText)(value, row)); }),
   ];
   for (const [index, side] of row.sides.entries()) {
     rows.push({ label: side.label, strong: true, divider: true });
     for (const part of side.countries) { const named = country(part.tag, part.hour);
       rows.push({ label: named.name, countryFlag: named, indent: true }); }
     if (side.countriesUnknown) rows.push({ label: 'Countries unknown', indent: true });
-    for (const value of side.counts) rows.push({ label: value.label, value: battleValueText(value), indent: true });
-    for (const value of side.losses) rows.push({ label: value.label, value: formatLoss ? formatLoss(value, row, index, true) : battleValueText(value), indent: true });
+    for (const value of side.counts) rows.push(battleValueRow(value.label, value, battleValueText(value), { indent: true }));
+    for (const value of side.losses) rows.push(battleValueRow(value.label, value, formatLoss ? formatLoss(value, row, index, true) : battleValueText(value), { indent: true }));
   }
   rows.push({ label: labels.winner, value: battleWinner(row), divider: true });
   return { title: battlePlaceText(row as T & { provinceId?: number | null }, labels), rows, note };

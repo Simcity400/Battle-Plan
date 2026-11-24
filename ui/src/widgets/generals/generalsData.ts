@@ -4,7 +4,7 @@ import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { clipToSpans } from '../../charts/series.ts';
 import { sortRows } from '../../charts/table/logic.ts';
-import type { TooltipContent } from '../../charts/tooltip';
+import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { stackedSpans } from '../../charts/timeline/layout.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import { firstHourOfMonth, formatDateTime, gameDate, monthIndex } from '../../dashboard/calendar.ts';
@@ -84,7 +84,10 @@ export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
 
 export const recordedSince = (firstSeen: number | null, recordingStart: number) => `Battles since ${formatDateTime(firstSeen ?? recordingStart)}`;
 
-const atLeast = (_partial: boolean, count: number | null) => count == null ? '—' : String(count);
+export const BATTLE_COUNTS_PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
+const countRow = (label: string, partial: boolean, text: string, extra: Omit<TooltipRow, 'label' | 'value' | 'valueState'> = {}): TooltipRow => partial
+  ? { ...extra, label, valueState: { kind: 'partial', text, reason: BATTLE_COUNTS_PARTIAL } } : { ...extra, label, value: text };
+const countText = (count: number | null) => count == null ? '—' : String(count);
 
 export function traitDateText(date: TraitDate | null): string {
   return date ? `${DATES[date[1]] ?? 'Held by'} ${formatDateTime(date[0])}` : 'Date not recorded';
@@ -97,10 +100,9 @@ export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: st
     rows: [{ label: 'Skill', value: row.row.skill == null ? 'Not recorded' : `${row.row.skill}${row.role.maximumSkill == null ? '' : ` / ${row.role.maximumSkill}`}` },
       { label: `${names[0]} · ${names[1]}`, value: `${components[0]} · ${components[1]}` },
       { label: `${names[2]} · ${names[3]}`, value: `${components[2]} · ${components[3]}` },
-      { label: 'Battles won / fought', value: `${atLeast(row.foughtPartial, row.won)} / ${atLeast(row.foughtPartial, row.fought)}`, divider: true },
-      { label: 'Battles lost', value: atLeast(row.foughtPartial, row.lost) },
-      { label: 'Unresolved battles', value: atLeast(row.foughtPartial, row.unresolved) },
-      ...row.foughtPartial ? [{ label: 'Battle counts are incomplete: some battles were not recorded.', tone: 'muted' as const }] : [],
+      countRow('Battles won / fought', row.foughtPartial, `${countText(row.won)} / ${countText(row.fought)}`, { divider: true }),
+      countRow('Battles lost', row.foughtPartial, countText(row.lost)),
+      countRow('Unresolved battles', row.foughtPartial, countText(row.unresolved)),
       { label: 'Win rate', value: row.winRate == null ? 'No battles with known results.' : `${Math.round(row.winRate)}%` },
       ...(row.row.traits === null ? [{ label: 'Traits not recorded', divider: true }] : row.traits.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }]
         : row.traits.map((trait, i) => ({ label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,

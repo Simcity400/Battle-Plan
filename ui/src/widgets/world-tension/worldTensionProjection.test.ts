@@ -47,16 +47,21 @@ function sampleStack(): WorldTensionStackReply {
     ceilingRaw: '10000000',
     endHour: H1941,
     cappedEndTension: 100,
+    cappedEndTensionRaw: '100000',
+    endTotalRaw: '100000',
+    endSumRaw: '10000000',
     downsampled: false,
     refused: null,
     hours: [H1936, H1936 + 5000, H1936 + 20000],
     total: [0, 35, 100],
+    totalRaw: ['0', '35000', '100000'],
+    sumRaw: ['0', '3500000', '10000000'],
     bands: [
-      { slot: 1, tag: 'GER', remembered: false, values: [0, 20, 60], minValues: [], maxValues: [], endValue: 60, endRaw: '6000000' },
-      { slot: 2, tag: 'JAP', remembered: false, values: [0, 10, 25], minValues: [], maxValues: [], endValue: 25, endRaw: '2500000' },
-      { slot: 3, tag: 'ITA', remembered: false, values: [0, 2, 3], minValues: [], maxValues: [], endValue: 3, endRaw: '300000' },
+      { slot: 1, tag: 'GER', remembered: false, values: [0, 20, 60], valuesRaw: ['0', '2000000', '6000000'], minValues: [], maxValues: [], endValue: 60, endRaw: '6000000' },
+      { slot: 2, tag: 'JAP', remembered: false, values: [0, 10, 25], valuesRaw: ['0', '1000000', '2500000'], minValues: [], maxValues: [], endValue: 25, endRaw: '2500000' },
+      { slot: 3, tag: 'ITA', remembered: false, values: [0, 2, 3], valuesRaw: ['0', '200000', '300000'], minValues: [], maxValues: [], endValue: 3, endRaw: '300000' },
     ],
-    other: { count: 31, values: [0, 3, 12], endValue: 12 },
+    other: { count: 31, values: [0, 3, 12], valuesRaw: ['0', '300000', '1200000'], endValue: 12, endRaw: '1200000' },
     events: [
       { hour: H1936 + 5000, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
       { hour: H1941 + 200, slot: 2, secondCountry: 0, place: 0, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
@@ -159,9 +164,9 @@ describe('world-tension projections', () => {
     const withEdge = {
       ...reply,
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 0.4, 0.4], minValues: [], maxValues: [], endValue: 0.4, endRaw: '40000' },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 0.04, 0.04], minValues: [], maxValues: [], endValue: 0.04, endRaw: '4000' },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, 1, 1], minValues: [], maxValues: [], endValue: Number.NaN, endRaw: '0' },
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 0.4, 0.4], valuesRaw: ['0', '40000', '40000'], minValues: [], maxValues: [], endValue: 0.4, endRaw: '40000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 0.04, 0.04], valuesRaw: ['0', '4000', '4000'], minValues: [], maxValues: [], endValue: 0.04, endRaw: '4000' },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, 1, 1], valuesRaw: ['0', '100000', '100000'], minValues: [], maxValues: [], endValue: Number.NaN, endRaw: '0' },
       ],
       other: null,
     };
@@ -191,14 +196,19 @@ describe('world-tension projections', () => {
       ceilingRaw: '10000000',
       endHour: H1936 + 5000,
       cappedEndTension: 6.5,
+      cappedEndTensionRaw: '6500',
+      endTotalRaw: '650000',
+      endSumRaw: '650000',
       downsampled: false,
       refused: null,
       hours: [H1936, H1936 + 5000],
       total: [0, 6.5],
+      totalRaw: ['0', '650000'],
+      sumRaw: ['0', '650000'],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 4], minValues: [], maxValues: [], endValue: 4, endRaw: '400000' },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3], minValues: [], maxValues: [], endValue: 3, endRaw: '300000' },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5], minValues: [], maxValues: [], endValue: -0.5, endRaw: '-50000' },
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 4], valuesRaw: ['0', '400000'], minValues: [], maxValues: [], endValue: 4, endRaw: '400000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3], valuesRaw: ['0', '300000'], minValues: [], maxValues: [], endValue: 3, endRaw: '300000' },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5], valuesRaw: ['0', '-50000'], minValues: [], maxValues: [], endValue: -0.5, endRaw: '-50000' },
       ],
       other: null,
       events: [],
@@ -234,7 +244,10 @@ describe('world-tension projections', () => {
     const noWorldScalar: WorldTensionStackReply = {
       ...negReply,
       cappedEndTension: null,
+      cappedEndTensionRaw: null,
+      endTotalRaw: null,
       total: [null, null],
+      totalRaw: [null, null],
     };
     const witnessedModel = worldTensionProjection.project(
       createBoundedReadView({ hour: H1936 + 5000, panels: new Map([['main', noWorldScalar]]), identity: makeIdentity() }),
@@ -247,12 +260,17 @@ describe('world-tension projections', () => {
       ...negReply,
       endHour: null,
       cappedEndTension: null,
+      cappedEndTensionRaw: null,
+      endTotalRaw: null,
+      endSumRaw: null,
       hours: [H1936, H1936 + 5000, H1936 + 5010],
       total: [0, 6.5, null],
+      totalRaw: ['0', '650000', null],
+      sumRaw: ['0', '650000', null],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 4, null], minValues: [], maxValues: [], endValue: null, endRaw: null },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3, null], minValues: [], maxValues: [], endValue: null, endRaw: null },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5, null], minValues: [], maxValues: [], endValue: null, endRaw: null },
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 4, null], valuesRaw: ['0', '400000', null], minValues: [], maxValues: [], endValue: null, endRaw: null },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3, null], valuesRaw: ['0', '300000', null], minValues: [], maxValues: [], endValue: null, endRaw: null },
+        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5, null], valuesRaw: ['0', '-50000', null], minValues: [], maxValues: [], endValue: null, endRaw: null },
       ],
       missing: [{ firstHour: H1936 + 5010, lastHour: H1936 + 5020, reason: 'Recording gap' }],
     };
@@ -275,11 +293,16 @@ describe('world-tension projections', () => {
       ...sampleStack(),
       endHour: at,
       cappedEndTension: 100,
+      cappedEndTensionRaw: null,
+      endTotalRaw: null,
+      endSumRaw: null,
       hours: [H1936, at],
       total: [0, 125],
+      totalRaw: [null, null],
+      sumRaw: [null, null],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 127], minValues: [], maxValues: [], endValue: 127, endRaw: '12700000' },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, -2], minValues: [], maxValues: [], endValue: -2, endRaw: '-200000' },
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 127], valuesRaw: ['0', '12700000'], minValues: [], maxValues: [], endValue: 127, endRaw: '12700000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, -2], valuesRaw: ['0', '-200000'], minValues: [], maxValues: [], endValue: -2, endRaw: '-200000' },
       ],
       other: null,
       events: [],
@@ -567,5 +590,80 @@ describe('world-tension projections', () => {
     const refusedEvents = worldTensionEventsProjection.project(refusedView, { branchFirst: H1936 });
     assert.equal(refusedEvents.emptyKind, 'unavailable');
     assert.equal(refusedEvents.empty, 'Membership of this group is not recorded at this hour');
+  });
+
+  it('formats total, band shares, Other, lines, tooltips, and audit from raw integers without float drift', () => {
+    const driftFloat = (145 / 700) * 70;
+    const shareReply = {
+      ...sampleStack(),
+      cappedEndTension: 70,
+      cappedEndTensionRaw: '70000',
+      endTotalRaw: '70000',
+      endSumRaw: '700',
+      hours: [H1936, H1941],
+      total: [0, 70],
+      totalRaw: ['0', '70000'],
+      sumRaw: ['0', '700'],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, driftFloat], valuesRaw: ['0', '145'], minValues: [], maxValues: [], endValue: driftFloat, endRaw: '145' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 41], valuesRaw: ['0', '410'], minValues: [], maxValues: [], endValue: 41, endRaw: '410' },
+      ],
+      other: { count: 4, values: [0, driftFloat], valuesRaw: ['0', '145'], endValue: driftFloat, endRaw: '145' },
+      events: [],
+    } as unknown as WorldTensionStackReply;
+    const shareModel = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1941, panels: new Map([['main', shareReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] },
+    );
+    assert.equal(shareModel.stack?.bands[0]?.endLabel?.value, '15%', '145/700 of 70% is exact 14.5% -> 15%, not float 14.499999999999998 -> 14%');
+    assert.equal(shareModel.stack?.bands.at(-1)?.endLabel?.value, '15%', 'Other 145/700 of 70% prints 15%, not float 14%');
+    assert.equal(shareModel.auditRows?.find(r => r.row === 'slot:1')?.value, '15%');
+    assert.equal(shareModel.auditRows?.find(r => r.row === 'other')?.value, '15%');
+    const shareLayout = layoutTimeChart(shareModel, 960, 280, 'Segoe UI', measure);
+    const shareTip = deriveTimeChartTooltip(shareModel, shareLayout, 'label:__total__');
+    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+14.5%');
+    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'Other (4)')?.value, '+14.5%');
+
+    const bigRaw = '999999999999999999';
+    const bigFloat = Number(bigRaw) / 100_000;
+    const recReply = {
+      ...sampleStack(),
+      cappedEndTension: 100,
+      cappedEndTensionRaw: '100000',
+      endTotalRaw: bigRaw,
+      endSumRaw: bigRaw,
+      hours: [H1941],
+      total: [bigFloat],
+      totalRaw: [bigRaw],
+      sumRaw: [bigRaw],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [bigFloat], valuesRaw: [bigRaw], minValues: [], maxValues: [], endValue: bigFloat, endRaw: bigRaw },
+      ],
+      other: { count: 1, values: [bigFloat], valuesRaw: [bigRaw], endValue: bigFloat, endRaw: bigRaw },
+      events: [],
+    } as unknown as WorldTensionStackReply;
+    const recModel = worldTensionProjection.project(
+      createBoundedReadView({ hour: H1941, panels: new Map([['main', recReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
+    );
+    assert.equal(recModel.stack?.total?.endLabel?.value, '9,999,999,999,999.99999%');
+    assert.equal(recModel.stack?.bands[0]?.endLabel?.value, '9,999,999,999,999.99999%');
+    assert.equal(recModel.stack?.bands[1]?.endLabel?.value, '9,999,999,999,999.99999%');
+    assert.equal(recModel.auditRows?.find(r => r.row === '__total__')?.value, '9,999,999,999,999.99999%');
+    assert.equal(recModel.auditRows?.find(r => r.row === 'other')?.value, '9,999,999,999,999.99999%');
+    const recLayout = layoutTimeChart(recModel, 960, 280, 'Segoe UI', measure);
+    const recTip = deriveTimeChartTooltip(recModel, recLayout, 'label:__total__');
+    assert.equal(recTip?.payload?.items?.[0]?.value, '9,999,999,999,999.99999%');
+    assert.equal(recTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+9,999,999,999,999.99999%');
+
+    const linesModel = worldTensionLinesProjection.project(
+      createBoundedReadView({ hour: H1941, panels: new Map([['main', recReply]]), identity: makeIdentity() }),
+      { extent: [H1936, H1941], surface: '#111111', gaps: [] },
+    );
+    assert.equal(linesModel.series[0]?.endLabel?.value, '9,999,999,999,999.99999%');
+    assert.equal(linesModel.auditRows?.find(r => r.row === 'slot:1')?.value, '9,999,999,999,999.99999%');
+    const linesLayout = layoutTimeChart(linesModel, 960, 280, 'Segoe UI', measure);
+    const linesTip = deriveTimeChartTooltip(linesModel, linesLayout, `plot:${H1941}`);
+    assert.equal(linesTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+9,999,999,999,999.99999%');
   });
 });

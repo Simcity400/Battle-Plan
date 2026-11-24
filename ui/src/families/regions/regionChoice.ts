@@ -42,8 +42,7 @@ export function addRegion(choice: RegionChoice, id: number): RegionChoice {
 }
 
 export function removeRegion(choice: RegionChoice, id: number): RegionChoice {
-  if (choice.picks.includes(id)) return { picks: choice.picks.filter(item => item !== id), hidden: choice.hidden };
-  return choice.hidden.includes(id) ? choice : { picks: choice.picks, hidden: [...choice.hidden, id] };
+  return { picks: choice.picks.filter(item => item !== id), hidden: choice.hidden.includes(id) ? choice.hidden : [...choice.hidden, id] };
 }
 
 export function moveRegion(choice: RegionChoice, id: number, to: number): RegionChoice {
