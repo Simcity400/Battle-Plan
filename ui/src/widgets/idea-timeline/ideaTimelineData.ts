@@ -11,6 +11,7 @@ export interface IdeaLaneSpan {
   readonly lastHour: number;
   readonly label: string;
   readonly icon: string | null;
+  readonly holder: number | null;
 }
 
 export interface IdeaLane {
@@ -35,7 +36,7 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaL
   const holder = (token: string, character: number, script: string, name: string) => JSON.stringify([token, character, script, name]);
   const holders = new Map<string, Artwork>(reply.holders.map(item => [holder(item.token, item.character, item.characterToken, item.name), item.artwork]));
   const span = (item: IdeaSpan): IdeaLaneSpan => {
-    const base = { id: `${item.token}:${item.firstHour}`, token: item.token, firstHour: item.firstHour, lastHour: item.lastHour };
+    const base = { id: `${item.token}:${item.firstHour}`, token: item.token, firstHour: item.firstHour, lastHour: item.lastHour, holder: item.character?.id ?? null };
     if (item.character) {
       const look = holders.get(holder(item.token, item.character.id, item.character.token, item.character.name));
       return look ? { ...base, label: look.name ?? 'Holder name unavailable', icon: look.icon ?? null } : { ...base, label: UNIDENTIFIED_HOLDER, icon: null };

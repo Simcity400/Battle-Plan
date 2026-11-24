@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
-import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
+import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, tagAt } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
@@ -84,8 +84,9 @@ test('after members swap tags and one leaves, the remaining member has the recor
       members: [run('AAA', 0, 20), run('BBB', 0, 14)] }],
   };
   const [view] = factionViews(swapped, summaryName, id => id);
-  assert.deepEqual(membersHeld(view, 5).sort(), ['AAA', 'BBB']);
-  assert.deepEqual(membersHeld(view, 16), ['AAA']);
+  const held = (hour: number) => view.members.flatMap(member => member.runs.some(item => item.firstHour <= hour && hour <= item.lastHour) ? [tagAt(view, member, hour)] : []);
+  assert.deepEqual(held(5).sort(), ['AAA', 'BBB']);
+  assert.deepEqual(held(16), ['AAA']);
 });
 
 test('factions keep recorded ids, colours and names, and count members over known hours only', () => {
@@ -218,6 +219,8 @@ test('a membership continued across unrecorded hours is not said to have ended',
   const lanes = factionLanes([view], 300, options, text, gap.unobserved.factions, 0).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.deepEqual(lanes.slice(1), ['AAA: Joined day 100', 'CCC: Joined day 250']);
   assert.equal(membersAt(view, 205), null);
+  const during = factionLanes([view], 205, options, text, gap.unobserved.factions, 0).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
+  assert.deepEqual(during.slice(1), ['AAA: Last recorded day 199', 'CCC: Left day 151'], 'inside the gap, a later reading does not make the membership continuous yet');
 });
 
 test('hours the rosters were not recorded after a faction was last seen are not a dissolution, a departure or an empty roster', () => {

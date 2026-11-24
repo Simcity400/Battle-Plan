@@ -1,5 +1,5 @@
-import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
-import type { CountryFlagLook } from '../../components/countryFlagPresentation';
+import type { ArtHandle } from '../../families/contract.ts';
+import type { TimelineLane } from '../../families/timeline/model.ts';
 import type { DiplomacyKind, DiplomacyPact, DiplomacyPactsReply } from '../../generated/dashboard';
 
 type Pact = DiplomacyPact;
@@ -78,54 +78,66 @@ export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, ki
   });
 }
 
-export interface AgreementLaneInfo { agreement: Agreement; title: string; mutual: boolean }
+export interface AgreementLaneMeta { readonly agreement: Agreement; readonly title: string; readonly mutual: boolean }
 export interface AgreementText {
-  name: string;
-  country: (tag: string | null, hour: number) => CountryFlagLook & { name: string };
-  kindName: (kind: string) => string;
-  colors: readonly string[];
+  readonly name: string;
+  readonly country: (tag: string, hour: number) => { readonly name: string; readonly flag: ArtHandle | null };
+  readonly kindName: (kind: string) => string;
+  readonly colour: (kind: string) => string;
 }
 
-const faded = (color: string) => /^#[0-9a-f]{6}$/i.test(color) ? `${color}66` : color;
 const live = (item: Agreement) => item.state.state === 'present';
 const order = (a: Agreement, b: Agreement) => Number(!live(a)) - Number(!live(b)) || a.since - b.since;
 
-export function agreementLanes(agreements: readonly Agreement[], ended: boolean, knownLastHour: number, text: AgreementText) {
+export function agreementLanes(agreements: readonly Agreement[], ended: boolean, hour: number, text: AgreementText): TimelineLane[] {
   const lanes: TimelineLane[] = [];
-  const info = new Map<string, AgreementLaneInfo>();
   const present = agreements.filter(item => ended || live(item));
   const known = new Map(KNOWN.map((entry, index) => [entry.kind, index]));
   const kinds = [...new Set(present.map(item => item.kind))].sort((a, b) => (known.get(a) ?? KNOWN.length) - (known.get(b) ?? KNOWN.length)
     || text.kindName(a).localeCompare(text.kindName(b)));
-  kinds.forEach((kind, index) => {
+  for (const kind of kinds) {
     const spec = KNOWN.find(entry => entry.kind === kind);
     const title = spec?.title ?? text.kindName(kind);
     const items = present.filter(item => item.kind === kind);
-    const color = text.colors[index % text.colors.length];
-    const active = items.filter(item => item.state.state === 'present').length;
-    lanes.push({ id: `kind:${kind}`, heading: true, rowHeight: 30, singleLine: true, separator: false, label: '',
-      identity: { label: `${title} · ${active} in force` }, icons: false, names: false, spans: [] });
+    const fill = text.colour(kind);
+    const active = items.filter(live).length;
+    const kindKey = `kind:${kind}`;
+    lanes.push({ key: kindKey, kind: 'group', label: title, subtitle: `${active} in force`, spans: [], auditValue: `${title}|${active} in force` });
     const sides: { label: string | null; items: Agreement[] }[] = spec && !spec.out ? [{ label: null, items }]
-      : [{ label: spec?.out?.(text.name) ?? `${text.name} → partner`, items: items.filter(item => item.outgoing) },
+      : [{ label: spec?.out?.(text.name) ?? `${text.name} → Partner`, items: items.filter(item => item.outgoing) },
         { label: spec?.in?.(text.name) ?? `Partner → ${text.name}`, items: items.filter(item => !item.outgoing) }];
     if (spec?.incomingFirst) sides.reverse();
     for (const side of sides) {
       if (!side.items.length) continue;
-      if (side.label) lanes.push({ id: `side:${kind}:${side.label}`, label: '', identity: { label: side.label }, heading: true, depth: 1, muted: true,
-        labelStyle: 'side', separator: false, rowHeight: 18, singleLine: true, icons: false, names: false, spans: [] });
+      if (side.label) lanes.push({ key: `side:${kind}:${side.label}`, kind: 'heading', depth: 1, parentKey: kindKey, label: side.label, spans: [], auditValue: side.label });
       for (const item of [...side.items].sort(order)) {
-        const id = `agreement:${item.key}`;
-        const look = text.country(item.partner, item.lastSeen);
-        const listed = live(item);
-        const span: TimelineSpan = { id: 'bar', firstHour: item.since, lastHour: item.pact.presentAtEnd ? knownLastHour : item.lastSeen,
-          label: look.name, color: listed ? color : faded(color), barHeight: 8, openEnd: true };
-        info.set(id, { agreement: item, title: spec?.one ?? title, mutual: !!spec && !spec.out });
-        lanes.push({ id, label: '', identity: { label: look.name, countryFlag: look }, depth: 1, rowHeight: 22, singleLine: true,
-          separator: false, icons: false, names: false, muted: !listed, spans: [span] });
+        const look = item.partner === null ? { name: 'Country not recorded', flag: null } : text.country(item.partner, live(item) ? hour : Math.min(hour, item.lastSeen));
+        const open = live(item);
+        const meta: AgreementLaneMeta = { agreement: item, title: spec?.one ?? title, mutual: !!spec && !spec.out };
+        const status = open ? 'In force' : item.state.state === 'gone' ? 'Ended' : 'Not recorded';
+        lanes.push({
+          key: `agreement:${item.key}`,
+          kind: 'item',
+          depth: 1,
+          parentKey: kindKey,
+          label: look.name,
+          ...(item.partner !== null ? { flag: look.flag, flagTag: item.partner } : { flagTag: '?' }),
+          spans: [{
+            id: 'bar',
+            firstHour: item.since,
+            lastHour: open ? hour : Math.min(hour, item.lastSeen),
+            color: fill,
+            startBy: item.sinceBound,
+            endUnseen: !open && !(item.state.state === 'gone' && item.state.by === item.lastSeen + 1),
+            open,
+          }],
+          auditValue: `${title}|${look.name}|${status}`,
+          meta,
+        });
       }
     }
-  });
-  return { lanes, info };
+  }
+  return lanes;
 }
 
 export function agreementKinds(kinds: readonly DiplomacyKind[]): { kind: string; name: string | null }[] {

@@ -24,7 +24,7 @@ import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type { HeatMatrixLayout } from './matrixLayout.ts';
 import { MATRIX_COLUMN_NAME_ANGLE, MATRIX_COLUMN_NAME_HEIGHT, MATRIX_PAD, MATRIX_TRAILING_GAP } from './matrixLayout.ts';
-import type { HeatMatrixModel, MatrixAxisEntity, MatrixRamp } from './matrixModel.ts';
+import { matrixCellAt, type HeatMatrixModel, type MatrixAxisEntity, type MatrixRamp } from './matrixModel.ts';
 
 const MARK_SQUARE_PX = 14;
 const MARK_RING_RADIUS_PX = 6.2;
@@ -311,7 +311,7 @@ export function drawHeatMatrix(
     const y = layout.gridTop + r * ch - scrollTop;
     for (let c = layout.firstCol; c < layout.endCol; c++) {
       const x = layout.gridLeft + c * cw - scrollLeft;
-      const item = model.cell(r, c);
+      const item = matrixCellAt(model, r, c);
       const cx = x + 1;
       const cy = y + 1;
       if (item.kind === 'diagonal') {

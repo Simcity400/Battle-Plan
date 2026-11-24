@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { deriveMatrixAudit, deriveMatrixTooltip } from '../../families/heat/matrixModel.ts';
+import { deriveMatrixAudit, deriveMatrixTooltip, matrixCellAt } from '../../families/heat/matrixModel.ts';
 import type { OperativeMatrixReply } from '../../generated/dashboard';
 import { projectOperativeMatrix, projectOperativePairs } from './whoSpiesProjection.ts';
 
@@ -35,14 +35,14 @@ const view = (data: unknown) => createBoundedReadView({ hour: HOUR, panels: new 
 test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched never zero, agency capacity in the margin', () => {
   const model = projectOperativeMatrix(view(reply));
   assert.equal(model.shape, 'wide');
-  assert.deepEqual(model.cell(0, 0), { kind: 'diagonal', outlined: true, text: '2' });
-  assert.deepEqual(model.cell(1, 1), { kind: 'diagonal', outlined: true });
-  const value = model.cell(0, 1);
+  assert.deepEqual(matrixCellAt(model, 0, 0), { kind: 'diagonal', outlined: true, text: '2' });
+  assert.deepEqual(matrixCellAt(model, 1, 1), { kind: 'diagonal', outlined: true });
+  const value = matrixCellAt(model, 0, 1);
   assert.equal(value.kind, 'value');
   assert.equal(value.kind === 'value' && value.text, '3');
   assert.equal(value.kind === 'value' && value.intensity, 1);
-  assert.equal(model.cell(1, 2).kind, 'empty');
-  assert.deepEqual(model.cell(2, 0), { kind: 'missing', reason: 'An operative\'s target country was not recorded at this hour' });
+  assert.equal(matrixCellAt(model, 1, 2).kind, 'empty');
+  assert.deepEqual(matrixCellAt(model, 2, 0), { kind: 'missing', reason: 'An operative\'s target country was not recorded at this hour' });
   assert.deepEqual(model.margin!.cell(0), { kind: 'value', fraction: 7 / 8, text: '7 / 7' });
   assert.deepEqual(model.margin!.cell(2), { kind: 'missing', reason: 'Agencies were not read' });
   assert.deepEqual(model.margin!.cell(3), { kind: 'none', label: 'No agency' });
@@ -53,7 +53,7 @@ test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched ne
   assert.deepEqual(deriveMatrixTooltip(model, 0, model.columns.length)?.items, [{ label: 'Active / maximum', value: '7 / 7' }]);
   const audit = deriveMatrixAudit(model);
   assert.ok(audit.some(row => row.key === 'ENG->ENG' && row.value === '2'));
-  assert.ok(audit.some(row => row.key === 'ITA->ENG' && String(row.value).startsWith('Not recorded')));
+  assert.ok(audit.some(row => row.key === 'ITA->rest' && String(row.value).startsWith('Not recorded')));
 });
 
 test('spy matrix: a census not recorded is the not-recorded state, not an empty matrix', () => {
