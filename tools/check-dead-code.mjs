@@ -1,5 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { extname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
 import { relPosix, walkImportGraph } from './ui-import-graph.mjs';
@@ -328,44 +330,120 @@ export function checkRustProducts(root, uiResult) {
   };
 }
 
-function countLegacyManifestEntries(legacyPath) {
+function parseLegacyManifestEntries(legacyPath) {
   const source = readFileSync(legacyPath, 'utf8');
   const ast = parseAst(source, { lang: 'ts' });
   for (const node of ast.body) {
     if (node.type !== 'ExportNamedDeclaration' || node.declaration?.type !== 'VariableDeclaration') continue;
     for (const decl of node.declaration.declarations) {
       if (decl.id?.type === 'Identifier' && decl.id.name === 'LEGACY_WIDGETS' && decl.init?.type === 'ArrayExpression') {
-        return decl.init.elements.length;
+        const entries = [];
+        for (const el of decl.init.elements) {
+          if (!el || el.type !== 'ObjectExpression') continue;
+          let kind = null;
+          let view = null;
+          for (const prop of el.properties) {
+            if (prop.type !== 'Property') continue;
+            const propName = prop.key?.name ?? prop.key?.value;
+            if (propName === 'kind' && prop.value?.type === 'Literal' && typeof prop.value.value === 'string') {
+              kind = prop.value.value;
+            } else if (propName === 'view' && prop.value?.type === 'Literal' && typeof prop.value.value === 'string') {
+              view = prop.value.value;
+            }
+          }
+          if (kind) entries.push({ kind, view });
+        }
+        return entries;
       }
     }
   }
   throw new Error('Could not find exported LEGACY_WIDGETS array in ui/src/widgets/legacyManifest.ts');
 }
 
-export function checkLegacyRatchet(root) {
+async function loadMetaAndFamilyViews(root) {
+  const metaByKind = new Map();
+  const familyByKind = new Map();
+  const definitionsPath = resolve(root, 'ui/src/widgets/definitions.ts');
+  if (existsSync(definitionsPath)) {
+    const mod = await import(`${pathToFileURL(definitionsPath).href}?t=${Date.now()}`);
+    for (const meta of mod.widgetMetas ?? []) {
+      if (meta && typeof meta.kind === 'string') metaByKind.set(meta.kind, meta);
+    }
+  }
+  const familyManifestPath = resolve(root, 'ui/src/widgets/familyManifest.ts');
+  if (existsSync(familyManifestPath)) {
+    const mod = await import(`${pathToFileURL(familyManifestPath).href}?t=${Date.now()}`);
+    for (const entry of mod.FAMILY_VIEWS ?? []) {
+      if (!entry || typeof entry.kind !== 'string') continue;
+      const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
+      let set = familyByKind.get(entry.kind);
+      if (!set) familyByKind.set(entry.kind, set = new Set());
+      set.add(view);
+    }
+  }
+  return { metaByKind, familyByKind };
+}
+
+function expandLegacyViewPairs(legacyEntries, metaByKind, familyByKind) {
+  const pairs = [];
+  const seen = new Set();
+  const addPair = (kind, view) => {
+    const pair = `${kind}:${view}`;
+    if (!seen.has(pair)) {
+      seen.add(pair);
+      pairs.push(pair);
+    }
+  };
+  for (const entry of legacyEntries) {
+    if (entry.view && entry.view.length > 0) {
+      addPair(entry.kind, entry.view);
+      continue;
+    }
+    const meta = metaByKind.get(entry.kind);
+    const optKey = meta?.viewSwitch?.option ?? 'view';
+    const field = meta?.options?.find(item => item.key === optKey && item.kind === 'choice');
+    const choices = meta?.viewSwitch?.choices ?? field?.choices ?? null;
+    if (choices && choices.length > 0) {
+      const covered = familyByKind.get(entry.kind);
+      for (const choice of choices) {
+        if (!covered?.has(choice.value)) addPair(entry.kind, choice.value);
+      }
+    } else {
+      addPair(entry.kind, 'default');
+    }
+  }
+  return pairs.sort();
+}
+
+export async function checkLegacyRatchet(root) {
   const ratchetPath = resolve(root, 'tools/legacy-widgets-ratchet.json');
   const ratchetData = JSON.parse(readFileSync(ratchetPath, 'utf8'));
-  const maxLegacyWidgets = ratchetData.maxLegacyWidgets;
-  if (typeof maxLegacyWidgets !== 'number' || !Number.isInteger(maxLegacyWidgets) || maxLegacyWidgets < 0) {
-    throw new Error('tools/legacy-widgets-ratchet.json must set integer maxLegacyWidgets >= 0');
+  const maxLegacyViews = ratchetData.maxLegacyViews ?? ratchetData.maxLegacyWidgets;
+  if (typeof maxLegacyViews !== 'number' || !Number.isInteger(maxLegacyViews) || maxLegacyViews < 0) {
+    throw new Error('tools/legacy-widgets-ratchet.json must set integer maxLegacyViews >= 0');
   }
 
   const legacyPath = resolve(root, 'ui/src/widgets/legacyManifest.ts');
   const legacyFileExists = existsSync(legacyPath);
-  const count = legacyFileExists ? countLegacyManifestEntries(legacyPath) : 0;
+  const legacyEntries = legacyFileExists ? parseLegacyManifestEntries(legacyPath) : [];
+  const { metaByKind, familyByKind } = legacyEntries.length > 0
+    ? await loadMetaAndFamilyViews(root)
+    : { metaByKind: new Map(), familyByKind: new Map() };
+  const pairs = expandLegacyViewPairs(legacyEntries, metaByKind, familyByKind);
+  const count = pairs.length;
 
   const errors = [];
   const notices = [];
 
-  if (count > maxLegacyWidgets) {
-    errors.push(`ui/src/widgets/legacyManifest.ts has ${count} entries, above ratchet ${maxLegacyWidgets}`);
-  } else if (count > 0 && count < maxLegacyWidgets) {
-    notices.push(`ui/src/widgets/legacyManifest.ts now has ${count} entries (ratchet is ${maxLegacyWidgets}); lower maxLegacyWidgets in tools/legacy-widgets-ratchet.json to ${count}`);
+  if (count > maxLegacyViews) {
+    errors.push(`legacy renderer has ${count} (kind, view) pair(s), above ratchet ${maxLegacyViews}`);
+  } else if (count > 0 && count < maxLegacyViews) {
+    notices.push(`legacy renderer now has ${count} (kind, view) pair(s) (ratchet is ${maxLegacyViews}); lower maxLegacyViews in tools/legacy-widgets-ratchet.json to ${count}`);
   }
 
   if (count === 0) {
-    if (maxLegacyWidgets !== 0) {
-      errors.push(`legacy widgets are gone; lower maxLegacyWidgets in tools/legacy-widgets-ratchet.json from ${maxLegacyWidgets} to 0`);
+    if (maxLegacyViews !== 0) {
+      errors.push(`legacy views are gone; lower maxLegacyViews in tools/legacy-widgets-ratchet.json from ${maxLegacyViews} to 0`);
     }
     if (legacyFileExists) {
       errors.push('ui/src/widgets/legacyManifest.ts is empty and must be deleted');
@@ -394,13 +472,13 @@ export function checkLegacyRatchet(root) {
     }
   }
 
-  return { count, maxLegacyWidgets, errors, notices };
+  return { count, maxLegacyViews, maxLegacyWidgets: maxLegacyViews, pairs, errors, notices };
 }
 
-export function runDeadCodeCheck(root) {
+export async function runDeadCodeCheck(root) {
   const ui = checkUiModules(root);
   const rust = checkRustProducts(root, ui);
-  const legacy = checkLegacyRatchet(root);
+  const legacy = await checkLegacyRatchet(root);
   const totalIssues = ui.deadProduction.length
     + ui.deadTests.length
     + ui.deadFixturesAndSupport.length
@@ -410,38 +488,130 @@ export function runDeadCodeCheck(root) {
   return { ui, rust, legacy, totalIssues };
 }
 
-export function formatReport(result) {
+export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
+  const shortBase = baseSha.slice(0, 9);
+  const baseDeadProd = new Set(baseResult.ui.deadProduction);
+  const baseDeadTestTargets = new Map(baseResult.ui.deadTests.map(entry => [entry.test, new Set(entry.targets)]));
+  const baseDeadFixtures = new Set(baseResult.ui.deadFixturesAndSupport.map(entry => entry.file));
+  const baseDeadProducts = new Set(baseResult.rust.deadProducts.map(entry => entry.product));
+  const baseUnwired = new Set(baseResult.rust.unwiredRegistrations);
+  const baseLegacyPairs = new Set(baseResult.legacy.pairs);
+  const baseLegacyErrors = new Set(baseResult.legacy.errors);
+  const baseOverRatchet = baseResult.legacy.count > baseResult.legacy.maxLegacyViews;
+
+  const addedLegacyPairs = result.legacy.pairs.filter(pair => !baseLegacyPairs.has(pair));
+  let newIssues = 0;
+  let inheritedIssues = 0;
+  const tag = inherited => {
+    if (inherited) inheritedIssues += 1;
+    else newIssues += 1;
+    return inherited ? `[inherited from ${shortBase}]` : '[new on this branch]';
+  };
+
+  const deadProduction = result.ui.deadProduction.map(file => ({
+    file,
+    inherited: baseDeadProd.has(file),
+    tag: tag(baseDeadProd.has(file)),
+  }));
+
+  const deadTests = result.ui.deadTests.map(entry => {
+    const baseTargets = baseDeadTestTargets.get(entry.test);
+    const inherited = Boolean(baseTargets && entry.targets.every(target => baseTargets.has(target)));
+    return { ...entry, inherited, tag: tag(inherited) };
+  });
+
+  const deadFixturesAndSupport = result.ui.deadFixturesAndSupport.map(entry => ({
+    ...entry,
+    inherited: baseDeadFixtures.has(entry.file),
+    tag: tag(baseDeadFixtures.has(entry.file)),
+  }));
+
+  const deadProducts = result.rust.deadProducts.map(entry => ({
+    ...entry,
+    inherited: baseDeadProducts.has(entry.product),
+    tag: tag(baseDeadProducts.has(entry.product)),
+  }));
+
+  const unwiredRegistrations = result.rust.unwiredRegistrations.map(item => ({
+    item,
+    inherited: baseUnwired.has(item),
+    tag: tag(baseUnwired.has(item)),
+  }));
+
+  const legacyErrors = result.legacy.errors.map(err => {
+    if (err.includes('above ratchet')) {
+      const text = addedLegacyPairs.length > 0 ? `${err} (added: ${addedLegacyPairs.join(', ')})` : err;
+      const inherited = baseOverRatchet && addedLegacyPairs.length === 0 && result.legacy.count <= baseResult.legacy.count;
+      return { error: text, inherited, tag: tag(inherited) };
+    }
+    const inherited = baseLegacyErrors.has(err);
+    return { error: err, inherited, tag: tag(inherited) };
+  });
+
+  return {
+    shortBase,
+    addedLegacyPairs,
+    newIssues,
+    inheritedIssues,
+    deadProduction,
+    deadTests,
+    deadFixturesAndSupport,
+    deadProducts,
+    unwiredRegistrations,
+    legacyErrors,
+  };
+}
+
+export function formatReport(result, comparison = null) {
   const lines = [];
   if (result.ui.deadProduction.length > 0) {
     lines.push(`Dead UI production modules (${result.ui.deadProduction.length}):`);
-    for (const file of result.ui.deadProduction) lines.push(`  - ${file}`);
+    if (comparison) {
+      for (const entry of comparison.deadProduction) lines.push(`  - ${entry.file} ${entry.tag}`);
+    } else {
+      for (const file of result.ui.deadProduction) lines.push(`  - ${file}`);
+    }
   }
   if (result.ui.deadTests.length > 0) {
     lines.push(`Dead UI tests targeting dead modules (${result.ui.deadTests.length}):`);
-    for (const entry of result.ui.deadTests) {
-      lines.push(`  - ${entry.test} -> ${entry.targets.join(', ')}`);
+    const list = comparison ? comparison.deadTests : result.ui.deadTests;
+    for (const entry of list) {
+      const suffix = entry.tag ? ` ${entry.tag}` : '';
+      lines.push(`  - ${entry.test} -> ${entry.targets.join(', ')}${suffix}`);
     }
   }
   if (result.ui.deadFixturesAndSupport.length > 0) {
     lines.push(`Dead UI fixtures / test-support modules (${result.ui.deadFixturesAndSupport.length}):`);
-    for (const entry of result.ui.deadFixturesAndSupport) {
-      lines.push(`  - ${entry.file} (${entry.role})`);
+    const list = comparison ? comparison.deadFixturesAndSupport : result.ui.deadFixturesAndSupport;
+    for (const entry of list) {
+      const suffix = entry.tag ? ` ${entry.tag}` : '';
+      lines.push(`  - ${entry.file} (${entry.role})${suffix}`);
     }
   }
   if (result.rust.deadProducts.length > 0) {
     lines.push(`Dead Rust dashboard products (${result.rust.deadProducts.length}):`);
-    for (const entry of result.rust.deadProducts) {
-      const suffix = entry.onlyIn.length > 0 ? ` (only referenced by dead/test UI: ${entry.onlyIn.join(', ')})` : '';
-      lines.push(`  - ${entry.product}${suffix}`);
+    const list = comparison ? comparison.deadProducts : result.rust.deadProducts;
+    for (const entry of list) {
+      const onlyIn = entry.onlyIn.length > 0 ? ` (only referenced by dead/test UI: ${entry.onlyIn.join(', ')})` : '';
+      const suffix = entry.tag ? ` ${entry.tag}` : '';
+      lines.push(`  - ${entry.product}${onlyIn}${suffix}`);
     }
   }
   if (result.rust.unwiredRegistrations.length > 0) {
     lines.push(`Unwired Rust dashboard registrations (${result.rust.unwiredRegistrations.length}):`);
-    for (const item of result.rust.unwiredRegistrations) lines.push(`  - ${item}`);
+    if (comparison) {
+      for (const entry of comparison.unwiredRegistrations) lines.push(`  - ${entry.item} ${entry.tag}`);
+    } else {
+      for (const item of result.rust.unwiredRegistrations) lines.push(`  - ${item}`);
+    }
   }
   if (result.legacy.errors.length > 0) {
-    lines.push(`Legacy widget ratchet errors (${result.legacy.errors.length}):`);
-    for (const err of result.legacy.errors) lines.push(`  - ${err}`);
+    lines.push(`Legacy view ratchet errors (${result.legacy.errors.length}):`);
+    if (comparison) {
+      for (const entry of comparison.legacyErrors) lines.push(`  - ${entry.error} ${entry.tag}`);
+    } else {
+      for (const err of result.legacy.errors) lines.push(`  - ${err}`);
+    }
   }
   for (const notice of result.legacy.notices) {
     lines.push(`dead-code notice: ${notice}`);
@@ -449,24 +619,109 @@ export function formatReport(result) {
   return lines.join('\n');
 }
 
+function gitText(root, args) {
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function resolveBaseCommit(root, explicitRef) {
+  const baseSha = explicitRef
+    ? gitText(root, ['rev-parse', '--verify', '--quiet', `${explicitRef}^{commit}`])
+    : (gitText(root, ['merge-base', 'HEAD', 'origin/main']) || gitText(root, ['merge-base', 'HEAD', 'main']));
+  if (!baseSha) return null;
+  const headSha = gitText(root, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  const dirty = gitText(root, ['status', '--porcelain']);
+  if (baseSha === headSha && !dirty) return null;
+  return baseSha;
+}
+
+async function runCheckAtCommit(root, sha) {
+  const baseDir = mkdtempSync(join(tmpdir(), 'bp-dead-code-base-'));
+  const tarPath = join(baseDir, '__base.tar');
+  const nodeModulesLink = join(baseDir, 'node_modules');
+  const repoNodeModules = resolve(root, 'node_modules');
+  let linkedNodeModules = false;
+  try {
+    execFileSync(
+      'git',
+      [
+        'archive',
+        '--output',
+        tarPath,
+        sha,
+        '--',
+        'ui/src',
+        'tools/legacy-widgets-ratchet.json',
+        ':(glob)ui/*.html',
+        ':(glob)crates/*/src/**/*.rs',
+        ':(glob)tools/*.mjs',
+        ':(glob)tools/*.py',
+        ':(glob)tools/*.ps1',
+        ':(glob)tools/*.json',
+        ':(glob)tools/*.toml',
+      ],
+      { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    execFileSync('tar', ['-xf', tarPath, '-C', baseDir], { stdio: ['ignore', 'ignore', 'pipe'] });
+    rmSync(tarPath, { force: true });
+    if (existsSync(repoNodeModules)) {
+      symlinkSync(repoNodeModules, nodeModulesLink, 'junction');
+      linkedNodeModules = true;
+    }
+    return await runDeadCodeCheck(baseDir);
+  } finally {
+    if (linkedNodeModules) {
+      try { unlinkSync(nodeModulesLink); } catch {}
+    }
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+}
+
+function parseAgainstArg(argv) {
+  const index = argv.indexOf('--against');
+  if (index >= 0 && index + 1 < argv.length) return argv[index + 1];
+  const prefixed = argv.find(arg => arg.startsWith('--against='));
+  return prefixed ? prefixed.slice('--against='.length) : null;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const reportOnly = process.argv.includes('--report-only');
+  const noBase = process.argv.includes('--no-base');
+  const againstArg = parseAgainstArg(process.argv);
   const root = fileURLToPath(new URL('../', import.meta.url));
-  const result = runDeadCodeCheck(root);
-  const body = formatReport(result);
+  const result = await runDeadCodeCheck(root);
+  let comparison = null;
+  if (result.totalIssues > 0 && !noBase) {
+    const baseSha = resolveBaseCommit(root, againstArg);
+    if (baseSha) {
+      const baseResult = await runCheckAtCommit(root, baseSha);
+      comparison = classifyAgainstBase(result, baseResult, baseSha);
+    }
+  }
+  const body = formatReport(result, comparison);
   if (body) console.log(body);
   const summary = `dead-code: ${result.ui.deadProduction.length} dead UI module(s), `
     + `${result.ui.deadTests.length} dead test(s), `
     + `${result.ui.deadFixturesAndSupport.length} dead fixture/support file(s), `
     + `${result.rust.deadProducts.length} dead Rust product(s), `
     + `${result.rust.unwiredRegistrations.length} unwired registration(s), `
-    + `${result.legacy.count}/${result.legacy.maxLegacyWidgets} legacy widget(s)`;
+    + `${result.legacy.count}/${result.legacy.maxLegacyViews} legacy view(s)`;
   if (result.totalIssues > 0) {
     if (reportOnly) {
       console.log(`${summary} (report-only)`);
       process.exit(0);
     }
-    console.error(`${summary} (FAILED)`);
+    if (comparison && comparison.newIssues === 0) {
+      console.log(`${summary} (OK: 0 new on this branch; ${comparison.inheritedIssues} inherited from ${comparison.shortBase})`);
+      process.exit(0);
+    }
+    const detail = comparison
+      ? `FAILED: ${comparison.newIssues} new on this branch, ${comparison.inheritedIssues} inherited from ${comparison.shortBase}`
+      : 'FAILED';
+    console.error(`${summary} (${detail})`);
     process.exit(1);
   }
   console.log(`${summary} (OK)`);
