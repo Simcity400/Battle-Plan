@@ -50,6 +50,7 @@ export {
   type HeatMatrixPicture,
 } from './matrixPainter.ts';
 export {
+  ensureHeatMatrixProjection,
   heatMatrixProjection,
   registeredHeatMatrixKinds,
   registerHeatMatrixProjection,
@@ -118,6 +119,7 @@ export {
   type HeatLanesPicture,
 } from './lanesPainter.ts';
 export {
+  ensureHeatLanesProjection,
   heatLanesProjection,
   registeredHeatLanesKinds,
   registerHeatLanesProjection,
