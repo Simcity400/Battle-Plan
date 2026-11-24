@@ -363,7 +363,6 @@ impl Named {
     }
 
     fn new(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[&SunkShipEntry], content: &Content) -> io::Result<Self> {
-        let mut out = Self::default();
         let tokens: BTreeSet<u32> = entries.iter().map(|entry| entry.class_token).collect();
         let attr_tokens: BTreeSet<u32> = entries
             .iter()
@@ -372,6 +371,17 @@ impl Named {
             .collect();
         let all_tokens: BTreeSet<u32> = tokens.union(&attr_tokens).copied().collect();
         let literals = literals(seeker, run, hour, &all_tokens)?;
+        Ok(Self::from_literals(tokens, attr_tokens, &literals, entries, content))
+    }
+
+    fn from_literals(
+        tokens: BTreeSet<u32>,
+        attr_tokens: BTreeSet<u32>,
+        literals: &HashMap<u32, String>,
+        entries: &[&SunkShipEntry],
+        content: &Content,
+    ) -> Self {
+        let mut out = Self::default();
         if let Err(reason) = &content.catalogue {
             out.warnings.push(format!("Ship class names, artwork and sea zones are unavailable: {reason}"));
         } else if let Err(reason) = &content.units {
@@ -441,7 +451,7 @@ impl Named {
             out.warnings.extend(cat.verification.iter().chain(&cat.warnings).cloned());
             out.warnings.extend(cat.refusal_lines());
         }
-        Ok(out)
+        out
     }
 }
 
@@ -485,8 +495,10 @@ pub fn window(source: &Source, query: &Query<'_>, branch_id: &str, index: usize,
     let windows = dashboard_world::products::army_windows::windows(query)?;
     let span = windows.get(index).cloned().ok_or_else(|| invalid("Unknown history window"))?;
     let (first, last) = (span.first_hour, span.last_hour);
-    let stretch = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?;
-    let run = stretch.run;
+    let stretches: Vec<_> = query.timeline.within(first, last).collect();
+    if stretches.is_empty() {
+        return Err(invalid("The window's hours are not recorded"));
+    }
     let recording = query.replay.recording();
     let mut reply = ShipsSunkReply {
         branch_id: branch_id.to_owned(),
@@ -502,52 +514,91 @@ pub fn window(source: &Source, query: &Query<'_>, branch_id: &str, index: usize,
         rows: Vec::new(),
         warnings: Vec::new(),
     };
-    let Some((sampled, entries)) = sinkings_at(recording, run, last)? else { return Ok(reply) };
-    reply.available = true;
-    dashboard_text::metadata::check_cancel(cancelled)?;
-    let mut reads = replay_lanes::lanes::reads(recording, run, TableId::SunkShips, (first - 720).max(stretch.first), last)?;
-    if reads.first().is_none_or(|run| run.0 >= first) && stretch.first < first - 720 {
-        reads = replay_lanes::lanes::reads(recording, run, TableId::SunkShips, stretch.first, last)?;
+    let mut all_reads: Vec<(i32, i32)> = Vec::new();
+    let mut groups: Vec<(u32, i32, i32, Vec<(SunkShipEntry, i32)>)> = Vec::new();
+    for stretch in stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let Some((sampled, entries)) = sinkings_at(recording, stretch.run, stretch.last)? else { continue };
+        reply.available = true;
+        let full_first = query.timeline.at(stretch.first).map_or(stretch.first, |held| held.first);
+        let mut reads = replay_lanes::lanes::reads(recording, stretch.run, TableId::SunkShips, (stretch.first - 720).max(full_first), stretch.last)?;
+        if reads.first().is_none_or(|run| run.0 >= stretch.first) && full_first < stretch.first - 720 {
+            reads = replay_lanes::lanes::reads(recording, stretch.run, TableId::SunkShips, full_first, stretch.last)?;
+        }
+        all_reads.extend_from_slice(&reads);
+        let stretch_first_read = known_at(&reads, stretch.first).filter(|&hour| hour <= stretch.last);
+        if reply.first_read.is_none() {
+            reply.first_read = stretch_first_read;
+        }
+        let earlier = match stretch_first_read {
+            Some(read) if read < sampled => sinkings_at(recording, stretch.run, read)?.map(|(_, entries)| entries).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let gone = stretch_first_read.map(|read| pruned(&earlier, &entries, read, &reads)).unwrap_or_default();
+        let shown: Vec<(SunkShipEntry, i32)> = gone
+            .into_iter()
+            .cloned()
+            .chain(entries)
+            .filter_map(|entry| {
+                let known = known_at(&all_reads, entry.sink_hour)?;
+                (stretch.first..=stretch.last).contains(&known).then_some((entry, known))
+            })
+            .collect();
+        if !shown.is_empty() {
+            groups.push((stretch.run, full_first, stretch.last, shown));
+        }
     }
-    reply.first_read = known_at(&reads, first).filter(|&hour| hour <= last);
-    let earlier = match reply.first_read {
-        Some(read) if read < sampled => sinkings_at(recording, run, read)?.map(|(_, entries)| entries).unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    let gone = reply.first_read.map(|read| pruned(&earlier, &entries, read, &reads)).unwrap_or_default();
-    let shown: Vec<(&SunkShipEntry, i32)> = gone
-        .into_iter()
-        .chain(&entries)
-        .filter_map(|entry| known_at(&reads, entry.sink_hour).filter(|known| (first..=last).contains(known)).map(|known| (entry, known)))
-        .collect();
-    let named = Named::new(&mut Seeker::new(recording)?, run, last, &shown.iter().map(|(entry, _)| *entry).collect::<Vec<_>>(), content)?;
-    let needed_combats: BTreeSet<u64> = shown.iter().map(|(entry, _)| entry.battle).filter(|&battle| battle != 0).collect();
+    if groups.is_empty() {
+        return Ok(reply);
+    }
+    let mut seeker = Seeker::new(recording)?;
+    let mut all_tokens: BTreeSet<u32> = BTreeSet::new();
+    let mut all_attr_tokens: BTreeSet<u32> = BTreeSet::new();
+    let mut all_literals: HashMap<u32, String> = HashMap::new();
+    let mut needed_combats: BTreeSet<u64> = BTreeSet::new();
+    for (run, _, stretch_last, shown) in &groups {
+        let tokens: BTreeSet<u32> = shown.iter().map(|(entry, _)| entry.class_token).collect();
+        let attr_tokens: BTreeSet<u32> = shown
+            .iter()
+            .filter(|(entry, _)| entry.attribution_class_present != 0 && entry.attribution_class_token != 0)
+            .map(|(entry, _)| entry.attribution_class_token)
+            .collect();
+        needed_combats.extend(shown.iter().map(|(entry, _)| entry.battle).filter(|&battle| battle != 0));
+        all_tokens.extend(&tokens);
+        all_attr_tokens.extend(&attr_tokens);
+        let missing: BTreeSet<u32> = tokens.union(&attr_tokens).copied().filter(|token| !all_literals.contains_key(token)).collect();
+        all_literals.extend(literals(&mut seeker, *run, *stretch_last, &missing)?);
+    }
+    let all_entries: Vec<&SunkShipEntry> = groups.iter().flat_map(|(_, _, _, shown)| shown.iter().map(|(entry, _)| entry)).collect();
+    let named = Named::from_literals(all_tokens, all_attr_tokens, &all_literals, &all_entries, content);
     let battles = BattleIndex::build(source, query, last, &needed_combats, &BTreeSet::new())?;
-    let links = country_ids::run_links(recording, run)?;
     let names = country_ids::Names::new(&query.holders);
     let mut refused = named.refused.clone();
-    for (entry, known) in shown {
-        let at = entry.sink_hour.clamp(stretch.first, last);
-        let tag = |raw: u32| (raw != 0).then(|| names.tag_at(&links, raw, at).map(str::to_owned)).flatten();
-        let sinking_cause = named.attribution_for(entry, content, &mut refused);
-        let battle = battles.resolve_sinking(entry.battle, entry.sink_hour);
-        reply.rows.push(ShipsSunkRow {
-            sink_hour: entry.sink_hour,
-            known_at: known,
-            name: stored(&entry.ship_name, "ship name", content, &mut refused),
-            class_index: named.class_at[&entry.class_token],
-            recorded_name_index: named.recorded_at.get(&entry.class_name).copied().flatten(),
-            victim: tag(entry.victim_country),
-            attacker: tag(entry.attacker_country),
-            victim_as_of: None,
-            attacker_as_of: None,
-            place_index: (entry.province_present != 0).then(|| named.place_at.get(&entry.province).copied().flatten()).flatten(),
-            cause: cause(entry),
-            attribution_name: stored(&entry.attribution_name, if entry.cause_record != 0 { "sinking cause" } else { "attribution ship name" }, content, &mut refused),
-            assisted_kill: entry.assisted_kill != 0,
-            sinking_cause,
-            battle,
-        });
+    for (run, full_first, stretch_last, shown) in groups {
+        let links = country_ids::run_links(recording, run)?;
+        for (entry, known) in shown {
+            let at = entry.sink_hour.clamp(full_first, stretch_last);
+            let tag = |raw: u32| (raw != 0).then(|| names.tag_at(&links, raw, at).map(str::to_owned)).flatten();
+            let sinking_cause = named.attribution_for(&entry, content, &mut refused);
+            let battle = battles.resolve_sinking(entry.battle, entry.sink_hour);
+            reply.rows.push(ShipsSunkRow {
+                sink_hour: entry.sink_hour,
+                known_at: known,
+                name: stored(&entry.ship_name, "ship name", content, &mut refused),
+                class_index: named.class_at[&entry.class_token],
+                recorded_name_index: named.recorded_at.get(&entry.class_name).copied().flatten(),
+                victim: tag(entry.victim_country),
+                attacker: tag(entry.attacker_country),
+                victim_as_of: None,
+                attacker_as_of: None,
+                place_index: (entry.province_present != 0).then(|| named.place_at.get(&entry.province).copied().flatten()).flatten(),
+                cause: cause(&entry),
+                attribution_name: stored(&entry.attribution_name, if entry.cause_record != 0 { "sinking cause" } else { "attribution ship name" }, content, &mut refused),
+                assisted_kill: entry.assisted_kill != 0,
+                sinking_cause,
+                battle,
+            });
+        }
     }
     reply.classes = named.classes;
     reply.places = named.places;

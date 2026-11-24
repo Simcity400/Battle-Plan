@@ -398,9 +398,21 @@ fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catal
     let localised = if label.is_empty() {
         Some(Ok(String::new()))
     } else {
-        catalogue
-            .filter(|catalogue| catalogue.localisation.get(label).is_some())
-            .map(|catalogue| dashboard_text::catalogue::localised(&catalogue.localisation, label, dashboard_text::catalogue::View::Plain))
+        let titled = format!("group_{label}_title");
+        catalogue.and_then(|catalogue| {
+            let key = if catalogue.localisation.get(&titled).is_some() {
+                titled.as_str()
+            } else if catalogue.localisation.get(label).is_some() {
+                label
+            } else {
+                return None;
+            };
+            Some(dashboard_text::catalogue::localised(
+                &catalogue.localisation,
+                key,
+                dashboard_text::catalogue::View::Plain,
+            ))
+        })
     };
     let label = match localised {
         Some(Ok(label)) => label,

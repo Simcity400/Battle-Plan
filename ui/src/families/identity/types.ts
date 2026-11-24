@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { Failure } from '../../dashboard/queryError';
 import type {
   CountryFactsReply,
@@ -6,6 +7,7 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyle,
+  HourSpan,
 } from '../../generated/dashboard';
 
 export type HourInterval = readonly [firstHour: number, lastHour: number];
@@ -56,6 +58,13 @@ export interface RegionIdentityKey {
   readonly kind: 'region';
   readonly id: number | string;
 }
+
+export type EntityIdentityKey =
+  | LeaderIdentityKey
+  | DesignIdentityKey
+  | StateIdentityKey
+  | ProvinceIdentityKey
+  | RegionIdentityKey;
 
 export type IdentityKey =
   | CountryIdentityKey
@@ -190,6 +199,8 @@ export interface IdentitySnapshot {
   readonly drawnFlags?: Readonly<Record<string, DrawnFlagEntry>>;
 }
 
+export type { HourSpan };
+
 export interface IdentityAsk {
   readonly key: IdentityKey;
   readonly hour: number;
@@ -206,14 +217,8 @@ export const provinceKey = (id: number | string): ProvinceIdentityKey => ({ kind
 export const regionKey = (id: number | string): RegionIdentityKey => ({ kind: 'region', id });
 
 export function countryKeyFromString(raw: string): CountryIdentityKey {
-  if (raw.startsWith('#')) {
-    const slot = Number(raw.slice(1));
-    if (Number.isInteger(slot) && slot >= 0) return countrySlotKey(slot);
-  }
-  if (raw.startsWith('slot:')) {
-    const slot = Number(raw.slice(5));
-    if (Number.isInteger(slot) && slot >= 0) return countrySlotKey(slot);
-  }
+  const country = countryFromKey(raw);
+  if (typeof country === 'number') return countrySlotKey(country);
   if (raw.startsWith('holder:')) {
     const parts = raw.slice(7).split(':');
     if (parts.length === 2) {

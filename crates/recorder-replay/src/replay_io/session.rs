@@ -19,6 +19,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -319,6 +323,7 @@ struct SessionHost<'a> {
     omitted: &'a mut Vec<(Option<i64>, u64)>,
     committed: &'a mut Vec<Committed>,
     facts_refused: bool,
+    facts_packing: bool,
 }
 
 impl Host for SessionHost<'_> {
@@ -371,6 +376,10 @@ impl Host for SessionHost<'_> {
         let place = replay::campaign::session_facts_place(&mut file, identity).ok().flatten();
         self.facts_refused = place.is_none();
         place.map(|(offset, length)| FactsFile { file, offset, length })
+    }
+
+    fn facts_packing(&mut self) -> bool {
+        self.facts_packing
     }
 
     fn hour(&mut self, hour: &Applied<'_>) {
@@ -435,6 +444,7 @@ impl Campaign {
         saves: bool,
         ended: bool,
         released: bool,
+        facts_packing: bool,
         stop: &dyn Fn() -> bool,
     ) -> Result<Reached> {
         let campaign_dir = session_dir.join(campaign);
@@ -465,6 +475,7 @@ impl Campaign {
                 omitted: &mut self.omitted,
                 committed: &mut self.committed,
                 facts_refused: false,
+                facts_packing,
             };
             let path = writer.path().to_owned();
             let at = |error| failure(&path, error);
@@ -478,6 +489,7 @@ impl Campaign {
             match progress {
                 Progress::Finished => {}
                 Progress::Paused => return Ok(Reached::Paused),
+                Progress::AwaitsFacts => return Ok(Reached::Journal),
                 Progress::Undecided(asked) => {
                     self.waiting = Some(asked);
                     return Ok(Reached::Undecided);
@@ -506,6 +518,7 @@ impl Campaign {
                     match writer.advance(journal, &mut host, stop).map_err(at)? {
                         Progress::Finished => {}
                         Progress::Paused => return Ok(Reached::Paused),
+                        Progress::AwaitsFacts => return Ok(Reached::Journal),
                         Progress::Undecided(asked) => {
                             self.waiting = Some(asked);
                             return Ok(Reached::Undecided);
@@ -620,9 +633,14 @@ pub struct Unsaved {
 pub struct Live {
     campaigns: BTreeMap<String, Box<Campaign>>,
     loads: Vec<Load>,
+    facts_packing: Option<Arc<AtomicBool>>,
 }
 
 impl Live {
+    pub fn wait_for_facts(&mut self, packing: Arc<AtomicBool>) {
+        self.facts_packing = Some(packing);
+    }
+
     pub fn advance(
         &mut self,
         session_dir: &Path,
@@ -650,6 +668,7 @@ impl Live {
             let failed = campaign.error.take().map(|(error, _)| error);
             let before = campaign.observed.span.map(|_| campaign.observed.latest);
             let saves = campaign.saving || saves(&name);
+            let packing = self.facts_packing.as_ref().is_some_and(|packing| packing.load(Ordering::Acquire));
             let reached = campaign.advance(
                 session_dir,
                 replay_dir,
@@ -658,6 +677,7 @@ impl Live {
                 saves,
                 false,
                 false,
+                packing,
                 stop,
             );
             grew |= before != campaign.observed.span.map(|_| campaign.observed.latest);
@@ -767,6 +787,7 @@ impl Live {
                 true,
                 false,
                 true,
+                false,
                 &|| false,
             )? {
                 Reached::Undecided => {
@@ -1283,6 +1304,7 @@ pub(super) fn end_campaign(
         save,
         true,
         true,
+        false,
         &stop,
     );
     progress().map_err(|error| failure(&campaign_dir, error))?;

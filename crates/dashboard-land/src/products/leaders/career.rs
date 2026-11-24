@@ -355,10 +355,18 @@ impl Product for LeaderCareer {
             Some((run, hour)) => {
                 let leaders = [key];
                 let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read { table: TableId::UnitLeaders, columns: None, keys: replay_lanes::at::Keys::These(&leaders) }, replay_lanes::at::Read::all(TableId::LexicalTokens)]))?;
-                let character = frame.complete::<tables::UnitLeaders>().ok().and_then(|rows| rows.first().map(|row| u128::from(row.character_id)));
-                let characters: Vec<u128> = character.into_iter().collect();
+                let character = frame.complete::<tables::UnitLeaders>().ok().and_then(|rows| rows.iter().find(|row| handle(row) == leader).map(|row| row.character_id));
+                let characters: Vec<u128> = character.into_iter().map(u128::from).collect();
                 let people = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read { table: TableId::Characters, columns: None, keys: replay_lanes::at::Keys::These(&characters) }]))?;
-                let name = content.person_name(people.complete::<tables::Characters>().ok().and_then(|rows| rows.first()), frame.complete::<tables::LexicalTokens>().ok());
+                let person = character.and_then(|id| {
+                    people.complete::<tables::Characters>().ok().and_then(|rows| {
+                        rows.binary_search_by_key(&id, |row| row.id)
+                            .ok()
+                            .or_else(|| rows.iter().position(|row| row.id == id))
+                            .map(|at| &rows[at])
+                    })
+                });
+                let name = content.person_name(person, frame.complete::<tables::LexicalTokens>().ok());
                 (name, Some(hour), None)
             }
             None => (None, None, Some("This leader is not recorded on this timeline".to_owned())),
@@ -492,7 +500,12 @@ impl AtHour for LeaderHour {
                 Read::all(TableId::Countries),
                 Read::all(TableId::CountryLinks),
             ],
-            1 => held.complete::<tables::UnitLeaders>().ok().and_then(|rows| rows.first()).map(|row| vec![Read::these(TableId::Characters, [u128::from(row.character_id)])]).unwrap_or_default(),
+            1 => held
+                .complete::<tables::UnitLeaders>()
+                .ok()
+                .and_then(|rows| rows.iter().find(|row| handle(row) == leader))
+                .map(|row| vec![Read::these(TableId::Characters, [u128::from(row.character_id)])])
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -539,7 +552,13 @@ impl AtHour for LeaderHour {
         let query = context.query(branch)?;
         let owner = Tags::read(frame).ok().and_then(|tags| tags.tag(row.owner));
         let lexical = frame.complete::<tables::LexicalTokens>().ok();
-        reply.name = content.person_name(frame.complete::<tables::Characters>().ok().and_then(|rows| rows.first()), lexical);
+        let person = frame.complete::<tables::Characters>().ok().and_then(|rows| {
+            rows.binary_search_by_key(&row.character_id, |character| character.id)
+                .ok()
+                .or_else(|| rows.iter().position(|character| character.id == row.character_id))
+                .map(|at| &rows[at])
+        });
+        reply.name = content.person_name(person, lexical);
         reply.skill = (row.skill_valid != 0).then_some(row.skill_level);
         reply.role = Some(content.role(owner, row.kind, row.category, reply.skill));
         reply.components = row.components;

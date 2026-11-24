@@ -13,7 +13,16 @@ use std::{
 
 pub(super) struct GameFacts {
     cancelled: Arc<AtomicBool>,
+    packing: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<String, String>>>,
+}
+
+struct Packed(Arc<AtomicBool>);
+
+impl Drop for Packed {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl GameFacts {
@@ -25,6 +34,8 @@ impl GameFacts {
     ) -> Self {
         let cancelled = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&cancelled);
+        let packing = Arc::new(AtomicBool::new(true));
+        let packed = Packed(Arc::clone(&packing));
         let layers = content.layers.clone();
         let withheld = changed_layers(content, identity);
         let identity = identity.clone();
@@ -33,7 +44,8 @@ impl GameFacts {
         let thread = std::thread::Builder::new()
             .name("game facts".into())
             .spawn(move || {
-                if packed(&file, &identity) {
+                let _packed = packed;
+                if packed_already(&file, &identity) {
                     return Ok("kept as the session packed them".to_owned());
                 }
                 let withheld = withheld?;
@@ -43,7 +55,11 @@ impl GameFacts {
                 })
             })
             .ok();
-        Self { cancelled, thread }
+        Self { cancelled, packing, thread }
+    }
+
+    pub(super) fn packing(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.packing)
     }
 
     pub(super) fn finish(mut self) -> Result<String, String> {
@@ -65,7 +81,7 @@ impl Drop for GameFacts {
     }
 }
 
-fn packed(file: &Path, identity: &Identity) -> bool {
+fn packed_already(file: &Path, identity: &Identity) -> bool {
     std::fs::File::open(file)
         .ok()
         .and_then(|mut file| replay::campaign::session_facts_place(&mut file, identity).ok())

@@ -12,6 +12,7 @@ const config: PartsRaceViewConfig = {
   zeroMix: options => navalPeriod(options) === 'month' ? 'No known naval losses this month.' : 'No known naval losses yet.',
   formatValue: formatNavalCount,
   positiveTop: true,
+  canFollow: options => navalPeriod(options) === 'running',
   note: () => 'Counted when the game lists a sinking; a country is named as it was when the sinking was read.',
 };
 
