@@ -1,4 +1,3 @@
-import { formatAmount } from '../../charts/valueAxis.ts';
 import { equipmentOf, fixedText, priceLevel } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
 import type { MarketGrant, MarketItem, MarketLendLeaseReply, MarketOffer, MarketTerms } from '../../generated/dashboard';
@@ -64,12 +63,7 @@ export function offerRows(reply: MarketAt, matches: MarketMatch): OfferRow[] {
 
 export const units = (raw: bigint | null) => raw === null ? '—' : fixedText(raw);
 export const cic = (raw: bigint | null) => raw === null ? '—' : `${fixedText(raw)} CIC`;
-export const unitsLabel = (raw: bigint | null) => raw === null ? '—' : formatAmount(raw, 5);
-export const cicLabel = (raw: bigint | null) => raw === null ? '—' : `${formatAmount(raw, 5)} CIC`;
 export const levelText = (level: number | null) => priceLevel(level);
-export const firstWithMore = (list: readonly unknown[]) => list.length > 1 ? `+${list.length - 1}` : null;
-
-export const collectedText = (value: number) => cicLabel(BigInt(Math.trunc(value)));
 
 export interface MarketDetailLine { readonly label: string; readonly value: string; readonly marked?: boolean; readonly country?: string }
 export interface MarketDetailSection { readonly title: string; readonly lines: readonly MarketDetailLine[]; readonly empty: string }

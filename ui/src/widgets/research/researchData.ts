@@ -1,4 +1,3 @@
-import { runAt } from '../../charts/series.ts';
 import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
@@ -20,15 +19,6 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
         ? e.outcomeObservedHour != null && e.outcomeObservedHour > hour ? 'unknown' : e.outcome : 'active',
     })),
   }));
-}
-
-export function withSlotReads(slots: readonly ResearchSlotHistory[], now: ResearchSlotsReply | undefined): ResearchSlotHistory[] {
-  if (!now) return [...slots];
-  const reads = new Map(now.slots.map(slot => [slot.index, slot]));
-  return slots.map(slot => {
-    const read = reads.get(slot.index);
-    return read ? { ...slot, states: [read.state], progress: read.progress ? [read.progress] : [] } : { ...slot, states: [], progress: [] };
-  });
 }
 
 export function withBreakdown(slots: readonly ResearchSlotHistory[], breakdown: ResearchBreakdownReply | undefined): ResearchSlotHistory[] {
@@ -57,25 +47,6 @@ export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotSt
 
 export function isUnjoinedResearch(state: ResearchSlotState | null): state is ResearchSlotState & { token: string } {
   return !!state?.token && state.entryFirstObservedHour === null;
-}
-
-export function researchStateAt(slot: ResearchSlotHistory, hour: number): ResearchSlotState | null {
-  if (Number.isNaN(hour)) return null;
-  if (!runAt(slot.availability, hour)) return null;
-  const state = runAt(slot.states, hour);
-  if (!state) return null;
-  return state.details?.remainingDays == null ? state : { ...state, details: { ...state.details,
-    remainingDays: Math.max(0, state.details.remainingDays - Math.floor((hour - state.firstHour) / 24)),
-  } };
-}
-
-export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
-  if (Number.isNaN(hour)) return null;
-  const sample = runAt(slot.progress, hour);
-  if (!sample?.baseDaysRaw || sample.entryFirstObservedHour !== entryFirstObservedHour) return null;
-  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
-  if (base <= 0n || done < 0n) return null;
-  return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
 }
 
 export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {
@@ -182,20 +153,6 @@ export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLo
   const all = [...looks.values(), ...[...looks.definitions?.values() ?? []].flatMap(byIndex => [...byIndex.values()])];
   for (const look of all) if (!seen.has(look.key)) seen.set(look.key, look);
   return [...seen.values()].sort((a, b) => a.order - b.order);
-}
-
-export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | null, hour: number | undefined, moment: boolean): string[] {
-  if (!slots || hour === undefined) return [];
-  const ordered = [...slots].sort((a, b) => a.index - b.index), tokens: string[] = [];
-  if (moment) for (const slot of ordered) {
-    const current = researchStateAt(slot, hour);
-    const entry = current && slot.entries.find(entry => entry.outcome === 'active'
-      && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token && entry.databaseIndex === current.databaseIndex);
-    if (entry) tokens.push(entry.token);
-    else if (isUnjoinedResearch(current)) tokens.push(current.token);
-  }
-  for (const slot of ordered) for (const entry of slot.entries) if (entry.outcome === 'completed') tokens.push(entry.token);
-  return [...new Set(tokens)];
 }
 
 const hour = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= -2147483648 && (n as number) <= 2147483647;

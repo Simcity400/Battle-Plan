@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EquipmentStockpileReply, StockpileCatalogueReply } from './types';
-import { holderAt, servedHour, stockpileHolders, stockpileView } from './stockpileCatalogue.ts';
+import { holderAt, stockpileHolders, stockpileView } from './stockpileCatalogue.ts';
 import { stockAt, stockGroups, validateStockpileCatalogue } from './stockpileData.ts';
 
 const at = (hour: number, amountRaw: string | null) => [{ firstHour: hour, lastHour: hour, amountRaw }];
@@ -56,7 +56,7 @@ test('an alias history reads each hour from the tag it held then', () => {
 test('a reply held while the next hour loads is shown at its own hour, never read as the next', () => {
   const held = stockpileView(catalogue, hour, 120);
   const rifles = stockGroups(held, 'variant', 120)[0];
-  assert.equal(servedHour(held, 121), 120);
-  assert.equal(stockAt(held, rifles, servedHour(held, 121)), 30n);
+  assert.equal(held.prepared?.hour, 120);
+  assert.equal(stockAt(held, rifles, held.prepared!.hour), 30n);
   assert.equal(stockAt(held, rifles, 121), null);
 });

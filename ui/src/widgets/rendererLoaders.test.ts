@@ -3,12 +3,13 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
-import { FAMILY_VIEW_UI, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
-import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererKinds, setPlaybackActive } from './rendererLoaders.ts';
+import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
+import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, setPlaybackActive } from './rendererLoaders.ts';
 import { viewKey, type FamilyViewEntry } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
-  assert.deepEqual([...rendererKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
+  const kinds = [...new Set([...buildRendererLoaders(LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI).values()].map(entry => entry.kind))];
+  assert.deepEqual(kinds.sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(registry, /import \w+ from ['"]\.\/[^'"]+['"]/);

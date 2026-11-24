@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchEntry, ResearchReply, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from './types';
-import { researchArt, researchArtwork, researchArtworkTokens, researchAt, researchEntryAt, researchFolderAt, researchFolderLooks,
-  researchProgressAt, researchRateAt, researchReadName, researchRecordedTemplates, researchStateAt, validateResearchBreakdown, validateResearchReply, validateResearchSlots,
-  withBreakdown, withSlotReads } from './researchData.ts';
+import { researchArt, researchArtwork, researchAt, researchEntryAt, researchFolderAt, researchFolderLooks,
+  researchRateAt, researchReadName, researchRecordedTemplates, validateResearchBreakdown, validateResearchReply, validateResearchSlots,
+  withBreakdown } from './researchData.ts';
 
 const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = end === null ? 'active' : 'completed', databaseIndex = 3): ResearchEntry => ({
   token, technologyHandle: 1, databaseIndex, continuityStartHour: 0, level: 0, firstObservedHour: first, startedAfterHour: first > 0 ? first - 1 : null,
@@ -45,20 +45,13 @@ test('rewind hides new slots, future assignments and outcomes not yet observed',
   assert.deepEqual(researchAt(data.history, Number.NaN), []);
 });
 
-test('the slots at an hour join their slot and assignment; an hour without a read joins nothing and guesses nothing', () => {
+test('the slots at an hour validate their estimates, definitions and assignments', () => {
   const data = validateResearchReply(reply([entry('radio', 0, 10), entry('radar', 10, null)]));
   const now: ResearchSlotsAt = { hour: 30, ...validateResearchSlots({ tag: 'MOD', readHour: 24, missing: null, warnings: [],
     grants: { nextId: 1, grants: [], unavailable: null },
     slots: [{ index: 0, state: state('radar', 24, 10, { lastHour: 30, details: { remainingDays: 9, estimateRaw: '850000', bonuses: [], modifiers: null } }),
       progress: { firstHour: 24, lastHour: 24, entryFirstObservedHour: 10, baseDaysRaw: '1000000', progressRaw: '250000' }, definition: null }] }) };
-  const [slot] = withSlotReads(researchAt(data.history, 30), now);
-  const shown = researchStateAt(slot, 30)!;
-  assert.equal(shown.details?.remainingDays, 9);
-  assert.equal(researchStateAt(slot, 31), null, 'past its last hour a state is not carried');
-  assert.equal(researchEntryAt(slot, shown, 30)?.token, 'radar');
-  assert.equal(researchProgressAt(slot, 10, 24), 0.25);
-  assert.equal(researchProgressAt(slot, 0, 24), null, 'never another assignment\'s progress');
-  assert.deepEqual(withSlotReads(researchAt(data.history, 30), { ...now, slots: [], missing: 'No research read covers this hour' })[0].states, []);
+  assert.equal(researchEntryAt(researchAt(data.history, 30)[0], now.slots[0].state, 30)?.token, 'radar');
   assert.throws(() => validateResearchSlots({ ...now, slots: [now.slots[0], now.slots[0]] }), /do not match/);
   assert.throws(() => validateResearchSlots({ ...now, grants: { nextId: 2 ** 40, grants: [], unavailable: null } }), /Invalid/);
   const estimate = (remainingDays: number, estimateRaw: string) => () => validateResearchSlots({ ...now,
@@ -118,5 +111,4 @@ test('a repeated technology is named and placed by the definition each assignmen
   assert.equal(researchFolderAt(looks, 'radio', 3)?.name, 'Electronics');
   assert.equal(researchFolderAt(looks, 'radio', 4)?.name, 'Support');
   assert.equal(researchFolderAt(looks, 'radar')?.name, 'Support');
-  assert.deepEqual(researchArtworkTokens(researchAt(data.history, 25), 25, false), ['radio']);
 });

@@ -3,19 +3,17 @@ import type { OptionField, WidgetOptions } from '../dashboard/options';
 import {
   DEFAULT_VIEW,
   manifestViewSwitch,
-  normalizeView,
   resolveActiveView,
   scopedOptionFields,
   viewKey,
   viewOwnedFields,
   type FamilyViewEntry,
-  type FamilyViewModule,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
-export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
+export { FAMILY_VIEWS, LEGACY_WIDGETS };
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
@@ -92,10 +90,6 @@ export function legacyEntriesForKind(kind: string): readonly LegacyWidgetEntry[]
   return legacyByKind.get(kind) ?? EMPTY_LEGACY;
 }
 
-export function manifestFamilyView(kind: string, view?: string): FamilyViewEntry | undefined {
-  return familyByPair.get(viewKey(kind, view));
-}
-
 const viewFields = new Map<string, readonly OptionField[]>();
 
 export function familyViewOptionFields(kind: string, view?: string): readonly OptionField[] {
@@ -116,10 +110,6 @@ export function widgetOptionFields(kind: string, storedOptions?: WidgetOptions):
   return familyByPair.has(viewKey(kind, view)) ? familyViewOptionFields(kind, view) : widgetDefinition(kind)?.options ?? [];
 }
 
-export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {
-  return legacyByPair.get(viewKey(kind, view)) ?? legacyByPair.get(viewKey(kind, DEFAULT_VIEW));
-}
-
 export function resolveWidgetActiveView(
   kind: string,
   storedOptions?: WidgetOptions,
@@ -127,23 +117,6 @@ export function resolveWidgetActiveView(
 ): string {
   const meta = metaOverride ?? widgetDefinition(kind);
   return resolveActiveView(storedOptions, meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
-}
-
-export function activeFamilyView(
-  kind: string,
-  storedOptions?: WidgetOptions,
-  metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
-): FamilyViewEntry | undefined {
-  const view = resolveWidgetActiveView(kind, storedOptions, metaOverride);
-  return familyByPair.get(viewKey(kind, view));
-}
-
-export function isFamilyWidgetView(
-  kind: string,
-  storedOptions?: WidgetOptions,
-  metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
-): boolean {
-  return activeFamilyView(kind, storedOptions, metaOverride) !== undefined;
 }
 
 export function isPlaybackDatedView(
@@ -178,24 +151,6 @@ export function resolveWidgetViewSwitch(
   return manifestViewSwitch(meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
 }
 
-export function manifestKinds(): readonly string[] {
-  const seen = new Set<string>();
-  const kinds: string[] = [];
-  for (const entry of FAMILY_VIEWS) {
-    if (!seen.has(entry.kind)) {
-      seen.add(entry.kind);
-      kinds.push(entry.kind);
-    }
-  }
-  for (const entry of LEGACY_WIDGETS) {
-    if (!seen.has(entry.kind)) {
-      seen.add(entry.kind);
-      kinds.push(entry.kind);
-    }
-  }
-  return kinds;
-}
-
 export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
@@ -204,27 +159,4 @@ export function manifestSlotsForKind(kind: string): readonly ('render' | 'countr
     if (entry.slots?.length) return entry.slots;
   }
   return ['render'];
-}
-
-const loadedSpecs = new Map<string, Promise<FamilyViewModule | undefined>>();
-const readySpecs = new Map<string, FamilyViewModule>();
-
-export function loadedFamilyViewSpec(kind: string, view?: string): FamilyViewModule | undefined {
-  return readySpecs.get(viewKey(kind, view));
-}
-
-export function loadFamilyViewSpec(kind: string, view?: string): Promise<FamilyViewModule | undefined> {
-  const key = viewKey(kind, normalizeView(view));
-  const entry = familyByPair.get(key);
-  if (!entry) return Promise.resolve(undefined);
-  let held = loadedSpecs.get(key);
-  if (!held) {
-    held = entry.loadSpec().then(mod => {
-      readySpecs.set(key, mod);
-      return mod;
-    });
-    loadedSpecs.set(key, held);
-    held.catch(() => { loadedSpecs.delete(key); });
-  }
-  return held;
 }

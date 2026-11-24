@@ -11,7 +11,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { MEASURES, armyMeasure, measureName } from './armySizeMeta.ts';
 
-export { MEASURES, armyMeasure, measureName };
+export { armyMeasure, measureName };
 
 export type ArmySizeReply = Omit<ArmySizeAnswer, 'series'> & { series: (Omit<ArmySeries, 'country'> & { tag: string })[] };
 

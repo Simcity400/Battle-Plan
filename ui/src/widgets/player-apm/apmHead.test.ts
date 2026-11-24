@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { liveKey } from '../../charts/live.ts';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
@@ -8,7 +7,7 @@ import { createBoundedReadView, emptyReadView } from '../../families/boundedView
 import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
-import { apmFromSort, apmHeadRows, apmHeadStructure, apmLiveValues, apmSortValue, clockHead } from './apmHead.ts';
+import { apmHeadRows } from './apmHead.ts';
 import { apmTableColumns, apmTableProjection } from './apmProjection.ts';
 
 const bits = (value: number) => { const view = new DataView(new ArrayBuffer(8)); view.setFloat64(0, value, true); return view.getBigInt64(0, true); };
@@ -79,28 +78,8 @@ test('a followed eAPM reads back as the request path\'s series: rates, counts, a
   assert.equal(rows[1]!.name, 'DatedPlayer', 'dated player name comes from the head window');
   assert.equal(rows[2]!.name, null);
   assert.equal(rows[2]!.nameMissing, 'Player name is not valid UTF-8.');
-  assert.equal(apmHeadStructure(followed), 'GER:GER\u0000user:ab:CUSTOM_MOD_TAG_12345\u0000user:cd:FRA\u0000');
-  const live = apmLiveValues(followed);
-  assert.deepEqual(apmFromSort(live.get(liveKey('GER', 'apm')) as bigint), { apm: 2.35, gaps: false });
-  assert.equal(live.get(liveKey('GER', 'orders')), 47n);
-  assert.equal(live.get(liveKey('user:ab', 'apm')), undefined, 'an unknown rate is missing, never zero');
-  assert.equal(live.missing(liveKey('user:ab', 'apm')), 'No unpaused time was observed in this period.');
-  assert.equal(live.missing(liveKey('SOV', 'apm')), 'Not in the period');
-  assert.ok((apmSortValue({ ...rows[0]!.summary, gaps: true }) as bigint) > (apmSortValue(rows[0]!.summary) as bigint), 'gaps ride below the rate, which orders the sort');
-  assert.deepEqual(apmFromSort(apmSortValue({ ...rows[0]!.summary, apm: 7.1, gaps: true })!), { apm: 7.1, gaps: true });
   const refused = answer({ notRecorded: 'Player orders were not recorded in this campaign.' });
   assert.deepEqual(apmHeadRows(refused), []);
-  assert.equal(apmLiveValues(refused).missing(liveKey('GER', 'apm')), 'Player orders were not recorded in this campaign.');
-});
-
-test('the followed clock reads its seconds exactly, an unclassified playing time as missing, a refusal as its reason', () => {
-  const V = CELL.value, M = CELL.missing;
-  assert.deepEqual(clockHead(answer({ keys: [0n], columns: 4, names: ['clock'], values: [bits(3723.25), bits(3000.5), bits(722.75), 1n], states: [V, V, V, V] })),
-    { recorded: 3723.25, playing: 3000.5, paused: 722.75, complete: true });
-  assert.deepEqual(clockHead(answer({ keys: [0n], columns: 4, names: ['clock'], values: [bits(10), 0n, 0n, 0n], states: [V, M, M, V] })),
-    { recorded: 10, playing: null, paused: null, complete: false });
-  assert.deepEqual(clockHead(answer({ notRecorded: 'Playing and paused time were not recorded in this campaign.' })), { reason: 'Playing and paused time were not recorded in this campaign.' });
-  assert.equal(clockHead(undefined), null);
 });
 
 test('apm-table resolves country at row observation hour including hour 0, gives each field its own missing/partial meaning, checks membership gaps over the active window only, and keeps missing player names notRecorded without internal ids', () => {

@@ -44,8 +44,6 @@ const defaultViews = new Map<string, string>();
 for (const [key, entry] of rendererLoaders) if (!defaultViews.has(entry.kind)) defaultViews.set(entry.kind, key);
 const keyFor = (kind: string, view?: string) => view === undefined ? defaultViews.get(kind) : viewKey(kind, view);
 
-export const rendererKinds = (): readonly string[] => [...defaultViews.keys()];
-
 const loaded = new Map<string, Promise<WidgetRenderer>>();
 const ready = new Map<string, WidgetRenderer>();
 export const loadedWidgetRenderer = (kind: string, view?: string): WidgetRenderer | undefined => {

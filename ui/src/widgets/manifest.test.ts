@@ -35,8 +35,6 @@ import { FAMILY_MANIFESTS, FAMILY_VIEWS, familyLaneView } from './familyManifest
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 import { drawnViews } from '../draw/views/drawn.ts';
 import {
-  activeFamilyView,
-  isFamilyWidgetView,
   isPlaybackDatedView,
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
@@ -120,19 +118,21 @@ test('every manifest view reaches its own projection through the binding the hos
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
+  const familyFor = (kind: string, options?: WidgetOptions) => {
+    const view = resolveWidgetActiveView(kind, options);
+    return FAMILY_VIEWS.find(entry => entry.kind === kind && normalizeView(entry.view) === view);
+  };
   assert.equal(resolveWidgetActiveView('game-score'), 'table');
-  assert.equal(isFamilyWidgetView('game-score'), true);
-  assert.equal(activeFamilyView('game-score')?.family, 'table');
+  assert.equal(familyFor('game-score')?.family, 'table');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'race' }), 'race');
-  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), true);
-  assert.equal(activeFamilyView('game-score', { view: 'race' })?.family, 'bars');
+  assert.equal(familyFor('game-score', { view: 'race' })?.family, 'bars');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
-  assert.equal(isFamilyWidgetView('game-score', { view: 'lines' }), false);
+  assert.equal(familyFor('game-score', { view: 'lines' }), undefined);
 
-  assert.equal(activeFamilyView('casualties-between')?.family, 'heat-matrix', 'the view option picks the default');
-  assert.equal(activeFamilyView('casualties-between', { view: 'opponents' })?.family, 'bars');
-  assert.equal(activeFamilyView('who-spies-on-whom', { view: 'pairs' })?.family, 'bars');
-  assert.equal(activeFamilyView('who-spies-on-whom')?.family, 'heat-matrix');
+  assert.equal(familyFor('casualties-between')?.family, 'heat-matrix', 'the view option picks the default');
+  assert.equal(familyFor('casualties-between', { view: 'opponents' })?.family, 'bars');
+  assert.equal(familyFor('who-spies-on-whom', { view: 'pairs' })?.family, 'bars');
+  assert.equal(familyFor('who-spies-on-whom')?.family, 'heat-matrix');
 
   const tableKeys = resolveWidgetScopedOptions('game-score', { view: 'table' }).map(field => field.key);
   assert.ok(tableKeys.includes('view'));
