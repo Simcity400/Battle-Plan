@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
+import { sunburstTree } from '../../charts/sunburst/layout.ts';
 import { amountIn, createWindowTracker, designAmount, displayedSpendingWindows, kindAmount, mergeSpending, noProductionAt, productionSpendingItems, selectSpendingState, spendingDesigns, spendingEmptyLabel, spendingFinals,
-  spendingRecorded, spendingTotal, validateProductionSpendingReply, validateSpendingData } from './spendingData.ts';
+  spendingRecorded, spendingTotal, spendingWidgetGate, validateProductionSpendingReply, validateSpendingData } from './spendingData.ts';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string, breakBefore?: true): ProductionSpendingRun =>
   ({ firstHour, lastHour, totalRaw, reason: null, ...breakBefore ? { breakBefore } : {} });
@@ -210,18 +211,40 @@ test('a range starting on a 2,880-hour window boundary includes the preceding ba
   assert.equal(kindAmount(merged, spendingDesigns(merged, true, 'dockyards'), 2880, 3000, 'dockyards', true).exact, 400000n);
 });
 
-test('a design classification follows the displayed hour (not a later window-end definition), including on rewind', () => {
+test('a range across three windows keeps the middle window for Breakdown and returns the exact 20 IC total and final', () => {
   const base = reply();
-  const win0 = validateProductionSpendingReply({
-    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
-    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
-    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }],
-    leaves: [leaf({ variant: '7', typeKey: ':variant/7', name: null, domain: null, purpose: 'new', names: [{ firstHour: 0, name: null, design: null, known: false }], runs: [known(0, 2879, '1000000')] })],
-    total: [known(0, 2879, '1000000')], totalWithoutRefits: [known(0, 2879, '1000000')],
-    equipmentTotal: [known(0, 2879, '1000000')], equipmentTotalWithoutRefits: [known(0, 2879, '1000000')],
+  const makeWin = (window: number, firstHour: number, lastHour: number, raw: string) => validateProductionSpendingReply({
+    ...base, window, firstHour, lastHour, reads: [firstHour, lastHour], observations: [0],
+    equipmentReads: [firstHour, lastHour], rocketReads: [firstHour],
+    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(firstHour, lastHour, '0')],
+    production: [{ firstHour, lastHour, present: true, emptyCensusHour: null }],
+    leaves: [leaf({ variant: '1', typeKey: 'mod_walker', name: 'Walkers', domain: 'land', purpose: 'new', names: [], runs: [known(firstHour, lastHour, raw)] })],
+    total: [known(firstHour, lastHour, raw)], totalWithoutRefits: [known(firstHour, lastHour, raw)],
+    equipmentTotal: [known(firstHour, lastHour, raw)], equipmentTotalWithoutRefits: [known(firstHour, lastHour, raw)],
+    repairs: null,
   });
+  const branch = { firstHour: 0, lastHour: 11519 };
+  const needed = displayedSpendingWindows(branch, 8641, 2881, false, false);
+  assert.deepEqual(needed, [1, 2, 3]);
+  const replies = new Map([
+    [1, makeWin(1, 2880, 5759, '1000000')],
+    [2, makeWin(2, 5760, 8639, '2000000')],
+    [3, makeWin(3, 8640, 11519, '3000000')],
+  ]);
+  const selected = selectSpendingState(needed, replies, new Map(), 8641);
+  assert.ok(selected.data);
+  const designs = spendingDesigns(selected.data, true, 'military');
+  const total = spendingTotal(selected.data, designs, { from: 2881, hour: 8641, end: 8641 }, 'military', true);
+  assert.equal(total.exact, 2000000n);
+  assert.equal(total.finalUnknown, false);
+  assert.equal(total.final, 2000000);
+});
+
+test('a design already classified by archetype keeps its recorded type even when its VariantDefinitions name arrives later', () => {
+  const base = reply();
   const win1 = validateProductionSpendingReply({
-    ...win0, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880, 3000], equipmentReads: [2880, 3000], rocketReads: [2880],
+    ...base, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880, 3000], observations: [2880],
+    equipmentReads: [2880, 3000], rocketReads: [2880], equipmentObservations: [2880], rocketObservations: [2880],
     rocketTotal: [known(2880, 5759, '0')], production: [{ firstHour: 2880, lastHour: 5759, present: true, emptyCensusHour: null }],
     leaves: [leaf({ variant: '7', typeKey: 'mod_hull', name: 'Hulls', domain: 'naval', purpose: 'new',
       names: [{ firstHour: 3000, name: 'Type 34', design: null, known: true }], runs: [known(2880, 2999, '1000000'), known(3000, 5759, '3000000')] })],
@@ -230,19 +253,56 @@ test('a design classification follows the displayed hour (not a later window-end
     equipmentTotal: [known(2880, 2999, '1000000'), known(3000, 5759, '3000000')],
     equipmentTotalWithoutRefits: [known(2880, 2999, '1000000'), known(3000, 5759, '3000000')],
   });
-  const held = new Map([[0, win0], [1, win1]]);
-  const beforeDef = mergeSpending(held, 2890)!;
-  assert.deepEqual(kindAmount(beforeDef, spendingDesigns(beforeDef, true, 'dockyards'), null, 2890, 'dockyards', true),
-    { exact: null, reason: 'unattributed' });
-  assert.equal(spendingEmptyLabel(beforeDef, spendingDesigns(beforeDef, true, 'dockyards'), 2890, null, 'dockyards', true), 'Equipment type unknown.');
-  const atDef = mergeSpending(held, 3000)!;
-  assert.deepEqual(kindAmount(atDef, spendingDesigns(atDef, true, 'dockyards'), null, 3000, 'dockyards', true),
-    { exact: 3000000n, reason: null });
-  const rewound = mergeSpending(held, 500)!;
-  assert.deepEqual(kindAmount(rewound, spendingDesigns(rewound, true, 'dockyards'), null, 500, 'dockyards', true),
-    { exact: null, reason: 'unattributed' });
-  assert.equal(rewound.leaves[0].domain, null);
-  assert.equal(rewound.leaves[0].typeKey, ':variant/7');
+  const at2890 = mergeSpending(new Map([[1, win1]]), 2890)!;
+  assert.deepEqual(kindAmount(at2890, spendingDesigns(at2890, true, 'dockyards'), null, 2890, 'dockyards', true),
+    { exact: 1000000n, reason: null });
+});
+
+test('withholding a future final keeps large designs sorted ahead of smaller ones instead of folding them into Other', () => {
+  const leaves: ProductionSpendingLeaf[] = Array.from({ length: 9 }, (_, index) => {
+    const id = String(index + 1);
+    const raw = index === 8 ? '100000000' : '100000';
+    return leaf({ variant: id, typeKey: `mod_t${id}`, name: `Type ${id}`, domain: 'land', purpose: 'new', names: [], runs: [known(100, 171, raw)] });
+  });
+  const totalRaw = '100800000';
+  const data = validateProductionSpendingReply({
+    ...reply(), leaves,
+    total: [known(100, 171, totalRaw)], totalWithoutRefits: [known(100, 171, totalRaw)],
+    equipmentTotal: [known(100, 171, totalRaw)], equipmentTotalWithoutRefits: [known(100, 171, totalRaw)],
+  });
+  const designs = spendingDesigns(data, true, 'military');
+  const window = { from: null, hour: 130, end: 171 };
+  const items = productionSpendingItems(data, window, designs, spendingFinals(data, designs, window.from, window.end, window.hour), 'military', true);
+  const tree = sunburstTree(items, { id: 'all', label: 'All military production' });
+  const land = tree.children.find(child => child.key === 'land')!;
+  assert.ok(land.children.some(child => child.key === 'mod_t9' && !child.other), '1,000 IC design stays shown individually');
+  assert.equal(land.children.find(child => child.key === 'mod_t9')?.finalUnknown, true);
+});
+
+test('an unread displayed window with lostOutput stays recorded so its reason is exposed instead of not-recorded', () => {
+  const lost = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'lostOutput' });
+  const noRocket = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'rocketTableUnavailable' });
+  const data = validateProductionSpendingReply({
+    ...reply(), leaves: [],
+    total: [lost(100, 171)], totalWithoutRefits: [lost(100, 171)],
+    equipmentTotal: [lost(100, 171)], equipmentTotalWithoutRefits: [lost(100, 171)],
+    rocketTotal: [noRocket(100, 171)],
+  });
+  assert.equal(spendingRecorded(data), true);
+  assert.equal(spendingEmptyLabel(data, spendingDesigns(data, false, 'military'), 130, null, 'military', false), 'Final total missing.');
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const unrecorded = { ...data, total: [notRec(100, 171)], totalWithoutRefits: [notRec(100, 171)], equipmentTotal: [notRec(100, 171)], equipmentTotalWithoutRefits: [notRec(100, 171)] };
+  assert.equal(spendingRecorded(unrecorded), false);
+});
+
+test('seeking before a track starts shows the outside-recording state instead of staying on loading', () => {
+  const branch = { firstHour: 100, lastHour: 171 };
+  const needed = displayedSpendingWindows(branch, 99, null, false, false);
+  assert.deepEqual(needed, []);
+  const selected = selectSpendingState(needed, new Map(), new Map(), 99);
+  assert.equal(selected.data, undefined);
+  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: 99, end: 171, hasData: Boolean(selected.data), recorded: false }), 'outside');
+  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: 120, end: 171, hasData: false, recorded: false }), 'loading');
 });
 
 test('fill marks the final total unknown while the period end is in the future, and known once reached', () => {

@@ -1,7 +1,7 @@
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
-import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
+import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import { windowOf, windowsOf } from '../../dashboard/heldWindows.ts';
 import type { FactoryKind } from './definition.ts';
@@ -145,8 +145,27 @@ function wholeOf(reply: SpendingData, kind: FactoryKind | undefined, refits: boo
     : { runs: refits ? reply.total : reply.totalWithoutRefits, observations: reply.observations };
 }
 
+const UNRECORDED_REASONS: ReadonlySet<ProductionSpendingUnknown | null> = new Set(['notRecorded', 'rocketTableUnavailable']);
+
 export const spendingRecorded = (reply: SpendingData): boolean =>
-  [reply.total, reply.equipmentTotal, reply.rocketTotal].some(runs => runs.some(run => run.totalRaw != null));
+  [reply.total, reply.equipmentTotal, reply.rocketTotal].some(runs =>
+    runs.some(run => run.totalRaw != null || !UNRECORDED_REASONS.has(run.reason)));
+
+export type SpendingGate = 'empty' | 'error' | 'outside' | 'loading' | 'unavailable' | 'ready';
+
+export function spendingWidgetGate(input: {
+  hasTarget: boolean; hasError: boolean;
+  branch: { firstHour: number; lastHour: number } | undefined;
+  hour: number | undefined; end: number | undefined;
+  hasData: boolean; recorded: boolean;
+}): SpendingGate {
+  if (!input.hasTarget || !input.branch) return 'empty';
+  if (input.hasError) return 'error';
+  if (input.hour == null || input.end == null || input.hour < input.branch.firstHour || input.hour > input.branch.lastHour) return 'outside';
+  if (!input.hasData) return 'loading';
+  if (!input.recorded) return 'unavailable';
+  return 'ready';
+}
 
 export const noProductionAt = (reply: SpendingData, hour: number, refits = true) => {
   const evidence = runAt(reply.production, Math.floor(hour));
@@ -227,7 +246,9 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
       unknownValue: amount.exact == null, unknownLevels: [attribution, attribution, false],
       localUnknownLevels: [false, design.rocket && typeAttribution, false],
       note: amount.reason ? unknownLabel(amount.reason) : typeAttribution ? ATTRIBUTION_NOTE : undefined,
-      final: futureEnd ? 0 : final.geometry, finalUnknown: futureEnd || final.exact == null,
+      final: futureEnd ? 0 : final.geometry,
+      ...(futureEnd ? { weight: amount.exact == null ? 0 : Number(amount.exact) } : {}),
+      finalUnknown: futureEnd || final.exact == null,
       finalUnknownLevels: [finalAttribution, finalAttribution, false],
       localFinalUnknownLevels: [false, design.rocket && unresolvedRocketAtEnd && design.domain != null, false],
       present: observed || typeAttribution, counted: observed ? [identity] : [],
@@ -290,9 +311,8 @@ export function displayedSpendingWindows(branch: { firstHour: number; lastHour: 
   const clampedAt = Math.min(branch.lastHour, Math.floor(at));
   if (clampedAt < branch.firstHour) return [];
   const start = from == null ? branch.firstHour : Math.max(branch.firstHour, from - 1);
-  if (whole || repairs) return windowsOf(start, clampedAt, false);
-  const hours = [clampedAt, ...(from == null ? [] : [from, from - 1])].filter(value => value >= branch.firstHour && value <= clampedAt);
-  return [...new Set(hours.map(windowOf))].sort((a, b) => a - b);
+  if (whole || repairs || from != null) return windowsOf(start, clampedAt, false);
+  return [windowOf(clampedAt)];
 }
 
 export function prefetchSpendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
@@ -329,28 +349,6 @@ export function createWindowTracker(build: SpendingWindowBuilder = prefetchSpend
   };
 }
 
-export function classificationTransitions(replies: Iterable<ProductionSpendingReply>): number[] {
-  const hours = new Set<number>();
-  for (const reply of replies) {
-    for (const leaf of reply.leaves) {
-      for (const name of leaf.names) if (name.known && name.firstHour > reply.firstHour) hours.add(name.firstHour);
-    }
-    for (const part of reply.repairs?.parts ?? []) {
-      for (const name of part.names) if (name.known && name.firstHour > reply.firstHour) hours.add(name.firstHour);
-    }
-    const firstRepair = reply.repairs?.total.find(run => run.totalRaw != null)?.firstHour;
-    if (firstRepair != null && firstRepair > reply.firstHour) hours.add(firstRepair);
-  }
-  return [...hours].sort((a, b) => a - b);
-}
-
-function classificationSupportedAt(names: readonly StockVariantName[], reply: ProductionSpendingReply, cutoff: number, hadUnresolved: boolean): boolean {
-  if (cutoff >= reply.lastHour) return true;
-  const known = names.filter(name => name.known);
-  if (known.length) return known.some(name => name.firstHour <= cutoff);
-  return !hadUnresolved;
-}
-
 export function selectSpendingState<E>(needed: readonly number[], data: ReadonlyMap<number, ProductionSpendingReply>,
   errors: ReadonlyMap<number, E>, at?: number): { data: SpendingData | undefined; error: E | undefined } {
   const error = needed.map(index => errors.get(index)).find(failure => failure !== undefined);
@@ -376,27 +374,11 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
   for (const reply of held) {
     for (const leaf of reply.leaves) {
       const key = leafKey(leaf);
-      const heldLeaf = leaves.get(key);
-      const supported = classificationSupportedAt(leaf.names, reply, cutoff, heldLeaf != null && heldLeaf.domain == null);
-      if (!heldLeaf) {
-        leaves.set(key, supported
-          ? { ...leaf, runs: [], unproven: [], names: [] }
-          : { ...leaf, typeKey: `${UNRESOLVED_MARK}variant/${leaf.variant}`, name: null, domain: null, runs: [], unproven: [], names: [] });
-      } else if (supported) {
-        heldLeaf.typeKey = leaf.typeKey; heldLeaf.name = leaf.name; heldLeaf.domain = leaf.domain;
-      }
+      if (!leaves.has(key)) leaves.set(key, { ...leaf, runs: [], unproven: [], names: [] });
       if (leaf.unproven.length) hasUnproven.add(key);
     }
     for (const part of reply.repairs?.parts ?? []) {
-      const heldPart = parts.get(part.variant);
-      const supported = part.variant === null || classificationSupportedAt(part.names, reply, cutoff, heldPart != null && heldPart.domain == null);
-      if (!heldPart) {
-        parts.set(part.variant, supported
-          ? { ...part, runs: [], names: [] }
-          : { ...part, typeKey: `${UNRESOLVED_MARK}variant/${part.variant}`, name: null, domain: null, runs: [], names: [] });
-      } else if (supported) {
-        heldPart.typeKey = part.typeKey; heldPart.name = part.name; heldPart.domain = part.domain;
-      }
+      if (!parts.has(part.variant)) parts.set(part.variant, { ...part, runs: [], names: [] });
     }
   }
   for (const reply of held) {

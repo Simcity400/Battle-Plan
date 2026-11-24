@@ -16,11 +16,11 @@ import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded } from '../production-spending/spendingData';
+import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData';
 import type { SpendingWindow } from '../production-spending/spendingData';
 import { useSpending } from '../production-spending/useSpending';
 import type { DockyardViewChoice } from './definition';
-import { LEVELS, formatExactIc, headMonthLayer, monthColumns, monthLabel, monthsOf, reasonLabel, shownMonthBands, visibleMonths } from './dockyardData';
+import { LEVELS, createLiveMonthCache, formatExactIc, headMonthLayer, monthColumns, monthLabel, monthSpansFor, reasonLabel, shownMonthBands, visibleMonths } from './dockyardData';
 import type { Exact, PurposeMonth } from './dockyardData';
 import './dockyardSpending.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
@@ -51,8 +51,10 @@ const sentence = (text: string) => text[0].toUpperCase() + text.slice(1);
 
 export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnostics }: WidgetProps & { kind: PurposeSpendingKind }) {
   const options = resolveOptions(kind.options, widget.options);
+  const optionsKey = JSON.stringify(options);
   const view: DockyardViewChoice = options.view === 'months' ? 'months' : 'circle';
   const headKey = useRef<(hour: number) => string>(() => '');
+  const liveMonthCache = useMemo(() => createLiveMonthCache(kind.month), [kind]);
   const spending = useSpending(widget, runtime, active, kind.repairs, kind.validate, hour => headKey.current(hour), view === 'months');
   useShownEachFrame(runtime.clock, () => spending.data && spending.track ? trackHourOf(widget, spending.track, runtime.tracks, runtime.clock.getHour()) : null);
   const { track, tag, data, error, retry, hour, from, end, headAt } = spending;
@@ -69,7 +71,7 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
       const date = gameDate(floored);
       const bucket = date ? monthIndex(date) : floored;
       const monthStart = date ? Math.max(from ?? track.branch.firstHour, firstHourOfMonth(bucket)) : floored;
-      const current = kind.month(data, options, monthStart, floored, track.branch.firstHour);
+      const current = liveMonthCache(data, options, optionsKey, monthStart, floored, track.branch.firstHour);
       const remainders = shownMonthBands(kind.bands, [current]).map(entry => entry.band.id).join(',');
       return `months:${bucket}:${remainders}`;
     }
@@ -77,17 +79,18 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
   };
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
 
-  const read = data && (spendingRecorded(data) || kind.read?.(data, hour) === true);
-  if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
-  if (!read) return <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;
-  if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="outside" />;
-  if (view === 'months') return <PurposeMonths kind={kind} data={data} options={options}
-    extent={[from ?? track.branch.firstHour, widget.time.mode === 'range' ? hour : track.branch.lastHour]}
-    last={hour} playhead={headAt ? hour : null} headAt={headAt} runtime={runtime}
-    branchStart={track.branch.firstHour} decimals={decimals} digits={digits} hoursPerSecond={hoursPerSecond} active={active} />;
-  return <PurposeCircle kind={kind} data={data} window={{ from, hour, end }} options={options} decimals={decimals} digits={digits}
+  const read = Boolean(data && (spendingRecorded(data) || kind.read?.(data, hour) === true));
+  const gate = spendingWidgetGate({ hasTarget: Boolean(track && tag), hasError: Boolean(error), branch: track?.branch, hour, end, hasData: Boolean(data), recorded: read });
+  if (gate === 'empty') return <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
+  if (gate === 'error') return <WidgetState kind="error" failure={error!} onRetry={retry} />;
+  if (gate === 'outside') return <WidgetState kind="outside" />;
+  if (gate === 'loading') return <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
+  if (gate === 'unavailable') return <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;
+  if (view === 'months') return <PurposeMonths kind={kind} data={data!} options={options} optionsKey={optionsKey} liveMonth={liveMonthCache}
+    extent={[from ?? track!.branch.firstHour, widget.time.mode === 'range' ? hour! : track!.branch.lastHour]}
+    last={hour!} playhead={headAt ? hour! : null} headAt={headAt} runtime={runtime}
+    branchStart={track!.branch.firstHour} decimals={decimals} digits={digits} hoursPerSecond={hoursPerSecond} active={active} />;
+  return <PurposeCircle kind={kind} data={data!} window={{ from, hour: hour!, end: end! }} options={options} decimals={decimals} digits={digits}
     headAt={headAt} runtime={runtime} hoursPerSecond={hoursPerSecond} active={active} />;
 }
 
@@ -132,19 +135,17 @@ export function PurposeCircle({ kind, data, window, options, decimals, digits, h
       live={live} hoursPerSecond={hoursPerSecond} active={active} />;
 }
 
-function monthEndOf(hour: number, limit: number): number {
-  const date = gameDate(hour);
-  return date ? Math.min(limit, firstHourOfMonth(monthIndex(date) + 1) - 1) : Math.min(limit, hour);
-}
-
-export function PurposeMonths({ kind, data, options, extent, last, playhead, headAt, runtime, branchStart, decimals, digits, hoursPerSecond, active }: {
-  kind: PurposeSpendingKind; data: SpendingData; options: Options; extent: [number, number]; last: number; playhead: number | null;
+export function PurposeMonths({ kind, data, options, optionsKey, liveMonth, extent, last, playhead, headAt, runtime, branchStart, decimals, digits, hoursPerSecond, active }: {
+  kind: PurposeSpendingKind; data: SpendingData; options: Options; optionsKey?: string;
+  liveMonth?: (data: SpendingData, options: Options, optionsKey: string, first: number, last: number, branchFirst: number) => PurposeMonth;
+  extent: [number, number]; last: number; playhead: number | null;
   headAt: ((position: number) => number | null) | null; runtime: Runtime; branchStart: number;
   decimals: number; digits: number; hoursPerSecond: number | undefined; active: boolean;
 }) {
   const colours = usePurposeColours(kind.bands);
   const first = extent[0];
-  const spans = useMemo(() => monthsOf(first, monthEndOf(last, extent[1])), [first, last, extent[1]]);
+  const resolvedOptionsKey = optionsKey ?? JSON.stringify(options);
+  const spans = useMemo(() => monthSpansFor(first, last, extent[1], playhead != null), [first, last, extent[1], playhead]);
   const months = useMemo(() => spans.map(span => {
     const to = Math.min(span.lastHour, last);
     const computed = kind.month(data, options, span.firstHour, to, branchStart);
@@ -158,12 +159,15 @@ export function PurposeMonths({ kind, data, options, extent, last, playhead, hea
   }, [headAt, runtime.clock, playhead]);
   const monthThrough = (index: number, hour: number) => {
     const span = spans[index];
-    const computed = kind.month(data, options, span.firstHour, Math.min(span.lastHour, hour), branchStart);
+    const to = Math.min(span.lastHour, hour);
+    const computed = liveMonth
+      ? liveMonth(data, options, resolvedOptionsKey, span.firstHour, to, branchStart)
+      : kind.month(data, options, span.firstHour, to, branchStart);
     return { ...computed, lastHour: span.lastHour };
   };
   const layers = useMemo(() => [headMonthLayer(columns, colours, (index, hour) => monthColumns([monthThrough(index, hour)], decimals)[0],
     () => head?.read() ?? playhead)],
-    [columns, colours, spans, data, options, branchStart, decimals, head, playhead]);
+    [columns, colours, spans, data, options, resolvedOptionsKey, liveMonth, branchStart, decimals, head, playhead]);
   const keyHours = useMemo(() => columns.map(column => column.firstHour), [columns]);
   const label = `${kind.name} by month`;
   const write = ({ exact, reason, denominator }: Exact) => exact == null ? reasonLabel(reason)

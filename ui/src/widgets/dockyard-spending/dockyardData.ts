@@ -1,7 +1,7 @@
 import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { CAP_HEADROOM, columnAt, columnEdges, columnsLayer } from '../../charts/columns.ts';
-import type { ColumnPeriod } from '../../charts/columns';
+import { CAP_HEADROOM, columnAt, drawPreparedColumns, prepareColumn } from '../../charts/columns.ts';
+import type { ColumnPeriod, PreparedColumn } from '../../charts/columns';
 import type { Range } from '../../charts/view';
 import { runAt } from '../../charts/series.ts';
 import { UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
@@ -148,13 +148,16 @@ export function repairItems(reply: SpendingData, window: SpendingWindow, purpose
     const withdrawn = now.incomplete && value.exact == null;
     const observed = !withdrawn && (value.exact == null || value.exact !== 0n);
     const reason = value.reason ?? totalReason;
+    const displayValue = value.exact == null ? null : Number(value.exact) / Number(denominator);
     return {
-      path, value: value.exact == null ? null : Number(value.exact) / Number(denominator), exact: value.exact, exactDenominator: denominator,
+      path, value: displayValue, exact: value.exact, exactDenominator: denominator,
       unknownValue: value.exact == null && !withdrawn,
       localUnknownLevels: [false, now.incomplete && part.variant != null, false],
       localFinalUnknownLevels: [false, !futureEnd && end.incomplete && part.variant != null, false],
       note: now.incomplete ? `${noted} ${SPLIT_NOTE}` : reason ? `${noted} ${unknownLabel(reason)}` : noted,
-      final: final.exact == null ? 0 : Number(final.exact) / Number(denominator), finalUnknown: futureEnd || (final.exact == null && !end.incomplete),
+      final: final.exact == null ? 0 : Number(final.exact) / Number(denominator),
+      ...(futureEnd ? { weight: displayValue ?? 0 } : {}),
+      finalUnknown: futureEnd || (final.exact == null && !end.incomplete),
       present: observed, counted: observed && part.variant != null ? [part.variant] : [],
     };
   });
@@ -210,7 +213,9 @@ export function purposeItems(reply: SpendingData, leaves: readonly ProductionSpe
       localFinalUnknownLevels: local(key, purposeEnd),
       note: value.reason ? unknownLabel(value.reason) : key.id === UNRECORDED.id ? UNRECORDED_NOTE : key.id === OTHER.id ? OTHER_NOTE
         : purposeNow ? split.note : typeNow ? TYPE_NOTE : undefined,
-      final: futureEnd ? 0 : final.geometry, finalUnknown: futureEnd || final.exact == null,
+      final: futureEnd ? 0 : final.geometry,
+      ...(futureEnd ? { weight: value.exact == null ? 0 : Number(value.exact) } : {}),
+      finalUnknown: futureEnd || final.exact == null,
       present: observed, counted: observed ? [`${leaf.variant}`] : [],
     });
   });
@@ -254,18 +259,9 @@ export const repairsRead = (reply: SpendingData, atHour = Infinity) => repairsSi
 
 interface ColumnSummary { low: number; high: number; any: boolean; unknown: boolean }
 
-function columnSummary(period: ColumnPeriod): ColumnSummary {
-  if (period.unknown || (period.values.length > 0 && period.values.every(value => value == null))) {
-    return { low: 0, high: 0, any: false, unknown: false };
-  }
-  let low = 0, high = 0;
-  const unknown = period.values.some(value => value == null) || period.uncertain?.some(Boolean) === true;
-  for (const edge of columnEdges(period)) {
-    if (!edge) continue;
-    low = Math.min(low, edge.low); high = Math.max(high, edge.high);
-  }
-  return { low, high, any: true, unknown };
-}
+const summaryOf = (prepared: PreparedColumn): ColumnSummary => ({
+  low: prepared.low, high: prepared.high, any: prepared.any, unknown: prepared.hasUnknown,
+});
 
 function combineSummary(a: ColumnSummary, b: ColumnSummary): ColumnSummary {
   if (!a.any) return b;
@@ -282,11 +278,11 @@ function summaryRange(summary: ColumnSummary): Range | null {
 
 export function headMonthLayer(columns: readonly ColumnPeriod[], colours: readonly string[],
   through: (index: number, hour: number) => ColumnPeriod, headRead: () => number | null): ChartLayer {
-  const drawn = [...columns];
-  const base = columnsLayer(drawn, colours);
-  const summaries = columns.map(columnSummary);
+  const basePrepared = columns.map(prepareColumn);
+  const drawn = [...basePrepared];
+  const summaries = basePrepared.map(summaryOf);
   let patched = -1;
-  let held: { hour: number; index: number; column: ColumnPeriod; summary: ColumnSummary } | null = null;
+  let held: { hour: number; index: number; prepared: PreparedColumn; summary: ColumnSummary } | null = null;
   let rangeCache: { start: number; end: number; skip: number; summary: ColumnSummary } | null = null;
 
   const firstOverlap = (x0: number): number => {
@@ -314,17 +310,17 @@ export function headMonthLayer(columns: readonly ColumnPeriod[], colours: readon
     const index = head == null ? -1 : columnAt(columns, head);
     if (head == null || index < 0 || (head >= columns[index].lastHour && index < columns.length - 1)) {
       if (patched >= 0) {
-        drawn[patched] = columns[patched];
+        drawn[patched] = basePrepared[patched];
         patched = -1;
       }
       return null;
     }
     if (!held || held.hour !== head || held.index !== index) {
-      const column = through(index, Math.min(head, columns[index].lastHour));
-      held = { hour: head, index, column, summary: columnSummary(column) };
+      const prepared = prepareColumn(through(index, Math.min(head, columns[index].lastHour)));
+      held = { hour: head, index, prepared, summary: summaryOf(prepared) };
     }
-    if (patched >= 0 && patched !== index) drawn[patched] = columns[patched];
-    drawn[index] = held.column;
+    if (patched >= 0 && patched !== index) drawn[patched] = basePrepared[patched];
+    drawn[index] = held.prepared;
     patched = index;
     return held;
   };
@@ -332,7 +328,7 @@ export function headMonthLayer(columns: readonly ColumnPeriod[], colours: readon
   return {
     draw(ctx, frame, tokens, state) {
       sync(state.playhead ?? headRead());
-      base.draw(ctx, frame, tokens, state);
+      drawPreparedColumns(drawn, colours, {}, ctx, frame, tokens, state);
     },
     extent(x) {
       const rawHead = headRead();
@@ -353,6 +349,25 @@ export function headMonthLayer(columns: readonly ColumnPeriod[], colours: readon
       const total = skip >= 0 && active ? combineSummary(rangeCache.summary, active.summary) : rangeCache.summary;
       return summaryRange(total);
     },
+  };
+}
+
+export function monthSpansFor(first: number, last: number, limit: number, live: boolean): { firstHour: number; lastHour: number }[] {
+  if (!live) return monthsOf(first, last);
+  const date = gameDate(last);
+  const end = date ? Math.min(limit, firstHourOfMonth(monthIndex(date) + 1) - 1) : Math.min(limit, last);
+  return monthsOf(first, end);
+}
+
+export function createLiveMonthCache<O>(compute: (data: SpendingData, options: O, first: number, last: number, branchFirst: number) => PurposeMonth) {
+  let cached: { data: SpendingData; optionsKey: string; first: number; last: number; branchFirst: number; month: PurposeMonth } | null = null;
+  return (data: SpendingData, options: O, optionsKey: string, first: number, last: number, branchFirst: number): PurposeMonth => {
+    if (cached && cached.data === data && cached.optionsKey === optionsKey && cached.first === first && cached.last === last && cached.branchFirst === branchFirst) {
+      return cached.month;
+    }
+    const month = compute(data, options, first, last, branchFirst);
+    cached = { data, optionsKey, first, last, branchFirst, month };
+    return month;
   };
 }
 

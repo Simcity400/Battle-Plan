@@ -12,7 +12,7 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { OPTIONS } from './definition';
 import type { FactoryKind } from './definition';
 import { LEVELS, UNIT, formatAppliedIc, noProductionAt, productionSpendingItems, spendingDesigns, spendingEmptyLabel, spendingFinals, spendingTotal,
-  spendingRecorded, validateProductionSpendingReply } from './spendingData';
+  spendingRecorded, spendingWidgetGate, validateProductionSpendingReply } from './spendingData';
 import { useSpending } from './useSpending';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
@@ -59,13 +59,14 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
 
+  const gate = spendingWidgetGate({ hasTarget: Boolean(track && tag), hasError: Boolean(error), branch: track?.branch, hour, end, hasData: Boolean(data), recorded: Boolean(data && spendingRecorded(data)) });
   let body: ReactNode;
-  if (!track || !tag) body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
-  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
-  else if (!data) body = <WidgetState kind="loading" label="Loading production spending…" />;
-  else if (!spendingRecorded(data)) body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
-  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="outside" />;
-  else if (empty(hour)) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
+  if (gate === 'empty') body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
+  else if (gate === 'error') body = <WidgetState kind="error" failure={error!} onRetry={retry} />;
+  else if (gate === 'outside') body = <WidgetState kind="outside" />;
+  else if (gate === 'loading') body = <WidgetState kind="loading" label="Loading production spending…" />;
+  else if (gate === 'unavailable') body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
+  else if (empty(hour!)) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
   else body = <Sunburst label={widget.title} items={values.items} root={ROOTS[kind]} levels={levels} text={text} settings={settings}
     authoritativeTotal={values.authoritativeTotal} live={live} hoursPerSecond={hoursPerSecond} active={active} />;
   return body;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BANDS, TYPE_NOTE, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
+import { BANDS, createLiveMonthCache, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthSpansFor, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
+import { columnAt } from '../../charts/columns.ts';
 import { plotFrame } from '../../charts/frame.ts';
 import { tokensFromValues } from '../../charts/tokens.ts';
 import { sunburstTree } from '../../charts/sunburst/layout.ts';
@@ -185,21 +186,13 @@ test('by-month visible bands and amounts use completed past months plus the curr
   assert.equal(atEarly[0].total.exact, 1000000n * 24n + 11n * 240000n);
 });
 
-test('a window-end design definition or future repair date never leaks before the hour it appears', () => {
+test('a future repair date never leaks before the hour it appears, while archetype-classified ships keep their recorded type', () => {
   const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
   const base = reply();
-  const win0 = validateDockyardSpendingReply({
-    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
-    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
-    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }],
-    leaves: [leaf({ variant: '7', typeKey: ':variant/7', name: null, domain: null, purpose: 'new',
-      names: [{ firstHour: 0, name: null, design: null, known: false }], runs: [known(0, 2879, '1000000')] })],
-    total: [known(0, 2879, '1000000')], totalWithoutRefits: [known(0, 2879, '1000000')],
-    equipmentTotal: [known(0, 2879, '1000000')], equipmentTotalWithoutRefits: [known(0, 2879, '1000000')],
-    repairs: { denominator: 24, total: [notRec(0, 2879)], parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(0, 2879)] }] },
-  });
   const win1 = validateDockyardSpendingReply({
-    ...win0, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880, 3000], equipmentReads: [2880, 3000], rocketReads: [2880],
+    ...base, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880, 3000], observations: [2880],
+    equipmentReads: [2880, 3000], rocketReads: [2880], equipmentObservations: [2880], rocketObservations: [2880],
+    rocketTotal: [known(2880, 5759, '0')], production: [{ firstHour: 2880, lastHour: 5759, present: true, emptyCensusHour: null }],
     leaves: [leaf({ variant: '7', typeKey: 'mod_hull', name: 'Hulls', domain: 'naval', purpose: 'new',
       names: [{ firstHour: 3000, name: 'Type 34', design: null, known: true }], runs: [known(2880, 5759, '1000000')] })],
     total: [known(2880, 5759, '1000000')], totalWithoutRefits: [known(2880, 5759, '1000000')],
@@ -210,7 +203,7 @@ test('a window-end design definition or future repair date never leaks before th
       parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(2880, 2999), known(3000, 5759, '24000')] }],
     },
   });
-  const windows = new Map([[0, win0], [1, win1]]);
+  const windows = new Map([[1, win1]]);
 
   const at2890 = mergeSpending(windows, 2890)!;
   assert.equal(repairsSince(at2890, 2890), null);
@@ -218,9 +211,8 @@ test('a window-end design definition or future repair date never leaks before th
   const items2890 = dockyardItems(at2890, { from: null, hour: 2890, end: 5759 });
   const tree2890 = sunburstTree(items2890, { id: 'all', label: 'All dockyard IC' });
   const new2890 = tree2890.children.find(child => child.key === 'new')!;
-  assert.equal(new2890.valueUnknown, true);
-  assert.equal(new2890.exact, null);
-  assert.ok(new2890.notes.includes(TYPE_NOTE));
+  assert.equal(new2890.valueUnknown, false);
+  assert.equal(new2890.exact, 1000000n);
   const repair2890 = tree2890.children.find(child => child.key === 'repair')!;
   assert.equal(repair2890.valueUnknown, true);
   assert.ok(!repair2890.notes.some(note => note.includes('since ')), 'future repair start date must not appear at hour 2890');
@@ -232,14 +224,37 @@ test('a window-end design definition or future repair date never leaks before th
   assert.equal(repairsRead(at3000, 3000), true);
   const items3000 = dockyardItems(at3000, { from: null, hour: 3000, end: 5759 });
   const tree3000 = sunburstTree(items3000, { id: 'all', label: 'All dockyard IC' });
-  const new3000 = tree3000.children.find(child => child.key === 'new')!;
-  assert.equal(new3000.valueUnknown, false);
-  assert.equal(new3000.exact, 1000000n);
   const repair3000 = tree3000.children.find(child => child.key === 'repair')!;
   assert.equal(repair3000.valueUnknown, false);
   assert.equal(repair3000.exact, 1000n);
   assert.equal(repair3000.exactDenominator ?? 1n, 1n);
   assert.ok(repair3000.notes.some(note => note.includes('since ')));
+});
+
+test('withholding a future final keeps large purpose and repair designs shown instead of folded into Other', () => {
+  const leaves: ProductionSpendingLeaf[] = Array.from({ length: 9 }, (_, index) => {
+    const id = String(index + 1);
+    return leaf({ variant: id, typeKey: `mod_h${id}`, name: `Hull ${id}`, domain: 'naval', purpose: 'new', names: [], runs: [known(100, 171, index === 8 ? '100000000' : '100000')] });
+  });
+  const repairParts = [
+    ...Array.from({ length: 9 }, (_, index) => {
+      const id = `r${index + 1}`;
+      return { variant: id, typeKey: `mod_r${index + 1}`, name: `Repair ${index + 1}`, domain: 'naval' as const, names: [], runs: [known(100, 171, index === 8 ? '240000000' : '240000')] };
+    }),
+    { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(100, 171, '0')] },
+  ];
+  const data = validateDockyardSpendingReply({
+    ...reply(), leaves,
+    total: [known(100, 171, '100800000')], equipmentTotal: [known(100, 171, '100800000')],
+    repairs: { denominator: 24, total: [known(100, 171, '241920000')], parts: repairParts },
+  });
+  const tree = sunburstTree(dockyardItems(data, { from: null, hour: 130, end: 171 }), { id: 'all', label: 'All dockyard IC' });
+  const newShips = tree.children.find(child => child.key === 'new')!;
+  assert.ok(newShips.children.some(child => child.key === 'mod_h9' && !child.other), 'large naval design stays shown');
+  assert.equal(newShips.children.find(child => child.key === 'mod_h9')?.finalUnknown, true);
+  const repairs = tree.children.find(child => child.key === 'repair')!;
+  assert.ok(repairs.children.some(child => child.key === 'mod_r9' && !child.other), 'large repair design stays shown');
+  assert.equal(repairs.children.find(child => child.key === 'mod_r9')?.finalUnknown, true);
 });
 
 test('a repair gap withholds the incomplete repair total as on main so Breakdown and By month agree', () => {
@@ -283,14 +298,22 @@ test('headMonthLayer computes extent and drawing from the same playhead-clipped 
   const layer = headMonthLayer(tracked, ['#000'], (_index, hour) => ({
     firstHour: 11 * 720, lastHour: 12 * 720 - 1, values: [hour >= 11 * 720 + 50 ? 10 : 1],
   }), () => head);
+  const tokens = tokensFromValues(() => '#888888', 'sans-serif');
+  const multiCtx = {
+    fillStyle: '', strokeStyle: '', lineWidth: 0,
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, rect() {}, clip() {},
+    fillRect() {},
+  } as unknown as CanvasRenderingContext2D;
   assert.deepEqual(layer.extent!([0, 12 * 720 - 1]), [0, 2]);
   const readsAfterInit = historicalReads;
   for (let h = 11 * 720 + 11; h <= 11 * 720 + 60; h++) {
     head = h;
-    const ext = layer.extent!([0, 12 * 720 - 1]);
+    const ext = layer.extent!([0, 12 * 720 - 1])!;
     assert.deepEqual(ext, [0, h >= 11 * 720 + 50 ? 10 : 2]);
+    const multiFrame = plotFrame(400, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 12 * 720], ext, false);
+    layer.draw(multiCtx, multiFrame, tokens, { playhead: h });
   }
-  assert.equal(historicalReads, readsAfterInit, 'advancing hours inside the live month must not rescan completed months');
+  assert.equal(historicalReads, readsAfterInit, 'advancing hours inside the live month must not rescan completed months during extent or draw');
   const single = [{ firstHour: 0, lastHour: 719, values: [1] }];
   let firstHead = 10;
   const growing = headMonthLayer(single, ['#000'], (_index, hour) => ({
@@ -309,4 +332,35 @@ test('headMonthLayer computes extent and drawing from the same playhead-clipped 
   } as unknown as CanvasRenderingContext2D;
   growing.draw(fakeCtx, frame, tokensFromValues(() => '#888888', 'sans-serif'), { playhead: firstHead });
   assert.equal(drawnHeights[0], frame.plotHeight, 'drawn 10 IC bar fits inside the updated [0, 10] axis');
+});
+
+test('pinning mid-month keeps the pinned column ending at the pin so later dates in the month hit nothing', () => {
+  const jan1937 = firstHourOfMonth(1937 * 12);
+  const jul1 = firstHourOfMonth(1937 * 12 + 6);
+  const jul15 = jul1 + 14 * 24;
+  const jul25 = jul1 + 24 * 24;
+  const aug31 = firstHourOfMonth(1937 * 12 + 8) - 1;
+  const pinnedSpans = monthSpansFor(jan1937, jul15, aug31, false);
+  const pinnedColumns = pinnedSpans.map(span => ({ ...span, values: [1] }));
+  assert.equal(pinnedSpans.at(-1)?.lastHour, jul15);
+  assert.equal(columnAt(pinnedColumns, jul15), pinnedColumns.length - 1);
+  assert.equal(columnAt(pinnedColumns, jul25), -1);
+  const liveSpans = monthSpansFor(jan1937, jul15, aug31, true);
+  assert.equal(liveSpans.at(-1)?.lastHour, firstHourOfMonth(1937 * 12 + 7) - 1);
+});
+
+test('createLiveMonthCache shares one monthly calculation between clock key and live layer across sub-hour frames', () => {
+  const data = reply();
+  let calls = 0;
+  const cached = createLiveMonthCache((d, _opts: Record<string, never>, first, last, branchFirst) => {
+    calls++;
+    return dockyardMonth(d, first, last, branchFirst);
+  });
+  const opts = {};
+  const first = cached(data, opts, '{}', 100, 140, 100);
+  const second = cached(data, opts, '{}', 100, 140, 100);
+  assert.equal(second, first);
+  assert.equal(calls, 1);
+  cached(data, opts, '{}', 100, 141, 100);
+  assert.equal(calls, 2);
 });
