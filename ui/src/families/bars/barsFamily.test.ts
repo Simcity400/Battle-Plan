@@ -495,6 +495,10 @@ test('audit rows keep one key per row and cell, so two bars never collapse in th
     { kind: 'data', key: 'USA', label: 'United States', value: { value: knownValue(292) }, numeric: 292 },
   ] });
   assert.equal(new Map(rows.map(row => [row.key, row.value])).size, rows.length);
+  const counted = (primary: string) => new Map(deriveBarsAudit({ form: 'share', hour: h, rows: [
+    { kind: 'data', key: '11', label: 'English Channel', segments: [], readout: { primary } },
+  ] }).map(row => [row.key, row.value]));
+  assert.notDeepEqual(counted('90 air wings'), counted('91 air wings'), 'a painted readout is compared');
 });
 
 test('a backward seek drops a cached model from a later hour', () => {

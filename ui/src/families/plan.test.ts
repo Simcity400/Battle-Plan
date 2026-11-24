@@ -57,6 +57,7 @@ import type {
   EntityKind,
   IdentityProvider,
   InstalledPicture,
+  SourceEntry,
   SourcePlan,
 } from './plan.ts';
 import { resolveDisplayedStaticSnapshot, type FrozenGate } from './sources.ts';
@@ -1171,6 +1172,42 @@ test('the exact read of a pixel-binned chart asks its exact product at the hour,
   assert.deepEqual(asked[0], { product: 'series-state', params: { branchId: '1', family, reads: [{ country: 'GER', hour: 120 }] } });
   assert.equal(view?.hour, 120);
   assert.equal(view?.panel('main'), reply);
+});
+
+test('the exact read answers every entry the picture reads, not only the first', async () => {
+  const src = fakeSource();
+  const asked: string[] = [];
+  const client = {
+    product: async (request: { product: string; params: Record<string, unknown> }) => {
+      asked.push(String((request.params as { family: { measure: string } }).family.measure));
+      return { data: { measure: (request.params as { family: { measure: string } }).family.measure } };
+    },
+  } as unknown as DashboardClient;
+  const point = (name: string, measure: string, followed: boolean): SourceEntry => ({
+    name,
+    source: src,
+    branch: '1',
+    offset: 0,
+    read: {
+      shape: 'point' as const,
+      channel: 'followed' as const,
+      coverage: { mode: 'keyed' as const, keys: ['GER'] },
+      product: 'series-state' as const,
+      exactProduct: 'series-state' as const,
+      followQuery: followed ? { product: 'series-state' as const, params: { branchId: '1', family: { kind: 'k', measure } } } : null,
+      params: { branchId: '1', family: { kind: 'k', measure } },
+      buildExactParams: (base: Readonly<Record<string, unknown>>, hour: unknown) => ({ ...base, hour }),
+    },
+  });
+  const plan: SourcePlan = { owner: 'parts', entries: [point('main', 'total', false), point('part:a', 'a', false), point('live', 'followed', true)] };
+  const gate: FrozenGate = {
+    recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+    span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+  };
+  const view = await readPlanExact(plan, 120, { client, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 1000 }, window: null, staticSpan: null, gate });
+  assert.deepEqual(asked.sort(), ['a', 'total'], 'a followed entry is stood in for by the primary, as in a pinned read');
+  assert.deepEqual(view?.panel('part:a'), { measure: 'a' });
+  assert.deepEqual(view?.panel('main'), { measure: 'total' });
 });
 
 test('advancing through an open bucket and a growing mark cluster costs what changed, and replaced prefix points are never served from the cache', () => {
