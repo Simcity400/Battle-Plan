@@ -537,7 +537,10 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         })
         .collect();
     if people.iter().any(|leader| leader.portrait.is_some()) {
-        warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+        warnings.push(format!(
+            "{}; visual assets are outside content hash coverage.",
+            dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
+        ));
     }
     if parties.parties.is_empty() {
         warnings.push(format!("{tag}: no recorded parties in this branch"));

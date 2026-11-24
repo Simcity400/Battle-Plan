@@ -35,6 +35,36 @@ pub fn recorded_portrait_in(
     }
 }
 
+pub fn resolve_portrait(
+    content: &super::politics_content::PoliticsContent,
+    portrait: &RecordedPortrait,
+    max_edge: u32,
+) -> super::artwork::ArtResolution {
+    match portrait {
+        RecordedPortrait::Entry { kind, identity } => match std::str::from_utf8(identity) {
+            Ok(text) => {
+                super::artwork::resolve_portrait_entry(&content.catalogue, *kind, text, max_edge)
+            }
+            Err(_) => super::artwork::ArtResolution::Refused {
+                reason: "The recorded portrait name is not UTF-8.".into(),
+                construct: "portrait-non-utf8".into(),
+                origin: None,
+                file: None,
+            },
+        },
+        RecordedPortrait::Generated => super::artwork::ArtResolution::ConfirmedMissing {
+            reason: "The game generates this portrait from inputs the recording lacks.".into(),
+            origin: None,
+            file: None,
+        },
+        RecordedPortrait::Unrecorded => super::artwork::ArtResolution::ConfirmedMissing {
+            reason: "The character's portraits were not recorded.".into(),
+            origin: None,
+            file: None,
+        },
+    }
+}
+
 pub fn portrait_png(
     content: &super::politics_content::PoliticsContent,
     portrait: &RecordedPortrait,

@@ -1,6 +1,15 @@
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
+pub mod resolver;
 pub mod sprites;
+
+pub use resolver::{
+    ArtFrame, ArtOrigin, ArtProvenance, ArtRenderVariant, ArtResolution, ArtScopeKey, ArtTarget,
+    CURRENT_INSTALL_ART_LABEL, FlagSetKey, art_scope_key, resolve, resolve_equipment_icon,
+    resolve_flag, resolve_flag_pixels, resolve_portrait_entry, resolve_sprite,
+    resolve_sprite_or_texture, resolve_sprite_type, resolve_sprite_type_on_layers,
+    resolve_text_icon, resolve_texture, resolve_with_sprites,
+};
 
 use super::ContentOptions;
 use crate::{
@@ -55,11 +64,7 @@ fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<S
     if sprite.texture.is_none() {
         return Ok(None);
     }
-    let decode = *catalogue
-        .gui_decode
-        .as_ref()
-        .map_err(|why| invalid(why.clone()))?;
-    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, ICON_EDGE).map(Some)
+    resolve_sprite_type(catalogue, sprite, 0, ICON_EDGE).into_io_result()
 }
 
 struct TechnologyName {
@@ -558,7 +563,9 @@ impl Context {
     }
 
     fn load_inner(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
-        let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
+        let mut warnings = vec![format!(
+            "{CURRENT_INSTALL_ART_LABEL}; visual assets are outside content hash coverage."
+        )];
         warnings.extend(catalogue.verification.iter().cloned());
         let layers = &catalogue.content.layers;
         let prepared = layers.derived::<PreparedContent>();
@@ -1859,16 +1866,9 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
             icons[0].path, icon.frame
         ))
     })?;
-    catalogue::sprite_frame_png(
-        &catalogue.content.layers,
-        sprite,
-        *catalogue
-            .gui_decode
-            .as_ref()
-            .map_err(|why| invalid(why.clone()))?,
-        frame,
-        ICON_EDGE,
-    )
+    resolve_sprite_type(catalogue, sprite, frame, ICON_EDGE)
+        .into_io_result()?
+        .ok_or_else(|| invalid("nukes artwork unavailable"))
 }
 
 #[cfg(test)]

@@ -222,11 +222,19 @@ impl IconChoice {
                 .contains(name)
                 .then(|| Icon::Sprite(name.to_owned()))),
         };
-        let file = |path: &str| {
-            layers
-                .has_file(path)
-                .map(|found| found.then(|| Icon::Path(path.to_owned())))
-                .map_err(|error| format!("{path}: {error}"))
+        let file = |path: &str| match layers.art_file_source(path.as_bytes()) {
+            Ok(content_reader_layers::content::ArtFileSource::Mounted { .. }) => {
+                Ok(Some(Icon::Path(path.to_owned())))
+            }
+            Ok(content_reader_layers::content::ArtFileSource::Unmounted { layer, reason }) => {
+                let owner = &layers.layers[layer];
+                let name = owner.display_name().unwrap_or(&owner.id);
+                Err(format!(
+                    "{name} is not mounted ({reason}); {path} cannot be resolved without risking a substitute"
+                ))
+            }
+            Ok(content_reader_layers::content::ArtFileSource::Missing) => Ok(None),
+            Err(error) => Err(format!("{path}: {error}")),
         };
         self.walk(|probe| match probe {
             Probe::Sprite(name) => sprite(name),
@@ -244,19 +252,18 @@ fn reads_as_path(name: &str) -> bool {
     name.contains('/') || name.contains('.')
 }
 
+pub fn resolve_image(
+    catalogue: &Catalogue,
+    icon: &Icon,
+    max_edge: u32,
+) -> super::artwork::ArtResolution {
+    super::artwork::resolve_equipment_icon(catalogue, icon, max_edge)
+}
+
 pub fn image(catalogue: &Catalogue, icon: &Icon, max_edge: u32) -> io::Result<String> {
-    let layers = &catalogue.content.layers;
-    let decode = *catalogue
-        .gui_decode
-        .as_ref()
-        .map_err(|why| crate::invalid(why.clone()))?;
-    match icon {
-        Icon::Sprite(name) => {
-            let sprite = catalogue.sprites.lookup(name).map_err(crate::invalid)?;
-            crate::catalogue::sprite_frame_png(layers, sprite, decode, 0, max_edge)
-        }
-        Icon::Path(path) => crate::catalogue::texture_png(layers, path, decode, 1, max_edge),
-    }
+    resolve_image(catalogue, icon, max_edge)
+        .into_io_result()?
+        .ok_or_else(|| crate::invalid("equipment icon unavailable"))
 }
 
 pub struct AuthoredIcons {
