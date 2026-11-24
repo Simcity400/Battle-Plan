@@ -273,6 +273,8 @@ pub struct Captured {
     weather: Vec<(u32, [Value; 9])>,
     selection: SliceSelection,
     witness: Vec<u64>,
+    navy_pointers: Vec<usize>,
+    headquarters_cache: Vec<(u64, Option<(usize, [usize; 4])>)>,
     ledger_counts: LedgerCounts,
     sequence: fn(usize) -> Option<(u64, u64)>,
     ledger_sequence: fn(usize) -> Option<(u64, u64)>,
@@ -447,6 +449,8 @@ impl Captured {
             )),
             selection: SliceSelection::new(),
             witness: Vec::new(),
+            navy_pointers: Vec::new(),
+            headquarters_cache: Vec::new(),
             ledger_counts: LedgerCounts::default(),
             sequence: collector_observers::naval_tree_changes::sequence,
             ledger_sequence: collector_missions::naval_map_changes::ledger_token,
@@ -495,6 +499,8 @@ impl Captured {
         self.commanders.reset();
         self.named.len = 0;
         self.named.required = 0;
+        self.navy_pointers.clear();
+        self.headquarters_cache.clear();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -510,6 +516,8 @@ impl Captured {
                 .sum::<usize>()
             + self.leaders.allocated_bytes()
             + self.witness.capacity() * size_of::<u64>()
+            + self.navy_pointers.capacity() * size_of::<usize>()
+            + self.headquarters_cache.capacity() * size_of::<(u64, Option<(usize, [usize; 4])>)>()
             + self.mines.capacity() * size_of::<replay_data::rows::NavalRegionalMineRow>()
             + self.accidents.capacity() * size_of::<replay_data::rows::NavalAccidentReportRow>()
             + self.entries.allocated_bytes()
@@ -1711,6 +1719,10 @@ impl Captured {
         };
         let census = &mut self.census.first[..self.census.len];
         let mut census_sorted = false;
+        self.navy_pointers.clear();
+        if engine_allocation::advisory(|| reserve(&mut self.navy_pointers, count)).is_ok() {
+            self.navy_pointers.resize(count, 0);
+        }
         let mut len = 0_usize;
         let mut unread = 0_u32;
         for index in 0..count {
@@ -1725,6 +1737,9 @@ impl Captured {
             let pointer = navy.ledger_navy()?;
             if pointer == 0 {
                 return Err("country navy absent or unreadable");
+            }
+            if let Some(entry) = self.navy_pointers.get_mut(index) {
+                *entry = pointer;
             }
             let begin = qpc();
             if let Some(session) = mine_session.as_mut() {
@@ -1991,7 +2006,8 @@ impl Captured {
         let mut receivers = 0;
         let mut leaders = std::mem::take(&mut self.leaders);
         let mut witness = std::mem::take(&mut self.witness);
-        let mut headquarters_cache: Vec<(u64, Option<(usize, [usize; 4])>)> = Vec::new();
+        let mut headquarters_cache = std::mem::take(&mut self.headquarters_cache);
+        headquarters_cache.clear();
         for index in 0..self.named.len {
             let country = self.named.first[index];
             witness.clear();
@@ -2011,6 +2027,7 @@ impl Captured {
         collector_missions::navy_ledger_changes::record_leaders(leaders.finish());
         self.leaders = leaders;
         self.witness = witness;
+        self.headquarters_cache = headquarters_cache;
         fingerprints.finish_scan();
         self.selection.finish_census(fingerprints);
         receivers
@@ -2049,11 +2066,20 @@ impl Captured {
         let (epoch, sequence) = (self.sequence)(country.pointer)?;
         *receivers += 1;
         push(&[country.pointer as u64, epoch, sequence])?;
-        let navy = cstrategic_navy_manager::navy(memory, base, game_state, country).ok()?;
+        let navy = match self
+            .navy_pointers
+            .get(country.canonical_slot as usize)
+            .copied()
+            .filter(|&p| p != 0)
+        {
+            Some(pointer) => pointer,
+            None => cstrategic_navy_manager::navy(memory, base, game_state, country).ok()?,
+        };
         let hubs =
             engine_native_memory::cpdx_array::Array::read(memory, navy.checked_add(inputs::HUBS)?, 4)?;
         push(&[u64::from(hubs.count)])?;
         let mut chunk = [0_u8; 256];
+        let mut words = [0_u64; 32];
         let total = hubs.count as usize * 4;
         let mut done = 0;
         while done < total {
@@ -2061,11 +2087,14 @@ impl Captured {
             if !engine_native_memory::memory::read_slice(memory, hubs.data + done, &mut chunk[..len]) {
                 return None;
             }
+            let mut count = 0;
             for word in chunk[..len].chunks(8) {
                 let mut bytes = [0; 8];
                 bytes[..word.len()].copy_from_slice(word);
-                push(&[u64::from_le_bytes(bytes)])?;
+                words[count] = u64::from_le_bytes(bytes);
+                count += 1;
             }
+            push(&words[..count])?;
             done += len;
         }
         for task_force in owned {
@@ -2187,7 +2216,15 @@ impl Captured {
             *unread = unread.saturating_add(1);
             return Ok(());
         };
-        let navy = cstrategic_navy_manager::navy(memory, base, game_state, country)?;
+        let navy = match self
+            .navy_pointers
+            .get(country.canonical_slot as usize)
+            .copied()
+            .filter(|&p| p != 0)
+        {
+            Some(pointer) => pointer,
+            None => cstrategic_navy_manager::navy(memory, base, game_state, country)?,
+        };
         let count = inputs::navy_hubs_buffer(
             memory,
             navy,

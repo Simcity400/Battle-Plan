@@ -19,11 +19,15 @@ static MISSED: AtomicBool = AtomicBool::new(false);
 pub fn active() -> usize {
     FLIGHT_GATE.active()
 }
-struct Flight(FlightGuard<'static>);
+struct Flight {
+    _guard: FlightGuard<'static>,
+}
 impl Flight {
     #[inline(always)]
     fn new() -> Self {
-        Self(FLIGHT_GATE.enter(true))
+        Self {
+            _guard: FLIGHT_GATE.enter(true),
+        }
     }
 }
 fn stamp(ignore_missed: bool) -> Option<u64> {
@@ -133,6 +137,7 @@ impl Storage {
                 })
                 .sum::<usize>()
     }
+    #[cfg(test)]
     fn write(&self, receiver: usize, resource: bool, index: usize, value: i64, add: bool) {
         let map = if resource { &self.pools } else { &self.owners };
         let Ok(at) = map.binary_search_by_key(&receiver, |value| value.0) else {
@@ -413,11 +418,15 @@ pub fn boundary_call(receiver: usize, kind: usize, original: impl FnOnce() -> us
     drop(std::mem::ManuallyDrop::into_inner(hazard));
     result
 }
-struct Hazard(FlightGuard<'static>);
+struct Hazard {
+    _guard: FlightGuard<'static>,
+}
 impl Hazard {
     #[inline(always)]
     fn new() -> Self {
-        Self(HAZARD_GATE.enter(false))
+        Self {
+            _guard: HAZARD_GATE.enter(false),
+        }
     }
 }
 pub fn rebuild() {

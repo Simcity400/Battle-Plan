@@ -24,11 +24,15 @@ pub enum Operation {
     Add,
     Subtract,
 }
-pub struct Flight(FlightGuard<'static>);
+pub struct Flight {
+    _guard: FlightGuard<'static>,
+}
 impl Flight {
     #[inline(always)]
     pub fn new() -> Self {
-        Self(FLIGHT_GATE.enter(true))
+        Self {
+            _guard: FLIGHT_GATE.enter(true),
+        }
     }
 }
 pub fn active() -> usize {

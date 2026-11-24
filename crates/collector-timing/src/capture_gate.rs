@@ -11,8 +11,11 @@ const IDLE: u32 = 0;
 const RUNNING: u32 = 1;
 pub const SLOTS: usize = 128;
 
-static STATE: AtomicU32 = AtomicU32::new(IDLE);
-static WAITING: AtomicU32 = AtomicU32::new(0);
+#[repr(align(64))]
+struct AlignedU32(AtomicU32);
+
+static STATE: AlignedU32 = AlignedU32(AtomicU32::new(IDLE));
+static WAITING: AlignedU32 = AlignedU32(AtomicU32::new(0));
 static WAITS: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 static EXEMPT: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS];
 static WAIT_NS: AtomicU64 = AtomicU64::new(0);
@@ -39,6 +42,7 @@ pub unsafe fn on_wait(hurry: fn()) {
 /// indefinitely.
 pub unsafe fn begin() -> bool {
     STATE
+        .0
         .compare_exchange(IDLE, RUNNING, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
 }
@@ -47,14 +51,14 @@ pub unsafe fn begin() -> bool {
 /// Only the owner that opened the gate with `begin()`, or the beside worker to which that callback
 /// transferred gate ownership for `serve`, may release it once the guarded capture window finishes.
 pub unsafe fn end() {
-    STATE.store(IDLE, Ordering::SeqCst);
-    if WAITING.load(Ordering::SeqCst) != 0 {
-        unsafe { WakeByAddressAll(STATE.as_ptr().cast()) };
+    STATE.0.store(IDLE, Ordering::SeqCst);
+    if WAITING.0.load(Ordering::SeqCst) != 0 {
+        unsafe { WakeByAddressAll(STATE.0.as_ptr().cast()) };
     }
 }
 
 pub fn running() -> bool {
-    STATE.load(Ordering::SeqCst) == RUNNING
+    STATE.0.load(Ordering::SeqCst) == RUNNING
 }
 
 /// # Safety
@@ -66,12 +70,12 @@ pub unsafe fn exempt(slot: usize, exempt: bool) {
 
 #[inline(always)]
 pub fn is_running() -> bool {
-    STATE.load(Ordering::Relaxed) == RUNNING
+    STATE.0.load(Ordering::Relaxed) == RUNNING
 }
 
 #[inline(always)]
 pub fn pass(slot: usize) {
-    if STATE.load(Ordering::Relaxed) == RUNNING {
+    if STATE.0.load(Ordering::Relaxed) == RUNNING {
         wait(slot);
     }
 }
@@ -86,7 +90,7 @@ pub fn wait_if_blocking(slot: usize) -> bool {
 }
 
 pub fn hold(slot: usize) {
-    if STATE.load(Ordering::SeqCst) == RUNNING && !READER.get() {
+    if STATE.0.load(Ordering::SeqCst) == RUNNING && !READER.get() {
         wait_out(slot);
     }
 }
@@ -101,16 +105,16 @@ fn wait(slot: usize) {
 
 #[cold]
 fn wait_out(slot: usize) {
-    WAITING.fetch_add(1, Ordering::SeqCst);
+    WAITING.0.fetch_add(1, Ordering::SeqCst);
     let started = std::time::Instant::now();
     if let Some(hurry) = HURRY.get() {
         hurry();
     }
     let running = RUNNING;
-    while STATE.load(Ordering::SeqCst) == RUNNING {
+    while STATE.0.load(Ordering::SeqCst) == RUNNING {
         unsafe {
             WaitOnAddress(
-                STATE.as_ptr().cast(),
+                STATE.0.as_ptr().cast(),
                 (&raw const running).cast(),
                 size_of::<u32>(),
                 100,
@@ -122,11 +126,11 @@ fn wait_out(slot: usize) {
         u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
-    WAITING.fetch_sub(1, Ordering::SeqCst);
+    WAITING.0.fetch_sub(1, Ordering::SeqCst);
 }
 
 pub fn waiting() -> u32 {
-    WAITING.load(Ordering::SeqCst)
+    WAITING.0.load(Ordering::SeqCst)
 }
 
 pub fn waits(slot: usize) -> u64 {

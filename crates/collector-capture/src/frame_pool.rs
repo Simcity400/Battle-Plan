@@ -29,6 +29,8 @@ const SURPLUS_STREAK: u32 = 48;
 
 const STEADY_IDLE_STREAK: u32 = 4;
 
+const STEADY_PARK_STREAK: u32 = 6;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {
     Free(usize),
@@ -382,7 +384,7 @@ impl FramePool {
         self.restore(index)?;
         if self.live() == STEADY && self.len() == STEADY {
             let streak = self.steady_idle_streak.load(Ordering::Relaxed);
-            if streak < STEADY_IDLE_STREAK {
+            if streak < STEADY_PARK_STREAK {
                 self.steady_idle_streak
                     .store(streak + 1, Ordering::Relaxed);
             }
@@ -396,6 +398,12 @@ impl FramePool {
         self.live() == STEADY
             && self.len() == STEADY
             && self.steady_idle_streak.load(Ordering::Relaxed) >= STEADY_IDLE_STREAK
+    }
+
+    pub(crate) fn steady_park_ready(&self) -> bool {
+        self.live() == STEADY
+            && self.len() == STEADY
+            && self.steady_idle_streak.load(Ordering::Relaxed) >= STEADY_PARK_STREAK
     }
 
     pub(crate) fn set_parked(&self, index: usize, parked: bool) {
@@ -607,6 +615,10 @@ impl FramePool {
         slot.state.store(VACANT, Ordering::Release);
         // SAFETY: the frame was installed from a Box and its holder gives it up here.
         unsafe { Box::from_raw(frame) }
+    }
+
+    pub fn freed_count(&self) -> u64 {
+        self.freed.load(Ordering::Relaxed)
     }
 
     pub fn gauge(&self) -> Gauge {

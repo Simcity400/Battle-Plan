@@ -1700,6 +1700,19 @@ impl Shared {
     pub unsafe fn build_ahead_until_observing(
         &self,
         stop: &AtomicBool,
+        follow: impl FnMut(),
+        observe: impl FnMut(BuildAhead),
+    ) -> std::io::Result<()> {
+        // SAFETY: The caller owns the builder and the observer storage outlives it.
+        unsafe { self.build_ahead_until_with_grace(stop, std::time::Duration::ZERO, follow, observe) }
+    }
+
+    /// # Safety
+    /// The ownership and lifetime requirements of build_ahead_until apply.
+    pub unsafe fn build_ahead_until_with_grace(
+        &self,
+        stop: &AtomicBool,
+        grace: std::time::Duration,
         mut follow: impl FnMut(),
         mut observe: impl FnMut(BuildAhead),
     ) -> std::io::Result<()> {
@@ -1713,6 +1726,39 @@ impl Shared {
                 self.frames.len(),
                 self.frames.spool_stalled() || self.at_frame_limit(),
             ) {
+                if !grace.is_zero() && self.frames.live() >= crate::frame_pool::STEADY {
+                    let deadline = std::time::Instant::now() + grace;
+                    loop {
+                        let Some(remaining) =
+                            deadline.checked_duration_since(std::time::Instant::now())
+                        else {
+                            break;
+                        };
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        std::thread::park_timeout(remaining);
+                        if stop.load(Ordering::Acquire) || self.acquisition_failed() {
+                            return Ok(());
+                        }
+                        if !crate::frame_pool::builds_ahead(
+                            self.frames.len(),
+                            self.frames.spool_stalled() || self.at_frame_limit(),
+                        ) {
+                            break;
+                        }
+                    }
+                    follow();
+                    if stop.load(Ordering::Acquire) || self.acquisition_failed() {
+                        return Ok(());
+                    }
+                    if !crate::frame_pool::builds_ahead(
+                        self.frames.len(),
+                        self.frames.spool_stalled() || self.at_frame_limit(),
+                    ) {
+                        continue;
+                    }
+                }
                 observe(BuildAhead::Starting);
                 // SAFETY: The dedicated builder or owning fixture prepares a spare while observers
                 // remain live.
@@ -1921,7 +1967,31 @@ impl Shared {
 
     pub fn needs_steady_park(&self) -> bool {
         self.unparked_frames.load(Ordering::Acquire) >= crate::frame_pool::STEADY
-            && self.frames.steady_idle()
+            && self.frames.steady_park_ready()
+    }
+
+    pub fn detach_idle_steady_frame(&self) -> bool {
+        if !self.needs_steady_park() {
+            return false;
+        }
+        let Some(index) = self.frames.take_oldest_idle(crate::frame_pool::AHEAD) else {
+            return false;
+        };
+        // SAFETY: `take_oldest_idle` claimed exclusive `HELD` ownership of this frame slot.
+        let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        let parked = frame.extended.take_parked_packs();
+        if parked.is_some() {
+            self.unparked_frames.fetch_sub(1, Ordering::AcqRel);
+            self.frames.set_parked(index, true);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
+        }
+        let restored = self.frames.restore(index);
+        debug_assert!(restored.is_ok());
+        if let Some(parked) = parked {
+            self.retire_parked_pack_with_prior(parked, 0);
+            return true;
+        }
+        false
     }
 
     pub fn park_idle_steady_frame(&self) -> bool {
@@ -2155,7 +2225,7 @@ impl Shared {
     /// spool, sizing or helper borrow, and give up that claim on return to the pool.
     pub unsafe fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
-        let before = frame.allocated_bytes();
+        let before = self.frames.slot(index).bytes.load(Ordering::Relaxed);
         frame.reset_verdicts();
         frame.verdicts_reset = true;
         frame.extended.release_transient();
@@ -2184,9 +2254,7 @@ impl Shared {
         let after = frame.allocated_bytes() as u64;
         if let Some(parked) = parked {
             self.park_pack_from_frame(index, after, parked);
-        } else if after != before as u64
-            || self.frames.slot(index).bytes.load(Ordering::Relaxed) == 0
-        {
+        } else if after != before || before == 0 {
             self.set_frame_bytes(index, after);
         }
         collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();

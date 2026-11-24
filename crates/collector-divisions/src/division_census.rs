@@ -650,15 +650,7 @@ impl Census {
         let mut found = false;
         let mut counting = false;
         let mut scalar_capacity_failed = false;
-        let mut pointers = [0usize; BATCH];
         let mut pointer_bytes = [0u8; BATCH * 8];
-        const POINTER: [RecordField; 1] = [RecordField {
-            source_offset: 0,
-            destination_offset: 0,
-            len: 8,
-        }];
-        const POINTER_LAYOUT: RecordLayout<'static> =
-            RecordLayout::new(&POINTER, 8).expect("valid division pointer layout");
         let (first_slot, end_slot) = slots.unwrap_or((1, reader.count()));
         for slot in first_slot.max(1)..end_slot.min(reader.count()) {
             let Some(country) = reader.at(slot).map_err(|reason| match reason {
@@ -706,25 +698,23 @@ impl Census {
             }
             'roster: for first in (0..roster.count).step_by(BATCH) {
                 let count = ((roster.count - first) as usize).min(BATCH);
-                for (i, p) in pointers.iter_mut().take(count).enumerate() {
-                    *p = roster
-                        .element(first + i as u32, 8)
-                        .ok_or("division roster pointer unreadable")?;
-                }
-                let copied = memory.copy_records(
-                    RecordSources::Pointers(&pointers[..count]),
-                    &POINTER_LAYOUT,
-                    &mut pointer_bytes,
-                );
+                let start = roster
+                    .element(first, 8)
+                    .ok_or("division roster pointer unreadable")?;
+                let bulk = start.checked_add(count * 8).is_some()
+                    && memory.copy(start, &mut pointer_bytes[..count * 8]);
                 let Some(inputs) = self.unit_inputs.as_mut().and_then(SharedBox::get_mut) else {
                     self.overflowed = true;
                     return Err("division owned roster capacity exhausted");
                 };
                 for i in 0..count {
-                    let raw = if i < copied {
+                    let raw = if bulk {
                         u64::from_le_bytes(pointer_bytes[i * 8..i * 8 + 8].try_into().unwrap())
                     } else {
-                        read::<u64>(memory, pointers[i]).ok_or("division roster pointer unreadable")?
+                        let address = roster
+                            .element(first + i as u32, 8)
+                            .ok_or("division roster pointer unreadable")?;
+                        read::<u64>(memory, address).ok_or("division roster pointer unreadable")?
                     };
                     let pointer = usize::try_from(raw)
                         .map_err(|_| "division roster pointer unreadable")?;

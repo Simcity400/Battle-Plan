@@ -15,6 +15,7 @@ struct Log {
 
 impl Log {
     fn new(len: usize) -> Option<Box<Self>> {
+        debug_assert!(len.is_power_of_two());
         let slots = || {
             let mut slots = engine_allocation::vec(len).ok()?;
             slots.resize_with(len, || AtomicUsize::new(0));
@@ -64,13 +65,18 @@ static CURSOR: Padded<AtomicU64> = Padded(AtomicU64::new(0));
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WAR_FORWARD: AtomicBool = AtomicBool::new(false);
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+static ACTIVE_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
 const SITES: usize = MUTATIONS.len() + RELATIONS.len();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 static EVENTS: [AtomicU64; SITES + 1] = [const { AtomicU64::new(0) }; SITES + 1];
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static WALKS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+
+pub fn active() -> usize {
+    ACTIVE_GATE.active()
+}
 
 pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -90,16 +96,20 @@ fn diplomacy(status: usize) -> usize {
     unsafe { std::ptr::read_volatile(address as *const usize) }
 }
 
-struct Mutation;
+struct Mutation {
+    _guard: collector_primitives::asymmetric::FlightGuard<'static>,
+}
 impl Mutation {
+    #[inline(always)]
     fn enter(site: usize) -> Self {
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
+        let guard = ACTIVE_GATE.enter(false);
         if site != 0 {
             EVENTS[site].fetch_add(1, Ordering::Relaxed);
         }
-        Self
+        Self { _guard: guard }
     }
 
+    #[inline(always)]
     fn mark(&self, status: usize, before: i32) {
         if opinion(status) != before {
             self.mark_always(status);
@@ -144,7 +154,7 @@ fn publish(index: u64, status: usize, diplomacy: usize) -> bool {
         invalidate();
         return true;
     };
-    let slot = (index % log.len()) as usize;
+    let slot = (index & (log.len() - 1)) as usize;
     log.owners[slot].store(diplomacy, Ordering::SeqCst);
     log.statuses[slot].store(status, Ordering::SeqCst);
     let lapped = CURSOR.load(Ordering::SeqCst).wrapping_sub(index) > log.len();
@@ -152,11 +162,6 @@ fn publish(index: u64, status: usize, diplomacy: usize) -> bool {
         invalidate();
     }
     lapped
-}
-impl Drop for Mutation {
-    fn drop(&mut self) {
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 pub fn drain(
@@ -173,7 +178,7 @@ pub fn drain(
             between();
         }
     });
-    let settled = ACTIVE.load(Ordering::SeqCst) == 0;
+    let settled = !ACTIVE_GATE.any_active();
     let first = std::mem::replace(consumed, cursor);
     let pending = cursor.wrapping_sub(first);
     *required = usize::try_from(pending).unwrap_or(usize::MAX);
@@ -233,7 +238,7 @@ fn install_offered() {
     let replaced = LOG.swap(offered, Ordering::SeqCst);
     DRAINING.store(replaced, Ordering::SeqCst);
     INSTALLS.fetch_add(1, Ordering::Relaxed);
-    if ACTIVE.load(Ordering::SeqCst) != 0 {
+    if ACTIVE_GATE.any_active() {
         invalidate();
     }
 }
@@ -283,8 +288,9 @@ thread_local! {
 }
 
 fn copy_marks(log: &Log, first: u64, output: &mut [Mark], cursor: impl Fn() -> u64) -> bool {
+    let mask = log.len() - 1;
     for (offset, mark) in output.iter_mut().enumerate() {
-        let slot = ((first + offset as u64) % log.len()) as usize;
+        let slot = ((first + offset as u64) & mask) as usize;
         *mark = Mark {
             status: log.statuses[slot].load(Ordering::SeqCst),
             diplomacy: log.owners[slot].load(Ordering::SeqCst),

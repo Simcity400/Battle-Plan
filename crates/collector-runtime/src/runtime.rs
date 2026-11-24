@@ -2342,7 +2342,7 @@ impl ObserverState for RestoreFamily {
                 "portrait callbacks did not quiesce; collector retained",
             ),
             Self::Opinion => (
-                collector_observers::opinion_changes::ACTIVE.load(Ordering::SeqCst) != 0,
+                collector_observers::opinion_changes::active() != 0,
                 "opinion callbacks did not quiesce; collector retained",
             ),
             Self::Construction => (
@@ -4722,6 +4722,9 @@ fn spool_loop(
                 collector_memory::terminal::attempted_hour(None);
             }
             sizing.sizing.recycle_frame(shared, index);
+            if shared.needs_steady_park() && shared.detach_idle_steady_frame() {
+                sizing.retire_parked(shared);
+            }
             span.finish();
             if let Some(prepared) = pending_write
                 && let Err(error) =
@@ -5228,7 +5231,6 @@ impl SizingShared {
                 // observer storage stays live and teardown is excluded; shared observers synchronize
                 // concurrent growth.
                 unsafe { proposal.grow_frame(frame) };
-                shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     // SAFETY: This is the sizing pass for the active session's cache.
                     unsafe { shared.offer_country_cache(required_cells) };
@@ -5363,10 +5365,14 @@ impl SizingThread {
         span.finish();
         match &self.thread {
             Some(thread) if received || collector_lifetime::world_lifetime::invalidating() => {
+                if received && shared.needs_steady_park() {
+                    shared.detach_idle_steady_frame();
+                }
                 self.sizing.pass_requested.store(true, Ordering::Release);
                 if collector_lifetime::world_lifetime::invalidating()
                     || self.sizing.hint_demand.load(Ordering::Relaxed)
                     || self.sizing.idle_growth_requested.load(Ordering::Relaxed)
+                    || shared.has_retired_parked()
                     || shared.needs_steady_park()
                 {
                     thread.thread().unpark();
@@ -5469,12 +5475,22 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 }
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
-    frame_builder_observing(shared, sizing, |_| {});
+    frame_builder_with_grace(shared, sizing, Duration::from_millis(6), |_| {});
 }
 
+#[cfg(test)]
 fn frame_builder_observing(
     shared: &Shared,
     sizing: &SizingShared,
+    observe: impl FnMut(sampling::BuildAhead),
+) {
+    frame_builder_with_grace(shared, sizing, Duration::ZERO, observe);
+}
+
+fn frame_builder_with_grace(
+    shared: &Shared,
+    sizing: &SizingShared,
+    grace: Duration,
     observe: impl FnMut(sampling::BuildAhead),
 ) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
@@ -5484,7 +5500,7 @@ fn frame_builder_observing(
     let built =
     // SAFETY: This is the session's designated builder, which the runtime joins before releasing
     // Shared.
-    unsafe { shared.build_ahead_until_observing(&sizing.stop, || {
+    unsafe { shared.build_ahead_until_with_grace(&sizing.stop, grace, || {
         priority.follow_pipeline(
             shared.frame_priority(),
             collector_workers::frame_priority::Role::Builder,
@@ -5522,6 +5538,10 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     let mut next_pass = Instant::now();
     let mut last_pass = Instant::now() - SIZING_IDLE_WAIT;
     let mut last_reclaim = Instant::now();
+    let mut followup_reclaims: u8 = 2;
+    let mut last_freed =
+        // SAFETY: This is the runtime's frame pool for the current session.
+        unsafe { shared.frames() }.freed_count();
     let mut steady_wait = SIZING_IDLE_WAIT;
     let mut seen_version = sizing.capacities_version.load(Ordering::Acquire);
     while !sizing.stop.load(Ordering::Acquire) && !collector_memory::terminal::failed() {
@@ -5551,11 +5571,28 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         if shared.drain_surplus_parked() {
             reclaim_now = true;
         }
-        if shared.park_idle_steady_frame() {
+        if shared.needs_steady_park() && shared.park_idle_steady_frame() {
             reclaim_now = true;
         }
-        if reclaim_now || last_reclaim.elapsed() >= Duration::from_secs(3) {
+        let freed =
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.freed_count();
+        if freed != last_freed {
+            last_freed = freed;
+            reclaim_now = true;
+        }
+        let reclaim_interval = if followup_reclaims > 0 {
+            Duration::from_millis(750)
+        } else {
+            Duration::from_secs(3)
+        };
+        if reclaim_now || last_reclaim.elapsed() >= reclaim_interval {
             last_reclaim = Instant::now();
+            if reclaim_now {
+                followup_reclaims = followup_reclaims.max(1);
+            } else {
+                followup_reclaims = followup_reclaims.saturating_sub(1);
+            }
             collector_workers::private_heap::PRIVATE_HEAP.reclaim_empty_slabs();
         }
         let now = Instant::now();
@@ -5595,7 +5632,14 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         let _span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
         unsafe { phases.span(Phase::Wait) };
-        std::thread::park_timeout(next_pass.saturating_duration_since(Instant::now()));
+        let next_reclaim = last_reclaim
+            + if followup_reclaims > 0 {
+                Duration::from_millis(750)
+            } else {
+                Duration::from_secs(3)
+            };
+        let wake_at = next_pass.min(next_reclaim);
+        std::thread::park_timeout(wake_at.saturating_duration_since(Instant::now()));
     }
 }
 
