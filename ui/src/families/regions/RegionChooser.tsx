@@ -29,7 +29,7 @@ export function regionChooserGroups(list: RegionList, inChart: readonly RegionIn
   const active = inChart.filter(row => row.activity && matches(row.label)).map(row => ({ id: row.id, label: row.label, inChart: true, activity: row.activity! }));
   const regions = list.kind === 'ready' ? list.regions.filter(region => matches(region.label)) : [];
   const listed = (sea: boolean) => regions.filter(region => region.sea === sea).map(region => ({ id: region.id, label: region.label, inChart: charted.has(region.id) }));
-  const groups: ChooserGroup[] = [{ title: 'Active now', rows: active }];
+  const groups: ChooserGroup[] = [{ title: 'Active in this chart', rows: active }];
   if (!seaOnly) groups.push({ title: 'Land regions', rows: listed(false) });
   groups.push({ title: 'Sea regions', rows: listed(true) });
   return groups.filter(group => group.rows.length > 0);
