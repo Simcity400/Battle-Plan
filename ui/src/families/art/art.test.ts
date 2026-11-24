@@ -6,7 +6,9 @@ import { flagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
 import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
-import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle } from './provider.ts';
+import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand } from './provider.ts';
+import { fetchArtHandles } from '../../dashboard/useSpriteArtwork.ts';
+import type { ArtHandle } from '../plan.ts';
 import { spriteResolutions } from '../../dashboard/spriteArtwork.ts';
 import {
   artHandleKey,
@@ -260,4 +262,44 @@ test('Rust ArtResolution on CountryFlagImage and SpriteImage passes straight thr
   const missingKey = artHandleKey({ kind: 'sprite', key: 'GFX_md_spirit_none', frame: 0 });
   assert.deepEqual(parsed.get(okKey), readyModRes);
   assert.deepEqual(parsed.get(missingKey), missingSpiritRes);
+});
+
+test('sprite, portrait and relative-path handles are asked of their products and drawn from the answer by the lane', async () => {
+  const sprite: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
+  const portrait: ArtHandle = { kind: 'portrait', leader: '12', hour: 300 };
+  const path: ArtHandle = { kind: 'path', path: 'gfx/interface/icon.dds', frame: 1, frames: 2 };
+  const asks = new Map<string, ArtHandle>();
+  const urls = new Set<string>();
+  for (const handle of [sprite, portrait, path, { kind: 'url', url: 'https://art.test/a.png' } as const]) laneArtDemand(handle, null, undefined, urls, asks);
+  assert.deepEqual([...asks.values()], [sprite, portrait, path]);
+  assert.deepEqual([...urls], ['https://art.test/a.png']);
+
+  const requests: { product: string; params: unknown }[] = [];
+  const ready = readyArt('art://drawn');
+  const missing = missingArt('The game generates this portrait from unrecorded inputs');
+  const answered = await fetchArtHandles(async request => {
+    requests.push({ product: request.product, params: request.params });
+    if (request.product === 'unit-leader-portraits') return { portraits: [{ reference: '12', image: null, missing: missing.reason, resolution: missing }], warnings: [] };
+    return {
+      items: [{ key: 'GFX_x', frame: 0, text: true, icon: 'art://drawn', resolution: ready }],
+      textures: [{ path: 'gfx/interface/icon.dds', frame: 1, frames: 2, resolution: ready }],
+      warnings: [],
+    };
+  }, { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, [...asks.values()], new AbortController().signal);
+  assert.deepEqual(requests.map(request => request.product).sort(), ['sprite-artwork', 'unit-leader-portraits']);
+  assert.deepEqual(requests.find(request => request.product === 'sprite-artwork')!.params, {
+    sprites: [{ key: 'GFX_x', frame: 0, text: true }],
+    textures: [{ path: 'gfx/interface/icon.dds', frame: 1, frames: 2 }],
+  });
+  const resolutions = Object.fromEntries(answered);
+  assert.deepEqual(resolutions[artHandleKey(portrait)], missing);
+  assert.deepEqual(resolutions[artHandleKey(path)], ready);
+
+  const lane = createLaneArtProvider(new LaneArtCache(), { resolutions });
+  assert.equal(lane.resolve(portrait).status, 'confirmedMissing');
+  assert.equal(artUrlForHandle(path, null, resolutions), 'art://drawn');
+  const again = new Map<string, ArtHandle>();
+  laneArtDemand(path, null, resolutions, urls, again);
+  assert.equal(again.size, 0);
+  assert.ok(urls.has('art://drawn'));
 });
