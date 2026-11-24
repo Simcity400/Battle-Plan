@@ -42,7 +42,7 @@ export type ScoreOf = (tag: string, part: ScorePart) => number | undefined;
 
 export function scoreCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number): ResolvedCountries {
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
-  return selection.kind === 'all' ? { ...resolved, reason: null, top: undefined } : resolved;
+  return selection.kind === 'all' ? { ...resolved, reason: null } : resolved;
 }
 
 export function scoreRows(reply: GameScoreReply, choice: { all: boolean; tags: readonly string[]; top: number | null; hour: number },

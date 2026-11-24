@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { columnTooltip, modifierText, shownRegions, temperatureText, uncoveredSpans, validateProvinces, validateWeather, weatherPeriods, weatherRows, weatherWindow } from './weatherData.ts';
+import { cellRect } from '../../charts/heat/layout.ts';
+import type { DashboardClient, ProductRequest } from '../../dashboard/client';
+import { loadProduct } from '../../dashboard/products.ts';
+import { columnTooltip, mergeWeatherTail, modifierText, shownRegions, temperatureText, uncoveredSpans, validateProvinces, validateWeather, weatherPeriods, weatherRows, weatherTailWindow, weatherWindow } from './weatherData.ts';
 import type { RegionalWeatherColumns as WeatherColumns } from '../../generated/dashboard';
 
 const colours = { flag: (index: number) => `c${index}`, ramp: (value: number, highest: number) => `r${value / highest}`, clear: 'surface', gap: 'gap' };
@@ -55,15 +58,88 @@ test('a modifier is its sampled value; a day without one is unknown, never zero;
 test('the asked window keeps whole blocks while days fit, else asks its own days folded to the pixels; regions filter by choice', () => {
   const branch = { firstHour: 0, lastHour: 100_000 };
   assert.deepEqual(weatherWindow(branch, [2_200, 2_300], 400), { first: 2_160, last: 4_319, width: 90 });
-  assert.deepEqual(weatherWindow(branch, [2_200, 2_300], 400, 100_000), { first: 2_160, last: 4_319, width: 90 });
-  assert.deepEqual(weatherWindow(branch, [2_200, 2_300], 400, 2_300), { first: 2_160, last: 2_300, width: 6 },
-    'snapping never pushes the asked window past the playhead ceiling');
-  assert.deepEqual(weatherWindow(branch, [0, 50_003], 256, 50_003), { first: 0, last: 50_003, width: 256 },
-    'folded windows stop at the playhead hour instead of the end of the day');
+  assert.deepEqual(weatherTailWindow(branch, [2_200, 2_300], 400, 2_300), { first: 2_280, last: 2_300, width: 1 },
+    'a partial playhead day asks only that day through the playhead');
+  assert.equal(weatherTailWindow(branch, [2_200, 2_303], 400, 2_303), null,
+    'a completed day at 23:00 needs no partial-day tail');
+  assert.deepEqual(weatherTailWindow(branch, [0, 50_003], 256, 50_003)?.last, 50_003,
+    'folded views request only the final partial column through the playhead');
   assert.deepEqual(weatherWindow(branch, [0, 99_999], 256), { first: 0, last: 100_000, width: 256 }, 'whole days, within the branch');
   assert.deepEqual(shownRegions(reply, ['2']).map(region => region.name), ['Sea']);
   assert.equal(shownRegions(reply, []).length, 3);
   assert.deepEqual(uncoveredSpans([0, 100], { firstHour: 10, lastHour: 80 }), [{ firstHour: 0, lastHour: 9 }, { firstHour: 81, lastHour: 100 }]);
+});
+
+test('consecutive follow playheads in one 90-day block reuse the cached block request and only fetch the current partial day', async () => {
+  const branch = { firstHour: 0, lastHour: 100_000 };
+  const asked: { firstHour: number; lastHour: number; width: number }[] = [];
+  const client = {
+    async product(request: ProductRequest) {
+      const p = request.params as unknown as { firstHour: number; lastHour: number; width: number };
+      asked.push({ firstHour: p.firstHour, lastHour: p.lastHour, width: p.width });
+      return {
+        sourceId: request.sourceId, revision: request.revision, product: request.product,
+        data: {
+          ...reply, firstHour: p.firstHour, lastHour: p.lastHour,
+          columns: { days: 1, columns: [{ firstHour: p.firstHour, lastHour: p.lastHour, sampledHour: p.lastHour, readHour: p.lastHour, recorded: 1 }],
+            regions: [{ id: '1', observed: [1], clear: [0], measures: [{ id: 'rain', days: [1] }] }] },
+        },
+      };
+    },
+  } as unknown as DashboardClient;
+  const runFor = async (head: number) => {
+    const extent: [number, number] = [head - 168, head];
+    const base = weatherWindow(branch, extent, 400);
+    const tail = weatherTailWindow(branch, extent, 400, head);
+    const req = (w: { first: number; last: number; width: number }) => ({
+      sourceId: 's1', revision: 'r1', product: 'regional-weather',
+      params: { branchId: '1', firstHour: w.first, lastHour: w.last, width: w.width, show: 'conditions' },
+    }) as unknown as ProductRequest;
+    await loadProduct(client, req(base), new AbortController().signal, validateWeather);
+    if (tail) await loadProduct(client, req(tail), new AbortController().signal, validateWeather);
+  };
+  await runFor(2500);
+  await runFor(2501);
+  const blockRequests = asked.filter(item => item.firstHour === 2160 && item.lastHour === 4319);
+  const tailRequests = asked.filter(item => item.width === 1);
+  assert.equal(blockRequests.length, 1, '90-day block is requested once and reused across advancing playheads');
+  assert.deepEqual(tailRequests, [
+    { firstHour: 2496, lastHour: 2500, width: 1 },
+    { firstHour: 2496, lastHour: 2501, width: 1 },
+  ], 'only the current partial day is requested on each advancing hour');
+});
+
+test('midnight at hour 2160 replaces the block day with the midnight reading and gives the cell drawable width', () => {
+  const block = validateWeather({
+    ...reply, firstHour: 2160, lastHour: 4319,
+    columns: {
+      days: 1,
+      columns: [
+        { firstHour: 2160, lastHour: 2183, sampledHour: 2183, readHour: 2183, recorded: 1 },
+        { firstHour: 2184, lastHour: 2207, sampledHour: 2207, readHour: 2207, recorded: 1 },
+      ],
+      regions: [{ id: '1', observed: [1, 1], clear: [0, 0], measures: [{ id: 'rain', days: [1, 1] }] }],
+    },
+  });
+  const midnightTail = validateWeather({
+    ...reply, firstHour: 2160, lastHour: 2160,
+    columns: {
+      days: 1,
+      columns: [{ firstHour: 2160, lastHour: 2160, sampledHour: 2160, readHour: 2160, recorded: 1 }],
+      regions: [{ id: '1', observed: [1], clear: [0], measures: [{ id: 'snow', days: [1] }] }],
+    },
+  });
+  const merged = mergeWeatherTail(block, midnightTail);
+  const periods = weatherPeriods(merged.columns, [1992, 2160], 24);
+  assert.equal(periods.length, 1);
+  assert.equal(periods[0].firstHour, 2160);
+  assert.equal(periods[0].lastHour, 2160);
+  assert.equal(periods[0].readHour, 2160);
+  const { rows } = weatherRows(merged, [reply.regions[0]], periods, 'conditions', null, colours);
+  assert.deepEqual(rows[0].cells[0].parts.map(part => part.id), ['snow'], 'midnight reading replaces end-of-day rain');
+  const frame = { plotTop: 20, plotHeight: 100, plotLeft: 80, plotWidth: 336, toX: (h: number) => 80 + (h - 1992) * 2 };
+  const rect = cellRect(periods[0], 0, 1, frame, 1992, 2160, 2160);
+  assert.ok(rect && rect.width >= 1, 'cell starting at the terminal midnight hour has drawable width');
 });
 
 test('malformed replies are refused: a read after its sample, a value without its days, a province of the wrong shape', () => {

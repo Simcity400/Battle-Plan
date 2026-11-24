@@ -42,10 +42,12 @@ export function columnEdges(period: ColumnPeriod): (Edge | null)[] {
   return edges.map((edge, band) => period.values[band] == null ? null : edge);
 }
 
+const periodUnknown = (period: ColumnPeriod) => period.unknown === true || (period.values.length > 0 && period.values.every(value => value == null));
+
 export function columnsExtent(periods: readonly ColumnPeriod[], x: Range): Range | null {
   let low = 0, high = 0, any = false, unknown = false;
   for (const period of periods) {
-    if (period.unknown || period.lastHour < x[0] || period.firstHour > x[1]) continue;
+    if (periodUnknown(period) || period.lastHour < x[0] || period.firstHour > x[1]) continue;
     any = true;
     unknown ||= period.values.some(value => value == null) || period.uncertain?.some(Boolean) === true;
     for (const edge of columnEdges(period)) {
@@ -84,8 +86,8 @@ export function columnsLayer(periods: readonly ColumnPeriod[], colours: readonly
         const box = columnBox(period, frame, style.spacing);
         if (!box) continue;
         const { left, width } = box;
-        if (period.unknown) {
-          hatch(left, frame.plotTop, width, frame.toY(Math.max(frame.y[0], Math.min(frame.y[1], 0))) - frame.plotTop);
+        if (periodUnknown(period)) {
+          hatch(left, frame.plotTop, width, frame.plotHeight);
           continue;
         }
         let top = zero;

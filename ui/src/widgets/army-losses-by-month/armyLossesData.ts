@@ -78,10 +78,19 @@ export interface MonthBars { periods: MonthPeriod[]; parts: Part[]; first: numbe
 
 const plotted = (raw: bigint, measure: Measure) => measure === 'manpower' ? Number(raw) : fixedNumber(String(raw), 5);
 
+export function measureAvailabilityReason(reply: Pick<ArmyLossesData, 'availability'>, measure: Measure, ledger: Ledger): string | null {
+  if (reply.availability.armies !== null) return reply.availability.armies;
+  if (measure === 'manpower') return reply.availability.manpower;
+  return reply.availability.months ?? (ledger === 'enemy' ? reply.availability.enemyEquipment : reply.availability.ownEquipment);
+}
+
+export function availabilityMessage(reason: string): string {
+  const trimmed = reason.trim().replace(/\.+$/, '');
+  return trimmed ? `The combat log wasn’t recorded at this time: ${trimmed}.` : 'The combat log wasn’t recorded at this time.';
+}
+
 function measureUnavailable(reply: Pick<ArmyLossesData, 'availability'>, measure: Measure, ledger: Ledger): boolean {
-  if (reply.availability.armies !== null) return true;
-  if (measure === 'manpower') return reply.availability.manpower !== null;
-  return reply.availability.months !== null || (ledger === 'enemy' ? reply.availability.enemyEquipment !== null : reply.availability.ownEquipment !== null);
+  return measureAvailabilityReason(reply, measure, ledger) !== null;
 }
 
 export function monthBars(reply: ArmyLossesData, measure: Measure, stack: ManpowerStack | EquipmentStack, ledger: Ledger,
@@ -150,7 +159,7 @@ export function monthBars(reply: ArmyLossesData, measure: Measure, stack: Manpow
       continue;
     }
     if (!known.has(month)) {
-      periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unretained: true });
+      periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true, unretained: true });
       continue;
     }
     const shown = values.get(month) ?? new Map<string, bigint>();
@@ -179,8 +188,8 @@ export function formatAmount(value: number | bigint, measure: Measure): string {
 export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measure: Measure, caption: string, playhead: number | null,
   colour: (key: string) => string): TooltipContent {
   const title = monthLabel(Number(period.key));
-  if (period.unknown) return { title, subtitle: caption, rows: [{ label: 'Not recorded', tone: 'muted' }] };
   if (period.unretained) return { title, subtitle: caption, rows: [{ label: 'Not in the game’s Combat Log', tone: 'muted' }] };
+  if (period.unknown) return { title, subtitle: caption, rows: [{ label: 'Not recorded', tone: 'muted' }] };
   const labels = new Map(parts.map(part => [part.key, part.label]));
   const rows: TooltipRow[] = period.parts.map(part => ({ label: labels.get(part.key) ?? part.key, swatch: colour(part.key), value: formatAmount(part.raw, measure) }));
   const total = period.parts.reduce((sum, part) => (measure === 'manpower' ? addManpower : addExact)(sum, part.raw), 0n);

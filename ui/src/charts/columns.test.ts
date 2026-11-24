@@ -30,7 +30,7 @@ test('the value axis fits the columns in view, with zero', () => {
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [3, -7, null] }], [0, 9]), [-7, 3 + 10 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent(periods, [1416, 2159]), [-2, 5 + 7 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [4, 0, 0] }], [0, 9]), [0, 4]);
-  assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [null] }], [0, 9]), [0, 1]);
+  assert.equal(columnsExtent([{ firstHour: 0, lastHour: 9, values: [null] }], [0, 9]), null, 'an all-unknown period has no value extent');
   assert.equal(columnsExtent(periods, [5000, 6000]), null);
 });
 

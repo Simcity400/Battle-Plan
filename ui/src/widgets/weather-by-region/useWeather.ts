@@ -1,12 +1,12 @@
 import { useCampaignGate, useGate, type Gate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { theatreChoices, useAirTheatres } from '../../dashboard/airTheatres.ts';
 import { useProduct } from '../../dashboard/products';
-import { validateWeather, weatherWindow } from './weatherData.ts';
+import { mergeWeatherTail, validateWeather, weatherTailWindow, weatherWindow } from './weatherData.ts';
 import type { WeatherReply, WeatherShow } from './weatherData';
 import { OPTIONS } from './definition';
 import { busyWait } from '../../shell/busy.ts';
@@ -22,16 +22,29 @@ export function weatherShow(widget: WidgetSpec): { show: WeatherShow; chosen: st
   return { show, chosen: options.modifier ? contentKey(String(options.modifier)) : null };
 }
 
-export function weatherRequest(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number,
-  limit?: number) {
+function makeWeatherRequest(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined,
+  window: { first: number; last: number; width: number } | null) {
   const { show, chosen } = weatherShow(widget);
-  const window = track && extent ? weatherWindow(track.branch, extent, pixels, limit) : null;
   const span = window && window.first <= window.last ? gate.span(window.first, window.last) : null;
   if (!track || !window || !span) return null;
   const asked = show === 'modifiers' ? 'modifier' : show;
   return productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather', params: {
     branchId: track.branch.id, ...span, width: window.width, show: asked,
     ...asked === 'modifier' && chosen ? { modifier: chosen } : {} } });
+}
+
+export function weatherRequests(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number,
+  limit?: number) {
+  const baseWindow = track && extent ? weatherWindow(track.branch, extent, pixels) : null;
+  const tailWindow = track && extent ? weatherTailWindow(track.branch, extent, pixels, limit) : null;
+  return {
+    base: makeWeatherRequest(gate, widget, track, baseWindow),
+    tail: makeWeatherRequest(gate, widget, track, tailWindow),
+  };
+}
+
+export function weatherRequest(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number) {
+  return weatherRequests(gate, widget, track, extent, pixels).base;
 }
 
 function useWindowWidth(): number {
@@ -51,13 +64,19 @@ export function useWeather(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   const { show, chosen } = weatherShow(widget);
   const window = useWindowWidth();
   const gate = useGate(runtime, widget, SPEC, active);
-  const product = useProduct<WeatherReply>(runtime.client, weatherRequest(gate, widget, track, extent, pixels ?? window, limit), active, validateWeather, track?.source);
+  const { base: baseRequest, tail: tailRequest } = weatherRequests(gate, widget, track, extent, pixels ?? window, limit);
+  const product = useProduct<WeatherReply>(runtime.client, baseRequest, active, validateWeather, track?.source);
+  const tail = useProduct<WeatherReply>(runtime.client, tailRequest, active, validateWeather, track?.source);
+  const merged = useMemo(() => product.data ? mergeWeatherTail(product.data, tailRequest ? tail.data : undefined) : undefined,
+    [product.data, tailRequest, tail.data]);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, show, chosen]);
   const kept = useRef<{ client: unknown; scope: string; data: WeatherReply } | null>(null);
-  if (product.data) kept.current = { client: runtime.client, scope, data: product.data };
-  const data = product.data ?? (kept.current?.client === runtime.client && kept.current.scope === scope && !product.error ? kept.current.data : undefined);
+  if (merged) kept.current = { client: runtime.client, scope, data: merged };
+  const error = product.error ?? tail.error;
+  const retry = useCallback(() => { product.retry(); tail.retry(); }, [product.retry, tail.retry]);
+  const data = merged ?? (kept.current?.client === runtime.client && kept.current.scope === scope && !error ? kept.current.data : undefined);
   const modifier = show === 'modifiers' ? chosen ?? data?.modifiers[0]?.id ?? null : null;
-  return { track, options, show, modifier, ...product, data };
+  return { track, options, show, modifier, error, retry, data };
 }
 
 export function useWeatherInView(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, extent: readonly [number, number] | null) {

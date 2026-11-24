@@ -18,14 +18,81 @@ export const DAY_HOURS = 24;
 const BLOCK_HOURS = 90 * 24;
 const dayOf = (hour: number) => Math.floor(hour / DAY_HOURS);
 
-export function weatherWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number, limit = branch.lastHour) {
-  const cap = Math.min(branch.lastHour, limit);
+export function weatherWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number) {
   if (dayOf(extent[1]) - dayOf(extent[0]) + 1 <= pixels) {
     const first = Math.max(branch.firstHour, Math.floor(extent[0] / BLOCK_HOURS) * BLOCK_HOURS);
-    const last = Math.min(cap, Math.ceil((extent[1] + 1) / BLOCK_HOURS) * BLOCK_HOURS - 1);
+    const last = Math.min(branch.lastHour, Math.ceil((extent[1] + 1) / BLOCK_HOURS) * BLOCK_HOURS - 1);
     return { first, last, width: Math.max(1, dayOf(last) - dayOf(first) + 1) };
   }
-  return { first: Math.max(branch.firstHour, dayOf(extent[0]) * DAY_HOURS), last: Math.min(cap, (dayOf(extent[1]) + 1) * DAY_HOURS - 1), width: pixels };
+  return { first: Math.max(branch.firstHour, dayOf(extent[0]) * DAY_HOURS), last: Math.min(branch.lastHour, (dayOf(extent[1]) + 1) * DAY_HOURS - 1), width: pixels };
+}
+
+export function weatherTailWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number, limit?: number) {
+  if (limit == null) return null;
+  const cap = Math.min(branch.lastHour, Math.floor(limit));
+  if (cap < Math.max(branch.firstHour, extent[0]) || cap > extent[1]) return null;
+  const base = weatherWindow(branch, extent, pixels);
+  if (dayOf(extent[1]) - dayOf(extent[0]) + 1 <= pixels) {
+    const dayFirst = Math.max(branch.firstHour, dayOf(cap) * DAY_HOURS);
+    const dayLast = Math.min(branch.lastHour, (dayOf(cap) + 1) * DAY_HOURS - 1);
+    return cap < dayLast ? { first: dayFirst, last: cap, width: 1 } : null;
+  }
+  const totalDays = Math.max(1, dayOf(base.last) - dayOf(base.first) + 1);
+  const daysPerColumn = Math.max(1, Math.ceil(totalDays / Math.max(1, base.width)));
+  const colIndex = Math.floor((dayOf(cap) - dayOf(base.first)) / daysPerColumn);
+  const colFirst = Math.max(branch.firstHour, (dayOf(base.first) + colIndex * daysPerColumn) * DAY_HOURS);
+  const colLast = Math.min(base.last, (dayOf(base.first) + (colIndex + 1) * daysPerColumn) * DAY_HOURS - 1);
+  return cap < colLast ? { first: colFirst, last: cap, width: 1 } : null;
+}
+
+export function mergeWeatherTail(base: WeatherReply, tail: WeatherReply | undefined): WeatherReply {
+  if (!tail || tail.columns.columns.length !== 1) return base;
+  const tailCol = tail.columns.columns[0];
+  const baseCols = base.columns.columns;
+  const slot = baseCols.findIndex(col => col.firstHour <= tailCol.firstHour && tailCol.firstHour <= col.lastHour);
+  if (slot < 0) return base;
+  const columns = baseCols.map((col, index) => index === slot ? tailCol : col);
+  const length = columns.length;
+  const tailRegions = new Map(tail.columns.regions.map(region => [region.id, region]));
+  const baseRegionIds = new Set(base.columns.regions.map(region => region.id));
+  const mergeRegion = (region: WeatherColumnRegion, incoming: WeatherColumnRegion | undefined): WeatherColumnRegion => {
+    const observed = region.observed ? region.observed.map((value, index) => index === slot ? incoming?.observed?.[0] ?? 0 : value) : undefined;
+    const clear = region.clear ? region.clear.map((value, index) => index === slot ? incoming?.clear?.[0] ?? 0 : value) : undefined;
+    const incomingMeasures = new Map((incoming?.measures ?? []).map(measure => [measure.id, measure]));
+    const seen = new Set<string>();
+    const measures: WeatherMeasure[] = region.measures.map(measure => {
+      seen.add(measure.id);
+      const next = incomingMeasures.get(measure.id);
+      return {
+        id: measure.id,
+        days: measure.days.map((value, index) => index === slot ? next?.days[0] ?? 0 : value),
+        ...(measure.values !== undefined ? { values: measure.values.map((value, index) => index === slot ? next?.values?.[0] ?? null : value) } : {}),
+      };
+    });
+    for (const [id, next] of incomingMeasures) {
+      if (seen.has(id)) continue;
+      const days = new Array<number>(length).fill(0);
+      days[slot] = next.days[0];
+      const values = next.values !== undefined ? new Array<([string, string, string] | null)>(length).fill(null) : undefined;
+      if (values) values[slot] = next.values![0];
+      measures.push({ id, days, ...(values !== undefined ? { values } : {}) });
+    }
+    return { id: region.id, ...(observed !== undefined ? { observed } : {}), ...(clear !== undefined ? { clear } : {}), measures };
+  };
+  const regions: WeatherColumnRegion[] = base.columns.regions.map(region => mergeRegion(region, tailRegions.get(region.id)));
+  for (const incoming of tail.columns.regions) {
+    if (baseRegionIds.has(incoming.id)) continue;
+    const empty: WeatherColumnRegion = {
+      id: incoming.id,
+      ...(incoming.observed !== undefined ? { observed: new Array<number>(length).fill(0) } : {}),
+      ...(incoming.clear !== undefined ? { clear: new Array<number>(length).fill(0) } : {}),
+      measures: [],
+    };
+    regions.push(mergeRegion(empty, incoming));
+  }
+  const regionList = base.regions.length >= tail.regions.length ? base.regions : tail.regions;
+  const warnings = [...new Set([...base.warnings, ...tail.warnings])];
+  return { ...base, lastHour: Math.max(base.lastHour, tail.lastHour), regions: regionList, columns: { ...base.columns, columns, regions }, warnings };
 }
 
 const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'
@@ -97,8 +164,9 @@ export function weatherRows(reply: WeatherReply, regions: readonly Choice[], per
     clear?: string; gap?: string }): { rows: HeatRow[]; highest: number } {
   const byRegion = regionMeasures(reply);
   const columns = reply.columns.columns;
-  const extremes = (id: string) => [...byRegion.values()].flatMap(({ measures }) => measures.get(id)?.values ?? [])
-    .flatMap(values => values ? [[Number(values[0]), Number(values[2])] as const] : []);
+  const shownColumns = new Set(periods.map(period => period.column));
+  const extremes = (id: string) => [...byRegion.values()].flatMap(({ measures }) =>
+    (measures.get(id)?.values ?? []).flatMap((values, column) => values && shownColumns.has(column) ? [[Number(values[0]), Number(values[2])] as const] : []));
   let highest = 0;
   if (show === 'modifiers' && modifier !== null)
     for (const [min, max] of extremes(`mod:${modifier}`)) highest = Math.max(highest, Math.abs(min) / MODIFIER_SCALE, Math.abs(max) / MODIFIER_SCALE);

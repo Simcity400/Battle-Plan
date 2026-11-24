@@ -37,7 +37,7 @@ import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { shownUntil } from '../view';
 import type { PlaybackMode } from '../view';
 import { useCountryColours } from './countryColours';
-import { countryRaceEnds, countryRaceHours, countryRaceItem, countryRaceItems, countryRaceLookHours, countryRacePickTag, countryRaceReadHour, countryRaceStack, countryRaceStackExtent, countryRaceTooltipTags, forEachJoinedCountryRaceSegment, partColours, raceLabelAt } from './countryRace';
+import { countryRaceEnds, countryRaceHours, countryRaceItem, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceStack, countryRaceStackExtent, countryRaceTooltipTags, forEachJoinedCountryRaceSegment, partColours, raceLabelAt } from './countryRace';
 import type { CountryRaceEntry, CountryRaceLine, CountryRaceLooks, CountryRacePart, LiveRaceEntries } from './countryRace';
 import { linesAt, linesTooltip } from './lines';
 import type { LabelAt } from './lines';
@@ -152,8 +152,10 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     [presentation.countryLooks, countryTags, view, ranked, lines, mix]);
   const readHour = useCallback((tag: string, hour: number) => countryRaceReadHour(tag, hour,
     view === 'race' ? countryLookHours : undefined, countryLookHour), [view, countryLookHours, countryLookHour]);
-  const lookHoursOf = (at: ReadonlyMap<string, number>) => countryRaceLookHours(tags, view, linesView, moment, at, countryLookHours,
-    countryLookHour ? readHour : undefined);
+  const lookHoursOf = (at: ReadonlyMap<string, number>) => countryLookHour ? new Map(tags.flatMap(tag => {
+    const read = readHour(tag, linesView ? at.get(tag) ?? moment : moment);
+    return read === null ? [] : [[tag, read] as const];
+  })) : view === 'race' ? countryLookHours : linesView ? at : undefined;
   const lookHours = useMemo(() => lookHoursOf(hours), [countryLookHour, tags, readHour, linesView, hours, moment, view, countryLookHours]);
   const exactLooks = countryLookHour !== undefined || (view === 'race' && countryLookHours !== undefined);
   const followedLooks = active && view === 'race' && !!liveRanked && !exactLooks && presentation.countryLooks !== false && !entityLooks;

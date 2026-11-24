@@ -227,15 +227,14 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
       const labels = lines.flatMap(line => {
-        const shown = series.summaryOf(keyId(line.key));
+        const shown = series.summaryByKey.get(keyId(line.key))?.summary;
         const end = shown ? drawLineSummary(ctx, frame, chartTokens, shown, line.color, true, state.playhead) : null;
         const run = state.playhead === null ? null : runAt(reachedByKey.get(keyId(line.key))?.runs ?? [], Math.floor(state.playhead));
         return ends && end && run ? [{ text: percentText(Number(run.valueRaw) / 10 ** SHARE_PLACES), y: end.y, from: end.y, color: line.color }] : [];
       });
       drawEndLabels(ctx, frame, chartTokens, labels);
     },
-  }], [lines, series.summaryOf, reachedByKey, ends]);
-  const chartData = useMemo(() => ({ revision: () => [series.revision()], subscribe: series.subscribe }), [series.revision, series.subscribe]);
+  }], [lines, series.summaryByKey, reachedByKey, ends]);
 
   const shownTag = keyNameAt(slots, tag, playhead ?? extent[1]);
   if (parts.error) return <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />;
@@ -264,7 +263,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: axis.top, log: false }} valueTicks={axis.ticks}
         formatValue={value => `${value}%`} padding={ends ? { right: 64 } : undefined}
-        layers={layers} data={chartData} active={active} pickOwner={series.owner} notRecorded={series.unrecorded}
+        layers={layers} active={active} pickOwner={series.owner} notRecorded={series.unrecorded}
         onSummaryView={series.onSummaryView} onNavigateHour={series.onNavigateHour}
         keyboardHour={series.keyboardHour} keyboardRevision={series.keyboardRevision} onHover={setHoverHour}
         revision={`${track.branch.id}:${tag}:${lines.length}:${ends}:${series.states ? 'states' : 'loading'}`}
