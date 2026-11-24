@@ -562,7 +562,8 @@ describe('time-chart laneView integration', () => {
         ['warSupport', new Map([['GER', boundTiledSeries(warLine, displayedHour(until), { headValue: knownValue(0.9) })]])],
       ]),
       panels: new Map([['markers', { hour: until, nextChange: until + 48, warnings: [], markers: [
-        { id: 'w1', hour: H1936 + 100, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
+        { id: 'i1', hour: H1936 + 105, kind: 'idea', title: 'Partial mobilisation adopted', verb: null, other: null, faction: null, sprite: null, alert: false },
+        { id: 'w1', hour: H1936 + 113, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
       ] }]]),
       identity: createSnapshotIdentityProvider(index),
     });
@@ -580,8 +581,10 @@ describe('time-chart laneView integration', () => {
     assert.equal(model.series[0]!.valueScale, 100);
     assert.equal(model.series[0]!.endLabel?.value, '100%');
     assert.equal(model.series[1]!.endLabel?.value, '90%');
-    assert.equal(model.markers?.length, 1, 'the recorded markers are drawn from the plan entry');
-    assert.equal(model.markers![0]!.title, 'War with Poland began');
+    assert.deepEqual(model.markers?.map(marker => [marker.hour, marker.title]), [
+      [H1936 + 105, 'Partial mobilisation adopted'],
+      [H1936 + 113, 'War with Poland began'],
+    ], 'each event keeps its own hour: a later alert on the same day neither moves nor hides the morning one');
 
     const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
     assert.deepEqual(fullLayout.yTicks, [0, 25, 50, 75, 100]);
