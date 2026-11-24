@@ -3741,7 +3741,16 @@ unknown: string | null,
 /**
  * The idea in `ideaTooltips` its tooltip shows.
  */
-tooltipToken: string | null, };
+tooltipToken: string | null,
+/**
+ * A decision's category or an advisor's role, from the installed content; none for other spending.
+ */
+kind: SpendKind | null, };
+export type SpendKind = { id: string | null, name: string | null,
+/**
+ * Why the category or role is not known.
+ */
+unknown: string | null, };
 export type SpendCategory = { id: string, name: string,
 /**
  * False for payments whose cause was not recorded.
