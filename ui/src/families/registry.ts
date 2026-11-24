@@ -111,3 +111,7 @@ export function unknownProjectionReason(binding: BoundProjectionKey): string {
     ? `The ${binding.kind} view "${view}" did not load: ${failure}`
     : `No ${binding.family} projection for ${binding.kind}, view "${view}"`;
 }
+
+export function retryFamilyProjection(family: FamilyId, kind: string, view?: string): void {
+  failures.delete(resolveLookupKey(family, kind, view));
+}

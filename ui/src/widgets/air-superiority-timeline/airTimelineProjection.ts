@@ -17,11 +17,10 @@ import type { FamilyPlanContext } from '../../families/plan.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
-import { mix } from '../../shell/appearance/color.ts';
+import { mix, surfaceMix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
 export const AIR_TOP_DEFAULT = 7;
-const LANE_FILL = '#f5f5f5';
 
 export interface AirTimelineProjectionOptions {
   readonly viewpoint: boolean;
@@ -201,14 +200,14 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   const reply = readView.panel<AirTimelineReply>('timeline');
   if (!reply || !options.surface || reply.lastHour > hour) return emptyModel(hour, {});
   const through = reply.lastHour;
-  const track = mix(options.surface, LANE_FILL, 0.04);
+  const track = surfaceMix(options.surface, 0.04);
   const style = reply.viewpointCountryStyle;
   const viewpointSide = reply.viewpoint === null ? undefined : reply.sides[reply.viewpoint];
   const look: Look = {
     track,
     contested: reservedGrey(options.surface, reply.sides.flatMap(side => (side.color ? [readableColour(authoredHex(side.color), options.surface)] : []))),
     enemy: readableColour(CHART_MEASURE_COLOURS.short, options.surface),
-    unknownSide: mix(options.surface, LANE_FILL, 0.45),
+    unknownSide: surfaceMix(options.surface, 0.45),
     viewpointColour: style?.color ? readableColour(authoredHex(style.color), options.surface) : sideColour(viewpointSide, options.surface, readableColour(CHART_MEASURE_COLOURS.bopRight, options.surface)),
   };
   const rows: HeatLaneRow[] = reply.rows.map(row => {

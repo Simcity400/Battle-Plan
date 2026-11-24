@@ -1,5 +1,6 @@
 import type { CountrySelection } from '../dashboard/model';
 import type { Gate } from '../dashboard/regionGate';
+import { authoredHex } from '../charts/palette.ts';
 import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
 import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
 import { countryTagKey, type DrawnFlagEntry, type IdentityIndex } from './identity/index.ts';
@@ -157,15 +158,6 @@ export function extractFactionData(groups: CountryGroupReply | undefined, enable
   return { runs, unobserved, incomplete };
 }
 
-export function colourStringFromPacked(packed: number | undefined): string | undefined {
-  if (packed === undefined || packed < 0) return undefined;
-  return `rgb(${(packed >> 16) & 255}, ${(packed >> 8) & 255}, ${packed & 255})`;
-}
-
-export function colourStringFromRgb(rgb: readonly [number, number, number]): string {
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-}
-
 export function buildCountryLooksFromIdentity(
   index: IdentityIndex | null,
   tags: readonly string[],
@@ -192,7 +184,7 @@ export function buildCountryLooksFromIdentity(
             : res.name.kind === 'pending'
               ? 'Loading…'
               : undefined;
-        const color = includeColours && res.color.kind === 'known' ? colourStringFromRgb(res.color.value) : undefined;
+        const color = includeColours && res.color.kind === 'known' ? authoredHex(res.color.value) : undefined;
         let flag: string | undefined;
         let flagPending = false;
         if (res.flagChoice.kind === 'known') {

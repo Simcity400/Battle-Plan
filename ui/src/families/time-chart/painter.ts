@@ -1,6 +1,6 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import {
+  DEFAULT_FAMILY_THEME,
   drawArtSlot,
   drawCrosshairLine,
   drawDateTab,
@@ -11,36 +11,13 @@ import {
   drawSeriesMissingStrip,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { parseColor } from '../../shell/appearance/color.ts';
+import { rgbaColor } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { ChartArtSlot, TimeChartModel, TimeChartSeriesModel } from './model.ts';
-
-const DEFAULT_THEME: FamilyTheme = {
-  surface: '#111111',
-  raised: '#262626',
-  dark: true,
-  text: '#f5f5f5',
-  muted: '#929292',
-  line: 'rgba(245, 245, 245, 0.18)',
-  lineSoft: 'rgba(245, 245, 245, 0.055)',
-  accent: '#4f86f7',
-  blue: '#4f86f7',
-  red: CHART_MEASURE_COLOURS.short,
-  shortage: CHART_MEASURE_COLOURS.shortInk,
-  amber: CHART_MEASURE_COLOURS.politicalPower,
-  green: CHART_MEASURE_COLOURS.supplyOk,
-  grey: '#929292',
-  hatch: 'rgba(245, 245, 245, 0.17)',
-  hatchEdge: 'rgba(245, 245, 245, 0.12)',
-  font: "'Segoe UI', system-ui, sans-serif",
-  fontSize: { small: 11, body: 12 },
-  lineWidth: 1,
-  hatchSpacing: 5,
-};
 
 function artUrl(slot: ChartArtSlot | undefined): string | null {
   return slot?.art.status === 'ready' && slot.art.url ? slot.art.url : null;
@@ -224,7 +201,7 @@ export function drawTimeChart(
   inspectKey: string | null | undefined,
   dpr: number,
 ): void {
-  const theme = themeInput ?? DEFAULT_THEME;
+  const theme = themeInput ?? DEFAULT_FAMILY_THEME;
   const tokens = resolveKitTokens(theme);
   const parsedInspect = parseChartInspect(inspectKey);
   const hoverHour = parsedInspect?.kind === 'plot' || parsedInspect?.kind === 'line'
@@ -243,7 +220,7 @@ export function drawTimeChart(
   const labelNameFont = `500 ${theme.fontSize.body}px ${theme.font}`;
   const labelValueFont = `600 ${theme.fontSize.body}px ${theme.font}`;
   const overlayFont = `${theme.fontSize.body}px ${theme.font}`;
-  const textSecondary = tokens.dark ? '#d4d4d4' : theme.muted;
+  const textSecondary = tokens.textSecondary;
 
   if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
     drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
@@ -439,10 +416,10 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const rgb = parseColor(s.color);
-          if (rgb) {
-            grad.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(0.26 * opacity).toFixed(3)})`);
-            grad.addColorStop(1, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(0.02 * opacity).toFixed(3)})`);
+          const topStop = rgbaColor(s.color, Number((0.26 * opacity).toFixed(3)), '');
+          if (topStop) {
+            grad.addColorStop(0, topStop);
+            grad.addColorStop(1, rgbaColor(s.color, Number((0.02 * opacity).toFixed(3)), s.color));
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
@@ -612,7 +589,7 @@ export function drawTimeChart(
       drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, toArtSlotState(m.marker.icon.art, m.marker.icon.label), theme, { radius: 0 });
     } else {
       ctx.save();
-      ctx.strokeStyle = m.marker.tickColor ?? (tokens.dark ? 'rgba(245, 245, 245, 0.42)' : 'rgba(15, 23, 42, 0.42)');
+      ctx.strokeStyle = m.marker.tickColor ?? tokens.markerTick;
       ctx.lineWidth = 1.6;
       ctx.lineCap = 'round';
       ctx.beginPath();
