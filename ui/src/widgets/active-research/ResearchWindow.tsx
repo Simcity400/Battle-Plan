@@ -51,7 +51,7 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, stat
   return <FloatingPanel title="Research" label="research details" anchor={anchor} onClose={onClose} className="research-window">
     <div className="dossier">
       <header className="dossier-hero">
-        <span className="dossier-art">{shown.icon ? <img src={shown.icon} alt="" /> : <ArtFallback icon="flask" />}</span>
+        <span className="dossier-art">{shown.icon ? <img src={shown.icon} alt="" /> : <ArtFallback icon="flask" name={shown.name} />}</span>
         <div className="dossier-title">
           <h3>{shown.name}</h3>
         </div>

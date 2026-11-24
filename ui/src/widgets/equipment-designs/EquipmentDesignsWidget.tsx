@@ -89,7 +89,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const obsolete = useMemo(() => rows.filter(row => row.obsolete), [rows]);
   const columns = useCallback((withObsolete: boolean): readonly TableColumn<DesignRow>[] => [
     { key: 'design', header: 'Design', label: 'Design', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? UNNAMED,
-      render: row => <span className="design-name">{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="layers" />}
+      render: row => <span className="design-name">{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="layers" name={row.name ?? UNNAMED} />}
         <span><b>{row.name ?? UNNAMED}</b>{row.type && <small> {row.type}</small>}</span></span> },
     { key: 'firstSeen', header: 'First seen', label: 'First seen', numeric: true, width: 'max-content', renderMissing: true, priority: withObsolete ? 1 : undefined,
       value: row => row.firstSeen.hour, text: row => seenText(row.firstSeen, dayLabel), render: row => seenText(row.firstSeen, dayLabel) },

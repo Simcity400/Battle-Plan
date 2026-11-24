@@ -175,7 +175,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     const outcome = going ? live ? null : progressText(item, values) : outcomeText(item);
     const progress = operationProgress(item, values);
     return <>
-      <span className="log-art" aria-hidden="true">{type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="target" reason={type?.missing ?? undefined} />}</span>
+      <span className="log-art" aria-hidden={type?.icon ? true : undefined}>{type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="target" name={operationName(type, typesPending)} reason={type?.missing ?? undefined} />}</span>
       <span className="log-text">
         {item.owner.tag && <CountryFlagUrl className="log-flag" url={owner.flag} detail={owner.flagDetail} reason={owner.flagReason} pending={owner.flagPending} />}<b>{owner.name}</b>
         <span className="espionage-muted">{wording.action}</span><span data-state={!type && typesPending ? 'loading' : undefined}>{operationName(type, typesPending)}</span>

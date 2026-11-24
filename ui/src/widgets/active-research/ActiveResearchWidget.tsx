@@ -100,7 +100,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
           if (event.key !== 'Enter') return;
           event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(item, box.left + 40, box.bottom);
         }}>
-        <span className="active-row-art is-open" onClick={click}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
+        <span className="active-row-art is-open" onClick={click}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" name={name} />}</span>
         <span className="active-row-name is-open" onClick={click}>{name}</span>
         <ProgressMeter value={numbers.fraction} state="live" label={`${name} progress`} />
         <span className="active-row-percent" data-paint="percent">{numbers.percent}</span>

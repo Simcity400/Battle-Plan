@@ -36,12 +36,12 @@ export function SkillStars({ level, maximum }: { level: number | null; maximum: 
   </span>;
 }
 
-export function LeaderPortrait({ art }: { art?: Pick<UnitLeaderPortrait, 'image' | 'missing'> | Error }) {
+export function LeaderPortrait({ art, name }: { art?: Pick<UnitLeaderPortrait, 'image' | 'missing'> | Error; name?: string }) {
   const portrait = art instanceof Error ? undefined : art?.image;
   const [failed, setFailed] = useState<string>();
   const broken = !!portrait && failed === portrait;
   return <span className="leader-portrait" data-detail={art instanceof Error ? undefined : art?.missing ?? undefined}>
-    {portrait && !broken ? <img src={portrait} alt="" onError={() => setFailed(portrait)} /> : <ArtFallback icon="helmet" failure={art instanceof Error ? art : undefined}
+    {portrait && !broken ? <img src={portrait} alt="" onError={() => setFailed(portrait)} /> : <ArtFallback icon="helmet" name={name} failure={art instanceof Error ? art : undefined}
       reason={broken ? 'Portrait could not be drawn.' : art instanceof Error || art?.missing == null ? undefined : 'Portrait unavailable.'} />}
   </span>;
 }
@@ -71,5 +71,5 @@ function identityContent({ name, rank, hasOwner, level, maximum, countryName, na
 }
 
 export function LeaderIdentity(props: IdentityProps) {
-  return identityContent(props, <LeaderPortrait art={props.portraitFailure ?? { image: props.image ?? null, missing: props.portraitMissing ?? null }} />);
+  return identityContent(props, <LeaderPortrait name={props.name} art={props.portraitFailure ?? { image: props.image ?? null, missing: props.portraitMissing ?? null }} />);
 }

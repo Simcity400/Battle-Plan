@@ -6,7 +6,6 @@
 .trade-drill { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; }
 .trade-drill-chart { flex: 1; min-height: 180px; }
 .trade-resource-icon { width: 16px; height: 16px; flex: none; object-fit: contain; }
-.trade-resource-icon.is-missing { border-radius: 50%; background: color-mix(in srgb, var(--text) 8%, transparent); }
 .trade-country { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; }
 .trade-country-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: var(--space-3) var(--space-4); }
 .trade-country-side { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }

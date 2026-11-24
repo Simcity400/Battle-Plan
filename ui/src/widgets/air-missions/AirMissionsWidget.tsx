@@ -3,6 +3,7 @@ import { failureDetails, type Failure } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
@@ -159,5 +160,5 @@ function WingTable({ reply, error, read, missions, live, hoursPerSecond }: { rep
 }
 
 function MissionHeader({ name, icon }: { name: string; icon: string | null }) {
-  return <span className="air-missions-head">{icon && <img src={icon} alt="" />}<span>{name}</span></span>;
+  return <span className="air-missions-head">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="plane" name={name} className="air-missions-icon" />}<span>{name}</span></span>;
 }

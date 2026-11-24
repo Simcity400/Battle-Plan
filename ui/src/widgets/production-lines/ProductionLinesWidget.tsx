@@ -258,7 +258,7 @@ function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
         title={variant?.nameUnknown ?? undefined} style={{ transform: `translateY(calc(var(--production-head) + ${row.slot} * var(--production-row)))` }}>
         {more && <span className="production-number is-muted">{line.priority + 1}</span>}
         <span className="production-equipment">
-          {art ? <img className="production-art" src={art} alt="" /> : <ArtFallback className="production-art" icon="hammer" />}
+          {art ? <img className="production-art" src={art} alt="" /> : <ArtFallback className="production-art" icon="hammer" name={name} />}
           <span><b>{name}</b>{variant?.typeName && variant.typeName !== name && <small>{variant.typeName}</small>}</span>
         </span>
         <span className="production-cell"><span><b className="production-number" data-paint="active" data-line={line.handle} /><small data-paint="requested" data-line={line.handle} /></span>
@@ -272,7 +272,7 @@ function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
             onClick={() => onBreakdown(line.handle, 'output')} data-paint="weekly" data-line={line.handle} /></span>
         <span className={`production-number is-number${muted}`} data-paint="output" data-line={line.handle} />
         {more && <><span className="production-number is-number" data-paint="cost" data-line={line.handle} />
-          <span className="production-organisation">{orgArt ? <img src={orgArt} alt="" /> : line.mio !== '0' && <ArtFallback icon="factory" />}
+          <span className="production-organisation">{orgArt ? <img src={orgArt} alt="" /> : line.mio !== '0' && <ArtFallback icon="factory" name={organisationText(organisation, line.mio)} />}
             <small>{organisationText(organisation, line.mio)}</small></span></>}
       </div>;
     })}

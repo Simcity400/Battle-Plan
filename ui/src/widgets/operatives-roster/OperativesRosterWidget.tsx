@@ -104,7 +104,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
           const operative = row.operative;
           const owner = operative.owner.tag ? labelAt(labelHour(row, hour))(operative.owner.tag) : null;
           const departure = departureText(row);
-          return <span className="operative-person">{operative.portrait !== null ? <img src={row.artwork[operative.portrait]} alt="" /> : <ArtFallback icon="helmet" />}
+          return <span className="operative-person">{operative.portrait !== null ? <img src={row.artwork[operative.portrait]} alt="" /> : <ArtFallback icon="helmet" name={operativeName(operative)} />}
             <span className="operative-cell-detail"><span>{comparison && owner
               ? <CountryCell name={operativeName(operative)} flag={owner.flag} flagReason={owner.flagReason} flagPending={owner.flagPending} /> : operativeName(operative)}</span>
               {departure && <small>{departure}</small>}

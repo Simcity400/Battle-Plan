@@ -87,7 +87,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const named = (placeholder: string): ReactNode => !found ? <span className="construction-ellipsis">A country not identified</span>
       : found.known === undefined ? <span className={`skeleton ${placeholder}`} aria-hidden="true" /> : <span className="construction-ellipsis">{found.name}</span>;
     return <>
-      {artwork && <span className="log-art" aria-hidden="true">{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" />}</span>}
+      {artwork && <span className="log-art" aria-hidden={card.item?.icon ? true : undefined}>{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" name={decisionName(card)} />}</span>}
       <span className="construction-title">
         <span className="construction-building"><span className={`construction-name${card.item?.name ? '' : ' is-muted'}`} data-tooltip={card.item?.name ? undefined : reasonsOf(card.item).nameMissing}>
           <ScriptedText text={decisionName(card)} reason={reasonsOf(card.item).gaps} /></span></span>

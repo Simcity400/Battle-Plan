@@ -53,7 +53,7 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   }, [diagnostics, onDiagnostics]);
   const columns = useMemo<readonly TableColumn<GoalRow>[]>(() => [
     { key: 'goal', header: 'Goal', label: 'Goal', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name,
-      render: row => <span className="faction-goal-name" title={row.name}>{row.definition.icon ? <img src={row.definition.icon} alt="" /> : <ArtFallback icon="target" />}
+      render: row => <span className="faction-goal-name" title={row.name}>{row.definition.icon ? <img src={row.definition.icon} alt="" /> : <ArtFallback icon="target" name={row.name} />}
         <span className={row.definition.reason ? 'faction-goal-missing' : undefined}>{row.name}</span></span> },
     { key: 'progress', header: 'Progress', label: 'Progress', numeric: true, width: 'minmax(120px, 1fr)', priority: 2, bar: 1,
       value: () => null, paint: value => `${((value as number) * 100).toFixed(1)}%` },

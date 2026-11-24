@@ -58,8 +58,8 @@ type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpP
 const laneInteractive = (item: ResearchItem) => item.kind !== 'opened' && item.kind !== 'closed';
 const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.databaseIndex : null;
 
-function Art({ icon, className }: { icon: string | undefined; className: string }) {
-  return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
+function Art({ icon, name, className }: { icon: string | undefined; name?: string; className: string }) {
+  return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" name={name} />}</span>;
 }
 
 function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent | null) {
@@ -85,7 +85,7 @@ function LaneRow({ item, slots, text, dimmed, tip, untip, jump, onOpen }: {
   return <button type="button" className={className} aria-label={`${name}, completed ${date}, show time breakdown`}
     onClick={event => { const target = event.currentTarget; untip(); onOpen({ slotIndex: item.slot.index, entry: item.entry, hour: item.hour }, () => target.isConnected ? target.getBoundingClientRect() : null); }}
     {...tipProps(tip, untip, item.key, () => completedTooltip(completedRow(slots, item.slot, item.entry, item.hour), text))}
-    {...jump(item.hour)}><Art icon={text.icon(token)} className="research-cell-art" /><span className="research-cell-name">{name}</span><small>{date}</small></button>;
+    {...jump(item.hour)}><Art icon={text.icon(token)} name={name} className="research-cell-art" /><span className="research-cell-name">{name}</span><small>{date}</small></button>;
 }
 
 function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }: {
@@ -121,7 +121,7 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
     return currentTooltip(token, slot.index, progress, slotNumbers(current, reply.hour).left, !!entry, named, null, databaseIndex);
   };
   const body = <>
-    <Art icon={text.icon(token)} className="research-now-art" /><b>{name}</b>
+    <Art icon={text.icon(token)} name={name} className="research-now-art" /><b>{name}</b>
     {numbers.fraction !== null && <small className="is-progress" data-paint="percent">{numbers.percent}</small>}
     {numbers.fraction !== null && <span className="research-now-meter"><i data-paint="bar" style={{ width: `${numbers.fraction * 100}%` }} /></span>}
   </>;
@@ -294,7 +294,7 @@ function ResearchList({ rows, text, looks, sort, density, narrow, setOption, men
     { key: 'technology', label: 'Technology', header: 'Technology', width: 'minmax(var(--table-name-min), 1fr)',
       value: row => row.kind === 'gap' ? null : text.name(row.token, rowIndex(row)), renderMissing: true,
       render: row => row.kind === 'gap' ? <span className="research-list-gap">{researchDateRange(row.hour, row.lastHour)}</span>
-        : <span className="research-list-tech"><Art icon={text.icon(row.token)} className="research-list-art" /><span>{text.name(row.token, rowIndex(row))}</span></span> },
+        : <span className="research-list-tech"><Art icon={text.icon(row.token)} name={text.name(row.token, rowIndex(row))} className="research-list-art" /><span>{text.name(row.token, rowIndex(row))}</span></span> },
     { key: 'folder', label: 'Folder', header: 'Folder', width: 'minmax(6em, 0.6fr)', priority: 2,
       value: row => row.kind === 'gap' ? null : researchFolderAt(looks, row.token, rowIndex(row))?.name ?? null, renderMissing: true,
       render: row => { const look = row.kind === 'gap' ? undefined : researchFolderAt(looks, row.token, rowIndex(row));

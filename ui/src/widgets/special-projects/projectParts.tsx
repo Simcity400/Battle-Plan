@@ -5,5 +5,5 @@ import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/
 export function Scientist({ reply, info }: { reply: SpecialProjectsReply; info: ProjectPresentation }) {
   const person = reply.people[info.scientist];
   if (!person.name) return <span className="special-project-scientist is-unassigned">{scientistName(reply, info)}</span>;
-  return <span className="special-project-scientist">{person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" />}<span>{person.name}</span></span>;
+  return <span className="special-project-scientist">{person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" name={person.name} />}<span>{person.name}</span></span>;
 }

@@ -150,8 +150,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
       ? <span className={`skeleton ${placeholder}`} aria-hidden="true" /> : <span className="construction-ellipsis">{label.name}</span>;
     const flag = <CountryFlagUrl className="log-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />;
     return <>
-      <span className="log-art" aria-hidden="true">
-        {type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="factory" />}
+      <span className="log-art" aria-hidden={type?.icon ? true : undefined}>
+        {type?.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="factory" name={typeName(type)} />}
         {(at.repairing || (at.status !== 'building' && at.status !== 'unread' && at.kind === 'repair')) && manifest.repairIcon && <img className="log-art-overlay" src={manifest.repairIcon} alt="" />}
       </span>
       <span className="construction-title">

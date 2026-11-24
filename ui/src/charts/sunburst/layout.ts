@@ -6,7 +6,7 @@ import { fractionSum } from '../valueAxis.ts';
 
 
 export interface SunburstKey {
-  id: string; label: string; icon?: string | null;
+  id: string; label: string; icon?: string | null; iconMissing?: string | null;
   countryFlag?: TooltipRow['countryFlag'];
   colour?: string;
   last?: boolean;
@@ -41,6 +41,8 @@ export interface SunburstNode {
   key: string;
   label: string;
   icon?: string;
+  expectsArt?: boolean;
+  iconMissing?: string;
   countryFlag?: TooltipRow['countryFlag'];
   colour?: string;
   last?: boolean;
@@ -104,7 +106,7 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
         const id = `${node.id}${SEPARATOR}${key.id}`;
         let child = byId.get(id);
         if (!child) {
-          child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, countryFlag: key.countryFlag, colour: key.colour, last: key.last, keepZero: key.keepZero,
+          child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, expectsArt: key.icon !== undefined, iconMissing: key.iconMissing ?? undefined, countryFlag: key.countryFlag, colour: key.colour, last: key.last, keepZero: key.keepZero,
             stretch: key.stretch,
             depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), aggregateCount: 0, count: 0 };
           byId.set(id, child);

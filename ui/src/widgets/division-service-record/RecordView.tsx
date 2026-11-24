@@ -43,13 +43,13 @@ export default function RecordView({ runtime, widget, trackId, division, time, s
   if (!data) return <WidgetState kind="loading" label="Loading the record…" read={state} />;
   if (data.absent) return <WidgetState kind="unavailable" message="This division is not in service at this date." />;
   const name = divisionName(data.name);
-  const renderRow = ({ item }: LogRow<RecordItem>) => <><span className="log-art" aria-hidden="true">
-    {item.entry.award ? <ArtFallback icon="star" /> : data.template?.icon ? <img src={data.template.icon} alt="" /> : <ArtFallback icon="helmet" />}</span>
+  const renderRow = ({ item }: LogRow<RecordItem>) => <><span className="log-art" aria-hidden={!item.entry.award && data.template?.icon ? true : undefined}>
+    {item.entry.award ? <ArtFallback icon="star" name={entryText(item)} /> : data.template?.icon ? <img src={data.template.icon} alt="" /> : <ArtFallback icon="helmet" name={data.template?.name ?? name} />}</span>
     <span className="log-text">{entryText(item)}</span></>;
   return <div className="service-record" ref={state.root}>
     {caption && <p className="service-record-subject">{caption}</p>}
     <div className="service-record-header" data-tooltip={data.division}>
-      {data.template?.icon ? <img src={data.template.icon} alt="" /> : <ArtFallback icon="helmet" />}
+      {data.template?.icon ? <img src={data.template.icon} alt="" /> : <ArtFallback icon="helmet" name={data.template?.name ?? name} />}
       <strong title={name}>{name}</strong>
       <small title={headerDetail(data.template?.name ?? null, data.facts)}>{headerDetail(data.template?.name ?? null, data.facts)}</small>
     </div>

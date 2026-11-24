@@ -40,8 +40,8 @@ const disclosureKey = (entry: FocusEntry, readHour: number) => JSON.stringify([e
 
 export interface FocusLiveProgress { at(): FocusProgressState | null; subscribe(changed: () => void): () => void }
 
-export function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large' | 'small' }) {
-  return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="target" />}</span>;
+export function FocusArt({ art, name, size }: { art: Artwork | undefined; name?: string; size: 'large' | 'small' }) {
+  return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="target" name={name ?? art?.name} />}</span>;
 }
 
 function focusErrors(failure: Failure | undefined, failures: readonly Failure[] = []): Failure[] {
@@ -71,11 +71,12 @@ function sameCompletion(a: CompletionProps, b: CompletionProps): boolean {
 export const FocusCompletion = memo(function FocusCompletion({ entry, art, reason, failure, failures, titleFailure, pending, description, open, onToggle }: CompletionProps) {
   const errors = focusErrors(failure, failures);
   const date = entry.completedByHour == null ? null : gameDate(entry.completedByHour);
+  const title = contentTitle((titleFailure ?? (pending && art?.name == null ? undefined : art ? art.name : failure)), entry.token, 'Focus name unavailable', pending);
   return <details data-detail={failureDetails(errors)} className="focus-details" open={open} onToggle={event => onToggle(event.currentTarget.open)}>
     <summary className="focus-row">
       <span className="focus-number" aria-label={`Focus ${entry.ordinal + 1}`}>{String(entry.ordinal + 1).padStart(2, '0')}</span>
-      <FocusArt art={art} size="small" />
-      <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token, reason)}>{contentTitle((titleFailure ?? (pending && art?.name == null ? undefined : art ? art.name : failure)), entry.token, 'Focus name unavailable', pending)}</strong>
+      <FocusArt art={art} name={title} size="small" />
+      <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token, reason)}>{title}</strong>
         <span className="focus-date" data-tooltip={date == null ? 'Completion date unknown: the list was first read here, or changed other than by a completion.'
           : 'Completed by this date. Focuses are read once a game day, so it may have finished a day or so earlier.'}>
           {date == null ? 'Date not recorded' : formatDate(date)}
@@ -138,7 +139,7 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
   const name = contentTitle((titleFailure ?? (pending && art?.name == null ? undefined : art ? art.name : failure)), token, 'Focus name unavailable', pending);
   const timed = !!order.current && duration != null;
   return <div data-detail={failureDetails(errors)} className={`focus-now${order.paused ? ' is-paused' : ''}`} aria-live="polite">
-    <FocusArt art={art} size="large" />
+    <FocusArt art={art} name={name} size="large" />
     <span className="focus-now-text"><strong data-tooltip={contentTitleHint(token, reason)}>{name}</strong>
       <FocusFailureNotices errors={errors} />
       <span className="focus-now-status">{live && !continuous && !order.paused && <span className="live-dot" />}{status}
@@ -287,13 +288,16 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
         ? `${item.entry.ordinal}:${completedHour(item.entry)}` : `unfinished:${item.token}`} estimate={52} label="Completed focuses in order" className="focus-list" scrollRef={list}
         isInteractive={isCompletedFocus} rowProps={item => item.kind === 'unfinished' ? { className: 'focus-entry is-unfinished' }
           : ({ className: `focus-entry${item.entry.ordinal === newest ? ' is-newest' : ''}`, ...rowJumpProps(runtime, track.id, item.entry.completedByHour, menu.open) })}>{item => {
-        if (item.kind === 'unfinished') return <div className="focus-row">
+        if (item.kind === 'unfinished') {
+          const title = contentTitle((currentArt.titleFailure ?? (currentArt.pending && currentArt.art?.name == null ? undefined : currentArt.art?.name)), item.token, 'Focus name unavailable', currentArt.pending);
+          return <div className="focus-row">
           <span className="focus-number" aria-hidden="true">{String(order.completed.length + 1).padStart(2, '0')}</span>
-          <FocusArt art={currentArt.art} size="small" />
-          <span className="focus-label"><strong data-detail={currentArt.failure?.message} data-tooltip={contentTitleHint(item.token, currentArt.reason)}>{contentTitle((currentArt.titleFailure ?? (currentArt.pending && currentArt.art?.name == null ? undefined : currentArt.art?.name)), item.token, 'Focus name unavailable', currentArt.pending)}</strong>
+          <FocusArt art={currentArt.art} name={title} size="small" />
+          <span className="focus-label"><strong data-detail={currentArt.failure?.message} data-tooltip={contentTitleHint(item.token, currentArt.reason)}>{title}</strong>
             <span>{order.paused ? 'Paused' : 'In progress'}</span></span>
           <FocusFailureNotices errors={focusErrors(currentArt.failure, currentArt.failures)} />
         </div>;
+        }
         const entry = item.entry;
         const readHour = completedHour(entry), textKey = nameKey(readHour, entry.token), disclosure = disclosureKey(entry, readHour);
         const { art, reason, failure, failures, titleFailure, pending } = at('national', entry.token, readHour);

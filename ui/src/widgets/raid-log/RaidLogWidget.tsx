@@ -105,7 +105,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     const icon = raidIcon(data, row.item.episode);
     const { raider, victim } = labels(row);
     return <>
-      <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden="true" title={icon ? undefined : row.item.episode.iconMissing ?? undefined}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="target" />}</span>
+      <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden={icon ? true : undefined}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="target" name={raidTypeText(data, row.item.episode)} reason={row.item.episode.iconMissing ?? undefined} />}</span>
       <span className="log-text">
         {row.item.episode.raider !== null && <CountryFlagUrl className="log-flag" url={raider.flag} detail={raider.flagDetail} reason={raider.flagReason} pending={raider.flagPending} />}<b>{raider.name}</b> targets{' '}
         {row.item.episode.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} detail={victim.flagDetail} reason={victim.flagReason} pending={victim.flagPending} />}<b title={row.item.episode.victimMissing ?? undefined}>{victim.name}</b> at {targetText(row.item.episode, names)}

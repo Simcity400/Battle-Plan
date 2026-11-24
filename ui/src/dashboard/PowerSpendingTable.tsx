@@ -184,7 +184,7 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
       render: row => {
         const image = iconOf(row);
         return <span className="spending-item" title={row.label}>
-          {artwork && (image ? <img src={image} alt="" /> : <ArtFallback icon={row.month === null || row.icon ? icon : 'history'} className="spending-item-art" />)}
+          {artwork && (image ? <img src={image} alt="" /> : <ArtFallback icon={row.month === null || row.icon ? icon : 'history'} name={row.label} className="spending-item-art" />)}
           <span>{row.label}</span>{row.month !== null && <small><LiveText live={texts} at={row.key} /></small>}
         </span>;
       } },

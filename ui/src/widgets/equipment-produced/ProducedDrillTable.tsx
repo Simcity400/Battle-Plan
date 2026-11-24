@@ -36,7 +36,7 @@ export default function ProducedDrillTable({ runtime, gate, track, active, tag, 
       render: row => {
         const picture = pictures.get(`type:${row.type}`);
         return <span className={`produced-equipment${row.type === chartType ? ' is-charted' : ''}`} title={picture?.name ?? row.label}>
-          {picture?.icon ? <img className="produced-art" src={picture.icon} alt="" /> : <ArtFallback icon="hammer" className="produced-art" />}
+          {picture?.icon ? <img className="produced-art" src={picture.icon} alt="" /> : <ArtFallback icon="hammer" name={picture?.name ?? row.label} className="produced-art" />}
           <span><b>{row.label}</b>{row.models && <small>{row.models}</small>}</span>
         </span>;
       } },

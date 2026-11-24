@@ -129,7 +129,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
         const start = takenOn(spirit);
         if (start != null) menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, start)]);
       }}>
-      {spirit.icon ? <img src={spirit.icon} alt={spirit.name} /> : <ArtFallback className="spirit-missing" icon="sparkle" />}
+      {spirit.icon ? <img src={spirit.icon} alt={spirit.name} /> : <ArtFallback className="spirit-missing" icon="sparkle" name={spirit.name} />}
       <span className="spirit-name">{spirit.name}</span>
       {!out && <span id={`${widgetOwner}-${spirit.token}`} className="sr-only">{spoken(spirit)}</span>}
     </li>)}

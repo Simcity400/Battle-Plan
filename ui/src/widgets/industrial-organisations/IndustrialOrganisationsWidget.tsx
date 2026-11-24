@@ -88,7 +88,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
     return [
       { key: 'organisation', header: 'Organisation', label: 'Organisation', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? NAME_UNAVAILABLE,
         render: row => <span className="mio-name" data-tooltip={contentTitleHint(row.token)}>
-          {row.icon ? <img className="mio-icon" src={row.icon} alt="" /> : <span className="mio-icon"><ArtFallback icon="factory" /></span>}
+          {row.icon ? <img className="mio-icon" src={row.icon} alt="" /> : <span className="mio-icon"><ArtFallback icon="factory" name={row.name ?? NAME_UNAVAILABLE} /></span>}
           <b>{row.name ?? NAME_UNAVAILABLE}</b></span> },
       { key: 'size', header: 'Size', label: 'Size', numeric: true, width: 'max-content', renderMissing: true, value: row => row.size, render: row => row.size === null ? '—' : row.size.toString() },
       { key: 'funds', header: 'Funds', label: 'Funds', numeric: true, width: 'max-content', value: () => null, paint: value => fundsText(fundsRaw(value as number)) },

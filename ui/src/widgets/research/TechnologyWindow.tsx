@@ -59,7 +59,7 @@ export default function TechnologyWindow({ link, onClose, ...shown }: Shown & { 
   return <FloatingPanel title="Technology" label={`${name} technology`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="technology-window">
     <div className="dossier">
       <header className="dossier-hero">
-        <span className="dossier-art">{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="flask" />}</span>
+        <span className="dossier-art">{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="flask" name={name} failure={failed} />}</span>
         <div className="dossier-title">
           <h3 data-tooltip={contentTitleHint(link.token)}>{name}</h3>
         </div>

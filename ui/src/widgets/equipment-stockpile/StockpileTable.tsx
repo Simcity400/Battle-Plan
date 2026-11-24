@@ -70,7 +70,7 @@ export default function StockpileTable({ data, hour, at, live, shownAt, included
       render: row => {
         const picture = art.get(`type:${row.group.key}`);
         return <span className="stockpile-equipment">
-          {picture?.icon ? <img className="stockpile-art" src={picture.icon} alt="" /> : <span className="stockpile-art"><ArtFallback icon="hammer" /></span>}
+          {picture?.icon ? <img className="stockpile-art" src={picture.icon} alt="" /> : <span className="stockpile-art"><ArtFallback icon="hammer" name={row.group.label} /></span>}
           <span><b>{row.group.label}</b></span>
         </span>;
       } },

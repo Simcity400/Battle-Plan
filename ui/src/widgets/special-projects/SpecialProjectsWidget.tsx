@@ -47,8 +47,8 @@ import type { ProjectRecord, SpecialProjectsReply } from '../../generated/dashbo
 
 const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 
-const ProjectTile = ({ icon, onClick }: { icon: string | null; onClick?: (event: MouseEvent<HTMLElement>) => void }) =>
-  <span className={onClick ? 'blueprint-tile is-open' : 'blueprint-tile'} onClick={onClick}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
+const ProjectTile = ({ icon, name, reason, onClick }: { icon: string | null; name: string; reason?: string | null; onClick?: (event: MouseEvent<HTMLElement>) => void }) =>
+  <span className={onClick ? 'blueprint-tile is-open' : 'blueprint-tile'} onClick={onClick}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" name={name} reason={reason} />}</span>;
 
 const Section = ({ label, count, children }: { label: string; count: number; children: ReactNode }) =>
   <><p className="special-project-section">{label}<span>{usNumber.format(count)}</span></p>{children}</>;
@@ -81,7 +81,7 @@ function CurrentList({ reply, at, item, open, clock, feed, placement }: { clock:
         return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
           style={progressStyle(run.progress, painted) as CSSProperties | undefined} {...item(card)} aria-label={undefined}
           aria-labelledby={['name', 'progress', 'iterations'].map(part => `${valueId}-${card.project.id}-${part}`).join(' ')}>
-          <ProjectTile icon={info.icon} onClick={event => open(card, event)} />
+          <ProjectTile icon={info.icon} name={info.name} reason={info.iconMissing} onClick={event => open(card, event)} />
           <strong className="special-project-name is-open" id={`${valueId}-${card.project.id}-name`} onClick={event => open(card, event)}>{info.name}</strong>
           <span className="special-project-who">
             {run.state === 'paused' && <b className="special-project-state is-paused">Paused</b>}
@@ -95,7 +95,7 @@ function CurrentList({ reply, at, item, open, clock, feed, placement }: { clock:
       })}</Section> : <p data-panel-label="none" className="special-project-none">No projects in progress.</p>}
       {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>
         {completed.map(card => <div key={card.project.id} className="special-project-row special-project-done" {...item(card)}>
-          <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} />
+          <ProjectTile icon={card.info.icon} name={card.info.name} reason={card.info.iconMissing} onClick={event => open(card, event)} />
           <strong className="special-project-name is-open" data-panel-label={card.project.id} onClick={event => open(card, event)}>{card.info.name}</strong>
           <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
           <span className="special-project-when">{readLabel(statusRead(reply, card.project, at), at) ?? 'Completed'}</span>
@@ -106,7 +106,7 @@ function CurrentList({ reply, at, item, open, clock, feed, placement }: { clock:
             <span className="special-project-who">Already complete when first recorded</span>
             <svg className="special-project-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary>
           <div className="special-project-earlier-grid">{earlier.map(card => <div key={card.project.id} className="special-project-earlier-item" {...item(card)}>
-            <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} /><span className="is-open" onClick={event => open(card, event)}>{card.info.name}</span></div>)}</div>
+            <ProjectTile icon={card.info.icon} name={card.info.name} reason={card.info.iconMissing} onClick={event => open(card, event)} /><span className="is-open" onClick={event => open(card, event)}>{card.info.name}</span></div>)}</div>
         </details>}
       </Section>}
     </div>

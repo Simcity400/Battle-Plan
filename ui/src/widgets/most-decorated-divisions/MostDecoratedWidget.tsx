@@ -67,7 +67,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   const columns = useMemo<readonly TableColumn<CareerRow>[]>(() => [
     { key: 'division', header: 'Division', label: 'Division', sortable: false, width: 'minmax(var(--table-name-min), 2fr)', value: row => divisionName(row.name),
       render: row => { const template = templates.get(row.template); const named = country(row);
-        return <span className="decorated-division" data-tooltip={row.division}>{template?.icon ? <img src={template.icon} alt="" /> : <ArtFallback icon="helmet" />}
+        return <span className="decorated-division" data-tooltip={row.division}>{template?.icon ? <img src={template.icon} alt="" /> : <ArtFallback icon="helmet" name={template?.name ?? divisionName(row.name)} />}
           <span className="decorated-division-text"><span>{divisionName(row.name)}</span>
             <CountryCell {...named} /></span></span>; } },
     { key: 'medals', header: 'Medals', label: 'Medals', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1.5fr)', align: 'start', value: medalsValue, renderMissing: true,

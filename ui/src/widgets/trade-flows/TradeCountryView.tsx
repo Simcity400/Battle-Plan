@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import ArtFallback from '../../components/ArtFallback';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart, LiveDrillParts } from '../../charts/drill/DrillParts';
 import { mapLive } from '../../charts/live';
@@ -36,7 +37,7 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a === b || a.len
 
 export function resourceLegendItems(resources: readonly ResourceInfo[], colours: ReadonlyMap<number, string>, other: string): LegendItem[] {
   return resources.map(item => ({ id: String(item.id), label: resourceName(item), color: colours.get(item.id) ?? other,
-    flag: item.icon ? <img className="trade-resource-icon" src={item.icon} alt="" /> : <span className="trade-resource-icon is-missing" aria-hidden="true" /> }));
+    flag: item.icon ? <img className="trade-resource-icon" src={item.icon} alt="" /> : <ArtFallback className="trade-resource-icon" icon="layers" name={resourceName(item)} /> }));
 }
 
 export default function TradeCountryView({ holder, trade, resources, track, runtime, measure, from, hour, live, extent, colours, tokens, active, onPick, onContextMenu }: {

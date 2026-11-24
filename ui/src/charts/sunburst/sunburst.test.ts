@@ -882,3 +882,30 @@ test('grouping and folding retain dated country flags without marking aggregates
   }
   assert.equal(walk(tree).filter(node => node.countryFlag !== undefined).length, 3);
 });
+
+test('missing item artwork in a sunburst legend renders a named ArtFallback while text-only levels omit placeholders', async () => {
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'sunburst-art-theme', enforce: 'pre', transform(_source, id) {
+      if (id.replaceAll('\\', '/').endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { small: 10, body: 12 } });";
+    } }] });
+  try {
+    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
+    const withMissing = renderToStaticMarkup(createElement(Sunburst, {
+      label: 'Buildings', root: ROOT, active: true, fold: false,
+      items: [{ path: [{ id: 'reactor', label: 'Nuclear Reactor', icon: null }], value: 10, exact: 10n }],
+      text: { format: (_value, exact) => String(exact), unit: 'IC', valueLabel: 'Spent' },
+      settings: { growth: 'share', labels: false, legend: true, breadcrumb: false, dimming: true },
+    }));
+    assert.match(withMissing, /class="art-fallback sunburst-icon"/);
+    assert.match(withMissing, /aria-label="Nuclear Reactor — Art not in the current installation\."/);
+
+    const textOnly = renderToStaticMarkup(createElement(Sunburst, {
+      label: 'Categories', root: ROOT, active: true, fold: false,
+      items: [{ path: [{ id: 'cat', label: 'Industry' }], value: 10, exact: 10n }],
+      text: { format: (_value, exact) => String(exact), unit: 'IC', valueLabel: 'Spent' },
+      settings: { growth: 'share', labels: false, legend: true, breadcrumb: false, dimming: true },
+    }));
+    assert.doesNotMatch(textOnly, /art-fallback/);
+  } finally { await vite.close(); }
+});

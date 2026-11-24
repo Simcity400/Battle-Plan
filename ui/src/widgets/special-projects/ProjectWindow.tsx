@@ -53,12 +53,12 @@ function Summary({ reply, card, hour, feed, active, clock }: { reply: SpecialPro
   const read = readLabel(statusRead(reply, project, hour), hour);
   return <>
     <header className="dossier-hero">
-      <span className="dossier-art is-blueprint">{info.icon ? <img src={info.icon} alt="" /> : <ArtFallback icon="flask" />}</span>
+      <span className="dossier-art is-blueprint">{info.icon ? <img src={info.icon} alt="" /> : <ArtFallback icon="flask" name={info.name} reason={info.iconMissing} />}</span>
       <div className="dossier-title">
         <h3>{info.name}</h3>
         <div className="dossier-chips">
           {(run.state === 'paused' || run.state === 'unknown') && <span className={`dossier-chip is-state${STATE_TONES[run.state]}`}>{STATES[run.state]}</span>}
-          <span className="dossier-chip" title={assigned ?? undefined}>{person.name && (person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" />)}
+          <span className="dossier-chip" title={assigned ?? undefined}>{person.name && (person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" name={person.name} />)}
             <span>{scientistName(reply, info)}</span>{scientistRead && <small>{scientistRead}</small>}</span>
         </div>
         {read && !done && <p className="dossier-note">{`Status ${read}`}</p>}

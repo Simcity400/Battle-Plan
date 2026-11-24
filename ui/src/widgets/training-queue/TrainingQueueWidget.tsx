@@ -58,7 +58,7 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
     { key: 'name', header: 'Deployment', label: 'Deployment', width: 'minmax(var(--table-name-min), 2fr)', sortable: false, value: () => null, renderMissing: true,
       text: row => row.kind === 'order' ? `${orderName(row.order)} ×${row.order.amount}` : divisionName(row.division),
       render: row => row.kind === 'order'
-        ? <span className="training-queue-name" data-tooltip={row.order.template}>{orderIcon(row.order) ? <img src={orderIcon(row.order)!} alt="" /> : <ArtFallback icon="helmet" />}
+        ? <span className="training-queue-name" data-tooltip={row.order.template}>{orderIcon(row.order) ? <img src={orderIcon(row.order)!} alt="" /> : <ArtFallback icon="helmet" name={orderName(row.order)} reason={row.order.iconMissing} />}
           <span>{orderName(row.order)}</span><small>×{usNumber.format(row.order.amount)}</small></span>
         : <span className="training-queue-name"><span>{divisionName(row.division)}</span></span> },
     { key: 'training', header: 'Training', label: 'Training', width: 'minmax(calc(var(--space-6) * 3), 1fr)', sortable: false, value: () => null, renderMissing: true,

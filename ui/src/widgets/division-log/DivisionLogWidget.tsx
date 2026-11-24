@@ -166,7 +166,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const total = (kind: DivisionKind) => <LiveText live={totalTexts} at={kind} />;
   const renderRow = ({ item: row }: LogRow<DivisionLogEntry>) => {
     const { country, killer, place } = labels(row);
-    return <><span className="log-art" aria-hidden="true">{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}</span>
+    return <><span className="log-art" aria-hidden={row.icon ? true : undefined}>{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" name={row.templateName ?? divisionName(row)} reason={row.iconMissing} />}</span>
       <span className="log-text">{row.tag !== null && <CountryFlagUrl className="log-flag" url={country.flag} detail={country.flagDetail} reason={country.flagReason} pending={country.flagPending} />}<b>{country.name}</b>: <b>{divisionName(row)}</b>
         {' · '}{row.templateName ?? 'Template not recorded'}{' · '}{row.placeAtEvent ? 'at ' : 'last seen at '}{row.province === null || row.placeHour === null ? place
           : <span className={place === PLACE_LOADING ? 'is-loading' : undefined} data-keyed="place" data-keyed-key={placeKey(row.province, row.placeHour)}>{place}</span>}

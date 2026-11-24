@@ -104,7 +104,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const lines = optionLines(choice);
     return <article className="event-choice">
       <div className="event-choice-heading">
-        {artwork && <span className="log-art" aria-hidden="true">{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" />}</span>}
+        {artwork && <span className="log-art" aria-hidden={card.item?.icon ? true : undefined}>{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" name={choiceTitle(card)} />}</span>}
         <b className={card.item?.name ? undefined : 'event-choice-muted'} data-tooltip={card.item?.name ? undefined : reasonsOf(card.item).nameMissing}>
           <ScriptedText text={choiceTitle(card)} reason={reasonsOf(card.item).gaps} /></b>
         <small>{choiceDates(choice)}</small>

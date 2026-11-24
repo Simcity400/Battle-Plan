@@ -206,7 +206,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const leader = leaderShown(data, leaderRun);
   const header = <div className="ruling-party-leader">
     <span className="ruling-party-portrait" style={rulingBand ? { borderColor: rulingBand.color } : undefined}>
-      {leader.portrait ? <img src={leader.portrait} alt="" /> : <ArtFallback icon="helmet" />}
+      {leader.portrait ? <img src={leader.portrait} alt="" /> : <ArtFallback icon="helmet" name={leader.name} reason={leader.portraitMissing} />}
     </span>
     <div className="ruling-party-leader-text">
       <strong className={leader.known ? undefined : 'is-notice'}>{leader.name}</strong>

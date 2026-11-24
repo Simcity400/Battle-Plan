@@ -71,7 +71,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const columns = useMemo<readonly TableColumn<AceRow>[]>(() => [
     { key: 'portrait', header: null, label: 'Portrait', sortable: false, width: 'var(--military-portrait-column)', value: () => null, renderMissing: true,
       render: row => { const art = portraits.get(nameKey(row.hour, row.key)); return art && !(art instanceof Error) && art.image ? <img className="aces-portrait" src={art.image} alt="" />
-        : <ArtFallback icon="helmet" className="aces-portrait" failure={art instanceof Error ? art : undefined} />; } },
+        : <ArtFallback icon="helmet" name={aceName(row)} className="aces-portrait" failure={art instanceof Error ? art : undefined} />; } },
     { ...SORT_CHOICES[1], label: 'Ace', header: 'Ace', width: 'minmax(var(--military-name-min), 1.6fr)', value: aceNameValue, renderMissing: true,
       render: row => { const label = row.ace.tag ? labelAt(row.hour)(row.ace.tag) : null; return <div className="aces-who"><b title={aceName(row)}>{aceName(row)}</b><small>
         {label ? <CountryFlagUrl className="aces-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />

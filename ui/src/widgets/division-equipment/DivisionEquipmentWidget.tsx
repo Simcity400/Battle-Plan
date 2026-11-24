@@ -78,7 +78,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   useDiagnostics(onDiagnostics, data ? [...new Set([...data.warnings, ...detail.data?.warnings ?? []])] : null);
   const typeColumns = useMemo<readonly TableColumn<EquipmentType>[]>(() => [
     { key: 'type', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 2fr)', value: typeName,
-      render: row => <span className="division-equipment-name" data-tooltip={contentTitleHint(row.archetype)}><ArtFallback icon="hammer" /><span>{typeName(row)}</span></span> },
+      render: row => <span className="division-equipment-name" data-tooltip={contentTitleHint(row.archetype)}><ArtFallback icon="hammer" name={typeName(row)} /><span>{typeName(row)}</span></span> },
     { key: 'held', header: 'In divisions', label: 'In divisions', numeric: true, width: 'max-content', priority: 3, value: row => big(row.heldRaw), renderMissing: true,
       text: row => items(row.heldRaw) ?? 'Not recorded', render: row => items(row.heldRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
     { key: 'needed', header: 'Needed', label: 'Needed', numeric: true, width: 'max-content', priority: 2, value: row => big(row.neededRaw), renderMissing: true,
@@ -93,7 +93,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   ], [bars]);
   const templateColumns = useMemo<readonly TableColumn<EquipmentTemplate>[]>(() => [
     { key: 'template', header: 'Template', label: 'Template', width: 'minmax(var(--table-name-min), 2fr)', value: templateName,
-      render: row => <span className="division-equipment-name" title={templateName(row)}>{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}<span>{templateName(row)}</span></span> },
+      render: row => <span className="division-equipment-name" title={templateName(row)}>{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" name={templateName(row)} reason={row.iconMissing} />}<span>{templateName(row)}</span></span> },
     { key: 'divisions', header: 'Divisions', label: 'Divisions', numeric: true, width: 'max-content', priority: 3, value: row => row.divisions, renderMissing: true,
       text: row => counted(row.divisions), render: row => row.divisions ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, value: row => share(row.manpower, row.manpowerRequired), renderMissing: true,

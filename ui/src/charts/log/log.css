@@ -40,7 +40,7 @@
 .log-art { display: grid; place-items: center; width: 24px; height: 24px; border-radius: var(--r-xs); position: relative; }
 .log-art img { max-width: 24px; max-height: 24px; object-fit: contain; }
 .log-art .log-art-overlay { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: fill; }
-.log-art.is-missing { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--muted); font-size: var(--type-xs); }
+.log-art.is-missing { color: var(--muted); font-size: var(--type-xs); }
 .log.is-compact .log-art, .log.is-compact .log-art img:not(.log-art-overlay) { width: 20px; height: 20px; max-width: 20px; max-height: 20px; }
 .log-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-text b { font-weight: 600; }

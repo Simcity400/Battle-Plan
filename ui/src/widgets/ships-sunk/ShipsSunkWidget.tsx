@@ -150,7 +150,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
     const attackerFlag = row.attacker === null ? null : <CountryFlagUrl className="log-flag"
       url={attacker.flag} detail={attacker.flagDetail} reason={attacker.flagReason} pending={attacker.flagPending} />;
     return <>
-      <span className="log-art" aria-hidden="true">{type.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="anchor" />}</span>
+      <span className="log-art" aria-hidden={type.icon ? true : undefined}>{type.icon ? <img src={type.icon} alt="" /> : <ArtFallback icon="anchor" name={shipClassName(data, row)} />}</span>
       <span className="log-text">
         <b>{shipName(row)}</b>, {shipClassName(data, row)}{' · '}
         {row.victim !== null && <CountryFlagUrl className="log-flag" url={victim.flag} detail={victim.flagDetail} reason={victim.flagReason} pending={victim.flagPending} />}<b>{victim.name}</b>{', '}

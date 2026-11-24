@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useLayoutEffect } from 'react';
 import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import ArtFallback from '../../components/ArtFallback';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { mix, parseColor, readableText, toHex } from '../../shell/appearance/color';
 import type { Rgb } from '../../shell/appearance/color';
@@ -500,7 +501,7 @@ export default function Sunburst(props: SunburstProps) {
     setLegendHover(id => id !== null && ids.has(id) ? id : null);
     setLegendTip(tip => tip !== null && ids.has(tip.id) ? tip : null);
   }, []);
-  const artwork = parts.some(part => part.icon);
+  const artwork = parts.some(part => part.icon || part.expectsArt);
   const icons = artwork || parts.some(part => part.countryFlag !== undefined);
   const colours = useMemo(() => sliceColours(focus, tokens.categories, { light: tokens.text, dark: tokens.surface }), [focus, tokens]);
   const path = pathTo(focus);
@@ -531,6 +532,7 @@ export default function Sunburst(props: SunburstProps) {
           {icons && (part.countryFlag !== undefined
             ? <CountryFlagUrl className="sunburst-icon" url={part.countryFlag.flag} detail={part.countryFlag.flagDetail} reason={part.countryFlag.flagReason} pending={part.countryFlag.flagPending} />
             : part.icon ? <img className="sunburst-icon" src={part.icon} alt="" />
+            : part.expectsArt ? <ArtFallback className="sunburst-icon" icon="layers" name={part.label} reason={part.iconMissing} />
             : null)}
           <span className="sunburst-name" data-detail={part.countryFlag?.nameFailure?.message} data-tooltip={part.label.length > 18 ? part.label : undefined}>{part.label}</span>
           <b>{props.live ? <span data-sunburst-amount={part.id}>{legendAmount(part, text)}</span> : legendAmount(part, text)}{unknownTotal(part) ? <small className="sunburst-partial"> partial</small> : null}</b>
