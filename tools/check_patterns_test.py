@@ -430,6 +430,20 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/table/tableFamily.test.ts": "const s = count.toLocaleString('en-US');\n",
         })[0], 0)
 
+    def test_family_measure_text_loop_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/heat/matrixLaneView.ts": "for (const row of rows) { w = Math.max(w, ctx.measureText(row.label).width); }\n",
+            "ui/src/families/time-chart/painter.ts": "items.map(item => ctx.measureText(item).width);\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-measure-text-loop", out)
+        self.assertIn("ui/src/charts/textWidth.ts", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/table/painter.ts": "const measure = (text: string) => ctx.measureText(text).width;\n",
+            "ui/src/charts/labels.ts": "for (const t of texts) { w = ctx.measureText(t).width; }\n",
+            "ui/src/families/heat/heatFamily.test.ts": "for (const t of texts) { w = ctx.measureText(t).width; }\n",
+        })[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

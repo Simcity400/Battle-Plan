@@ -8,7 +8,6 @@ import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type Tim
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import {
   factionChangeHours,
   factionGaps,
@@ -192,7 +191,6 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
   subject: 'factions',
   emptyCampaign: 'Load a campaign to see its factions.',
   icon: 'shield',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: true, allTagsForLabels: true },
   jumpToDate: true,
   keyByBranch: true,

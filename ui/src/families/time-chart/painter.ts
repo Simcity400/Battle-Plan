@@ -1,4 +1,4 @@
-import type { Canvas2D } from '../../charts/textWidth.ts';
+import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DEFAULT_FAMILY_THEME,
   drawArtSlot,
@@ -13,37 +13,29 @@ import {
 } from '../../draw/kit.ts';
 import { rgbaColor } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import type { ChartArtSlot, TimeChartModel, TimeChartSeriesModel } from './model.ts';
-
-function artUrl(slot: ChartArtSlot | undefined): string | null {
-  return slot?.art.status === 'ready' && slot.art.url ? slot.art.url : null;
-}
+import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
 export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
-  const urls = new Set<string>();
-  const add = (slot: ChartArtSlot | undefined) => {
-    const url = artUrl(slot);
-    if (url) urls.add(url);
-  };
+  const items: ArtUrlInput[] = [];
   for (const label of layout.endLabels) {
-    add(label.flag);
-    add(label.icon);
+    items.push(label.flag, label.icon);
   }
   for (const m of layout.markers) {
-    if (m.kind === 'flag') add(m.marker.flag);
-    if (m.kind === 'icon') add(m.marker.icon);
+    if (m.kind === 'flag') items.push(m.marker.flag);
+    if (m.kind === 'icon') items.push(m.marker.icon);
   }
   if (model.legend) {
-    for (const item of model.legend) add(item.flag);
+    for (const item of model.legend) items.push(item.flag);
   }
   if (model.overlays) {
-    for (const ov of model.overlays) add(ov.icon);
+    for (const ov of model.overlays) items.push(ov.icon);
   }
-  return [...urls];
+  return collectArtUrls(items);
 }
 
 export function buildLineSubpaths(
@@ -541,7 +533,7 @@ export function drawTimeChart(
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(label.name, cursorX, label.y + 0.5);
-      cursorX += ctx.measureText(label.name).width + 6;
+      cursorX += textWidth(ctx, label.name) + 6;
     }
     ctx.font = labelValueFont;
     ctx.fillStyle = label.valueMuted ? theme.muted : (label.valueColor ?? theme.text);
@@ -555,7 +547,7 @@ export function drawTimeChart(
     for (const ov of model.overlays) {
       ctx.save();
       ctx.font = overlayFont;
-      const tw = ctx.measureText(ov.text).width;
+      const tw = textWidth(ctx, ov.text);
       const ox = layout.left + layout.plotWidth - 8 - tw;
       const oy = ov.position === 'top-right' ? layout.top + 12 : layout.baseY - 12;
       if (ov.arrow) {

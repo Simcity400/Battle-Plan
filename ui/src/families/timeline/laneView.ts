@@ -1,6 +1,6 @@
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import type { LaneView } from '../../draw/lane.ts';
-import { artUrlForHandle } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { ArtHandle, BoundedReadView, FamilyTheme, MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
@@ -81,20 +81,14 @@ function tooltipFor(
 }
 
 function collectArt(model: TimelineModel, layout: TimelinePlacement, scrollTop: number, index: IdentityIndex | null): string[] {
-  const urls = new Set<string>();
-  const add = (handle: ArtHandle | null | undefined) => {
-    if (!handle) return;
-    const url = artUrlForHandle(handle, index);
-    if (url) urls.add(url);
-  };
+  const handles: (ArtHandle | null | undefined)[] = [];
   const [first, end] = visibleRange(layout, scrollTop);
   for (let i = first; i < end; i++) {
     const lane = layout.lanes[i]!.lane;
-    add(lane.flag);
-    add(lane.icon);
-    if (model.iconsOnBars) for (const span of lane.spans) add(span.icon);
+    handles.push(lane.flag, lane.icon);
+    if (model.iconsOnBars) for (const span of lane.spans) handles.push(span.icon);
   }
-  return [...urls];
+  return collectArtUrls(handles, index);
 }
 
 const lastEvents = new WeakMap<TimelineModel, number>();

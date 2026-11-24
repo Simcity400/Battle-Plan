@@ -77,10 +77,10 @@ function answered(results: ReadonlyMap<string, UnitResult>, ...replies: (readonl
   for (const [asked, data] of replies) out.set(asked.name, { key: asked.key!, data });
   return out;
 }
-const settleFollowing = (units: readonly ReadUnit[], results: ReadonlyMap<string, UnitResult>, hour: number, subscribed = false) =>
-  settleUnits(units, results, { following: true, hour, subscribed, endHour: END });
+const settleFollowing = (units: readonly ReadUnit[], results: ReadonlyMap<string, UnitResult>, hour: number, subscribed = false, moving = true) =>
+  settleUnits(units, results, { following: true, moving, hour, subscribed, endHour: END });
 const settlePinned = (units: readonly ReadUnit[], results: ReadonlyMap<string, UnitResult>, hour: number) =>
-  settleUnits(units, results, { following: false, hour, subscribed: false, endHour: END });
+  settleUnits(units, results, { following: false, moving: false, hour, subscribed: false, endHour: END });
 const NONE: ReadonlyMap<string, UnitResult> = new Map();
 
 function fakeReads() {
@@ -155,8 +155,30 @@ test('a unit not yet applicable bounds the bundle by its known absence, and is a
   const settledAt100 = settleFollowing(at100, answered(results, [unit(at100, 'later'), { rows: [] }]), 100, true);
   assert.deepEqual(settledAt100.kind === 'complete' && settledAt100.bundle.proof, [100, 100]);
   assert.equal(settledAt100.kind === 'complete' && settledAt100.bundle.hour, 100);
-  assert.deepEqual(settleUnits(at50, NONE, { following: true, hour: 50, subscribed: false, endHour: END }).kind, 'hold', 'with nothing followed, a pending sibling still holds the bundle');
-  assert.deepEqual(settleUnits(following([later], {}, 50), NONE, { following: true, hour: 50, subscribed: false, endHour: END }), { kind: 'outside' });
+  assert.deepEqual(settleFollowing(at50, NONE, 50).kind, 'hold', 'with nothing followed, a pending sibling still holds the bundle');
+  assert.deepEqual(settleFollowing(following([later], {}, 50), NONE, 50), { kind: 'outside' });
+});
+
+test('a lagging bundle is ordinary while playing, but at rest the displayed hour must lie inside its proof (host R2-S6)', async () => {
+  const entries = [aggregate('history', 0, hour => [hour, hour + 20])];
+  const { reads, calls } = fakeReads();
+  const at100 = following(entries, {}, 100);
+  reads.sync(at100, true);
+  calls[0]!.resolve({});
+  await settled();
+  const playing = settleFollowing(at100, reads.results, 150);
+  assert.deepEqual(playing.kind === 'complete' && playing.bundle.proof, [100, 120], 'while the clock moves, the last complete bundle is shown dated by its own proof');
+  assert.deepEqual(settleFollowing(at100, reads.results, 150, false, false), { kind: 'hold' }, 'paused at 150, a bundle proven 100 to 120 is held as not current');
+  assert.deepEqual(reaskedUnits(at100, reads.results, 150, END), ['history']);
+  const at150 = following(entries, { history: 150 }, 150);
+  reads.sync(at150, true);
+  assert.equal(calls.length, 2, 'the unit is asked at 150');
+  assert.deepEqual(settleFollowing(at150, reads.results, 150, false, false), { kind: 'hold' });
+  calls[1]!.resolve({});
+  await settled();
+  const resting = settleFollowing(at150, reads.results, 150, false, false);
+  assert.deepEqual(resting.kind === 'complete' && resting.bundle.proof, [150, 170], 'it settles when that reply lands');
+  reads.dispose();
 });
 
 test('a failed read keeps a boundary watch, so a seek asks the new hour (R2-S8)', async () => {

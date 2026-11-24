@@ -1,0 +1,140 @@
+import type { ChartBucket } from '../charts/chartSummary';
+import type { MarkSummary } from '../charts/markSummary';
+import type { Run } from '../charts/series';
+import { rowName, type FollowedAnswer } from '../dashboard/follow/message.ts';
+import { rowAmount } from '../dashboard/follow/painters.ts';
+import { followedRow, keyId } from '../dashboard/keyedSeriesData.ts';
+import type { TiledLine } from '../dashboard/tiles/view';
+import type { Scene } from '../draw/lane.ts';
+import type { MissingSpan, TilePart } from '../generated/dashboard';
+import { BoundedSeriesCursor, type WitnessedPoint } from './boundedView.ts';
+import type { BoundedReadView, BoundedSeries } from './contract.ts';
+import { sceneReadView, type SceneSources } from './scene.ts';
+import { knownValue } from './value.ts';
+
+export interface SerializedTiledLine {
+  readonly rev: number;
+  readonly source: string;
+  readonly tag: string;
+  readonly head: string;
+  readonly decimals: number;
+  readonly binHours: number;
+  readonly from: number;
+  readonly to: number;
+  readonly width: number;
+  readonly buckets: readonly (ChartBucket | null)[];
+  readonly runs?: readonly Run[];
+  readonly missing: readonly MissingSpan[];
+  readonly parts: readonly TilePart[];
+  readonly marks: MarkSummary | null;
+}
+
+export interface SeriesHeadSource {
+  readonly answerName: string;
+  readonly tags: readonly string[];
+  readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+  readonly partBits?: number;
+  readonly decimals?: number;
+}
+
+export interface TiledSources {
+  readonly tiledLines?: readonly SerializedTiledLine[];
+  readonly keepTiled?: readonly number[];
+  readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  readonly headSourceBySeries?: Readonly<Record<string, SeriesHeadSource>>;
+}
+
+function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
+  return {
+    tag: raw.tag,
+    head: raw.head,
+    decimals: raw.decimals,
+    summary: {
+      from: raw.from,
+      to: raw.to,
+      width: raw.width,
+      buckets: [...raw.buckets],
+      ...(raw.runs ? { runs: raw.runs } : {}),
+      tiles: { binHours: raw.binHours, valueAt: () => null },
+    },
+    missing: [...raw.missing],
+    parts: [...raw.parts],
+    marks: raw.marks,
+  };
+}
+
+const rowIndexes = new WeakMap<readonly string[], ReadonlyMap<string, number>>();
+
+function rowIndexOf(tags: readonly string[]): ReadonlyMap<string, number> {
+  let index = rowIndexes.get(tags);
+  if (!index) rowIndexes.set(tags, index = new Map(tags.map((tag, row) => [tag, row])));
+  return index;
+}
+
+const answerRows = new WeakMap<FollowedAnswer, ReadonlyMap<string, number>>();
+
+export function answerRowOf(answer: FollowedAnswer | undefined, tag: string): number {
+  if (!answer || answer.kind === 'notRecorded') return -1;
+  let rows = answerRows.get(answer);
+  if (!rows) {
+    const named = new Map<string, number>();
+    for (let row = 0; row < answer.rows; row++) {
+      const key = rowName(answer, row);
+      if (key && !named.has(key)) named.set(key, row);
+    }
+    answerRows.set(answer, rows = named);
+  }
+  return rows.get(tag) ?? -1;
+}
+
+function headRow(answer: FollowedAnswer, head: SeriesHeadSource, tag: string): number {
+  if (head.keys && head.partBits !== undefined) {
+    const matched = head.keys.find(key => keyId(key) === tag);
+    return matched ? followedRow(answer, matched, head.partBits) : -1;
+  }
+  return head.tags.length ? rowIndexOf(head.tags).get(tag) ?? -1 : answerRowOf(answer, tag);
+}
+
+export class SceneTiles {
+  private readonly lines = new Map<number, TiledLine>();
+  private readonly cursors = new Map<string, BoundedSeriesCursor>();
+
+  sync(binding: TiledSources): void {
+    if (binding.tiledLines) for (const raw of binding.tiledLines) if (!this.lines.has(raw.rev)) this.lines.set(raw.rev, hydrateTiledLine(raw));
+    if (binding.keepTiled) {
+      const keep = new Set(binding.keepTiled);
+      for (const rev of [...this.lines.keys()]) if (!keep.has(rev)) this.lines.delete(rev);
+    }
+  }
+
+  series(scene: Scene, sources: SceneSources, binding: TiledSources, hour: number): ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>> | undefined {
+    if (!binding.tiledBySource) return undefined;
+    let answers: BoundedReadView | null = null;
+    const bySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
+    for (const [source, revs] of Object.entries(binding.tiledBySource)) {
+      const head = binding.headSourceBySeries?.[source];
+      const answer = head ? (answers ??= sceneReadView(scene, sources, hour)).answer(head.answerName) : undefined;
+      const byTag = new Map<string, BoundedSeries>();
+      for (const [tag, rev] of Object.entries(revs)) {
+        const line = this.lines.get(rev);
+        if (!line) continue;
+        const key = `${source}\u0000${tag}`;
+        let cursor = this.cursors.get(key);
+        if (!cursor) this.cursors.set(key, cursor = new BoundedSeriesCursor());
+        let headPoint: WitnessedPoint | null = null;
+        let headValue = undefined;
+        const row = answer && head ? headRow(answer, head, tag) : -1;
+        if (answer && head && row >= 0) {
+          const value = rowAmount(answer, row, head.decimals ?? line.decimals);
+          if (value !== undefined && value !== null && Number.isFinite(value)) {
+            headPoint = { hour: Math.floor(hour), value };
+            headValue = knownValue(value);
+          }
+        }
+        byTag.set(tag, cursor.advance(line, hour, { headPoint, headValue }));
+      }
+      bySource.set(source, byTag);
+    }
+    return bySource;
+  }
+}

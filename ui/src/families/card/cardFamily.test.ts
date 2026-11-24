@@ -6,6 +6,8 @@ import { nationalFocusProjection } from '../../widgets/national-focus/nationalFo
 import { nationalSpiritsProjection } from '../../widgets/national-spirits/nationalSpiritsProjection.ts';
 import { warGoalsDeclaration, warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
+import { familyViewOptionFields } from '../../widgets/manifest.ts';
+import '../../widgets/definitions.ts';
 import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
 import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -75,9 +77,9 @@ test('war goals keep the product’s order and states, show a missing expiry by 
       { handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
       { handle: '3', name: 'Conquer', actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
-    removed: [{ handle: '9', name: 'Take state', recipient: 'NOR', granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
     warnings: [],
-    stateNames: [{ id: 1, name: 'Norrbotten', known: true }, { id: 2, name: 'Moskva', known: true }, { id: 3, name: 'Leningrad', known: true }, { id: 4, name: 'Sjaelland', known: true }, { id: 5, name: 'Danzig', known: true }],
+    stateNames: [{ id: 1, name: 'Invented state 1', known: true }, { id: 2, name: 'Invented state 2', known: true }, { id: 3, name: 'Invented state 3', known: true }, { id: 4, name: 'Invented state 4', known: true }, { id: 5, name: 'Invented state 5', known: true }],
   };
   const live: LiveValues<number | bigint | string> = { get: key => (key.startsWith('11') ? 640_000 : undefined), missing: () => 'Not read at this hour' };
   const model = warGoalsProjection.project(view(hour, reply, live), { targetNames: false });
@@ -88,10 +90,13 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.ok(rows[4]!.tooltip?.items?.some(item => item.label === 'Reason' && item.missingReason === 'War goal removal reason was not recorded'));
   assert.deepEqual(rows[0]!.meter?.fraction, { kind: 'known', value: 0.64 });
   assert.deepEqual(rows[0]!.figure?.value, { kind: 'known', value: '21 days left' });
-  assert.equal(rows[1]!.place, 'Moskva · Leningrad');
+  assert.equal(rows[1]!.place, 'Invented state 2 · Invented state 3');
   assert.equal(rows[2]!.figure?.value.kind, 'notRecorded', 'an unrecorded expiry is named, never blank');
+  const unreadWar = items(warGoalsProjection.project(view(hour, { ...reply, goals: [{ ...reply.goals[1]!, state: 'unknown' }], justifications: [], removed: [] }, live), { targetNames: false }))[0]!;
+  assert.equal(unreadWar.state, undefined, 'unread war relations claim no state');
+  assert.equal(unreadWar.figure?.value.kind, 'notRecorded');
   assert.equal(rows[3]!.muted, true);
-  assert.equal(rows[3]!.place, 'Danzig · State not recorded');
+  assert.equal(rows[3]!.place, 'Invented state 5 · State not recorded');
   const unread = warGoalsProjection.project(view(hour, reply, null), { targetNames: false });
   assert.equal(items(unread)[0]!.meter?.fraction.kind, 'notRecorded', 'progress not read is not zero');
   const justification = reply.justifications[0]!;
@@ -179,16 +184,17 @@ test('special projects follow the product’s order: running with progress and s
       project('support', 'running', [status(0, 'running', 24)]),
       project('radar', 'running', [status(1, 'completed', 100)], [{ ordinal: 0, date: hour - 196 * DAY, completion: true, readHour: hour - 196 * DAY, counted: true, presentation: null }]),
       project('old', 'completed', [status(2, 'completed', 100)]),
+      project('unread', 'running', [status(3, 'unknown', 40)]),
     ],
-    reads: [], presentations: [info('Support Ships', 1), info('Radar', 0), info('Cruiser Submarine', 0)],
+    reads: [], presentations: [info('Invented project A', 1), info('Invented project B', 0), info('Invented project C', 0), info('Invented project', 0)],
     people: [{ assigned: false, id: null, name: null, portrait: null, missing: null }, { assigned: null, id: null, name: null, portrait: null, missing: 'The program read was not recorded' }],
     iterationTexts: {}, unavailable: null, warnings: [],
-    shown: { through: hour, running: [0], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
+    shown: { through: hour, running: [0], unknown: [3], completed: [{ project: 1, date: hour - 196 * DAY }, { project: 2, date: null }], undated: 1 },
   };
   const model = specialProjectsProjection.project(view(hour, reply), {});
   assertCardModelValid(model, hour);
-  assert.deepEqual(model.rows.map(row => row.kind === 'section' ? `${row.label} ${row.count}` : row.key), ['In progress 1', 'running:support', 'Completed 2', 'done:radar', 'Date not recorded 1', 'done:old']);
-  const [running, radar, old] = items(model);
+  assert.deepEqual(model.rows.map(row => row.kind === 'section' ? `${row.label} ${row.count}` : row.key), ['In progress 1', 'running:support', 'State not recorded 1', 'running:unread', 'Completed 2', 'done:radar', 'Date not recorded 1', 'done:old']);
+  const [running, , radar, old] = items(model);
   assert.equal(running!.meter?.text, '24%');
   assert.equal(running!.figure?.value.kind, 'notRecorded', 'an unread scientist is named as not recorded');
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
@@ -198,7 +204,7 @@ test('special projects follow the product’s order: running with progress and s
 
 test('a stored "Show names" reaches the war goals projection through the declaration the host resolves', () => {
   const resolve = (stored: Record<string, boolean>) => warGoalsDeclaration.projectionOptions({
-    options: resolveOptions(warGoalsDeclaration.optionFields ?? [], stored),
+    options: resolveOptions(familyViewOptionFields('war-goals'), stored),
   } as FamilyPlanContext<unknown>);
   assert.equal(resolve({ targetNames: true }).targetNames, true);
   assert.equal(resolve({}).targetNames, false);

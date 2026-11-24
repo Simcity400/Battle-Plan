@@ -15,7 +15,7 @@ use dashboard_query::{Query, coverage};
 use replay_frame::frame::DecodedFrame;
 use replay_lanes::{lanes::{self, Keys}, points::Cell};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, RowCodec, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
+use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},

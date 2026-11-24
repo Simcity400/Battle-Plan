@@ -976,15 +976,24 @@ const AUTONOMY_SCORE: usize = 0;
 const AUTONOMY_LOWER: usize = 1;
 const AUTONOMY_UPPER: usize = 2;
 
+pub const NO_AUTONOMY_RANGE: &str = "No autonomy range";
+
+pub fn autonomy_progress_milli(score: i64, lower: i64, upper: i64) -> Result<Option<i64>, &'static str> {
+    let room = i128::from(upper) - i128::from(lower);
+    if room <= 0 {
+        return Err(NO_AUTONOMY_RANGE);
+    }
+    Ok(i64::try_from((i128::from(score) - i128::from(lower)) * 100_000 / room).ok())
+}
+
 fn autonomy_progress(cells: &dyn Cells, slot: u32) -> Computed {
     let (Some(score), Some(lower), Some(upper)) = (cells.number(AUTONOMY_SCORE, slot), cells.number(AUTONOMY_LOWER, slot), cells.number(AUTONOMY_UPPER, slot)) else {
         return Computed::Unrecorded;
     };
-    let room = i128::from(upper) - i128::from(lower);
-    if room <= 0 {
-        return Computed::NotApplicable("No autonomy range");
+    match autonomy_progress_milli(score, lower, upper) {
+        Ok(value) => Computed::of(value),
+        Err(reason) => Computed::NotApplicable(reason),
     }
-    Computed::of(i64::try_from((i128::from(score) - i128::from(lower)) * 100_000 / room).ok())
 }
 
 const FUEL_REQUESTED: usize = 1;

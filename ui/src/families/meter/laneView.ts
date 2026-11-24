@@ -57,8 +57,8 @@ const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> = {
         warnings: model.warnings ?? [],
         layout: model.layout,
       },
-      nav: deriveMeterNav(model),
-      extent: { width: layout.contentWidth, height: layout.contentHeight, bands: Object.fromEntries(layout.itemBands) },
+      nav: deriveMeterNav(model, layout.itemBands),
+      extent: { width: layout.contentWidth, height: layout.contentHeight },
     };
   },
   mirror: frame => deriveMeterMirror(frame.model),

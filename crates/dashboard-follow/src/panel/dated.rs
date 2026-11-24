@@ -106,6 +106,39 @@ pub struct Record<'a> {
     bytes: &'a [u8],
 }
 
+impl Record<'_> {
+    pub fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn stepped(&self) -> bool {
+        self.bytes[9] & 1 != 0
+    }
+}
+
+pub fn refused_record_len(reason: &str) -> usize {
+    (PANEL_HEAD + reason.len()).next_multiple_of(8)
+}
+
+pub fn refuse_panel(bytes: &[u8], panel_id: u32, reason: &str) -> io::Result<Option<Vec<u8>>> {
+    let stamp = stamp(bytes).ok_or_else(|| crate::invalid("A panel message does not start with PNL2"))?;
+    let list = records(bytes)?;
+    if !list.iter().any(|r| r.id == panel_id && r.kind == DATA) {
+        return Ok(None);
+    }
+    let mut out = head(list.len(), clock(bytes), stamp);
+    for r in list {
+        if r.id == panel_id && r.kind == DATA {
+            let offset = out.len();
+            record(&mut out, r.id, r.hour, REFUSED, reason.as_bytes());
+            out[offset + 9] = r.bytes[9];
+        } else {
+            out.extend_from_slice(r.bytes);
+        }
+    }
+    Ok(Some(out))
+}
+
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
 }
@@ -146,25 +179,73 @@ pub fn records(bytes: &[u8]) -> io::Result<Vec<Record<'_>>> {
     Ok(out)
 }
 
+#[derive(Default)]
+struct PanelState<'a> {
+    stands_before: Option<Record<'a>>,
+    wait_before: Option<Record<'a>>,
+    reading: Option<Record<'a>>,
+    tail: Option<Record<'a>>,
+}
+
+impl<'a> PanelState<'a> {
+    fn push(&mut self, r: Record<'a>) {
+        match r.kind {
+            DATA | REFUSED => {
+                if self.wait_before.is_none() {
+                    self.stands_before = None;
+                }
+                self.reading = Some(r);
+                self.tail = None;
+            }
+            STANDS => {
+                if self.reading.is_some() || self.wait_before.is_some() {
+                    self.tail = Some(r);
+                } else {
+                    self.stands_before = Some(r);
+                }
+            }
+            WAITING => {
+                if self.reading.is_some() {
+                    if !matches!(self.tail, Some(t) if t.kind == WAITING) {
+                        self.tail = Some(r);
+                    }
+                } else if self.wait_before.is_none() {
+                    self.wait_before = Some(r);
+                } else if matches!(self.tail, Some(t) if t.kind == STANDS) {
+                    self.tail = Some(r);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Record<'a>> {
+        [self.stands_before, self.wait_before, self.reading, self.tail].into_iter().flatten()
+    }
+}
+
 pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let stamp = stamp(older).filter(|s| Some(*s) == self::stamp(newer) && clock(older) == clock(newer))
         .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
-    let mut readings = BTreeMap::new();
-    let mut stands = BTreeMap::new();
-    let mut completed = None;
+    let mut panels: BTreeMap<u32, PanelState<'_>> = BTreeMap::new();
+    let mut completed: Option<Record<'_>> = None;
     let mut count = 0;
     for r in records(older)?.into_iter().chain(records(newer)?) {
         count += 1;
         match r.kind {
-            DATA | REFUSED => { stands.remove(&r.id); readings.insert(r.id, r); }
-            STANDS => { stands.insert(r.id, r); }
-            COMPLETED => completed = Some(r),
-            WAITING => return Err(crate::invalid("A product waiting for its table keeps every message whole")),
+            DATA | REFUSED | STANDS | WAITING => panels.entry(r.id).or_default().push(r),
+            COMPLETED => {
+                if completed.is_none_or(|c| r.hour >= c.hour) {
+                    completed = Some(r);
+                }
+            }
             _ => return Err(crate::invalid("Unknown dated panel kind")),
         }
     }
-    let kept = readings.len() + stands.len() + usize::from(completed.is_some());
+    let kept = panels.values().map(|p| p.iter().count()).sum::<usize>() + usize::from(completed.is_some());
     let mut out = head(kept, clock(newer), stamp);
-    for r in readings.into_values().chain(stands.into_values()).chain(completed) { out.extend_from_slice(r.bytes); }
+    for r in panels.values().flat_map(PanelState::iter).chain(completed) {
+        out.extend_from_slice(r.bytes);
+    }
     Ok((out, (count - kept) as u32))
 }
