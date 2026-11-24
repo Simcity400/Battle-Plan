@@ -106,12 +106,12 @@ export function formatClockSeconds(seconds: number | bigint): string {
     const hours = total / 3600n;
     const minutes = (total / 60n) % 60n;
     const secs = total % 60n;
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return `${hours.toString()}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
   const total = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor(total / 60) % 60;
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+  return `${String(hours)}:${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
 export function formatFixed5Amount(value: number | bigint): string {

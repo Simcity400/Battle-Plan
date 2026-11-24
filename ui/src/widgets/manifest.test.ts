@@ -249,7 +249,9 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   assert.equal(barsBehindOf('off'), 'off');
   assert.equal(barsBehindOf('sorted'), 'sorted');
   assert.equal(barsBehindOf('all'), 'all');
-  assert.equal(barsBehindOf('bogus'), 'sorted');
+  assert.equal(barsBehindOf('bogus'), 'all');
+  assert.deepEqual(BARS_BEHIND_CHOICES.map(c => c.label), ['Every column', 'Sorted column', 'Off']);
+  assert.deepEqual(ROW_HEIGHT_CHOICES.map(c => c.label), ['Compact', 'Default', 'Comfortable']);
 
   const added1 = addOrderedToken('', 'reg_1');
   const added2 = addOrderedToken(added1!, 'reg_2');
