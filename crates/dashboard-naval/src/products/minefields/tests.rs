@@ -67,6 +67,7 @@ fn a_history_of_every_owner_of_a_region_is_asked_whatever_their_count() {
 #[test]
 fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_truncation_reason() {
     use dashboard_follow::live::{CellValue, Cells as LiveCells, GroupState};
+    use dashboard_query::coverage::CoverageScope;
     use replay_data::rows::TableRows;
     use replay_frame::frame::Metrics;
 
@@ -84,13 +85,15 @@ fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_
 
     let vals11 = live10.values(&frame11);
     assert_eq!(vals11.len(), 2, "owner cells in Row group and region total in Table group");
+    let row_group10 = live10.groups.iter().position(|g| g.scope == CoverageScope::Row).expect("Row group");
+    let table_group10 = live10.groups.iter().position(|g| g.scope == CoverageScope::Table).expect("Table group");
     assert_eq!(
-        vals11[0],
+        vals11[row_group10],
         vec![CellValue::Number(40), CellValue::Missing(row_trunc.into())],
         "Row group keeps witnessed GER live and refuses unwitnessed ENG"
     );
     assert_eq!(
-        vals11[1],
+        vals11[table_group10],
         vec![CellValue::Missing(table_trunc.into()), CellValue::Missing(table_trunc.into())],
         "Table group refuses region total operands with main's truncation reason"
     );
@@ -102,8 +105,10 @@ fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_
     register_live(&fold11, &cells11).unwrap();
     let live11 = cells11.finish();
     let live11_vals = live11.values(&frame11);
-    assert_eq!(live11_vals[0], vec![CellValue::Number(40)], "cold truncated hour keeps witnessed owner cell live");
-    assert_eq!(live11_vals[1], vec![CellValue::Missing(table_trunc.into())], "cold truncated hour refuses region total with truncation reason");
+    let row_group11 = live11.groups.iter().position(|g| g.scope == CoverageScope::Row).expect("Row group");
+    let table_group11 = live11.groups.iter().position(|g| g.scope == CoverageScope::Table).expect("Table group");
+    assert_eq!(live11_vals[row_group11], vec![CellValue::Number(40)], "cold truncated hour keeps witnessed owner cell live");
+    assert_eq!(live11_vals[table_group11], vec![CellValue::Missing(table_trunc.into())], "cold truncated hour refuses region total with truncation reason");
     let states11: Vec<GroupState> = live11_vals.into_iter().map(GroupState::Values).collect();
     let json11 = live11.json(&states11);
     let kinds: Vec<&str> = json11["kinds"].as_array().unwrap().iter().map(|k| k["id"].as_str().unwrap()).collect();

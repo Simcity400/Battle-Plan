@@ -62,24 +62,50 @@ Let `{Name}` be `table.words()` with its first letter capitalized (for example, 
 
 `CoverageScope::Table` paths keep `origin/main`'s exact table-wide refusal strings (`board::table_unrecorded`, `series.rs::status_reason`, and `dashboard-follow/src/evaluate.rs::unrecorded`).
 
-### Every `CoverageScope::Row` call site
+### Complete call-site audit (`Table` vs `Row`)
 
-1. **Exact keyed states (`crates/dashboard-query/src/series.rs::Line::states_of`)**: preserves `point.covered` and complete-hour spans from the single `key_runs_covered` pass (`replay_lanes::points::points_with_complete`), so both unvalued and absent scalar holders on complete hours resolve in one storage read with zero `at_each_with_status` re-read. Truncated and computed unresolved keys resolve through `at_each_with_status` + `row_coverage` (preserving `Computed::NotApplicable` on witnessed truncated rows and emitting the canonical truncation reason on unwitnessed rows). Unspecified-part owner enumerations (`owned_at`) remain `CoverageScope::Table`.
-2. **Scoreboard keyed cells (`crates/dashboard-query/src/series/board.rs::values`)**: `board::at` with `Rows::Countries` looks up each requested country key in sorted `snapshot.rows` and passes `slot.is_some()` to `row_coverage`, serving witnessed cells and refusing unwitnessed rows (including `absent_none` series) with the canonical reason. `Rows::Top` remains `CoverageScope::Table`.
-3. **Keyed series tiles (`crates/dashboard-query/src/tile.rs::tile`)**: explicitly passes `CoverageScope::Row` to `Line::binned_scoped` and `Line::missing_scoped`.
-   - `Line::missing`, `Line::binned`, `Line::summaries`, `Line::summaries_within`, `Line::summary`, `Line::ranked`, and `Line::part_lives` keep their public signatures and default to `CoverageScope::Table`.
-   - `Line::binned_scoped(..., CoverageScope::Row)` reads status spans over the full tile span before clipping to `within`, so both unfiltered and filtered complete tiles share the cached status read with `missing_scoped` and perform the same storage reads as `main` (3 on first tile, 2 on subsequent tiles).
-   - `Line::binned_from_runs(..., CoverageScope::Row)` also marks `has_break` and `first_break` for unwitnessed gaps overlapping the bin (including trailing truncation gaps on `relation-opinions`).
-   - `Line::alias_plan` provides one time-bounded `CountryLinks` alias resolution shared by `key_runs`, `key_runs_covered`, and `witnessed_spans` so exact states and tiles agree on aliased keys.
-4. **Follow evaluator (`crates/dashboard-follow/src/evaluate.rs::write`)**: uses `row_coverage` (checking `lane.read_rows()` via binary search) only for `Rows::Keys(_)`, `Rows::Live(_)`, and `Query::Series { top: None, parts: false, scope: CoverageScope::Row }`. `Rows::All`, `Rows::Top`, `Rows::LiveTable`, part enumerations, and default `CoverageScope::Table` series queries refuse the whole answer via `Reasons::unrecorded`. `playhead::Lane::finish` compares the sorted witnessed slot slice against the previous hour only when both hours are `Status::Truncated` with the same `Status` variant, setting `Changes::read_rows_changed()` so `Follow::touch` invalidates keyed queries when witnesses swap across consecutive truncated hours.
-5. **Follow parser (`crates/dashboard-follow/src/parse.rs::parse`)**: defaults `Query::Series` to `CoverageScope::Table`; accepts outer `"coverage": "row"` only on non-ranked, non-parts keyed series requests and rejects it on ranked `top`, `parts`, and `log-page` queries. UI callers pass `coverage: 'row'` only for per-country line-head reads (`MeasureRace` when `!racing`, `CasualtiesWidget` when `top == null`, and single-country/line widgets). `FactionTotalsView` and race-mode `MeasureRace` omit `coverage` and run under `CoverageScope::Table`.
-6. **Live rows (`crates/dashboard-follow/src/follow.rs::Follow::evaluate`, `crates/dashboard-follow/src/live_rows.rs::LiveRows::evaluate`)**: `Rows::Live` routes per-key coverage through `Reasons::row_coverage -> row_coverage`, borrowing `NO_ROW` when absent on complete hours so no extra string allocation occurs. `Rows::LiveTable` refuses via `Reasons::unrecorded`.
-7. **Live cells (`crates/dashboard-follow/src/live.rs::group_values`)**: each `Group` carries `scope: CoverageScope`. `Cells::value`, `sum`, `difference`, and `ratio` register in `CoverageScope::Row` groups (`Rows::Live`), which binary-search `TableView::Truncated` per key and pass `row.is_some()` to `row_coverage` (allocating `CellValue::Missing` only for keys that are actually missing). `Cells::table_sum` registers in a `CoverageScope::Table` group (`Rows::LiveTable`) and refuses via `evaluate::unrecorded`. `crates/dashboard-naval/src/products/minefields.rs` registers per-owner mine cells via `value` (`Row`) and the region `"total"` via `table_sum` (`Table`), so witnessed owners stay live while `"total"` always remains registered and reports `main`'s truncation reason.
-8. **Casualties UI (`ui/src/widgets/casualties/casualtiesData.ts`, `CasualtiesWidget.tsx`)**: retains explicitly requested unread keyed rows with their truncation reason in tooltips and surfaces unread countries with their truncation reason in the race-mode unknown note (`casualtyUnknownNote`).
+#### `dashboard-query`
+
+| Call site | Scope | Reason |
+| --- | --- | --- |
+| `series.rs::Line::states_of` | `Row` | Keyed per-(country, hour[, part]) reads; preserves `point.covered` and complete-hour spans via `replay_lanes::points::points_with_complete` (1 storage read for unvalued or absent complete-hour scalars) and resolves unresolved truncated/computed keys via `at_each_with_status` + `row_coverage`. |
+| `series.rs::Line::owned_at` | `Table` | Enumerates an owner's unknown set of parts at one hour (`status_reason`). |
+| `series.rs::Line::binned` (called by `summaries`, `summaries_within`, `summary`, `ranked`) | `Table` | Shared summary path used by ranked top-N (`series/ranked.rs`, `army.rs`, `forces.rs`), faction sums (`factions.rs`), and resource summaries (`resources.rs`). |
+| `series.rs::Line::missing` (called by `summaries`, `summaries_within`, `summary`, `ranked`) | `Table` | Keeps `Line::missing`'s signature and `origin/main` table-wide coverage for all summary/ranked/faction callers. |
+| `series.rs::Line::part_lives` | `Table` | Enumerates an owner's parts over a range (`part_coverage(..., Table)`). |
+| `series/board.rs::values` (`board::at` with `Rows::Countries`) | `Row` | Explicitly requested country cells; looks up each key in sorted `snapshot.rows` and passes `slot.is_some()` to `row_coverage`. |
+| `series/board.rs::at` with `Rows::Top` and `Line::rank_at_by_checked` | `Table` | Whole-population top-N ranking (`board::table_unrecorded`). |
+| `tile.rs::tile` (`Line::binned_scoped`, `Line::missing_scoped`) | `Row` | Keyed per-line tile requests; reads full-tile status spans before `within` clipping so unfiltered and filtered complete tiles share the status cache (3 reads first tile, 2 subsequent), and marks `has_break`/`first_break` in `binned_from_runs` for unwitnessed gaps including trailing truncation gaps. Uses `Line::alias_plan` so exact states and tiles agree on aliased keys. |
+
+#### `dashboard-follow` and `dashboard-naval` / `at_hour` live cells
+
+| Call site | Scope | Reason |
+| --- | --- | --- |
+| `evaluate.rs::write` (`Rows::Keys`, `Rows::Live`, `Query::Series { top: None, parts: false, scope: Row }`) | `Row` | Explicitly keyed followed reads; checks `lane.read_rows()` (`O(log W)` binary search) via `Reasons::row_coverage -> row_coverage`. `playhead::Lane::finish` sets `Changes::read_rows_changed()` when consecutive truncated hours swap witnessed slots. |
+| `evaluate.rs::write` (`Rows::All`, `Rows::Top`, `Rows::LiveTable`, `parts: true`, `Query::Series { scope: Table }`) | `Table` | Whole-population, ranked, part-enumeration, and multi-row sum queries refuse the whole answer via `Reasons::unrecorded`. |
+| `follow.rs::Follow::evaluate` (`Rows::Live` -> `LiveRows::evaluate`) | `Row` | Keyed live-cell backing queries route per-key coverage through `Reasons::row_coverage -> row_coverage`, borrowing `NO_ROW` on complete hours. |
+| `follow.rs::Follow::evaluate` (`Rows::LiveTable`) | `Table` | Multi-row live sums refuse via `Reasons::unrecorded`. |
+| `live.rs::Cells::value`, `difference`, `ratio` -> `group_values` | `Row` | Single-key live cell reads (`minefields.rs` owner mines, `research/slots.rs` slot progress, per-row scalars) binary-search `TableView::Truncated` per key via `row_coverage` (allocating `CellValue::Missing` only for missing keys). |
+| `live.rs::Cells::sum` -> `group_values` | `Table` | Multi-row population sums (`minefields.rs` region `"total"`, `production/live.rs` line `"output"`, `faction_state/details.rs` faction `"manpower"`, `occupation/states.rs` state `"assigned"`, `world_tension.rs` and `territory.rs` `"unnamed"`) refuse via `evaluate::unrecorded`, keeping `"total"` registered with `main`'s truncation reason. |
+| `parse.rs::parse` | `Table` default; `Row` opt-in | Defaults all followed requests to `CoverageScope::Table`; accepts outer `"coverage": "row"` only on non-ranked, non-parts keyed series requests and rejects it on `top`, `parts`, and `log-page`. |
+
+#### UI followed queries (`gate.follow`)
+
+| Call site | Scope | Reason |
+| --- | --- | --- |
+| `ui/src/charts/race/MeasureRace.tsx` (`!racing` head + `secondQuery`) | `Row` | Keyed country lines mode. |
+| `ui/src/charts/race/MeasureRace.tsx` (`racing`, both `top` and selected-group) | `Table` | Whole-population race ranking. |
+| `ui/src/charts/race/FactionTotalsView.tsx` | `Table` | Multi-faction sum and ranking. |
+| `ui/src/charts/race/PartFollows.tsx`, `ui/src/dashboard/keyedSeries.ts` | `Table` | Owner part enumerations (`parts: true`). |
+| `ui/src/charts/race/PartsRaceView.tsx`, `ui/src/widgets/army-size/ArmySizeWidget.tsx` | `Table` | Live race rankings (`air-force-size`, `navy-size`, `army-size`). |
+| `ui/src/widgets/casualties/CasualtiesWidget.tsx` (`top == null`) | `Row` | Explicitly selected countries; retains unread keyed rows with truncation reasons in tooltips and surfaces unread countries in `casualtyUnknownNote`. |
+| `ui/src/widgets/casualties/CasualtiesWidget.tsx` (`top != null`), `diplomatic-relations/topCountries.ts` | `Table` | Top-N ranked membership and values. |
+| `ui/src/widgets/autonomy/AutonomyWidget.tsx`, `country-measure/MeasureWidget.tsx`, `experience/ExperienceWidget.tsx`, `fuel/FuelWidget.tsx`, `stability/StabilityWidget.tsx`, `supply-health/supplyHead.ts`, `supply-health/supplySeries.ts` | `Row` | Per-country keyed line heads. |
+| `ui/src/widgets/army-size/ArmyBreakdown.tsx`, `player-apm/ApmWidget.tsx`, `special-projects/useProjectHistory.ts` | `Table` | Non-series panel / log-page queries. |
 
 ### Out of scope (deferred to follow-up)
 
-Whole-population results remain on `CoverageScope::Table` (`origin/main` behaviour) in this ADR and are left to a dedicated follow-up: ranks, totals, top-N, ranked summaries and their `membership` (`Line::ranked`, `rank_at_by`, `series/ranked.rs`), `totals_ranked`, faction lines/totals (`dashboard-wars/src/products/factions.rs`, `FactionTotalsView`), owner part enumerations (`part_lives`, `owned_at`), race-mode `MeasureRace`, and any whole-population refusal fields in the generated TypeScript contract (`ui/src/generated/dashboard.ts`).
+Whole-population results remain on `CoverageScope::Table` (`origin/main` behaviour) in this ADR and are left to a dedicated follow-up: ranks, totals, top-N, ranked summaries and their `membership` (`Line::ranked`, `rank_at_by`, `series/ranked.rs`), `totals_ranked`, faction lines/totals (`dashboard-wars/src/products/factions.rs`, `FactionTotalsView`), owner part enumerations (`part_lives`, `owned_at`), race-mode `MeasureRace`, multi-row `Cells::sum` totals, and any whole-population refusal fields in the generated TypeScript contract (`ui/src/generated/dashboard.ts`).
 
 ## Consequences
 

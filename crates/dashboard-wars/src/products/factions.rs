@@ -508,15 +508,15 @@ mod tests {
 
     #[test]
     fn truncated_default_faction_lines_leave_both_factions_missing_on_unstored_measure() {
-        use dashboard_base::test_fixtures::{CAMPAIGN, snapshot_records};
+        use dashboard_base::test_fixtures::{CAMPAIGN, records};
         use replay::campaign::Replay;
-        use replay_data::rows::{CampaignRow, CountryFactoriesRow, CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, TableRows};
+        use replay_data::rows::{CampaignRow, CountryFactoriesRow, CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, Recorded, TableRows};
         use replay_frame::frame::{Metrics, TableView};
         use std::sync::Arc;
 
         let countries = vec![
-            CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() },
-            CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..CountryRow::default() },
+            CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() },
+            CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..CountryRow::default() },
         ];
         let links = vec![
             CountryLinkRow { id: 9001, canonical_slot: 7 },
@@ -548,7 +548,7 @@ mod tests {
                 DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() }
             })
             .collect();
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)])
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
             .unwrap()
             .into_timelines(&Default::default())
             .unwrap();

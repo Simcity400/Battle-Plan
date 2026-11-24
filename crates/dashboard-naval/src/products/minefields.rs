@@ -115,7 +115,7 @@ fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Resul
         totals.entry(*region).or_default().push(source);
     }
     for (region, sources) in &totals {
-        live.table_sum(&region.to_string(), "total", sources, 1.0);
+        live.sum(&region.to_string(), "total", sources, 1.0);
     }
     Ok(())
 }

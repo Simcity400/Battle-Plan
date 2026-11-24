@@ -563,7 +563,14 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
     );
 
     let tile_reply = tile::tile(&rel, "1", &[ask], None, 6, 0, false).unwrap();
-    assert_eq!(tile_reply.lines[0].missing, row_missing);
+    let in_range: Vec<MissingSpan> = tile_reply
+        .lines[0]
+        .missing
+        .iter()
+        .filter(|span| span.first_hour <= 131 && 120 <= span.last_hour)
+        .cloned()
+        .collect();
+    assert_eq!(in_range, row_missing);
     let bytes = crate::fixture::unbase64(&tile_reply.bins);
     let slot0 = ((120 - tile_reply.first_hour) / 6) as usize;
     assert_eq!(

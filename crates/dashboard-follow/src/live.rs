@@ -268,10 +268,6 @@ impl Cells {
     }
 
     pub fn sum(&self, row: &str, column: &str, sources: &[Source], scale: f64) {
-        self.add(CoverageScope::Row, row, column, Op::Sum, scale, sources);
-    }
-
-    pub fn table_sum(&self, row: &str, column: &str, sources: &[Source], scale: f64) {
         self.add(CoverageScope::Table, row, column, Op::Sum, scale, sources);
     }
 
