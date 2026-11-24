@@ -1,0 +1,121 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
+import { registerTableProjection } from '../../families/table/registry.ts';
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { knownValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
+import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
+import { fraction, shipLabel, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
+
+const NO_OPTIONS: Record<string, never> = {};
+const ON_PORT = 'Shown on the port';
+const ON_SHIP = 'Shown on each ship';
+const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
+
+type DockRow =
+  | { readonly kind: 'port'; readonly key: string; readonly port: RepairPort; readonly children: readonly DockRow[] }
+  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip };
+
+const portName = (port: RepairPort): Value<string> => valueFromNullable(port.name, { kind: 'notRecorded', reason: 'Port name unavailable' });
+
+const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
+
+const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
+  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Wilhelmshaven'],
+    value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
+  { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
+    value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
+    bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
+  { ...PRIORITY!, priority: 2, numeric: true, format: 'integer', widest: ['9'],
+    value: row => row.kind === 'port'
+      ? valueFromNullable(row.port.priority, { kind: 'notRecorded', reason: 'Repair priority not recorded' })
+      : notApplicable(ON_PORT) },
+  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], hint: 'repairing',
+    value: row => row.kind === 'port'
+      ? valueFromNullable(row.port.dockyards, { kind: 'notRecorded', reason: 'Dockyards repairing not recorded' })
+      : notApplicable(ON_PORT) },
+];
+
+function summary(reply: NavalRepairsReply): string | null {
+  const parts: string[] = [];
+  if (reply.queuedShips !== null) parts.push(`${reply.queuedShips.toLocaleString('en-US')} ${reply.queuedShips === 1 ? 'ship' : 'ships'} waiting`);
+  if (reply.usedDockyards !== null && reply.repairLimit !== null) {
+    parts.push(`${reply.usedDockyards.toLocaleString('en-US')} / ${reply.repairLimit.toLocaleString('en-US')} repair dockyards in use`);
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
+export const dockyardsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+  declareTableProjection<NavalRepairsReply, DockRow, Record<string, never>>({
+    kind: 'dockyards-and-repairs',
+    validate: validateRepairs,
+    columns: DOCK_COLUMNS,
+    rows: reply => {
+      const rows: DockRow[] = reply.ports.map(port => ({
+        kind: 'port',
+        key: String(port.province),
+        port,
+        children: port.queue.map((ship, index) => ({ kind: 'ship', key: `${port.province}|${index}|${ship.handle}`, ship })),
+      }));
+      return {
+        rows,
+        ...(!rows.length
+          ? reply.censusComplete
+            ? { empty: 'No repair ports at this date', emptyKind: 'empty' as const }
+            : { empty: 'Repair ports were not fully recorded at this date', emptyKind: 'unavailable' as const }
+          : {}),
+        summaryPill: summary(reply),
+        warnings: reply.warnings,
+      };
+    },
+    rowKey: row => row.key,
+    rowName: row => row.kind === 'port' ? (row.port.name ?? 'Port name unavailable') : shipLabel(row.ship).name,
+    children: row => row.kind === 'port' && row.children.length ? row.children : undefined,
+    initiallyOpen: () => false,
+    tooltipExtra: (row): TooltipExtraRow[] => row.kind === 'ship'
+      ? shipTooltip(row.ship)
+      : [
+          { label: 'Repair priority', value: valueFromNullable(row.port.policy, { kind: 'notRecorded', reason: 'Repair priority name not localised' }), divider: true },
+          { label: 'Ships waiting', value: knownValue(row.port.queue.length.toLocaleString('en-US')) },
+        ],
+  }),
+);
+
+export const dockyardsDeclaration: TableWidgetDeclaration<Record<string, never>> = {
+  family: 'table',
+  kind: 'dockyards-and-repairs',
+  label: 'Dockyards and repairs',
+  subject: 'repair ports',
+  emptyCampaign: 'Load a campaign to see dockyards and repairs.',
+  icon: 'anchor',
+  countries: { mode: 'single', choose: 'Choose a country to see its dockyards.' },
+  sources: ctx => {
+    const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;
+    return {
+      owner: `dockyards-and-repairs:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`,
+      entries: params
+        ? [{
+            name: 'main',
+            source: ctx.track.source,
+            branch: ctx.branch.id,
+            offset: ctx.track.axisOffset,
+            read: {
+              shape: 'point',
+              channel: 'panel',
+              coverage: { mode: 'keyed', keys: [ctx.countryTag!] },
+              product: 'naval-repairs',
+              followQuery: { panel: 'naval-repairs', ...params },
+              params,
+              validate: validateRepairs,
+            },
+          }]
+        : [],
+    };
+  },
+  projection: dockyardsProjection,
+  columns: DOCK_COLUMNS,
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
+  projectionOptions: () => NO_OPTIONS,
+  jumpToDate: true,
+};

@@ -4413,7 +4413,11 @@ readHour: number | null,
 /**
  * Why the queue is unknown at this hour, when it is.
  */
-missing: string | null, orders: Array<TrainingOrder>, warnings: Array<string>, };
+missing: string | null, orders: Array<TrainingOrder>,
+/**
+ * Divisions in training across every order; none when the queue is unknown.
+ */
+inTraining: number | null, warnings: Array<string>, };
 export type TrainingOrder = { order: string, ordinal: number, template: string, templateName: string | null, templateMissing: string | null, icon: string | null, iconMissing: string | null, amount: number,
 /**
  * The stored priority, and the game's text for it.
@@ -4426,7 +4430,11 @@ location: number, locationName: string | null, locationMissing: string | null, c
 /**
  * A government in exile's order names that country.
  */
-exile: string | null, divisions: Array<TrainingDivision>, };
+exile: string | null, divisions: Array<TrainingDivision>,
+/**
+ * The divisions' available and needed manpower, added.
+ */
+manpower: number, manpowerNeeded: number, };
 export type TrainingDivision = { line: string, ordinal: number, name: string | null, nameMissing: string | null,
 /**
  * Fixed-point training and its maximum, five decimals.
@@ -4444,6 +4452,11 @@ need: Array<TrainingNeed>, needMissing: string | null,
  * Why held equipment cannot be measured against the need.
  */
 comparisonMissing: string | null,
+/**
+ * Held equipment as a share of the template's need, fixed-point with five decimals (100,000 is all of it):
+ * each type counts up to its need. None where it cannot be measured or nothing is needed.
+ */
+equipmentFillRaw: string | null,
 /**
  * A halting reason is stored; its meaning is not named.
  */

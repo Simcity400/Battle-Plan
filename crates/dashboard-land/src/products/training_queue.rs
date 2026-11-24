@@ -103,6 +103,9 @@ pub struct TrainingDivision {
     pub need_missing: Option<String>,
     #[doc = " Why held equipment cannot be measured against the need."]
     pub comparison_missing: Option<String>,
+    #[doc = " Held equipment as a share of the template's need, fixed-point with five decimals (100,000 is all of it):"]
+    #[doc = " each type counts up to its need. None where it cannot be measured or nothing is needed."]
+    pub equipment_fill_raw: Option<String>,
     #[doc = " A halting reason is stored; its meaning is not named."]
     pub halted: bool,
 }
@@ -131,6 +134,11 @@ pub struct TrainingOrder {
     #[doc = " A government in exile's order names that country."]
     pub exile: Option<String>,
     pub divisions: Vec<TrainingDivision>,
+    #[doc = " The divisions' available and needed manpower, added."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+    pub manpower: i64,
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+    pub manpower_needed: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -143,10 +151,31 @@ pub struct TrainingQueueReply {
     #[doc = " Why the queue is unknown at this hour, when it is."]
     pub missing: Option<String>,
     pub orders: Vec<TrainingOrder>,
+    #[doc = " Divisions in training across every order; none when the queue is unknown."]
+    pub in_training: Option<u32>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(TrainingQueueReply);
+
+#[cfg(test)]
+mod tests;
+
+const FILL_SCALE: i128 = 100_000;
+
+fn equipment_fill(need: &[TrainingNeed]) -> Option<i128> {
+    let (mut held, mut needed) = (0i128, 0i128);
+    for entry in need {
+        let amount: i128 = entry.need_raw.parse().ok()?;
+        if amount <= 0 {
+            continue;
+        }
+        let have: i128 = entry.held_raw.parse().ok()?;
+        needed += amount;
+        held += have.clamp(0, amount);
+    }
+    (needed > 0).then(|| held * FILL_SCALE / needed)
+}
 
 fn localised(cat: &Result<Arc<Catalogue>, String>, key: &str) -> Result<String, String> {
     let cat = cat.as_ref().map_err(Clone::clone)?;
@@ -286,7 +315,7 @@ impl AtHour for TrainingQueue {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Training queue country is unavailable at this hour"))?;
-        let mut reply = TrainingQueueReply { tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, orders: Vec::new(), warnings: Vec::new() };
+        let mut reply = TrainingQueueReply { tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, orders: Vec::new(), in_training: None, warnings: Vec::new() };
         if let Some(why) = QUEUE.iter().find_map(|&id| unavailable(frame, id)) {
             reply.missing = Some(why);
             return Ok(reply);
@@ -374,6 +403,7 @@ impl AtHour for TrainingQueue {
                     }
                 };
                 let comparison_missing = need_missing.clone().or_else(|| unclassified.then(|| "A held design's equipment type is unresolved".to_owned()));
+                let equipment_fill_raw = if comparison_missing.is_none() { equipment_fill(&need).map(|fill| fill.to_string()) } else { None };
                 divisions.push(TrainingDivision {
                     line: line.handle.to_string(),
                     ordinal: line.ordinal,
@@ -389,12 +419,15 @@ impl AtHour for TrainingQueue {
                     need,
                     need_missing,
                     comparison_missing,
+                    equipment_fill_raw,
                     halted: line.halting_reason_present != 0,
                 });
             }
             let priority = usize::try_from(order.priority).ok().and_then(|at| priority_names.get(at).cloned()).unwrap_or_else(|| Err(format!("Deployment priority {} has no proved name", order.priority)));
             let (priority_name, priority_missing) = refusals.keep(priority);
             let (location_name, location_missing) = refusals.keep(location(frame, cat, order.location));
+            let manpower_total = divisions.iter().map(|division| i64::from(division.manpower)).sum();
+            let needed_total = divisions.iter().map(|division| i64::from(division.manpower_needed)).sum();
             reply.orders.push(TrainingOrder {
                 order: order.handle.to_string(),
                 ordinal: order.ordinal,
@@ -413,8 +446,11 @@ impl AtHour for TrainingQueue {
                 closed: order.closed != 0,
                 exile: order.exile_country.and_then(tag_of),
                 divisions,
+                manpower: manpower_total,
+                manpower_needed: needed_total,
             });
         }
+        reply.in_training = Some(reply.orders.iter().map(|order| order.divisions.len() as u32).sum());
         reply.warnings = refusals.lines();
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)

@@ -1,5 +1,0 @@
-.air-missions { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; }
-.air-missions-region { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.air-missions-head { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
-.air-missions-head img { width: 1.5em; height: 1.5em; flex: none; object-fit: contain; }
-.air-missions-head > span { overflow: hidden; text-overflow: ellipsis; }
