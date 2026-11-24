@@ -71,7 +71,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_production::registrations::EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD,
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
     dashboard_politics::registrations::POWER_LEDGER_DAY_POWERDAY,
-    dashboard_wars::registrations::FACTION_STATE_REWARDS_FACTIONGOALREWARDS,
 ];
 
 const OWN: &[Registered] = &[
