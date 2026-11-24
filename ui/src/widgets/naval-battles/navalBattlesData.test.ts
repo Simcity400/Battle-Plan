@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
 import { navalBattleChanges, navalBattleMeasureText, navalBattleRow, navalBattleRows, navalBattleSize, navalBattleState, navalBattleWarnings, navalBattleWindows,
-  navalWindowPlaces, rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
+  navalSideText, navalWindowPlaces, rankedNavalBattleRows, shownNavalCensusHour, validateNavalBattlesManifest, validateNavalBattlesRanking, validateNavalBattlesReply,
   NAVAL_BATTLE_DEFAULT_MEASURE } from './navalBattlesData.ts';
 import { battleChangeHours, battleJumpHour, battlePlaceRequests, battlePlaceText, battleStateRows, battleTooltip, namedBattles, isBattleRow } from '../battles/battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
@@ -280,4 +280,18 @@ test('per-run province ids stay unrecorded on early runs, name later provinces a
   assert.equal(states[0].item.provinceId, 500);
   assert.equal(states[1].revealedHour, 105);
   assert.equal(states[1].item.provinceId, null);
+});
+
+test('naval side summaries show convoys on convoy raids and escorted convoys without calling them 0 ships', () => {
+  const side = (counts: NavalBattleRun['row']['sides'][number]['counts']) => ({
+    label: 'Defenders', countries: [], counts, losses: [],
+  });
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 6 }, { label: 'Convoys', value: 0 }]), false), '6 ships');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 6 }, { label: 'Convoys', value: 0 }]), true), '6');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 0 }, { label: 'Convoys', value: 7 }]), false), '7 convoys');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 0 }, { label: 'Convoys', value: 7 }]), true), '7c');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 0 }, { label: 'Convoys', value: 1 }]), false), '1 convoy');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 13 }, { label: 'Convoys', value: 1 }]), false), '13 ships, 1 convoy');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: 13 }, { label: 'Convoys', value: 1 }]), true), '13s+1c');
+  assert.equal(navalSideText(side([{ label: 'Ships', value: null, unknown: 'Not recorded' }, { label: 'Convoys', value: 2 }]), false), 'Not recorded ships, 2 convoys');
 });
