@@ -2692,3 +2692,22 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   assert.equal(feedModel.rows.length, 1);
   assert.equal(feedModel.rows[0]!.cells.detail.value.kind, 'notRecorded', 'missing dated faction name stays notRecorded rather than guessing');
 });
+
+test('the audit compares which art a cell shows, never whether its bytes have arrived', () => {
+  const settings = tableSettingsOf(undefined, CLOCK_COLUMNS, CLOCK_TABLE_BASE);
+  const layouts = buildColumnLayouts(CLOCK_COLUMNS, settings);
+  const base = campaignClockProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', {
+    available: true, recordedSeconds: 3661, playingSeconds: 2400, pausedSeconds: 1261, complete: true, warnings: [],
+  } as CampaignClockReply]]) }), {});
+  const column = CLOCK_COLUMNS[0]!.key;
+  const withArt = (art: { readonly icon?: string; readonly iconPending?: boolean }): TableModel => ({
+    ...base,
+    rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_counter', 0, null, false]), ...art } } })),
+  });
+  const audit = (model: TableModel) => deriveTableAudit({ model, flatRows: resolveTableRows(model, settings), visibleColumns: layouts });
+  const arrived = audit(withArt({ icon: 'http://artwork.localhost/0123456789abcdef0123456789abcdef.png' }));
+  const arriving = audit(withArt({ iconPending: true }));
+  assert.equal(pictureError('table', arrived, { values: new Map(arriving.map(row => [row.key, row.value!])), ordered: true }), null);
+  const other = audit({ ...base, rows: base.rows.map(row => ({ ...row, cells: { ...row.cells, [column]: { ...row.cells[column]!, iconSlot: true, iconArt: JSON.stringify(['sprite', 'GFX_other', 0, null, false]), iconPending: true } } })) });
+  assert.notEqual(pictureError('table', arrived, { values: new Map(other.map(row => [row.key, row.value!])), ordered: true }), null, 'a different picture is still a difference');
+});
