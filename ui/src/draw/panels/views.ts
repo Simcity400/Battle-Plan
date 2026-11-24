@@ -1,22 +1,14 @@
 import type { LiveValues } from '../../charts/live';
 import type { PanelGeometry, PanelView } from './view';
 import type { Structure } from '../views/fields';
-import type { DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
+import type { DoctrineMasteryReply, ResearchSlotsReply, WargoalsReply } from '../../generated/dashboard';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewardsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
 import { HISTORY_PANEL, historyStructure, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
-
-function detailValues(reply: SpecialProjectDetails) {
-  const values = detailTexts(reply);
-  if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
-  if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
-  return values;
-}
 
 function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (record: T) => string,
   fields: (record: T, values: LiveValues<number>, hour: number) => Map<string, string>, geometry: PanelGeometry, nextChange?: (reply: T, hour: number) => number) {
@@ -52,7 +44,6 @@ const logTailStructure = (raw: unknown): string => {
 };
 
 const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
-  'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
   [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
@@ -92,16 +83,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
       ...f.tracks.flatMap(t => [JSON.stringify([f.id, t.ordinal, t.sub?.id]), ...t.rewards.map(r => JSON.stringify([f.id, t.ordinal, r.id])),
         ...t.rewards.slice(0, t.unlocked ?? 0).map(r => JSON.stringify(['unlocked', f.id, t.ordinal, r.id]))])]);
   }
-  if (product === 'special-project-details') {
-    const r = raw as SpecialProjectDetails;
-    return [...(r.scientists ?? []).flatMap(s => ['scientist:' + s.character, ...(s.skills ?? []).map(k => JSON.stringify([s.character, k.specialization.token])),
-      ...(s.traits ?? []).map(t => JSON.stringify([s.character, t.token]))]), ...(r.breakthroughs ?? []).map(b => 'breakthrough:' + b.specialization.token),
-      ...(r.programs ?? []).flatMap(p => ['facility:' + p.id, ...(p.assignments ?? []).map(a => JSON.stringify([p.id, a.ordinal, a.reference])),
-        ...(p.facility?.sources ?? []).map(s => JSON.stringify([p.id, s.kind, s.label?.token, s.assignment, s.scientistReference]))]),
-      ...(r.projects ?? []).flatMap(p => [JSON.stringify([p.owner, p.id]), ...(p.variables ?? []).map(v => JSON.stringify([p.owner, p.id, v.name])),
-        ...(p.pending?.options ?? []).map(o => JSON.stringify([p.owner, p.id, p.pending?.label.token, o.label.token])),
-        ...(p.choices ?? []).map(c => JSON.stringify([p.owner, p.id, c.ordinal, c.reward.token, c.option.token]))])];
-  }
   if (product === 'log-tail' || product === 'market-ledger-tail') {
     const r = raw as { total?: string | number; rows?: readonly { hour?: number; key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
     return [
@@ -114,7 +95,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
 }
 
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
-const extendInline = '.project-details [data-paint]:last-child';
 
 export const panelViews: Readonly<Record<string, PanelView>> = {
   'research-slots': recordView(validateResearchSlots, slotsStructure, (reply, source, hour) =>
@@ -127,6 +107,4 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
       }
       return next;
     }),
-  'special-project-details': recordView(validateProjectDetails, detailsStructure, detailValues, { extendInline }),
-  [REWARDS_PANEL]: recordView(validateProjectDetails, rewardsStructure, detailValues, { extendInline }),
 };
