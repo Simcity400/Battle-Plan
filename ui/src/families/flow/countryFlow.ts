@@ -19,7 +19,6 @@ export interface CountryFlowText {
 }
 
 export const UNKNOWN_COUNTRY = 'Unknown country';
-const AMOUNT_FORMAT: ValueFormat = { decimals: 0, maxDecimals: 1 };
 
 export function scaledAmount(amount: string, decimals: number): number {
   return decimals > 0 ? Number(BigInt(amount)) / 10 ** decimals : Number(BigInt(amount));
@@ -74,9 +73,11 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
   if (reply.missing) return blank(hour, { empty: text.notRecorded, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
 
   const decimals = reply.decimals;
+  const shownFormat: ValueFormat = { decimals, maxDecimals: 1 };
+  const exactFormat: ValueFormat = { decimals };
   const value = (amount: string | null) => (amount === null ? null : scaledAmount(amount, decimals));
-  const figure = (amount: string | null) => (amount === null ? 'Not recorded' : formatCompactScalar(scaledAmount(amount, decimals), AMOUNT_FORMAT).text);
-  const exact = (amount: string | null) => (amount === null ? 'Not recorded' : formatScalar(scaledAmount(amount, decimals), AMOUNT_FORMAT));
+  const figure = (amount: string | null) => (amount === null ? 'Not recorded' : formatCompactScalar(BigInt(amount), shownFormat).text);
+  const exact = (amount: string | null) => (amount === null ? 'Not recorded' : formatScalar(BigInt(amount), exactFormat));
   const parts: FlowPartKey[] = reply.parts.map((part, index) => ({ key: part.key, label: part.name ?? part.key, ordinal: part.ordinal ?? index }));
   const items = (link: FlowLink): TooltipListItem[] => link.amounts.map(amount => {
     const part = parts[amount.part];

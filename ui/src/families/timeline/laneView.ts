@@ -168,7 +168,7 @@ const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFra
         notes: model.notes ?? [],
         warnings: model.warnings,
       },
-      extent: { height: layout.frame.contentHeight + AXIS_HEIGHT } satisfies TimelineExtentField,
+      extent: { height: layout.frame.bodyTop + layout.frame.contentHeight + AXIS_HEIGHT } satisfies TimelineExtentField,
       nav: navOf(layout.frame),
     };
   },

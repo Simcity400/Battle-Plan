@@ -5,3 +5,4 @@ pub mod map_events;
 mod script_events;
 
 mod decisions;
+mod windows;

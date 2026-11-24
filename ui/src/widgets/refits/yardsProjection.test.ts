@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
+import { NOT_LIVE_CELL } from '../../dashboard/follow/liveCells.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import type { TableModel, TableRow } from '../../families/table/model.ts';
-import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
+import type { TableModel, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../../families/value.ts';
 import type { NavalRefitsReply, NavalRepairsReply, YardShip } from '../../generated/dashboard';
 import { dockyardsProjection } from '../dockyards-and-repairs/dockyardsProjection.ts';
 import { refitsProjection } from './refitsProjection.ts';
@@ -14,14 +15,17 @@ const ship = (handle: string, extra: Partial<YardShip> = {}): YardShip => ({
 
 const refits = (extra: Partial<NavalRefitsReply> = {}): NavalRefitsReply => ({
   lines: [
-    { handle: '7', target: 'Early Cruiser C Klasse', progress: '906000', cost: '1000000', dockyards: 1, remaining: '94000', ships: [ship('70', { hull: '100' })] },
-    { handle: '8', target: null, progress: '10', cost: null, dockyards: null, remaining: null, ships: [ship('80', { maximum: null })] },
+    { handle: '7', target: 'Early Cruiser C Klasse', progress: '906000', cost: '1000000', dockyards: 1, remaining: '94000', ships: [ship('70', { hull: '100' })], shipsMissing: null },
+    { handle: '8', target: null, progress: '10', cost: null, dockyards: null, remaining: null, ships: [ship('80', { maximum: null })], shipsMissing: null },
   ],
   ships: 2, dockyards: 3, costRead: 40, censusComplete: true, missing: null, warnings: [], ...extra,
 });
 
-const project = (projection: typeof refitsProjection, reply: unknown, live: Map<string, number> = new Map()): TableModel =>
-  projection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', reply]]), live: new Map([['main', valuesOf(live, 'Not in the answer')]]) }), {});
+const project = (projection: typeof refitsProjection, reply: unknown, live: Map<string, number> = new Map(), missing: ReadonlyMap<string, string> = new Map()): TableModel =>
+  projection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', reply]]), live: new Map([['main', valuesOf(live, key => missing.get(key) ?? NOT_LIVE_CELL)]]) }), {});
+
+const tip = (row: TableRow | undefined): readonly TooltipExtraRow[] => (typeof row?.tooltipExtra === 'function' ? row.tooltipExtra() : row?.tooltipExtra) ?? [];
+const tipValue = (row: TableRow | undefined, label: string) => tip(row).find(item => item.label === label)?.value;
 
 const cell = (row: TableRow | undefined, column: string) => row?.cells[column]?.value;
 
@@ -43,9 +47,30 @@ test('a refit line shows the product’s progress against its cost, its dockyard
   assert.equal(project(refitsProjection, refits({ dockyards: null })).titleSummary, null, 'no total is invented when the census is incomplete');
 });
 
-test('the hourly progress cell moves the share without a new reply', () => {
+test('the hourly progress cell moves the share, the work done and the remaining cost together; a live cell that says missing is never covered by the held value', () => {
   const model = project(refitsProjection, refits(), new Map([[liveKey('7', 'progress'), 500000]]));
   assert.deepEqual(cell(model.rows[0], 'progress'), knownValue(50));
+  assert.deepEqual([tipValue(model.rows[0], 'Work done'), tipValue(model.rows[0], 'Remaining cost')], [knownValue('5 IC'), knownValue('5 IC')]);
+  const unread = 'Naval refit progress not read at this hour';
+  const missing = project(refitsProjection, refits(), new Map(), new Map([[liveKey('7', 'progress'), unread], [liveKey('70', 'hull'), unread]]));
+  assert.deepEqual(cell(missing.rows[0], 'progress'), notRecorded(unread));
+  assert.deepEqual([tipValue(missing.rows[0], 'Work done'), tipValue(missing.rows[0], 'Remaining cost')], [notRecorded(unread), notRecorded(unread)]);
+  assert.deepEqual([cell(missing.rows[0]!.children![0], 'strength'), tipValue(missing.rows[0]!.children![0], 'Strength')], [notRecorded(unread), notRecorded(unread)]);
+});
+
+test('ships linked or waiting are counted only from a whole read; the ships that were read are kept', () => {
+  const unread = 'Naval refit ships read only in part at this hour (2 rows not read)';
+  const line = refits().lines[0]!;
+  const refit = project(refitsProjection, refits({ lines: [{ ...line, shipsMissing: unread }, { ...line, handle: '9', ships: [], shipsMissing: unread }] }));
+  assert.deepEqual(tipValue(refit.rows[0], 'Ships'), partialValue('1', unread, { atLeast: true }));
+  assert.equal(refit.rows[0]!.children?.length, 1, 'the witnessed ship stays');
+  assert.deepEqual(tipValue(refit.rows[1], 'Ships'), notRecorded(unread), 'none seen in an unread list is not zero');
+  assert.deepEqual(tipValue(project(refitsProjection, refits()).rows[0], 'Ships'), knownValue('1'));
+  const queueUnread = 'Naval repair queue not available at this hour';
+  const port = repairs().ports[0]!;
+  const docks = project(dockyardsProjection, repairs({ ports: [{ ...port, queue: [], queueMissing: queueUnread }] }));
+  assert.deepEqual(tipValue(docks.rows[0], 'Ships waiting'), notRecorded(queueUnread));
+  assert.deepEqual(tipValue(project(dockyardsProjection, repairs()).rows[0], 'Ships waiting'), knownValue('1'));
 });
 
 test('refits not recorded at the hour are the body’s unavailable state with the reason', () => {
@@ -57,8 +82,8 @@ test('refits not recorded at the hour are the body’s unavailable state with th
 
 const repairs = (extra: Partial<NavalRepairsReply> = {}): NavalRepairsReply => ({
   ports: [
-    { province: 11, name: 'Brest', priority: 2, policy: 'Normal', dockyards: 0, queue: [ship('90', { hull: '0' })] },
-    { province: 12, name: null, priority: null, policy: null, dockyards: null, queue: [] },
+    { province: 11, name: 'Brest', priority: 2, policy: 'Normal', dockyards: 0, queue: [ship('90', { hull: '0' })], queueMissing: null },
+    { province: 12, name: null, priority: null, policy: null, dockyards: null, queue: [], queueMissing: null },
   ],
   usedDockyards: 0, repairLimit: 29, queuedShips: 1, censusComplete: true, warnings: [], ...extra,
 });

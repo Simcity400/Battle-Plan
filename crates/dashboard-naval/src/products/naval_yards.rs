@@ -5,7 +5,7 @@ use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Owner, Read}};
 use dashboard_world::products::place_names::{self, Places};
 use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals, View}};
 use dashboard_follow::live::{Cells, Source as Cell};
-use dashboard_query::coverage::witnessed;
+use dashboard_query::coverage::{witnessed, witnessed_rows};
 use content_reader_script::sub_units::{SubUnit, SubUnits};
 use content_reader_division_names::division_names::Database;
 use replay_data::rows::{ShipModelRow, ShipNamingOperands, ShipRow};
@@ -60,8 +60,10 @@ pub struct RepairPort {
     #[doc = " The game's name of the port's repair priority."]
     pub policy: Option<String>,
     pub dockyards: Option<i32>,
-    #[doc = " The ships queued, in queue order; a ship queued twice is listed twice."]
+    #[doc = " The ships queued that were read, in queue order; a ship queued twice is listed twice."]
     pub queue: Vec<YardShip>,
+    #[doc = " Why the queue may hold more ships than listed: the queue was not read whole."]
+    pub queue_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -91,7 +93,10 @@ pub struct RefitLine {
     pub dockyards: Option<i32>,
     #[doc = " Cost less work done, where both are finite and the cost positive."]
     pub remaining: Option<String>,
+    #[doc = " The linked ships that were read."]
     pub ships: Vec<YardShip>,
+    #[doc = " Why the line may link more ships than listed: the ship links were not read whole."]
+    pub ships_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -406,7 +411,7 @@ fn owned_ports(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeSet<u32> {
 
 fn queues(frame: &DecodedFrame, ports: &BTreeSet<u32>) -> BTreeMap<u32, Vec<(u32, u64)>> {
     let mut out: BTreeMap<u32, Vec<(u32, u64)>> = BTreeMap::new();
-    for row in frame.complete::<tables::NavalRepairQueue>().unwrap_or_default().iter().filter(|row| ports.contains(&row.province)) {
+    for row in witnessed_rows::<tables::NavalRepairQueue>(frame).rows.iter().filter(|row| ports.contains(&row.province)) {
         out.entry(row.province).or_default().push((row.ordinal, row.ship));
     }
     out
@@ -498,6 +503,7 @@ impl AtHour for NavalRepairs {
         let raws = raws(frame, owner.slot);
         let ports = owned_ports(frame, &raws);
         let queues = queues(frame, &ports);
+        let queue_missing = witnessed_rows::<tables::NavalRepairQueue>(frame).missing;
         let places = Places::new(frame);
         let mut yard = Yard::new(frame, &at.context.cat, at.live);
         let bases = frame.complete::<tables::NavalRepairBases>().unwrap_or_default();
@@ -520,6 +526,7 @@ impl AtHour for NavalRepairs {
                 policy: repair.and_then(|row| yard.policy(true, row.priority)),
                 dockyards: repair.map(|row| row.allocated_dockyards),
                 queue: queue.into_iter().flatten().map(|&(_, ship)| yard.ship(ship)).collect(),
+                queue_missing: queue_missing.clone(),
             });
         }
         shown.sort_by(|a, b| b.priority.unwrap_or(i32::MIN).cmp(&a.priority.unwrap_or(i32::MIN)).then(a.province.cmp(&b.province)));
@@ -561,7 +568,7 @@ fn owned_lines(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeMap<u64, Vec<u
     for row in held.complete::<tables::NavalRefitProgress>().unwrap_or_default().iter().filter(|row| owned.contains(&row.line)) {
         out.insert(row.line, Vec::new());
     }
-    for link in held.complete::<tables::NavalRefitShips>().unwrap_or_default() {
+    for link in witnessed_rows::<tables::NavalRefitShips>(held).rows {
         if let Some(ships) = out.get_mut(&link.line) {
             ships.push(link.ship);
         }
@@ -653,6 +660,7 @@ impl AtHour for NavalRefits {
         let metadata: HashMap<u64, &replay_data::rows::ProductionLineRow> = frame.complete::<tables::ProductionLines>().map(|rows| rows.iter().map(|row| (row.handle, row)).collect()).unwrap_or_default();
         let mut yard = Yard::new(frame, &at.context.cat, at.live);
         let progress_column = dashboard_declare::field(TableId::NavalRefitProgress, "progress_raw")?;
+        let ships_missing = witnessed_rows::<tables::NavalRefitShips>(frame).missing;
         let mut shown = Vec::new();
         let (mut ships, mut dockyards) = (0u32, Some(0i64));
         for (&handle, linked) in &lines {
@@ -680,6 +688,7 @@ impl AtHour for NavalRefits {
                 dockyards: line.map(|line| line.active_factories),
                 remaining,
                 ships: linked.iter().map(|&ship| yard.ship(ship)).collect(),
+                ships_missing: ships_missing.clone(),
             });
         }
         let census_complete = [TableId::NavalRefitProgress, TableId::NavalRefitShips, TableId::ProductionLines, TableId::CountryLinks].into_iter().all(|table| complete(frame, table));

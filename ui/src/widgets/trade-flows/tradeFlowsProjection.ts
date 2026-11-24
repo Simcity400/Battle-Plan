@@ -16,8 +16,10 @@ import type { CountryFlowReply } from '../../generated/dashboard';
 const EMPTY_OPTIONS: Readonly<Record<string, never>> = {};
 const NOT_RECORDED = 'Trade was not recorded at this date.';
 const NO_TRADE = 'No trade at this date.';
-const AMOUNT: ValueFormat = { decimals: 0, maxDecimals: 1 };
 const SIGNED: ValueFormat = { decimals: 0, maxDecimals: 1, signed: true };
+const signedFormat = (decimals: number): ValueFormat => ({ decimals, maxDecimals: 1, signed: true });
+const amountFormat = (decimals: number): ValueFormat => ({ decimals, maxDecimals: 1 });
+const exactAmountFormat = (decimals: number): ValueFormat => ({ decimals });
 
 export const tradeFlowProjection: FlowProjection = {
   family: 'flow',
@@ -52,10 +54,10 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
 const PARTNER: TableColumnSpec = { key: 'partner', label: 'Partner', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, sortable: false };
 const NET: TableColumnSpec = { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1000, numeric: true, format: SIGNED, widest: ['+999.9'], sortable: false, hideable: false };
 
-function signed(amount: string | null, decimals: number, reason: string): Value {
+function signed(amount: string | null, reason: string): Value {
   if (amount === null) return notRecorded(reason);
-  const value = scaledAmount(amount, decimals);
-  return value === 0 ? zeroValue(0) : knownValue(value);
+  const raw = BigInt(amount);
+  return raw === 0n ? zeroValue(0n) : knownValue(raw);
 }
 
 export function projectTradeTable(readView: BoundedReadView): TableModel {
@@ -72,6 +74,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     return notes.length ? blank({ empty: NOT_RECORDED, emptyDetail: notes.join(' '), emptyKind: 'unavailable', warnings: reply.warnings }) : blank({ empty: NO_TRADE, warnings: reply.warnings });
   }
   const used = reply.parts.map((_, part) => reply.table.some(row => row.cells[part] !== '0'));
+  const signedCellFormat = signedFormat(reply.decimals);
   const partColumns: TableColumnSpec[] = reply.parts.flatMap((part, at) => used[at] ? [{
     key: `part:${part.key}`,
     label: part.name ?? part.key,
@@ -80,7 +83,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     priority: 2 + at,
     numeric: true,
     cellKind: 'shaded',
-    format: SIGNED,
+    format: signedCellFormat,
     widest: ['+999.9'],
     sortable: false,
     hideable: true,
@@ -93,15 +96,15 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     const flags = partner.unknown ? {} : { flags: [{ tag: partner.tag ?? partner.label, ...(icon ? { icon } : {}), ...(partner.flag?.status === 'pending' ? { pending: true } : {}) }] };
     const cells: Record<string, TableRow['cells'][string]> = {
       partner: { value: name, ...flags },
-      net: { value: signed(row.net, reply.decimals, 'An amount with this partner was not recorded'), format: SIGNED },
+      net: { value: signed(row.net, 'An amount with this partner was not recorded'), format: signedCellFormat },
     };
     reply.parts.forEach((part, at) => {
       if (!used[at]) return;
       const cell = row.cells[at] ?? null;
-      const value = signed(cell, reply.decimals, 'This deal\'s daily delivery was not recorded');
+      const value = signed(cell, 'This deal\'s daily delivery was not recorded');
       cells[`part:${part.key}`] = cell === '0'
         ? { value, blank: true }
-        : { value, format: SIGNED };
+        : { value, format: signedCellFormat };
     });
     return { key: partner.key, name: partner.label, cells, tooltipTitle: `${partner.label} and ${subject.label}` };
   });
@@ -178,6 +181,8 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
     const c = columnOf.get(link.to);
     if (r !== undefined && c !== undefined) cells.set(r * width + c, link);
   }
+  const shownFmt = amountFormat(reply.decimals);
+  const exactFmt = exactAmountFormat(reply.decimals);
   const most = Math.max(1e-9, scaledAmount(reply.largestLink, reply.decimals));
   const present = new Map<number, MatrixCell>();
   for (const [at, link] of cells) {
@@ -185,8 +190,9 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
       present.set(at, { kind: 'missing', reason: link.missing ?? NOT_RECORDED });
       continue;
     }
+    const raw = BigInt(link.total);
     const value = scaledAmount(link.total, reply.decimals);
-    present.set(at, { kind: 'value', intensity: value / most, text: formatCompactScalar(value, AMOUNT).text, audit: formatScalar(value, AMOUNT), value, selectable: true });
+    present.set(at, { kind: 'value', intensity: value / most, text: formatCompactScalar(raw, shownFmt).text, audit: formatScalar(raw, exactFmt), value, selectable: true });
   }
   return {
     hour,
@@ -197,7 +203,7 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
     ramp: 'accent',
     corner: 'Exporter ↓ · importer →',
     legend: {
-      gradient: { lowLabel: '0', highLabel: `${formatCompactScalar(most, AMOUNT).text} per day`, stops: [] },
+      gradient: { lowLabel: '0', highLabel: `${formatCompactScalar(BigInt(reply.largestLink), shownFmt).text} per day`, stops: [] },
       ...(reply.links.some(link => link.total === null) ? { entries: [{ id: 'missing', label: 'Not recorded', color: '', hatched: true }] } : {}),
     },
     tooltip: (row, column, item, r, c) => {
@@ -211,7 +217,7 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
         hour,
         items: link.amounts.map(amount => ({
           label: reply.parts[amount.part]?.name ?? reply.parts[amount.part]?.key ?? '',
-          value: amount.amount === null ? 'Not recorded' : `${formatScalar(scaledAmount(amount.amount, reply.decimals), AMOUNT)} per day`,
+          value: amount.amount === null ? 'Not recorded' : `${formatScalar(BigInt(amount.amount), exactFmt)} per day`,
         })),
       };
     },

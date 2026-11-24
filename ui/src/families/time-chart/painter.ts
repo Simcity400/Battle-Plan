@@ -295,7 +295,7 @@ export function drawTimeChart(
     if (count > 0 && step) {
       const gapBetween = (a: number, b: number) =>
         model.gaps?.some(g => g.firstHour > a && g.firstHour < b) ?? false;
-      const isNullAt = (i: number) => total ? total.values[i] == null : bands.every(b => b.values[i] == null);
+      const isNullAt = (i: number) => (total?.values[i] == null) && bands.every(b => b.values[i] == null);
       const runs: { readonly start: number; readonly end: number; readonly endHour: number }[] = [];
       let runStart = -1;
       for (let i = 0; i < count; i++) {
@@ -325,36 +325,56 @@ export function drawTimeChart(
         ctx.clip();
         for (const run of runs) {
           const len = run.end - run.start + 1;
-          const acc = new Float64Array(len);
+          const posAcc = new Float64Array(len);
+          const negAcc = new Float64Array(len);
           const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
+          const xEndAt = (k: number) => (k + 1 < len ? layout.toX(hours[run.start + k + 1]!) : endX);
           for (const band of bands) {
+            const botVals = new Float64Array(len);
             const topVals = new Float64Array(len);
-            let anyValid = false;
+            const sign = new Int8Array(len);
             for (let k = 0; k < len; k++) {
               const v = band.values[run.start + k];
-              if (v != null && Number.isFinite(v)) anyValid = true;
-              topVals[k] = acc[k]! + (v ?? 0);
+              if (v == null || !Number.isFinite(v) || v === 0) continue;
+              if (v > 0) {
+                botVals[k] = posAcc[k]!;
+                topVals[k] = posAcc[k]! + v;
+                posAcc[k] = topVals[k]!;
+                sign[k] = 1;
+              } else {
+                botVals[k] = negAcc[k]!;
+                topVals[k] = negAcc[k]! + v;
+                negAcc[k] = topVals[k]!;
+                sign[k] = -1;
+              }
             }
-            if (anyValid) {
+            let k = 0;
+            while (k < len) {
+              const s = sign[k]!;
+              if (s === 0) { k++; continue; }
+              const subStart = k;
+              while (k < len && sign[k] === s) k++;
+              const subEnd = k - 1;
+              const subEndX = xEndAt(subEnd);
               ctx.beginPath();
-              for (let k = 0; k < len; k++) {
-                const x = layout.toX(hours[run.start + k]!);
-                const y = layout.toY(topVals[k]!);
-                if (k === 0) ctx.moveTo(x, y);
+              for (let j = subStart; j <= subEnd; j++) {
+                const x = layout.toX(hours[run.start + j]!);
+                const y = layout.toY(topVals[j]!);
+                if (j === subStart) ctx.moveTo(x, y);
                 else {
-                  ctx.lineTo(x, layout.toY(topVals[k - 1]!));
+                  ctx.lineTo(x, layout.toY(topVals[j - 1]!));
                   ctx.lineTo(x, y);
                 }
               }
-              if (endX > layout.toX(hours[run.end]!)) {
-                ctx.lineTo(endX, layout.toY(topVals[len - 1]!));
-                ctx.lineTo(endX, layout.toY(acc[len - 1]!));
+              if (subEndX > layout.toX(hours[run.start + subEnd]!)) {
+                ctx.lineTo(subEndX, layout.toY(topVals[subEnd]!));
+                ctx.lineTo(subEndX, layout.toY(botVals[subEnd]!));
               }
-              for (let k = len - 1; k >= 0; k--) {
-                const x = layout.toX(hours[run.start + k]!);
-                const y = layout.toY(acc[k]!);
-                if (k < len - 1) {
-                  ctx.lineTo(layout.toX(hours[run.start + k + 1]!), y);
+              for (let j = subEnd; j >= subStart; j--) {
+                const x = layout.toX(hours[run.start + j]!);
+                const y = layout.toY(botVals[j]!);
+                if (j < subEnd) {
+                  ctx.lineTo(layout.toX(hours[run.start + j + 1]!), y);
                 }
                 ctx.lineTo(x, y);
               }
@@ -367,32 +387,50 @@ export function drawTimeChart(
               ctx.lineWidth = 0.8;
               ctx.stroke();
             }
-            acc.set(topVals);
           }
           if (total) {
-            ctx.beginPath();
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = total.color ?? theme.text;
+            ctx.lineWidth = 1.6;
+            ctx.lineJoin = 'round';
             let started = false;
             let prevY = 0;
+            let lastValidK = -1;
             for (let k = 0; k < len; k++) {
               const tv = total.values[run.start + k];
-              if (tv == null) continue;
+              if (tv == null || !Number.isFinite(tv)) {
+                if (started) {
+                  const breakX = layout.toX(hours[run.start + k]!);
+                  if (breakX > layout.toX(hours[run.start + lastValidK]!)) ctx.lineTo(breakX, prevY);
+                  ctx.stroke();
+                  started = false;
+                }
+                continue;
+              }
               const x = layout.toX(hours[run.start + k]!);
               const y = layout.toY(tv);
-              if (!started) { ctx.moveTo(x, y); started = true; }
+              if (!started) { ctx.beginPath(); ctx.moveTo(x, y); started = true; }
               else { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
               prevY = y;
-            }
-            if (started && endX > layout.toX(hours[run.end]!)) {
-              ctx.lineTo(endX, prevY);
+              lastValidK = k;
             }
             if (started) {
-              ctx.globalAlpha = 1;
-              ctx.strokeStyle = total.color ?? theme.text;
-              ctx.lineWidth = 1.6;
-              ctx.lineJoin = 'round';
+              if (endX > layout.toX(hours[run.start + lastValidK]!)) {
+                ctx.lineTo(endX, prevY);
+              }
               ctx.stroke();
             }
           }
+        }
+        if (layout.yDomain[0] < 0) {
+          const zeroY = Math.round(layout.toY(0)) + 0.5;
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = tokens.hairlineStrong;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(layout.left, zeroY);
+          ctx.lineTo(layout.left + layout.plotWidth, zeroY);
+          ctx.stroke();
         }
         ctx.restore();
       }
@@ -521,10 +559,10 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const topStop = rgbaColor(s.color, Number((0.26 * opacity).toFixed(3)), '');
+          const topStop = rgbaColor(s.color, 0.26 * opacity, '');
           if (topStop) {
             grad.addColorStop(0, topStop);
-            grad.addColorStop(1, rgbaColor(s.color, Number((0.02 * opacity).toFixed(3)), s.color));
+            grad.addColorStop(1, rgbaColor(s.color, 0.02 * opacity, s.color));
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
