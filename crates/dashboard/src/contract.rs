@@ -57,8 +57,6 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::SeriesState::decl(),
         dashboard_query::series::SeriesStateReply::decl(),
         dashboard_query::series::SeriesKeyReply::decl(),
-        dashboard_query::series::SeriesEvent::decl(),
-        dashboard_query::series::SeriesEventPage::decl(),
         dashboard_query::tile::TilePart::decl(),
         dashboard_query::tile::TileMarks::decl(),
         dashboard_query::tile::TileLine::decl(),
