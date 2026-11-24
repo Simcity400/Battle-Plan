@@ -23,6 +23,7 @@ export interface RegionRowsField {
   readonly rows: readonly RegionRowRef[];
   readonly add: { readonly top: number; readonly height: number } | null;
   readonly nameLeft: number;
+  readonly nameRight: number;
   readonly active?: ActiveRegions;
 }
 
@@ -69,7 +70,7 @@ export function regionDropAt(field: RegionRowsField, dragged: RegionRowRef, y: n
 }
 
 export type RegionCommand =
-  | { readonly op: 'open'; readonly x: number; readonly y: number; readonly rows: readonly RegionRowRef[]; readonly active?: ActiveRegions }
+  | { readonly op: 'open'; readonly x: number; readonly y: number; readonly aside?: number; readonly rows: readonly RegionRowRef[]; readonly active?: ActiveRegions }
   | { readonly op: 'remove'; readonly row: RegionRowRef }
   | { readonly op: 'step'; readonly row: RegionRowRef; readonly delta: -1 | 1 }
   | { readonly op: 'drop'; readonly row: RegionRowRef; readonly to: number };
@@ -161,4 +162,21 @@ export function regionChooserGroups(list: RegionList, inChart: readonly RegionIn
   if (!seaOnly) groups.push({ title: 'Land regions', rows: listed(false) });
   groups.push({ title: 'Sea regions', rows: listed(true) });
   return groups.filter(group => group.rows.length > 0 || group.note);
+}
+
+export function savedRegionName(list: RegionList, id: number): string {
+  if (list.kind === 'loading') return `Region ${id} · loading its name…`;
+  if (list.kind === 'failed') return `Region ${id} · its name could not be loaded`;
+  return list.regions.find(region => region.id === id)?.label ?? `Region ${id} · not in this recording`;
+}
+
+export interface ChooserOpening {
+  readonly owner: string;
+  readonly hour: number;
+  readonly rows: readonly RegionInChart[];
+  readonly active: ActiveRegions | null;
+}
+
+export function chooserFor(opening: ChooserOpening | null, owner: string): ChooserOpening | null {
+  return opening && opening.owner === owner ? opening : null;
 }

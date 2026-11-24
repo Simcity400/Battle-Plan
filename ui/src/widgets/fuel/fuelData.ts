@@ -1,7 +1,7 @@
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { Run } from '../../charts/series';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { formatAmount, formatSigned, rescale } from '../../charts/valueAxis.ts';
+import { formatRational } from '../../families/valueFormat.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { object } from '../../dashboard/validation.ts';
 import type { CountryFuelReply, DayLeftOut, FuelAwardHistoryReply, FuelAwardsReply, FuelLabel, FuelReadAt } from '../../generated/dashboard';
@@ -97,33 +97,36 @@ export const LEFT_OUT: Readonly<Record<DayLeftOut, { value: string; note: string
   notRecorded: { value: 'Not recorded', note: 'The day before this read was not recorded.' },
 };
 
-export const formatFuel = (raw: string | bigint, scale: number, digits: number) => formatAmount(rescale(BigInt(raw), BigInt(scale), digits), digits, digits);
+type Fraction = readonly [bigint, bigint];
+
+const formatFuelFraction = ([raw, scale]: Fraction, digits: number, signed = false) =>
+  formatRational(raw, scale, { maxDecimals: digits, fixedDecimals: true, signed });
 
 export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): string {
-  if (digits !== undefined) return formatAmount(rescale(raw, scale, digits), digits, digits);
+  if (digits !== undefined) return formatRational(raw, scale, { maxDecimals: digits });
   let denominator = scale, twos = 0, fives = 0;
   while (denominator % 2n === 0n) { denominator /= 2n; twos++; }
   while (denominator % 5n === 0n) { denominator /= 5n; fives++; }
   if (denominator !== 1n) return `${raw}/${scale}`;
   const places = Math.max(twos, fives);
-  return formatAmount(rescale(raw, scale, places), places, places);
+  return formatRational(raw, scale, { maxDecimals: places });
 }
 
 export const fuelPartShare = (raw: bigint, total: bigint) => total === 0n ? '—'
-  : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`;
+  : `${formatRational(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, { maxDecimals: 1 })}%`;
 
-export function dayAmounts(reply: Pick<CountryFuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelReadAt, 'day'>, digits: number) {
+export function dayAmounts(reply: Pick<CountryFuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelReadAt, 'day'>) {
   if (!read.day) return null;
   const [gainScale, quantityScale] = [BigInt(reply.gainScale), BigInt(reply.quantityScale)];
   const gained = BigInt(read.day.gainedRaw), burned = BigInt(read.day.burnedRaw);
-  const [net, netScale] = read.day.awards ? [BigInt(read.day.awards.ownGainQuantityRaw) - burned, quantityScale]
+  const net: Fraction = read.day.awards ? [BigInt(read.day.awards.ownGainQuantityRaw) - burned, quantityScale]
     : [gained * quantityScale - burned * gainScale, gainScale * quantityScale];
-  return { gained: rescale(gained, gainScale, digits), burned: rescale(burned, quantityScale, digits), net: rescale(net, netScale, digits), gaining: net > 0n };
+  return { gained: [gained, gainScale] as Fraction, burned: [burned, quantityScale] as Fraction, net, gaining: net[0] > 0n };
 }
 
-export function percentFull(read: Pick<FuelReadAt, 'fuelRaw' | 'capacityRaw'>): bigint | null {
+export function percentFull(read: Pick<FuelReadAt, 'fuelRaw' | 'capacityRaw'>): string | null {
   const capacity = BigInt(read.capacityRaw);
-  return capacity > 0n ? rescale(BigInt(read.fuelRaw) * 100n, capacity, 0) : null;
+  return capacity > 0n ? `${formatRational(BigInt(read.fuelRaw) * 100n, capacity)}%` : null;
 }
 
 export interface FuelPart { id: string; label: string; raw: bigint; consumer?: number; muted?: boolean; reason?: string | null }
@@ -168,18 +171,18 @@ export function fuelTooltips(reply: CountryFuelReply, title: string,
   if (!read) return [{ title, rows: [{ label: reply.missing ?? 'Not recorded at this time', tone: 'muted' }] }];
   const full = percentFull(read);
   const tank: TooltipRow[] = [
-    { label: 'Fuel', value: formatFuel(read.fuelRaw, reply.quantityScale, digits), swatch: colors.fuel },
-    { label: 'Capacity', value: formatFuel(read.capacityRaw, reply.quantityScale, digits), swatch: colors.capacity, tone: 'muted' },
-    { label: 'Full', value: full == null ? 'No capacity' : `${full}%` },
+    { label: 'Fuel', value: formatFuelFraction([BigInt(read.fuelRaw), BigInt(reply.quantityScale)], digits), swatch: colors.fuel },
+    { label: 'Capacity', value: formatFuelFraction([BigInt(read.capacityRaw), BigInt(reply.quantityScale)], digits), swatch: colors.capacity, tone: 'muted' },
+    { label: 'Full', value: full ?? 'No capacity' },
   ];
   const notes: string[] = [];
-  const day = dayAmounts(reply, read, digits);
+  const day = dayAmounts(reply, read);
   let rows: TooltipRow[];
   if (day) {
-    const net: TooltipRow = { label: 'Net', value: formatSigned(day.net, digits, digits), strong: true,
-      tone: day.net < 0n ? 'negative' : day.net > 0n ? 'positive' : undefined };
-    rows = [...tank, { label: 'Gained (own production)', value: formatSigned(day.gained, digits, digits), swatch: colors.gained, divider: true },
-      { label: 'Burned', value: formatSigned(-day.burned, digits, digits), swatch: colors.burned }, net];
+    const net: TooltipRow = { label: 'Net', value: formatFuelFraction(day.net, digits, true), strong: true,
+      tone: day.net[0] < 0n ? 'negative' : day.net[0] > 0n ? 'positive' : undefined };
+    rows = [...tank, { label: 'Gained (own production)', value: formatFuelFraction(day.gained, digits, true), swatch: colors.gained, divider: true },
+      { label: 'Burned', value: formatFuelFraction([-day.burned[0], day.burned[1]], digits, true), swatch: colors.burned }, net];
     notes.push(`Previous ${reply.dayHours} hours; excludes incoming lend-lease.`);
     if (read.fuelRaw === read.capacityRaw && day.gaining) notes.push('The tank was full: the game discards fuel beyond its capacity.');
   } else {
@@ -188,7 +191,7 @@ export function fuelTooltips(reply: CountryFuelReply, title: string,
     notes.push(why.note);
   }
   const incoming = read.day?.awards?.transfersRaw[0];
-  if (day && incoming !== undefined) rows.push({ label: 'Lend-lease received (separate)', value: formatSigned(rescale(BigInt(incoming), BigInt(reply.quantityScale), digits), digits, digits) });
+  if (day && incoming !== undefined) rows.push({ label: 'Lend-lease received (separate)', value: formatFuelFraction([BigInt(incoming), BigInt(reply.quantityScale)], digits, true) });
   else if (day && BigInt(read.lendLeaseRaw) !== 0n) notes.push('Daily lend-lease total unavailable.');
   const note = notes.join(' ');
   return [{ title, rows, note }, { title, rows: [tank[0], rows.find(row => row.strong) ?? rows.at(-1)!], note }];

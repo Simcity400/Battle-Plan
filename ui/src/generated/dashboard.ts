@@ -1522,13 +1522,21 @@ raidTypeHour: number | null,
  */
 raidType: string | null, raidTypeName: string | null,
 /**
+ * The hour the icon was settled (the type spelled, the target read and its building spelled); none, and no icon, before it.
+ */
+iconHour: number | null,
+/**
  * The sprite key into the reply's artwork, or why there is none.
  */
 icon: string | null, iconMissing: string | null,
 /**
  * The hour the target's place was first read; none, and no place, before it.
  */
-placeHour: number | null, province: number | null, state: number | null,
+placeHour: number | null, province: number | null,
+/**
+ * The hour the target's state was first read; none, and no state, before it.
+ */
+stateHour: number | null, state: number | null,
 /**
  * Its last phase, and its last outcome read.
  */
@@ -1544,7 +1552,11 @@ ends: Array<RaidEndAt>,
 /**
  * The first read that saw it ended and successful: what a later read reveals is never counted before it.
  */
-succeededHour: number | null, disappearedHour: number | null, disappearedExact: boolean, };
+succeededHour: number | null, disappearedHour: number | null, disappearedExact: boolean,
+/**
+ * With countries asked, the hour a read first named one of them; the raid is not among theirs before it.
+ */
+memberHour: number | null, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none
@@ -6827,7 +6839,7 @@ fallback: AirCell, scale: number, badBelow: number, goodAbove: number, warnings:
 export type AirMode = "sides" | "viewpoint";
 export type AirRegionOrder = "contested" | "active" | "name";
 export type AirAnchor = { tag: string, hour: number, };
-export type AirCountryStyle = { tag: string, hour: number, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
+export type AirCountryStyle = { tag: string, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
 export type AirSide = { key: string,
 /**
  * Its anchor faction's id.
