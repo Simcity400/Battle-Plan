@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed, type FollowedRows } from '../../dashboard/follow/message.ts';
-import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { assertBarsModelValid, deriveBarsAudit, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
-import { factoriesProjection, type FactoriesProjectionOptions } from './factoriesProjection.ts';
+import { unitEntries } from '../../families/readUnits.ts';
+import { factoriesDeclaration, factoriesProjection, type FactoriesProjectionOptions } from './factoriesProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -27,14 +26,13 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-function makeFollowed(rows: readonly (readonly [string, number | null])[]): FollowedRows {
-  const keys = rows.map((_, idx) => BigInt(idx + 1));
-  const names = rows.map(([tag]) => tag);
-  const values = rows.map(([, val]) => BigInt(val ?? 0));
-  const states = rows.map(([, val]) => (val === null ? CELL.missing : CELL.value));
-  const reasons = rows.map(([, val]) => (val === null ? 'Not recorded at this hour' : null));
-  const parsed = parseFollowed(message(500, [{ id: 1, answer: { keys, columns: 1, values, states, reasons, names } }]));
-  return parsed.answers[0]!.answer as FollowedRows;
+function panelOf(hour: number, rows: readonly (readonly [string, number])[]) {
+  return {
+    branchId: '1',
+    measure: 'free7',
+    decimals: 0,
+    states: rows.map(([country, value]) => ({ country, hour, run: { valueRaw: String(value), firstHour: hour - 10, lastHour: hour + 10 }, missing: null })),
+  };
 }
 
 const BASE_OPTS: FactoriesProjectionOptions = {
@@ -46,7 +44,6 @@ const BASE_OPTS: FactoriesProjectionOptions = {
     { id: 'naval', label: 'Naval dockyards', source: 'part:naval', color: '#d95926' },
     { id: 'civilian', label: 'Civilian factories', source: 'part:civilian', color: '#199e70' },
   ],
-  candidates: ['GER', 'USA', 'ENG'],
   top: 10,
 };
 
@@ -59,7 +56,7 @@ test('factories projection preserves Rust top order, uses identity resolver, and
 
   const followedView = createBoundedReadView({
     hour: displayedHour(500),
-    answers: new Map([['main', makeFollowed([['USA', 240], ['GER', 210], ['SOV', 180]])]]),
+    panels: new Map([['main', panelOf(500, [['USA', 240], ['GER', 210], ['SOV', 180]])]]),
     identity,
   });
   const exactView = createBoundedReadView({
@@ -93,7 +90,7 @@ test('factories projection preserves Rust top order, uses identity resolver, and
   assert.deepEqual(deriveBarsAudit(followedModel), deriveBarsAudit(exactModel));
 });
 
-test('factories projection keeps missing readings as notRecorded with null numeric and sorts missing last for explicit countries', () => {
+test('factories projection keeps missing readings as notRecorded with null numeric and keeps the product order with missing last', () => {
   const identity = fakeIdentity({
     GER: { name: 'German Reich', color: '#6b7280' },
     ENG: { name: 'United Kingdom', color: '#e11d48' },
@@ -112,7 +109,7 @@ test('factories projection keeps missing readings as notRecorded with null numer
     identity,
   });
 
-  const model = factoriesProjection.project(view, { ...BASE_OPTS, top: null, candidates: ['ENG', 'GER'] });
+  const model = factoriesProjection.project(view, { ...BASE_OPTS, top: null });
   assertBarsModelValid(model, 200);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.equal(rows[0]!.key, 'GER');
@@ -127,11 +124,11 @@ test('factories projection splits into group segments and rejects reads past dis
   const identity = fakeIdentity({ GER: { name: 'German Reich', color: '#6b7280' } });
   const view = createBoundedReadView({
     hour: displayedHour(300),
-    answers: new Map([
-      ['main', makeFollowed([['GER', 100]])],
-      ['part:military', makeFollowed([['GER', 60]])],
-      ['part:naval', makeFollowed([['GER', 10]])],
-      ['part:civilian', makeFollowed([['GER', 30]])],
+    panels: new Map([
+      ['main', panelOf(300, [['GER', 100]])],
+      ['part:military', panelOf(300, [['GER', 60]])],
+      ['part:naval', panelOf(300, [['GER', 10]])],
+      ['part:civilian', panelOf(300, [['GER', 30]])],
     ]),
     identity,
   });
@@ -147,4 +144,21 @@ test('factories projection splits into group segments and rejects reads past dis
   ]);
 
   assert.throws(() => view.who('country', 'GER', displayedHour(301)), FutureDataError);
+});
+
+test('a pinned view with split on reads the main and every part source, and the chosen countries are ranked by the product', () => {
+  const ctx = {
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: { split: true, count: 'free' },
+    countries: { top: null, all: false, every: ['GER', 'ENG'], tags: ['ENG', 'GER'], membership: null },
+  } as unknown as Parameters<typeof factoriesDeclaration.sources>[0];
+  const plan = factoriesDeclaration.sources(ctx, { following: false, staticSpan: null });
+  const names = unitEntries(plan, false, []).map(entry => entry.name);
+  assert.ok(names.includes('main'));
+  assert.ok(names.some(name => name.startsWith('part:')), `pinned reads ${names.join(', ')}`);
+  const main = plan.entries[0]!.read;
+  assert.equal(main.shape, 'point');
+  const params = main.shape === 'point' ? main.buildExactParams?.(main.params!, 500 as never, 'static') : null;
+  assert.equal((params as { top?: number }).top, 2, 'the product ranks among the chosen countries');
 });

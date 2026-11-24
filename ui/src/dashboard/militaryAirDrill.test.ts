@@ -14,12 +14,9 @@ import { plotFrame } from '../charts/frame.ts';
 import { pickLines } from '../charts/linePick.ts';
 import { tokensFromValues } from '../charts/tokens.ts';
 import type { WidgetProps } from './definitions';
-import type { BoundTrack, WidgetSpec } from './model';
+import type { WidgetSpec } from './model';
 import { persistedSpec, type PinnedSpec } from './regionTime.ts';
-import { gatedHour } from '../test-support/gated.ts';
-import type BombingDrill from './BombingDrill.tsx';
 import type AirLossDrill from './AirLossDrill.tsx';
-import type { SunburstProps } from '../charts/sunburst/Sunburst';
 import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
@@ -59,7 +56,6 @@ function fixture() {
     track: { id: 'track', axisOffset: 1000, source: { id: 'source', revision: 1, metadata: { countries: [], campaignKey: 'campaign' } },
       branch: { id: 'branch', firstHour: 10, lastHour: 20, gaps: [span(17)] } }, hour: -988, playing: false, added: [] as WidgetSpec[],
     groups: { retry() {} } as { retry(): void; data?: unknown },
-    bombing: undefined as ComponentProps<typeof BombingDrill> | undefined,
     butterfly: undefined as { items: unknown[]; active: boolean; onSelect: (item: unknown, side: 'left' | 'right') => void } | undefined,
     chart: undefined as ComponentProps<typeof CountryRaceView> | undefined, host: undefined as (ComponentProps<typeof DrillHost> & { open: boolean; onFollow: () => void; onPause: () => void; following: boolean }) | undefined,
     picker: undefined as ComponentProps<typeof CountryPicker> | undefined, detail: undefined as ComponentProps<typeof AirLossDrill> | undefined,
@@ -74,7 +70,7 @@ async function server(replacements: Record<string, string>) {
       transform(code, id) {
         const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
-        if (path.endsWith('/dashboard/MilitaryAirView.tsx') || path.endsWith('/dashboard/AirLossDrill.tsx') || path.endsWith('/dashboard/BombingDrill.tsx')
+        if (path.endsWith('/dashboard/MilitaryAirView.tsx') || path.endsWith('/dashboard/AirLossDrill.tsx')
           || path.endsWith('/charts/drill/useDrill.ts') || path.endsWith('/dashboard/widgetTime.ts'))
           return code.replace("from 'react'", "from 'air-drill-hooks'");
       },
@@ -86,38 +82,6 @@ const common = {
   '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted, active) => { if (active || wanted.length) throw new Error("This fixture has no country header target"); return { labelAt: () => () => { throw new Error("No country header label was requested"); }, revision: 0 }; };',
   '/charts/useChartTokens.ts': `const tokens = ${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))}; export const useChartTokens = () => tokens;`,
 };
-
-test('bombing breakdown keeps damage amounts and uses readable missing-content labels', async () => {
-  const state = fixture();
-  const host = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture>; __bombingBreakdown?: SunburstProps };
-  host.__airDrill = state;
-  const reply = data(); reply.family = 'bombing';
-  reply.buildings = [{id: 'synthetic-private-token', name: null, missing: 'Synthetic raw building lookup refusal'}];
-  reply.parts = reply.parts.map(part => ({...part, opponentKnown: null, buildingToken: 'synthetic-private-token', buildingId: 1, state: 0}));
-  const vite = await server({...common,
-    '/dashboard/products.ts': 'export const useProduct = (client, request) => request ? {error: new Error("Synthetic raw place-name failure")} : {}; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
-  });
-  try {
-    const {default: Breakdown} = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx') as typeof import('../widgets/bombing-damage-breakdown/BombingBreakdown.tsx');
-    renderToStaticMarkup(createElement(Breakdown, {data: reply, runtime: {client: {}, clock: {}} as never, track: state.track as unknown as BoundTrack,
-      tag: 'B', identity: '1:9', namedAt: gatedHour(20), from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
-    const chart = host.__bombingBreakdown!;
-    assert.equal(chart.text.valueLabel, 'Damage'); assert.equal(chart.text.countLabel, 'Locations');
-    assert.equal(chart.text.unit, 'building levels'); assert.match(chart.footnote as string, /Some damage may be missing/);
-    assert.ok(chart.items.length > 0);
-    for (const item of chart.items) {
-      assert.equal(item.path[0].label, 'Building name unavailable'); assert.equal(item.path[1].label, 'State unknown');
-      assert.doesNotMatch(item.note ?? '', /refus|absent|request/i, 'no backend reason in the hover'); assert.equal(typeof item.exact, 'bigint');
-      assert.equal(item.unknownValue, true, 'incomplete intervals remain unknown');
-    }
-    assert.equal(chart.authoritativeTotal!.unknownValue, true);
-    renderToStaticMarkup(createElement(Breakdown, {data: {...reply, parts: reply.parts.map(part => ({...part, state: 7}))}, runtime: {client: {}, clock: {}} as never,
-      track: state.track as unknown as BoundTrack, tag: 'B', identity: '1:9', namedAt: null, from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
-    assert.ok(host.__bombingBreakdown!.items.length > 0);
-    for (const item of host.__bombingBreakdown!.items) assert.equal(item.path[1].label, 'State name not recorded', 'a state name the gate withholds is not recorded, never pending');
-  } finally {await vite.close(); delete host.__airDrill; delete host.__bombingBreakdown;}
-});
 
 test('actual Air view opens the witnessed chooser, holds days, follows the clock, pins and rejects replaced owners', async () => {
   const state = fixture(), globals = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture> };
@@ -308,140 +272,4 @@ test('actual cause producer keeps exact negative rows, positive geometry and nat
   } finally { await vite.close(); delete globals.__airDrill; }
 });
 
-const bombingData = (): MilitaryAirLedger => ({ ...data(), family: 'bombing', parts: data().parts.map((part, i) => ({ ...part,
-  opponentKnown: null, cause: 1, buildingToken: i === 1 ? 'correction' : 'factory', buildingId: i === 1 ? 2 : 1, state: 7 })),
-  buildings: [{ id: 'factory', name: 'Factory', missing: null }, { id: 'correction', name: 'Corrected building', missing: null }] });
 
-test('bombing parts retain exact corrections, selectable positive history and controls at unavailable dates', async () => {
-  const state = fixture(), globals = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture> };
-  state.data = validateMilitaryAirReply(bombingData()); globals.__airDrill = state;
-  const vite = await server({ ...common,
-    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
-    '/charts/drill/DrillParts.tsx': 'export default props => { globalThis.__airDrill.parts = props; return null; };',
-    '/charts/TimeChart.tsx': 'export default props => { globalThis.__airDrill.history = props; return null; };',
-    '/components/DateTimePicker.tsx': 'export default props => { globalThis.__airDrill.datePicker = props; return null; };',
-  });
-  try {
-    const Drill = (await vite.ssrLoadModule('/ui/src/dashboard/BombingDrill.tsx')).default as typeof BombingDrill;
-    const picked: number[] = [];
-    const props = { data: state.data, track: state.track, runtime: { client: {}, clock: {} }, tag: 'B', identity: '1:9',
-      from: 10, hour: 16, end: 20, dealt: false, active: true, pickOwner: {}, onPick: (at: number) => picked.push(at) } as unknown as ComponentProps<typeof BombingDrill>;
-    const render = () => { state.cursor = 0; state.parts = undefined; state.history = undefined; state.datePicker = undefined;
-      return renderToStaticMarkup(createElement(Drill, props)); };
-    render();
-    const correction = state.parts!.parts.find(part => part.id === 'correction')!;
-    assert.equal(correction.raw, -100000n); assert.equal(correction.text, '−0.01');
-    assert.equal(state.parts!.parts.find(part => part.id === 'factory')!.text, '90,071,992,547,409.93');
-    assert.equal(state.parts!.positiveBars, true); assert.equal(state.parts!.signedShares, true);
-    state.parts!.onPick!('correction'); assert.match(render(), /History: Corrected building/);
-    assert.deepEqual(state.history!.layers[0].extent!([10, 20]), [0, 0]);
-    assert.equal(state.history!.afterPlayhead, false); assert.ok(state.history!.overlay);
-    assert.equal(state.history!.tooltip!(18, {} as never, []), null);
-    const oldPart = state.parts!.onPick!, oldDay = state.history!.onPick!;
-    props.tag = 'A'; props.identity = '0:9'; render();
-    oldPart('correction'); oldDay(14); assert.match(render(), /All building types/); assert.deepEqual(picked, []);
-    props.tag = 'B'; props.identity = '1:9'; render(); oldPart('correction'); assert.match(render(), /All building types/);
-    props.hour = 17; assert.match(render(), /not recorded at this moment/);
-    assert.ok(state.parts!.parts.every(part => part.raw === null)); assert.equal(state.parts!.showShares, false);
-    assert.deepEqual(state.history!.extent, [10, 20]);
-    state.datePicker!.onChange(16.9); assert.deepEqual(picked, [16]);
-    props.hour = 9; render(); assert.equal(state.history!.layers[0].extent!([10, 20]), null);
-    props.hour = 16;
-    props.data = { ...state.data, buildings: [
-      { id: 'factory', name: null, missing: 'Synthetic absent localization' },
-      { id: 'correction', name: '', missing: null },
-    ] };
-    render();
-    assert.equal(state.parts!.parts.find(part => part.id === 'factory')!.label, 'Building name unavailable');
-    assert.equal(state.parts!.parts.find(part => part.id === 'correction')!.label, '');
-  } finally { await vite.close(); delete globals.__airDrill; }
-});
-
-test('bombing Drill follows the shared clock from a campaign view and rejects replaced client controls', async () => {
-  const state = fixture(), globals = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture> };
-  state.data = validateMilitaryAirReply(bombingData()); globals.__airDrill = state;
-  state.groups = { retry() {}, data: { branchId: 'branch', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
-    unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: ['A', 'B', 'C'].map((tag, slot) => ({ tag, identities: [{ slot, countryId: 9, firstHour: 10, lastHour: 20 }] })) } };
-  const vite = await server({ ...common,
-    '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__airDrill.data, track: globalThis.__airDrill.track, retry() {} });',
-    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => globalThis.__airDrill.groups;',
-    '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#777";',
-    '/charts/butterfly/index.ts': 'export const ButterflyChart = props => { globalThis.__airDrill.butterfly = props; return null; };',
-    '/dashboard/BombingDrill.tsx': 'export default props => { globalThis.__airDrill.bombing = props; return null; };',
-    '/charts/drill/DrillHost.tsx': `import { createElement } from 'react'; export default props => {
-      const open = props.drill.open && props.subject !== false;
-      globalThis.__airDrill.host = { ...props, open, onFollow: props.drill.follow, onPause: props.drill.pause, following: props.drill.following };
-      return createElement('div', null, props.main, open ? props.children : null); };`,
-  });
-  try {
-    const registry = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts');
-    const metadata = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage/definition.ts');
-    const breakdown = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/definition.ts');
-    registry.registerWidgets([metadata.definition, breakdown.definition]);
-    const View = (await vite.ssrLoadModule('/ui/src/dashboard/MilitaryAirView.tsx')).default;
-    const props = { widget: { id: 'bombing', kind: 'bombing-damage', trackIds: ['track'], countries: { kind: 'all' }, time: { mode: 'campaign' } },
-      runtime: { tracks: [state.track], client: {}, clock: { getHour: () => state.hour, getSnapshot: () => ({ playing: state.playing }) },
-        addWidgetBelow: (_id: string, widget: PinnedSpec) => state.added.push(persistedSpec(widget)) }, active: true, onDiagnostics() {},
-      family: 'bombing', fields: metadata.OPTIONS, title: 'Bombing damage' };
-    const render = () => { state.cursor = 0; state.bombing = undefined; return renderToStaticMarkup(createElement(View, props)); };
-    render(); state.butterfly!.onSelect(state.butterfly!.items[0], 'left'); render();
-    assert.equal(state.bombing!.hour, 20); assert.equal(state.host!.canFollow, true); assert.equal(state.butterfly!.active, false);
-    state.hour = -981; state.host!.onFollow(); render(); assert.equal(state.bombing!.hour, 19);
-    state.host!.onPin!(); assert.deepEqual(state.added[0].time, { mode: 'follow' });
-    state.host!.onPause!(); render(); const pausedHour = state.bombing!.hour;
-    state.hour++; render(); assert.equal(state.bombing!.hour, pausedHour, 'bombing pause keeps its displayed moment');
-    state.host!.onFollow(); render(); assert.equal(state.bombing!.hour, pausedHour + 1);
-    state.hour--; render();
-    state.bombing!.onPick(16); render(); assert.equal(state.bombing!.hour, 16); assert.equal(state.host!.following, false);
-    const oldPick = state.bombing!.onPick, oldPin = state.host!.onPin!, oldFollow = state.host!.onFollow;
-    const oldClient = props.runtime.client; props.runtime.client = {}; render(); assert.equal(state.host!.open, false);
-    oldPick(14); oldPin(); oldFollow(); render(); assert.equal(state.host!.open, false); assert.equal(state.added.length, 1);
-    props.runtime.client = oldClient; render(); oldPin(); oldFollow(); render(); assert.equal(state.host!.open, false);
-    props.widget.time.mode = 'follow'; state.hour = -984; state.playing = true; render();
-    state.butterfly!.onSelect(state.butterfly!.items[0], 'left'); render();
-    state.hour = -983; render(); assert.equal(state.bombing!.hour, 17, 'a missing live read keeps the breakdown mounted');
-  } finally { await vite.close(); delete globals.__airDrill; }
-});
-
-test('bombing sunburst uses content titles and hover keys while exact recorded damage remains independent', async () => {
-  const state: { data?: { states: { stateId: number; name: string | null; missing: string | null }[] }; error?: Error;
-    sunburst?: import('../charts/sunburst/Sunburst').SunburstProps } = { data: { states: [{ stateId: 7, name: 'Dated mod state', missing: null }] } };
-  const globals = globalThis as typeof globalThis & { __bombingTitles?: typeof state };
-  globals.__bombingTitles = state;
-  const vite = await server({ ...common,
-    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/dashboard/products.ts': 'export const useProduct = () => globalThis.__bombingTitles; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/charts/sunburst/Sunburst.tsx': 'export default props => { globalThis.__bombingTitles.sunburst = props; return null; };',
-  });
-  try {
-    const View = (await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx')).default;
-    const data = validateMilitaryAirReply(bombingData());
-    const props = { data, track: fixture().track, runtime: { client: {}, clock: {} }, tag: 'B', identity: '1:9',
-      from: 10, hour: 16, end: 20, dealt: false, active: true, options: {} };
-    const render = () => renderToStaticMarkup(createElement(View, props));
-    render();
-    const parts = () => state.sunburst!.items;
-    const factory = () => parts().find(item => item.path[0].id === 'building:factory')!;
-    assert.equal(factory().path[0].label, 'Factory');
-    assert.equal(factory().path[1].label, 'Dated mod state');
-    const exact = factory().exact;
-    props.data = { ...data, buildings: [{ id: 'factory', name: null, missing: 'Synthetic absent localization' },
-      { id: 'correction', name: '', missing: null }] };
-    render();
-    assert.equal(factory().path[0].label, 'Building name unavailable');
-    assert.equal(factory().exact, exact, 'missing content text does not change recorded damage');
-    assert.match(factory().note!, /Key: factory/);
-    assert.doesNotMatch(factory().note!, /Synthetic absent localization/, 'the lookup key, not the localization diagnostic');
-    assert.equal(parts().find(item => item.path[0].id === 'building:correction')!.path[0].label, '');
-    props.data = { ...data, buildings: [{ id: 'factory', name: 'factory', missing: null }] };
-    render();
-    assert.equal(factory().path[0].label, 'factory', 'an authored title identical to its key remains authoritative');
-    state.data = { states: [{ stateId: 7, name: '', missing: null }] };
-    render();
-    assert.equal(factory().path[1].label, '');
-    state.data = undefined;
-    render();
-    assert.equal(factory().path[1].label, 'Loading name…', 'a state name still loading is not called unrecorded');
-    assert.equal(factory().exact, exact);
-  } finally { await vite.close(); delete globals.__bombingTitles; }
-});

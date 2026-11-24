@@ -11,7 +11,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'leaders', label: 'Army leaders', as: 'faint', offered: OFFERED.number },
 ];
 export const DEFAULT_SORT = { column: 'manpower', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'governments-in-exile', version: 1, title: 'Governments in exile', category: 'Politics', icon: 'flag',

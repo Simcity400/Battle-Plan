@@ -57,7 +57,6 @@ export interface TableHeaderColumn extends TableColumnLayout {
 export interface FamilyTableHeaderProps {
   columns: readonly TableHeaderColumn[];
   allColumns: readonly TableColumnSpec[];
-  hiddenColumns: readonly string[];
   settings: TableSettings;
   unsorted?: boolean;
   editableColumns?: boolean;

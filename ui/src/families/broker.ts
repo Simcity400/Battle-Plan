@@ -73,7 +73,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'trailing-window':
       return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.dynamicKeys ?? []];
     case 'pixel-binned':
-      return ['pixel-binned', read.coverage, read.family, read.tags, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null];
+      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null];
     case 'exact-hover':
       return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params];
     case 'paged-rows':
@@ -597,7 +597,10 @@ export async function readPlanExact(
 
   if (read.shape === 'exact-hover') {
     if (!read.params) return null;
-    const params = { ...read.params, [read.hourParam ?? 'hour']: recorded };
+    const reads = (read.params as { reads?: unknown }).reads;
+    const params = Array.isArray(reads)
+      ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: recorded })) }
+      : { ...read.params, [read.hourParam ?? 'hour']: recorded };
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
     const raw = await fetchRaw(request);
     return createBoundedReadView({
@@ -631,7 +634,10 @@ export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined
   for (const entry of plan.entries) {
     const read = entry.read;
     if (read.shape !== 'exact-hover' || !read.params) continue;
-    const params = { ...read.params, [read.hourParam ?? 'hour']: hour };
+    const reads = (read.params as { reads?: unknown }).reads;
+    const params = Array.isArray(reads)
+      ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: hour })) }
+      : { ...read.params, [read.hourParam ?? 'hour']: hour };
     asks.push({
       name: entry.name,
       key: planQueryKey(entry.source, entry.branch, read.product, params),
