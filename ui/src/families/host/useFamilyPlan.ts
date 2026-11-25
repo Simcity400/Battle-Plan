@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
-import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
+import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
@@ -485,7 +485,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const selectedSlots = useMemo(() => {
     if (!isFilter && !isMulti) return undefined;
-    const identities = groups.data && Array.isArray(groups.data.countryIdentities)
+    if (widget.countries.kind !== 'tags' && widget.countries.kind !== 'selected') return undefined;
+    const identities = groups.data && validCountryIdentityHistories(groups.data.countryIdentities)
       ? countryIdentityIndex(groups.data.countryIdentities)
       : null;
     return resolveSelectedCountryRefs(widget.countries, selectedFallback, identities);
