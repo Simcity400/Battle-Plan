@@ -21,6 +21,7 @@ export const BREAKDOWN_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
   ),
   breakdownView('construction-spending', () => import('../construction-spending/constructionProjection.ts').then(mod => mod.constructionBreakdown)),
   breakdownView('territory-breakdown', () => import('../territory-breakdown/territoryBreakdownProjection.ts').then(mod => mod.territoryBreakdown)),
+  breakdownView('casualties-breakdown', () => import('../casualties-breakdown/casualtiesBreakdownProjection.ts').then(mod => mod.casualtiesBreakdown)),
 ];
 
 export const breakdownFamilyManifest: FamilyManifestModule = {
