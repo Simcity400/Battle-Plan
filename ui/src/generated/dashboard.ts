@@ -2134,10 +2134,10 @@ export type StabilityMarkerKind = "focus" | "idea" | "party" | "war" | "faction"
 export type StabilityMarkerVerb = "began" | "capitulated" | "founded" | "joined" | "left";
 export type CasualtyBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
 export type CasualtyBreakdownReply = { from: number, hour: number, through: number, breakdown: Breakdown, warnings: Array<string>, };
-export type PeaceDealsTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, expanded?: Array<string>, termsPerLine?: number, limit: number, };
+export type PeaceDealsTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, expanded?: Array<string>, full?: Array<string>, termsPerLine?: number, limit: number, };
 export type PeaceTermKind = "state" | "puppet" | "government" | "release" | "ship" | "other";
 export type PeaceTermCount = { kind: PeaceTermKind, count: number, };
-export type PeaceLine = { "kind": "treaty", winner: string | null, loser: string | null, terms: Array<PeaceTermCount>, whitePeace: boolean, members: number, bounded: boolean, derived: boolean, limitations: Array<string>, } | { "kind": "recipient", tag: string | null, terms: Array<PeaceTermCount>, } | { "kind": "terms", items: Array<PeaceTerm>, };
+export type PeaceLine = { "kind": "treaty", winner: string | null, loser: string | null, terms: Array<PeaceTermCount>, whitePeace: boolean, members: number, bounded: boolean, derived: boolean, limitations: Array<string>, } | { "kind": "recipient", tag: string | null, terms: Array<PeaceTermCount>, } | { "kind": "terms", items: Array<PeaceTerm>, } | { "kind": "more", terms: number, hidden: number, };
 export type PeaceTerm = { kind: PeaceTermKind, state: number | null, tag: string | null, at: number, };
 export type PeaceDealsRow = { key: string, parent: string | null, hour: number, detail: PeaceLine, };
 export type PeaceDealsTailReply = { branchId: string, total: string, offset: string, counts: Array<OccurrenceCount>, rows: Array<PeaceDealsRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
@@ -6557,7 +6557,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "operative-matrix": { "branchId": "leaf", "countries": "node", "countries[]": "any", "form": "leaf", "hour": "leaf", "top": "leaf" },
   "operatives-roster": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "party-history": { "branchId": "leaf", "country": "any" },
-  "peace-deals-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "expanded": "node", "expanded[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "termsPerLine": "leaf", "to": "leaf" },
+  "peace-deals-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "expanded": "node", "expanded[]": "leaf", "from": "leaf", "full": "node", "full[]": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "termsPerLine": "leaf", "to": "leaf" },
   "place-name-runs": { "branchId": "leaf", "from": "leaf", "land": "leaf", "provinces": "node", "provinces[]": "leaf", "states": "node", "states[]": "leaf", "to": "leaf" },
   "player-apm": { "branchId": "leaf", "buckets": "leaf", "firstHour": "leaf", "group": "leaf", "hour": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "registry": "leaf", "tags": "node", "tags[]": "leaf" },
   "politics-state": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "leaf" },

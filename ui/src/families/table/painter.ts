@@ -892,7 +892,7 @@ export function drawFamilyTable(
         ctx.fillRect(indent, y, 1, contentH);
         const look = computeLook(item, detail);
         drawApprovedCell(renderCtx, {
-          item, column: { ...detail, width, inlineFlags: undefined, narrowed: undefined, leadInset: 0, trailInset: 0 }, labelLines: lines,
+          item, column: { ...detail, width, inlineFlags: undefined, narrowed: undefined, leadInset: 0, trailInset: 0, textTone: undefined }, labelLines: lines,
           colIndex: -1, x: indent + CELL_INSET, y, rowHeight: contentH,
           paintModel: look.paintModel, formatted: look.formatted, fraction: look.fraction, fill: look.fill, rowHovered: inspected, rowFocused: focused, lastChild: isLastChildRow(rows, index),
         });
