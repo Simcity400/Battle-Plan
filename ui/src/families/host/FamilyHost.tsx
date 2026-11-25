@@ -6,7 +6,7 @@ import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
-import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
+import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
@@ -77,6 +77,8 @@ import {
   type MountedFamilyCanvas,
 } from './surface.ts';
 import { useFamilyTheme } from './theme.ts';
+import { FamilyHeaderSummary } from './FamilyHeaderSummary.tsx';
+import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary } from './headerSummary.ts';
 import type { FamilyTooltipField } from './tooltips.ts';
 import './familyHost.css';
 
@@ -895,7 +897,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
       reportWindow();
-      describe(installed.accessibleDescription);
+      const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
+        summaryText: rawMeta?.summaryText ?? null,
+        summaryPartial: rawMeta?.summaryPartial ?? null,
+        notes: rawMeta?.notes ?? NO_STRINGS,
+      });
+      describe(mergeAccessibleDescription(installed.accessibleDescription, rawSummary));
 
       const extentSize = activeAdapter.getScrollExtent?.(fields);
       if (extentSize) {
@@ -1171,9 +1178,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   useEffect(() => {
     if (!onDiagnostics) return;
-    onDiagnostics([...(extraWarnings ?? []), ...meta.warnings]);
+    onDiagnostics(mergeDiagnosticNotes(extraWarnings, meta.warnings, meta.notes));
     return () => onDiagnostics([]);
-  }, [onDiagnostics, extraWarnings, meta.warnings]);
+  }, [onDiagnostics, extraWarnings, meta.warnings, meta.notes]);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent) => {
     const picture = resolveInstalledRef.current();
@@ -1315,25 +1322,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     emptyAction: typeof emptyAction === 'function' ? emptyAction(openRegionsAt) : emptyAction,
   });
 
-  const summaryText = meta.summaryText ?? (meta.summaryPartial ? 'Partial' : null);
-  const summaryNote = meta.mode === 'picture' && !meta.empty && summaryText
-    ? (meta.summaryPartial ? `${summaryText}. ${meta.summaryPartial}` : summaryText)
+  const headerSummary = meta.mode === 'picture' && !meta.empty && !bodyStateNode
+    ? resolveHeaderSummary(meta)
     : null;
-  const summary = meta.mode === 'picture' && !meta.empty && summaryText
-    ? meta.summaryPartial
-      ? (
-          <span
-            className="fh-summary fh-summary-partial"
-            tabIndex={0}
-            data-tooltip={meta.summaryPartial}
-            aria-label={summaryNote!}
-          >
-            {summaryText}
-            <span className="fh-summary-hatch" aria-hidden="true" />
-          </span>
-        )
-      : <span className="fh-summary">{summaryText}</span>
-    : null;
+  const summaryNote = headerSummary?.spoken ?? null;
   const rowsFocus = (adapter.mirrorFocus ?? 'body') === 'rows';
   const bodyRole = mirrorKind === 'listbox' ? 'listbox' : adapter.navigation === 'grid' ? 'grid' : 'region';
   const bodyFocus = rowsFocus
@@ -1342,8 +1334,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   return (
     <div ref={frameRef} className={className ? `fh-frame ${className}` : 'fh-frame'}>
-      {headerSlot && summary ? createPortal(summary, headerSlot) : null}
-      {meta.notes.length > 0 && !bodyStateNode ? <WidgetCaption>{meta.notes.join(' ')}</WidgetCaption> : null}
+      {headerSlot && headerSummary ? createPortal(<FamilyHeaderSummary summary={headerSummary} />, headerSlot) : null}
       {Chrome ? (
         <Chrome
           state={chromeState}

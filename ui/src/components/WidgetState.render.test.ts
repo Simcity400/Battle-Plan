@@ -78,7 +78,7 @@ test('technical errors stay generic with Retry and Details, named refusals are n
     const outsideWithBounds = renderToStaticMarkup(createElement(WidgetFrameContext.Provider, {
       value: {
         title: 'Factories', subject: 'factories', things: 'factories', timeMode: 'pin', pinned: true,
-        bounds: { firstHour: 43800000, lastHour: 43800024 }, hasSubject: true, captionSlot: null,
+        bounds: { firstHour: 43800000, lastHour: 43800024 }, hasSubject: true,
         reportState() {}, announce() {}, clearAnnouncement() {}, setDynamicViewSwitch() {}, skeleton: 'generic', setSkeleton() {},
       },
     }, createElement(WidgetState as never, { kind: 'outside', pinned: true, onChangeTime: () => {} } as never)));

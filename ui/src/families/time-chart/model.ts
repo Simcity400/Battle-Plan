@@ -253,6 +253,7 @@ export interface TimeChartModel {
   readonly gaps?: readonly ChartGap[];
   readonly legend?: readonly ChartLegendEntry[];
   readonly overlays?: readonly ChartOverlayLabel[];
+  readonly summaryText?: string | null;
   readonly note?: string | null;
   readonly hoverDetail?: ChartHoverDetail | null;
   readonly warnings?: readonly string[];

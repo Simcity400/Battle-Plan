@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import type { WidgetDefinition, WidgetMeta, WidgetSkeletonKind } from './definitions';
 import type { WidgetSpec, WidgetTime } from './model';
 import { resolveOptions } from './options';
@@ -21,7 +20,6 @@ export interface WidgetFrameValue {
   pinned: boolean;
   bounds: { firstHour: number; lastHour: number } | null;
   hasSubject: boolean;
-  captionSlot: HTMLElement | null;
   openCountries?: () => void;
   openTime?: () => void;
   reportState: (owner: object, active: boolean) => void;
@@ -95,13 +93,6 @@ export function resolveDeclaredViewSwitch(
     options,
     onChange: value => onChange(spec.option, value),
   };
-}
-
-export function WidgetCaption({ children, className = '' }: { children: ReactNode; className?: string }) {
-  const frame = useContext(WidgetFrameContext);
-  if (children === null || children === undefined || children === false) return null;
-  const line = <div className={`dash-widget-caption${className ? ` ${className}` : ''}`}>{children}</div>;
-  return frame?.captionSlot ? createPortal(line, frame.captionSlot) : line;
 }
 
 export interface HeaderMeasuredWidths {

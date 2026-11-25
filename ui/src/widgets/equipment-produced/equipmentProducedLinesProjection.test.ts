@@ -203,6 +203,8 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
   assert.equal(model.series[1]!.headValue, null, 'unknown reading must never become zero');
   assert.match(model.series[1]!.absentReason ?? '', /before this country/);
   assert.equal(model.series[1]!.endLabel, null);
+  assert.equal(model.summaryText, 'Infantry Equipment · per day', 'selection line moves beside the title');
+  assert.equal(model.note, undefined, 'selection line never uses a body note');
   assert.deepEqual(model.hoverDetail?.items?.map(item => item.label), ['German Reich'], 'hover excludes non-member ITA at hour 295');
 });
 
