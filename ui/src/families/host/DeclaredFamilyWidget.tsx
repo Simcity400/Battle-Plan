@@ -109,6 +109,7 @@ export default function DeclaredFamilyWidget<
   onDiagnostics,
   setOption,
   headerSlot,
+  filterSlot,
   selectedKey = null,
   onActivate,
   onToggle,
@@ -358,6 +359,8 @@ export default function DeclaredFamilyWidget<
       {...(regionsEditable ? { onRegions, emptyAction } : {})}
       contextMenuItems={resolvedContextMenuItems}
       headerSlot={headerSlot}
+      filterSlot={filterSlot}
+      setFilterOption={setOption}
       onDiagnostics={onDiagnostics}
       extraWarnings={combinedWarnings}
       blockedState={blockedState}

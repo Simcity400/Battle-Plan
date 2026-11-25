@@ -14,6 +14,7 @@ export interface LogKindFilterProps {
   readonly slot: HTMLElement | null | undefined;
   readonly allLabel: string;
   readonly noun: string;
+  readonly compact?: boolean;
   readonly items: readonly LogKindFilterItem[];
   readonly searchThreshold?: number;
   readonly onToggle: (value: string, nextChecked: boolean) => void;
@@ -25,6 +26,7 @@ export default function LogKindFilter({
   allLabel,
   noun,
   items,
+  compact = false,
   searchThreshold = 8,
   onToggle,
   onSelectAll,
@@ -73,8 +75,8 @@ export default function LogKindFilter({
         data-tooltip={`Filter ${noun}`}
       >
         <Icon name="filter" className="dash-widget-filter-icon" />
-        <span>{label}</span>
-        <Icon name="chevron-down" className="dash-view-menu-chevron" />
+        {!compact && <span>{label}</span>}
+        {!compact && <Icon name="chevron-down" className="dash-view-menu-chevron" />}
       </button>
       <Popover menu={menu} id={id} role="menu" className="log-kind-filter-menu" aria-label={`Filter ${noun}`}>
         {menu.open ? (

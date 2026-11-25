@@ -1,17 +1,6 @@
 import { logEntryItems, newestFirst, ROW_HEIGHT, visibleRange } from './logData.ts';
 import type { LogDensity, LogEntry, LogItem, LogPage, LogRow } from './logData';
 
-export function stableLogPages<T>(previous: readonly LogPage<T>[], next: readonly LogPage<T>[]): readonly LogPage<T>[] {
-  if (previous.length !== next.length) return next;
-  for (let index = 0; index < previous.length; index++) {
-    const before = previous[index];
-    const after = next[index];
-    if (before.key !== after.key || before.start !== after.start || before.end !== after.end || before.count !== after.count
-      || before.rows !== after.rows || before.error !== after.error) return next;
-  }
-  return previous;
-}
-
 export function logPageEntries<T>(pages: readonly LogPage<T>[]): LogEntry<T>[] {
   const entries: LogEntry<T>[] = [];
   const ordered = pages.map((page, index) => ({ page, index })).sort((a, b) => b.page.end - a.page.end || b.page.start - a.page.start || a.index - b.index);
@@ -107,10 +96,4 @@ export function logPixelTarget<T>(items: readonly LogItem<T>[], offsets: readonl
   else if (direction === 1 && destination?.kind === 'month') target--;
   target = direction === 1 ? Math.max(ordinal + 1, target) : Math.min(ordinal - 1, target);
   return logRowTarget(items, ordinals, Math.max(0, Math.min(ordinals[items.length] - 1, target)));
-}
-
-export function newestPageRows<T>(pages: readonly LogPage<T>[], count: number): LogRow<T>[] {
-  const rows: LogRow<T>[] = [];
-  for (let index = pages.length - 1; index >= 0 && rows.length < count; index--) rows.push(...pages[index].rows ?? []);
-  return rows;
 }

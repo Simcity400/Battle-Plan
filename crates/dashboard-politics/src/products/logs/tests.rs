@@ -39,22 +39,15 @@ fn page(source: &Source, from: Option<i32>) -> LogPageReply {
     LogPage::load(source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
 }
 
-fn counts(source: &Source, from: i32) -> LogCountsReply {
-    let params = LogCountsParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: f64::from(from), to: f64::from(LAST), bin_hours: 6 };
-    LogCounts::load(source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
-}
-
 #[test]
-fn a_log_unavailable_for_a_stretch_is_missing_there_with_its_reason_in_pages_and_counts() {
+fn a_log_unavailable_for_a_stretch_is_missing_there_with_its_reason_in_pages() {
     let source = opened();
     let whole = page(&source, None);
     assert_eq!(whole.total, "6", "the events of the hours read");
     assert_eq!(whole.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), [120, 124, 128, 132, 136, 140]);
     assert_eq!(spans(&whole.missing), [(FIRST, UNREAD, true)], "{:?}", whole.missing);
-    assert_eq!(spans(&counts(&source, FIRST).missing), [(FIRST, UNREAD, true)]);
-    assert_eq!(spans(&counts(&source, 110).missing), [(110, UNREAD, true)], "cut to the asked range");
+    assert_eq!(spans(&page(&source, Some(110)).missing), [(110, UNREAD, true)], "cut to the asked range");
     assert!(page(&source, Some(UNREAD + 1)).missing.is_empty());
-    assert!(counts(&source, UNREAD + 1).missing.is_empty());
 }
 
 #[test]

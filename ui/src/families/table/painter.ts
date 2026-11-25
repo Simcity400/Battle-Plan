@@ -117,6 +117,7 @@ export interface DrawFamilyTableInput {
   readonly dpr?: number;
   readonly hasGroupHeaders?: boolean;
   readonly dateGrouped?: boolean;
+  readonly dayDividersOnly?: boolean;
   readonly precomputedMaxima?: Map<string, number>;
   readonly staticRowLooks?: boolean;
   readonly rowHeightMode?: 'standard' | 'media';
@@ -261,6 +262,7 @@ export function drawFamilyTable(
     precomputedMaxima,
     staticRowLooks,
     dateGrouped = false,
+    dayDividersOnly = false,
     rowHeightMode = 'standard',
     rowGeom = null,
     clockSummary,
@@ -383,6 +385,7 @@ export function drawFamilyTable(
   const hairlineSpec = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, pinned: boolean) => {
     if (item.isLiveEnd) return { kind: 'band' as const, left: HAIRLINE_INSET };
     if (item.isDayEnd || item.isTotal || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
+    if (dayDividersOnly) return { kind: 'normal' as const, left: rowWidth };
     if (dateGrouped && intraDayLeftBase > HAIRLINE_INSET) {
       const shifted = pinned ? intraDayLeftBase : Math.max(HAIRLINE_INSET, intraDayLeftBase - bounds.left);
       return { kind: 'normal' as const, left: shifted };
@@ -460,7 +463,11 @@ export function drawFamilyTable(
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
     const unitArt = artStateOf(cell?.unitArt);
     const splitSig = cell?.splitBar ? cell.splitBar.map(s => `${s.fraction}:${s.fill}:${s.hatched ? 1 : 0}`).join(',') : '';
-    const extraSig = `${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.boundedDate ?? ''}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
+    const flags = column.inlineFlags?.map(key => {
+      const tail = item.row.cells[key];
+      return tail && !tail.blank ? `${tail.glyph ?? ''}:${tail.value.kind}:${cellListSignature(tail)}` : '';
+    }).join('|') ?? '';
+    const extraSig = `${flags}|${cell?.glyph ?? ''}|${cell?.artTile ? 1 : 0}|${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.boundedDate ?? ''}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
     const key = `${formatted.kind}\u0002${textVal}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
     return { paintModel, formatted, fraction, fill, key };
   };

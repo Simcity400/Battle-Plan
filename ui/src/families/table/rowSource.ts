@@ -1,11 +1,18 @@
-import type { BoundFacetFilter, LogReplyRow } from '../../charts/log/logSource';
-import type { BoundHour } from '../../dashboard/regionTime';
-import type { LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
+import type { BoundHour, BoundWindow } from '../../dashboard/regionTime';
+import type { CountrySpan, FacetFilter, LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
+
+type BoundFacetFilter = Omit<FacetFilter, 'membership' | 'unobserved'> & {
+  membership?: readonly (CountrySpan & BoundWindow)[];
+  unobserved?: readonly BoundWindow[];
+};
+
+interface LogReplyRow { key: string; hour: number; cells: Readonly<Record<string, LogCell>>; fields: Readonly<Record<string, unknown>> }
 
 export type TailProduct =
   | 'log-tail'
   | 'market-ledger-tail'
   | 'raid-log-tail'
+  | 'division-log-tail'
   | 'espionage-log-tail'
   | 'construction-log-tail'
   | 'event-feed-tail'
