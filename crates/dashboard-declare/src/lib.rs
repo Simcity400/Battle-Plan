@@ -95,6 +95,12 @@ pub enum Column {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankZero {
+    Drop,
+    Keep,
+}
+
 #[derive(Clone, Copy)]
 pub struct Measure {
     pub name: &'static str,
@@ -103,6 +109,7 @@ pub struct Measure {
     pub aggregates: u8,
     pub carry: Carry,
     pub rank: u8,
+    pub rank_zero: RankZero,
 }
 
 impl Measure {
@@ -112,6 +119,18 @@ impl Measure {
 
     const fn carried(self, carry: Carry) -> Self {
         Self { carry, ..self }
+    }
+
+    const fn drop_zeros(self) -> Self {
+        Self { rank_zero: RankZero::Drop, ..self }
+    }
+
+    const fn keep_zeros(self) -> Self {
+        Self { rank_zero: RankZero::Keep, ..self }
+    }
+
+    pub const fn drops_zeros_in_top(&self) -> bool {
+        matches!(self.rank_zero, RankZero::Drop)
     }
 }
 
@@ -172,6 +191,7 @@ const fn fixed5(name: &'static str, column: &'static str, aggregates: u8) -> Mea
         aggregates,
         carry: Carry::None,
         rank: 0,
+        rank_zero: RankZero::Keep,
     }
 }
 
@@ -183,6 +203,7 @@ const fn count(name: &'static str, column: &'static str) -> Measure {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: RankZero::Drop,
     }
 }
 
@@ -194,6 +215,7 @@ const fn raw(name: &'static str, column: &'static str) -> Measure {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: RankZero::Keep,
     }
 }
 
@@ -239,9 +261,9 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[
             count("ownerDivisions", "owner_divisions").ranked(32),
-            fixed5("ownerStrength", "owner_strength_raw", 0).ranked(32),
+            fixed5("ownerStrength", "owner_strength_raw", 0).drop_zeros().ranked(32),
             count("hostDivisions", "host_divisions").ranked(32),
-            fixed5("hostStrength", "host_strength_raw", 0).ranked(32),
+            fixed5("hostStrength", "host_strength_raw", 0).drop_zeros().ranked(32),
             count("ownerBattalions", "owner_battalions").ranked(32),
             count("hostBattalions", "host_battalions").ranked(32),
             count("ownerManpower", "owner_manpower").ranked(32),
@@ -302,6 +324,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 0,
+                rank_zero: RankZero::Drop,
             },
         ],
         drops: false,
@@ -328,11 +351,11 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[
             count("rosterShips", "roster_ships").ranked(32),
-            fixed5("rosterStrength", "roster_strength_raw", 0).ranked(32),
-            fixed5("rosterMaxStrength", "roster_max_strength_raw", 0),
+            fixed5("rosterStrength", "roster_strength_raw", 0).drop_zeros().ranked(32),
+            fixed5("rosterMaxStrength", "roster_max_strength_raw", 0).drop_zeros(),
             count("logicalShips", "logical_ships").ranked(32),
-            fixed5("logicalStrength", "logical_strength_raw", 0).ranked(32),
-            fixed5("logicalMaxStrength", "logical_max_strength_raw", 0),
+            fixed5("logicalStrength", "logical_strength_raw", 0).drop_zeros().ranked(32),
+            fixed5("logicalMaxStrength", "logical_max_strength_raw", 0).drop_zeros(),
         ],
         drops: false,
         absent_none: false,
@@ -359,12 +382,12 @@ pub static SERIES: &[Series] = &[
         key: Key::Country,
         parts: None,
         measures: &[
-            fixed5("army", "army", 0).ranked(32),
-            fixed5("navy", "navy", 0).ranked(32),
-            fixed5("air", "air", 0).ranked(32),
-            fixed5("industry", "industry", 0).ranked(32),
-            fixed5("land", "land", 0).ranked(32),
-            fixed5("total", "total", 0).ranked(32),
+            fixed5("army", "army", 0).drop_zeros().ranked(32),
+            fixed5("navy", "navy", 0).drop_zeros().ranked(32),
+            fixed5("air", "air", 0).drop_zeros().ranked(32),
+            fixed5("industry", "industry", 0).drop_zeros().ranked(32),
+            fixed5("land", "land", 0).drop_zeros().ranked(32),
+            fixed5("total", "total", 0).drop_zeros().ranked(32),
         ],
         drops: false,
         absent_none: false,
@@ -420,9 +443,9 @@ pub static SERIES: &[Series] = &[
         parts: None,
         measures: &[
             Measure { carry: Carry::Sum, ..count("units", "units") }.ranked(32),
-            Measure { carry: Carry::Sum, ..fixed5("spent", "spent", 0) }.ranked(32),
+            Measure { carry: Carry::Sum, ..fixed5("spent", "spent", 0) }.drop_zeros().ranked(32),
             Measure { carry: Carry::Sum, ..count("unitsWithoutRefits", "units_without_refits") }.ranked(32),
-            Measure { carry: Carry::Sum, ..fixed5("spentWithoutRefits", "spent_without_refits", 0) }.ranked(32),
+            Measure { carry: Carry::Sum, ..fixed5("spentWithoutRefits", "spent_without_refits", 0) }.drop_zeros().ranked(32),
         ],
         drops: false,
         absent_none: false,
@@ -434,9 +457,9 @@ pub static SERIES: &[Series] = &[
         parts: Some(Parts { bits: 32, id: Some((0, 32)) }),
         measures: &[
             Measure { carry: Carry::Sum, ..count("units", "units") },
-            Measure { carry: Carry::Sum, ..fixed5("spent", "spent", 0) },
+            Measure { carry: Carry::Sum, ..fixed5("spent", "spent", 0) }.drop_zeros(),
             Measure { carry: Carry::Sum, ..count("unitsWithoutRefits", "units_without_refits") },
-            Measure { carry: Carry::Sum, ..fixed5("spentWithoutRefits", "spent_without_refits", 0) },
+            Measure { carry: Carry::Sum, ..fixed5("spentWithoutRefits", "spent_without_refits", 0) }.drop_zeros(),
         ],
         drops: false,
         absent_none: false,
@@ -458,6 +481,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::Rebase,
                 rank: 32,
+                rank_zero: RankZero::Drop,
             },
         ],
         drops: false,
@@ -481,6 +505,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 32,
+                rank_zero: RankZero::Keep,
             },
             Measure {
                 name: "compliance",
@@ -489,6 +514,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 32,
+                rank_zero: RankZero::Keep,
             },
         ],
         drops: false,
@@ -519,6 +545,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 0,
+                rank_zero: RankZero::Drop,
             },
         ],
         drops: false,
@@ -546,6 +573,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 0,
+                rank_zero: RankZero::Drop,
             },
             count("ready", "ready"),
         ],
@@ -557,7 +585,7 @@ pub static SERIES: &[Series] = &[
         table: TableId::WorldTension,
         key: Key::Singleton,
         parts: None,
-        measures: &[Measure { name: "tension", column: Column::Cell("total_raw"), decimals: 3, aggregates: 0, carry: Carry::None, rank: 0 }],
+        measures: &[Measure { name: "tension", column: Column::Cell("total_raw"), decimals: 3, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: RankZero::Keep }],
         drops: false,
         absent_none: false,
     },
@@ -566,7 +594,7 @@ pub static SERIES: &[Series] = &[
         table: TableId::ThreatCountryAggregates,
         key: Key::Slot,
         parts: None,
-        measures: &[fixed5("contribution", "total_raw", 0).ranked(32)],
+        measures: &[fixed5("contribution", "total_raw", 0).drop_zeros().ranked(32)],
         drops: false,
         absent_none: false,
     },
@@ -628,6 +656,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 0,
+                rank_zero: RankZero::Keep,
             },
             fixed5("score", "score", 0),
             fixed5("lower", "lower_score", 0),
@@ -662,7 +691,7 @@ pub static SERIES: &[Series] = &[
         measures: &[
             fixed5("requested", "requested_raw", 0),
             fixed5("received", "received_raw", 0),
-            count("priority", "priority"),
+            count("priority", "priority").keep_zeros(),
             Measure {
                 name: "receivedShare",
                 column: Column::Computed { id: 0, inputs: &["requested_raw", "received_raw"], value: fuel_received_share },
@@ -670,6 +699,7 @@ pub static SERIES: &[Series] = &[
                 aggregates: 0,
                 carry: Carry::None,
                 rank: 0,
+                rank_zero: RankZero::Keep,
             },
         ],
         drops: false,
@@ -720,7 +750,7 @@ pub static SERIES: &[Series] = &[
         table: TableId::EquipmentLossTotals,
         key: Key::Holder,
         parts: Some(Parts { bits: 41, id: Some((0, 32)) }),
-        measures: &[fixed5("total", "total", 0).carried(Carry::Sum)],
+        measures: &[fixed5("total", "total", 0).drop_zeros().carried(Carry::Sum)],
         drops: false,
         absent_none: false,
     },
@@ -783,8 +813,8 @@ pub static SERIES: &[Series] = &[
         measures: &[
             Measure { carry: Carry::Sum, ..count("units", "units") },
             Measure { carry: Carry::Sum, ..count("unitsWithoutRefits", "units_without_refits") },
-            Measure { carry: Carry::Sum, ..fixed5("ic", "ic", 0) },
-            Measure { carry: Carry::Sum, ..fixed5("icWithoutRefits", "ic_without_refits", 0) },
+            Measure { carry: Carry::Sum, ..fixed5("ic", "ic", 0) }.drop_zeros(),
+            Measure { carry: Carry::Sum, ..fixed5("icWithoutRefits", "ic_without_refits", 0) }.drop_zeros(),
         ],
         drops: false,
         absent_none: false,
@@ -925,6 +955,7 @@ macro_rules! factory_channels {
             aggregates: 0,
             carry: Carry::None,
             rank: $rank,
+            rank_zero: RankZero::Drop,
         }),+]
     };
 }
@@ -1027,6 +1058,7 @@ const fn share(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Comput
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: RankZero::Keep,
     }
 }
 
@@ -1090,6 +1122,7 @@ const fn fuel_day(name: &'static str, id: u32, value: fn(&dyn Cells, u32) -> Com
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: RankZero::Keep,
     }
 }
 
@@ -1109,6 +1142,7 @@ const fn resource_value(name: &'static str, id: u32, value: fn(&dyn Cells, u32) 
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: RankZero::Keep,
     }
 }
 

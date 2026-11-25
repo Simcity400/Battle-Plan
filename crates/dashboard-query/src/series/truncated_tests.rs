@@ -71,6 +71,7 @@ static RATIO_EXP: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: false,
@@ -88,6 +89,7 @@ static ABSENT_ZERO_EXP: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: true,
@@ -290,7 +292,7 @@ static GAP_EXP: Series = Series {
     table: TableId::CountryExperience,
     key: Key::Country,
     parts: None,
-    measures: &[Measure { name: "army", column: Column::Computed { id: 911, inputs: &["army_raw"], value: exp_gap }, decimals: 0, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "army", column: Column::Computed { id: 911, inputs: &["army_raw"], value: exp_gap }, decimals: 0, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: false,
 };
@@ -849,4 +851,124 @@ fn cold_truncated_tile_batches_witness_walk_once_across_many_countries() {
             "country C{i:02} missing spans"
         );
     }
+}
+
+#[test]
+fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
+    use replay_data::rows::{AutonomyRow, NukeRow};
+
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 120, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    let campaign = CampaignRow { id: b"rank-zero-rule".to_vec() };
+    let countries = [
+        CountryRow { id: 9001, canonical_slot: 7, tag: b"ABK".to_vec(), political_power_raw: Some(0), ..CountryRow::default() },
+        CountryRow { id: 9002, canonical_slot: 8, tag: b"GER".to_vec(), political_power_raw: Some(50_000), ..CountryRow::default() },
+        CountryRow { id: 9003, canonical_slot: 9, tag: b"USA".to_vec(), political_power_raw: Some(-10_000), ..CountryRow::default() },
+    ];
+    let links = [
+        CountryLinkRow { id: 9001, canonical_slot: 7 },
+        CountryLinkRow { id: 9002, canonical_slot: 8 },
+        CountryLinkRow { id: 9003, canonical_slot: 9 },
+    ];
+    let autonomy = [
+        AutonomyRow { subject: 9001, score: 0, lower_score: 0, upper_score: 1_000, ..AutonomyRow::default() },
+        AutonomyRow { subject: 9002, score: 500, lower_score: 0, upper_score: 1_000, ..AutonomyRow::default() },
+        AutonomyRow { subject: 9003, score: 0, lower_score: 0, upper_score: 1_000, ..AutonomyRow::default() },
+    ];
+    let fac_all = [
+        CountryFactoriesRow { country: 9001, military_total_raw: 0, ..CountryFactoriesRow::default() },
+        CountryFactoriesRow { country: 9002, military_total_raw: 500_000, ..CountryFactoriesRow::default() },
+        CountryFactoriesRow { country: 9003, military_total_raw: 0, ..CountryFactoriesRow::default() },
+    ];
+
+    let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, branch, 125, |frame, hour| {
+        frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Autonomy, Input::Snapshot { rows: &autonomy, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let nukes = if hour < 123 {
+            vec![
+                NukeRow { country: 9001, nuke_type: 0, amount_raw: 0, ready: 0 },
+                NukeRow { country: 9002, nuke_type: 0, amount_raw: 0, ready: 0 },
+                NukeRow { country: 9003, nuke_type: 0, amount_raw: 0, ready: 0 },
+            ]
+        } else {
+            vec![
+                NukeRow { country: 9001, nuke_type: 0, amount_raw: 0, ready: 0 },
+                NukeRow { country: 9002, nuke_type: 0, amount_raw: 0, ready: 0 },
+                NukeRow { country: 9003, nuke_type: 0, amount_raw: 200_000_000, ready: 0 },
+            ]
+        };
+        frame.table(TableId::Nukes, Input::Snapshot { rows: &nukes, partial: None, read: true, sample: Sample::FromReadBit })?;
+        if hour == 124 {
+            frame.table(TableId::CountryFactories, Input::Snapshot { rows: &fac_all[..2], partial: Some(1), read: true, sample: Sample::FromReadBit })?;
+        } else {
+            frame.table(TableId::CountryFactories, Input::Snapshot { rows: &fac_all, partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let timeline = Arc::new(Timeline { id: 1, first: 120, last: 125, stretches: vec![Stretch { run: 0, first: 120, last: 125, join: Join::Start }], unheld: Vec::new() });
+    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let query = Query { replay: &replay, timeline, holders };
+
+    let nukes_series = dashboard_declare::series("country-nuke-totals").unwrap();
+    let nukes = Line::new(&query, nukes_series, nukes_series.measure("total").unwrap()).unwrap();
+    assert_eq!(nukes.rank_at(121, 5, false).unwrap(), Ok(Vec::new()), "all zeros drops every country from a count top");
+    assert_eq!(nukes.rank_at(124, 5, false).unwrap(), Ok(vec![Country::from("USA")]), "count top shows only positive rows and fewer than N");
+
+    let rank_top: ranked::SeriesRankReply = serde_json::from_value(
+        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "top": 5, "hour": 124 }))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rank_top.rows.iter().map(|r| r.country.to_string()).collect::<Vec<_>>(), vec!["USA"]);
+    assert_eq!(rank_top.refused, None);
+    let tiles_top = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 124 / BINS as i64, "top": 5, "hour": 124 })).unwrap();
+    assert_eq!(tiles_top.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), vec!["USA"], "lines and race agree on positive-only top");
+    let tiles_empty = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 121 / BINS as i64, "top": 5, "hour": 121 })).unwrap();
+    assert!(tiles_empty.lines.is_empty() && tiles_empty.ranking.unwrap().refused.is_none(), "all-zero count top yields an empty unproven-free tile reply");
+
+    let chosen: ranked::SeriesRankReply = serde_json::from_value(
+        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "countries": ["USA", "ABK"], "hour": 124 }))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(chosen.rows.iter().map(|r| r.country.to_string()).collect::<Vec<_>>(), vec!["USA", "ABK"], "explicit countries still keep their recorded zero");
+
+    let pp_series = dashboard_declare::series("country-measure").unwrap();
+    let pp = Line::new(&query, pp_series, pp_series.measure("politicalPower").unwrap()).unwrap();
+    assert_eq!(pp.rank_at(124, 5, false).unwrap(), Ok(vec![Country::from("GER"), Country::from("ABK"), Country::from("USA")]), "signed balance keeps zeros");
+
+    let auto_series = dashboard_declare::series("autonomy").unwrap();
+    let auto = Line::new(&query, auto_series, auto_series.measure("progress").unwrap()).unwrap();
+    assert_eq!(auto.rank_at(124, 5, false).unwrap(), Ok(vec![Country::from("GER"), Country::from("ABK"), Country::from("USA")]), "percentage standing keeps zeros");
+
+    let fac_series = dashboard_declare::series("country-factories").unwrap();
+    let fac = Line::new(&query, fac_series, fac_series.measure("built1").unwrap()).unwrap();
+    assert_eq!(fac.rank_at(121, 5, false).unwrap(), Ok(vec![Country::from("GER")]));
+    assert!(fac.rank_at(124, 5, false).unwrap().is_err(), "an unrecorded contender still refuses a positive-only count top");
 }

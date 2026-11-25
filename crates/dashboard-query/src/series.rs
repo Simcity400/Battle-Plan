@@ -668,6 +668,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let tag_of = |key: u128| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
         let mut values: Vec<(i64, Country)> = Vec::new();
         let mut held: HashSet<u128> = HashSet::new();
+        let drop_zero = !least && self.measure.drops_zeros_in_top();
         for slot in view.rows() {
             let Some(key) = view.key(slot) else { continue };
             held.insert(key);
@@ -677,12 +678,16 @@ impl<'q, 'a> Line<'q, 'a> {
                 (None, None) => return Ok(Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table)))),
             };
             match self.source.read(&view, slot) {
-                Computed::Value(value) => values.push((value, country)),
+                Computed::Value(value) => {
+                    if !drop_zero || value > 0 {
+                        values.push((value, country));
+                    }
+                }
                 Computed::NotApplicable(_) => {}
                 Computed::Unrecorded => return Ok(Err(self.query.holders.say(&country, hour, |name| board::measure_unrecorded(name, self.measure.name)))),
             }
         }
-        if self.series.absent_none {
+        if self.series.absent_none && !drop_zero {
             values.extend(holders.iter().filter(|(key, _)| !held.contains(key)).filter_map(|(&key, _)| Some((0, Country::from(tag_of(key)?)))));
         }
         let order = |a: &(i64, Country), b: &(i64, Country)| {
@@ -844,6 +849,7 @@ impl<'q, 'a> Line<'q, 'a> {
                     true => self.exact_top(stretch.run, (lo as i32, hi as i32), level, stretch_bins, n, &holders)?,
                     false => members
                         .into_iter()
+                        .filter(|(_, value)| !self.measure.drops_zeros_in_top() || value.last > 0)
                         .filter_map(|(key, value)| Some((tag_of(key, hi as i32)?, value)))
                         .take(n)
                         .map(|(tag, value)| {
@@ -1734,11 +1740,16 @@ impl<'q, 'a> Line<'q, 'a> {
             return Ok(Vec::new());
         }
         let view = snapshot.view();
+        let drop_zero = self.measure.drops_zeros_in_top();
         let mut ranked: Vec<(i64, u128, &'t str)> = view
             .rows()
             .filter_map(|slot| {
                 let key = view.key(slot)?;
-                Some((self.source.value(&view, slot)?, key, tag_of(key, last)?))
+                let value = self.source.value(&view, slot)?;
+                if drop_zero && value <= 0 {
+                    return None;
+                }
+                Some((value, key, tag_of(key, last)?))
             })
             .collect();
         let order = |a: &(i64, u128, &str), b: &(i64, u128, &str)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));

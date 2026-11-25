@@ -44,7 +44,6 @@ export interface SeriesRaceProjectConfig {
   readonly valueLabel: string;
   readonly emptyMessage: string;
   readonly note?: string;
-  readonly positiveOnly?: boolean;
   readonly parts?: (reply: SeriesRankReply, row: SeriesRankRow) => SeriesRaceParts;
 }
 
@@ -180,13 +179,10 @@ export function projectSeriesRace(readView: BoundedReadView, options: SeriesRace
   if (panel === undefined) return { ...baseModel, rows: [] };
   const reply = validateRankReply(panel);
   if (!reply.rows.length && reply.refused) return { ...baseModel, rows: [], empty: reply.refused, emptyKind: 'unavailable' };
-  const ranked = options.top != null || options.all === true;
   const decimals = reply.measures[0]!.decimals;
   const rows: BarsDataRow[] = [];
   for (const rankRow of reply.rows) {
-    const row = makeRow(readView, reply, rankRow, decimals, config);
-    if (ranked && config.positiveOnly && row.numeric !== null && row.numeric !== undefined && row.numeric <= 0) continue;
-    rows.push(row);
+    rows.push(makeRow(readView, reply, rankRow, decimals, config));
   }
   if (rows.length) return { ...baseModel, rows };
   return { ...baseModel, rows, empty: options.group ? 'No country of this group at this date.' : config.emptyMessage, emptyKind: 'empty' };

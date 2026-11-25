@@ -152,4 +152,16 @@ test('nuclear-arsenal lines ranks chosen slots, preserves missing readings, and 
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'Nuclear Bomb' && item.value === '5 (2 ready)'));
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'thermonuclear_bomb' && item.value === '2'));
   assert.throws(() => readView.who('country', slot2, displayedHour(501)), FutureDataError);
+
+  const emptyTopView = createBoundedReadView({
+    hour: displayedHour(200),
+    series: new Map([['main', new Map()]]),
+    identity: fakeIdentity({}),
+  });
+  const emptyTopOpts = nuclearArsenalLinesDeclaration.projectionOptions(
+    makeCtx({ top: 6, options: { endLabels: true } }),
+    { extent: [100, 600], surface: '#111111' },
+  );
+  const emptyModel = nuclearArsenalLinesProjection.project(emptyTopView, emptyTopOpts);
+  assert.deepEqual(emptyModel.empty, { message: 'No nuclear stockpiles recorded at this date.', kind: 'empty' });
 });

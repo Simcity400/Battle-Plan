@@ -151,10 +151,40 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         };
       }
       const top = options.top !== null;
+      if (top) {
+        const refused = readView.refused('main');
+        if (refused) {
+          return {
+            kind: spec.kind,
+            measureTitle: spec.title,
+            mode: 'lines',
+            hour,
+            extent: options.extent,
+            yAxis: { format: spec.format },
+            series: [],
+            empty: { message: refused, kind: 'unavailable' },
+            auditRows: [],
+          };
+        }
+      }
       const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
       const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
       const tags = top ? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main')) : options.tags;
+      if (top && drawn !== undefined && tags.length === 0) {
+        return {
+          kind: spec.kind,
+          measureTitle: spec.title,
+          mode: 'lines',
+          hour,
+          extent: options.extent,
+          ...(view ? { view } : {}),
+          yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, ...chartAxis(settings) },
+          series: [],
+          empty: { message: `No ${spec.subject} recorded at this date.`, kind: 'empty' },
+          auditRows: [],
+        };
+      }
       const rowOf = new Map(tags.map((tag, row) => [tag, row]));
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
