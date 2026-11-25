@@ -36,6 +36,7 @@ const outside = OUTSIDE.split(': ')[1];
 test('Equipment losses mounted at 99, before a country recorded 100–109, is outside the recording, and binds the country once the clock enters the track', () => onPage(async act => {
   const before = await act<string>("mount('losses', 99)");
   assert.ok(before.includes(outside) && !before.includes('Country unavailable'), `mounted at 99: ${before}`);
-  const inside = await act<string>("seek('losses', 105)");
-  assert.ok(/Land combat losses/.test(inside) && !inside.includes('Country unavailable') && !inside.includes(outside), `at 105 the country recorded since 100 is bound and its losses are drawn: ${inside}`);
+  const inside = await act<{ text: string; followed: unknown[] }>("seek('losses', 105)");
+  assert.ok(!inside.text.includes('Country unavailable') && !inside.text.includes(outside), `at 105 the country recorded since 100 is bound: ${inside.text}`);
+  assert.deepEqual(inside.followed, [{ panel: 'equipment-losses', branchId: '1', country: 1, landSource: 'destruction' }], 'its losses are followed for that country, and nothing was followed at 99');
 }));
