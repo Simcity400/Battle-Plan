@@ -5,7 +5,8 @@ import type { MarketAt } from '../../dashboard/market';
 import { contractRows, marketDetail, offerRows } from './marketData.ts';
 import { internationalMarketProjection } from './internationalMarketProjection.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 
 const item = (variant: string, amountRaw: string) => ({ variant, name: null, amountRaw });
 const raw = { branchId: '1', purchasesMissing: null, unattributed: 1, refused: null, warnings: [],

@@ -315,7 +315,8 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
 
 test('a general’s dossier splits the record won and lost, measures experience and training against what each needs, lists traits as dated text, and leaves unread experience not recorded', async () => {
   const { dossierProjection } = await import('../../widgets/general-career/dossierProjection.ts');
-  const { valuesOf, liveKey } = await import('../../charts/live.ts');
+  const { liveKey } = await import('../../charts/live.ts');
+  const { valuesOf } = await import('../../test-support/liveValues.ts');
   const hour = engineHour({ year: 1941, month: 6, day: 1, hour: 1 })!;
   const gained = engineHour({ year: 1938, month: 3, day: 12, hour: 1 })!;
   const trait = (token: string, name: string) => ({ token, name, icon: null, missing: 'No sprite' });

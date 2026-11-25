@@ -31,7 +31,7 @@ test('the theatres at the hour validate with the reply, and malformed ones refus
 test('the bars butterfly keeps the region order the product gives, puts ours left and the enemy right, and a word not recorded is missing, never zero', async () => {
   const { airStatisticsProjection } = await import('./airStatisticsProjection.ts');
   const { createBoundedReadView, displayedHour } = await import('../../families/boundedView.ts');
-  const { valuesOf } = await import('../../charts/live.ts');
+  const { valuesOf } = await import('../../test-support/liveValues.ts');
   const { liveKey } = await import('../../charts/live.ts');
   const data = reply([{ region: '11', name: 'Baltic', missing: null }, { region: '10', name: 'North Sea', missing: null }]);
   const live = valuesOf(new Map([[liveKey('11', 'ours'), 250000], [liveKey('11', 'enemy'), 500000], [liveKey('10', 'ours'), 0]]), 'Not recorded at this hour');

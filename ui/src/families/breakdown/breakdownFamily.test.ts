@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, ProductionSpendingReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, EquipmentLossesReply, PowerSpendingBreakdownReply, ProductionSpendingReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
 import { casualtiesBreakdown, casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
 import { constructionBreakdown, constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
+import { equipmentLossesBreakdown, equipmentLossesProjection } from '../../widgets/equipment-losses/equipmentLossesProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { dockyardSpendingBreakdown, dockyardSpendingProjection, militaryFactorySpendingBreakdown, productionSpendingBreakdown, productionSpendingProjection } from '../../widgets/production-spending/productionSpendingProjection.ts';
 import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
@@ -720,6 +721,7 @@ test('S6: at-hour breakdowns key plan owner and product request by recorded coun
     ['production-spending', productionSpendingBreakdown, { factories: 'military', refits: false }],
     ['dockyard-spending', dockyardSpendingBreakdown, {}],
     ['military-factory-spending', militaryFactorySpendingBreakdown, { equipment: 'air' }],
+    ['equipment-losses', equipmentLossesBreakdown, { landSource: 'destruction' }],
   ] as const) {
     const asA = decl.sources(mkCtx('AAA', countryKey(7), options), vp);
     const asB = decl.sources(mkCtx('BBB', countryKey(7), options), vp);
@@ -733,4 +735,53 @@ test('S6: at-hour breakdowns key plan owner and product request by recorded coun
     const unresolved = decl.sources(mkCtx('BBB', null, options), vp);
     assert.equal(unresolved.entries.length, 0, `${name} withholds requests until the recorded slot is resolved`);
   }
+});
+
+test('equipment losses projects exact fractions, separates landSource owners, and keeps quiet stretches to one request', () => {
+  const lossReply: EquipmentLossesReply = {
+    from: START,
+    hour: START + 40,
+    through: START + 140,
+    landSource: 'destruction',
+    warnings: [],
+    breakdown: {
+      unrecordedHours: 0,
+      total: { amount: { numerator: '525', denominator: '2' }, state: 'known', reason: null },
+      parts: [
+        wire('destruction:landCombat', 0, '250', { name: 'Land combat losses', share: 500 / 525, parentShare: 500 / 525 }),
+        wire('sunkConvoys', 1, '25', { name: 'Sunk convoys', amount: { numerator: '25', denominator: '2' }, share: 25 / 525, parentShare: 25 / 525 }),
+      ],
+    },
+  };
+  const projected = equipmentLossesProjection.project(
+    createBoundedReadView({ hour: START + 40, panels: new Map([['main', lossReply]]), validInterval: [START + 40, START + 140] }),
+    { landSource: 'destruction' },
+  );
+  assert.equal(projected.periodLabel, 'Lost since 1 Jan 1936');
+  assert.equal(projected.total.unit, 'units');
+  assert.equal(projected.total.text, '262.5');
+  assert.deepEqual(projected.parts.map(part => [part.name, part.text]), [['Land combat losses', '250'], ['Sunk convoys', '12.5']]);
+
+  const vp = { width: 800, height: 300 } as Parameters<typeof equipmentLossesBreakdown.sources>[1];
+  const mkCtx = (landSource: 'destruction' | 'combatLog') => ({
+    countryTag: 'GER',
+    countrySubject: countryKey(7),
+    options: { landSource },
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  }) as unknown as Parameters<typeof equipmentLossesBreakdown.sources>[0];
+
+  const destPlan = equipmentLossesBreakdown.sources(mkCtx('destruction'), vp);
+  const logPlan = equipmentLossesBreakdown.sources(mkCtx('combatLog'), vp);
+  assert.notEqual(destPlan.owner, logPlan.owner, 'switching landSource owns a distinct broker entry');
+  assert.equal(destPlan.entries[0]!.read.shape, 'point');
+  assert.deepEqual(destPlan.entries[0]!.read.params, { branchId: '1', country: 7, landSource: 'destruction' });
+  assert.equal(logPlan.entries[0]!.read.shape, 'point');
+  assert.deepEqual(logPlan.entries[0]!.read.params, { branchId: '1', country: 7, landSource: 'combatLog' });
+
+  const proof = resolvePlaybackProvenInterval(destPlan.entries[0]!.read, lossReply, { anchorHour: START + 40, span: null }, START + 10_000);
+  assert.deepEqual(proof, [START + 40, START + 140]);
+  let asks = 1;
+  for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
+  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
 });

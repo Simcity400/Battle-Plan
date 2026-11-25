@@ -1,10 +1,9 @@
 import { clipToSpans, isOrderedSpans, runAt } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import { countryDrillSpans, historyAt } from '../../dashboard/countryIdentity.ts';
-import type { BoundTrack, CountrySelection } from '../../dashboard/model';
-import { object, opaqueTag, signed32 } from '../../dashboard/validation.ts';
+import type { BoundTrack } from '../../dashboard/model';
+import { signed32 } from '../../dashboard/validation.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
-import type { HeldCountry } from '../../dashboard/regionGate';
 
 export interface DrillCountry {
   campaign: string; branch: string; tag: string; originOffset: number; slot: number; countryId: number;
@@ -17,21 +16,6 @@ export function chooseDrillCountry(histories: readonly CountryIdentityHistory[],
   return history && identity && origin >= track.branch.firstHour && origin <= track.branch.lastHour
     ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: history.tag,
       originOffset: origin - track.branch.firstHour, slot: identity.slot, countryId: identity.countryId } : null;
-}
-
-export const heldDrillCountry = (held: HeldCountry, track: BoundTrack): DrillCountry => ({ campaign: track.source.metadata.campaignKey, branch: track.branch.id,
-  tag: held.tag, originOffset: held.origin - track.branch.firstHour, slot: held.slot, countryId: held.countryId });
-
-export function readDrillCountry(value: unknown, track: BoundTrack | undefined, countries: CountrySelection): DrillCountry | null {
-  if (typeof value !== 'string' || !track) return null;
-  try {
-    const pick: unknown = JSON.parse(value);
-    return object(pick) && pick.campaign === track.source.metadata.campaignKey && pick.branch === track.branch.id
-      && opaqueTag(pick.tag) && countries.kind === 'tags' && countries.tags.length === 1 && countries.tags[0] === pick.tag
-      && Number.isSafeInteger(pick.originOffset) && typeof pick.originOffset === 'number' && pick.originOffset >= 0
-      && [pick.slot, pick.countryId].every(value => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff)
-      ? pick as unknown as DrillCountry : null;
-  } catch { return null; }
 }
 
 export function drillCountrySpans(histories: readonly CountryIdentityHistory[], pick: DrillCountry,

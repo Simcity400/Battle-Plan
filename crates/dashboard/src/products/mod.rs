@@ -67,7 +67,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_research::registrations::TECHNOLOGY_EFFECTS_TECHNOLOGYEFFECTSAT,
     dashboard_research::registrations::ENTITY_STATS_ENTITYSTATSAT,
     dashboard_air::registrations::AIR_SUPERIORITY_AIRSUPERIORITYAT,
-    dashboard_production::registrations::EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD,
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
     dashboard_land::registrations::FORCES_AIRFORCEAT,
     dashboard_land::registrations::FORCES_NAVYAT,

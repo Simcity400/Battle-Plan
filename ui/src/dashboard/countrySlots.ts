@@ -126,12 +126,6 @@ export function useSlotTags(client: DashboardClient, track: Pick<BoundTrack, 'so
   return useSlotTagsState(client, track, active).slots;
 }
 
-export function countryTagAt(slots: SlotTags | undefined, country: CountryRef | null | undefined, hour: number): string | null {
-  if (country == null) return null;
-  if (typeof country === 'string') return country;
-  return slots?.tagAt(country, hour) ?? null;
-}
-
 export function countryNameAt(slots: SlotTags | undefined, country: CountryRef | null | undefined, hour: number): string | null {
   if (country == null) return null;
   if (typeof country === 'string') return country;
