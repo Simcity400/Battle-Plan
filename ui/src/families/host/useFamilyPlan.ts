@@ -755,6 +755,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   useEffect(() => {
+    if (pagersRef.current.sig === sig) return;
     pageBrokerRef.current?.dispose();
     pageBrokerRef.current = null;
     pagersRef.current = { sig, pagers: new Map() };
