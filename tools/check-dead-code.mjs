@@ -284,6 +284,7 @@ async function loadManifestData(root) {
   const familyViews = [];
   const familyByKind = new Map();
   const legacyEntries = [];
+  const unresolvedNativeLoaders = [];
   const familyViewUiEntries = new Map();
   const familyViewUiViews = new Map();
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -356,6 +357,10 @@ async function loadManifestData(root) {
     }
     try {
       const mod = await import(`${pathToFileURL(manifestPath).href}?t=${stamp}`);
+      for (const entry of mod.NATIVE_WIDGETS ?? []) {
+        const { targets, hasUnresolvedImport } = resolveImportsFromFunction(entry.load, manifestPath, root);
+        if (targets.length === 0 || hasUnresolvedImport) unresolvedNativeLoaders.push(entry.kind);
+      }
       if (mod.FAMILY_VIEW_UI && typeof mod.FAMILY_VIEW_UI === 'object') {
         for (const [kind, loader] of Object.entries(mod.FAMILY_VIEW_UI)) {
           const fromFn = resolveImportsFromFunction(loader?.load, manifestPath, root);
@@ -376,6 +381,7 @@ async function loadManifestData(root) {
     familyByKind,
     legacyFileExists,
     legacyEntries,
+    unresolvedNativeLoaders,
     familyViewUiEntries,
     familyViewUiViews,
   };
@@ -918,7 +924,7 @@ export function checkLegacyRatchet(root, loaded, ratchetData = null) {
   );
   const count = pairs.length;
 
-  const errors = [];
+  const errors = loaded.unresolvedNativeLoaders.map(kind => `NATIVE_WIDGETS entry ${kind} has an unresolvable load target`);
   const notices = [];
 
   for (const stale of staleEntries) {
