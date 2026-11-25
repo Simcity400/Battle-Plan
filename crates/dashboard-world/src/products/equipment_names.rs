@@ -508,7 +508,7 @@ impl Naming {
                 }
             }
         }
-        if held.refused {
+        if held.refused || tokens.iter().any(|token| held.rows.get(token).is_some_and(Option::is_none)) {
             drop(held);
             let keys: Vec<u128> = tokens.iter().map(|&token| u128::from(token)).collect();
             return keyed_at(hour, &keys);

@@ -89,6 +89,51 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
 }
 
 #[test]
+fn a_design_whose_token_the_run_never_spells_keeps_the_refusal_of_its_own_hour() {
+    let (cat, _folder) = dashboard_base::catalogue::tests::localisation_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+        ("localisation/mod_l_english.yml", "\u{feff}l_english:\n rifle_0:0 \"Default Rifle\"\n"),
+    ]);
+    let context: names::Context = Ok(names::Content::from_catalogue(Arc::new(cat)));
+    let frames: Vec<_> = (100..=106)
+        .map(|hour| {
+            let mut frame = ownership_frame(1, hour, 9001);
+            *frame.tables[TableId::LexicalTokens.index()] = if hour == 100 {
+                TableView::Unavailable { reason: "synthetic lexical refusal".into() }
+            } else {
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 2, literal: b"rifle_0".to_vec() }]))
+            };
+            *frame.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Stored Design".to_vec(), ..Default::default() }]));
+            if hour == 100 {
+                *frame.tables[TableId::MarketContractTerms.index()] = TableView::Complete(TableRows::MarketContractTerms(vec![MarketContractTermsRow {
+                    country: 9001,
+                    buyer: 44,
+                    id: 0x12,
+                    kind: 1,
+                    equipment: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 500_000 }] }.into(),
+                    prices: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 96_000 }] }.into(),
+                    ..Default::default()
+                }]));
+            }
+            let events = if hour == 100 { vec![event(1, hour, 11, MarketEventRow::default())] } else { Vec::new() };
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+            frame
+        })
+        .collect();
+    let src = opened("mkt-unspelled", frames);
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    let mut prepared = prepare(&src, &query, 1, &LoadContext { content: None }, &ask(104), &AtomicBool::new(false)).unwrap();
+    prepared.context = Arc::new(context);
+    prepared.namings = Arc::new(namings(&src, &query).unwrap());
+    let reply = load_tail_at(&prepared, &query, &ask(104), 104, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.rows[0].quotes, [MarketQuote { variant: "6".into(), name: None, name_missing: Some(UNNAMED.into()), price_raw: "96000".into() }], "the hour's lexical refusal stands when the last hour does not spell the token either");
+}
+
+#[test]
 fn a_request_and_its_accepted_contract_are_two_rows_and_the_request_removal_ends_only_the_request() {
     let frames: Vec<_> = (100..=106)
         .map(|hour| {
