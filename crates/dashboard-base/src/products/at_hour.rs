@@ -111,8 +111,6 @@ pub trait AtHour: 'static {
         vec![Self::Params::decl(), Self::Reply::decl()]
     }
 
-    fn read_hour(_context: &Self::Context, hour: i32) -> i32 { hour }
-
     fn owner(_params: &Self::Params) -> Option<&Country> {
         None
     }
@@ -261,14 +259,10 @@ fn covers(read: &Read, group: &Group) -> bool {
 }
 
 fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, pool: &Arc<placed::Pool>, params: &P::Params, hour: i32, context: impl FnOnce() -> io::Result<C>, cancelled: &AtomicBool) -> io::Result<(P::Reply, Option<Value>)> {
-    let recorded = |hour| query.timeline.at(hour).map(|at| at.run).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)));
-    let run = recorded(hour)?;
+    let run = query.timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
+    let owner = holder::<P>(&query.holders, params, hour)?;
     let held = context()?;
     let context = held.borrow();
-    let target = P::read_hour(context, hour);
-    let run = if target == hour { run } else { recorded(target)? };
-    let hour = target;
-    let owner = holder::<P>(&query.holders, params, hour)?;
     let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
     let mut count = 0;
     let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None };

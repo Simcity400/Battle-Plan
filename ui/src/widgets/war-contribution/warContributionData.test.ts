@@ -67,7 +67,7 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(model.columns.map(column => column.key), ['country', 'participation', 'casualties'], 'only the measures the product answers are columns');
   const none = warContributionSidesProjection.project(createBoundedReadView({ hour: 5, panels: new Map() }), { wars, saved: null });
   assert.equal(none.empty, 'Choose a war to see who fought it.');
-  const ended = warContributionSidesProjection.project(createBoundedReadView({ hour: 900, panels: new Map([['live', { ...reply, hour: 500 }]]) }), { wars, saved: null });
+  const ended = warContributionSidesProjection.project(createBoundedReadView({ hour: 900, panels: new Map([['ended', { ...reply, hour: 500 }]]) }), { wars, saved: null });
   assert.equal(ended.panes?.length, 2, 'an ended war is read at its last hour, never later');
   const { warContributionMeasureProjection } = await import('./measureProjection.ts');
   const warShares: Readonly<Record<string, number>> = { BBB: 4100, CCC: 5900, AAA: 0 };

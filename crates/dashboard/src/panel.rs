@@ -22,7 +22,6 @@ pub fn dated_panel_of(source: &Arc<Source>, load: &LoadContext, asked: &Value) -
     Some(match asked["panel"].as_str()? {
         "diplomatic-relations" => dashboard_wars::registrations::EXACT_DIPLOMATICRELATIONS(source, load, asked),
         "intel-network-coverage" => dashboard_intelligence::registrations::EXACT_INTELNETWORKCOVERAGE(source, load, asked),
-        "war-contributions" => dashboard_wars::registrations::EXACT_WARCONTRIBUTIONS(source, load, asked),
         "power-spending-breakdown" => product_interval_panel::<dashboard_politics::products::power_ledger::breakdown::PowerSpendingBreakdown>(source, load, asked, at_hour, |r| r.through),
         "production-spending" => product_interval_panel::<dashboard_production::products::production_spending::ProductionSpending>(source, load, asked, at_hour, |r| r.through),
         "construction-breakdown" => product_interval_panel::<dashboard_production::products::construction::breakdown::ConstructionBreakdown>(source, load, asked, at_hour, |r| r.through),
