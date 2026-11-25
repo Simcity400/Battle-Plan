@@ -8,4 +8,4 @@ Filter transfers at each endpoint's supplied date and show outcomes only once th
 
 A held view opens a drill at the shown moment. Follow can inherit the clock. New pins bind the native holder, campaign and branch. Continue to honor older link-based pins and name absent links. The transfer table keeps its own sort. Earlier saved flow-diagram settings remain stored and unused. Request labels only for mounted rows or the open tooltip.
 
-[Territory breakdown](../../ui/src/widgets/territory-breakdown/breakdownData.ts) · [Territory series](../../ui/src/widgets/territory/territoryData.ts) · [Transfers](../../ui/src/widgets/territory-transfers/territoryData.ts) · [Transfer drill](../../ui/src/widgets/territory-transfers/transferDrillData.ts)
+[Territory breakdown](../../ui/src/widgets/territory-breakdown/territoryBreakdownProjection.ts) · [Territory share](../../ui/src/widgets/territory/territoryShareProjection.ts) · [Transfers](../../ui/src/widgets/territory-transfers/territoryData.ts) · [Transfer drill](../../ui/src/widgets/territory-transfers/transferDrillData.ts)

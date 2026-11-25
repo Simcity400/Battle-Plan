@@ -4428,17 +4428,12 @@ export type TerritoryShareParams = { branchId: string,
 /**
  * A declared territory measure.
  */
-measure: string, };
-export type TerritoryShareEntry = { tag: string, slot: number, };
-export type TerritoryShareReply = { measure: string, entries: Array<TerritoryShareEntry>,
+measure: string,
 /**
- * Some is held by slots no tag holds at the hour: in the rest of the world, named by no country.
+ * When set, keep the top N named countries and roll the rest into Rest of the world.
  */
-unnamed: boolean,
-/**
- * Why the whole is not known, never a smaller sum.
- */
-missing: string | null, warnings: Array<string>, };
+top?: number, };
+export type TerritoryShareReply = { hour: number, measure: string, breakdown: Breakdown, warnings: Array<string>, };
 export type TerritoryShareParamsAtHour = TerritoryShareParams & { hour: number };
 export type TerritoryBreakdownParams = { branchId: string,
 /**
@@ -7448,7 +7443,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "technology-effects": { "branchId": "leaf", "country": "any", "databaseIndex": "leaf", "hour": "leaf", "token": "leaf" },
   "template-roster": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "territory-breakdown": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
-  "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf" },
+  "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf", "top": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
 import { casualtiesBreakdown, casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
+import { territoryShare, territoryShareProjection } from '../../widgets/territory/territoryShareProjection.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { IdentityProvider } from '../plan.ts';
@@ -563,4 +564,73 @@ test('casualties breakdown resolves slot-keyed enemies at their live or ended ho
   let asks = 1;
   for (let hour = START + 101; hour <= START + 200; hour++) if (hour > proof[1]) asks++;
   assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+});
+
+test('territory share resolves slot-keyed countries, keeps Rest of the world neutral, refuses occupied rule, and subscribes via panel follow', () => {
+  const asked: string[] = [];
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      asked.push(key);
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready', value: key },
+        tag: { status: 'ready', value: 'GER' },
+        name: { status: 'ready', value: 'German Reich' },
+        colour: { status: 'ready', value: '#4f86f7' },
+        flagChoice: { status: 'absent', reason: 'Flag not recorded' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const reply: TerritoryShareReply = {
+    hour: START + 24,
+    measure: 'controlledStates',
+    warnings: [],
+    breakdown: {
+      unrecordedHours: 0,
+      total: { amount: exact('100'), state: 'known', reason: null },
+      parts: [
+        wire('slot:1', 1, '40', { name: 'GER', share: 0.4, parentShare: 0.4 }),
+        wire('~rest', 4_294_967_295, '60', { name: 'Rest of the world', other: true, share: 0.6, parentShare: 0.6 }),
+      ],
+    },
+  };
+  const readView = createBoundedReadView({ hour: START + 24, panels: new Map([['main', reply]]), identity, validInterval: [START + 24, START + 124] });
+  const projected = territoryShareProjection.project(readView, { measure: 'states', rule: 'controlled' });
+  assert.equal(projected.periodLabel, 'Share of world states');
+  assert.equal(projected.total.text, '100');
+  assert.deepEqual(projected.parts.map(part => part.name), ['German Reich', 'Rest of the world']);
+  assert.equal(projected.parts[0]!.flag, 'GER');
+  assert.equal(projected.parts[0]!.color, '#4f86f7');
+  assert.equal(projected.parts[1]!.flag, undefined, 'Rest of the world stays neutral without a flag');
+  assert.deepEqual([...new Set(asked)], [countryKey(1)], 'only named country slots ask identity');
+
+  const unread = territoryShareProjection.project(
+    createBoundedReadView({ hour: START + 24, panels: new Map([['main', { ...reply, breakdown: { unrecordedHours: 0, total: { amount: null, state: 'notRecorded', reason: "The world's territory is not recorded at this hour" }, parts: [] } }]]) }),
+    { measure: 'states', rule: 'controlled' },
+  );
+  assert.equal(unread.empty, 'Not recorded at this time.');
+  assert.equal(unread.emptyKind, 'unavailable');
+
+  const ctx = (countries: CountrySelection, rule: 'controlled' | 'owned' | 'occupied' = 'controlled') => ({
+    widget: { countries },
+    options: { measure: 'states', rule },
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1' },
+  }) as unknown as Parameters<typeof territoryShare.sources>[0];
+
+  const topPlan = territoryShare.sources(ctx({ kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false }), { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]);
+  assert.equal(topPlan.entries.length, 1);
+  const topRead = topPlan.entries[0]!.read;
+  assert.equal(topRead.shape, 'point');
+  assert.equal(topRead.channel, 'panel');
+  assert.deepEqual(topRead.followQuery, { panel: 'territory-share', branchId: '1', measure: 'controlledStates', top: 10 });
+
+  const allPlan = territoryShare.sources(ctx({ kind: 'all' }, 'owned'), { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]);
+  assert.deepEqual((allPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', measure: 'ownedStates' });
+
+  const occupiedCtx = ctx({ kind: 'all' }, 'occupied');
+  assert.ok(territoryShare.unavailable!(occupiedCtx), 'occupied rule is refused on world share');
+  assert.equal(territoryShare.sources(occupiedCtx, { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]).entries.length, 0);
 });

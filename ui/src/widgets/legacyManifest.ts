@@ -26,5 +26,4 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'production-spending', load: () => import('./production-spending') },
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
   { kind: 'territory', view: 'lines', label: 'Lines', load: () => import('./territory') },
-  { kind: 'territory', view: 'share', label: 'Share', load: () => import('./territory') },
 ];
