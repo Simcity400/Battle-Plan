@@ -24,6 +24,7 @@ export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoices
   'equipment-produced': () => import('./equipment-produced/useProduced').then(module => module.useProducedTypeChoices),
   'equipment-stockpile': () => import('./equipment-stockpile/useStockpileChoices').then(module => module.useStockpileChoices),
   'faction-pooled-strength': () => import('../dashboard/factionChoice').then(module => module.useFactionChoices),
+  'general-career': () => import('./general-career/useLeaderChoices').then(module => module.useLeaderChoices),
 };
 
 export interface FamilyViewUiLoader {
@@ -46,7 +47,6 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'decisions': { load: () => import('./decisions') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
-  'general-career': { load: () => import('./general-career/family.ts') },
   'equipment-designs': { load: () => import('./equipment-designs') },
   'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'event-choices': { load: () => import('./event-choices') },

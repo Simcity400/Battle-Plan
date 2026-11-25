@@ -39,13 +39,3 @@ export function validateFuelBranches(value: unknown): FuelBranchesReply {
 export const branchName = (names: readonly (string | null)[], index: number) => names[index] ?? 'Branch name unavailable';
 
 export const fuelAmount = (value: bigint, digits: number) => formatAmount(value, FUEL_PLACES, digits);
-
-export const percentText = (value: number) => `${value.toFixed(value % 1 === 0 ? 0 : 2)}%`;
-
-export function ratioAxis(most: number): { top: number; ticks: number[] } {
-  const highest = Math.max(100, most);
-  let step = 25;
-  for (let scale = 1; Math.ceil(highest / step) > 8; scale *= 10) step = [25, 50, 100].map(base => base * scale).find(size => Math.ceil(highest / size) <= 8) ?? 100 * scale;
-  const top = Math.ceil(highest / step) * step;
-  return { top, ticks: Array.from({ length: top / step + 1 }, (_, index) => index * step) };
-}

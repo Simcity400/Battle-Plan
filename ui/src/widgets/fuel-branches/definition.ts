@@ -1,5 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
+import { END_LABELS_OPTION, LINE_AXIS_OPTIONS, TIME_CHART_TIME_OPTIONS } from '../../dashboard/lineChartOptions.ts';
+import { choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { FUEL_DECIMALS_OPTION } from './fuelBranchesData.ts';
 
@@ -9,12 +10,9 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Bars' }, { value: 'time', label: 'Over time' }] },
   FUEL_DECIMALS_OPTION,
-  { key: 'endLabels', section: 'options', label: 'Values at line ends', kind: 'toggle', default: true, visibleWhen: overTime },
-  { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in', visibleWhen: overTime,
-    choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
-  { ...AFTER_PLAYHEAD_OPTION, visibleWhen: options => overTime(options) && options.playback === 'cursor' },
-  { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
-    visibleWhen: options => overTime(options) && options.playback === 'window' },
+  { ...END_LABELS_OPTION, visibleWhen: overTime },
+  ...TIME_CHART_TIME_OPTIONS.map(field => ({ ...field, visibleWhen: (options: Readonly<Record<string, OptionValue>>) => overTime(options) && (!field.visibleWhen || field.visibleWhen(options)) })),
+  ...LINE_AXIS_OPTIONS.map(field => ({ ...field, visibleWhen: overTime })),
 ];
 
 export const definition = {

@@ -1,4 +1,4 @@
-import type { CountryRef, CountryIdentitiesReply } from '../generated/dashboard';
+import type { CountryIdentitiesReply } from '../generated/dashboard';
 import { mergeTagExistenceRuns, resolveSlotHolderRuns, type HolderRun } from '../families/holders.ts';
 import type { DashboardClient, ProductRequest } from './client';
 import { countryFromKey } from './countryKey.ts';
@@ -9,10 +9,6 @@ import { productRequest } from './request.ts';
 import { compareTags } from './tagOrder.ts';
 
 export type { CountryRef } from '../generated/dashboard';
-
-export function keyNameAt(slots: SlotTags | undefined, key: string, hour: number): string | null {
-  return countryNameAt(slots, countryFromKey(key), hour);
-}
 
 type Held = { firstHour: number; lastHour: number; countryId: number; tag: string };
 
@@ -124,10 +120,4 @@ export function useSlotTagsState(client: DashboardClient, track: Pick<BoundTrack
 
 export function useSlotTags(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true): SlotTags | undefined {
   return useSlotTagsState(client, track, active).slots;
-}
-
-export function countryNameAt(slots: SlotTags | undefined, country: CountryRef | null | undefined, hour: number): string | null {
-  if (country == null) return null;
-  if (typeof country === 'string') return country;
-  return slots?.nameAt(country, hour) ?? null;
 }

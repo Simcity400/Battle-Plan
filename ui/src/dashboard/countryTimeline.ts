@@ -109,17 +109,6 @@ function spanAt(known: readonly (readonly number[])[], hour: number): readonly n
 
 const holds = (known: readonly (readonly number[])[], hour: number) => spanAt(known, hour) !== undefined;
 
-export function identitySince(facts: CountryTimeline, hour: number, tags: readonly string[]): number | undefined {
-  const span = spanAt(facts.reply.known, hour);
-  if (!span) return undefined;
-  let since = span[0];
-  for (const tag of tags) {
-    const run = runAt(facts.runs.get(tag) ?? [], hour);
-    if (run && run[0] > since) since = run[0];
-  }
-  return since;
-}
-
 function runAt(runs: readonly Run[], hour: number): Run | undefined {
   let low = 0, high = runs.length;
   while (low < high) { const middle = (low + high) >> 1; if (runs[middle][0] <= hour) low = middle + 1; else high = middle; }

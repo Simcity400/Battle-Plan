@@ -11,6 +11,7 @@ import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/d
 import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
 import { OPTIONS as FACTION_STRENGTH_OPTIONS } from '../faction-strength/definition.ts';
+import { OPTIONS as FUEL_BRANCHES_OPTIONS } from '../fuel-branches/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
@@ -38,6 +39,12 @@ const EQUIPMENT_PRODUCED_LINES_OPTIONS = [
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
 const FACTION_STRENGTH_LINES_OPTIONS = [
   ...FACTION_STRENGTH_OPTIONS.filter(field => ['view', 'measure', 'count', 'territoryMeasure', 'rule', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
+  ...LINES_VIEW_OPTIONS,
+];
+const FUEL_BRANCHES_TIME_OPTIONS = [
+  ...FUEL_BRANCHES_OPTIONS
+    .filter(field => ['view', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
+    .map(field => ({ ...field, visibleWhen: undefined })),
   ...LINES_VIEW_OPTIONS,
 ];
 const GAME_SCORE_LINES_OPTIONS = [
@@ -252,6 +259,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../fuel/fuelProjection.ts'),
       mod => ({ projection: mod.fuelProjection, declaration: mod.fuelDeclaration }),
+    ),
+  },
+  {
+    kind: 'fuel-branches',
+    view: 'time',
+    label: 'Over time',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: FUEL_BRANCHES_TIME_OPTIONS,
+    loadSpec: timeChartSpec(
+      'fuel-branches',
+      'time',
+      () => import('../fuel-branches/fuelBranchesTimeProjection.ts'),
+      mod => ({ projection: mod.fuelBranchesTimeProjection, declaration: mod.fuelBranchesTimeDeclaration }),
     ),
   },
   {

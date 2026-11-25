@@ -188,16 +188,6 @@ export function heldSegments(runs: readonly Run[], from: number, to: number, toX
   return result;
 }
 
-export function extentOf(runs: readonly Run[], from: number, to: number): [number, number] | null {
-  const [start, end] = rangeBounds(runs, from, to);
-  let low = Infinity, high = -Infinity;
-  for (let index = start; index < end; index++) {
-    low = Math.min(low, runs[index].value);
-    high = Math.max(high, runs[index].value);
-  }
-  return low <= high ? [low, high] : null;
-}
-
 export interface Band { low: number[]; high: number[] }
 
 export function divergingStack(layers: readonly (readonly number[])[]): Band[] {

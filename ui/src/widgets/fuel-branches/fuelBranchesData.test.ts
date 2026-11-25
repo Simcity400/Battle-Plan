@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { branchName, percentText, ratioAxis, validateFuelBranches } from './fuelBranchesData.ts';
+import { branchName, validateFuelBranches } from './fuelBranchesData.ts';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 
 const reply = (): FuelBranchesReply => ({
@@ -24,13 +24,6 @@ test('branchName falls back when content names no consumer', () => {
   const validated = validateFuelBranches(reply());
   assert.equal(branchName(validated.consumerNames, 0), 'Land');
   assert.equal(branchName(validated.consumerNames, 3), 'Branch name unavailable');
-});
-
-test('a share axis reaches every share shown in round steps, and percents keep two places only when needed', () => {
-  assert.deepEqual(ratioAxis(40), { top: 100, ticks: [0, 25, 50, 75, 100] });
-  assert.equal(ratioAxis(900).top, 1000);
-  assert.equal(percentText(50), '50%');
-  assert.equal(percentText(33.3333), '33.33%');
 });
 
 test('a malformed or out of order reply is refused', () => {
