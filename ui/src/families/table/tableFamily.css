@@ -514,7 +514,7 @@
 .tf-th:has(.tf-th-pair) > .tf-th-label { flex: none; width: calc(100% + 12px); max-width: none; }
 .tf-th-pair { display: grid; grid-template-rows: 18px 22px; align-items: end; width: 100%; }
 .tf-th-group { display: flex; align-self: start; justify-content: center; align-items: center; gap: 0; min-width: 0; padding-bottom: 3px; border-bottom: 1px solid color-mix(in srgb, var(--text) 16%, transparent); white-space: nowrap; }
-.tf-th-group > img { height: 16px; width: auto; margin-right: 6px; }
+.tf-th-group > img { height: 16px; width: auto; max-width: 22px; object-fit: contain; margin-right: 6px; }
 .tf-th-group > .tf-th-hatch { margin-right: 6px; }
 .tf-th-group > .tf-sort-mark { margin-left: 4px; }
 .tf-th-sides { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; text-align: right; }
