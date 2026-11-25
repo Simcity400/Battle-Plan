@@ -85,7 +85,7 @@ where
     let step_read = Arc::clone(&read);
     let held: Arc<Mutex<Option<Held<R>>>> = Arc::new(Mutex::new(None));
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _step| {
-        if seed {
+        if !seed {
             let guard = held.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(prev) = guard.as_ref()
                 && prev.hour <= hour
@@ -109,4 +109,70 @@ where
         serde_json::to_value(reply).map_err(|error| error.to_string())
     });
     super::at_hour::product_panel(advance, cold)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Serialize)]
+    struct StubReply {
+        hour: i32,
+        next_change: Option<i32>,
+        rows: usize,
+    }
+
+    impl OccurrenceReply for StubReply {
+        fn next_change(&self) -> Option<i32> {
+            self.next_change
+        }
+
+        fn row_count(&self) -> usize {
+            self.rows
+        }
+    }
+
+    #[test]
+    fn occurrence_panel_reuses_held_reply_across_quiet_forward_steps_and_rereads_at_boundary_seed_or_seek_back() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reader_calls = Arc::clone(&calls);
+        let panel = occurrence_panel(None, move |hour, _cancelled| {
+            reader_calls.fetch_add(1, Ordering::SeqCst);
+            let next_change = if hour < 20 { Some(20) } else { None };
+            Ok(StubReply { hour, next_change, rows: 3 })
+        });
+        let exact = panel.exact().expect("exact reader");
+        let cancel = AtomicBool::new(false);
+
+        let initial = (exact.advance)(10, true, &cancel, None);
+        assert!(initial.fresh);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        for quiet_hour in 11..20 {
+            let step = (exact.advance)(quiet_hour, false, &cancel, None);
+            assert!(!step.fresh, "quiet hour {quiet_hour} must return fresh=false");
+            assert_eq!(step.rows, 3);
+            assert!(Arc::ptr_eq(&step.value, &initial.value));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "quiet forward steps inside proved interval must not call inner reader");
+
+        let at_boundary = (exact.advance)(20, false, &cancel, None);
+        assert!(at_boundary.fresh);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "boundary hour must call inner reader once");
+
+        for tail_hour in 21..=25 {
+            let step = (exact.advance)(tail_hour, false, &cancel, None);
+            assert!(!step.fresh);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "unbounded proved tail must not call inner reader");
+
+        let seek_back = (exact.advance)(15, false, &cancel, None);
+        assert!(seek_back.fresh);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "backward seek must read afresh");
+
+        let reseed = (exact.advance)(16, true, &cancel, None);
+        assert!(reseed.fresh);
+        assert_eq!(calls.load(Ordering::SeqCst), 4, "seed delivery must read afresh");
+    }
 }
