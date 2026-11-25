@@ -836,7 +836,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   const strong = cell?.strong === true && narrowText === undefined;
   const toned = column.textTone !== undefined && !strong && rc.rhythm === 'log';
-  const textSize = density === 'compact' || strong ? 13 : toned ? 12.5 : 13.5;
+  const textSize = strong ? 13 : toned ? 12.5 : density === 'compact' ? 13 : 13.5;
   const textFont = fontOf(theme, textSize, strong ? 500 : column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
   const textColor = item.row.muted || cell?.tone === 'muted'
     ? theme.muted

@@ -47,7 +47,9 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   const victim = { tag: row.victim, dimmed: true, missingLabel: 'Victim not recorded', role: 'Victim' };
   const attacker = { tag: row.attacker, missingLabel: 'Killer not recorded', role: 'Killer' };
   const cause = row.sinkingCause;
-  const country = logCountryCell(view, row.attacker === null && cause.kind === 'cause' ? [victim] : [attacker, victim], row.hour, boundary);
+  const namedCause = row.attacker === null && cause.kind === 'cause';
+  const flags = logCountryCell(view, namedCause ? [victim] : [attacker, victim], row.hour, boundary);
+  const country = namedCause ? { ...flags, tooltipRows: [{ label: 'Killer', value: notRecorded('Killer not recorded') }, ...flags.tooltipRows ?? []] } : flags;
   const place = row.seaZone ? knownValue(row.seaZone) : notRecorded('Sea zone not recorded');
   let loss: TableCell;
   if (row.battle.kind === 'linked') {

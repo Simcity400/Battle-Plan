@@ -21,7 +21,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown'
-    ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('No result was recorded for this battle') }] }
+    ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('Winner not recorded') }] }
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
   const shipsSunk = logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined);
   const ships = logPairCell(row.ships, 'Ships');

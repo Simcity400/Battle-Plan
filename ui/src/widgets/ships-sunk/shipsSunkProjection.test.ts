@@ -47,10 +47,13 @@ function tooltip(row: TableRow) {
 }
 
 test('ship rows name the class and keep the victim dimmed, with the missing mark for an unrecorded cause', () => {
-  const model = project([sinking('0', {})]);
+  const model = project([sinking('0', {}), sinking('1', { attacker: null, sinkingCause: { kind: 'cause', text: 'Naval mine', assisted: false } })]);
+  const mined = tooltip(model.rows[1]!);
+  assert.deepEqual(model.rows[1]!.cells.country?.flags?.map(flag => flag.tag), ['BBB'], 'a named cause without a killer draws only the victim');
+  assert.deepEqual([mined.labels.slice(1, 3), mined.value('Killer')?.kind], [['Killer', 'Victim'], 'notRecorded'], 'and its tooltip still says the killer is not recorded');
   const row = model.rows[0]!;
   assert.equal(model.empty, undefined);
-  assert.equal(model.titleSummary, '1 sunk');
+  assert.equal(model.titleSummary, '2 sunk');
   assert.equal(model.kindFilter?.allLabel, 'All classes');
   assert.equal(row.meta, 10);
   assert.equal(row.cells.item?.inlineSubtext, 'Corvette');
