@@ -81,6 +81,7 @@ pub struct LandBattleLogRow {
     pub countries_hour: [i32; 2],
     pub casualties: [Option<i32>; 2],
     pub ic_lost: [Option<f64>; 2],
+    pub losses_so_far: bool,
     pub divisions: [Option<u32>; 2],
     pub result: LandBattleStatus,
 }
@@ -138,6 +139,7 @@ struct Sides {
 struct Losses {
     manpower: [Option<i32>; 2],
     ic_raw: [Option<i64>; 2],
+    so_far: bool,
 }
 
 #[derive(Default)]
@@ -254,7 +256,7 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
             }
             for (hour, through, read) in during(data.losses.get(&combat).map_or(&[][..], Vec::as_slice), first, last) {
                 let Some(read) = read.and_then(Option::as_ref) else {
-                    push(&mut line.losses, hour, Losses::default());
+                    push(&mut line.losses, hour, Losses { so_far: true, ..Losses::default() });
                     continue;
                 };
                 let mut changes = vec![hour];
@@ -274,6 +276,7 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
                         Losses {
                             manpower: read.manpower,
                             ic_raw: read.equipment.each_ref().map(|pool| ic(pool.as_deref(), readings.costs, h)),
+                            so_far: true,
                         },
                     );
                 }
@@ -313,6 +316,7 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
                 Losses {
                     manpower: end.terminal,
                     ic_raw: end.terminal_equipment.each_ref().map(|pool| ic(pool.as_deref(), readings.costs, hour)),
+                    so_far: false,
                 },
             );
         }
@@ -546,6 +550,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
                 divisions,
                 casualties: losses.manpower,
                 ic_lost: losses.ic_raw.map(|v| v.map(|v| v as f64 / 100_000.0)),
+                losses_so_far: losses.so_far,
                 countries: sides.map_or_else(Default::default, |s| s.1.countries.clone()),
                 countries_unknown: sides.map_or([true; 2], |s| s.1.unknown),
                 countries_hour: sides.map_or([entry.observed; 2], |(h, s)| s.read.map(|at| at.unwrap_or(*h))),

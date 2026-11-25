@@ -15,6 +15,7 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import { parseColor } from '../../shell/appearance/color.ts';
 import BattleCourseChart, { type CourseSide } from './BattleCourseChart.tsx';
 import { courseDivisions, courseEquipment, courseManpower, exactEquipment, validateLandBattleCourse, validateLandBattleTerrain, wholeEquipment, type DesignLoss, type LandCourse } from './landBattleCourse';
+import { LOSSES_SO_FAR } from './definition.ts';
 import type { BattleDetailSubject } from './landBattlesProjection';
 import './landBattles.css';
 
@@ -140,7 +141,7 @@ function BattleBody({ subject, hour, course, colours }: {
           <dl className="lb-figures">
             <FigureItem label="Divisions" hint="Divisions at the last read" figure={division == null ? { missing: 'Divisions not recorded' } : { value: formatScalar(division, 'integer') }} />
             <FigureItem label="Most at once" hint="Most divisions read at once" figure={pending ? 'pending' : peak == null ? { missing: unread ?? 'Divisions not recorded' } : { value: formatScalar(peak, 'integer') }} />
-            <FigureItem label="Casualties" figure={casualties == null ? { missing: 'Casualties not recorded' } : { value: formatScalar(casualties, 'integer') }} />
+            <FigureItem label={row.lossesSoFar ? 'Casualties so far' : 'Casualties'} hint={row.lossesSoFar ? LOSSES_SO_FAR : undefined} figure={casualties == null ? { missing: 'Casualties not recorded' } : { value: formatScalar(casualties, 'integer') }} />
             <FigureItem label="Equipment lost" figure={pending ? 'pending' : unread ? { missing: unread } : totalOf(equipment?.sides[index])} />
           </dl>
         </section>;
