@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import { parseRegionHitKey } from '../regions/regionRows.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
@@ -51,10 +52,10 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
   mirror: 'listbox',
   auditOwnerId: -2,
   parseHit: parseBarsHit,
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['meta'], fields => {
     const meta = fields.meta as { readonly scrollHeight?: number } | undefined;
     return meta?.scrollHeight !== undefined ? { height: meta.scrollHeight } : null;
-  },
+  }),
   deriveAuditRows: (model, _hour, { viewport, fields }) => {
     const nav = Array.isArray(fields.nav) ? fields.nav as readonly (readonly unknown[])[] : [];
     const pickShown = nav.some(entry => pickedKey(String(entry[0])) !== null);

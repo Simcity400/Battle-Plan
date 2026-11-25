@@ -28,16 +28,6 @@ function restoreFocus(row: HTMLTableRowElement | null, key: string | null, optio
   return true;
 }
 
-export function mirrorToSync(
-  next: MirrorModel | undefined,
-  last: MirrorModel | null,
-  selected: string | null,
-  lastSelected: string | null,
-): MirrorModel | null | undefined {
-  if (!next) return last === null ? undefined : null;
-  return next !== last || selected !== lastSelected ? next : undefined;
-}
-
 export function syncTableMirror(
   tbody: HTMLTableSectionElement | null,
   mirror: MirrorModel | null,

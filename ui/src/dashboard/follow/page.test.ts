@@ -441,6 +441,23 @@ test('should-fix: an entry that only moves the confirmation dates the widget wit
   assert.deepEqual([told, dated, p.view(1).id], [installed, 1, 2]);
 });
 
+test('one install notice carries changed surfaces, added fields and removed fields across the committed batch', () => {
+  const p = new Page<Fake>();
+  const notices: unknown[] = [];
+  p.mount(1, { route: 9, lane: 0, surfaces: [surface(), surface()], changed: changes => notices.push(changes) });
+  const first = entry({ id: 1, content: 'first' });
+  p.offer({ lane: 0, serial: 1, entries: [first] });
+  p.frame();
+  const second: Entry<Fake> = { ...first, id: 2, surfaces: [SAME, bitmap('new')], fields: { legend: SAME, rows: [] },
+    content: { ...first.content, '1': 'new', rows: 'rows' } };
+  const third: Entry<Fake> = { ...second, id: 3, surfaces: [SAME, SAME], fields: { legend: 'new legend', rows: SAME },
+    content: { ...second.content, legend: 'new legend' } };
+  p.offer({ lane: 0, serial: 2, entries: [second, third] });
+  p.frame();
+  assert.deepEqual(notices, ['all', new Set([1, 'rows', 'a11y', 'legend'])]);
+  assert.deepEqual(p.view(1).fields, { legend: 'new legend', rows: [] });
+});
+
 test('review 5 finding 4: widgets showing one content hold one page copy of it, dropped once none shows it', () => {
   const p = new Page<Fake>({ lanes: 1 });
   for (const id of [1, 2, 3]) p.mount(id, { route: 9, lane: 0, surfaces: [] });

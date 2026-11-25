@@ -8,7 +8,7 @@ import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.t
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
 import { createBoundedReadView, displayedHour } from '../boundedView.ts';
-import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from '../contract.ts';
+import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
@@ -34,7 +34,7 @@ import {
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { keepEqual } from './stableValue.ts';
-import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
+import { optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
 import { reportFamilyShownHour } from './shownHour.ts';
@@ -1225,17 +1225,6 @@ test('R3-S7: Page Up and Page Down each find their destination in their own dire
   handleFamilyKeyDown(mkEvent('PageUp').event, keys);
   handleFamilyKeyDown(mkEvent('PageDown').event, { ...keys, focusedKey: 'r0', pageStep: navPageSteps(nav, 'r0', 100) });
   assert.deepEqual(focused, ['r45', 'r4']);
-});
-
-test('rv10 R2-S6: a mirror the lane withholds clears the installed rows once, and only a new field or selection repopulates', () => {
-  const m1 = { rows: [], total: 0, first: 0 } as unknown as MirrorModel;
-  const m2 = { rows: [], total: 0, first: 0 } as unknown as MirrorModel;
-  assert.equal(mirrorToSync(m1, null, 'A', null), m1, 'the first mirror is shown');
-  assert.equal(mirrorToSync(m1, m1, 'A', 'A'), undefined, 'the same field and selection do nothing, however many frames install');
-  assert.equal(mirrorToSync(undefined, m1, 'A', 'A'), null, 'a withheld mirror clears the stale rows once');
-  assert.equal(mirrorToSync(undefined, null, 'A', 'A'), undefined, 'and not again');
-  assert.equal(mirrorToSync(m2, null, 'A', 'A'), m2, 'the current field repopulates');
-  assert.equal(mirrorToSync(m2, m2, 'B', 'A'), m2, 'a new selection re-syncs the same rows');
 });
 
 test('rv10 R2-S5: rebuilt projection options equal in structure keep the earlier object, so their revision survives a span-only context change', () => {

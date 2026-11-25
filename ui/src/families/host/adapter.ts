@@ -379,6 +379,12 @@ export function familyInspectToken(adapter: Pick<FamilyHostAdapter, 'inspectToke
   return adapter.inspectToken ? adapter.inspectToken(key) : `row:${key}`;
 }
 
+type FieldConsumer<F> = F & { readonly inputs: readonly string[] };
+
+export function fieldConsumer<A extends unknown[], R>(inputs: readonly string[], read: (...args: A) => R): FieldConsumer<(...args: A) => R> {
+  return Object.assign(read, { inputs });
+}
+
 export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown> {
   readonly family: FamilyId;
   readonly skeleton?: FamilySkeletonKind;
@@ -389,16 +395,16 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly mirrorFocus?: 'body' | 'rows';
   readonly tree?: boolean;
   readonly settings?: FamilySettingsPolicy<TSettings>;
-  readonly chromeState?: (fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown;
+  readonly chromeState?: FieldConsumer<(fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown>;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
-  readonly rowWindow?: (viewport: FamilyViewportState, settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowWindow | null;
+  readonly rowWindow?: FieldConsumer<(viewport: FamilyViewportState, settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowWindow | null>;
   readonly buildBinding?: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingExtras<TBinding> | null;
   readonly parseHit?: (hitKey: string | null) => ParsedFamilyHit | null;
   readonly inspectToken?: (key: string) => string;
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
-  readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>) => FamilyScrollExtent | null;
-  readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
+  readonly getScrollExtent?: FieldConsumer<(fields: Readonly<Record<string, unknown>>) => FamilyScrollExtent | null>;
+  readonly getGridMetrics?: FieldConsumer<(fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null>;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
   readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly FamilyAuditRow[];

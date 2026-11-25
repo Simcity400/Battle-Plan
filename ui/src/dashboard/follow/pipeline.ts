@@ -3,7 +3,7 @@ import { engine } from '../../engine/frame.ts';
 import type { DashboardClient, DashboardSource, FollowOpen } from '../client';
 import type { PlaybackController, PlaybackSnapshot } from '../playback';
 import { canonical } from './canonical.ts';
-import { Page, type PageMessage, type PageSurface, type RebindChange, type WidgetView } from './page.ts';
+import { Page, type InstallChanges, type PageMessage, type PageSurface, type RebindChange, type WidgetView } from './page.ts';
 import type { Channel } from './facts';
 import type { Binding, Dated, Supply } from '../../draw/lane';
 import { PayloadSender } from './payloads.ts';
@@ -40,9 +40,14 @@ interface RouteState {
   serial: Promise<unknown>; told: string | null; error?: { seek: number; failure: Failure };
 }
 
+export interface InstallUpdate {
+  readonly revision: number;
+  readonly changes: InstallChanges;
+}
+
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
-  installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
+  install: InstallUpdate; installListeners: Set<(update: InstallUpdate) => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
   held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
 }
 
@@ -247,7 +252,7 @@ export class Pipeline {
     const changed = this.changed, dated = this.dated, redated = this.redated;
     this.changed = new Set(); this.redated = new Set();
     this.dated = false;
-    if (changed.size) flushSync(() => { for (const widget of changed) for (const listener of [...widget.installListeners]) listener(); });
+    if (changed.size) flushSync(() => { for (const widget of changed) for (const listener of [...widget.installListeners]) listener(widget.install); });
     if (dated) {
       for (const widget of this.dateWatchers) {
         this.stats.dateVisits++;
@@ -364,11 +369,16 @@ export class Pipeline {
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
     const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), stamp: undefined,
+      install: { revision: 0, changes: 'all' }, installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), stamp: undefined,
       payloads: { own: NO_PAYLOADS, statics: NO_PAYLOADS, identity: NO_PAYLOADS } };
     if (options.model !== undefined) this.own(widget, options.model);
     this.widgets.set(id, widget);
-    this.page.mount(id, { route: 0, lane, ...(options.owner !== undefined ? { owner: options.owner } : {}), offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
+    this.page.mount(id, { route: 0, lane, ...(options.owner !== undefined ? { owner: options.owner } : {}), offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: changes => {
+        const earlier = widget.install.changes;
+        if (this.changed.has(widget)) changes = earlier === 'all' || changes === 'all' ? 'all' : new Set([...earlier, ...changes]);
+        widget.install = { revision: widget.install.revision + 1, changes };
+        this.changed.add(widget);
+      },
       dated: () => this.redated.add(widget) });
     return id;
   }
@@ -450,7 +460,9 @@ export class Pipeline {
 
   view(id: number): WidgetView | null { return this.widgets.has(id) ? this.page.view(id) : null; }
 
-  onInstall(id: number, listener: () => void) {
+  installation(id: number) { return this.widgets.get(id)?.install; }
+
+  onInstall(id: number, listener: (update: InstallUpdate) => void) {
     const widget = this.widgets.get(id);
     widget?.installListeners.add(listener);
     return () => { widget?.installListeners.delete(listener); };

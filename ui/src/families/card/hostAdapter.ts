@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyHostAdapter } from '../host/adapter.ts';
 import type { FamilyCardBinding } from './laneView.ts';
@@ -22,10 +23,10 @@ export const cardHostAdapter: FamilyHostAdapter<CardModel, unknown, FamilyCardBi
       ...(target?.meta !== undefined ? { meta: target.meta } : {}),
     };
   },
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['meta'], fields => {
     const meta = fields.meta as { readonly totalHeight?: number } | undefined;
     return meta?.totalHeight !== undefined ? { height: meta.totalHeight } : null;
-  },
+  }),
   deriveAuditRows: model => deriveCardAudit(model),
   auditOrdered: true,
 };

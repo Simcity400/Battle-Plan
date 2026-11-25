@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import { parseRegionHitKey } from '../regions/regionRows.ts';
@@ -73,11 +74,11 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
   defaultSize: [320, 240],
   parseHit: parseHeatMatrixHit,
   inspectToken: key => `cell:${key}`,
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['extent'], fields => {
     const ext = fields.extent as MatrixExtentField | undefined;
     return ext ? { width: ext.totalWidth, height: ext.totalHeight } : null;
-  },
-  getGridMetrics: fields => {
+  }),
+  getGridMetrics: fieldConsumer(['extent'], fields => {
     const ext = fields.extent as MatrixExtentField | undefined;
     if (!ext) return null;
     return {
@@ -90,7 +91,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
       rowLabel: r => ext.rows[r]?.label ?? '',
       columnLabel: c => ext.columns[c]?.label ?? (c === ext.columns.length ? ext.margin ?? '' : ''),
     };
-  },
+  }),
   parseGridKey: parseMatrixCellKey,
   formatGridKey: matrixCellKey,
   resolveHitAction: (hit, installed, fields) => {
@@ -143,10 +144,10 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
   defaultSize: [360, 220],
   parseHit: parseHeatLanesHit,
   inspectToken: key => `lane:${key}`,
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['extent'], fields => {
     const ext = fields.extent as LanesExtentField | undefined;
     return ext ? { height: ext.totalHeight } : null;
-  },
+  }),
   resolveHitAction: (hit, installed, fields) => {
     const ext = fields.extent as LanesExtentField | undefined;
     if (!ext) return null;

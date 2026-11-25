@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import type { FamilyHostAdapter } from '../host/adapter.ts';
 import { serializeTiledBySource } from '../sceneTiles.ts';
 import type { FamilyMeterBinding } from './laneView.ts';
@@ -10,10 +11,10 @@ export const meterHostAdapter: FamilyHostAdapter<MeterModel, unknown, FamilyMete
   navigation: 'rows',
   mirror: 'listbox',
   auditOwnerId: -6,
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['extent'], fields => {
     const extent = fields.extent as { readonly height?: number } | undefined;
     return extent?.height !== undefined ? { height: extent.height } : null;
-  },
+  }),
   deriveAuditRows: model => deriveMeterAudit(model),
   auditOrdered: true,
   buildBinding: ctx => (ctx.tiledSeries ? { tiledBySource: serializeTiledBySource(ctx.tiledSeries) } : {}),

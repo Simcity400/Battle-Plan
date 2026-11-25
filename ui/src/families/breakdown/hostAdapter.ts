@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
 import type { FamilyBreakdownBinding } from './laneView.ts';
@@ -25,10 +26,10 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   auditOwnerId: -4,
   parseHit: parseBreakdownHit,
   exclusiveExpansion: fields => (fields.meta as { readonly view?: string } | undefined)?.view === 'ring',
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['meta'], fields => {
     const meta = fields.meta as { readonly contentHeight?: number } | undefined;
     return meta?.contentHeight !== undefined ? { height: meta.contentHeight } : null;
-  },
+  }),
   deriveAuditRows: (model, _hour, context) => deriveBreakdownAudit(model, auditLayout(model, context.viewport.width, context.viewport.height, context.expanded, context.theme)),
   auditOrdered: true,
   buildBinding: ctx => ({ expanded: ctx.expanded }),

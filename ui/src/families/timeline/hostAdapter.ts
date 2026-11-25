@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { FamilyTimelineBinding, TimelineExtentField } from './laneView.ts';
 import { decodeTimelineHit, deriveTimelineAudit, type TimelineModel } from './model.ts';
@@ -28,10 +29,10 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
   defaultSize: [480, 240],
   parseHit: parseTimelineHit,
   inspectToken: key => `lane:${key}\u001f\u001f`,
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['extent'], fields => {
     const extent = extentOf(fields);
     return extent ? { height: extent.height } : null;
-  },
+  }),
   deriveAuditRows: model => deriveTimelineAudit(model),
   auditOrdered: true,
   buildBinding: ctx => ({ expanded: ctx.expanded, ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}) }),

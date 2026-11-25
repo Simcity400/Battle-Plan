@@ -1,3 +1,4 @@
+import { fieldConsumer } from '../host/adapter.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import type { FamilyHostAdapter, FamilyRowWindow, FamilySettingsPolicy, ParsedFamilyHit } from '../host/adapter.ts';
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
@@ -70,22 +71,22 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   mirrorFocus: 'rows',
   tree: true,
   settings: tableSettingsPolicy,
-  chromeState: (fields, previous) => {
+  chromeState: fieldConsumer(['meta', 'widths', 'panes'], (fields, previous) => {
     const prev = previous as TableChromeState | undefined;
     if (prev && prev.meta === fields.meta && prev.widths === fields.widths && prev.panes === fields.panes) return prev;
     const next: TableChromeState = { meta: fields.meta, widths: fields.widths, panes: fields.panes };
     return next;
-  },
+  }),
   parseHit: parseTableHit,
-  getScrollExtent: fields => {
+  getScrollExtent: fieldConsumer(['widths', 'table'], fields => {
     const widths = fields.widths as TableWidthsField | undefined;
     const table = fields.table as TableInfoField | undefined;
     return {
       ...(widths ? { width: widths.totalWidth } : {}),
       ...(table ? { height: table.totalHeight } : {}),
     };
-  },
-  rowWindow: (viewport, settings, fields) => {
+  }),
+  rowWindow: fieldConsumer(['meta', 'table'], (viewport, settings, fields) => {
     if (!settings) return null;
     const media = (fields.meta as { readonly rowHeightMode?: string } | undefined)?.rowHeightMode === 'media';
     const table = fields.table as TableInfoField | undefined;
@@ -95,7 +96,7 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     if (!gapBefore || gapBefore.length === 0) return win;
     const data = displayWindowToData(win, gapBefore, Number.isFinite(count) ? Math.max(0, count - gapBefore.length) : undefined);
     return { ...win, dataFirst: data.first, dataCount: data.count };
-  },
+  }),
   deriveAuditRows: (model, _hour, { settings, expanded, viewport, fields }) => {
     if (!settings) return [];
     const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};

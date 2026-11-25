@@ -1944,7 +1944,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.presented.set(id, { widget: widget.id, sent });
     this.syncWindowTracking(widget);
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
+      gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...full ? { full } : {}, ...reason !== undefined ? { reason } : {},
       ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
