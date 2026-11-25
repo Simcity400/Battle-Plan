@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
-import type { TooltipExtraRow } from '../../families/table/model.ts';
+import { deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import type { ShipsSunkTailReply, SinkingRow } from '../../generated/dashboard';
+import { SHIPS_SUNK_COLUMNS } from './definition.ts';
 import { shipsSunkProjection } from './shipsSunkProjection.ts';
 
 const provinces: IdentityProvider = {
@@ -39,8 +40,11 @@ const sinking = (key: string, overrides: Partial<SinkingRow>): SinkingRow => ({
 
 const linked = { kind: 'linked', id: 'combat:20:5', liveId: 'combat:20:5', resultId: null, firstHour: 5, resultHour: null } as const;
 
-const tooltip = (rows: readonly TooltipExtraRow[] | (() => readonly TooltipExtraRow[] | undefined) | undefined) =>
-  Object.fromEntries((typeof rows === 'function' ? rows() : rows)!.map(row => [row.label, row.value]));
+function tooltip(row: TableRow) {
+  const found = { kind: 'data', key: row.key, name: row.name, row, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const lines = deriveRowTooltip(found, SHIPS_SUNK_COLUMNS).rows;
+  return { labels: lines.map(line => line.label), value: (label: string) => lines.find(line => line.label === label)?.rawValue };
+}
 
 test('ship rows name the class and keep the victim dimmed, with the missing mark for an unrecorded cause', () => {
   const model = project([sinking('0', {})]);
@@ -53,7 +57,7 @@ test('ship rows name the class and keep the victim dimmed, with the missing mark
   assert.deepEqual(row.cells.country?.flags?.map(flag => [flag.tag, !!flag.dimmed]), [['AAA', false], ['BBB', true]]);
   assert.equal(row.cells.cause?.value.kind, 'notRecorded');
   assert.equal(row.cells.cause?.missingFigure, 'Cause');
-  assert.equal(tooltip(row.tooltipExtra)['Cause']?.kind, 'notRecorded');
+  assert.equal(tooltip(row).value('Cause')?.kind, 'notRecorded');
 });
 
 test('a battle row names the battle in bold with its recorded killer beside it, and only the battle when the killer is not recorded', () => {
@@ -66,11 +70,12 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.equal(known!.cells.cause?.strong, true);
   assert.equal(known!.cells.cause?.inlineSubtext, 'by mod_raider_hull');
   assert.equal(known!.cells.cause?.narrowText, 'Battle');
-  const knownTip = tooltip(known!.tooltipExtra);
-  assert.deepEqual(knownTip['Battle'], { kind: 'known', value: 'Battle of Mod Strait' });
-  assert.deepEqual(knownTip['Sunk by'], { kind: 'known', value: 'Mod Raider (mod_raider_hull)' });
-  assert.equal(knownTip['Cause'], undefined);
+  const knownTip = tooltip(known!);
+  assert.deepEqual(knownTip.value('Battle'), { kind: 'known', value: 'Battle of Mod Strait' });
+  assert.deepEqual(knownTip.value('Sunk by'), { kind: 'known', value: 'Mod Raider' });
+  assert.deepEqual(knownTip.value('Killer class'), { kind: 'known', value: 'mod_raider_hull' });
+  assert.equal(knownTip.labels.includes('Cause'), false, 'the battle and its killer replace the Cause line');
+  assert.equal(knownTip.labels.filter(label => label === 'Sea zone').length, 1);
   assert.equal(unknown!.cells.cause?.inlineSubtext, undefined);
-  const unknownTip = tooltip(unknown!.tooltipExtra);
-  assert.deepEqual(unknownTip['Sunk by'], { kind: 'notRecorded', reason: 'Killer not recorded' });
+  assert.deepEqual(tooltip(unknown!).value('Sunk by'), { kind: 'notRecorded', reason: 'Killer not recorded' });
 });

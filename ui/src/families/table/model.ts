@@ -129,6 +129,7 @@ export interface TableCell {
   readonly inlineSubtext?: string;
   readonly narrowText?: string;
   readonly strong?: boolean;
+  readonly tooltipRows?: readonly TooltipExtraRow[];
   readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
@@ -332,6 +333,7 @@ function validateRowCells(row: TableRow): void {
     assertValue(cell.value, 'table cell');
     if (cell.bar) assertValue(cell.bar.fraction, 'table cell bar');
     if (cell.sortValue) assertValue(cell.sortValue, 'table cell sortValue');
+    for (const line of cell.tooltipRows ?? []) assertValue(line.value, `tooltipRows(${line.label})`);
   }
   if (Array.isArray(row.tooltipExtra)) {
     for (const extra of row.tooltipExtra) assertValue(extra.value, `tooltipExtra(${extra.label})`);
@@ -1225,6 +1227,16 @@ function tooltipFlag(art: ArtResult): NonNullable<TooltipContent['countryFlag']>
   return { flagReason: artHoverText(art) ?? '' };
 }
 
+function tooltipLine(line: TooltipExtraRow): TooltipRow {
+  return tooltipRowFromValue(line.label, line.value, line.format, {
+    ...(line.indent ? { indent: true } : {}),
+    ...(line.divider ? { divider: true } : {}),
+    ...(line.strong ? { strong: true } : {}),
+    ...(line.lookupKey ? { lookupKey: line.lookupKey } : {}),
+    ...(line.tone ? { tone: line.tone } : {}),
+  });
+}
+
 export function deriveRowTooltip(
   found: Extract<FlatTableRow, { kind: 'data' }>,
   allColumns: readonly TableColumnSpec[],
@@ -1244,6 +1256,10 @@ export function deriveRowTooltip(
     if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
+    if (cell.tooltipRows) {
+      for (const line of cell.tooltipRows) rows.push(tooltipLine(line));
+      continue;
+    }
     const resolved = resolveCellAtHour(cell);
     if (col.cellKind === 'date' && hasMeasuredValue(resolved.value) && typeof resolved.value.value === 'number') {
       const hoverDate = formatDateHover(resolved.value.value);
@@ -1268,13 +1284,7 @@ export function deriveRowTooltip(
   if (extraRows) {
     for (const extra of extraRows) {
       assertValue(extra.value, `tooltipExtra(${extra.label})`);
-      rows.push(tooltipRowFromValue(extra.label, extra.value, extra.format, {
-        ...(extra.indent ? { indent: true } : {}),
-        ...(extra.divider ? { divider: true } : {}),
-        ...(extra.strong ? { strong: true } : {}),
-        ...(extra.lookupKey ? { lookupKey: extra.lookupKey } : {}),
-        ...(extra.tone ? { tone: extra.tone } : {}),
-      }));
+      rows.push(tooltipLine(extra));
     }
   }
   const noteParts = [row.tooltipNote, row.tooltipAction].filter((part): part is string => Boolean(part));

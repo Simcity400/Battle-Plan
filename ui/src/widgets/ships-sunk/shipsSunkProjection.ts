@@ -27,17 +27,18 @@ function killerBeside(cause: ShipSinkingAttribution): string | undefined {
   return cause.kind === 'cause' ? cause.text : undefined;
 }
 
-function sunkBy(cause: ShipSinkingAttribution): Value {
-  if (cause.kind === 'ship') {
-    const shipClass = cause.className ?? cause.classKey;
-    return knownValue(shipClass ? `${cause.name} (${shipClass})` : cause.name);
-  }
+function sunkBy(cause: ShipSinkingAttribution): readonly TooltipExtraRow[] {
+  const classOf = (name: string | null, key: string | null): Value => {
+    const shown = name ?? key;
+    return shown ? knownValue(shown) : notRecorded('Killer class not recorded');
+  };
+  if (cause.kind === 'ship') return [{ label: 'Sunk by', value: knownValue(cause.name) }, { label: 'Killer class', value: classOf(cause.className, cause.classKey) }];
   if (cause.kind === 'airWing') {
-    const carrierClass = cause.carrierClassName ?? cause.carrierClassKey;
-    if (!cause.carrierName) return knownValue('Aircraft');
-    return knownValue(carrierClass ? `Aircraft from ${cause.carrierName} (${carrierClass})` : `Aircraft from ${cause.carrierName}`);
+    return cause.carrierName
+      ? [{ label: 'Sunk by', value: knownValue(`Aircraft from ${cause.carrierName}`) }, { label: 'Carrier class', value: classOf(cause.carrierClassName, cause.carrierClassKey) }]
+      : [{ label: 'Sunk by', value: knownValue('Aircraft') }];
   }
-  return cause.kind === 'cause' ? knownValue(cause.text) : notRecorded('Killer not recorded');
+  return [{ label: 'Sunk by', value: cause.kind === 'cause' ? knownValue(cause.text) : notRecorded('Killer not recorded') }];
 }
 
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
@@ -49,17 +50,16 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   const country = logCountryCell(view, row.attacker === null && cause.kind === 'cause' ? [victim] : [attacker, victim], row.hour, boundary);
   const place = row.seaZone ? knownValue(row.seaZone) : notRecorded('Sea zone not recorded');
   let loss: TableCell;
-  let explained: readonly TooltipExtraRow[];
   if (row.battle.kind === 'linked') {
     const where = row.battleProvince === null ? null : resolveName(view, 'province', String(row.battleProvince), { atHour: row.hour, boundary }).value;
+    const battle = where?.kind === 'known' ? knownValue(`Battle of ${where.value}`) : notRecorded('Naval battle recorded, battle name not recorded');
     const killer = killerBeside(cause);
-    loss = where?.kind === 'known' ? { value: knownValue(`Battle of ${where.value}`), strong: true, narrowText: 'Battle', ...(killer ? { inlineSubtext: killer } : {}) }
-      : { value: notRecorded('Naval battle recorded, battle name not recorded'), missingFigure: 'Battle name' };
-    explained = [{ label: 'Battle', value: loss.value }, { label: 'Sunk by', value: sunkBy(cause) }];
+    const tooltipRows = [{ label: 'Battle', value: battle }, ...sunkBy(cause)];
+    loss = battle.kind === 'known' ? { value: battle, strong: true, narrowText: 'Battle', tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) }
+      : { value: battle, missingFigure: 'Battle name', tooltipRows };
   } else {
     loss = cause.kind === 'notRecorded' ? { value: notRecorded(cause.reason), missingFigure: 'Cause' }
       : { value: knownValue(cause.kind === 'cause' ? cause.text : cause.kind === 'airWing' ? 'Air attack' : `Sunk by ${cause.name}`) };
-    explained = [{ label: 'Cause', value: loss.value }];
   }
   return {
     key: row.key, name, rowHour: row.hour, meta: row.hour,
@@ -74,7 +74,6 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
       { label: 'Class', value: className ? knownValue(className) : notRecorded('Ship class not recorded') },
       { label: 'Killer', value: row.attacker ? logCountryCell(view, [attacker], row.hour).value : notRecorded('Killer not recorded') },
       { label: 'Victim', value: row.victim ? logCountryCell(view, [victim], row.hour).value : notRecorded('Victim not recorded') },
-      { label: 'Sea zone', value: place }, ...explained,
       { label: 'First recorded', value: knownValue(formatDateTime(row.observed)) },
     ],
   };
