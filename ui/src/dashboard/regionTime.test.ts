@@ -153,7 +153,8 @@ const GAPPED = { firstHour: 100, lastHour: 109, gaps: [{ firstHour: 105, lastHou
 test('only checked hours leave for the native side: each field’s role comes from the contract, nested reads included, and requests widened past their declared type are refused by name', () => {
   assert.equal(refusedHours('series-state', { branchId: '1', reads: [{ country: 'GER', hour: 104 }] }, GAPPED), null);
   assert.match(refusedHours('series-state', { branchId: '1', reads: [{ country: 'GER', hour: 95 }] }, GAPPED) ?? '', /params\.reads\[0\]\.hour names hour 95/);
-  assert.match(refusedHours('equipment-losses', { reads: [104, 105] }, GAPPED) ?? '', /hour 105, which was not recorded/);
+  assert.match(refusedHours('equipment-losses', { branchId: '1', country: 7, hour: 95 }, GAPPED) ?? '', /hour names hour 95/);
+  assert.equal(refusedHours('equipment-losses', { branchId: '1', country: 7, hour: 105 }, GAPPED), null, 'cumulative breakdown end hour may sit in a gap');
   assert.equal(refusedHours('raid-log', { from: 105, to: 106 }, GAPPED), null, 'range bounds may lie in a gap');
   assert.match(refusedHours('series-state', { branchId: '1', family: { kind: 'supply', measure: 'state' }, reads: [{ tag: 'GER', hour: 104 }] }, GAPPED) ?? '',
     /params\.reads\[0\]\.tag is not a field the request type has/, 'a field the Rust request type does not name is refused before it is sent');

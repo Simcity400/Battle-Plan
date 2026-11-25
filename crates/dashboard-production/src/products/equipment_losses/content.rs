@@ -1,12 +1,12 @@
 
-use super::{Cause, LandSource, LossDesign, LossDesignName, LossDomain, LossName, LossSource};
+use super::{Cause, LandSource, LossDomain, LossName, LossSource};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_world::products::equipment_names as names;
 use dashboard_core::config::LoadContext;
 use dashboard_query::Query;
-use replay_data::rows::EquipmentDestructionCause;
+use replay_data::rows::{EquipmentDestructionCause, TableId};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeSet, HashMap},
     io,
     sync::Arc,
 };
@@ -125,6 +125,14 @@ pub struct Content {
     pub warnings: Vec<String>,
 }
 
+pub(super) struct DatedDesign {
+    pub first_hour: Option<i32>,
+    pub name: Option<String>,
+    pub archetype: Option<String>,
+    pub archetype_name: Option<String>,
+    pub domain: Option<LossDomain>,
+}
+
 impl Content {
     pub fn load(source: &Source, load: &LoadContext, land: LandSource) -> io::Result<Self> {
         let mut warnings = Vec::new();
@@ -159,10 +167,6 @@ impl Content {
         named
     }
 
-    pub fn attrition_name(&self) -> LossName {
-        name(self.catalogue.as_deref(), self.keys.attrition.as_deref())
-    }
-
     pub fn retention_refusal(&self) -> Option<String> {
         match self.retained_months {
             Some(months) if months < 1 => Some(retention_unknown(months)),
@@ -183,17 +187,38 @@ impl Content {
         })
     }
 
-    pub fn designs(&self, query: &Query<'_>, hour: i32, variants: &BTreeSet<u32>, warnings: &mut Vec<String>) -> io::Result<BTreeMap<u32, LossDesign>> {
+    pub(super) fn designs_dated(&self, query: &Query<'_>, variants: &BTreeSet<u32>, warnings: &mut Vec<String>) -> io::Result<HashMap<u32, DatedDesign>> {
         if variants.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(HashMap::new());
         }
-        let Some(run) = query.timeline.at(hour).map(|stretch| stretch.run) else { return Ok(BTreeMap::new()) };
+        let recording = query.replay.recording();
         let handle = |variant: u32| u64::from(variant) << 32 | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
         let handles: Vec<u64> = variants.iter().map(|&variant| handle(variant)).collect();
+        let keys: Vec<u128> = handles.iter().map(|&raw| u128::from(raw)).collect();
+        let mut since: HashMap<u32, i32> = HashMap::new();
+        for stretch in &query.timeline.stretches {
+            let history = dashboard_query::cost::storage(|| {
+                replay_lanes::lanes::history(recording, stretch.run, TableId::VariantDefinitions, &[0], replay_lanes::lanes::Keys::These(&keys), stretch.first, stretch.last)
+            })?;
+            for (key, steps) in &history.keys {
+                if let Some(step) = steps.iter().find(|step| step.cells.is_some())
+                    && let Some(variant) = replay_data::rows::EquipmentLossTotalRow::variant_id(*key as u64)
+                {
+                    let at = step.hour.max(stretch.first);
+                    since.entry(variant).and_modify(|prev| *prev = (*prev).min(at)).or_insert(at);
+                }
+            }
+        }
         let mut named = names::Named::default();
-        names::name_at(query.replay.recording(), run, hour, &handles, &[], &self.names, &mut named)?;
+        for stretch in query.timeline.stretches.iter().rev() {
+            let missing: Vec<u64> = handles.iter().copied().filter(|raw| !named.variants.contains_key(raw)).collect();
+            if missing.is_empty() {
+                break;
+            }
+            names::name_at(recording, stretch.run, stretch.last, &missing, &[], &self.names, &mut named)?;
+        }
         warnings.extend(named.warnings.iter().cloned());
-        let mut out = BTreeMap::new();
+        let mut out = HashMap::new();
         for &variant in variants {
             let Some(found) = named.variants.get(&handle(variant)) else { continue };
             let equipment = (!found.token.is_empty()).then(|| found.token.clone());
@@ -203,13 +228,10 @@ impl Content {
                 units.equipment.get(ordinal)?.name_str().ok().map(str::to_owned)
             });
             let archetype_name = archetype.as_deref().and_then(|key| self.catalogue.as_ref()?.localised(key, View::Plain)).or_else(|| found.type_name.clone());
-            out.insert(variant, LossDesign {
-                variant,
-                names: vec![LossDesignName { first_hour: found.hour.unwrap_or(hour), name: found.name.clone(), known: found.known && found.name.is_some() }],
-                equipment,
-                archetype,
-                archetype_name,
-            });
+            let domain = archetype.as_deref().and_then(|key| self.domain(key));
+            let name = found.known.then(|| found.name.clone()).flatten();
+            let first_hour = name.is_some().then(|| since.get(&variant).copied().or(found.hour)).flatten();
+            out.insert(variant, DatedDesign { first_hour, name, archetype, archetype_name, domain });
         }
         Ok(out)
     }

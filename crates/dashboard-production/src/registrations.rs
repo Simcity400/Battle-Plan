@@ -21,7 +21,6 @@ dashboard_base::register_hourly_products! {
     PRODUCTION_INDUSTRIALORGANISATIONS => crate::products::production::IndustrialOrganisations,
     PRODUCTION_EQUIPMENTDESIGNS => crate::products::production::EquipmentDesigns,
     STOCKPILE_STOCKPILEARTWORK => crate::products::stockpile::StockpileArtwork,
-    EQUIPMENT_LOSSES_EQUIPMENTLOSSHEAD => crate::products::equipment_losses::EquipmentLossHead,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

@@ -1,29 +1,41 @@
 import { createRoot } from 'react-dom/client';
+import '../widgets';
 import type { FrameEngine } from '../engine/frame';
-import type { WidgetProps, WidgetRuntime } from './definitions';
+import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { PlaybackController } from './playback';
-import type { LossesReply } from '../generated/dashboard';
-import EquipmentLossesWidget from '../widgets/equipment-losses/EquipmentLossesWidget';
-import { registerWidgets } from './definitions';
-import { definition as equipmentLosses } from '../widgets/equipment-losses/definition';
-
-registerWidgets([equipmentLosses]);
+import type { EquipmentLossesReply } from '../generated/dashboard';
+import { WidgetBody } from './widgets';
 
 const engine = { every: () => ({ wake() {}, stop() {} }) } as unknown as FrameEngine;
 const clock = new PlaybackController(engine);
 clock.setBounds({ firstHour: 0, lastHour: 200 });
 
-const losses: LossesReply = {
-  branchId: '1', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'GER', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null,
-  destructionRuns: [{ firstHour: 100, lastHour: 109, countedFrom: 100, withheldFrom: null }], destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
-  designs: [{ variant: 91001, equipment: 'mod_walkers_v2', archetype: 'mod_walkers', archetypeName: 'Walking machines', names: [{ firstHour: 100, name: 'Walker', known: true }] }],
-  coverage: [{ firstHour: 100, lastHour: 109, coverage: 'logged' }],
-  causes: [{ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' }, group: null, loss: true,
-    unknown: null, unknownSpans: [], leaves: [{ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], exact: [], lowerBoundFrom: null }] }],
+const losses: EquipmentLossesReply = {
+  from: 100,
+  hour: 105,
+  through: 109,
+  landSource: 'destruction',
+  warnings: [],
+  breakdown: {
+    unrecordedHours: 0,
+    total: { amount: { numerator: '350001', denominator: '100000' }, state: 'known', reason: null },
+    parts: [{
+      key: 'destruction:landCombat', name: 'Land combat losses', nameMissing: null, ordinal: 0, other: false,
+      amount: { numerator: '350001', denominator: '100000' }, state: 'known', reason: null, share: 1, parentShare: 1,
+      count: null, last: null, art: null, children: [],
+    }],
+  },
 };
-Object.assign(globalThis, { __fixture: { losses, groups: { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
-  unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }] } } });
+const identities = {
+  branchId: '1', warnings: [], known: [{ firstHour: 100, lastHour: 109 }],
+  countries: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }], unresolved: [] }],
+};
+const groups = {
+  branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
+  unobserved: { humans: [], factions: [], wars: [] },
+  countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }],
+};
 
 const waiting = new Promise<never>(() => {});
 const client = {
@@ -31,29 +43,31 @@ const client = {
   openFollow: async () => {},
   product: async (request: { sourceId: string; revision: string; product: string }) => {
     const reply = (data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
-    if (request.product === 'follow') return reply({ available: true, route: 1 });
+    if (request.product === 'country-identities') return reply(identities);
+    if (request.product === 'country-groups') return reply(groups);
+    if (request.product === 'equipment-losses') return reply(losses);
+    if (request.product === 'follow') return reply({ available: false, reason: 'not followed here' });
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply({ available: true });
     return waiting;
   },
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
-const source = { id: 'outside', revision: '1', metadata: { countries: [], campaignKey: 'campaign', captureMode: 'full' } };
-const track = { id: 'main', roleId: 'main', label: 'main', branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: 'GER', source, branch: { id: '1', firstHour: 100, lastHour: 109, gaps: [] } };
+const source = { id: 'outside', revision: '1', metadata: { countries: [], campaignKey: 'campaign', captureMode: 'full', branches: [{ id: '1', firstHour: 100, lastHour: 109, gaps: [] }] } };
+const track = { id: 'main', roleId: 'main', label: 'main', branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: 'GER', selectedSlot: 1, source, branch: { id: '1', firstHour: 100, lastHour: 109, gaps: [] } };
 const runtime = { tracks: [track], campaignTracks: [], defaultRoleId: null, clock, client, addWidgetBelow() {}, campaigns: [], recordings: [], requestSeek() {} } as unknown as WidgetRuntime;
 const spec = (id: string, kind: string) => ({ id, kind, configVersion: 1, title: id, trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'follow' }, options: {} }) as unknown as WidgetSpec;
-const props = (widget: WidgetSpec) => ({ widget, runtime, active: true, headerSlot: null, countrySlot: null, onDiagnostics() {}, setOption() {} }) as unknown as WidgetProps;
 
-const settle = async () => { for (let turn = 0; turn < 3; turn++) await new Promise<void>(resolve => setTimeout(resolve, 0)); };
+const settle = async () => { for (let turn = 0; turn < 6; turn++) await new Promise<void>(resolve => setTimeout(resolve, 10)); };
 const text = (id: string) => document.getElementById(id)?.textContent ?? '';
-const widgets = { losses: EquipmentLossesWidget };
 
 Object.assign(window, { outsideWidgets: {
-  async mount(id: keyof typeof widgets, hour: number) {
+  async mount(id: 'losses', hour: number) {
     clock.seek(hour);
-    const Widget = widgets[id];
     const host = document.body.appendChild(document.createElement('div'));
     host.id = id;
-    createRoot(host).render(<Widget {...props(spec(id, 'equipment-losses'))} />);
+    host.style.width = '600px';
+    host.style.height = '320px';
+    createRoot(host).render(<WidgetBody widget={spec(id, 'equipment-losses')} runtime={runtime} active headerSlot={null} countrySlot={null} onDiagnostics={() => {}} setOption={() => {}} />);
     await settle();
     return text(id);
   },

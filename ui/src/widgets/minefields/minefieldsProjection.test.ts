@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 import { assertBarsModelValid, deriveBarsAudit, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';

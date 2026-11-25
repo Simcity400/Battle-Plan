@@ -5,10 +5,6 @@ export interface LiveValues<V> { get(key: string): V | undefined; missing(key: s
 
 export const liveKey = (...parts: readonly string[]) => parts.join('\u0000');
 
-export function valuesOf<V>(values: ReadonlyMap<string, V>, reason: string | ((key: string) => string)): LiveValues<V> {
-  return { get: key => values.get(key), missing: typeof reason === 'string' ? () => reason : reason };
-}
-
 export const noValues = (reason: string): LiveValues<never> => ({ get: () => undefined, missing: () => reason });
 
 export interface LiveClock {

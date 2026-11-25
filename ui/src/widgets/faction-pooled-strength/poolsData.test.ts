@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 import { manpowerKey, manpowerTotalKey } from '../../dashboard/factionDetails.ts';
 import { manpowerRows, manpowerTableValues, poolHeading, poolsOffered, shareOf, shownPool } from './poolsData.ts';
 import { chosenMembers } from './manpowerLine.ts';

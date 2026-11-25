@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 import { heldCoverage, occupationMean, occupationTooltip, totalsOf, validateOccupationDetail } from './occupationTrendData.ts';
 import { occupationHoverItems } from './occupationLinesProjection.ts';
 import type { DetailAt } from './occupationTrendData';

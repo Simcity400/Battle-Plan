@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import { failureText, type Failure } from './queryError.ts';
-import { CountryFlag, CountryFlagUrl } from '../components/CountryFlag';
+import { CountryFlagUrl } from '../components/CountryFlag';
 import { formatDateTime } from './calendar';
 import type { CountryLabel } from './countryFlagsAt';
 import type { LiveValue } from '../components/DateTimePicker';
@@ -35,8 +35,4 @@ export default function DatedCountryChip({ label, hour, reason, failure, live }:
       detail={qualified ? label?.flagDetail : undefined} reason={qualified ? label?.flagReason ?? undefined : undefined} pending={qualified ? label?.flagPending : undefined} />
     <span>{hasFailure ? errorText : named && qualified ? label!.name : loading ? 'Loading…' : 'Unavailable'}</span>
   </span>;
-}
-
-export function ChooseCountryChip() {
-  return <span className="dash-widget-country"><CountryFlag /><span>Choose a country</span></span>;
 }

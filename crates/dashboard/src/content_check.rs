@@ -461,7 +461,6 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.extend(warnings.into_iter().map(|message| Finding::new(Kind::Warning, "equipment loss interface", message)));
             Ok("Cause names resolve through the recorded content's interface keys and localisation; equipment types and arms through its equipment; totals, ships and coverage are the recorded equipment-loss tables, unavailable offline.".into())
         }
-        key if key == <equipment_losses::EquipmentLossHead as at_hour::AtHour>::KEY => Ok("No content dependency: each leaf's total is a recorded EquipmentLossTotals cell.".into()),
         key if key == <army_losses::ArmyLosses as at_hour::AtHour>::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "Combat Log months, armies and amounts need the recorded Combat Log tables; unavailable offline"));
             Ok("Army names are the recorded stored texts localised through the content stack; designs and their types resolve through the recorded definitions and the content's equipment.".into())
