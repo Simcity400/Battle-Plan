@@ -1712,12 +1712,7 @@ fn verify_lane(
             }
         }
         4 => val == base_val.max(0),
-        5 => {
-            if base_val > STAT_FIXED_ONE {
-                return Err("variant stat reliability rebuild cap mode ambiguous");
-            }
-            val == base_val.max(0)
-        }
+        5 => val == base_val.max(0) || (base_val > STAT_FIXED_ONE && val == STAT_FIXED_ONE),
         _ => val == base_val,
     };
     if matches {

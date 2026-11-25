@@ -1738,7 +1738,7 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
 }
 
 #[test]
-fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_reliability_and_recovers_independent_operands()
+fn walk_stats_witness_checks_timing_after_module_reads_accepts_either_reliability_cap_and_recovers_independent_operands()
 {
     struct SteppingWorld<'a> {
         bytes: &'a [u8],
@@ -1901,7 +1901,7 @@ fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_relia
             .any(|(_, reason)| *reason == "variant stat writer crossed read")
     );
 
-    for cached_rel in [100_000_i64, 150_000_i64] {
+    for (cached_rel, published) in [(100_000_i64, true), (150_000, true), (120_000, false)] {
         let mut high_rel = bytes.clone();
         let hr_base = high_rel.as_ptr() as usize;
         high_rel[var_off + DEFINITION..var_off + DEFINITION + 8]
@@ -1935,14 +1935,12 @@ fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_relia
             ),
             Outcome::Rows { len: 1 }
         );
-        assert_eq!(rows[0].values[5], None);
+        assert_eq!(rows[0].values[5], published.then_some(cached_rel), "either rebuild mode's reliability is the game's own value");
         assert_eq!(rows[0].values[4], Some(42_000_000));
-        assert!(
-            witness
-                .withheld
-                .iter()
-                .any(|(lane, reason)| *lane == "reliability"
-                    && *reason == "variant stat reliability rebuild cap mode ambiguous")
+        assert_eq!(
+            witness.withheld.iter().any(|(lane, reason)| *lane == "reliability"
+                && *reason == "variant stat reliability disagrees with base definition"),
+            !published
         );
     }
 
