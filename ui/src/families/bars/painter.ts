@@ -632,10 +632,34 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         ctx.fillText(row.readout.shortfall, cursorRight, middleY);
         cursorRight -= textWidth(ctx, row.readout.shortfall) + 8;
       }
+      if (row.readout.secondary) {
+        ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
+        ctx.fillStyle = theme.muted;
+        const secRoom = Math.max(12, cursorRight - layout.readoutX);
+        const secText = ellipsise(row.readout.secondary, secRoom, s => textWidth(ctx, s));
+        ctx.fillText(secText, cursorRight, middleY);
+        cursorRight -= textWidth(ctx, secText) + 4;
+      }
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : row.readout.tone === 'muted' ? theme.muted : theme.text;
-      ctx.fillText(ellipsise(row.readout.primary, Math.max(12, cursorRight - layout.readoutX), s => textWidth(ctx, s)), cursorRight, middleY);
+      const iconReserve = row.readout.icon ? 21 : 0;
+      const primRoom = Math.max(12, cursorRight - layout.readoutX - iconReserve);
+      const primText = ellipsise(row.readout.primary, primRoom, s => textWidth(ctx, s));
+      ctx.fillText(primText, cursorRight, middleY);
+      cursorRight -= textWidth(ctx, primText);
       ctx.restore();
+      if (row.readout.icon && cursorRight - 21 >= layout.readoutX - 2) {
+        drawMediaSlot(
+          ctx,
+          Math.round(cursorRight - 21),
+          middleY,
+          16,
+          16,
+          { kind: 'art', art: row.readout.icon, resolvedName: row.readout.iconLabel },
+          theme,
+          { artCache, radius: 2 },
+        );
+      }
     } else if (formatted) {
       ctx.save();
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
@@ -777,7 +801,7 @@ export function collectVisibleBarsIcons(model: BarsModel, layout: BarsLayout, sc
   for (let i = first; i < last; i++) {
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
-    items.push(item.media, item.rightSide?.media);
+    items.push(item.media, item.rightSide?.media, item.readout?.icon);
   }
   for (const side of model.captionSides ?? []) items.push(side.media);
   return collectArtUrls(items);

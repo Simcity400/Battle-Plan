@@ -9,7 +9,6 @@ export function bitmapSurface(canvas: HTMLCanvasElement): PageSurface<ImageBitma
   };
 }
 
-const HELD = '[data-held="stale"]';
 const holders = new WeakMap<Element, Set<object>>();
 const SURFACE = {};
 
@@ -23,13 +22,4 @@ export function holdElement(element: Element | null, held: boolean, owner: objec
   if (has === had) return;
   if (has) { element.setAttribute('data-held', 'stale'); element.setAttribute('aria-busy', 'true'); }
   else { element.removeAttribute('data-held'); element.removeAttribute('aria-busy'); }
-}
-
-export const heldAt = (element: Element | null) => !!element?.closest(HELD);
-
-export function watchHeld(element: Element, changed: () => void): () => void {
-  const holder = element.closest('article.dash-widget, [popover]') ?? element.ownerDocument.body;
-  const observer = new MutationObserver(changed);
-  observer.observe(holder, { subtree: true, attributes: true, attributeFilter: ['data-held'] });
-  return () => observer.disconnect();
 }

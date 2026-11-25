@@ -316,7 +316,23 @@ function layoutBarsBody(
     plotLeft = nameX + nameWidth + 10;
     if (hasReadoutColumn) {
       showReadout = !narrow;
-      readoutWidth = showReadout ? Math.min(148, Math.max(88, Math.round(w * 0.24))) : 0;
+      let maxReadout = 0;
+      if (showReadout) {
+        const measureText = (text: string) => (measure ? measure(text) : text.length * 7);
+        for (let i = 0; i < model.rows.length; i++) {
+          const row = model.rows[i]!;
+          if (row.kind !== 'data' || !row.readout) continue;
+          const r = row.readout;
+          const itemW = (r.icon ? 21 : 0)
+            + measureText(r.primary)
+            + (r.secondary ? 4 + measureText(r.secondary) : 0)
+            + (r.shortfall ? 8 + measureText(r.shortfall) : 0)
+            + 6;
+          if (itemW > maxReadout) maxReadout = itemW;
+        }
+      }
+      const cap = Math.min(230, Math.round(w * 0.44));
+      readoutWidth = showReadout ? Math.min(cap, Math.max(88, Math.ceil(maxReadout))) : 0;
       readoutX = w - BARS_PAD_X - readoutWidth;
       plotRight = Math.max(plotLeft + 40, readoutX - (showReadout ? 10 : 0));
     } else {

@@ -20,5 +20,5 @@ export const definition = {
   kind: 'faction-pooled-strength', version: 1, title: 'Faction pooled strength', icon: 'layers', category: 'Diplomacy',
   description: 'What a faction pools: its shared resources, each member’s manpower, research sharing and shared doctrines.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
-  minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, countries: { max: 1 }, options: OPTIONS, factionColours: true,
+  minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, countries: { max: 1 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

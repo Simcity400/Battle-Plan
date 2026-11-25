@@ -104,7 +104,18 @@ mod fuel {
         ]));
         assert!(at["missing"].is_null());
         assert_eq!(at["consumerNames"], json!([null, null, null]), "no content names no consumer");
+        assert_eq!(at["consumerIcons"], json!([null, null, null]), "no content resolves no consumer icon");
+        assert!(at["consumerIconReasons"].as_array().unwrap().iter().all(|reason| reason.as_str().is_some()));
+        assert!(at["fuelIcon"].is_null());
+        assert!(at["fuelIconReason"].as_str().is_some());
         assert!(at["warnings"].as_array().unwrap().iter().any(|warning| warning.as_str().unwrap().contains("TOPBAR_ARMY")));
+        let by_slot = asked::<FuelBranches>(&source, json!({ "branchId": "1", "country": 7 }), 115).unwrap();
+        assert_eq!(by_slot["consumers"], at["consumers"]);
+        let panel = dashboard_base::products::at_hour::exact_panel::<FuelBranches>(&source, &LoadContext { content: None }, &json!({ "branchId": "1", "country": 7 })).unwrap();
+        let exact = panel.exact().unwrap();
+        let h110 = (exact.advance)(110, true, &false.into(), None);
+        let h111 = (exact.advance)(111, false, &false.into(), None);
+        assert!(h110.fresh && !h111.fresh, "unchanged consumer hours stay covered without recomputing");
         let unread = asked::<FuelBranches>(&source, params, UNREAD).unwrap();
         assert_eq!(unread["consumers"], json!([]));
         assert!(unread["readHour"].is_null());
