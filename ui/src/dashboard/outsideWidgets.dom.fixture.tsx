@@ -57,7 +57,24 @@ const track = { id: 'main', roleId: 'main', label: 'main', branchIndex: 0, ancho
 const runtime = { tracks: [track], campaignTracks: [], defaultRoleId: null, clock, client, addWidgetBelow() {}, campaigns: [], recordings: [], requestSeek() {} } as unknown as WidgetRuntime;
 const spec = (id: string, kind: string) => ({ id, kind, configVersion: 1, title: id, trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'follow' }, options: {} }) as unknown as WidgetSpec;
 
-const settle = async () => { for (let turn = 0; turn < 6; turn++) await new Promise<void>(resolve => setTimeout(resolve, 10)); };
+const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+const settled = (host: HTMLElement) =>
+  !host.querySelector('[data-state="loading"], [data-family-pending]')
+  && Boolean(host.querySelector('[data-state], [data-family-visible]'));
+const settle = async (id: string) => {
+  await nextFrame();
+  await nextFrame();
+  const host = document.getElementById(id);
+  if (!host || settled(host)) return;
+  await new Promise<void>(resolve => {
+    const observer = new MutationObserver(() => {
+      if (!settled(host)) return;
+      observer.disconnect();
+      resolve();
+    });
+    observer.observe(host, { subtree: true, childList: true, attributes: true, characterData: true });
+  });
+};
 const text = (id: string) => document.getElementById(id)?.textContent ?? '';
 
 Object.assign(window, { outsideWidgets: {
@@ -68,9 +85,9 @@ Object.assign(window, { outsideWidgets: {
     host.style.width = '600px';
     host.style.height = '320px';
     createRoot(host).render(<WidgetBody widget={spec(id, 'equipment-losses')} runtime={runtime} active headerSlot={null} countrySlot={null} onDiagnostics={() => {}} setOption={() => {}} />);
-    await settle();
+    await settle(id);
     return text(id);
   },
-  async seek(id: string, hour: number) { clock.seek(hour); await settle(); return text(id); },
-  async step(id: string) { clock.step(1); await settle(); return { hour: clock.getHour(), text: text(id) }; },
+  async seek(id: string, hour: number) { clock.seek(hour); await settle(id); return text(id); },
+  async step(id: string) { clock.step(1); await settle(id); return { hour: clock.getHour(), text: text(id) }; },
 } });
