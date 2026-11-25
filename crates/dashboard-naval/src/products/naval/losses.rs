@@ -255,7 +255,13 @@ fn ranked(query: &Query<'_>, run: u32, params: &NavalLossesParams, hour: i32, to
             }
         }
     }
-    let mut scored: Vec<(i64, String)> = held.into_iter().map(|(tag, owner)| (score(owner, attribution, kinds, &bases, hour, &now, &before), tag)).collect();
+    let mut scored: Vec<(i64, String)> = held
+        .into_iter()
+        .filter_map(|(tag, owner)| {
+            let value = score(owner, attribution, kinds, &bases, hour, &now, &before);
+            (value > 0).then_some((value, tag))
+        })
+        .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     Ok(scored.into_iter().take(top).map(|(_, tag)| tag).collect())
 }

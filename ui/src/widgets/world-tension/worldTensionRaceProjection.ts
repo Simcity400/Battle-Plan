@@ -26,7 +26,6 @@ export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions>
       scaleUnit: 'World tension',
       valueLabel: 'Contribution to world tension',
       emptyMessage: 'No contribution to world tension recorded at this date.',
-      positiveOnly: true,
     });
   },
 }, 'race');

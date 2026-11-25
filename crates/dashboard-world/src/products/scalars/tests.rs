@@ -167,6 +167,10 @@ fn the_game_score_top_is_ranked_in_the_product_and_refused_by_name_while_any_cou
     assert_eq!(game_score::top(&complete, &[], &ask(2)), game_score::GameScoreTop { tags: vec!["ITA".into(), "GER".into()], missing: None }, "highest first, a tie broken by tag");
     assert_eq!(game_score::top(&complete, &[], &ask(9)).tags, ["ITA", "GER", "SOV"]);
     let (low, high) = (scored(Recorded::Value(10), CountryGameScoreRow::KNOWN), scored(Recorded::Value(40), CountryGameScoreRow::KNOWN));
+    let zero = scored(Recorded::Value(0), CountryGameScoreRow::KNOWN);
+    let with_zero = [("GER", &ger), ("ITA", &ita), ("SOV", &sov), ("ABK", &zero)];
+    assert_eq!(game_score::top(&with_zero, &[], &ask(9)).tags, ["ITA", "GER", "SOV"], "zero scores are excluded from a count/total top");
+    assert_eq!(game_score::top(&complete, &[&zero], &ask(9)).tags, ["ITA", "GER", "SOV"], "an unresolved zero-score country cannot enter a short top");
     assert_eq!(game_score::top(&complete, &[&low], &ask(2)).tags, ["ITA", "GER"], "a country whose holder is unresolved but scores below the top cannot change it");
     let unproven = game_score::top(&complete, &[&high], &ask(2));
     assert!(unproven.tags.is_empty(), "an unresolved country that could rank in the top makes the top unproven");
