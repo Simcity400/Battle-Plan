@@ -40,7 +40,7 @@ const FLEET_NOTE = 'Fleet commands cover fleets the recording names this leader 
 const COMMAND_COLOURS = ['#394d72', '#3b64a8', '#44587e', '#355c96'] as const;
 const HELD_DIAMOND = '#5c8df6';
 const GAINED_DIAMOND = '#e5a43b';
-const TRAIT_CLASSES = ['Held before', 'Gained', 'First recorded'] as const;
+const TRAIT_CLASSES = ['Held before', 'Gained', 'Gained'] as const;
 
 export function validateLeaderCareer(input: unknown): LeaderCareerReply {
   const reply = input as LeaderCareerReply | null;

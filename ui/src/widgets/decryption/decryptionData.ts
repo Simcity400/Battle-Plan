@@ -72,7 +72,7 @@ export const workingStatus = (pair: CipherPair, capitalized = false) => {
 function observationDate(observation: Observation | null, unknown = 'Not recorded'): string {
   if (!observation) return unknown;
   const date = gameDate(observation.hour);
-  return `${observation.upperBound ? 'by ' : ''}${date ? formatDate(date) : `hour ${observation.hour}`}`;
+  return date ? formatDate(date) : `hour ${observation.hour}`;
 }
 
 const attemptUnknown = (reply: Pick<DecryptionReply, 'attemptsUnknown'>) => reply.attemptsUnknown === null ? 'Not recorded' : 'Not known';

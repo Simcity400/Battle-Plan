@@ -407,7 +407,7 @@ test('reportFamilyShownHour prefers explicit installedHour over view.through', (
   assert.deepEqual(reported, [75, 90, null]);
 });
 
-test('tooltip payloads carry full truncated text, exact hours, date bounds, missing reasons, and structured lists', () => {
+test('tooltip payloads carry full truncated text, exact hours, notes, missing reasons, and structured lists', () => {
   const hour = engineHour({ year: 1941, month: 9, day: 14, hour: 8 })!;
   const entry: FamilyTooltipEntry = {
     hour,
@@ -415,7 +415,8 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
     payload: {
       title: 'Battle of Smol…',
       fullText: 'Battle of Smolensk',
-      dateBound: { kind: 'by', hour, reason: 'First seen after a recording gap.' },
+      hour,
+      note: 'First seen after a recording gap.',
       exactValue: '124,850',
       missingReason: 'Air losses not recorded in this build.',
       items: [
@@ -426,7 +427,7 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
   };
   const content = resolveTooltipEntryContent(entry);
   assert.equal(content.title, 'Battle of Smolensk');
-  assert.equal(content.subtitle, 'By 14 Sep 1941 · 08:00');
+  assert.equal(content.subtitle, '14 Sep 1941 · 08:00');
   assert.equal(content.note, 'First seen after a recording gap.');
   assert.equal(content.rows[0]?.value, '124,850');
   assert.equal(content.rows[1]?.valueState?.kind, 'missing');

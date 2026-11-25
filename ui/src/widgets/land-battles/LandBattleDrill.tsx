@@ -109,7 +109,7 @@ export default function LandBattleDrill({ subject, track, client, active, hour }
   });
   const ground = terrain.data?.provinces[0];
   return <div className="lb-drill">
-    <p className="lb-drill-facts">{ground?.name ?? ground?.missing ?? 'Terrain not recorded'} · {row.exact ? '' : 'by '}{dayLabel(row.hour)} · {row.result === 'ongoing' ? 'Ongoing' : row.result === 'unknown' ? 'Result not recorded' : row.result === 'attackerWon' ? 'Attacker won' : 'Defender won'}</p>
+    <p className="lb-drill-facts">{ground?.name ?? ground?.missing ?? 'Terrain not recorded'} · {dayLabel(row.hour)} · {row.result === 'ongoing' ? 'Ongoing' : row.result === 'unknown' ? 'Result not recorded' : row.result === 'attackerWon' ? 'Attacker won' : 'Defender won'}</p>
     <div className="lb-drill-sides">{sides.map((side, i) => {
       const peak = divisions?.[i]?.reduce<number | null>((peak, run) => Math.max(peak ?? run.value, run.value), null);
       return <div className="lb-drill-side" key={i}>

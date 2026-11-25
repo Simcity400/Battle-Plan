@@ -25,7 +25,7 @@ import {
 import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
-import { formatDateParts, formatValueState } from '../valueFormat.ts';
+import { formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
 import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
@@ -137,13 +137,6 @@ function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
-
-const BOUNDED_DATE_WORDS: Readonly<Record<'by' | 'since' | 'after' | 'before', string>> = {
-  by: 'by',
-  since: 'since',
-  after: 'after',
-  before: 'before',
-};
 
 function drawInlineRuns(
   rc: CellRenderContext,
@@ -517,36 +510,6 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       ? Number(paintModel.value.value)
       : null;
     const width = Math.max(0, right - left);
-    if (cell?.boundedDate && hourVal !== null) {
-      const parts = formatDateParts(hourVal);
-      if (parts) {
-        const prefix = `${BOUNDED_DATE_WORDS[cell.boundedDate]} `;
-        const dayFont = fontOf(theme, rowHeight >= 32 ? 12.5 : 11.5, 500);
-        const yearFont = fontOf(theme, 10.5, 400);
-        const prefixW = measure(prefix, dayFont);
-        const dayY = rowHeight >= 32 ? middle - 6 : middle;
-        ctx.save();
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.font = dayFont;
-        if (prefixW < width - 8) {
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(prefix, left, dayY);
-          ctx.fillStyle = theme.text;
-          ctx.fillText(fit(parts.dayMonth, dayFont, Math.max(0, width - prefixW)), left + prefixW, dayY);
-        } else {
-          ctx.fillStyle = theme.text;
-          ctx.fillText(fit(`${prefix}${parts.dayMonth}`, dayFont, width), left, dayY);
-        }
-        if (rowHeight >= 32) {
-          ctx.font = yearFont;
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(fit(parts.year, yearFont, width), left, middle + 7);
-        }
-        ctx.restore();
-        return;
-      }
-    }
     drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width, align: column.numeric ? 'right' : 'left' });
     return;
   }

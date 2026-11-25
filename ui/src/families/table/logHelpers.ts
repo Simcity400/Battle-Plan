@@ -28,7 +28,6 @@ import {
 import { OFFERED, type TableBase } from './settings.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../value.ts';
-import type { DateBoundKind } from '../valueFormat.ts';
 
 export const LOG_TABLE_BASE: TableBase = {
   density: 'normal',
@@ -177,11 +176,10 @@ export function logWatchCell(): TableCell {
   return { value: knownValue('Watch'), actionLabel: 'Watch', actionIcon: 'play' };
 }
 
-export function logDateCell(hour: number | null, bounded?: DateBoundKind, missingReason = 'Date not recorded'): TableCell {
+export function logDateCell(hour: number | null, missingReason = 'Date not recorded'): TableCell {
   if (hour === null) return { value: notRecorded(missingReason) };
   return {
     value: knownValue(hour),
-    ...(bounded ? { boundedDate: bounded } : {}),
   };
 }
 

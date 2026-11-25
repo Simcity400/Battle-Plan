@@ -157,7 +157,7 @@ function warLanes(readView: BoundedReadView, reply: WarTimelineReply, opt: WarsO
     const lastHour = open ? hour : war.lastHour;
     const halves: readonly [string, string] = [sideColour(readView, sides.leads[0], at, opt.surface, 0), sideColour(readView, sides.leads[1], at, opt.surface, 1)];
     const key = `war:${war.id}`;
-    const dates = `${war.startedBy ? 'By ' : ''}${formatDateOnly(war.firstHour)} – ${open ? 'ongoing' : formatDateOnly(war.lastHour)}`;
+    const dates = `${formatDateOnly(war.firstHour)} – ${open ? 'ongoing' : formatDateOnly(war.lastHour)}`;
     const span: TimelineSpan = {
       id: 'war', firstHour: war.firstHour, lastHour, color: halves[0], halves, open, startBy: war.startedBy, endUnseen: war.endedBy && !open,
       marks: war.capitulations.map(item => ({ hour: item.hour, art: readView.art(SURRENDER_FLAG), label: `${name(item.tag)} capitulated` })),

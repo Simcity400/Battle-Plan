@@ -28,7 +28,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
       value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') })),
     tooltipScrollId: JSON.stringify([options.scope, row.detailId, row.detailHour ?? (options.following ? row.readHour : view.hour)]),
     cells: {
-      date: logDateCell(row.hour, row.key.startsWith('combat:') ? 'by' : undefined),
+      date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
       shipsSunk: logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined),

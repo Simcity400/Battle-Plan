@@ -100,7 +100,7 @@ export function readCipherNumbers(live: ReturnType<BoundedReadView['live']>, pai
 
 function observationHover(observation: Observation | null, unknown: string): string {
   if (!observation) return unknown;
-  return `${observation.upperBound ? 'By ' : ''}${formatDateHover(observation.hour)}`;
+  return formatDateHover(observation.hour);
 }
 
 export function pairTooltipItems(
@@ -138,7 +138,7 @@ export function pairTooltipItems(
 
 export function brokenText(observation: Observation | null): string | null {
   if (!observation) return null;
-  return `${observation.upperBound ? 'By ' : ''}${formatDateOnly(observation.hour)}`;
+  return formatDateOnly(observation.hour);
 }
 
 export function countsText(counts: CipherCounts, partial = false): string {

@@ -202,11 +202,6 @@ function buildRaidRow(
     : row.disappearedHour !== null
       ? row.disappearedHour
       : row.hour;
-  const shownExact = row.end !== null
-    ? row.end.exact
-    : row.disappearedHour !== null
-      ? row.disappearedExact
-      : row.exact;
 
   const raiderEntry = row.end !== null
     ? {
@@ -266,18 +261,15 @@ function buildRaidRow(
     else if (row.placeMissing) out.push({ label: 'Target', value: notRecorded(row.placeMissing) });
     if (prep.text) out.push({ label: 'Preparation', value: knownValue(prep.text) });
     if (row.outcomeMissing) out.push({ label: 'Outcome', value: notRecorded(row.outcomeMissing) });
-    out.push({ label: row.exact ? 'First seen' : 'First seen by', value: knownValue(formatDateTime(row.hour)) });
+    out.push({ label: 'First seen', value: knownValue(formatDateTime(row.hour)) });
     if (row.launchedHour !== null) {
-      out.push({ label: row.launchedExact ? 'Launched' : 'Launched by', value: knownValue(formatDateTime(row.launchedHour)) });
+      out.push({ label: 'Launched', value: knownValue(formatDateTime(row.launchedHour)) });
     }
     if (row.end !== null) {
-      const endLabel = row.end.source === 'nativeEndDate'
-        ? 'Ended (recorded)'
-        : row.end.exact ? 'Ended (observed)' : 'Ended by (observed)';
-      out.push({ label: endLabel, value: knownValue(formatDateTime(row.end.endedHour)) });
+      out.push({ label: 'Ended', value: knownValue(formatDateTime(row.end.endedHour)) });
     } else if (row.disappearedHour !== null) {
       out.push({
-        label: row.disappearedExact ? 'No longer seen' : 'No longer seen by',
+        label: 'No longer seen',
         value: knownValue(formatDateTime(row.disappearedHour)),
       });
     } else if (row.lastSeen !== null) {
@@ -296,7 +288,7 @@ function buildRaidRow(
       live: row.live,
       muted: status.muted,
       cells: {
-        date: logDateCell(shownHour, shownExact ? undefined : 'by'),
+        date: logDateCell(shownHour),
         kind: kindCell,
         country: countryCell,
         item: itemCell,

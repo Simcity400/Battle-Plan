@@ -68,8 +68,7 @@ const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
     value: row => textValue(row.ace.name, 'Ace name not recorded') },
   { ...WING!, priority: 2, text: true, widest: ['Sturzkampfgeschwader 2'], value: row => wingValue(row.ace),
     extra: row => (aircraftLine(row.ace) ? { subtext: aircraftLine(row.ace) } : {}) },
-  { ...SINCE!, priority: 3, numeric: true, cellKind: 'date', widest: ['by 30 Sep 1941'],
-    extra: row => (row.ace.firstSeen === null ? {} : { boundedDate: 'by' }),
+  { ...SINCE!, priority: 3, numeric: true, cellKind: 'date', widest: ['30 Sep 1941'],
     value: row => row.ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(row.ace.firstSeen) },
 ];
 
@@ -79,14 +78,14 @@ function aceTooltip(row: AceRow): TooltipExtraRow[] {
     ...(ace.callsign ? [{ label: 'Nickname', value: knownValue(`“${ace.callsign}”`) }] : []),
     { label: 'Aircraft', value: aircraftValue(ace) },
     { label: 'Portrait', value: ace.portrait === null ? notRecorded(ace.portraitMissing ?? 'Portrait not recorded') : knownValue('Current installation') },
-    { label: 'Became an ace', value: ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(`by ${formatDateHover(ace.firstSeen)}`), divider: true },
+    { label: 'Became an ace', value: ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(formatDateHover(ace.firstSeen)), divider: true },
     { label: 'Status', value: knownValue(ace.alive ? 'Alive' : 'Killed') },
   ];
   const death = ace.death;
   if (death) {
-    rows.push({ label: 'Killed', value: death.byHour === null || death.lastAlive === null
+    rows.push({ label: 'Killed', value: death.byHour === null
       ? notRecorded('Date of death not recorded')
-      : knownValue(`after ${formatDateOnly(death.lastAlive)}, by ${formatDateOnly(death.byHour)}`) });
+      : knownValue(formatDateOnly(death.byHour)) });
     if (death.killerAce) rows.push({ label: 'Killed by', value: textValue(death.killerName, 'Killer ace name not recorded') });
     rows.push({ label: 'Killer country', value: row.killerCountry ?? notRecorded('Killer country not recorded') });
   }
