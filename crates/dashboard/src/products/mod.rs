@@ -370,9 +370,6 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), PRODUCTS.len());
-        if let Some(path) = std::env::var_os("BATTLEPLAN_TYPESCRIPT_OUTPUT").or_else(|| std::env::var_os("HOI4_TYPESCRIPT_OUTPUT")) {
-            std::fs::write(path, crate::typescript_contract()).unwrap();
-        }
     }
 
 }

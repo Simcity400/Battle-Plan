@@ -1,4 +1,18 @@
-
+#[test]
+fn the_ui_holds_the_current_contract() {
+    let folder = std::env::var_os("CARGO_MANIFEST_DIR").expect("tests run with the crate's folder");
+    let path = std::path::Path::new(&folder).join("../../ui/src/generated/dashboard.ts");
+    let contract = crate::typescript_contract();
+    if std::env::var_os("BATTLEPLAN_WRITE_CONTRACT").is_some() {
+        std::fs::write(&path, &contract).expect("the UI's contract file is writable");
+    }
+    let held = std::fs::read_to_string(&path).expect("the UI holds a contract file");
+    assert!(
+        held == contract,
+        "{} differs from the dashboard's contract: run this test with BATTLEPLAN_WRITE_CONTRACT=1 (python tools/boat.py test -p dashboard --lib -- the_ui_holds_the_current_contract)",
+        path.display()
+    );
+}
 
 #[test]
 fn the_contract_names_the_refusals_a_reader_may_try_again() {

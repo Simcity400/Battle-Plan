@@ -61,12 +61,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [[bin]]
-name = "export-types"
-path = "src/bin/export-types.rs"
-required-features = ["export-types"]
-test = false
-
-[[bin]]
 name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 

@@ -238,8 +238,8 @@ toolchain = "rust"
 inputs = ["ui/src/generated/dashboard.ts"]
 package = "dashboard"
 ci-only = true
-command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
-warm = ["cargo", "build", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--lib"]
+command = ["cargo", "nextest", "run", "--cargo-profile", "ci", "-p", "dashboard", "--lib", "--no-tests=fail", "the_ui_holds_the_current_contract"]
+warm = ["cargo", "test", "--profile", "ci", "-p", "dashboard", "--lib", "--no-run"]
 
 [[job]]
 name = "dashboard-shipped"

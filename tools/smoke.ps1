@@ -1131,7 +1131,6 @@ function Invoke-FullSmoke {
             $cargo=(Get-Command cargo -ErrorAction Stop).Source
             $null=Run-Tool $cargo @('fmt','--all','--','--check') 'format' 2400
             $null=Run-Tool $cargo @('nextest','run','--workspace') 'checkpoint' 2400
-            $null=Run-Tool $cargo @('run','-q','-p','dashboard','--features','export-types','--bin','export-types','--','--check') 'types' 2400
             $summary=[regex]::Match([IO.File]::ReadAllText((Join-Path $output 'checkpoint.log')),'\d+ tests run: (\d+) passed')
             $report.tests_passed=[int]$summary.Groups[1].Value
             $null=Run-Tool $cargo @('build','-p','recorder','-p','collector','-p','viewer','--release','--target-dir','.cargo-target') 'release' 600
