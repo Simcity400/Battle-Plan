@@ -60,10 +60,18 @@ export type TableHeaderGroup =
 
 export interface TableCellFlag {
   readonly label?: string;
+  readonly note?: string;
+  readonly muted?: boolean;
   readonly tag: string;
   readonly art: ArtResult;
   readonly artKey?: string;
   readonly dimmed?: boolean;
+}
+
+export interface TableCellHeading {
+  readonly flag: TableCellFlag;
+  readonly text: Value<string>;
+  readonly note?: string;
 }
 
 export interface TableCellIconItem {
@@ -133,7 +141,7 @@ export interface TableCell {
   readonly narrowText?: string;
   readonly strong?: boolean;
   readonly tooltipRows?: readonly TooltipExtraRow[];
-  readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
+  readonly quantities?: readonly { readonly figure?: string; readonly unit: string }[];
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
@@ -147,6 +155,7 @@ export interface TableCell {
   readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter' | 'drawn';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
+  readonly heading?: TableCellHeading;
   readonly blank?: boolean;
   readonly icons?: readonly TableCellIconItem[];
   readonly iconStripKind?: 'traits' | 'medals';

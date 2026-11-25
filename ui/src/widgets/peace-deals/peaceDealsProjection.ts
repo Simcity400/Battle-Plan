@@ -12,8 +12,10 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import type { PeaceDealsRow, PeaceDealsTailReply, PeaceTermCount, PeaceTermKind } from '../../generated/dashboard';
 import { PEACE_DEALS_COLUMNS } from './definition.ts';
 
-const base = { columns: PEACE_DEALS_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false } as const;
+const base = { columns: PEACE_DEALS_COLUMNS, unsorted: true, dateGrouped: true, hideHeader: true, rowTimeBoundaries: false, rhythm: 'log' } as const;
 const blank: TableCell = { value: notApplicable('No detail for this row'), blank: true };
+const TERMS_INSET = 104;
+const TERM_WIDTH = 80;
 const labels: Record<PeaceTermKind, readonly [string, string]> = {
   state: ['state', 'states'], puppet: ['puppet', 'puppets'], government: ['new government', 'new governments'],
   release: ['released', 'released'], ship: ['ship', 'ships'], other: ['other action', 'other actions'],
@@ -36,14 +38,15 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     const country = logCountryCell(view, [
       { tag: d.winner, missingLabel: 'Winner not recorded' }, { tag: d.loser, dimmed: true, missingLabel: 'Loser not recorded' },
     ], row.hour, boundary);
-    const quantities = d.terms.map(quantity);
-    const value = quantities.length ? knownValue(summary(quantities)) : d.whitePeace ? knownValue('White peace') : notRecorded('Peace terms not recorded');
+    const counted = d.terms.map(quantity);
+    const value = counted.length ? knownValue(summary(counted)) : d.whitePeace ? knownValue('White peace') : notRecorded('Peace terms not recorded');
+    const quantities = counted.length ? counted : d.whitePeace ? [{ unit: 'White peace' }] : [];
     return {
       ...common, name: 'Peace deal',
       ...(d.members ? { pageGroup: { members: d.members, open: options.expanded.includes(row.key) } } : {}),
       cells: {
         date: logDateCell(row.hour),
-        kind: { ...artKindCell(view, { kind: 'sprite', key: 'GFX_global_diplorequest_icons', frame: 20 }, 'square', 'Peace deal', 'Peace deal artwork unavailable'), artTile: 'raised' },
+        kind: artKindCell(view, { kind: 'sprite', key: 'GFX_global_diplorequest_icons', frame: 20 }, 'drawn', 'Peace deal', 'Peace deal artwork unavailable'),
         country,
         terms: { value, missingFigure: 'Terms', quantities },
         action: blank,
@@ -59,22 +62,30 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     return { ...common, key: `all:${row.parent}`, name, muted: true, pageParent: row.parent ?? undefined, detailColumn: 'terms',
       cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank } };
   }
+  const flags = d.items.map(term => {
+    const flag = logCountryCell(view, [{ tag: term.tag, missingLabel: term.kind === 'state' ? 'Former owner not recorded' : 'Country not recorded' }], term.at, boundary).flags![0]!;
+    const name = term.kind === 'state'
+      ? term.state === null ? null : resolveName(view, 'state', String(term.state), { atHour: row.hour, boundary }).value
+      : term.tag === null ? null : resolveName(view, 'country', term.tag, { atHour: term.at, boundary }).value;
+    const known = name?.kind === 'known';
+    const label = known ? String(name.value) : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
+    return { ...flag, label, ...(known ? {} : { muted: true }), ...(term.kind === 'state' ? {} : { note: labels[term.kind][0] }) };
+  });
+  const list = flags.map(f => f.note ? `${f.label} \u00b7 ${f.note}` : f.label);
+  let name: string;
   let cell: TableCell;
   if (d.kind === 'recipient') {
-    cell = { ...logCountryCell(view, [{ tag: d.tag, missingLabel: 'Recipient not recorded' }], row.hour, boundary), inlineSubtext: summary(d.terms.map(quantity)) };
+    const recipient = logCountryCell(view, [{ tag: d.tag, missingLabel: 'Recipient not recorded' }], row.hour, boundary);
+    const text = d.tag === null || recipient.value.kind !== 'known' ? notRecorded('Recipient not recorded') : knownValue(String(recipient.value.value));
+    const note = summary(d.terms.map(quantity));
+    name = [text.kind === 'known' ? text.value : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
+    cell = { value: knownValue([name, ...list].join(', ')), heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
   } else {
-    const flags = d.items.map(term => {
-      const flag = logCountryCell(view, [{ tag: term.tag, missingLabel: term.kind === 'state' ? 'Former owner not recorded' : 'Country not recorded' }], term.at, boundary).flags![0]!;
-      const name = term.kind === 'state'
-        ? term.state === null ? null : resolveName(view, 'state', String(term.state), { atHour: row.hour, boundary }).value
-        : term.tag === null ? null : resolveName(view, 'country', term.tag, { atHour: term.at, boundary }).value;
-      const label = name?.kind === 'known' ? String(name.value) : term.kind === 'state' ? 'State name not recorded' : 'Country name not recorded';
-      return { ...flag, label: term.kind === 'state' ? label : `${label} \u00b7 ${labels[term.kind][0]}` };
-    });
-    cell = { value: knownValue(flags.map(f => f.label).join(', ')), flags };
+    name = list.length > 1 ? `${list[0]} \u2013 ${list[list.length - 1]}` : (list[0] ?? 'Terms');
+    cell = { value: knownValue(list.join(', ')), flags };
   }
   return {
-    ...common, key: `child:${row.key}`, name: cell.value.kind === 'known' ? String(cell.value.value) : 'Not recorded', pageParent: row.parent ?? undefined, detailColumn: 'terms',
+    ...common, key: `child:${row.key}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms',
     cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank },
   };
 }
@@ -108,7 +119,7 @@ export const peaceDealsDeclaration: TableWidgetDeclaration<Options> = {
     const from = win ? ctx.gateSpan(Math.max(Math.floor(win.firstHour), ctx.branch.firstHour), ctx.branch.lastHour)?.firstHour ?? null : null;
     const expanded = contentSet(ctx.options.expanded);
     const full = contentSet(ctx.options.full).filter(key => expanded.includes(key));
-    const termsPerLine = Math.max(1, Math.min(64, Math.floor(((viewport.width ?? 320) - 90) / 94)));
+    const termsPerLine = Math.max(1, Math.min(64, Math.floor(((viewport.width ?? 320) - TERMS_INSET) / TERM_WIDTH)));
     const ask = { ...occurrenceSelection(ctx), ...(expanded.length ? { expanded, ...(full.length ? { full } : {}), termsPerLine } : {}) };
     return {
       owner: JSON.stringify([ctx.track.source.id, ctx.branch.id, 'peace-deals', from, ask]),

@@ -4,7 +4,7 @@ import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
-import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, extentTop, layoutFamilyTable, measureFixedColumnWidths, rowExtents, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowExtents, type RowLayoutGeometry } from './layout.ts';
 import {
   computeColumnMaxima,
   deriveTableAudit,
@@ -66,6 +66,8 @@ interface TableShape {
   readonly windowOffset: number;
   readonly totalCount: number;
   readonly totalHeight: number;
+  readonly heightMemory: ReadonlyMap<number, MeasuredRow>;
+  readonly extents: RowExtents | null;
   readonly maxima: Map<string, number>;
   readonly maximaCols: string;
   readonly rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
@@ -161,6 +163,43 @@ function sampleSignature(samples: Record<string, string[]>): string {
   return sig;
 }
 
+interface MeasuredRow {
+  readonly key: string;
+  readonly height: number;
+}
+
+interface HeightBasis {
+  readonly options: unknown;
+  readonly settings: TableSettings;
+  readonly expanded: unknown;
+  readonly width: number;
+  readonly theme: FamilyTheme;
+  readonly rowHeight: number;
+  readonly totalCount: number;
+}
+
+function rememberHeights(
+  prev: TableShape | null,
+  basis: HeightBasis,
+  rows: readonly FlatTableRow[],
+  rowGeom: RowLayoutGeometry | null,
+  windowOffset: number,
+): Map<number, MeasuredRow> {
+  const memory = new Map<number, MeasuredRow>();
+  const end = windowOffset + rows.length;
+  const comparable = prev !== null && !prev.panes && prev.options === basis.options && prev.settings === basis.settings && prev.expanded === basis.expanded
+    && prev.width === basis.width && prev.theme === basis.theme && prev.rowHeight === basis.rowHeight && prev.totalCount === basis.totalCount;
+  if (comparable && [...prev.heightMemory].every(([ordinal, row]) => ordinal < windowOffset || ordinal >= end || rows[ordinal - windowOffset]!.key === row.key)) {
+    for (const [ordinal, row] of prev.heightMemory) if (ordinal < windowOffset || ordinal >= end) memory.set(ordinal, row);
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const height = rowGeom ? rowGeom.heights[i]! : basis.rowHeight;
+    if (height !== basis.rowHeight && row.kind !== 'loading') memory.set(windowOffset + i, { key: row.key, height });
+  }
+  return memory;
+}
+
 function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTheme, width: number, measure: OffscreenCanvasRenderingContext2D, step: LaneStep<TableModel, TableLayout>): TableShape {
   const prev = step.previous?.layout.shape ?? null;
   const settings = binding.settings;
@@ -217,7 +256,9 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
-  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight + (model.endNote ? END_NOTE_HEIGHT : 0));
+  const heightMemory = panes ? new Map<number, MeasuredRow>() : rememberHeights(prev, { options: binding.options, settings, expanded, width, theme, rowHeight, totalCount }, flatRows, rowGeom, windowOffset);
+  const extents = rowExtents(rowHeight, [...heightMemory].map(([ordinal, row]) => [ordinal, row.height] as const));
+  const totalHeight = panes ? localTotal : extentTop(extents, rowHeight, totalCount) + (model.endNote ? END_NOTE_HEIGHT : 0);
   let maximaCols = '';
   for (const col of columns.columns) if (col.numeric) maximaCols += `${col.key}:${col.display}|`;
   const maxima = inc && prev && prev.maximaCols === maximaCols && model.changedKeys
@@ -232,7 +273,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     hasTree: inc === null && flatRows.some(item => item.kind === 'data' && item.isTreeGroup),
     panes, paneGeom, rankShown, rankMarkersOn, rankWidth,
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
-    windowOffset, totalCount, totalHeight, maxima, maximaCols,
+    windowOffset, totalCount, totalHeight, heightMemory, extents, maxima, maximaCols,
     rowAuditCache: inc && prev ? prev.rowAuditCache : new WeakMap(),
     sortSig, orderKeys: dataKeys,
   };
@@ -243,7 +284,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
 function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, _hour: number, step: LaneStep<TableModel, TableLayout>): TableLayout {
   const shape = shapeOf(model, binding, theme, surface.width, measure, step);
   const { panes, rowGeom, rowHeight, flatRows } = shape;
-  const windowTop = shape.windowOffset * rowHeight;
+  const windowTop = panes ? 0 : extentTop(shape.extents, rowHeight, shape.windowOffset);
   const localScrollTop = Math.max(0, binding.scrollTop - windowTop);
   const spans = panes ? combinedPaneGeometry(panes) : null;
   const rowWindow = spans ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, rowGeom, rowHeight, localScrollTop, surface.height);
@@ -494,6 +535,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       table: {
         count: shape.totalCount,
         totalHeight: shape.totalHeight,
+        ...(shape.extents ? { extents: shape.extents } : {}),
         focusedIndex: layout.focusedIndex,
         ...(shape.model.gapBefore?.length ? { gapBefore: shape.model.gapBefore } : {}),
       },

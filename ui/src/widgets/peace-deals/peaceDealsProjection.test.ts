@@ -8,12 +8,11 @@ import { peaceDealsProjection } from './peaceDealsProjection.ts';
 test('a treaty counts once when expanded, its transfers show the former owner at the ownership read, and a capped treaty offers the rest', () => {
   const key = 'group:conference:2';
   const head: PeaceDealsTailReply = {
-    branchId: '1', total: '4', offset: '0', missing: [], warnings: [], nextChange: null, counts: [{ key: 'treaties', total: '1' }],
+    branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null, counts: [{ key: 'treaties', total: '1' }],
     rows: [
       { key, hour: 32, parent: null, detail: { kind: 'treaty', winner: 'BBB', loser: 'AAA', whitePeace: false, bounded: true, derived: true,
         members: 2, terms: [{ kind: 'state', count: 1 }], limitations: [] } },
-      { key: 'recipient', hour: 32, parent: key, detail: { kind: 'recipient', tag: 'BBB', terms: [{ kind: 'state', count: 1 }] } },
-      { key: 'states', hour: 32, parent: key, detail: { kind: 'terms', items: [{ kind: 'state', state: 7, tag: 'AAA', at: 28 }] } },
+      { key: 'recipient', hour: 32, parent: key, detail: { kind: 'recipient', tag: 'BBB', terms: [{ kind: 'state', count: 1 }], items: [{ kind: 'state', state: 7, tag: 'AAA', at: 28 }] } },
       { key: 'more', hour: 32, parent: key, detail: { kind: 'more', terms: 12, hidden: 11 } },
     ],
   };
@@ -31,10 +30,11 @@ test('a treaty counts once when expanded, its transfers show the former owner at
   assert.equal(model.titleSummary, '1 peace deal');
   assert.deepEqual(Object.keys(model.rows[0]?.cells ?? {}), ['date', 'kind', 'country', 'terms', 'action']);
   assert.equal(model.rows[0]?.cells.country?.flags?.[1]?.dimmed, true);
-  assert.equal(model.rows[2]?.cells.terms?.flags?.[0]?.label, 'state 7');
-  assert.equal(model.rows[3]?.key, `all:${key}`);
-  assert.equal(model.rows[3]?.name, 'Show all 12 terms · 11 more');
-  assert.equal(model.rows[3]?.cells.terms?.value.kind === 'known' && model.rows[3].cells.terms.value.value, model.rows[3]?.name);
+  assert.equal(model.rows[1]?.cells.terms?.heading?.note, '1 state', 'the recipient heads its own terms');
+  assert.equal(model.rows[1]?.cells.terms?.flags?.[0]?.label, 'state 7');
+  assert.equal(model.rows[2]?.key, `all:${key}`);
+  assert.equal(model.rows[2]?.name, 'Show all 12 terms · 11 more');
+  assert.equal(model.rows[2]?.cells.terms?.value.kind === 'known' && model.rows[2].cells.terms.value.value, model.rows[2]?.name);
   assert.ok(reads.includes('country AAA at 28'));
   assert.ok(reads.includes('state 7 at 32'));
 });
