@@ -3,6 +3,8 @@ import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
+import { compileFollowPlan } from '../../families/broker.ts';
+import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import type { FactionTotalsAtReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import { resolveWidgetScopedOptions } from '../manifest.ts';
@@ -100,8 +102,18 @@ test('faction-strength lines registers in TIME_CHART_VIEWS and uses pixel-binned
     }),
     { following: true, staticSpan: null },
   );
-  const linesEntry = aggPlan.entries.find(e => e.name === 'lines');
-  assert.ok(linesEntry && linesEntry.read.shape === 'branch-to-hour' && linesEntry.read.product === 'faction-lines');
+  const aggMain = aggPlan.entries.find(e => e.name === 'main');
+  assert.ok(aggMain && aggMain.read.shape === 'pixel-binned');
+  assert.deepEqual(aggMain.read.family, {
+    kind: 'faction-group-lines',
+    sourceKind: 'territory',
+    measure: 'controlledStates',
+    group: { type: 'humans', membership: 'hour' },
+  });
+  const aggHead = aggPlan.entries.find(e => e.name === 'head');
+  assert.ok(aggHead && aggHead.read.shape === 'point' && aggHead.read.product === 'faction-totals-at');
+  assert.ok(aggHead.read.followQuery && (aggHead.read.followQuery as { panel?: string }).panel === 'faction-totals-at');
+  assert.equal(aggPlan.entries.some(e => e.read.shape === 'branch-to-hour'), false);
 });
 
 test('faction-strength lines hides future factions, keeps recorded zeros and missing totals, and builds exact hover details', () => {
@@ -236,4 +248,144 @@ test('faction-strength lines applies campaign faction renames and colours to lin
   const alliesHover = model.hoverDetail?.items.find(item => item.label === 'Allies');
   assert.equal(axisHover?.swatch, '#ff8800');
   assert.equal(alliesHover?.swatch, '#22c55e');
+});
+
+test('aggregate and ever-member lines never show a stale value at an unread hour and refuse unproved Top N (S6)', () => {
+  const staleTile = {
+    tag: 'group',
+    from: 100,
+    binHours: 1,
+    decimals: 0,
+    buckets: createBoundedSlice([
+      { firstHour: 110, lastHour: 110, firstValue: 40, lastValue: 40, lastValueHour: 110, minValue: 40, minHour: 110, maxValue: 40, maxHour: 110, firstBreak: true, hasBreak: false },
+    ], 1),
+    straddling: 'none' as const,
+    missing: createBoundedSlice([{ firstHour: 111, lastHour: 111, reason: 'A member value is not recorded at this hour' }], 1),
+    validInterval: [100, 111] as const,
+  };
+  const aggUnreadHead: FactionTotalsAtReply = {
+    hour: 111,
+    kind: 'territory',
+    measure: 'controlledStates',
+    rows: [
+      { id: 'group', members: ['GER'], memberCountries: [7], total: null, missing: 'A member value is not recorded at this hour' },
+    ],
+    missing: null,
+    warnings: [],
+  };
+  const aggView = createBoundedReadView({
+    hour: displayedHour(111),
+    series: new Map([['main', new Map([['group', staleTile]])]]),
+    panels: new Map([['head', aggUnreadHead]]),
+    identity: fakeIdentity({ [`country:${countryKey(7)}`]: { name: 'German Reich', color: '#6b7280' } }),
+  });
+  const aggOpts = factionStrengthLinesDeclaration.projectionOptions(
+    makeCtx({
+      options: { measure: 'territory', territoryMeasure: 'states', rule: 'controlled', endLabels: true },
+      countries: { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: true },
+      tags: ['GER'],
+    }),
+    { extent: [100, 600], surface: '#111111' },
+  );
+  const aggModel = factionStrengthLinesProjection.project(aggView, aggOpts);
+  assert.equal(aggModel.series.length, 1);
+  assert.equal(aggModel.series[0]!.headValue, null);
+  assert.equal(aggModel.series[0]!.absentReason, 'A member value is not recorded at this hour');
+  assert.equal(aggModel.series[0]!.endLabel, null);
+  assert.deepEqual(aggModel.auditRows?.map(r => [r.key, r.value]), [
+    ['group', 'A member value is not recorded at this hour'],
+  ]);
+
+  const everTopRefused: FactionTotalsAtReply = {
+    hour: 111,
+    kind: 'territory',
+    measure: 'controlledStates',
+    rows: [],
+    missing: 'The top 5 factions cannot be proved: a faction\'s total is not known at this hour',
+    warnings: [],
+  };
+  const everView = createBoundedReadView({
+    hour: displayedHour(111),
+    series: new Map([['main', new Map([['10', { ...staleTile, tag: '10' }]])]]),
+    panels: new Map([['head', everTopRefused]]),
+    identity: fakeIdentity({ 'faction:10': { name: 'Axis', color: '#6b7280' } }),
+  });
+  const everOpts = factionStrengthLinesDeclaration.projectionOptions(
+    makeCtx({
+      options: { measure: 'territory', territoryMeasure: 'states', rule: 'controlled', endLabels: true },
+      countries: { kind: 'factions', count: 5, membership: 'ever' },
+      factions: [{ id: '10', tag: 'GER', firstHour: 100, lastHour: 600 }],
+    }),
+    { extent: [100, 600], surface: '#111111' },
+  );
+  const everModel = factionStrengthLinesProjection.project(everView, everOpts);
+  assert.equal(everModel.series.length, 0);
+  assert.equal(everModel.empty?.kind, 'unavailable');
+  assert.match(everModel.empty?.message ?? '', /cannot be proved/);
+});
+
+test('a quiet stretch of played hours makes zero requests for aggregate groups and ever-member factions (S7)', () => {
+  const cases = [
+    {
+      label: 'aggregate humans',
+      ctx: makeCtx({
+        options: { measure: 'territory', territoryMeasure: 'states', rule: 'controlled' },
+        countries: { kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: true },
+        tags: ['GER'],
+      }),
+    },
+    {
+      label: 'ever-member factions',
+      ctx: makeCtx({
+        options: { measure: 'factories', count: 'free' },
+        countries: { kind: 'factions', count: 5, membership: 'ever' },
+        factions: [{ id: '10', tag: 'GER', firstHour: 100, lastHour: 600 }],
+      }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    const plan = factionStrengthLinesDeclaration.sources(scenario.ctx, { following: true, staticSpan: null });
+    const compiled = compileFollowPlan(plan, query => ({ query: query as never, refused: null }));
+    assert.equal(compiled.refused, null, `${scenario.label}: follow plan compiles`);
+    assert.equal(compiled.subscriptions.length, 1, `${scenario.label}: head uses follow subscription`);
+    const entries = unitEntries(plan, true, compiled.subscriptions);
+    assert.equal(entries.length, 0, `${scenario.label}: zero unfollowed per-hour units in follow mode`);
+
+    let currentHour = 110;
+    const listeners = new Set<() => void>();
+    let requests = 0;
+    const target = new ReadTarget(
+      {
+        now: () => currentHour,
+        playing: () => true,
+        seek: () => 0,
+        subscribe: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
+        watch: () => () => {},
+      },
+      () => {
+        requests++;
+        return Promise.resolve(null);
+      },
+      () => undefined,
+    );
+    const branch = { id: '1', firstHour: 100, lastHour: 600, gaps: [] } as never;
+    const gate = { open: true, recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }), coverageSpan: () => [100, 600] as const } as never;
+    target.configure({
+      inputs: scenario.label,
+      entries,
+      active: true,
+      content: 0,
+      trackOffset: 0,
+      following: true,
+      subscribed: true,
+      playback: () => ({ branch, effectiveEndHour: 600, gate, countriesKnown: () => true }),
+    });
+    for (let h = 111; h <= 140; h++) {
+      currentHour = h;
+      for (const cb of listeners) cb();
+    }
+    assert.equal(requests, 0, `${scenario.label}: 30 quiet played hours make zero product requests`);
+    target.dispose();
+  }
 });
