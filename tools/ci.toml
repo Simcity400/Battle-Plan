@@ -133,7 +133,6 @@ tier = "check"
 toolchain = "tools"
 inputs = ["tools/**", ".github/workflows/**"]
 ci-only = true
-unset = ["WARM_TARGET_END_TO_END"]
 command = ["{python}", "tools/test-python.py"]
 
 [[job]]
