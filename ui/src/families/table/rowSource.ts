@@ -437,7 +437,7 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     for (const offset of wanted) {
       if (this.#pages.has(offset) || this.#inFlight.has(offset)) continue;
       this.#inFlight.add(offset);
-      fetch.push({ offset, limit: this.#pageSize, hour });
+      fetch.push({ offset, limit: this.#pageSize, hour: this.#hour });
     }
     return { fetch, cancel };
   }

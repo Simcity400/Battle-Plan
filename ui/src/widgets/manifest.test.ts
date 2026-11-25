@@ -134,7 +134,7 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
   assert.equal(resolveWidgetActiveView('game-score', { view: 'race' }), 'race');
   assert.equal(familyFor('game-score', { view: 'race' })?.family, 'bars');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
-  assert.equal(familyFor('game-score', { view: 'lines' }), undefined);
+  assert.equal(familyFor('game-score', { view: 'lines' })?.family, 'time-chart');
 
   assert.equal(familyFor('casualties-between')?.family, 'heat-matrix', 'the view option picks the default');
   assert.equal(familyFor('casualties-between', { view: 'opponents' })?.family, 'bars');

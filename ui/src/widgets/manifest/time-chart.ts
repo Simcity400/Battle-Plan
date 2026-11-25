@@ -7,6 +7,8 @@ import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts'
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
 import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
+import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
+import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
 import { OPTIONS as RAID_TALLY_OPTIONS } from '../raid-tally/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
@@ -14,6 +16,16 @@ import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../worl
 const ARMY_SIZE_BREAKDOWN_OPTIONS = ARMY_SIZE_OPTIONS.filter(field => ['view', 'measure', 'countFor', 'log', 'yMin', 'yMax'].includes(field.key));
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
+const GAME_SCORE_LINES_OPTIONS = [
+  ...GAME_SCORE_OPTIONS.filter(field => ['view', 'topMeasure', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
+  ...LINES_VIEW_OPTIONS,
+];
+const NUCLEAR_ARSENAL_LINES_OPTIONS = [
+  ...NUCLEAR_ARSENAL_OPTIONS
+    .filter(field => ['view', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
+    .map(field => ({ ...field, visibleWhen: undefined })),
+  ...LINES_VIEW_OPTIONS,
+];
 const OCCUPATION_RESERVE_BREAKDOWN_OPTIONS = OCCUPATION_RESERVE_OPTIONS.filter(field => ['show', 'holder', 'yMin', 'yMax'].includes(field.key));
 const RAID_TALLY_LINES_OPTIONS = [
   ...RAID_TALLY_OPTIONS.filter(field => ['view', 'metric', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
@@ -175,6 +187,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'game-score',
+    view: 'lines',
+    label: 'Lines over time',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: GAME_SCORE_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'game-score',
+      'lines',
+      () => import('../game-score/gameScoreLinesProjection.ts'),
+      mod => ({ projection: mod.gameScoreLinesProjection, declaration: mod.gameScoreLinesDeclaration }),
+    ),
+  },
+  {
     kind: 'military-factory-spending',
     view: 'months',
     label: 'By month',
@@ -214,6 +240,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'lines',
       () => import('../navy-size/navyLinesProjection.ts'),
       mod => ({ projection: mod.navyLinesProjection, declaration: mod.navyLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'nuclear-arsenal',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: NUCLEAR_ARSENAL_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'nuclear-arsenal',
+      'lines',
+      () => import('../nuclear-arsenal/nuclearArsenalLinesProjection.ts'),
+      mod => ({ projection: mod.nuclearArsenalLinesProjection, declaration: mod.nuclearArsenalLinesDeclaration }),
     ),
   },
   {

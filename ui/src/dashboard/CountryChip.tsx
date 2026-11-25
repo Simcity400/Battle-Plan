@@ -21,10 +21,6 @@ const NO_IDENTITY_KEYS: readonly IdentityKey[] = [];
 
 type AnyChipProps = Omit<WidgetCountryChipProps, 'widget'> & { readonly widget: WidgetBase; readonly options?: ResolvedViewOptions };
 
-export function PartsCountryChip(props: AnyChipProps) {
-  return props.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
-}
-
 export default function CountryChip({ widget, runtime, active, compact = false }: Omit<AnyChipProps, 'onSlot'>) {
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);

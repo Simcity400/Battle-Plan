@@ -93,7 +93,19 @@ test('the pager freezes one hour, asks it again after a seek before it, keeps pa
   answer(far.fetch[0]!);
   assert.deepEqual(Object.keys(pager.pages()).map(Number), [8, 12], 'pages beyond one either side of the window are evicted');
   assert.equal(pager.pages()[8], kept, 'a kept page keeps its object, so its revision');
-  pager.window({ first: 0, count: 2 }, 90);
+  const advanced = pager.window({ first: 16, count: 2 }, 150);
+  assert.deepEqual(advanced.fetch, [{ offset: 16, limit: 4, hour: 90 }], 'scrolling after playback advances asks the new offset at the frozen snapshot hour');
+  assert.equal(answer(advanced.fetch[0]!), true, 'a page asked after playback advances settles into the frozen snapshot');
+  assert.equal(pager.pages()[16]?.hour, 90);
+  const refusedStep = pager.window({ first: 20, count: 2 }, 160);
+  assert.deepEqual(refusedStep.fetch, [{ offset: 20, limit: 4, hour: 90 }], 'further scrolling keeps asking at the frozen hour');
+  assert.equal(pager.refuse(refusedStep.fetch[0]!, 'Log table withheld'), true, 'a refused page settles and clears its in-flight mark');
+  assert.equal('refused' in pager.pages()[20]!, true);
+  pager.window({ first: 8, count: 2 }, 160);
+  assert.equal(pager.pages()[20], undefined, 'evicting the refused page drops it');
+  const retried = pager.window({ first: 20, count: 2 }, 160);
+  assert.deepEqual(retried.fetch, [{ offset: 20, limit: 4, hour: 90 }], 'scrolling back asks an evicted refused offset again instead of leaving it in flight');
+  pager.window({ first: 0, count: 2 }, 160);
   assert.deepEqual(Object.keys(pager.pages()), [], 'back at the head the snapshot is released');
 });
 
