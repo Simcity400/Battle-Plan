@@ -316,11 +316,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                     }
                     country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
                     if sunk_ship(cells) {
-                        let cost = prices.of(*key, hour);
-                        let held = lost.entry(*key).or_insert(cost);
-                        if held.is_none() {
-                            *held = cost;
-                        }
+                        lost.entry(*key).or_insert_with(|| prices.of(*key, hour));
                     }
                 }
                 let sunk = [count(cells, 1), count(cells, 2)];
@@ -403,8 +399,9 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     sides[i].clone_from(&prior.countries[i]);
                     prior.countries_hour[i].or(Some(*at))
                 });
-                let sunk = [count(obs, 4), count(obs, 6)];
-                let ic = std::array::from_fn(|i| line.reads.last().filter(|(_, prior)| prior.sunk[i] == sunk[i]).and_then(|(_, prior)| prior.ic[i]));
+                let sunk = [count(obs, 5), count(obs, 7)];
+                let observed = number(obs, 3).and_then(|h| i32::try_from(h).ok()).and_then(|end| line.reads.iter().rev().find(|(at, _)| *at <= end));
+                let ic = std::array::from_fn(|i| observed.filter(|(_, prior)| prior.sunk[i] == sunk[i]).and_then(|(_, prior)| prior.ic[i]));
                 let status = match number(cells, 2) {
                     Some(1) => NavalBattleStatus::AttackerWon,
                     Some(2) => NavalBattleStatus::DefenderWon,
@@ -417,7 +414,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         province: count(cells, 0),
                         countries: sides,
                         countries_hour,
-                        ships: [count(obs, 3), count(obs, 5)],
+                        ships: [count(obs, 4), count(obs, 6)],
                         sunk,
                         ic,
                         result: status,
@@ -503,7 +500,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             span,
             &links,
             &history(TableId::NavalResults, &[0, 1, 8])?,
-            &history(TableId::NavalResultObservations, &[0, 1, 3, 7, 9, 11, 13])?,
+            &history(TableId::NavalResultObservations, &[0, 1, 3, 4, 7, 9, 11, 13])?,
             &history(TableId::NavalResultCountries, &[0])?,
         );
     }
@@ -728,7 +725,7 @@ mod tests {
         let participants = History {
             keys: vec![
                 (member(0, 1), vec![step(10, Some(&[100, 1, 0])), step(12, Some(&[100, 1, sunk])), step(13, None)]),
-                (member(1, 1), vec![step(10, Some(&[200, 2, 0])), step(14, Some(&[200, 2, sunk]))]),
+                (member(1, 1), vec![step(10, Some(&[200, 2, 0])), step(14, Some(&[200, 2, sunk])), step(16, Some(&[200, 3, sunk]))]),
                 (member(1, 2), vec![step(10, Some(&[0, 2, 0])), step(14, Some(&[0, 2, sunk]))]),
             ],
             ..History::default()
@@ -737,7 +734,7 @@ mod tests {
         let prices = Prices {
             designs: History { keys: vec![(member(0, 1), vec![step(10, Some(&[70]))]), (member(1, 1), vec![step(10, Some(&[71]))])], ..History::default() },
             costs: History {
-                keys: vec![(70, vec![step(10, Some(&[92_250_000]))]), (71, vec![step(10, Some(&[]))])],
+                keys: vec![(70, vec![step(10, Some(&[92_250_000]))]), (71, vec![step(10, Some(&[])), step(15, Some(&[50_000_000]))])],
                 statuses: vec![lanes::StatusRun { first: 10, last: 20, status: Status::Complete }],
                 ..History::default()
             },
@@ -749,5 +746,29 @@ mod tests {
         assert_eq!(reads.iter().map(|(hour, read)| (*hour, read.ic)).collect::<Vec<_>>(), [
             (10, [Some(0), Some(0)]), (12, [Some(92_250_000), Some(0)]), (14, [Some(92_250_000), None]),
         ]);
+    }
+
+    #[test]
+    fn a_linked_result_keeps_the_ic_lost_of_the_hour_it_observed() {
+        let read = |sunk: [u32; 2], ic: [Option<i64>; 2]| Snapshot {
+            province: None,
+            countries: [Vec::new(), Vec::new()],
+            countries_hour: [None; 2],
+            ships: [Some(5); 2],
+            sunk: sunk.map(Some),
+            ic,
+            result: NavalBattleStatus::Ongoing,
+            result_id: None,
+            detail_hour: None,
+        };
+        let mut lines = BTreeMap::new();
+        lines.insert(Battle::Live(7, 10), Line { reads: vec![(10, read([1, 0], [Some(5), Some(0)])), (12, read([2, 0], [None, Some(0)]))], ..Line::default() });
+        let observed = i64::from(NavalResultObservationRow::OBSERVED);
+        let results = History { keys: vec![(99, vec![step(13, Some(&[1, 13, 1]))])], ..History::default() };
+        let observations = History { keys: vec![(99, vec![step(13, Some(&[observed, 7, 10, 11, 5, 1, 5, 0]))])], ..History::default() };
+        let span = Stretch { run: 1, first: 10, last: 20, join: dashboard_query::timeline::Join::Start };
+        result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
+        let (hour, last) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
+        assert_eq!((*hour, last.result, last.sunk, last.ic), (13, NavalBattleStatus::AttackerWon, [Some(1), Some(0)], [Some(5), Some(0)]));
     }
 }
