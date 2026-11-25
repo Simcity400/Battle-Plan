@@ -1604,6 +1604,121 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
 }
 
 #[test]
+fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
+    struct World<'a> {
+        bytes: &'a [u8],
+        lexer: Option<[u8; 64]>,
+    }
+    impl Memory for World<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let block = engine_native_memory::cpdx_lexer::INITIALIZED_RVA.0;
+            if let Some(header) = &self.lexer
+                && let Some(slice) = address.checked_sub(block).and_then(|at| header.get(at..at + output.len()))
+            {
+                output.copy_from_slice(slice);
+                return true;
+            }
+            let Some(slice) = address
+                .checked_sub(self.bytes.as_ptr() as usize)
+                .and_then(|at| self.bytes.get(at..at.saturating_add(output.len())))
+            else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+    struct Quiet(Vec<(&'static str, &'static str)>);
+    impl StatWitness for Quiet {
+        fn quiet(&self) -> Result<QuietToken, &'static str> {
+            Ok(QuietToken::new(1, 7))
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.0.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    let mut bytes = vec![0_u8; 0x2000];
+    let base_ptr = bytes.as_ptr() as usize;
+    let (variant, def_off, bonuses_off, names_off) = (0x0, 0xc00, 0x1200, 0x1400);
+    let base_values = [0_i64, 100_000, 0, 100_000, 400_000, 80_000, 0, 0, 0, 2_400_000];
+    bytes[def_off..def_off + 8].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        let off = def_off + cequipment_type::STATS_BASE + lane.stat_index * 8;
+        bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[variant..variant + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[variant + TYPE..variant + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+    bytes[variant + ID..variant + ID + 4].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[variant + EQUIPMENT_TOKEN..variant + EQUIPMENT_TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
+    bytes[variant + DEFINITION..variant + DEFINITION + 8].copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
+    let mut cached = base_values;
+    cached[5] = 84_000;
+    cached[9] = 2_280_000;
+    for (lane, value) in STAT_LANES.into_iter().zip(cached) {
+        bytes[variant + lane.offset..variant + lane.offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[variant + BUILD_COST..variant + BUILD_COST + 8].copy_from_slice(&2_280_000_i64.to_le_bytes());
+    let bonuses = [(3_u32, -5_000_i64), (4, 5_000), (5, 25_000), (6, 0)];
+    bytes[variant + ORGANISATION_BONUSES..variant + ORGANISATION_BONUSES + 8]
+        .copy_from_slice(&((base_ptr + bonuses_off) as u64).to_le_bytes());
+    for offset in [8, 12] {
+        bytes[variant + ORGANISATION_BONUSES + offset..variant + ORGANISATION_BONUSES + offset + 4]
+            .copy_from_slice(&(bonuses.len() as u32).to_le_bytes());
+    }
+    for (index, (token, value)) in bonuses.into_iter().enumerate() {
+        let at = bonuses_off + index * 16;
+        bytes[at..at + 4].copy_from_slice(&token.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+    }
+    let names = ["", "", "", "build_cost_ic", "reliability", "soft_attack", "maximum_speed"];
+    for (token, name) in names.into_iter().enumerate() {
+        let at = names_off + token * engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE;
+        bytes[at..at + name.len()].copy_from_slice(name.as_bytes());
+        bytes[at + 16..at + 24].copy_from_slice(&(name.len() as u64).to_le_bytes());
+        bytes[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
+    }
+    let mut lexer = [0_u8; 64];
+    lexer[0] = 1;
+    let mut put = |key: Rva, value: &[u8]| {
+        let at = engine_native_memory::cpdx_lexer::witness_offset(key);
+        lexer[at..at + value.len()].copy_from_slice(value);
+    };
+    let maximum = (names.len() - 1) as u32;
+    put(engine_native_memory::cpdx_lexer::MAX_TOKEN_ID_RVA, &maximum.to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, &maximum.to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::TOKEN_NAMES_RVA, &((base_ptr + names_off) as u64).to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::TOKEN_ALLOCATION_RVA, &(names.len() as u32).to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::TOKEN_CAPACITY_RVA, &(names.len() as u32).to_le_bytes());
+    let row = RegistryRow {
+        id: (1_u64 << 32) | u64::from(REFERENCE_TYPE),
+        address: base_ptr + variant,
+    };
+    let walk = |bytes: &[u8], lexer: Option<[u8; 64]>| {
+        let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
+        let outcome = walk_stats_carried(&World { bytes, lexer }, 0, &[row], &mut rows, &mut (), &mut witness);
+        assert_eq!(outcome, Outcome::Rows { len: 1 });
+        (rows[0].values, witness.0)
+    };
+
+    let (values, withheld) = walk(&bytes, Some(lexer));
+    assert_eq!(values, cached.map(Some), "every lane is published once its bonuses are applied: {withheld:?}");
+
+    let cost = variant + BUILD_COST_IC_STAT..variant + BUILD_COST_IC_STAT + 8;
+    bytes[cost.clone()].copy_from_slice(&2_400_000_i64.to_le_bytes());
+    let (values, _) = walk(&bytes, Some(lexer));
+    assert_eq!(values[9], None, "a cached cost that disagrees with its bonuses stays withheld");
+    assert_eq!(values[5], Some(84_000));
+    bytes[cost].copy_from_slice(&2_280_000_i64.to_le_bytes());
+
+    let (values, withheld) = walk(&bytes, None);
+    assert_eq!(values, [None; STAT_LANE_COUNT]);
+    assert_eq!(withheld.len(), STAT_LANE_COUNT);
+    assert!(withheld.iter().all(|(_, reason)| *reason == "variant stat organisation bonus names unreadable"));
+}
+
+#[test]
 fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_reliability_and_recovers_independent_operands()
 {
     struct SteppingWorld<'a> {

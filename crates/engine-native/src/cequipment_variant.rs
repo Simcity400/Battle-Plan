@@ -11,6 +11,7 @@ pub use design::*;
 use engine_native_memory::{
     Memory,
     cpdx_array::Array,
+    cpdx_lexer,
     memory::{RecordField, RecordLayout, RecordSources},
     msvc_string,
     read,
@@ -747,6 +748,8 @@ struct WitnessSites {
     trait_bonus_vtable: Option<usize>,
     dlc_mask: Option<Option<u32>>,
     thrust_factor: Option<Option<i64>>,
+    token_names: Option<Option<cpdx_lexer::TokenNames>>,
+    token_lanes: Vec<(u32, Option<usize>)>,
 }
 
 impl WitnessSites {
@@ -762,7 +765,31 @@ impl WitnessSites {
             trait_bonus_vtable: engine_sites::resolve(base, TRAIT_BONUS_VTABLE_RVA).ok(),
             dlc_mask: None,
             thrust_factor: None,
+            token_names: None,
+            token_lanes: Vec::new(),
         }
+    }
+
+    fn token_lane(&mut self, memory: &impl Memory, base: usize, token: u32) -> Result<Option<usize>, &'static str> {
+        if let Some(&(_, lane)) = self.token_lanes.iter().find(|(held, _)| *held == token) {
+            return Ok(lane);
+        }
+        let names = self
+            .token_names
+            .get_or_insert_with(|| cpdx_lexer::TokenNames::witnessed(memory, base).ok().map(|(names, _)| names))
+            .ok_or("variant stat organisation bonus names unreadable")?;
+        let text = names.text(memory, token)?;
+        let mut name = [0_u8; 32];
+        let lane = match name.get_mut(..text.len()) {
+            Some(name) => {
+                text.copy(memory, name)?;
+                STAT_LANES.iter().position(|lane| lane.name.as_bytes() == name)
+            }
+            None => None,
+        };
+        engine_allocation::reserve(&mut self.token_lanes, 1).map_err(|_| "variant stat allocation failed")?;
+        self.token_lanes.push((token, lane));
+        Ok(lane)
     }
 
     fn clear_live_operands(&mut self) {
@@ -1101,45 +1128,30 @@ impl DefinitionStats {
 
 fn compute_modified_lanes(
     memory: &impl Memory,
+    base: usize,
     variant: usize,
     meta: VariantStatMeta,
     base_stats: &[Option<i64>; STAT_LANE_COUNT],
     type_rel_bonuses: i32,
-    sites: &WitnessSites,
+    sites: &mut WitnessSites,
 ) -> Result<[Result<i64, &'static str>; STAT_LANE_COUNT], &'static str> {
     let mut acc = [StatAccumulator::default(); STAT_LANE_COUNT];
+    let multiply = |acc: &mut [StatAccumulator; STAT_LANE_COUNT], lane: usize, value: i64| {
+        acc[lane].mult = acc[lane].mult.checked_add(value).ok_or("variant stat arithmetic overflow")?;
+        Ok::<(), &'static str>(())
+    };
     if meta.named_bonuses > 0 {
-        let handles = Array::read(memory, at(variant, NAMED_BONUSES)?, 4)
-            .ok_or("variant stat named equipment bonus unreadable")?;
-        const CHUNK: usize = 64;
-        let mut buf = [0_u8; CHUNK * 4];
-        let mut index = 0_u32;
-        while index < handles.count {
-            let take = ((handles.count - index) as usize).min(CHUNK);
-            let bytes = &mut buf[..take * 4];
-            if handles
-                .element(index, 4)
-                .is_some_and(|addr| memory.copy(addr, bytes))
-            {
-                for word in bytes.chunks_exact(4) {
-                    if i32::from_le_bytes(word.try_into().unwrap()) != -1 {
-                        return Err("variant stat named equipment bonus unverified");
-                    }
-                }
-            } else {
-                for offset in 0..take as u32 {
-                    let entry = handles
-                        .element(index + offset, 4)
-                        .ok_or("variant stat named equipment bonus unreadable")?;
-                    let handle = read::<i32>(memory, entry)
-                        .ok_or("variant stat named equipment bonus unreadable")?;
-                    if handle != -1 {
-                        return Err("variant stat named equipment bonus unverified");
-                    }
-                }
-            }
-            index += take as u32;
-        }
+        visit_named_sources(memory, base, variant, |pointer, _, _| {
+            let stats = stat_pair_array(
+                memory,
+                at(pointer, NAMED_BONUS_SPECIFIC)?,
+                BONUS_STATS,
+                "variant stat named equipment bonus stats unreadable",
+            )?;
+            for_each_stat_pair(memory, stats, "variant stat named equipment bonus stats unreadable", |stat_idx, value| {
+                lane_for_stat_index(stat_idx).map_or(Ok(()), |lane| multiply(&mut acc, lane, value))
+            })
+        })?;
     }
     if meta.org_bonuses > 0 {
         let bonuses = stat_pair_array(
@@ -1148,17 +1160,24 @@ fn compute_modified_lanes(
             ORGANISATION_BONUSES,
             "variant stat organisation bonus unreadable",
         )?;
+        let mut applied = Vec::new();
         for_each_stat_pair(
             memory,
             bonuses,
             "variant stat organisation bonus unreadable",
-            |_, value| {
+            |token, value| {
                 if value != 0 {
-                    return Err("variant stat organisation bonus unverified");
+                    engine_allocation::reserve(&mut applied, 1).map_err(|_| "variant stat allocation failed")?;
+                    applied.push((token as u32, value));
                 }
                 Ok(())
             },
         )?;
+        for (token, value) in applied {
+            if let Some(lane) = sites.token_lane(memory, base, token)? {
+                multiply(&mut acc, lane, value)?;
+            }
+        }
     }
     if meta.bonus_sources > 0 {
         let (Some(specific_vtable), Some(trait_vtable)) =
@@ -1747,7 +1766,7 @@ pub fn verified_cached_stat(
         def.base_stats
             .map(|value| value.ok_or("variant definition base stat unreadable"))
     } else {
-        compute_modified_lanes(memory, variant, meta, &def.base_stats, type_rel_bonuses, &sites)?
+        compute_modified_lanes(memory, base, variant, meta, &def.base_stats, type_rel_bonuses, &mut sites)?
     };
     let val = read::<i64>(memory, at(variant, STAT_LANES[lane].offset)?)
         .ok_or("variant stat lane unreadable")?;
@@ -2289,11 +2308,12 @@ pub fn walk_stats_carried(
                         } else {
                             compute_modified_lanes(
                                 memory,
+                                base,
                                 source.pointer(),
                                 meta,
                                 &def.base_stats,
                                 type_rel_bonuses,
-                                &sites,
+                                &mut sites,
                             )
                         };
                         match expected {
