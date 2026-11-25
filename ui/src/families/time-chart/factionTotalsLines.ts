@@ -1,9 +1,7 @@
 import { CATEGORY_LIMIT, CHART_MEASURE_COLOURS, colour } from '../../charts/palette.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
 import { factionIdentity, type FactionStyle } from '../../dashboard/campaignSettings.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
-import { validateFactionLines, type FactionLines } from '../../dashboard/territoryReplies.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import {
   factionSelectionTop,
@@ -29,12 +27,11 @@ import type { TimeChartWidgetDeclaration } from './declaration.ts';
 import type {
   ChartGap,
   ChartHoverDetail,
-  ChartInlinePoint,
   ChartMissingSpan,
   TimeChartModel,
   TimeChartSeriesModel,
 } from './model.ts';
-import { branchGapsOf, headReading, missingSpansOf, type HeadReading } from './seriesHelpers.ts';
+import { branchGapsOf, headReading, missingSpansOf, withinMapOf, type HeadReading } from './seriesHelpers.ts';
 import { chartAxis, chartWindow, lineChartSettings, type LineChartSettings } from './settings.ts';
 
 const COLOURED = 8;
@@ -149,52 +146,6 @@ function clipMissingSpans(
     }
   }
   return clipped.length > 0 ? clipped : undefined;
-}
-
-function summaryPoints(summary: ChartSummary, bounds: boolean, maxHour: number): ChartInlinePoint[] {
-  const points: ChartInlinePoint[] = [];
-  let prevLast: number | null = null;
-  for (const bucket of summary.buckets) {
-    if (!bucket || bucket.firstHour > maxHour) {
-      if (prevLast !== null) {
-        points.push({ hour: prevLast + 1, value: null });
-        prevLast = null;
-      }
-      continue;
-    }
-    if (prevLast !== null && (bucket.firstBreak || bucket.firstHour > prevLast + 1)) {
-      points.push({ hour: prevLast + 1, value: null });
-    }
-    const lastHour = Math.min(bucket.lastHour, maxHour);
-    if (bucket.firstHour === lastHour) {
-      points.push({ hour: bucket.firstHour, value: bucket.lastValue });
-    } else {
-      points.push({
-        hour: bucket.firstHour,
-        value: bucket.firstValue,
-        min: bucket.minValue,
-        max: bucket.maxValue,
-        approximate: bounds,
-      });
-      points.push({
-        hour: lastHour,
-        value: bucket.lastValue,
-        min: bucket.minValue,
-        max: bucket.maxValue,
-        approximate: bounds,
-      });
-    }
-    prevLast = lastHour;
-  }
-  return points;
-}
-
-function latestPointValue(points: readonly ChartInlinePoint[]): number | null {
-  for (let i = points.length - 1; i >= 0; i--) {
-    const v = points[i]!.value;
-    if (v !== null && Number.isFinite(v)) return v;
-  }
-  return null;
 }
 
 function sharedFactionColour(
@@ -318,6 +269,7 @@ export function factionTotalsLinesSources(
     ...(top != null ? { top } : {}),
     ...(group ? { group } : {}),
     ...(members ? { members } : {}),
+    ...(!aggregated && membership === 'ever' ? { membership: 'ever' } : {}),
   };
   const coverage: SourceCoverage = group
     ? { mode: 'population', form: 'all' }
@@ -371,45 +323,45 @@ export function factionTotalsLinesSources(
     };
   }
 
-  const groupMembers = aggregated
-    ? ctx.countries.tags.map(tag => ({
-        tag,
-        spans: ctx.countries.membership?.[tag]?.map(([first, last]) => [first, last] as [number, number]) ?? null,
-      }))
-    : null;
-  const unread = aggregated
-    ? ctx.countries.unobserved.map(([first, last]) => [first, last] as [number, number])
-    : null;
-  return {
-    owner,
-    entries: [
-      {
-        name: 'lines',
-        ...common,
-        read: {
-          shape: 'branch-to-hour',
-          coverage,
-          product: 'faction-lines',
-          followQuery: null,
-          params: {
-            branchId: ctx.branch.id,
-            kind,
-            measure,
-            ...(groupMembers ? { members: groupMembers, unread } : { membership }),
-          },
-          buildSpanParams: (base, span) => ({
-            ...base,
-            from: span.firstHour,
-            to: span.lastHour,
-            width: 512,
-          }),
-          dynamicKeys: ['from', 'to'],
-          validate: validateFactionLines,
-        },
-      },
-      hoverEntry,
-    ],
+  const tileTags = group ? ['group'] : aggregated ? ctx.countries.tags : factionSpansFor(ctx).map(item => item.id);
+  const within = aggregated && !group ? withinMapOf(ctx.countries.membership) : undefined;
+  const tileFamily: Record<string, unknown> = {
+    kind: 'faction-group-lines',
+    sourceKind: kind,
+    measure,
+    ...(group ? { group } : !aggregated ? { membership } : {}),
   };
+  const entries: SourceEntry[] = [];
+  if (tileTags.length > 0) {
+    entries.push({
+      name: 'main',
+      ...common,
+      read: {
+        shape: 'pixel-binned',
+        coverage: group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: tileTags },
+        family: tileFamily,
+        tags: tileTags,
+        ...(within ? { within } : {}),
+      },
+    });
+  }
+  entries.push(
+    {
+      name: 'head',
+      ...common,
+      read: {
+        shape: 'point',
+        channel: 'panel',
+        coverage,
+        product: 'faction-totals-at',
+        followQuery: { panel: 'faction-totals-at', ...atParams },
+        params: atParams,
+        validate: validateFactionTotalsAt,
+      },
+    },
+    hoverEntry,
+  );
+  return { owner, entries };
 }
 
 export function factionTotalsLinesOptions(
@@ -427,7 +379,7 @@ export function factionTotalsLinesOptions(
     aggregated: isAggregatedSelection(ctx.widget.countries),
     directTiles: usesDirectFactionTiles(ctx),
     top: factionSelectionTop(ctx.widget.countries),
-    factions: usesDirectFactionTiles(ctx) ? factionSpansFor(ctx) : [],
+    factions: factionSpansFor(ctx),
     groupLabel: groupTitleForSelection(ctx.widget.countries),
     endLabels: ctx.options.endLabels !== false,
     settings: lineChartSettings(ctx.options),
@@ -604,7 +556,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
     return projectDirectTiles(readView, options, yAxis, view, gaps, hoverDetail);
   }
 
-  const refused = readView.refused('lines');
+  const refused = readView.refused('head') ?? readView.refused('main');
   if (refused) {
     return {
       kind: options.kind,
@@ -622,8 +574,8 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
     };
   }
 
-  const linesPanel = readView.panel<FactionLines>('lines');
-  if (linesPanel === undefined) {
+  const headPanel = readView.panel<FactionTotalsAtReply>('head');
+  if (headPanel === undefined) {
     return {
       kind: options.kind,
       measureTitle: options.measureLabel,
@@ -639,47 +591,100 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
     };
   }
 
-  const rows = linesPanel.lines.map(line => {
-    const points = summaryPoints(line.summary, linesPanel.bounds === true, hour);
-    const last = latestPointValue(points);
-    return { line, points, last };
-  });
-  rows.sort((a, b) => {
-    if (a.last !== null && b.last !== null && a.last !== b.last) return b.last - a.last;
-    if (a.last !== null && b.last === null) return -1;
-    if (a.last === null && b.last !== null) return 1;
-    return a.line.id.localeCompare(b.line.id);
-  });
-  const shown = options.top !== null ? rows.slice(0, options.top) : rows;
+  const tiles = readView.series('main');
+  if (headPanel.missing !== null) {
+    if (options.top !== null || !tiles || tiles.size === 0) {
+      return {
+        kind: options.kind,
+        measureTitle: options.measureLabel,
+        mode: 'lines',
+        hour,
+        extent: options.extent,
+        ...(view ? { view } : {}),
+        yAxis,
+        series: [],
+        gaps,
+        hoverDetail,
+        ...(options.note ? { note: options.note } : {}),
+        warnings: headPanel.warnings,
+        empty: { message: headPanel.missing, kind: 'unavailable' },
+        auditRows: [],
+      };
+    }
+    const ids = options.aggregated ? ['group'] : [...tiles.keys()];
+    const auditRows: FamilyAuditRow[] = [];
+    const series: TimeChartSeriesModel[] = ids.map((id, rank) => {
+      const isTail = rank >= COLOURED;
+      const pres = factionPresentation(readView, id, options, hour);
+      const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
+      const bounded = tiles.get(id) ?? null;
+      auditRows.push(auditRow(id, headPanel.missing!));
+      return {
+        id,
+        key: id,
+        name: pres.name,
+        color,
+        role: isTail ? 'tail' : 'primary',
+        step: true,
+        ...(bounded ? { bounded } : {}),
+        headValue: null,
+        headHour: hour,
+        absentReason: headPanel.missing,
+        missingSpans: missingSpansOf(bounded),
+        endLabel: null,
+      };
+    });
+    return {
+      kind: options.kind,
+      measureTitle: options.measureLabel,
+      mode: 'lines',
+      hour,
+      extent: options.extent,
+      ...(view ? { view } : {}),
+      yAxis,
+      series,
+      gaps,
+      hoverDetail,
+      ...(options.note ? { note: options.note } : {}),
+      warnings: headPanel.warnings,
+      auditRows,
+    };
+  }
+
+  const shown = options.top !== null ? headPanel.rows.slice(0, options.top) : headPanel.rows;
   const auditRows: FamilyAuditRow[] = [];
-  const series: TimeChartSeriesModel[] = shown.map((item, rank) => {
+  const series: TimeChartSeriesModel[] = shown.map((row, rank) => {
     const isTail = rank >= COLOURED;
-    const pres = factionPresentation(readView, item.line.id, options, hour);
+    const pres = factionPresentation(readView, row.id, options, hour);
     const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
+    const bounded = tiles?.get(row.id) ?? null;
+    const headValue = row.total;
+    const absentReason = headValue === null ? (row.missing ?? 'Not recorded at this hour') : null;
     auditRows.push(
       auditRow(
-        item.line.id,
-        item.last === null ? 'Not recorded at this hour' : formatScalar(item.last, 'integer'),
+        row.id,
+        headValue === null ? absentReason! : formatScalar(headValue, 'integer'),
       ),
     );
     return {
-      id: item.line.id,
-      key: item.line.id,
+      id: row.id,
+      key: row.id,
       name: pres.name,
       color,
       role: isTail ? 'tail' : 'primary',
       step: true,
-      points: item.points,
-      headValue: item.last,
+      ...(bounded ? { bounded } : {}),
+      headValue,
       headHour: hour,
-      missingSpans: item.line.missing,
-      endLabel: isTail || item.last === null || !options.endLabels
+      absentReason,
+      missingSpans: missingSpansOf(bounded),
+      endLabel: isTail || headValue === null || !options.endLabels
         ? null
         : {
             colorBar: color,
             name: pres.name,
             fullName: pres.name,
-            value: formatScalar(item.last, 'integer'),
+            value: formatScalar(headValue, 'integer'),
           },
     };
   });
@@ -697,7 +702,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
       gaps,
       hoverDetail,
       ...(options.note ? { note: options.note } : {}),
-      warnings: linesPanel.warnings,
+      warnings: headPanel.warnings,
       empty: {
         message: options.aggregated ? 'No members of this group at this date.' : 'No factions at this date.',
         kind: 'empty',
@@ -718,7 +723,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
     gaps,
     hoverDetail,
     ...(options.note ? { note: options.note } : {}),
-    warnings: linesPanel.warnings,
+    warnings: headPanel.warnings,
     auditRows,
   };
 }
