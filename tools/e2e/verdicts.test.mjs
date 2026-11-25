@@ -279,16 +279,6 @@ test('a seek holds its captured pin through the next input, even after a correct
   assert.equal(sought(seek, new Map([['p', [{ at: 105, hour: 99 }, { at: 110, hour: 98 }]]]), [], 120).pass, false);
 });
 
-test('a visible placeholder fails freshnessByKind with reason not migrated while staying distinct from a real failure', () => {
-  const widget = { id: 'p', kind: 'legacy', title: 'Legacy', visible: true, notMigrated: true };
-  const window = { page: 'Overview', speed: 1440, from: 10, to: 50, widgets: [widget] };
-  const dated = [{ from: 10, widget: 'p', status: 'not migrated', pass: false }];
-  const [entry] = freshnessByKind([], [window], [], [], dated);
-  assert.equal(entry.pass, false);
-  assert.equal(entry.notMigrated, 1);
-  assert.equal(entry.status, 'not migrated');
-  assert.deepEqual(entry.reasons, ['not migrated']);
-});
 
 test('windowLosses counts only perf log losses overlapping a window, and losses names affected windows', () => {
   const records = [
@@ -305,27 +295,21 @@ test('classifyWidgetSnapshot classifies strictly from explicit DOM state and kee
   const serialized = new Function(`return (${classifyWidgetSnapshot.toString()});`)();
   for (const fn of [snap => classifyWidgetSnapshot(snap), snap => serialized(snap)]) {
     assert.deepEqual(fn({ domState: 'error', errorDetail: 'Changed rows arrived without the table they change.' }),
-      { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false });
+      { outcome: 'error', detail: 'Changed rows arrived without the table they change.' });
     assert.deepEqual(fn({ domState: 'error', errorDetail: 'No table 44 in the schema' }),
-      { outcome: 'error', detail: 'No table 44 in the schema', notMigrated: false },
+      { outcome: 'error', detail: 'No table 44 in the schema' },
       'an explicit error state is never reclassified as a refusal by message text');
     assert.deepEqual(fn({ domState: 'unavailable', unavailableText: 'No table 44 in the schema' }),
-      { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false });
+      { outcome: 'refusal', detail: 'No table 44 in the schema' });
     assert.deepEqual(fn({ domState: 'outside', outsideText: 'This time is outside the recording.' }),
-      { outcome: 'outside', detail: 'This time is outside the recording.', notMigrated: false });
+      { outcome: 'outside', detail: 'This time is outside the recording.' });
     assert.deepEqual(fn({ domState: 'not-recorded', notRecordedText: 'Not recorded at this time.' }),
-      { outcome: 'not-recorded', detail: 'Not recorded at this time.', notMigrated: false });
+      { outcome: 'not-recorded', detail: 'Not recorded at this time.' });
     assert.deepEqual(fn({ domState: 'empty', emptyText: 'No battles yet.' }),
-      { outcome: 'content', detail: 'No battles yet.', notMigrated: false });
-    assert.deepEqual(fn({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
-    assert.deepEqual(fn({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
-    assert.deepEqual(fn({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });
-    assert.deepEqual(fn({ domState: 'placeholder', placeholderText: 'Scoreboard paused' }),
-      { outcome: 'placeholder', detail: 'Scoreboard paused', notMigrated: true },
-      'explicit placeholder DOM state classifies without English text matching');
-    assert.deepEqual(fn({ placeholderText: "Scoreboard isn't playing back yet" }),
-      { outcome: 'error', detail: "Scoreboard isn't playing back yet", notMigrated: false },
-      'plain text without explicit placeholder marker is not matched by regex');
+      { outcome: 'content', detail: 'No battles yet.' });
+    assert.deepEqual(fn({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading' });
+    assert.deepEqual(fn({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null });
+    assert.deepEqual(fn({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body' });
   }
 });
 

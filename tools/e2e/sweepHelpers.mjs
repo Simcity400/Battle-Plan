@@ -1,11 +1,11 @@
-export const OUTCOME_RANK = Object.freeze({ content: 0, outside: 1, 'not-recorded': 1, placeholder: 2, refusal: 3, error: 4 });
+export const OUTCOME_RANK = Object.freeze({ content: 0, outside: 1, 'not-recorded': 1, refusal: 2, error: 3 });
 
 export function mergeWidgetOutcomes(widgets, observed) {
   return widgets.map(widget => {
     const seen = observed?.[widget.id];
     if (!seen) return widget;
     if ((OUTCOME_RANK[seen.outcome] ?? 0) > (OUTCOME_RANK[widget.outcome ?? 'content'] ?? 0)) {
-      return { ...widget, outcome: seen.outcome, detail: seen.detail, notMigrated: seen.notMigrated };
+      return { ...widget, outcome: seen.outcome, detail: seen.detail };
     }
     return widget;
   });
@@ -39,7 +39,7 @@ export async function measureIdleCost({ pausePlayback, waitPlayButton, setSpeed,
 }
 
 export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, observe, requestFrame, cancelFrame, waitForPlaying = false }) {
-  const rank = { content: 0, outside: 1, 'not-recorded': 1, placeholder: 2, refusal: 3, error: 4 };
+  const rank = { content: 0, outside: 1, 'not-recorded': 1, refusal: 2, error: 3 };
   const worst = new Map();
   let active = !waitForPlaying || isPlaying();
   let stopped = false;
@@ -122,7 +122,6 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
     const readDetail = el => el ? (el.getAttribute('data-detail')?.trim() || el.getAttribute('data-tooltip')?.trim() || el.textContent?.trim() || null) : null;
     const bodyState = a.querySelector('.widget-state[data-state]:not(.is-section)') ?? a.querySelector('[data-state]');
     const domState = bodyState?.getAttribute('data-state') ?? null;
-    const placeholder = a.querySelector('[data-playback-placeholder], [data-state="placeholder"]');
     const unavailable = a.querySelector('[data-state="unavailable"]');
     const error = a.querySelector('[data-state="error"], [role="alert"]');
     const outside = a.querySelector('[data-state="outside"]');
@@ -132,8 +131,6 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
     return classify({
       domState,
       domDetail: readDetail(bodyState),
-      isPlaceholder: Boolean(placeholder),
-      placeholderText: placeholder?.textContent ?? null,
       unavailableText: unavailable ? (readDetail(unavailable) || 'unavailable') : null,
       errorDetail: error ? (readDetail(error) || 'error') : null,
       outsideText: outside ? (readDetail(outside) || 'outside') : null,

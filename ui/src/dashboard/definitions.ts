@@ -88,7 +88,6 @@ export interface WidgetMeta {
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
   countries?: { max: number; ranked?: boolean; rankedBy?: string; aggregate?: boolean; all?: boolean; factions?: boolean; fixed?: boolean };
-  playsBackDated?: boolean;
   defaultCountries?: CountrySelection;
   options?: readonly OptionField[];
   captureModes?: readonly CaptureMode[];

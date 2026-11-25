@@ -10,13 +10,11 @@ import {
   viewOwnedFields,
   type FamilyViewEntry,
   type FamilyViewModule,
-  type LegacyWidgetEntry,
   type NativeWidgetEntry,
 } from '../families/manifest.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
-import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
-export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
+export { DEFAULT_VIEW, FAMILY_VIEWS };
 
 export const NATIVE_WIDGETS: readonly NativeWidgetEntry[] = [
   { kind: 'map', renderer: 'native', load: () => import('./map') },
@@ -91,8 +89,6 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();
 const familyByPair = new Map<string, FamilyViewEntry>();
-const legacyByKind = new Map<string, LegacyWidgetEntry[]>();
-const legacyByPair = new Map<string, LegacyWidgetEntry>();
 
 for (const entry of FAMILY_VIEWS) {
   let list = familyByKind.get(entry.kind);
@@ -101,22 +97,10 @@ for (const entry of FAMILY_VIEWS) {
   familyByPair.set(viewKey(entry.kind, entry.view), entry);
 }
 
-for (const entry of LEGACY_WIDGETS) {
-  let list = legacyByKind.get(entry.kind);
-  if (!list) legacyByKind.set(entry.kind, list = []);
-  list.push(entry);
-  legacyByPair.set(viewKey(entry.kind, entry.view), entry);
-}
-
 const EMPTY_FAMILY: readonly FamilyViewEntry[] = [];
-const EMPTY_LEGACY: readonly LegacyWidgetEntry[] = [];
 
 export function familyViewsForKind(kind: string): readonly FamilyViewEntry[] {
   return familyByKind.get(kind) ?? EMPTY_FAMILY;
-}
-
-export function legacyEntriesForKind(kind: string): readonly LegacyWidgetEntry[] {
-  return legacyByKind.get(kind) ?? EMPTY_LEGACY;
 }
 
 export function manifestFamilyView(kind: string, view?: string): FamilyViewEntry | undefined {
@@ -181,17 +165,13 @@ export function presetWidget(kind: string, initial: PresetWidget): PresetWidget 
   return held;
 }
 
-export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {
-  return legacyByPair.get(viewKey(kind, view)) ?? legacyByPair.get(viewKey(kind, DEFAULT_VIEW));
-}
-
 export function resolveWidgetActiveView(
   kind: string,
   storedOptions?: WidgetOptions,
   metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
 ): string {
   const meta = metaOverride ?? widgetDefinition(kind);
-  return resolveActiveView(storedOptions, meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
+  return resolveActiveView(storedOptions, meta, familyViewsForKind(kind));
 }
 
 export function activeFamilyView(
@@ -211,19 +191,6 @@ export function isFamilyWidgetView(
   return activeFamilyView(kind, storedOptions, metaOverride) !== undefined;
 }
 
-export function isPlaybackDatedView(
-  kind: string,
-  storedOptions?: WidgetOptions,
-  definition?: Pick<WidgetMeta, 'playsBackDated' | 'viewSwitch' | 'options'>,
-): boolean {
-  if (NATIVE_WIDGETS.some(entry => entry.kind === kind)) return true;
-  const view = resolveWidgetActiveView(kind, storedOptions, definition);
-  if (familyByPair.has(viewKey(kind, view))) return true;
-  const legacy = legacyByPair.get(viewKey(kind, view)) ?? legacyByPair.get(viewKey(kind, DEFAULT_VIEW));
-  if (legacy) return legacy.playsBackDated === true || definition?.playsBackDated === true;
-  return definition?.playsBackDated === true;
-}
-
 export function resolveWidgetScopedOptions(
   kind: string,
   storedOptions?: WidgetOptions,
@@ -231,9 +198,8 @@ export function resolveWidgetScopedOptions(
 ): readonly OptionField[] {
   const meta = metaOverride ?? widgetDefinition(kind);
   const familyEntries = familyViewsForKind(kind);
-  const legacyEntries = legacyEntriesForKind(kind);
-  const activeView = resolveActiveView(storedOptions, meta, familyEntries, legacyEntries);
-  return scopedOptionFields(meta, activeView, familyEntries, legacyEntries);
+  const activeView = resolveActiveView(storedOptions, meta, familyEntries);
+  return scopedOptionFields(meta, activeView, familyEntries);
 }
 
 export function resolveWidgetViewSwitch(
@@ -241,20 +207,16 @@ export function resolveWidgetViewSwitch(
   metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options' | 'title'>,
 ): WidgetViewSwitch | undefined {
   const meta = metaOverride ?? widgetDefinition(kind);
-  return manifestViewSwitch(meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
+  return manifestViewSwitch(meta, familyViewsForKind(kind));
 }
 
 export function manifestKinds(): readonly string[] {
-  return [...new Set([...FAMILY_VIEWS, ...NATIVE_WIDGETS, ...LEGACY_WIDGETS].map(entry => entry.kind))];
+  return [...new Set([...FAMILY_VIEWS, ...NATIVE_WIDGETS].map(entry => entry.kind))];
 }
 
 export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
-  const legacy = legacyEntriesForKind(kind);
-  for (const entry of legacy) {
-    if (entry.slots?.length) return entry.slots;
-  }
   return ['render'];
 }
 

@@ -103,7 +103,7 @@ test('createOutcomeWatcher scans once on playing transition, stops polling, and 
   const playHost = {};
   let playing = false, gridCb = null, playCb = null, playDisconnected = false, rafCalls = 0, pendingRaf = null;
   const classified = [];
-  const outcomes = { a: { outcome: 'content', detail: null, notMigrated: false }, b: { outcome: 'content', detail: null, notMigrated: false } };
+  const outcomes = { a: { outcome: 'content', detail: null }, b: { outcome: 'content', detail: null } };
   const watcher = createOutcomeWatcher({
     grid,
     playHost,
@@ -125,7 +125,7 @@ test('createOutcomeWatcher scans once on playing transition, stops polling, and 
   assert.equal(pendingRaf, null, 'activation frame polling stops once playing');
 
   classified.length = 0;
-  outcomes.a = { outcome: 'error', detail: 'boom', notMigrated: false };
+  outcomes.a = { outcome: 'error', detail: 'boom' };
   gridCb([{ target: childOfA, addedNodes: [] }]);
   assert.deepEqual(classified, ['a'], 'grid mutation classifies only the touched widget, never untouched siblings');
 
@@ -181,34 +181,29 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
   const errNode = nodeWith('error', 'Couldn’t load.', 'No table 44 in the schema');
   assert.deepEqual(
     classify(makeNode({ '.widget-state[data-state]:not(.is-section)': errNode, '[data-state="error"], [role="alert"]': errNode })),
-    { outcome: 'error', detail: 'No table 44 in the schema', notMigrated: false },
+    { outcome: 'error', detail: 'No table 44 in the schema' },
   );
   const unavailNode = nodeWith('unavailable', 'Not in this recording.', 'No table 44 in the schema');
   assert.deepEqual(
     classify(makeNode({ '.widget-state[data-state]:not(.is-section)': unavailNode, '[data-state="unavailable"]': unavailNode })),
-    { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false },
+    { outcome: 'refusal', detail: 'No table 44 in the schema' },
   );
   const outsideNode = nodeWith('outside', 'This time is outside the recording.');
   assert.deepEqual(
     classify(makeNode({ '.widget-state[data-state]:not(.is-section)': outsideNode, '[data-state="outside"]': outsideNode })),
-    { outcome: 'outside', detail: 'This time is outside the recording.', notMigrated: false },
+    { outcome: 'outside', detail: 'This time is outside the recording.' },
   );
   const gapNode = nodeWith('not-recorded', 'Not recorded at this time.');
   assert.deepEqual(
     classify(makeNode({ '.widget-state[data-state]:not(.is-section)': gapNode, '[data-state="not-recorded"]': gapNode })),
-    { outcome: 'not-recorded', detail: 'Not recorded at this time.', notMigrated: false },
-  );
-  const placeholderNode = nodeWith('placeholder', 'Any custom copy');
-  assert.deepEqual(
-    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': placeholderNode, '[data-playback-placeholder], [data-state="placeholder"]': placeholderNode })),
-    { outcome: 'placeholder', detail: 'Any custom copy', notMigrated: true },
+    { outcome: 'not-recorded', detail: 'Not recorded at this time.' },
   );
   assert.deepEqual(
     classify(makeNode({}, { state: 'loading', drawing: true })),
-    { outcome: 'content', detail: null, notMigrated: false },
+    { outcome: 'content', detail: null },
   );
   assert.deepEqual(
     classify(makeNode({}, { state: 'loading', drawing: false })),
-    { outcome: 'error', detail: 'still loading', notMigrated: false },
+    { outcome: 'error', detail: 'still loading' },
   );
 });

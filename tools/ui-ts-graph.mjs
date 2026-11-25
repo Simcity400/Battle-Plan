@@ -367,7 +367,7 @@ function openTsProject(root) {
   };
 }
 
-export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, activeLegacyTargets) {
+export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
   const canonRelByLowerAbs = new Map();
   for (const file of allFiles) {
     canonRelByLowerAbs.set(toPosix(file.full).toLowerCase(), file.rel);
@@ -938,7 +938,6 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
       if (!info) return;
       const unit = info.units[unitIndex];
       if (!unit) return;
-      const isLegacyManifestFile = rel === 'ui/src/widgets/legacyManifest.ts';
       const isWidgetManifestFile = rel === 'ui/src/widgets/manifest.ts';
 
       const identCandidates = [];
@@ -1083,7 +1082,6 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
 
       if (!unitIsType) {
         for (const dyn of dynamicImports) {
-          if (isLegacyManifestFile) continue;
           addModuleEdge(rel, dyn.targetRel, false, null);
           let cur = dyn.node;
           let p = parentOf.get(cur);
@@ -1295,11 +1293,6 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, act
           }
           for (const unit of info.units) {
             if (unit.isSideEffect) markRuntimeUnit(rel, unit.unitIndex, false);
-          }
-          if (rel === 'ui/src/widgets/legacyManifest.ts' && activeLegacyTargets) {
-            for (const targetRel of activeLegacyTargets) {
-              addModuleEdge(rel, targetRel, false, 'default');
-            }
           }
         }
 
