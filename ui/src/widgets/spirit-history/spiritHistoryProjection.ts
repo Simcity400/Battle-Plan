@@ -1,6 +1,5 @@
 import { colour } from '../../charts/palette.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryRead, lookOf, unobservedThrough } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { artworkArt } from '../../families/art/provider.ts';
@@ -41,11 +40,9 @@ function spiritRows(reply: IdeaHistoryReply): SpiritRow[] {
 function describe(holding: IdeaHolding): string {
   switch (holding.end.kind) {
     case 'held':
-      return holding.start === 'heldBefore' ? `Held before ${formatDateOnly(holding.firstHour)}`
-        : holding.start === 'firstObserved' ? `First observed ${formatDateOnly(holding.firstHour)}`
-          : `Active since ${formatDateOnly(holding.firstHour)}`;
+      return `${holding.start === 'heldBefore' ? 'Held before' : 'Active since'} ${formatDateOnly(holding.firstHour)}`;
     case 'ended': return `Ended ${formatDateOnly(holding.lastHour + 1)}`;
-    case 'endedBy': return `Ended by ${formatDateOnly(holding.end.hour)}`;
+    case 'endedBy': return `Ended ${formatDateOnly(holding.end.hour)}`;
     case 'lastSeen': return `Last recorded ${formatDateOnly(holding.lastHour)}`;
   }
 }
@@ -146,17 +143,7 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
           source: ctx.track.source,
           branch: ctx.branch.id,
           offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [ctx.countryTag] },
-            product: 'idea-history',
-            followQuery: null,
-            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
-            provenInterval: ideaHistoryProof,
-            dynamicKeys: ['hour'],
-            validate: validateIdeaHistoryReply,
-          },
+          read: ideaHistoryRead(ctx.branch.id, ctx.countryTag),
         }]
       : [],
   }),

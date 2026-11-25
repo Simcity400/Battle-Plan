@@ -1,19 +1,14 @@
-import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
+import { isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
-import { dayLabel } from '../../charts/draw.ts';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
-import { usNumber } from '../../charts/numberFormat.ts';
 import type { Run } from '../../charts/series';
-import { battleDate, battlePartial, battleValueRow, battleValueText, markPartial } from '../battles/battleRows.ts';
-import type { BattleCountryLabel, BattleSide, BattleValue } from '../battles/battleRows';
-import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { landManpowerSides } from './landBattlesData.ts';
-import type { LandBattleRow } from './landBattlesData';
+import type { ChartInlinePoint } from '../../families/time-chart/model.ts';
 
 export interface LandDesign { name: string | null; variant: string }
 export interface CourseSide { manpower: number | string; equipment: Map<number, bigint> | string }
 export interface CourseRead { hour: number; terminal: boolean; sides: [CourseSide, CourseSide] | string }
-export interface LandCourse { id: string; runs: { firstHour: number; lastHour: number; counts: [number, number]; rosterUnknown: boolean }[];
+export type CourseEnd = { hour: number; bound: 'exact' | 'by' } | { unknown: string } | null;
+export interface LandCourse { id: string; end: CourseEnd; runs: { firstHour: number; lastHour: number; counts: [number, number]; rosterUnknown: boolean }[];
   reads: CourseRead[]; designs: LandDesign[]; contentWarnings: string[] }
 export interface LandTerrain { provinceId: number; name: string | null; missing: string | null }
 
@@ -33,6 +28,11 @@ export function validateLandBattleCourse(v: unknown): LandCourse {
   }
   const battle = v.battle;
   if (!Array.isArray(battle.runs) || !Array.isArray(battle.losses)) throw malformed();
+  const ending = battle.end;
+  const end: CourseEnd = ending === null ? null
+    : object(ending) && typeof ending.unknown === 'string' ? { unknown: ending.unknown }
+      : object(ending) && hour(ending.hour) && (ending.bound === 'exact' || ending.bound === 'by') ? { hour: ending.hour, bound: ending.bound }
+        : (() => { throw malformed(); })();
   const runs = battle.runs.map(run => {
     if (!object(run) || !hour(run.firstHour) || !hour(run.lastHour) || run.firstHour > run.lastHour || typeof run.rosterUnknown !== 'boolean'
       || !Array.isArray(run.counts) || run.counts.length !== 2 || !run.counts.every(count => int(count) && count >= 0)) throw malformed();
@@ -61,7 +61,7 @@ export function validateLandBattleCourse(v: unknown): LandCourse {
     }) as [CourseSide, CourseSide];
     reads.push({ hour: read.hour, terminal: read.terminal, sides });
   }
-  return { id: battle.id as string, runs, reads, designs, contentWarnings: v.contentWarnings };
+  return { id: battle.id as string, end, runs, reads, designs, contentWarnings: v.contentWarnings };
 }
 
 export function validateLandBattleTerrain(v: unknown): { provinces: LandTerrain[]; warnings: string[] } {
@@ -70,25 +70,43 @@ export function validateLandBattleTerrain(v: unknown): { provinces: LandTerrain[
   return v as { provinces: LandTerrain[]; warnings: string[] };
 }
 
-export interface HeldTerrain { client: object; scope: string; names: Map<number, LandTerrain> }
-export function heldTerrain(held: HeldTerrain | null, client: object, source: { id: string; revision: string }, content: number): HeldTerrain {
-  const scope = JSON.stringify([source.id, source.revision, content]);
-  return held?.client === client && held.scope === scope ? held : { client, scope, names: new Map() };
+export interface CourseSpan { readonly firstHour: number; readonly lastHour: number }
+
+export function coursePoints(runs: readonly Run[], until: number): ChartInlinePoint[] {
+  const points: ChartInlinePoint[] = [];
+  runs.forEach((run, index) => {
+    const previous = runs[index - 1];
+    if (previous && run.breakBefore) points.push({ hour: previous.lastHour + 1, value: previous.value }, { hour: previous.lastHour + 1, value: null });
+    points.push({ hour: run.firstHour, value: run.value });
+  });
+  const last = runs.at(-1);
+  if (last) points.push({ hour: Math.min(last.lastHour + 1, until), value: last.value });
+  if (last && last.lastHour < until) points.push({ hour: last.lastHour + 1, value: null });
+  return points;
 }
 
-export function missingTerrain(held: HeldTerrain, drawn: readonly number[]): number[] {
-  return [...new Set(drawn)].filter(province => !held.names.has(province)).sort((a, b) => a - b);
+export function courseMissing(runs: readonly Run[], from: number, until: number): CourseSpan[] {
+  const missing: CourseSpan[] = [];
+  let next = from;
+  for (const run of runs) {
+    if (run.firstHour > until) break;
+    if (run.firstHour > next) missing.push({ firstHour: next, lastHour: run.firstHour - 1 });
+    next = Math.max(next, run.lastHour + 1);
+  }
+  if (next <= until) missing.push({ firstHour: next, lastHour: until });
+  return missing;
 }
 
-export function courseExtent(runs: readonly (readonly Run[])[]): [number, number] | null {
-  let most = 1, any = false;
-  for (const side of runs) for (const run of side) { any = true; if (run.value > most) most = run.value; }
-  return any ? [0, most] : null;
-}
-
-export function drillChartHour(row: Pick<LandBattleRow, 'end' | 'settledHour'>, shownHour: number): number {
-  const bound = row.end && 'hour' in row.end ? row.end.hour : row.settledHour;
-  return bound !== undefined ? Math.min(shownHour, bound) : shownHour;
+export function sharedSpans(first: readonly CourseSpan[], second: readonly CourseSpan[]): CourseSpan[] {
+  const shared: CourseSpan[] = [];
+  let i = 0, j = 0;
+  while (i < first.length && j < second.length) {
+    const a = first[i]!, b = second[j]!;
+    const firstHour = Math.max(a.firstHour, b.firstHour), lastHour = Math.min(a.lastHour, b.lastHour);
+    if (firstHour <= lastHour) shared.push({ firstHour, lastHour });
+    if (a.lastHour < b.lastHour) i++; else j++;
+  }
+  return shared;
 }
 
 export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {
@@ -150,131 +168,3 @@ export function courseEquipment(course: LandCourse, at: number): { hour: number;
 
 export const wholeEquipment = (raw: bigint) => formatFixed(raw, 5, 0);
 export const exactEquipment = (raw: bigint) => formatAmount(raw, 5, 5);
-
-export function lengthText(hours: number, long: boolean): string {
-  const days = Math.floor(hours / 24), rest = hours % 24;
-  const unit = (count: number, one: string, many: string) => `${usNumber.format(count)} ${count === 1 ? one : many}`;
-  return days === 0 ? unit(hours, 'hour', 'hours')
-    : long && rest ? `${unit(days, 'day', 'days')} ${unit(rest, 'hour', 'hours')}` : unit(days, 'day', 'days');
-}
-
-export interface SideLook { countries: { tag: string; hour: number; name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean }[]; name: string | null; unknown: string | null }
-export function sideLook(side: BattleSide, country: BattleCountryLabel): SideLook {
-  const countries = side.countries.map(part => ({ tag: part.tag, hour: part.hour, ...country(part.tag, part.hour) }));
-  return { countries, name: countries.length === 1 && !side.countriesUnknown ? countries[0].name : null, unknown: side.countriesUnknown ?? null };
-}
-
-export type BattleOutcome = { kind: 'ongoing' } | { kind: 'won'; side: number } | { kind: 'unknown'; text: string };
-export function battleOutcome(row: LandBattleRow): BattleOutcome {
-  if (row.end === null) return { kind: 'ongoing' };
-  if ('side' in row.winner) return { kind: 'won', side: row.winner.side };
-  if ('unknown' in row.end) return { kind: 'unknown', text: row.end.unknown };
-  return { kind: 'unknown', text: row.winner.unknown };
-}
-
-export function lossNote(row: LandBattleRow): string | undefined {
-  if (!row.lossRead) return undefined;
-  return `${row.lossRead.terminal ? 'Final losses' : 'Losses so far'}, read ${formatDateTime(row.lossRead.hour)}`;
-}
-
-export const peakText = (peak: { value: number; hour: number } | null) =>
-  peak === null ? 'Not recorded' : `${usNumber.format(peak.value)}, ${dayLabel(peak.hour)}`;
-export const peakValue = (row: LandBattleRow): BattleValue => row.peakUnknown ? { label: 'Peak size', value: null, unknown: 'Roster not recorded' }
-  : { label: 'Peak size', value: row.peak.value, atLeast: row.start?.bound === 'by' || row.end !== null && 'unknown' in row.end };
-
-const SIDES = ['Attackers', 'Defenders'] as const;
-const placeName = (row: LandBattleRow, pending: boolean) => row.place.name ?? (row.provinceId === null ? 'Province not recorded' : pending ? 'Loading…' : 'Unnamed province');
-
-export function winners(look: SideLook, side: string): string {
-  if (look.unknown) return side;
-  const names = look.countries.map(part => part.name);
-  if (names.length === 0) return side;
-  if (names.length <= 2) return names.join(' and ');
-  return `${names[0]} and ${names.length - 1} more`;
-}
-
-export function battleTooltip(row: LandBattleRow, looks: readonly SideLook[], terrain: string | null, colours: readonly string[], pending: boolean): TooltipContent {
-  const rows: TooltipRow[] = [];
-  if (terrain) rows.push({ label: 'Terrain', value: terrain });
-  rows.push({ label: 'Started', value: battleDate(row.start, 'Not recorded') });
-  rows.push({ label: 'Ended', value: battleDate(row.end, 'Ongoing') });
-  if (row.length.value !== null) rows.push(battleValueRow('Length', row.length, lengthText(row.length.value, true)));
-  rows.push(battleValueRow('Most divisions at once', peakValue(row), row.peakUnknown ? 'Roster not recorded' : peakText(row.peak)));
-  row.sides.forEach((side, index) => {
-    rows.push({ label: SIDES[index], strong: true, divider: true, swatch: colours[index] });
-    for (const part of looks[index].countries) rows.push({ label: part.name, countryFlag: part, indent: true });
-    if (side.countriesUnknown) rows.push({ label: 'Countries not recorded', indent: true, tone: 'muted' });
-    if (row.sidePeaks) rows.push({ label: 'Most divisions at once', value: peakText(row.sidePeaks[index]), indent: true });
-    const count = side.counts[0];
-    rows.push(count ? battleValueRow('Divisions at the last read', count, battleValueText(count), { indent: true }) : { label: 'Divisions at the last read', value: 'Not recorded', indent: true });
-    for (const value of side.losses) {
-      const raw = value.label === 'Equipment lost' ? row.lossRead?.equipmentRaw?.[index] : null;
-      rows.push(battleValueRow(value.label, value, raw != null ? wholeEquipment(BigInt(raw)) : battleValueText(value), {
-        indent: true, ...(value.value === null && raw == null ? { tone: 'muted' as const } : {}) }));
-    }
-    if (!side.losses.length) rows.push({ label: 'Losses', value: 'Not recorded', indent: true, tone: 'muted' });
-  });
-  const outcome = battleOutcome(row);
-  rows.push({ label: 'Result', divider: true, value: outcome.kind === 'ongoing' ? 'Ongoing' : outcome.kind === 'unknown' ? outcome.text
-    : `${winners(looks[outcome.side], SIDES[outcome.side])} won` });
-  return { title: placeName(row, pending), rows, note: lossNote(row) };
-}
-
-export const lossWidth = (value: number, larger: number) => larger > 0 && value > 0 ? `${Math.max(3, value / larger * 50)}%` : '0';
-
-export const sameKnownSides = (a: LandBattleRow, b: LandBattleRow) => {
-  const [left, right] = [landManpowerSides(a), landManpowerSides(b)];
-  return (left[0] === null) === (right[0] === null) && (left[1] === null) === (right[1] === null);
-};
-
-export function subLine(row: LandBattleRow): string | null {
-  const hours = row.length.value;
-  if (hours === null || row.end === null && hours < 24) return null;
-  return markPartial(`${hours < 24 ? hours : `d${Math.floor(hours / 24)}`}`, battlePartial(row.length));
-}
-
-export function subText(row: LandBattleRow, terrain: string | null) {
-  return [terrain, row.end !== null || row.length.value !== null && row.length.value >= 24
-    ? row.length.value === null ? null : markPartial(lengthText(row.length.value, false), battlePartial(row.length)) : null].filter(Boolean).join(' · ');
-}
-
-interface BattleParts { values: readonly HTMLElement[]; bars: readonly HTMLElement[]; sub: HTMLElement | null;
-  lost: readonly (number | null)[]; line: string | null; terrain: string | null | undefined }
-const battlePartsCache = new WeakMap<HTMLElement, BattleParts>();
-export function clearBattleParts(element: HTMLElement) { battlePartsCache.delete(element); }
-function battleParts(element: HTMLElement): BattleParts {
-  let held = battlePartsCache.get(element);
-  if (!held || (held.sub && !element.contains(held.sub)) || (held.values[0] && !element.contains(held.values[0]))) {
-    held = { values: [...element.querySelectorAll<HTMLElement>('.lb-losses .log-value')], bars: [...element.querySelectorAll<HTMLElement>('.lb-losses .lb-bar')],
-      sub: element.querySelector<HTMLElement>('.lb-place small'), lost: [], line: null, terrain: undefined };
-    battlePartsCache.set(element, held);
-  }
-  return held;
-}
-
-export function paintBattle(element: HTMLElement, row: LandBattleRow, terrain: string | null) {
-  const held = battleParts(element);
-  const { values, bars, sub } = held;
-  const lost = landManpowerSides(row);
-  if (values.length === 2 && (lost[0] !== held.lost[0] || lost[1] !== held.lost[1])) {
-    held.lost = lost;
-    const both = lost[0] !== null && lost[1] !== null;
-    const larger = both ? Math.max(lost[0]!, lost[1]!) : 0;
-    lost.forEach((value, side) => {
-      if (value !== null && !values[side].classList.contains('is-muted') && values[side].firstElementChild === null) {
-        const text = usNumber.format(value);
-        if (values[side].textContent !== text) values[side].textContent = text;
-      }
-      if (both && bars.length === 2) {
-        const width = lossWidth(value!, larger);
-        if (bars[side].style.width !== width) bars[side].style.width = width;
-      }
-    });
-  }
-  const line = subLine(row);
-  if (sub && (line !== held.line || terrain !== held.terrain)) {
-    held.line = line; held.terrain = terrain;
-    const text = subText(row, terrain);
-    if (sub.textContent !== text) sub.textContent = text;
-  }
-}

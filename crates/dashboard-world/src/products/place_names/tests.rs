@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, content_identity, records, source};
 use replay::campaign::Replay;
@@ -23,16 +24,6 @@ fn frame(hour: i32) -> DecodedFrame {
     frame
 }
 
-fn named(source: &Source, load: &LoadContext, places: &[(u32, i32)], states: &[(u32, i32)]) -> PlaceNamesReply {
-    let params = PlaceNamesParams {
-        branch_id: "1".into(),
-        land: false,
-        places: places.iter().map(|&(province_id, hour)| PlaceNameRequest { province_id, hour }).collect(),
-        states: states.iter().map(|&(state_id, hour)| StateNameRequest { state_id, hour }).collect(),
-    };
-    PlaceNames::load(source, &params, load, &AtomicBool::new(false)).unwrap()
-}
-
 #[test]
 fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a_reason() {
     engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -49,6 +40,14 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
             "\u{feff}l_english:\n MOD_STATE:0 \"Mod state\"\n ORI_VICTORY_POINTS_17:0 \"Original town\"\n GER_VICTORY_POINTS_17:0 \"Own-tag town\"\n RENAME:0 \"Renamed town\"\n",
         ),
     ]);
+    let mut bitmap = [0_u8; 58];
+    bitmap[..2].copy_from_slice(b"BM");
+    for (offset, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1)] {
+        bitmap[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    std::fs::write(folder.0.join("map/provinces.bmp"), bitmap).unwrap();
     let (options, identity) = content_identity(&folder.0);
     let mut input = records(1, (100..=110).map(frame).collect());
     let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
@@ -62,33 +61,20 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
     let replay = Replay::open_newest(&path).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "place-names".into(), revision: "1".into() }, path, Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let load = LoadContext { content: Some(options) };
-    let reply = named(&source, &load, &[(17, 105), (18, 105), (19, 105), (20, 105), (17, 500)], &[(64, 105), (65, 105), (66, 105)]);
-    let names: Vec<Option<&str>> = reply.places.iter().map(|place| place.name.as_deref()).collect();
-    assert_eq!(names, [Some("Original town"), Some("Renamed town"), Some("Mod state"), None, None], "the victory point is the state owner's original tag's");
-    assert!(reply.places[..3].iter().all(|place| place.missing.is_none()));
-    assert_eq!(reply.places[3].missing.as_deref(), Some("Not in this recording: province 20 at this hour"));
-    assert!(reply.places[4].missing.as_deref().is_some_and(|reason| reason.starts_with("Not in this recording")), "an hour no run holds is named, never guessed");
-    let states: Vec<Option<&str>> = reply.states.iter().map(|state| state.name.as_deref()).collect();
-    assert_eq!(states, [Some("Mod state"), Some("Custom state"), None]);
-    assert_eq!(reply.states[2].missing.as_deref(), Some("Not in this recording: state 66 at this hour"));
-    let asked = [(18, 101), (17, 103), (19, 103), (18, 107), (17, 110)];
-    let together = named(&source, &load, &asked, &[(64, 102), (65, 109)]);
-    for (at, &(province, hour)) in asked.iter().enumerate() {
-        let alone = named(&source, &load, &[(province, hour)], &[]);
-        assert_eq!((together.places[at].name.as_deref(), together.places[at].missing.as_deref()), (alone.places[0].name.as_deref(), alone.places[0].missing.as_deref()), "province {province} at {hour}");
-    }
-    assert_eq!(together.states.iter().map(|state| state.name.as_deref()).collect::<Vec<_>>(), [Some("Mod state"), Some("Custom state")]);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let content = Content::read(&source, &load).unwrap();
+    let mut frames = at_hour::Frames::new(&query).unwrap();
+    let frame = read_hour(&query, &mut frames, 105, &[17, 18, 19, 20], &[64, 65, 66]).unwrap();
+    let places = Places::new(&frame);
+    let names = [17, 18, 19, 20].map(|id| places.province(&content, id, false));
+    assert_eq!(names.each_ref().map(|p| p.name.as_deref()), [Some("Original town"), Some("Renamed town"), Some("Mod state"), None], "{names:?}");
+    assert!(names[..3].iter().all(|p| p.missing.is_none()));
+    assert_eq!(names[3].missing.as_deref(), Some("Not in this recording: province 20 at this hour"));
+    assert!(read_hour(&query, &mut frames, 500, &[17], &[]).err().unwrap().starts_with("Not in this recording"));
+    let states = [64, 65, 66].map(|id| places.state(&content, id));
+    assert_eq!(states.each_ref().map(|s| s.name.as_deref()), [Some("Mod state"), Some("Custom state"), None]);
+    assert_eq!(states[2].missing.as_deref(), Some("Not in this recording: state 66 at this hour"));
+    drop(query);
     drop(source);
     std::fs::remove_dir_all(&saved).unwrap();
-}
-
-#[test]
-fn a_request_naming_every_place_a_widget_shows_is_taken_whatever_its_count() {
-    let params = PlaceNamesParams {
-        branch_id: "1".into(),
-        land: false,
-        places: (0..5_000).map(|province_id| PlaceNameRequest { province_id, hour: 10 }).collect(),
-        states: (0..5_000).map(|state_id| StateNameRequest { state_id, hour: 10 }).collect(),
-    };
-    assert_eq!(<PlaceNames as Product>::validate(&params), Ok(()));
 }

@@ -1,23 +1,20 @@
 
-use dashboard_base::products::{LoadContext, Product, at_hour::{self, Read}};
-use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals}};
+use dashboard_base::products::{LoadContext, at_hour::{self, Read}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}};
 use dashboard_text::{
-    metadata::{check_cancel, not_recorded},
+    metadata::not_recorded,
     scope,
     scripted_text,
 };
 use content_reader_country_names::country_names;
 use replay_data::rows::{StateRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, DecodedSource, TableView};
-use serde::{Deserialize, Serialize};
 use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
 };
-#[cfg(any(test, feature = "export-types"))]
-use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
@@ -294,69 +291,7 @@ impl<'f> Places<'f> {
     }
 }
 
-pub struct PlaceNames;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PlaceNamesParams {
-    pub branch_id: String,
-    #[doc = " Land's ladder: a province in no state stays unnamed rather than taking its region's name."]
-    #[serde(default)]
-    pub land: bool,
-    pub places: Vec<PlaceNameRequest>,
-    #[serde(default)]
-    pub states: Vec<StateNameRequest>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PlaceNameRequest {
-    pub province_id: u32,
-    pub hour: i32,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StateNameRequest {
-    pub state_id: u32,
-    pub hour: i32,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct PlaceName {
-    pub province_id: u32,
-    pub hour: i32,
-    pub name: Option<String>,
-    pub missing: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct PlaceStateName {
-    pub state_id: u32,
-    pub hour: i32,
-    pub name: Option<String>,
-    pub missing: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct PlaceNamesReply {
-    pub places: Vec<PlaceName>,
-    pub states: Vec<PlaceStateName>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(PlaceNamesReply);
-
-pub(crate) fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_>, hour: i32, provinces: &[u32], states: &[u32]) -> Result<DecodedFrame, String> {
+pub fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_>, hour: i32, provinces: &[u32], states: &[u32]) -> Result<DecodedFrame, String> {
     if query.timeline.at(hour).is_none() {
         let reason = query.timeline.unheld.iter().find(|unheld| unheld.first <= hour && hour <= unheld.last).map_or("the hour was not recorded", |unheld| unheld.reason.as_str());
         return Err(format!("Not in this recording: {reason}"));
@@ -373,98 +308,4 @@ pub(crate) fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour
         }
     }
     Ok(frame)
-}
-
-impl Product for PlaceNames {
-    const KEY: &'static str = "place-names";
-    const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = PlaceNamesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, land, "places[].hour": Read, "states[].hour": Read, "places[].provinceId", "states[].stateId"];
-    type Reply = PlaceNamesReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        if params.branch_id.parse::<u64>().is_err() {
-            return Err("Invalid place names branch");
-        }
-        Ok(())
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![PlaceNamesParams::decl(), PlaceNameRequest::decl(), StateNameRequest::decl(), PlaceName::decl(), PlaceStateName::decl(), PlaceNamesReply::decl()]
-    }
-
-    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid place names branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let content = Content::read(source, load)?;
-        let mut hours: BTreeMap<i32, (Vec<u32>, Vec<u32>)> = BTreeMap::new();
-        for place in &params.places {
-            hours.entry(place.hour).or_default().0.push(place.province_id);
-        }
-        for state in &params.states {
-            hours.entry(state.hour).or_default().1.push(state.state_id);
-        }
-        let mut places: HashMap<(u32, i32), Name> = HashMap::new();
-        let mut states: HashMap<(u32, i32), Name> = HashMap::new();
-        let mut frames = at_hour::Frames::new(&query)?;
-        for (&hour, (provinces, wanted)) in &mut hours {
-            check_cancel(cancelled)?;
-            provinces.sort_unstable();
-            provinces.dedup();
-            wanted.sort_unstable();
-            wanted.dedup();
-            match read_hour(&query, &mut frames, hour, provinces, wanted) {
-                Ok(frame) => {
-                    let named = Places::new(&frame);
-                    for &id in provinces.iter() {
-                        places.insert((id, hour), named.province(&content, id, params.land));
-                    }
-                    for &id in wanted.iter() {
-                        states.insert((id, hour), named.state(&content, id));
-                    }
-                }
-                Err(reason) => {
-                    for &id in provinces.iter() {
-                        places.insert((id, hour), Name::missing(reason.clone()));
-                    }
-                    for &id in wanted.iter() {
-                        states.insert((id, hour), Name::missing(reason.clone()));
-                    }
-                }
-            }
-        }
-        let mut refused = Refusals::default();
-        let places: Vec<PlaceName> = params
-            .places
-            .iter()
-            .map(|asked| {
-                let name = places.get(&(asked.province_id, asked.hour)).cloned().unwrap_or_else(|| Name::missing("Not in this recording"));
-                if let Some(reason) = &name.missing {
-                    refused.note(reason, format!("province {} at {}", asked.province_id, asked.hour));
-                }
-                PlaceName { province_id: asked.province_id, hour: asked.hour, name: name.name, missing: name.missing }
-            })
-            .collect();
-        let states: Vec<PlaceStateName> = params
-            .states
-            .iter()
-            .map(|asked| {
-                let name = states.get(&(asked.state_id, asked.hour)).cloned().unwrap_or_else(|| Name::missing("Not in this recording"));
-                if let Some(reason) = &name.missing {
-                    refused.note(reason, format!("state {} at {}", asked.state_id, asked.hour));
-                }
-                PlaceStateName { state_id: asked.state_id, hour: asked.hour, name: name.name, missing: name.missing }
-            })
-            .collect();
-        let mut warnings = content.warnings();
-        warnings.extend(content.cat.refusal_lines());
-        warnings.extend(refused.lines("place names"));
-        warnings.sort();
-        warnings.dedup();
-        let reply = PlaceNamesReply { places, states, warnings };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
 }

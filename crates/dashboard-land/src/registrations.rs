@@ -6,14 +6,12 @@ dashboard_base::register_products! {
     LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
-    DIVISION_LOG_DIVISIONLOG => crate::products::division_log::DivisionLog,
-    DIVISION_LOG_DIVISIONLOGMANIFEST => crate::products::division_log::DivisionLogManifest,
-    LAND_BATTLES_LANDBATTLESMANIFEST => crate::products::land_battles::LandBattlesManifest,
-    LAND_BATTLES_LANDBATTLES => crate::products::land_battles::LandBattles,
-    LAND_BATTLES_LANDBATTLESRANKING => crate::products::land_battles::LandBattlesRanking,
+    DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail,
+    DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail,
+    DIVISION_SERVICE_RECORD_CHOICES => crate::products::divisions::careers::service_record::DivisionServiceRecordChoices,
+    LAND_BATTLES_TAIL => crate::products::land_battles::tail::LandBattlesTail,
     LAND_BATTLES_LANDBATTLECOURSES => crate::products::land_battles::LandBattleCourses,
     LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
-    COMBAT_LOG_COMBATLOG => crate::products::combat_log::CombatLog,
 }
 
 dashboard_base::register_hourly_products! {
@@ -24,8 +22,6 @@ dashboard_base::register_hourly_products! {
     LEADERS_UNITLEADERS => crate::products::leaders::UnitLeaders,
     LEADERS_CAREER_LEADERHOUR => crate::products::leaders::career::LeaderHour,
     DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => crate::products::divisions::templates::DivisionTemplates,
-    DIVISIONS_CAREERS_DIVISIONCAREERS => crate::products::divisions::careers::DivisionCareers,
-    DIVISIONS_CAREERS_DIVISIONRECORD => crate::products::divisions::careers::DivisionRecord,
     DIVISIONS_CAREERS_DECORATEDDIVISIONS => crate::products::divisions::careers::DecoratedDivisions,
     DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => crate::products::divisions::equipment::DivisionEquipment,
     ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,

@@ -14,7 +14,7 @@ use std::{
 pub(crate) struct RosterLine {
     tag: String,
     branch: u64,
-    source: dashboard_base::Source,
+    source: Arc<dashboard_base::Source>,
     context: dashboard_core::config::LoadContext,
     panel: Box<dyn Panel>,
     pub(super) reader: ViewReader,
@@ -27,11 +27,11 @@ pub(crate) struct RosterLine {
 impl RosterLine {
     pub(crate) fn open(views: &Views, path: &Path, branch: u64, tag: &str, content: &ResolveOptions, pace: Pace) -> io::Result<Self> {
         let cancelled = AtomicBool::new(false);
-        let source = dashboard_base::Source::open(
+        let source = Arc::new(dashboard_base::Source::open(
             dashboard_base::SourceKey { source_id: "roster-proof".into(), revision: dashboard_core::protocol::replay_revision(path)? },
             path.to_path_buf(),
             &cancelled,
-        )?;
+        )?);
         let context = dashboard_core::config::LoadContext {
             content: Some(dashboard_core::config::ContentOptions { options: content.clone(), allow_unverified: false, presentation: Default::default() }),
         };

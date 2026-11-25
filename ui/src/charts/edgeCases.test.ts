@@ -5,7 +5,6 @@ import { nudgeApart } from './palette.ts';
 import { layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
-import { samplePoints, segments } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import { linearTicks } from './valueAxis.ts';
 import { EMPTY_VIEW, reduceView, resolveY } from './view.ts';
@@ -32,34 +31,6 @@ test('a wake that arrives while a task draws is not lost', () => {
   assert.equal(frames, 2);
   assert.equal(queued, null);
 });
-
-test('a run ending in the hour of a fractional zoom edge is still drawn and fitted', () => {
-  const runs = [{ firstHour: 20, lastHour: 29, value: 8 }, { firstHour: 30, lastHour: 40, value: 2 }];
-  assert.equal(segments(runs, 29.5, 40)[0][0].value, 8);
-});
-
-test('a one-hour spike between samples is drawn, not skipped', () => {
-  const runs = [{ firstHour: 0, lastHour: 499, value: 50 }, { firstHour: 500, lastHour: 500, value: 900 }, { firstHour: 501, lastHour: 1000, value: 50 }];
-  const points = samplePoints(runs, hour => hour / 10, value => value, 12);
-  assert.ok(points.some(point => point.y === 900), 'the spike has a point');
-  assert.ok(points.every((point, index) => index === 0 || point.x > points[index - 1].x), 'points stay in order');
-});
-
-test('a line growing during playback keeps its samples, so only its tip moves', () => {
-  const runs = Array.from({ length: 300 }, (_, index) => ({ firstHour: index * 10, lastHour: index * 10 + 9, value: (index * 37) % 23 }));
-  const sampled = (until: number, span: number, width = 600) => samplePoints(segments(runs, 0, until)[0], hour => hour * width / span, value => value)
-    .map(point => Math.round(point.x * span / width * 1e6) / 1e6);
-  const before = sampled(1500, 1500);
-  const grown = sampled(1507, 1507);
-  const settled = before.filter(hour => hour < 1400);
-  assert.ok(settled.length > 20);
-  assert.deepEqual(grown.slice(0, settled.length), settled);
-  const fixed = sampled(1500, 3000);
-  assert.deepEqual(sampled(1503, 3000).slice(0, fixed.length - 2), fixed.slice(0, -2));
-  const rising = samplePoints(runs.map((run, index) => ({ ...run, value: index })), hour => hour * 600 / 2999, value => value);
-  assert.ok(rising.length >= 50 / Math.SQRT2 && rising.length <= 50 * Math.SQRT2 + 2, `${rising.length} samples`);
-});
-
 
 test('a zoomed time range with fractional bounds still gets ticks', () => {
   const whole = timeTicks(61_320_000, 61_321_000, 600);

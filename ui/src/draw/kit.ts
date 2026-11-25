@@ -114,6 +114,13 @@ function buildKitTokens(theme: KitTokenInput) {
     textSecondary: dark ? '#d4d4d4' : theme.muted,
     autoName: mix(theme.text, theme.surface, 0.25),
     childText: dark ? '#d4d4d4' : theme.text,
+    quiet: mix(theme.muted, theme.surface, 0.32),
+    tileTop: mix(theme.raised ?? theme.surface, theme.text, 0.05),
+    tileBottom: mix(theme.raised ?? theme.surface, theme.surface, 0.3),
+    tileEdge: `rgba(${ink}, ${dark ? 0.06 : 0.08})`,
+    tileFlat: `rgba(${ink}, ${dark ? 0.07 : 0.06})`,
+    tileInk: mix(theme.text, theme.surface, 0.28),
+    treeLine: `rgba(${ink}, ${dark ? 0.14 : 0.18})`,
     barNeutral: dark ? '#cfcfcf' : '#64748b',
     trackGrey: dark ? '#c4c4c4' : '#64748b',
     twoWayNeutral: dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)',
@@ -343,6 +350,39 @@ export interface ArtSlotResult {
   readonly label?: string;
 }
 
+interface DrawnBounds { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+const drawnBounds = new WeakMap<object, DrawnBounds | null>();
+const OPAQUE = 24;
+
+export function artDrawnBounds(source: CanvasImageSource, width: number, height: number): DrawnBounds | null {
+  if (typeof source !== 'object' || source === null) return null;
+  if (drawnBounds.has(source)) return drawnBounds.get(source)!;
+  let bounds: DrawnBounds | null = null;
+  try {
+    const canvas = new OffscreenCanvas(width, height);
+    const g = canvas.getContext('2d', { willReadFrequently: true });
+    if (g) {
+      g.drawImage(source, 0, 0);
+      const data = g.getImageData(0, 0, width, height).data;
+      let x0 = width, y0 = height, x1 = -1, y1 = -1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (data[(y * width + x) * 4 + 3]! <= OPAQUE) continue;
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+      bounds = x1 < 0 ? null : { x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1 };
+    }
+  } catch {
+    bounds = null;
+  }
+  drawnBounds.set(source, bounds);
+  return bounds;
+}
+
 function drawSlotImage(
   ctx: Canvas2D,
   x: number,
@@ -351,9 +391,13 @@ function drawSlotImage(
   height: number,
   state: Extract<ArtSlotState, { kind: 'ready' }>,
   radius: number,
+  trim = false,
 ): void {
-  const sw = Math.max(1, state.width);
-  const sh = Math.max(1, state.height);
+  const box = trim ? artDrawnBounds(state.bitmap, Math.max(1, state.width), Math.max(1, state.height)) : null;
+  const sx = box?.x ?? 0;
+  const sy = box?.y ?? 0;
+  const sw = box?.width ?? Math.max(1, state.width);
+  const sh = box?.height ?? Math.max(1, state.height);
   const scale = Math.min(width / sw, height / sh);
   const dw = sw * scale;
   const dh = sh * scale;
@@ -363,7 +407,7 @@ function drawSlotImage(
     ctx.roundRect(x, y, width, height, radius);
     ctx.clip();
   }
-  ctx.drawImage(state.bitmap, x + (width - dw) / 2, y + (height - dh) / 2, dw, dh);
+  ctx.drawImage(state.bitmap, sx, sy, sw, sh, x + (width - dw) / 2, y + (height - dh) / 2, dw, dh);
   ctx.restore();
 }
 
@@ -424,7 +468,7 @@ export function drawArtSlot(
   height: number,
   state: ArtSlotState,
   theme: FamilyTheme,
-  options?: { readonly radius?: number; readonly alpha?: number },
+  options?: { readonly radius?: number; readonly alpha?: number; readonly trim?: boolean },
 ): ArtSlotResult {
   const radius = options?.radius ?? 3;
   if (width <= 0 || height <= 0 || state.kind === 'none' || state.kind === 'pending') {
@@ -433,7 +477,7 @@ export function drawArtSlot(
   ctx.save();
   if (options?.alpha !== undefined) ctx.globalAlpha = options.alpha;
   if (state.kind === 'ready') {
-    drawSlotImage(ctx, x, y, width, height, state, radius);
+    drawSlotImage(ctx, x, y, width, height, state, radius, options?.trim);
     ctx.restore();
     return { x, y, width, height, drawn: 'ready' };
   }
@@ -629,10 +673,31 @@ export function drawSplitBar(
   height: number,
   segments: readonly SplitBarSegment[],
   theme: FamilyTheme,
+  options?: { readonly gap?: number },
 ): void {
   if (width <= 0 || height <= 0) return;
   const active = segments.filter(s => s.fraction > 0);
   if (!active.length) return;
+  const gap = options?.gap ?? 0;
+  if (gap > 0) {
+    const span = Math.max(0, width - gap * (active.length - 1));
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, Math.min(2, height / 2));
+    ctx.clip();
+    let at = x;
+    for (const segment of active) {
+      const segW = span * segment.fraction;
+      if (segment.hatched) drawHatchRect(ctx, at, y, segW, height, 0, theme);
+      else {
+        ctx.fillStyle = segment.fill;
+        ctx.fillRect(at, y, segW, height);
+      }
+      at += segW + gap;
+    }
+    ctx.restore();
+    return;
+  }
   const radius = barCornerRadius(height);
   let cursor = x;
   for (let i = 0; i < active.length; i++) {
@@ -810,6 +875,8 @@ export function drawProgressRing(
 }
 
 export type StatusMarkKind = 'running' | 'waiting' | 'succeeded' | 'finished' | 'ended';
+export const STATUS_WORD_SIZE = 12.5;
+export const STATUS_MARK_LEAD = 15;
 
 export const STATUS_MARK_LABELS: Readonly<Record<StatusMarkKind, string>> = {
   running: 'Running',
@@ -827,30 +894,34 @@ export function drawStatusMark(
   theme: FamilyTheme,
   options?: { readonly label?: string; readonly maxWidth?: number },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const dotRadius = 3;
+  const tokens = resolveKitTokens(theme);
+  const dotRadius = 3.5;
   const dotDiameter = dotRadius * 2;
-  const gap = 6;
+  const gap = STATUS_MARK_LEAD - dotDiameter;
   const color = kind === 'running' || kind === 'waiting'
     ? theme.accent
     : kind === 'succeeded'
       ? theme.green
-      : theme.muted;
+      : kind === 'ended'
+        ? tokens.quiet
+        : theme.muted;
   const ring = kind === 'waiting' || kind === 'ended';
+  const stroke = kind === 'waiting' ? 1.5 : 1.4;
   ctx.save();
   ctx.beginPath();
-  ctx.arc(x + dotRadius, middleY, ring ? dotRadius - 0.6 : dotRadius, 0, Math.PI * 2);
+  ctx.arc(x + dotRadius, middleY, ring ? dotRadius - stroke / 2 : dotRadius, 0, Math.PI * 2);
   if (ring) {
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = stroke;
     ctx.stroke();
   } else {
     ctx.fillStyle = color;
     ctx.fill();
   }
   const word = options?.label ?? STATUS_MARK_LABELS[kind];
-  const fontSize = theme.fontSize.small;
-  ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
-  ctx.fillStyle = kind === 'ended' ? theme.muted : theme.text;
+  const fontSize = STATUS_WORD_SIZE;
+  ctx.font = `400 ${fontSize}px ${theme.font}`;
+  ctx.fillStyle = kind === 'ended' ? theme.muted : tokens.childText;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - dotDiameter - gap) : 10_000;
@@ -958,19 +1029,20 @@ export function drawDateColumn(
     return { missing: true, full: notRecordedLabel('Date'), hover: notRecordedLabel('Date') };
   }
   const anchorX = align === 'right' ? x + width : x;
+  const tokens = resolveKitTokens(theme);
   ctx.save();
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   if (rowHeight >= 32) {
     ctx.font = `500 12.5px ${theme.font}`;
-    ctx.fillStyle = theme.text;
+    ctx.fillStyle = tokens.childText;
     ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY - 6);
     ctx.font = `400 10.5px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
+    ctx.fillStyle = tokens.quiet;
     ctx.fillText(ellipsise(parts.year, width, s => textWidth(ctx, s)), anchorX, middleY + 7);
   } else {
     ctx.font = `500 11.5px ${theme.font}`;
-    ctx.fillStyle = theme.text;
+    ctx.fillStyle = tokens.childText;
     ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY);
   }
   ctx.restore();
@@ -1746,6 +1818,15 @@ export function drawIconStrip(
   return { drawnCount, overflowCount };
 }
 
+let playPath: Path2D | null = null;
+
+export interface ActionButtonShape {
+  readonly padLeft: number;
+  readonly padRight: number;
+  readonly gap: number;
+  readonly height: number;
+}
+
 export function drawActionButton(
   ctx: Canvas2D,
   right: number,
@@ -1753,12 +1834,23 @@ export function drawActionButton(
   label: string,
   active: boolean,
   theme: FamilyTheme,
+  icon?: 'play',
+  shape: ActionButtonShape = { padLeft: 8, padRight: 8, gap: 5, height: 24 },
 ): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
   const tokens = resolveKitTokens(theme);
   const iconSize = 13;
-  const drawWindowIcon = (ix: number, iy: number, color: string, alpha: number) => {
+  const drawIcon = (ix: number, iy: number, color: string, alpha: number) => {
     ctx.save();
     ctx.globalAlpha = alpha;
+    if (icon === 'play') {
+      playPath ??= new Path2D('M5.2 3.4v9.2c0 .5.5.8.9.5l7-4.6c.4-.3.4-.8 0-1.1l-7-4.6c-.4-.2-.9 0-.9.6z');
+      ctx.fillStyle = color;
+      ctx.translate(ix, iy);
+      ctx.scale(iconSize / 16, iconSize / 16);
+      ctx.fill(playPath);
+      ctx.restore();
+      return;
+    }
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.3;
     ctx.beginPath();
@@ -1773,28 +1865,26 @@ export function drawActionButton(
   if (!active) {
     const ix = right - iconSize;
     const iy = Math.round(middleY - iconSize / 2);
-    drawWindowIcon(ix, iy, theme.muted, 0.55);
+    drawIcon(ix, iy, theme.muted, 0.55);
     return { x: ix - 4, y: iy - 4, width: iconSize + 8, height: iconSize + 8 };
   }
   const font = `500 12px ${theme.font}`;
   ctx.save();
   ctx.font = font;
   const labelW = textWidth(ctx, label);
-  const padX = 8;
-  const gap = 5;
-  const h = 24;
-  const w = Math.ceil(padX * 2 + iconSize + gap + labelW);
+  const { padLeft, padRight, gap, height: h } = shape;
+  const w = Math.ceil(padLeft + padRight + iconSize + gap + labelW);
   const x = right - w;
   const y = Math.round(middleY - h / 2);
   ctx.fillStyle = tokens.dark ? 'rgba(255, 255, 255, 0.09)' : 'rgba(15, 23, 42, 0.08)';
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, ROW_CORNER_RADIUS);
   ctx.fill();
-  drawWindowIcon(x + padX, Math.round(middleY - iconSize / 2), theme.text, 0.9);
+  drawIcon(x + padLeft, Math.round(middleY - iconSize / 2), theme.text, 0.9);
   ctx.fillStyle = theme.text;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, x + padX + iconSize + gap, middleY);
+  ctx.fillText(label, x + padLeft + iconSize + gap, middleY);
   ctx.restore();
   return { x, y, width: w, height: h };
 }

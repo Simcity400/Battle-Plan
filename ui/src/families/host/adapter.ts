@@ -23,53 +23,90 @@ import { parseDefaultRowHit } from './pointer.ts';
 
 const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
 
-export function lazyActionKeys(
-  nav: readonly FamilyNavTuple[],
-  hour: DisplayedHour,
-): ReadonlyMap<string, InstalledActionTarget> {
-  let materialized: Map<string, InstalledActionTarget> | null = null;
-  const toTarget = (entry: FamilyNavTuple): InstalledActionTarget => ({
+function actionIndexOf(nav: readonly FamilyNavTuple[]): Map<string, FamilyNavTuple> {
+  let idx = navActionIndexCache.get(nav);
+  if (!idx) {
+    idx = new Map();
+    for (let i = 0; i < nav.length; i++) {
+      const e = nav[i]!;
+      idx.set(e[0], e);
+    }
+    navActionIndexCache.set(nav, idx);
+  }
+  return idx;
+}
+
+function toActionTarget(entry: FamilyNavTuple, hour: DisplayedHour): InstalledActionTarget {
+  return {
     subject: entry[0],
     hour,
     ...(entry[3] >= 0 ? { toggle: true } : {}),
     label: entry[1],
     meta: entry[5],
-  });
-  const index = () => {
-    let idx = navActionIndexCache.get(nav);
-    if (!idx) {
-      idx = new Map();
-      for (let i = 0; i < nav.length; i++) {
-        const e = nav[i]!;
-        idx.set(e[0], e);
+  };
+}
+
+class LazyActionKeys implements ReadonlyMap<string, InstalledActionTarget> {
+  private readonly nav: readonly FamilyNavTuple[];
+  private readonly hour: DisplayedHour;
+  private materialized: Map<string, InstalledActionTarget> | null = null;
+
+  constructor(nav: readonly FamilyNavTuple[], hour: DisplayedHour) {
+    this.nav = nav;
+    this.hour = hour;
+  }
+
+  get size(): number {
+    return this.nav.length;
+  }
+
+  has(key: string): boolean {
+    return actionIndexOf(this.nav).has(key);
+  }
+
+  get(key: string): InstalledActionTarget | undefined {
+    const entry = actionIndexOf(this.nav).get(key);
+    return entry ? toActionTarget(entry, this.hour) : undefined;
+  }
+
+  private ensureAll(): Map<string, InstalledActionTarget> {
+    if (!this.materialized) {
+      const map = new Map<string, InstalledActionTarget>();
+      for (let i = 0; i < this.nav.length; i++) {
+        const e = this.nav[i]!;
+        map.set(e[0], toActionTarget(e, this.hour));
       }
-      navActionIndexCache.set(nav, idx);
+      this.materialized = map;
     }
-    return idx;
-  };
-  const ensureAll = () => {
-    if (!materialized) {
-      materialized = new Map();
-      for (let i = 0; i < nav.length; i++) {
-        const e = nav[i]!;
-        materialized.set(e[0], toTarget(e));
-      }
-    }
-    return materialized;
-  };
-  return {
-    get size() { return nav.length; },
-    has(key: string) { return index().has(key); },
-    get(key: string) {
-      const entry = index().get(key);
-      return entry ? toTarget(entry) : undefined;
-    },
-    forEach(cb, thisArg) { ensureAll().forEach(cb, thisArg); },
-    entries() { return ensureAll().entries(); },
-    keys() { return ensureAll().keys(); },
-    values() { return ensureAll().values(); },
-    [Symbol.iterator]() { return ensureAll()[Symbol.iterator](); },
-  };
+    return this.materialized;
+  }
+
+  forEach(cb: (value: InstalledActionTarget, key: string, map: ReadonlyMap<string, InstalledActionTarget>) => void, thisArg?: unknown): void {
+    this.ensureAll().forEach(cb, thisArg);
+  }
+
+  entries(): MapIterator<[string, InstalledActionTarget]> {
+    return this.ensureAll().entries();
+  }
+
+  keys(): MapIterator<string> {
+    return this.ensureAll().keys();
+  }
+
+  values(): MapIterator<InstalledActionTarget> {
+    return this.ensureAll().values();
+  }
+
+  [Symbol.iterator](): MapIterator<[string, InstalledActionTarget]> {
+    return this.ensureAll()[Symbol.iterator]();
+  }
+}
+
+export function lazyActionKeys(
+  nav: readonly FamilyNavTuple[],
+  hour: DisplayedHour,
+): ReadonlyMap<string, InstalledActionTarget> {
+  return new LazyActionKeys(nav, hour);
 }
 
 export type FamilyPointerMode = 'discrete' | 'continuous';
@@ -297,18 +334,18 @@ export function requestedRowWindow<TSettings>(
 export interface ReportedRowWindow {
   readonly window: FamilyRowWindow;
   readonly hour: number;
-  readonly planSig: string;
+  readonly plan: SourcePlan | null;
 }
 
 export function nextReportedRowWindow(
   reported: ReportedRowWindow | null,
   requested: FamilyRowWindow | null,
   installedHour: number | null,
-  planSig: string,
+  plan: SourcePlan | null,
 ): ReportedRowWindow | null {
   if (!requested || installedHour === null) return null;
-  if (reported && reported.planSig === planSig && sameRowWindow(reported.window, requested) && installedHour >= reported.hour) return null;
-  return { window: requested, hour: installedHour, planSig };
+  if (reported && reported.plan === plan && sameRowWindow(reported.window, requested) && installedHour >= reported.hour) return null;
+  return { window: requested, hour: installedHour, plan };
 }
 
 export interface InstalledRowWindowUpdate {
@@ -326,12 +363,11 @@ export function reconcileInstalledRowWindow<TSettings>(
   settings: TSettings | undefined,
   fields: Readonly<Record<string, unknown>>,
   installedHour: number | null,
-  planSig: string,
 ): InstalledRowWindowUpdate {
   const asked = requestedRowWindow(adapter, plan, viewport, settings, fields);
   const changed = !sameRowWindow(held, asked);
   const requested = changed ? asked : held;
-  const report = nextReportedRowWindow(reported, requested, installedHour, planSig);
+  const report = nextReportedRowWindow(reported, requested, installedHour, plan);
   return { requested, report, changed };
 }
 

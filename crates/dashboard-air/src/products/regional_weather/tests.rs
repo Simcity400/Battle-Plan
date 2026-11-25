@@ -55,6 +55,9 @@ fn weather_acceptance_current_day_at_midnight_terminal_split_since_and_scoped_ex
     assert_eq!(midnight.len(), 5, "midnight hour 2160 opens its own day");
     assert_eq!(midnight.last().unwrap().first, 2160);
     assert_eq!(midnight.last().unwrap().last, 2160);
+    let next = days(2160 - 4 * DAY, 2161, &known, &reads);
+    assert_eq!(next.last().unwrap().last, 2161);
+    assert_eq!(next.last().unwrap().at, Some((0, 2161)));
     assert_eq!(midnight.last().unwrap().at, Some((0, 2160)), "no hour after 2160 is sampled");
 
     let rain: Daily = [(1, vec![Some(1), Some(1), Some(1), Some(1), Some(0)]), (2, vec![Some(0), Some(0), Some(1), Some(1), Some(1)])].into();

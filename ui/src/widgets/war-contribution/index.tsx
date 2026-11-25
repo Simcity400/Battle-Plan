@@ -78,7 +78,7 @@ function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuP
       const observation = war.observations.at(-1) ?? null;
       const name = observation?.name.known ? observation.name.text : 'War name not recorded';
       return <button key={war.id} type="button" className={`war-menu-row${saved === war.id ? ' is-chosen' : ''}`} onClick={() => choose(war.id)}>
-        <span>{name}</span><small>{`${war.startedBy ? 'By ' : 'From '}${dayLabel(war.firstHour)}`}</small>
+        <span>{name}</span><small>{`From ${dayLabel(war.firstHour)}`}</small>
       </button>;
     })}
   </div>;

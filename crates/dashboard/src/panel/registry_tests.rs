@@ -1,5 +1,34 @@
 use super::*;
 
+#[test]
+fn day_history_follows_midnight_and_preserves_unrecorded_days() {
+    use dashboard_base::{SourceKey, test_fixtures::{replay, source}};
+    use serde_json::json;
+
+    let frames = [10, 23, 48, 71, 72].map(|hour| source(1, hour, None));
+    let replay = replay(frames.into()).into_timelines(&Default::default()).unwrap();
+    let cancelled = false.into();
+    let source = Arc::new(Source::from_replay(
+        SourceKey { source_id: "day-history".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled,
+    ).unwrap());
+    let load = LoadContext { content: None };
+    let params = json!({"branchId":"1", "panel":"convoy-health", "view":"regions", "country":"GER", "regions":[17], "from":10, "to":71});
+    let panel = dated_panel_of(&source, &load, &params).unwrap().unwrap();
+    let exact = panel.exact().unwrap();
+    for (hour, last) in [(10, None), (23, None), (24, Some(23)), (48, Some(47)), (71, Some(47)), (72, Some(71)), (10, None)] {
+        let read = (exact.advance)(hour, hour == 10, &cancelled, None);
+        let expected = if let Some(last) = last {
+            let request = json!({"branchId":"1", "view":"regions", "country":"GER", "regions":[17], "from":10, "to":last});
+            crate::answer::answer(&source, "convoy-health", &request, &load, &cancelled).unwrap()
+        } else { Value::Null };
+        assert_eq!(read.value.as_ref().as_ref().unwrap(), &expected, "history at {hour}");
+        if hour == 72 {
+            assert!(expected["gaps"].as_array().unwrap().iter().any(|gap| gap["firstHour"] == 24 && gap["lastHour"] == 47));
+        }
+    }
+}
+
 // quarantine: #3 dashboard rework
 #[test]
 #[ignore = "quarantined under #3"]
@@ -45,6 +74,7 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
         frame
     });
     let (source, load) = source_with_content(frames.into(), &root);
+    let source = Arc::new(source);
     for name in ["special-project-details", "special-projects", "doctrine-mastery", "research-slots", "production-lines-at", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance", "occupied-states"] {
         let mut params = json!({"branchId": "1", "panel": name});
         match name {

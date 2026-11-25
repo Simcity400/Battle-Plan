@@ -91,12 +91,12 @@ export default function ResearchExplanation({ client, gate, track, tag, hour, hi
   return <div className="research-description">
     <div className="research-when">
       {entry.outcome === 'completed' && entry.endedByHour !== null
-        ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>{completedBy(entry) ? 'Completed by' : 'Completed'}</small>{date(entry.endedByHour)}</span>
-        : <span data-tooltip={journey.startKnown ? formatDateTime(journey.firstHour) : 'Start date unknown.'}>
-          <small>{journey.startKnown ? 'Started' : 'Started by'}</small>{date(journey.firstHour)}</span>}
+        ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>Completed</small>{date(entry.endedByHour)}</span>
+        : <span data-tooltip={formatDateTime(journey.firstHour)}>
+          <small>Started</small>{date(journey.firstHour)}</span>}
       {active && <span data-tooltip={formatDateTime(hour)}><small>As of</small>{date(hour)}</span>}
     </div>
-    {bounded ? <p className="research-unavailable">Research time breakdown unavailable: the research is known only to have completed by {date(entry.endedByHour!)}.</p>
+    {bounded ? <p className="research-unavailable">Research time breakdown unavailable because the exact completion time was not recorded.</p>
       : unrecorded ? <p className="research-unavailable">Research time breakdown unavailable: an assignment’s first observation was not recorded.</p>
       : (error || active && estimate.error) && !(data && (!active || estimate.data))
       ? <WidgetState kind="error" failure={(error ?? estimate.error)!} onRetry={error ? retry : estimate.retry} />

@@ -82,13 +82,12 @@ export interface WidgetMeta {
   defaultTime: 'follow' | 'campaign';
   scope: 'moment' | 'history';
   data: boolean;
-  countrySelection?: boolean;
+  countrySelection?: boolean | 'settings';
   factionColours?: boolean;
   history: boolean;
   minSize: { w: number; h: number };
   defaultSize: { w: number; h: number };
   countries?: { max: number; ranked?: boolean; rankedBy?: string; aggregate?: boolean; all?: boolean; factions?: boolean; fixed?: boolean };
-  playsBackDated?: boolean;
   defaultCountries?: CountrySelection;
   options?: readonly OptionField[];
   captureModes?: readonly CaptureMode[];

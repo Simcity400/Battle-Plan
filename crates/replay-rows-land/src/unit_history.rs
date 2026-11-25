@@ -35,6 +35,10 @@ impl DivisionHistoryRow {
     pub const SUMMARY: u8 = 0;
     pub const CAREER: u8 = 1;
     pub const AWARDS: u8 = 2;
+    pub const OPERATION: i32 = 12;
+    pub const OPERATION_EXCELLED: i32 = 13;
+    pub const NAVAL_COMBAT: i32 = 23;
+    pub const NAVAL_COMBAT_EXCELLED: i32 = 24;
 }
 typed_codec!(DivisionHistoryRow, 98, |row| ((row.division as u128) << 34) | ((row.list as u128) << 32) | row.ordinal as u128,
     |key| Self { division: (key >> 34) as u64, list: ((key >> 32) & 3) as u8, ordinal: key as u32, ..Default::default() }, {

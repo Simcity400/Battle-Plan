@@ -128,7 +128,7 @@ pub fn answers(product: &str, params: &Value) -> bool {
     crate::products::MOVED.contains(&product)
 }
 
-pub fn panel(source: &Source, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
+pub fn panel(source: &Arc<Source>, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
     use crate::panel::{dated_panel_of, panel_of};
     dated_panel_of(source, context, query).or_else(|| panel_of(source, context, query))
 }
@@ -137,7 +137,7 @@ pub fn follows(product: &str) -> bool {
     dashboard_follow::registry::PRODUCTS.contains(&product)
 }
 
-pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
+pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     if follows(product) {
         return dashboard_follow::registry::registry().answer_heads(
@@ -270,12 +270,14 @@ mod tests {
             Arc::new(replay),
             &cancelled,
         ).unwrap();
+        let source = Arc::new(source);
         let run = query(&source, branch).unwrap().timeline.stretches[0].run;
         let load = LoadContext { content: None };
         let leaders = LeadersContext::load(&source, &load).unwrap();
         leaders.keep_test_verdict(run, hour);
         answer(&source, "wars", &serde_json::json!({ "branchId": branch.to_string() }), &load, &cancelled).unwrap();
         queries::spellings(&source, run, hour, &std::collections::BTreeSet::from([7])).unwrap();
+        answer(&source, "division-log-tail", &serde_json::json!({ "branchId": branch.to_string(), "limit": 1 }), &load, &cancelled).unwrap();
         feed_index::warm(&source, branch).unwrap();
         air_ledger::warm_observed(&source, branch).unwrap();
 
@@ -288,7 +290,6 @@ mod tests {
             warm("territory", || land_owners::cached_territory(&source, run).unwrap()),
             warm("subjects", || subjects::cached_subjects(&source, run).unwrap()),
             warm("army mix", || army::cached_army_mix(&source, run).unwrap()),
-            warm("division templates", || division_log::cached_division_templates(&source, run).unwrap()),
             warm("wars", || wars::cached_wars(&source, run).unwrap()),
             warm("diplomatic pacts", || diplomacy::cached_pacts(&source, run).unwrap()),
             warm("casualty endings", || casualties::cached_casualty_ends(&source, run).unwrap()),
@@ -303,6 +304,7 @@ mod tests {
         assert!(queries::has_cached_spellings(&source), "spellings should be warm");
         assert!(leaders.has_cached_verdicts(run, hour), "leader verdicts should be warm");
         assert!(wars::has_cached_walks(&source), "war walks should be warm");
+        assert!(division_log::is_cached(&source, branch));
         assert_eq!(feed_index::kept(&source), [branch], "feed index should be warm");
         assert_eq!(air_ledger::kept_observed(&source).len(), 2, "both air ledgers should be warm");
 
@@ -311,6 +313,7 @@ mod tests {
         assert!(!queries::has_cached_spellings(&source), "spellings should be cold");
         assert!(!leaders.has_cached_verdicts(run, hour), "leader verdicts should be cold");
         assert!(!wars::has_cached_walks(&source), "war walks should be cold");
+        assert!(!division_log::is_cached(&source, branch));
         assert!(feed_index::kept(&source).is_empty(), "feed index should be cold");
         assert!(air_ledger::kept_observed(&source).is_empty(), "air ledgers should be cold");
         for check in caches.into_iter().chain(histories) {

@@ -541,7 +541,7 @@ test('a drawing that expires at a wall-clock time arms the one timer, even while
 test('incremental families keep their backing canvas out of destructive transferToImageBitmap', async () => {
   const recording = installRecordingCanvas();
   try {
-    const incremental: LaneFamily<Binding, Model, Layout> = { ...family, incremental: true };
+    const incremental: LaneFamily<Binding, Model, Layout> = { ...family, paint: () => ({ drew: true, next: false }) };
     const view = createLaneView(incremental, () => {});
     const lane = driveLane(view, recording.canvases);
     const painted = lane.paint({ label: 'inc', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 10 });
@@ -606,6 +606,35 @@ test('a zero-sized surface waits without presenting or looping kept-content refu
     page.frame();
     assert.equal(page.view(1).mode, 'picture', 'resizing to positive dimensions wakes the view and installs');
   } finally {
+    recording.restore();
+  }
+});
+
+test('non-hover frames deduplicate structure, mirror, and audit fields structurally without JSON.stringify', () => {
+  const recording = installRecordingCanvas();
+  const origStringify = JSON.stringify;
+  let stringifyCalls = 0;
+  try {
+    const lane = driveLane(createLaneView({
+      ...family,
+      paint: () => false,
+      structure: frame => ({ nav: frame.model.rows.map(r => [r.key, BigInt(r.v)]), meta: { bucket: frame.model.bucket } }),
+      audit: frame => frame.model.rows.map(r => ({ key: r.key, value: BigInt(r.v) })),
+    }, () => {}), recording.canvases);
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      stringifyCalls++;
+      return origStringify(...args);
+    }) as typeof JSON.stringify;
+    const first = lane.paint({ label: 'p1', hour: 10, binding: { ...binding(rowsAt([{ key: 'A', v: 1 }])), audit: true } });
+    const same = lane.paint({ label: 'p2', hour: 12, binding: { ...binding(rowsAt([{ key: 'A', v: 1 }])), audit: true } });
+    const changed = lane.paint({ label: 'p3', hour: 25, binding: { ...binding(rowsAt([{ key: 'A', v: 2 }])), audit: true } });
+    assert.equal(first.fields.nav!.content, same.fields.nav!.content, 'identical nav keeps the same content token');
+    assert.equal(first.fields.audit!.content, same.fields.audit!.content, 'identical audit keeps the same content token');
+    assert.notEqual(first.fields.nav!.content, changed.fields.nav!.content, 'changed bigint nav produces a new content token');
+    assert.notEqual(first.fields.audit!.content, changed.fields.audit!.content, 'changed bigint audit produces a new content token');
+    assert.equal(stringifyCalls, 0, 'field deduplication never calls JSON.stringify');
+  } finally {
+    JSON.stringify = origStringify;
     recording.restore();
   }
 });

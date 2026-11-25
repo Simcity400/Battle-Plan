@@ -150,6 +150,21 @@ export function useIdentity<K extends IdentityKey>(
   }, [broker, scope, key, hour, version, flagSize, recording, bounds]);
 }
 
+const asksSigCache = new WeakMap<readonly IdentityAsk[], string>();
+
+function asksSignature(asks: readonly IdentityAsk[]): string {
+  const cached = asksSigCache.get(asks);
+  if (cached !== undefined) return cached;
+  let sig = '';
+  for (let i = 0; i < asks.length; i++) {
+    const ask = asks[i]!;
+    if (i > 0) sig += '\u0001';
+    sig += `${identityKeyString(ask.key)}@${Math.floor(ask.hour)}`;
+  }
+  asksSigCache.set(asks, sig);
+  return sig;
+}
+
 export function useIdentities(
   client: DashboardClient,
   recording: DashboardSource | null | undefined,
@@ -193,7 +208,7 @@ export function useIdentities(
 
   const asksRef = useRef(asks);
   asksRef.current = asks;
-  const asksSig = asks.map(ask => `${identityKeyString(ask.key)}@${Math.floor(ask.hour)}`).join('\u0001');
+  const asksSig = !active || !scope || !asks.length ? '' : asksSignature(asks);
 
   useEffect(() => {
     if (!active || !scope) {

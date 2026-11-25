@@ -1,16 +1,16 @@
 import { selectFocusable, selectIndex } from './selectNavigation';
 import { VirtualListIndex } from './virtualListIndex';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { Icon } from './Icons';
 import { Popover, usePopover } from './Popover';
 import './Select.css';
 
 export interface SelectOption { value: string; label: string; disabled?: boolean; reason?: string; detail?: string }
 
-export function Select({ id: triggerId, label, value, options, disabled = false, autoFocus, repick = false, onOpen, onChange }: {
+export function Select({ id: triggerId, label, value, options, disabled = false, autoFocus, repick = false, className, leading, onOpen, onChange }: {
   id?: string; label: string; value: string; options: readonly SelectOption[]; disabled?: boolean; autoFocus?: boolean;
-  repick?: boolean; onOpen?: () => void; onChange: (value: string) => void;
+  repick?: boolean; className?: string; leading?: ReactNode; onOpen?: () => void; onChange: (value: string) => void;
 }) {
   const id = useId();
   const menu = usePopover('start');
@@ -19,9 +19,9 @@ export function Select({ id: triggerId, label, value, options, disabled = false,
   const selected = held.find(option => option.value === value);
   const shown = selected?.label ?? value;
   return <>
-    <button ref={menu.trigger} id={triggerId} type="button" className="select-trigger" popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
+    <button ref={menu.trigger} id={triggerId} type="button" className={className ? `select-trigger ${className}` : 'select-trigger'} popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
       aria-label={label} aria-describedby={`${id}-value`} disabled={disabled} data-detail={selected?.detail} data-tooltip={selected?.reason} data-tooltip-overflow={shown}>
-      <span id={`${id}-value`} data-overflow-label>{shown}</span><Icon name="chevron-down" /></button>
+      {leading}<span id={`${id}-value`} data-overflow-label>{shown}</span><Icon name="chevron-down" /></button>
     { }
     <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}
       onToggle={event => { if (event.newState === 'open') onOpen?.(); }}>

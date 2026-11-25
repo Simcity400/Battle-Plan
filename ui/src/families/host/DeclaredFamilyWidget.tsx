@@ -1,3 +1,5 @@
+import ProductPicker from '../table/ProductPicker.tsx';
+import { PickerContext } from '../table/picker.ts';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
@@ -66,6 +68,7 @@ export interface DeclaredFamilyWidgetDeclaration<
   readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, extra: DeclaredProjectionExtra) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
+  readonly picker?: import('../table/picker').TablePicker;
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
@@ -109,6 +112,7 @@ export default function DeclaredFamilyWidget<
   onDiagnostics,
   setOption,
   headerSlot,
+  filterSlot,
   selectedKey = null,
   onActivate,
   onToggle,
@@ -154,7 +158,7 @@ export default function DeclaredFamilyWidget<
 
   const { theme } = useFamilyTheme();
 
-  const { resolutions: shownArtResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
+  const laneArt = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;
@@ -340,7 +344,7 @@ export default function DeclaredFamilyWidget<
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}
       hovers={plan.hovers}
-      artResolutions={shownArtResolutions}
+      laneArt={laneArt}
       extent={extent}
       plan={plan.plan}
       exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
@@ -349,7 +353,7 @@ export default function DeclaredFamilyWidget<
       bounds={plan.bounds}
       identitySnapshot={plan.identitySnapshot}
       onIdentityDemands={plan.onIdentityDemands}
-      onArtDemands={handleArtDemands}
+      onArtDemands={laneArt.onArtDemands}
       onViewportChange={handleViewportChange}
       onHoverHour={handleHoverHour}
       selectedKey={selectedKey}
@@ -358,6 +362,8 @@ export default function DeclaredFamilyWidget<
       {...(regionsEditable ? { onRegions, emptyAction } : {})}
       contextMenuItems={resolvedContextMenuItems}
       headerSlot={headerSlot}
+      filterSlot={filterSlot}
+      setFilterOption={setOption}
       onDiagnostics={onDiagnostics}
       extraWarnings={combinedWarnings}
       blockedState={blockedState}
@@ -366,11 +372,17 @@ export default function DeclaredFamilyWidget<
     />
   );
 
-  if (!declaration.className && !bannerFailure) return regionChooser ? <>{host}{regionChooser}</> : host;
+  const picker = declaration.picker;
+  const widgetHost = picker && displayedCtx ? <PickerContext.Provider value={(at, selected, children) => {
+    const hour = at === null ? null : plan.recorded(at);
+    return hour === null ? children([], { kind: 'unrecorded' })
+      : <ProductPicker spec={picker} runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</ProductPicker>;
+  }}>{host}</PickerContext.Provider> : host;
+  if (!declaration.className && !bannerFailure) return regionChooser ? <>{widgetHost}{regionChooser}</> : widgetHost;
   return (
     <div className={declaration.className} data-detail={plan.nameFailureDetail}>
       {bannerFailure}
-      {host}
+      {widgetHost}
       {regionChooser}
     </div>
   );

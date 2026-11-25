@@ -105,16 +105,35 @@ pub struct Ask<'a> {
     pub group: Option<(&'a GroupSelection, Resolve<'a>)>,
 }
 
+fn reading_interval(line: &Line<'_, '_>, state: &SeriesState, within: (i32, i32)) -> io::Result<(i32, i32)> {
+    let hour = state.hour;
+    if let Some(run) = &state.run {
+        let first = if line.series.drops && hour > run.first_hour { run.first_hour + 1 } else { run.first_hour };
+        return Ok((first, if state.drop.is_some() { hour } else { run.last_hour }));
+    }
+    let timeline = &line.query.timeline;
+    if let Some(gap) = timeline.unheld.iter().find(|gap| gap.first <= hour && hour <= gap.last) {
+        return Ok((gap.first, gap.last));
+    }
+    let Some(stretch) = timeline.at(hour) else { return Ok((hour, hour)) };
+    let first = stretch.first.max(within.0);
+    let last = stretch.last.min(within.1);
+    let parts = line.parts(state.country.clone(), first, last);
+    let gaps = line.missing_for_tile(state.country.clone(), first, last, &parts)?;
+    Ok(gaps.iter().find(|gap| gap.first_hour <= hour && hour <= gap.last_hour && Some(&gap.reason) == state.missing.as_ref())
+        .map_or((hour, hour), |gap| (gap.first_hour, gap.last_hour)))
+}
+
 pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &str, ask: Ask<'_>) -> io::Result<SeriesRankReply> {
     line.owners_only("a rank")?;
     let hour = hour_of(ask.hour, "hour")?;
-    let mut held = (i32::MIN, i32::MAX);
+    let mut held = line.query.holders.interval(hour);
     let named: Vec<Country> = match ask.group {
         None => ask.countries.to_vec(),
         Some(_) if ask.top.is_some() || !ask.countries.is_empty() => return Err(invalid("A rank names a group, a top or countries, one of them")),
         Some((group, resolve)) => {
             let members = resolve(group, hour)?;
-            held = (members.from.min(hour), members.until.max(hour));
+            held = (held.0.max(members.from.min(hour)), held.1.min(members.until.max(hour)));
             if members.refused.is_some() || members.tags.is_empty() {
                 let mut measures = vec![SeriesRankMeasure { name: line.measure_name().to_owned(), decimals: line.decimals() }];
                 measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));
@@ -187,18 +206,19 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         });
         refused = order.iter().find(|&&at| value(at).is_none()).map(|&at| columns[0][at].missing.clone().unwrap_or_else(|| super::board::measure_unrecorded(&asked[at].to_string(), line.measure.name)));
     }
-    for state in columns.iter().flatten() {
-        held = match &state.run {
-            Some(run) => (held.0.max(run.first_hour), held.1.min(run.last_hour)),
-            None => (hour, hour),
-        };
-    }
-    let (from, until) = match (top, &refused) {
-        (Some(n), None) => {
-            line.rank_holds(hour, n, ask.least, held, |at| at == asked.as_slice())?
+    for (column, reader) in columns.iter().zip(std::iter::once(line).chain(details)) {
+        for state in column {
+            let (from, until) = reading_interval(reader, state, held)?;
+            held = (held.0.max(from), held.1.min(until));
         }
-        (None, None) => (held.0.min(hour), held.1.max(hour)),
-        _ => (hour, hour),
+    }
+    let (from, until) = if let Some(n) = top {
+        line.rank_holds(hour, n, ask.least, held, |at| at == asked.as_slice())?
+    } else if ask.top.is_some() {
+        line.query.timeline.unheld.iter().find(|gap| gap.first <= hour && hour <= gap.last)
+            .map_or((hour, hour), |gap| (gap.first.max(held.0), gap.last.min(held.1)))
+    } else {
+        held
     };
     let mut measures = vec![SeriesRankMeasure { name: line.measure_name().to_owned(), decimals: line.decimals() }];
     measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));

@@ -12,7 +12,7 @@ import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
-import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
 import { SceneTiles, type TiledSources } from './sceneTiles.ts';
 import type { PagedRows, RowWindow } from './table/rowSource.ts';
 
@@ -80,7 +80,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readNow(): BoundedReadView;
 }
 
-export type LaneStatus = 'picture' | 'scene' | { readonly refused: string };
+export type LaneStatus = 'picture' | 'scene' | 'waiting' | { readonly refused: string };
 
 type Undated<T> = T extends unknown ? Omit<T, 'hour'> & { readonly hour?: number } : never;
 
@@ -88,13 +88,12 @@ export type LaneTooltip = Undated<FamilyTooltipEntry>;
 
 export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly family: FamilyId;
-  readonly incremental?: boolean;
   boundary(model: TModel, hour: number): number;
   redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
   readonly view: readonly (keyof TBinding & string)[];
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
-  paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number;
+  paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number | { drew: boolean; next: boolean | number };
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): LaneTooltip | null;
   structure(frame: LaneFrame<TBinding, TModel, TLayout>): Readonly<Record<string, unknown>>;
@@ -174,7 +173,7 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   artKey: string;
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
-  kept: Map<string, { readonly text: string; readonly field: Field }>;
+  kept: Map<string, Field>;
   frameKey: readonly unknown[];
   frameRevision: number;
   mirrorGate: CadenceGate;
@@ -234,12 +233,39 @@ function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
+function sameFieldValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a === 'number' && typeof b === 'number') return Number.isNaN(a) && Number.isNaN(b);
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameFieldValue(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  let leftCount = 0;
+  for (const key in left) {
+    if (!Object.prototype.hasOwnProperty.call(left, key)) continue;
+    const lv = left[key];
+    if (lv === undefined) continue;
+    leftCount++;
+    if (!Object.prototype.hasOwnProperty.call(right, key) || !sameFieldValue(lv, right[key])) return false;
+  }
+  let rightCount = 0;
+  for (const key in right) {
+    if (!Object.prototype.hasOwnProperty.call(right, key) || right[key] === undefined) continue;
+    if (++rightCount > leftCount) return false;
+  }
+  return rightCount === leftCount;
+}
+
 function field(held: Held<LaneBinding, unknown, unknown>, slot: string, value: unknown, content: () => string): Field {
   const prev = held.kept.get(slot);
-  if (prev && prev.field.value === value) return prev.field;
-  const text = stringifyTooltipPayload(value);
-  const made = { value, content: prev && prev.text === text ? prev.field.content : content() };
-  held.kept.set(slot, { text, field: made });
+  if (prev && prev.value === value) return prev;
+  const made: Field = { value, content: prev && sameFieldValue(prev.value, value) ? prev.content : content() };
+  held.kept.set(slot, made);
   return made;
 }
 
@@ -553,6 +579,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const nextChangeAt = Number.isFinite(keep.drawUntil) ? { nextChangeAt: keep.drawUntil } : {};
 
       const status = family.status(model);
+      if (status === 'waiting') return WAITING;
       if (typeof status === 'object') {
         keep.flusher.cancel();
         keep.drawn = null;
@@ -602,12 +629,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           return result;
         };
         const painted = drawCanvas();
-        if (!family.incremental) markCanvasPainted(keep.canvas, drawCanvas);
-        keep.motion = painted === true;
-        keep.expiry = typeof painted === 'number' ? painted : Infinity;
+        const incremental = typeof painted === 'object';
+        if (!incremental) markCanvasPainted(keep.canvas, drawCanvas);
+        const next = incremental ? painted.next : painted;
+        keep.motion = next === true;
+        keep.expiry = typeof next === 'number' ? next : Infinity;
         keep.drawn = { binding, model, layout, hour: drawn };
         keep.drawKey = drawKey;
-        keep.content = content();
+        if (!incremental || painted.drew || !keep.content) keep.content = content();
       }
 
       const tPaint = timed ? performance.now() : 0;

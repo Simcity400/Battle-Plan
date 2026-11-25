@@ -705,8 +705,9 @@ window.hostDom = {
     genericCommits = 0;
     const installsBefore = installCalls.get(pipeG) ?? 0;
     for (let i = 0; i < 20; i++) {
-      sendHour(subsG, 150, [90n, 70n, 50n, 30n]);
-      await frames(2);
+      const before = installCalls.get(pipeG);
+      sendHour(subsG, 150, [91n + BigInt(i), 70n, 50n, 30n]);
+      if (!await until(() => installCalls.get(pipeG) !== before)) throw new Error('The changed Germany row did not install');
     }
     const installs = (installCalls.get(pipeG) ?? 0) - installsBefore;
     const commitsDuring = genericCommits;

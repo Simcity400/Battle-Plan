@@ -2,6 +2,8 @@ use dashboard_base::Source;
 use dashboard_core::config::LoadContext;
 use dashboard_follow::panel::Panel;
 use serde_json::Value;
+use std::sync::Arc;
+use dashboard_base::products::at_hour::{interval_panel, product_interval_panel};
 
 pub fn panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
     let kind = asked.get("panel")?.as_str()?;
@@ -12,8 +14,39 @@ pub fn panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Re
 #[cfg(test)]
 mod registry_tests;
 
-pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
+fn at_hour(params: &mut Value, hour: i32) {
+    params["hour"] = hour.into();
+}
+
+pub fn dated_panel_of(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
     Some(match asked["panel"].as_str()? {
+        "air-superiority-timeline" => day_panel::<dashboard_air::products::air_superiority::timeline::AirSuperiorityTimeline>(source, load, asked, "firstHour", "lastHour", |r| r.last_hour),
+        "convoy-health" => day_panel::<dashboard_economy::products::convoys::ConvoyHealth>(source, load, asked, "from", "to", |r| r.valid_through),
+        "naval-supremacy" => day_panel::<dashboard_naval::products::naval_supremacy::NavalSupremacy>(source, load, asked, "firstHour", "lastHour", |r| r.valid_through),
+        "country-groups-at" => product_interval_panel::<dashboard_world::products::history_at::CountryGroupsAt>(source, load, asked, at_hour, |r| before(r.next_change)),
+        "subjects-at" => product_interval_panel::<dashboard_world::products::history_at::SubjectsAt>(source, load, asked, at_hour, |r| before(r.next_change)),
+        "group-counts" => product_interval_panel::<dashboard_world::products::group_counts::GroupCounts>(source, load, asked, at_hour, |r| before(r.next_change)),
+        "stability-markers" => product_interval_panel::<dashboard_politics::products::stability_markers::StabilityMarkers>(source, load, asked, at_hour, |r| before(r.next_change)),
+        "power-spend-markers" => product_interval_panel::<dashboard_politics::products::power_ledger::markers::PowerSpendMarkers>(source, load, asked, at_hour, |r| before(r.next_change)),
+        "idea-history" => product_interval_panel::<dashboard_politics::products::ideas::IdeaHistory>(source, load, asked, at_hour, |r| before(r.next_change)),
+        "diplomatic-relations" => dashboard_wars::registrations::EXACT_DIPLOMATICRELATIONS(source, load, asked),
+        "intel-network-coverage" => dashboard_intelligence::registrations::EXACT_INTELNETWORKCOVERAGE(source, load, asked),
+        "power-spending-breakdown" => product_interval_panel::<dashboard_politics::products::power_ledger::breakdown::PowerSpendingBreakdown>(source, load, asked, at_hour, |r| r.through),
+        "production-spending" => product_interval_panel::<dashboard_production::products::production_spending::ProductionSpending>(source, load, asked, at_hour, |r| r.through),
+        "construction-breakdown" => product_interval_panel::<dashboard_production::products::construction::breakdown::ConstructionBreakdown>(source, load, asked, at_hour, |r| r.through),
+        "equipment-losses" => product_interval_panel::<dashboard_production::products::equipment_losses::EquipmentLosses>(source, load, asked, at_hour, |r| r.through),
+        "casualty-breakdown" => product_interval_panel::<dashboard_wars::products::casualties::CasualtyBreakdown>(source, load, asked, at_hour, |r| r.through),
+        "bombing-damage-breakdown" => product_interval_panel::<dashboard_air::products::air_ledger::breakdown::BombingDamageBreakdown>(source, load, asked, at_hour, |r| r.through),
+        "focus-card" => product_interval_panel::<dashboard_politics::products::focus_card::FocusCard>(source, load, asked, at_hour, |r| r.valid_through),
+        "regional-weather" => {
+            let first = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch)).map(|q| q.timeline.first);
+            first.map_err(|e| e.to_string()).and_then(|first| product_interval_panel::<dashboard_air::products::regional_weather::RegionalWeather>(
+                source, load, asked, move |request, hour| {
+                    request["firstHour"] = first.max(hour.saturating_sub(7 * 24 - 1)).into();
+                    request["lastHour"] = hour.into();
+                }, |r| r.last_hour))
+        }
+        "series-rank" => rank_panel(source, load, asked),
         "special-projects" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
         "special-project-details" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),
         "doctrine-mastery" => dashboard_land::registrations::EXACT_DOCTRINEMASTERY(source, load, asked),
@@ -37,10 +70,68 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "log-tail" => dashboard_politics::products::logs::dated_panel(source, load, asked),
         "market-ledger-tail" => dashboard_economy::products::economy::market::ledger::dated_panel(source, load, asked),
         "raid-log-tail" => dashboard_intelligence::products::raids::tail::dated_panel(source, load, asked),
+        "division-service-record-tail" => dashboard_land::products::divisions::careers::service_record::dated_panel(source, load, asked),
+        "land-battles-tail" => dashboard_land::products::land_battles::tail::dated_panel(source, load, asked),
+        "naval-battles-tail" => dashboard_naval::products::naval::battles::tail::dated_panel(source, load, asked),
+        "ships-sunk-tail" => dashboard_naval::products::naval::sunk::tail::dated_panel(source, load, asked),
+        "peace-deals-tail" => dashboard_wars::products::peace::tail::dated_panel(source, load, asked),
+        "division-log-tail" => dashboard_land::products::division_log::dated_panel(source, load, asked),
+        "espionage-log-tail" => dashboard_intelligence::products::intelligence::espionage_tail::dated_panel(source, load, asked),
         "construction-log-tail" => dashboard_production::products::construction::tail::dated_panel(source, load, asked),
         "event-feed-tail" => dashboard_politics::products::feed::event_feed_dated_panel(source, load, asked),
         "event-choices-tail" => dashboard_politics::products::feed::event_choices_dated_panel(source, load, asked),
         "decisions-tail" => dashboard_politics::products::feed::decisions_dated_panel(source, load, asked),
         _ => return None,
     })
+}
+
+fn before(next: Option<i32>) -> i32 {
+    next.map_or(i32::MAX, |n| n.saturating_sub(1))
+}
+
+fn day_panel<P: dashboard_base::products::Product>(
+    source: &Arc<Source>, load: &LoadContext, asked: &Value,
+    start: &'static str, end: &'static str, through: fn(&P::Reply) -> i32,
+) -> Result<Box<dyn Panel>, String> {
+    let first = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch))
+        .map_err(|e| e.to_string())?.timeline.first;
+    let day_start = |hour: i32| hour.div_euclid(24).saturating_mul(24);
+    let Some(tile_first) = asked[start].as_i64() else {
+        return product_interval_panel::<P>(source, load, asked, move |request, hour| {
+            request[start] = first.max(day_start(hour)).into();
+            request[end] = hour.into();
+        }, through);
+    };
+    let tile_first = i32::try_from(tile_first).map_err(|_| "Invalid history start")?;
+    let tile_last = asked[end].as_i64().and_then(|n| i32::try_from(n).ok()).ok_or("Invalid history end")?;
+    let mut params = asked.clone();
+    params.as_object_mut().ok_or("Expected history parameters")?.remove("panel");
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    Ok(interval_panel(source.tables(), move |hour, cancelled| {
+        let today = day_start(hour);
+        if today <= tile_first {
+            return Ok((Value::Null, day_start(tile_first).saturating_add(23), 0));
+        }
+        let mut request = params.clone();
+        let last = tile_last.min(today.saturating_sub(1));
+        request[end] = last.into();
+        let (reply, rows) = dashboard_base::products::at_hour::counted(|| crate::answer::answer(&source, P::KEY, &request, &load, cancelled));
+        Ok((reply?, if last == tile_last { i32::MAX } else { today.saturating_add(23) }, rows))
+    }))
+}
+
+fn rank_panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    let mut params = asked.clone();
+    params.as_object_mut().ok_or("Expected rank parameters")?.remove("panel");
+    Ok(interval_panel(source.tables(), move |hour, cancelled| {
+        let mut request = params.clone();
+        at_hour(&mut request, hour);
+        let reply = crate::answer::answer(&source, dashboard_query::series::ranked::PRODUCT, &request, &load, cancelled)?;
+        let through = reply["until"].as_i64().and_then(|n| i32::try_from(n).ok()).unwrap_or(hour);
+        let rows = reply["rows"].as_array().map_or(0, |rows| rows.len() as u64);
+        Ok((reply, through, rows))
+    }))
 }

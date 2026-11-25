@@ -1,30 +1,23 @@
-
-use super::sinking_details::{BattleIndex, resolve_attribution};
-pub use super::sinking_details::{SINKING_BATTLE_NOT_RECORDED, SINKING_CAUSE_NOT_RECORDED, ShipSinkingAttribution, ShipSinkingBattle};
-use dashboard_base::{products::{LoadContext, Product}, queries::country_ids};
-use dashboard_world::products::army_windows::ArmySpan;
 use dashboard_base::Source;
 use dashboard_base::catalogue::{self, Catalogue, CachedResult, Refusals, View};
-use dashboard_query::{Query, read};
+use dashboard_query::read;
+use dashboard_base::products::LoadContext;
+use super::sinking_details::{ShipSinkingAttribution, resolve_attribution};
+pub mod tail;
 use content_reader_key_names::unit_leader::{SubUnits, sub_units};
 use content_reader_localisation::localisation::display_text;
 use replay_lanes::at::Seeker;
-use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{SunkShipEntry, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const ICON_EDGE: u32 = 48;
-
-fn invalid(what: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, what.into())
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -34,132 +27,12 @@ pub struct ShipClassInfo {
     #[doc = " The recorded lexical token, resolved to the content's sub-unit spelling."]
     pub key: Option<String>,
     pub name: Option<String>,
-    #[doc = " PNG sent once per class, never once per sinking."]
     pub icon: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub enum ShipSinkingCause {
-    Hostile,
-    Assisted,
-    Cause,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ShipsSunkRow {
-    pub sink_hour: i32,
-    #[doc = " The first read listing it."]
-    pub known_at: i32,
-    pub name: Option<String>,
-    pub class_index: u32,
-    pub recorded_name_index: Option<u32>,
-    pub victim: Option<String>,
-    pub attacker: Option<String>,
-    #[doc = " Always null: both countries are named at the sinking hour."]
-    pub victim_as_of: Option<i32>,
-    pub attacker_as_of: Option<i32>,
-    pub place_index: Option<u32>,
-    pub cause: ShipSinkingCause,
-    pub attribution_name: Option<String>,
-    pub assisted_kill: bool,
-    pub sinking_cause: ShipSinkingAttribution,
-    pub battle: ShipSinkingBattle,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ShipsSunkReply {
-    pub branch_id: String,
-    pub window: usize,
-    #[doc = " The game's list was read at or before the window's end; otherwise nothing is known."]
-    pub available: bool,
-    pub first_hour: i32,
-    pub last_hour: i32,
-    #[doc = " The window's first read of the list."]
-    pub first_read: Option<i32>,
-    #[doc = " The window's hours the timeline does not hold."]
-    pub unread: Vec<ArmySpan>,
-    pub classes: Vec<ShipClassInfo>,
-    pub places: Vec<String>,
-    pub recorded_names: Vec<String>,
-    #[doc = " Those pruned within the window first, then the game's list order at its end; a row's index"]
-    #[doc = " in the window is its place here."]
-    pub rows: Vec<ShipsSunkRow>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ShipsSunkManifestReply {
-    pub branch_id: String,
-    pub windows: Vec<ArmySpan>,
-    #[doc = " The list was read at some hour of the branch."]
-    pub available: bool,
-    pub first_read: Option<i32>,
-    #[doc = " The classes of every sinking the game listed at each run's end, for the class choice."]
-    pub classes: Vec<ShipClassInfo>,
-    pub recorded_names: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(ShipsSunkReply, ShipsSunkManifestReply);
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ShipsSunkParams {
-    pub branch_id: String,
-    pub window: usize,
-}
-
-fn branch(branch_id: &str) -> io::Result<u64> {
-    branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))
-}
-
-pub fn cause(entry: &SunkShipEntry) -> ShipSinkingCause {
-    if entry.cause_record != 0 {
-        ShipSinkingCause::Cause
-    } else if entry.assisted_kill != 0 {
-        ShipSinkingCause::Assisted
-    } else {
-        ShipSinkingCause::Hostile
-    }
 }
 
 pub fn known_at(reads: &[(i32, i32)], hour: i32) -> Option<i32> {
     let at = reads.partition_point(|run| run.1 < hour);
     reads.get(at).map(|run| run.0.max(hour))
-}
-
-pub fn pruned<'a>(earlier: &'a [SunkShipEntry], later: &[SunkShipEntry], first_read: i32, reads: &[(i32, i32)]) -> Vec<&'a SunkShipEntry> {
-    let mut left: BTreeMap<i32, Vec<&SunkShipEntry>> = BTreeMap::new();
-    for entry in later {
-        left.entry(entry.sink_hour).or_default().push(entry);
-    }
-    earlier
-        .iter()
-        .filter(|entry| known_at(reads, entry.sink_hour) == Some(first_read))
-        .filter(|entry| {
-            let Some(held) = left.get_mut(&entry.sink_hour) else { return true };
-            match held.iter().position(|other| **other == **entry) {
-                Some(at) => {
-                    held.swap_remove(at);
-                    false
-                }
-                None => true,
-            }
-        })
-        .collect()
-}
-
-pub fn sinkings_at(recording: &Recording, run: u32, hour: i32) -> io::Result<Option<(i32, Vec<SunkShipEntry>)>> {
-    sinkings_in(&replay_lanes::at::frame(recording, run, hour, &[read::Read::all(TableId::SunkShips)])?)
 }
 
 pub fn sinkings_seen(seeker: &mut Seeker<'_>, run: u32, hour: i32) -> io::Result<Option<(i32, Vec<SunkShipEntry>)>> {
@@ -181,6 +54,10 @@ pub struct Content {
 impl Content {
     pub fn load(source: &Source, context: &LoadContext) -> Self {
         let catalogue = context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|error| error.to_string());
+        Self::from_catalogue(catalogue)
+    }
+
+    fn from_catalogue(catalogue: Result<Arc<Catalogue>, String>) -> Self {
         let units = catalogue
             .as_ref()
             .map_err(Clone::clone)
@@ -213,13 +90,6 @@ impl Content {
     }
 }
 
-pub fn ship_names(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[SunkShipEntry], content: &Content, refused: &mut Refusals) -> io::Result<Vec<(Option<String>, Option<String>)>> {
-    Ok(ship_details(seeker, run, hour, entries, content, refused)?
-        .into_iter()
-        .map(|(name, class, _)| (name, class))
-        .collect())
-}
-
 pub fn ship_details(
     seeker: &mut Seeker<'_>,
     run: u32,
@@ -234,8 +104,8 @@ pub fn ship_details(
     Ok(entries
         .iter()
         .map(|entry| {
-            let class = named.classes.get(named.class_at[&entry.class_token] as usize).and_then(|class| class.name.clone()).or_else(|| {
-                named.recorded_at.get(&entry.class_name).copied().flatten().map(|index| format!("{} (recorded class)", named.recorded_names[index as usize]))
+            let class = named.classes.get(&entry.class_token).and_then(|class| class.name.clone()).or_else(|| {
+                text(&entry.class_name, "recorded class name", refused).map(|name| format!("{name} (recorded class)"))
             });
             let sinking_cause = named.attribution_for(entry, content, refused);
             (stored(&entry.ship_name, "ship name", content, refused), class, sinking_cause)
@@ -245,13 +115,9 @@ pub fn ship_details(
 
 #[derive(Default)]
 struct Named {
-    classes: Vec<ShipClassInfo>,
-    class_at: HashMap<u32, u32>,
+    classes: BTreeMap<u32, ShipClassInfo>,
     attr_classes: HashMap<u32, (Option<String>, Option<String>)>,
-    recorded_names: Vec<String>,
-    recorded_at: HashMap<Vec<u8>, Option<u32>>,
-    places: Vec<String>,
-    place_at: HashMap<u32, Option<u32>>,
+    places: HashMap<u32, String>,
     refused: Refusals,
     warnings: Vec<String>,
 }
@@ -392,30 +258,15 @@ impl Named {
         }
         for token in tokens {
             let info = class_info(token, literals.get(&token).cloned(), content, &mut out.refused);
-            out.class_at.insert(token, out.classes.len() as u32);
-            out.classes.push(info);
+            out.classes.insert(token, info);
         }
         for token in attr_tokens {
             let resolved = class_key_and_name(literals.get(&token).cloned(), content);
             out.attr_classes.insert(token, resolved);
         }
-        let mut names = HashMap::<String, u32>::new();
-        for entry in entries {
-            if out.recorded_at.contains_key(&entry.class_name) {
-                continue;
-            }
-            let index = text(&entry.class_name, "recorded class name", &mut out.refused).map(|name| {
-                *names.entry(name.clone()).or_insert_with(|| {
-                    out.recorded_names.push(name);
-                    out.recorded_names.len() as u32 - 1
-                })
-            });
-            out.recorded_at.insert(entry.class_name.clone(), index);
-        }
         match (&content.catalogue, &content.regions) {
             (Ok(cat), Ok((regions, memberships))) => {
                 out.warnings.extend(regions.notes.iter().cloned());
-                let mut indices = HashMap::<String, u32>::new();
                 for province in entries.iter().filter(|entry| entry.province_present != 0).map(|entry| entry.province).collect::<BTreeSet<_>>() {
                     let name = match memberships.get(&province).map(Vec::as_slice) {
                         Some([region]) => {
@@ -435,13 +286,9 @@ impl Named {
                             None
                         }
                     };
-                    let index = name.map(|name| {
-                        *indices.entry(name.clone()).or_insert_with(|| {
-                            out.places.push(name);
-                            out.places.len() as u32 - 1
-                        })
-                    });
-                    out.place_at.insert(province, index);
+                    if let Some(name) = name {
+                        out.places.insert(province, name);
+                    }
                 }
             }
             (Ok(_), Err(reason)) => out.warnings.push(format!("Ship sinking places are unavailable: {reason}; no place name is invented.")),
@@ -452,218 +299,5 @@ impl Named {
             out.warnings.extend(cat.refusal_lines());
         }
         out
-    }
-}
-
-pub struct ShipsSunk;
-pub struct ShipsSunkManifest;
-
-impl Product for ShipsSunk {
-    const KEY: &'static str = "ships-sunk";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = ShipsSunkParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, window];
-    type Reply = ShipsSunkReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            ShipsSunkParams::decl(),
-            ShipsSunkReply::decl(),
-            ShipClassInfo::decl(),
-            ShipSinkingCause::decl(),
-            ShipSinkingAttribution::decl(),
-            ShipSinkingBattle::decl(),
-            ShipsSunkRow::decl(),
-        ]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(drop).map_err(|_| "Invalid branch")
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let content = Content::load(source, context);
-        let reply = window(source, &query, &params.branch_id, params.window, &content, cancelled)?;
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-
-pub fn window(source: &Source, query: &Query<'_>, branch_id: &str, index: usize, content: &Content, cancelled: &AtomicBool) -> io::Result<ShipsSunkReply> {
-    let windows = dashboard_world::products::army_windows::windows(query)?;
-    let span = windows.get(index).cloned().ok_or_else(|| invalid("Unknown history window"))?;
-    let (first, last) = (span.first_hour, span.last_hour);
-    let stretches: Vec<_> = query.timeline.within(first, last).collect();
-    if stretches.is_empty() {
-        return Err(invalid("The window's hours are not recorded"));
-    }
-    let recording = query.replay.recording();
-    let mut reply = ShipsSunkReply {
-        branch_id: branch_id.to_owned(),
-        window: index,
-        available: false,
-        first_hour: first,
-        last_hour: last,
-        first_read: None,
-        unread: query.timeline.unheld_within(first, last).into_iter().map(|gap| ArmySpan { first_hour: gap.first, last_hour: gap.last }).collect(),
-        classes: Vec::new(),
-        places: Vec::new(),
-        recorded_names: Vec::new(),
-        rows: Vec::new(),
-        warnings: Vec::new(),
-    };
-    let mut all_reads: Vec<(i32, i32)> = Vec::new();
-    let mut groups: Vec<(u32, i32, i32, Vec<(SunkShipEntry, i32)>)> = Vec::new();
-    for stretch in stretches {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let Some((sampled, entries)) = sinkings_at(recording, stretch.run, stretch.last)? else { continue };
-        reply.available = true;
-        let full_first = query.timeline.at(stretch.first).map_or(stretch.first, |held| held.first);
-        let mut reads = replay_lanes::lanes::reads(recording, stretch.run, TableId::SunkShips, (stretch.first - 720).max(full_first), stretch.last)?;
-        if reads.first().is_none_or(|run| run.0 >= stretch.first) && full_first < stretch.first - 720 {
-            reads = replay_lanes::lanes::reads(recording, stretch.run, TableId::SunkShips, full_first, stretch.last)?;
-        }
-        all_reads.extend_from_slice(&reads);
-        let stretch_first_read = known_at(&reads, stretch.first).filter(|&hour| hour <= stretch.last);
-        if reply.first_read.is_none() {
-            reply.first_read = stretch_first_read;
-        }
-        let earlier = match stretch_first_read {
-            Some(read) if read < sampled => sinkings_at(recording, stretch.run, read)?.map(|(_, entries)| entries).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let gone = stretch_first_read.map(|read| pruned(&earlier, &entries, read, &reads)).unwrap_or_default();
-        let shown: Vec<(SunkShipEntry, i32)> = gone
-            .into_iter()
-            .cloned()
-            .chain(entries)
-            .filter_map(|entry| {
-                let known = known_at(&all_reads, entry.sink_hour)?;
-                (stretch.first..=stretch.last).contains(&known).then_some((entry, known))
-            })
-            .collect();
-        if !shown.is_empty() {
-            groups.push((stretch.run, full_first, stretch.last, shown));
-        }
-    }
-    if groups.is_empty() {
-        return Ok(reply);
-    }
-    let mut seeker = Seeker::new(recording)?;
-    let mut all_tokens: BTreeSet<u32> = BTreeSet::new();
-    let mut all_attr_tokens: BTreeSet<u32> = BTreeSet::new();
-    let mut all_literals: HashMap<u32, String> = HashMap::new();
-    let mut needed_combats: BTreeSet<u64> = BTreeSet::new();
-    for (run, _, stretch_last, shown) in &groups {
-        let tokens: BTreeSet<u32> = shown.iter().map(|(entry, _)| entry.class_token).collect();
-        let attr_tokens: BTreeSet<u32> = shown
-            .iter()
-            .filter(|(entry, _)| entry.attribution_class_present != 0 && entry.attribution_class_token != 0)
-            .map(|(entry, _)| entry.attribution_class_token)
-            .collect();
-        needed_combats.extend(shown.iter().map(|(entry, _)| entry.battle).filter(|&battle| battle != 0));
-        all_tokens.extend(&tokens);
-        all_attr_tokens.extend(&attr_tokens);
-        let missing: BTreeSet<u32> = tokens.union(&attr_tokens).copied().filter(|token| !all_literals.contains_key(token)).collect();
-        all_literals.extend(literals(&mut seeker, *run, *stretch_last, &missing)?);
-    }
-    let all_entries: Vec<&SunkShipEntry> = groups.iter().flat_map(|(_, _, _, shown)| shown.iter().map(|(entry, _)| entry)).collect();
-    let named = Named::from_literals(all_tokens, all_attr_tokens, &all_literals, &all_entries, content);
-    let battles = BattleIndex::build(source, query, last, &needed_combats, &BTreeSet::new())?;
-    let names = country_ids::Names::new(&query.holders);
-    let mut refused = named.refused.clone();
-    for (run, full_first, stretch_last, shown) in groups {
-        let links = country_ids::run_links(recording, run)?;
-        for (entry, known) in shown {
-            let at = entry.sink_hour.clamp(full_first, stretch_last);
-            let tag = |raw: u32| (raw != 0).then(|| names.tag_at(&links, raw, at).map(str::to_owned)).flatten();
-            let sinking_cause = named.attribution_for(&entry, content, &mut refused);
-            let battle = battles.resolve_sinking(entry.battle, entry.sink_hour);
-            reply.rows.push(ShipsSunkRow {
-                sink_hour: entry.sink_hour,
-                known_at: known,
-                name: stored(&entry.ship_name, "ship name", content, &mut refused),
-                class_index: named.class_at[&entry.class_token],
-                recorded_name_index: named.recorded_at.get(&entry.class_name).copied().flatten(),
-                victim: tag(entry.victim_country),
-                attacker: tag(entry.attacker_country),
-                victim_as_of: None,
-                attacker_as_of: None,
-                place_index: (entry.province_present != 0).then(|| named.place_at.get(&entry.province).copied().flatten()).flatten(),
-                cause: cause(&entry),
-                attribution_name: stored(&entry.attribution_name, if entry.cause_record != 0 { "sinking cause" } else { "attribution ship name" }, content, &mut refused),
-                assisted_kill: entry.assisted_kill != 0,
-                sinking_cause,
-                battle,
-            });
-        }
-    }
-    reply.classes = named.classes;
-    reply.places = named.places;
-    reply.recorded_names = named.recorded_names;
-    reply.warnings = named.warnings;
-    reply.warnings.extend(refused.lines("Ships sunk fields"));
-    Ok(reply)
-}
-
-impl Product for ShipsSunkManifest {
-    const KEY: &'static str = "ships-sunk-manifest";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = dashboard_base::products::BranchParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
-    type Reply = ShipsSunkManifestReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![ShipsSunkManifestReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(drop).map_err(|_| "Invalid branch")
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let recording = query.replay.recording();
-        let content = Content::load(source, context);
-        let mut reply = ShipsSunkManifestReply {
-            branch_id: params.branch_id.clone(),
-            windows: dashboard_world::products::army_windows::windows(&query)?,
-            available: false,
-            first_read: None,
-            classes: Vec::new(),
-            recorded_names: Vec::new(),
-            warnings: Vec::new(),
-        };
-        let mut ends: BTreeMap<u32, i32> = BTreeMap::new();
-        for stretch in &query.timeline.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            if reply.first_read.is_none() {
-                reply.first_read = replay_lanes::lanes::reads(recording, stretch.run, TableId::SunkShips, stretch.first, stretch.last)?.first().map(|run| run.0);
-            }
-            let end = ends.entry(stretch.run).or_insert(stretch.last);
-            *end = (*end).max(stretch.last);
-        }
-        reply.available = reply.first_read.is_some();
-        let mut tokens = BTreeMap::<u32, ShipClassInfo>::new();
-        let mut recorded = BTreeSet::<String>::new();
-        let mut seeker = Seeker::new(recording)?;
-        for (&run, &end) in &ends {
-            let Some((_, entries)) = sinkings_at(recording, run, end)? else { continue };
-            let entries: Vec<&SunkShipEntry> = entries.iter().collect();
-            let named = Named::new(&mut seeker, run, end, &entries, &content)?;
-            for class in named.classes {
-                tokens.entry(class.token).or_insert(class);
-            }
-            recorded.extend(named.recorded_names);
-            reply.warnings.extend(named.warnings);
-        }
-        reply.classes = tokens.into_values().collect();
-        reply.recorded_names = recorded.into_iter().collect();
-        reply.warnings.sort();
-        reply.warnings.dedup();
-        Ok(reply)
     }
 }

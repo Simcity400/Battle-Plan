@@ -27,7 +27,7 @@ export interface WidgetHeaderProps {
   readOnly?: boolean;
   active?: boolean;
   activeSwitch: DynamicViewSwitch | null;
-  hasBodyState: boolean;
+  hasBodyState?: boolean;
   readingBadge?: string | null;
   summarySlotRef: (element: HTMLSpanElement | null) => void;
   countrySlotRef: (element: HTMLSpanElement | null) => void;
@@ -95,6 +95,8 @@ export default function WidgetHeader({
     viewMenuKey: '', viewMenu: 0,
     subjectFullKey: '', subjectFull: 0,
     subjectCompact: 0,
+    filterFullKey: '', filterFull: 0,
+    filterCompact: 0,
     timeFullKey: '', timeFull: 0,
     timeCompact: 0,
   });
@@ -104,7 +106,7 @@ export default function WidgetHeader({
   const CountryChip = definition?.countryChip ?? DefaultCountryChip;
   const viewMenuOnly = (activeSwitch?.options.length ?? 0) >= 4;
   const viewKey = activeSwitch ? `${activeSwitch.options.map(item => item.label).join('|')}:${activeSwitch.value}` : '';
-  const hasSubject = definition?.data !== false && definition?.countrySelection !== false;
+  const hasSubject = definition?.data !== false && definition?.countrySelection !== false && definition?.countrySelection !== 'settings';
   const showTime = definition?.data !== false && (definition?.timeModes.length ?? 0) > 0;
   const timeInfo = showTime ? timeChipSummary(widget, effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0) : null;
   const timeKey = showTime ? (widget.time.mode === 'follow' ? 'follow' : (timeInfo?.label ?? '')) : '';
@@ -121,12 +123,12 @@ export default function WidgetHeader({
       return;
     }
     const inspect = () => {
-      const next = headerSlotElement.childNodes.length > 0;
+      const next = headerSlotElement.childNodes.length > 0 && !headerSlotElement.hasAttribute('data-body-state');
       setHasSummaryContent(previous => previous === next ? previous : next);
     };
     inspect();
     const observer = new MutationObserver(inspect);
-    observer.observe(headerSlotElement, { childList: true });
+    observer.observe(headerSlotElement, { childList: true, attributes: true, attributeFilter: ['data-body-state'] });
     return () => observer.disconnect();
   }, [headerSlotElement]);
 
@@ -212,8 +214,9 @@ export default function WidgetHeader({
     const timeEl = header.querySelector<HTMLElement>('.dash-time-chip');
     const heading = titleRef.current;
     const titleFull = heading ? Math.ceil(heading.scrollWidth) : 0;
-    const filterW = widthOf(filterEl);
-    const fixed = widthOf(iconEl) + widthOf(settingsEl) + widthOf(gripEl) + (filterW > 0 ? filterW + 6 : 0);
+    const filterKey = filterEl?.textContent ?? '';
+    const hasFilter = !!filterEl?.firstElementChild;
+    const fixed = widthOf(iconEl) + widthOf(settingsEl) + widthOf(gripEl);
 
     if (hasSummary && !effectiveDrop.dropPill) {
       cache.pill = summaryEl ? Math.ceil(summaryEl.scrollWidth) : 0;
@@ -236,6 +239,14 @@ export default function WidgetHeader({
         cache.subjectCompact = widthOf(subjectEl);
       }
     }
+    if (hasFilter) {
+      if (!effectiveDrop.compactSubject) {
+        cache.filterFull = widthOf(filterEl);
+        cache.filterFullKey = filterKey;
+      } else {
+        cache.filterCompact = widthOf(filterEl);
+      }
+    }
     if (showTime) {
       if (!effectiveDrop.compactTime) {
         cache.timeFull = widthOf(timeEl);
@@ -248,8 +259,9 @@ export default function WidgetHeader({
     const rawNeedsFull = (hasSummary && cache.pillKey !== summaryKey && effectiveDrop.dropPill)
       || (!!activeSwitch && !viewMenuOnly && cache.viewFullKey !== viewKey && effectiveDrop.collapseView)
       || (hasSubject && cache.subjectFullKey !== subjectKey && effectiveDrop.compactSubject)
+      || (hasFilter && cache.filterFullKey !== filterKey && effectiveDrop.compactSubject)
       || (showTime && cache.timeFullKey !== timeKey && effectiveDrop.compactTime);
-    const probeKey = `${summaryKey}\u0000${viewKey}\u0000${subjectKey}\u0000${timeKey}`;
+    const probeKey = `${summaryKey}\u0000${viewKey}\u0000${subjectKey}\u0000${filterKey}\u0000${timeKey}`;
     const needsFullMeasure = rawNeedsFull && cache.probeKey !== probeKey;
     if (needsFullMeasure) cache.probeKey = probeKey;
 
@@ -271,7 +283,10 @@ export default function WidgetHeader({
           hasSubject: subjectPresent,
           subjectFull: cache.subjectFullKey === subjectKey ? cache.subjectFull : 0,
           subjectCompact: cache.subjectCompact > 0 ? cache.subjectCompact : 42,
+          filterFull: hasFilter ? (cache.filterFullKey === filterKey ? cache.filterFull : 0) : 0,
+          filterCompact: cache.filterCompact > 0 ? cache.filterCompact : 46,
           hasTime: timePresent,
+          timeLive: widget.time.mode === 'follow',
           timeFull: cache.timeFullKey === timeKey ? cache.timeFull : 0,
           timeCompact: cache.timeCompact > 0 ? cache.timeCompact : 24,
           editing,
@@ -310,7 +325,7 @@ export default function WidgetHeader({
     <span className="dash-widget-summary" ref={summarySlotRef} hidden={effectiveDrop.dropPill || hasBodyState || undefined} />
     {readingBadge && <span className="dash-reading-badge is-in-header">{readingBadge}</span>}
     <div className="dash-widget-controls">
-      {filterSlotRef && <span className="dash-widget-filter-slot" ref={filterSlotRef} />}
+      {filterSlotRef && <span className="dash-widget-filter-slot" data-compact={effectiveDrop.compactSubject || undefined} ref={filterSlotRef} />}
       {hasSubject && (readOnly || !template || !onApply || !setOption
         ? <CountryChip widget={widget} runtime={runtime} active={false} compact={effectiveDrop.compactSubject} onSlot={countrySlotRef} />
         : <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply} setOption={setOption}

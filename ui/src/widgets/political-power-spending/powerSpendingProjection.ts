@@ -127,6 +127,7 @@ export const commandSpendingProjection = spendingProjection('command-power-spend
 
 function sources(ctx: FamilyPlanContext, kind: string, currency: SpendCurrency): SourcePlan {
   const tag = ctx.countryTag;
+  const params = { branchId: ctx.branch.id, country: tag ? countryFromKey(tag) : null, currency, from: ctx.branch.firstHour };
   return {
     owner: `${kind}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${tag ?? ''}`,
     entries: tag ? [{
@@ -136,16 +137,11 @@ function sources(ctx: FamilyPlanContext, kind: string, currency: SpendCurrency):
       offset: ctx.track.axisOffset,
       read: {
         shape: 'point',
-        channel: 'followed',
+        channel: 'panel',
         coverage: { mode: 'population', form: 'parts' },
         product: 'power-spending-breakdown',
-        followQuery: null,
-        params: { branchId: ctx.branch.id, country: countryFromKey(tag), currency, from: ctx.branch.firstHour },
-        hourParam: 'hour',
-        provenInterval: (data, at) => {
-          const reply = data as PowerSpendingBreakdownReply;
-          return reply.hour <= at && at <= reply.through ? [reply.hour, reply.through] : [at, at];
-        },
+        followQuery: { panel: 'power-spending-breakdown', ...params },
+        params,
         validate,
       },
     }] : [],

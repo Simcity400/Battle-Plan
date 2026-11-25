@@ -151,7 +151,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     use dashboard_world::products::{country_flags, identities, subjects};
     use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, forces, leaders, training_queue};
     use dashboard_naval::products::naval;
-    use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
+    use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, scoreboard, territory_transfers, volunteers, wargoals, wars};
     use dashboard_politics::products::{feed, national_focus, stability, technology_artwork};
     use dashboard_economy::products::{convoys, economy, trade_flow};
     use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending, production_spending_months};
@@ -253,9 +253,9 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Deployment orders, divisions in training, manpower and equipment come from the recorded daily queue read; template, priority, location and archetype names resolve through the recorded naming operands and the content stack.".into())
         }
-        <divisions::careers::DivisionCareers as at_hour::AtHour>::KEY | <divisions::careers::DecoratedDivisions as at_hour::AtHour>::KEY | <divisions::careers::DivisionRecord as at_hour::AtHour>::KEY => {
+        <divisions::careers::DecoratedDivisions as at_hour::AtHour>::KEY | divisions::careers::service_record::DivisionServiceRecordTail::KEY | divisions::careers::service_record::DivisionServiceRecordChoices::KEY => {
             content.catalogue()?;
-            Ok("Division histories, medal totals, experience and kill counters come from recorded rows; medal, level, entry and place names resolve through recorded lexical spellings and the content stack's localisation and defines.".into())
+            Ok("Division histories, medal totals, experience and casualties taken come from recorded rows; medal, level, entry and place names resolve through recorded lexical spellings and the content stack's localisation and defines.".into())
         }
         <divisions::templates::DivisionTemplates as at_hour::AtHour>::KEY => {
             content.catalogue()?;
@@ -295,7 +295,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "agency names, defence and upgrades", findings);
             Ok(format!("The default agency name, the defence line and every acquired upgrade's name checked ({} refused); agencies and their levels need a recording.", refused.len()))
         }
-        intelligence::espionage::EspionageTypes::KEY => {
+        dashboard_land::products::division_log::DivisionLogTail::KEY => {
+            content.catalogue()?;
+            Ok("Division names, template labels and artwork use the recorded naming operands and content stack.".into())
+        }
+        intelligence::espionage_tail::EspionageLogTail::KEY => {
             let catalogue = content.catalogue()?;
             let politics = std::sync::Arc::new(dashboard_base::products::politics_content::PoliticsContent::load(std::sync::Arc::clone(catalogue)).map_err(|error| error.to_string())?);
             let operatives = intelligence::operative_content::OperativeContent::load(politics).map_err(|error| error.to_string())?;
@@ -386,14 +390,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("No offline check: idea, advisor, leader, ideology and modifier names are read at the reply from the recorded lines and parts dictionary, in the country's look at the hour.".into())
         }
         casualties::CasualtyBreakdown::KEY | <casualty_matrix::CasualtyMatrix as at_hour::AtHour>::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
-        peace::PeaceDeals::KEY | territory_transfers::TerritoryTransfers::KEY => {
-            let catalogue = content.catalogue()?;
-            if catalogue.localised("PEACE_TAKE_STATES_DEMAND", dashboard_base::catalogue::View::Scripted).is_none() {
-                findings.push(Finding::new(Kind::Refused, "peace action names", "localisation PEACE_TAKE_STATES_DEMAND is missing; state transfers are unnamed"));
-            }
-            take(catalogue, "peace action names", findings);
-            Ok("The state-taking action's name checked; other action names come from the recorded settlements' keys and cached names.".into())
-        }
+        dashboard_wars::products::peace::tail::PeaceDealsTail::KEY => Ok("Treaty terms and participant slots come from the recording. Country groups need their recorded membership.".into()),
+        territory_transfers::TerritoryTransfers::KEY => Ok("Territory transfers use recorded state ownership, settlement participants and state victory points.".into()),
         dashboard_world::products::sea_regions::StrategicRegions::KEY => {
             let regions = dashboard_base::content::strategic_regions(&content.resolved.layers).map_err(|why| why.to_string())?;
             for note in &regions.notes {
@@ -423,10 +421,10 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Building type names localise the token spellings recorded in LexicalTokens through the recorded buildings; icons and the repair marker are the construction queue's line entry art; state names are the recorded states' name keys. Lines, totals and endings are the recorded ConstructionProjects and ConstructionSpend rows.".into())
         }
-        naval::battles::NavalBattlesManifest::KEY | naval::battles::NavalBattles::KEY | naval::battles::NavalBattlesRanking::KEY => {
-            Ok("No content dependency: battles, sides and results are the recorded naval combat, result and battle tables; places are named by the place names product.".into())
+        naval::battles::tail::NavalBattlesTail::KEY => {
+            Ok("No content dependency: battles, sides and results are the recorded naval combat, result and battle tables; places use the recorded place-name runs.".into())
         }
-        naval::sunk::ShipsSunk::KEY | naval::sunk::ShipsSunkManifest::KEY | naval::battles::NavalBattleDetails::KEY => {
+        naval::sunk::tail::ShipsSunkTail::KEY | naval::battles::NavalBattleDetails::KEY => {
             let catalogue = content.catalogue()?;
             content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;

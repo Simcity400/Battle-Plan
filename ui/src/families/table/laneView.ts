@@ -4,7 +4,7 @@ import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
-import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import {
   computeColumnMaxima,
   deriveTableAudit,
@@ -136,6 +136,21 @@ function textSamples(columns: readonly { readonly key: string; readonly numeric?
   return samples;
 }
 
+function flagCounts(columns: readonly { readonly key: string; readonly display?: string }[], rows: readonly FlatTableRow[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
+  for (const column of columns) {
+    if (column.display !== 'flagName') continue;
+    let most = 0;
+    for (let i = 0; i < limit; i++) {
+      const item = rows[i]!;
+      if (item.kind === 'data') most = Math.max(most, item.row.cells[column.key]?.flags?.length ?? 0);
+    }
+    if (most > 1) counts[column.key] = most;
+  }
+  return counts;
+}
+
 function sampleSignature(samples: Record<string, string[]>): string {
   let sig = '';
   for (const [key, list] of Object.entries(samples)) {
@@ -189,18 +204,20 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const layoutWidth = paneGeom ? paneGeom.width : width;
   const baseCols = buildColumnLayouts(model.columns, settings);
   const samples = textSamples(baseCols, flatRows);
-  const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}`;
+  const flags = flagCounts(baseCols, flatRows);
+  const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}${JSON.stringify(flags)}`;
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
-    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true });
+    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true, flags });
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
-  const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
+  const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth, rhythm: model.rhythm });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
-  const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode) : null;
+  const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode,
+    { width, columns: columns.columns, theme, measure: canvasMeasureText(measure) }) : null;
   const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
-  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight);
+  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight + (model.endNote ? END_NOTE_HEIGHT : 0));
   let maximaCols = '';
   for (const col of columns.columns) if (col.numeric) maximaCols += `${col.key}:${col.display}|`;
   const maxima = inc && prev && prev.maximaCols === maximaCols && model.changedKeys
@@ -318,6 +335,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
     widths: {
       widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...columns.columns].map(col => [col.key, col.width])),
       visible: columns.columns.map(col => col.key),
+      totals: columns.columns.filter(col => col.narrow === 'total' && !col.headerGroup).map(col => col.key),
       totalWidth: paneGeom ? width + Math.max(0, columns.totalWidth - paneGeom.width) : columns.totalWidth,
       scrollable: columns.scrollable,
       pinnedCount: columns.pinnedCount,
@@ -329,6 +347,9 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       summaryText: model.titleSummary ?? null,
       summaryPartial: model.titleSummaryPartial ?? null,
       hideHeader: model.hideHeader === true,
+      rhythm: model.rhythm,
+      kindFilter: model.kindFilter,
+      subjectSummary: model.subjectSummary,
       rowHeightMode: shape.rowHeightMode,
       notes: [],
       warnings: model.warnings ?? [],
@@ -361,7 +382,6 @@ const inspectedRow = (inspect: string | null): string | null => (inspect?.starts
 
 export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
-  incremental: true,
   boundary: nextTableChange,
   redraw: () => Infinity,
   status(model) {
@@ -393,10 +413,11 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       precomputedMaxima: shape.maxima,
       staticRowLooks: model.rowTimeBoundaries === false,
       rowHeightMode: shape.rowHeightMode,
+      rhythm: model.rhythm,
     };
+    let drew = false;
     if (shape.panes && shape.paneGeom) {
       const scroll = paneScroll(shape.columns, shape.paneGeom, binding.scrollLeft);
-      let drew = false;
       for (let p = 0; p < shape.panes.length; p++) {
         const pane = shape.panes[p]!;
         const picture = list[p] ?? (list[p] = createTablePicture());
@@ -424,7 +445,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       if (drew) drawPaneFrame(ctx, shape.paneGeom, shape.columns, scroll, layout.height, theme);
     } else {
       const picture = list[0] ?? (list[0] = createTablePicture());
-      drawFamilyTable(ctx, {
+      drew = drawFamilyTable(ctx, {
         ...common,
         rows: shape.flatRows,
         width: frame.surface.width,
@@ -438,13 +459,15 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         empty: model.empty,
         hasGroupHeaders: shape.hasGroups,
         dateGrouped: model.dateGrouped === true,
+        dayDividersOnly: model.dayDividersOnly,
+        ...(model.endNote && shape.windowOffset + shape.flatRows.length >= shape.totalCount ? { endNote: model.endNote } : {}),
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
-      }, picture);
+      }, picture).drew;
     }
-    if (glide.offsets.size > 0) return true;
+    if (glide.offsets.size > 0) return { drew, next: true };
     const until = nextExpiry(motion, frame.now);
-    return Number.isFinite(until) ? until : false;
+    return { drew, next: Number.isFinite(until) ? until : false };
   },
   hit(frame, point) {
     const { model, layout, binding } = frame;

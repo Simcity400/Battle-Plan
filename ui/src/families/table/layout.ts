@@ -1,8 +1,9 @@
 import { VALUE_WEIGHT } from '../../charts/draw.ts';
-import { DATE_COLUMN_WIDTH } from '../../draw/kit.ts';
+import { DATE_COLUMN_WIDTH, FLAG_SLOT_WIDTH, STATUS_MARK_LEAD, STATUS_WORD_SIZE } from '../../draw/kit.ts';
 import {
   CELL_INSET,
   CHILD_ROW_HEIGHT,
+  COL_GAP,
   displayExtra,
   MEDIA_ROW_HEIGHT,
   ROW_HEIGHT,
@@ -31,6 +32,12 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
+  readonly narrow?: TableColumnSpec['narrow'];
+  readonly narrowWidth?: number;
+  readonly flagsWidth?: number;
+  readonly textTone?: TableColumnSpec['textTone'];
+  readonly inlineFlags?: readonly string[];
+  readonly narrowed?: boolean;
   readonly leadInset?: number;
   readonly trailInset?: number;
 }
@@ -99,6 +106,10 @@ export function buildColumnLayouts(
       headerGroup: spec.headerGroup,
       minWidth: spec.minWidth,
       maxWidth: spec.maxWidth,
+      textTone: spec.textTone,
+      narrow: own?.width == null ? spec.narrow : undefined,
+      narrowWidth: own?.width == null ? spec.narrowWidth : undefined,
+      flagsWidth: spec.flagsWidth,
       grow: own?.width != null ? 0 : spec.grow,
     });
   };
@@ -117,11 +128,13 @@ export function buildColumnLayouts(
 
 const OPERATOR_SLOT = 16;
 const HEADER_HATCH = 16;
+const FLAG_GAP = 6;
 const SHORT_OVER_GAP = 8;
 
 function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, headFont: string, unitFont: string): number {
   const group = column.headerGroup;
   if (!group) return 0;
+  if (group.kind === 'pair') return 2 * Math.max(group.slot ?? 0, ...group.labels.map(label => measure(label, headFont))) + COL_GAP + CELL_INSET * 2;
   const unit = column.unit ? measure(column.unit, unitFont) : 0;
   if (group.kind === 'shortOver') return measure('Short', headFont) + measure('Over', headFont) + SHORT_OVER_GAP * 2 + 1 + CELL_INSET * 2;
   let slot = 0;
@@ -138,7 +151,7 @@ export function measureFixedColumnWidths(
   theme: Pick<TableTheme, 'font' | 'fontSize'>,
   measure: MeasureText,
   initialSamples?: Readonly<Record<string, readonly string[]>>,
-  options?: { readonly hideHeader?: boolean },
+  options?: { readonly hideHeader?: boolean; readonly flags?: Readonly<Record<string, number>> },
 ): Record<string, number> {
   const bodyFont = fontString(theme, 13.5, VALUE_WEIGHT);
   const headFont = fontString(theme, 13, 600);
@@ -161,6 +174,10 @@ export function measureFixedColumnWidths(
     }
     if (column.cellKind === 'item' && !column.widest?.length) {
       out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
+      continue;
+    }
+    if (column.headerGroup?.kind === 'pair') {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 0, headerGroupWidth(column, measure, headFont, unitFont)));
       continue;
     }
     if (column.cellKind === 'stockpileNet' || column.cellKind === 'stockpileSum' || column.cellKind === 'stockpileBalance') {
@@ -192,11 +209,11 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'status') {
-      const statusFont = fontString(theme, theme.fontSize.small, 400);
+      const statusFont = fontString(theme, STATUS_WORD_SIZE, 400);
       const statusSamples = column.widest?.length ? column.widest : ['Succeeded'];
       let widestStatus = 0;
       for (const sample of statusSamples) widestStatus = Math.max(widestStatus, measure(sample, statusFont));
-      const statusW = Math.max(column.minWidth ?? 88, widestStatus + 12 + CELL_INSET * 2, headerWidth);
+      const statusW = Math.max(column.minWidth ?? 88, widestStatus + STATUS_MARK_LEAD + CELL_INSET * 2, headerWidth);
       out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, statusW) : statusW);
       continue;
     }
@@ -207,7 +224,7 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.display === 'flag') {
-      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 48, headerWidth));
+      out[column.key] = Math.ceil(Math.max(column.flagsWidth ?? column.minWidth ?? 48, headerWidth));
       continue;
     }
     const samples = column.widest?.length
@@ -219,7 +236,8 @@ export function measureFixedColumnWidths(
     for (const sample of samples) {
       widest = Math.max(widest, measure(sample, bodyFont));
     }
-    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + TWO_WAY_GAP : displayExtra(column);
+    const moreFlags = column.display === 'flagName' ? Math.max(0, (options?.flags?.[column.key] ?? 1) - 1) * (FLAG_SLOT_WIDTH + FLAG_GAP) : 0;
+    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + TWO_WAY_GAP : displayExtra(column) + moreFlags;
     const contentWidth = widest + extra + CELL_INSET * 2;
     let computed = Math.ceil(Math.max(contentWidth, headerWidth));
     if (column.minWidth !== undefined) computed = Math.max(column.minWidth, computed);
@@ -232,12 +250,18 @@ export function measureFixedColumnWidths(
   return out;
 }
 
-function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayout[] {
+export type TableRhythm = 'log';
+
+export function columnInset(rhythm: TableRhythm | undefined): number {
+  return rhythm === 'log' ? (COL_GAP - CELL_INSET * 2) / 2 : 0;
+}
+
+function withEdgeInsets(shown: readonly FamilyColumnLayout[], inner: number): FamilyColumnLayout[] {
   const last = shown.length - 1;
   return shown.map((col, idx) => {
-    if (idx !== 0 && idx !== last) return col;
-    const lead = idx === 0 ? ROW_MARGIN_X : 0;
-    const trail = idx === last ? ROW_MARGIN_X : 0;
+    const lead = idx === 0 ? ROW_MARGIN_X : col.width > 0 ? inner : 0;
+    const trail = idx === last ? ROW_MARGIN_X : col.width > 0 ? inner : 0;
+    if (!lead && !trail) return col;
     return { ...col, width: col.width + lead + trail, ...(lead ? { leadInset: lead } : {}), ...(trail ? { trailInset: trail } : {}) };
   });
 }
@@ -281,10 +305,26 @@ export function layoutFamilyTable(
   options: {
     readonly rankShown?: boolean;
     readonly rankWidth?: number;
+    readonly rhythm?: TableRhythm;
   } = {},
 ): FamilyTableLayout {
-  const shown = withEdgeInsets(columns.filter(col => col.shown));
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
+  const inner = columnInset(options.rhythm);
+  let visible = columns.filter(col => col.shown);
+  const wanted = rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) + 2 * inner * Math.max(0, visible.length - 1);
+  if (visible.some(col => col.narrow || col.narrowWidth !== undefined) && wanted > available) {
+    visible = visible.filter(col => col.narrow !== 'hide');
+    const primary = visible.findIndex(col => col.narrow === 'primary');
+    const inlineFlags: string[] = [];
+    for (let i = primary + 1; primary >= 0 && visible[i]?.narrow === 'flag'; i++) inlineFlags.push(visible[i]!.key);
+    visible = visible.map(col => {
+      if (col.narrow === 'primary') return { ...col, inlineFlags, narrowed: true };
+      if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width, narrowed: true };
+      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0, narrowed: true };
+      return col.narrowWidth === undefined ? { ...col, narrowed: true } : { ...col, width: col.narrowWidth, narrowed: true };
+    });
+  }
+  const shown = withEdgeInsets(visible, inner);
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
     if (shown[i]!.pinned === true) pinnedCount = i + 1;
@@ -305,12 +345,22 @@ const GAP_ROW_HEIGHT = 30;
 const REFUSED_ROW_HEIGHT = 32;
 const LOADING_ROW_HEIGHT = 32;
 export const LIVE_END_GAP = 9;
+export const END_NOTE_HEIGHT = 44;
 
 export interface RowLayoutGeometry {
   readonly tops: readonly number[];
   readonly heights: readonly number[];
   readonly totalHeight: number;
+  readonly detailRows?: ReadonlyMap<number, DetailRowLayout>;
 }
+
+export interface DetailRowLayout {
+  readonly indent: number;
+  readonly width: number;
+  readonly lines: readonly number[];
+}
+
+export const DETAIL_LINE_HEIGHT = 28;
 
 export function rowHeightOf(
   item: FlatTableRow,
@@ -321,7 +371,7 @@ export function rowHeightOf(
   if (item.kind === 'gap') return GAP_ROW_HEIGHT;
   if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
   if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
-  const base = item.level > 1 ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
+  const base = item.level > 1 && !item.row.pageParent ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
   return item.isLiveEnd ? base + LIVE_END_GAP : base;
 }
 
@@ -329,17 +379,38 @@ export function computeRowLayout(
   rows: readonly FlatTableRow[],
   density: TableDensity,
   mode: 'standard' | 'media' = 'standard',
+  detail?: { width: number; columns: readonly FamilyColumnLayout[]; theme: TableTheme; measure: MeasureText },
 ): RowLayoutGeometry {
   const tops = new Array<number>(rows.length);
   const heights = new Array<number>(rows.length);
+  const detailRows = new Map<number, DetailRowLayout>();
   let y = 0;
   for (let i = 0; i < rows.length; i++) {
-    const h = rowHeightOf(rows[i]!, density, mode);
+    const row = rows[i]!;
+    let h = rowHeightOf(row, density, mode);
+    if (detail && row.kind === 'data' && row.row.detailColumn) {
+      const indent = (detail.columns.find(col => col.cellKind === 'date')?.width ?? 0) + CELL_INSET;
+      const width = Math.max(0, detail.width - indent - CELL_INSET * 2);
+      const flags = row.row.cells[row.row.detailColumn]?.flags ?? [];
+      const lines: number[] = [];
+      let used = 0;
+      for (const [at, flag] of flags.entries()) {
+        if (flag.label === undefined) continue;
+        const required = FLAG_SLOT_WIDTH + 5 + detail.measure(flag.label, fontString(detail.theme, detail.theme.fontSize.body, 400)) + 6;
+        if (!lines.length || used + required > width - CELL_INSET * 2) {
+          lines.push(at);
+          used = 0;
+        }
+        used += required;
+      }
+      detailRows.set(i, { indent, width, lines });
+      h = lines.length ? lines.length * DETAIL_LINE_HEIGHT : 30;
+    }
     tops[i] = y;
     heights[i] = h;
     y += h;
   }
-  return { tops, heights, totalHeight: y };
+  return { tops, heights, totalHeight: y, ...(detailRows.size ? { detailRows } : {}) };
 }
 
 export const TABLE_WINDOW_OVERSCAN = 4;

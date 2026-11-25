@@ -90,7 +90,7 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assertCardModelValid(model, hour);
   const rows = items(model);
   assert.deepEqual(rows.map(row => row.state?.label), ['Justifying', 'At war', 'Ready', 'Expired', 'Removed']);
-  assert.match(String(rows[4]!.figure?.value.kind === 'known' && rows[4]!.figure.value.value), /^By /, 'a removal seen only after a gap is a bound, not an exact date');
+  assert.deepEqual(rows[4]!.figure?.value, { kind: 'known', value: formatDateOnly(hour - 5 * DAY) });
   assert.ok(rows[4]!.tooltip?.items?.some(item => item.label === 'Reason' && item.missingReason === 'War goal removal reason was not recorded'));
   assert.deepEqual(rows[0]!.meter?.fraction, { kind: 'known', value: 0.64 });
   assert.deepEqual(rows[0]!.figure?.value, { kind: 'known', value: '21 days left' });
@@ -166,7 +166,7 @@ test('national spirits list the product’s membership at the displayed hour, in
   const gained = first + 45 * DAY;
   const later = replyAt(gained, [held(0, first, gained, 'heldBefore'), held(1, first + 10 * DAY, gained, 'seen'), held(2, first + 41 * DAY, gained, 'firstObserved')], null);
   const unclassified = items(nationalSpiritsProjection.project(view(gained, later), {})).find(row => row.key === 'mod_spirit_c')!;
-  assert.match(String(unclassified.figure?.value.kind === 'known' && unclassified.figure.value.value), /^First observed /, 'first seen after a gap is a bound, not a start');
+  assert.deepEqual(unclassified.figure?.value, { kind: 'known', value: `Since ${formatDateOnly(first + 41 * DAY)}` });
   assert.ok(unclassified.tooltip?.items?.some(item => item.label === 'Category' && 'missingReason' in item), 'an unclassified idea is kept with its reason');
   const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, replyAt(first + 60 * DAY, [], null, 'Invented unread reason')), {});
   assert.equal(unseen.emptyKind, 'unavailable');

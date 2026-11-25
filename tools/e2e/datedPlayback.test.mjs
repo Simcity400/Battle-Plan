@@ -385,33 +385,6 @@ test('an unmatched or ambiguous commit source fails instead of being assigned by
   assert.ok(ambiguous.reasons.some(reason => reason.includes('Ambiguous commit source') && reason.includes('FOO BAR')));
 });
 
-test('a visible placeholder fails its row as not migrated and lists how many and which kinds are not migrated', () => {
-  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
-  const records = [
-    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
-    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
-    ...presented.map(at => ({ t: 'picture', at, widget: 'ok', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
-    ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
-  ];
-  const baseInputs = { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic' })), to: 1000, presented: [] };
-  const onlyPlaceholder = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0, inputs: baseInputs,
-    widgets: [{ id: 'legacy', kind: 'legacy-kind', title: 'Legacy', visible: true, surfaces: [], notMigrated: true }] };
-  const alone = datedPlaybackVerdict([onlyPlaceholder], records);
-  assert.equal(alone.pass, false);
-  assert.ok(alone.reasons.includes('nothing measured'));
-  assert.ok(alone.reasons.some(reason => reason.includes('1 placement not migrated') && reason.includes('legacy-kind')));
-  assert.deepEqual(alone.placements.map(p => [p.kind, p.status, p.pass]), [['legacy-kind', 'not migrated', false]]);
-  assert.deepEqual(alone.widgets.map(w => [w.kind, w.notMigrated, w.pass]), [['legacy-kind', 1, false]]);
-  const mixed = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0, inputs: baseInputs,
-    widgets: [{ id: 'ok', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] },
-      { id: 'legacy', kind: 'legacy-kind', title: 'Legacy', visible: true, surfaces: [], notMigrated: true }],
-    audit: [{ widget: 'ok', surface: 'surface', placement: 1, at: 500, error: null }] };
-  const verdict = datedPlaybackVerdict([mixed], records);
-  assert.equal(verdict.pass, false, 'a page with a passing migrated widget and a visible placeholder must fail');
-  assert.ok(verdict.reasons.some(reason => reason.includes('1 placement not migrated') && reason.includes('legacy-kind')));
-  assert.deepEqual(verdict.placements.map(p => [p.kind, p.status ?? 'ok', p.pass]), [['ok-kind', 'ok', true], ['legacy-kind', 'not migrated', false]]);
-});
 
 test('a future picture counts once the worker grace window has passed, and for widgets mounted after the input', () => {
   const tick = { t: 'tick', at: 0, hour: 100, playing: false, seek: 2 };

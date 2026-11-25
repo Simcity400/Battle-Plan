@@ -407,7 +407,7 @@ test('reportFamilyShownHour prefers explicit installedHour over view.through', (
   assert.deepEqual(reported, [75, 90, null]);
 });
 
-test('tooltip payloads carry full truncated text, exact hours, date bounds, missing reasons, and structured lists', () => {
+test('tooltip payloads carry full truncated text, exact hours, notes, missing reasons, and structured lists', () => {
   const hour = engineHour({ year: 1941, month: 9, day: 14, hour: 8 })!;
   const entry: FamilyTooltipEntry = {
     hour,
@@ -415,7 +415,8 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
     payload: {
       title: 'Battle of Smol…',
       fullText: 'Battle of Smolensk',
-      dateBound: { kind: 'by', hour, reason: 'First seen after a recording gap.' },
+      hour,
+      note: 'First seen after a recording gap.',
       exactValue: '124,850',
       missingReason: 'Air losses not recorded in this build.',
       items: [
@@ -426,7 +427,7 @@ test('tooltip payloads carry full truncated text, exact hours, date bounds, miss
   };
   const content = resolveTooltipEntryContent(entry);
   assert.equal(content.title, 'Battle of Smolensk');
-  assert.equal(content.subtitle, 'By 14 Sep 1941 · 08:00');
+  assert.equal(content.subtitle, '14 Sep 1941 · 08:00');
   assert.equal(content.note, 'First seen after a recording gap.');
   assert.equal(content.rows[0]?.value, '124,850');
   assert.equal(content.rows[1]?.valueState?.kind, 'missing');
@@ -1249,24 +1250,26 @@ test('rv10 R2-S5: rebuilt projection options equal in structure keep the earlier
   assert.equal(keepEqual(undefined, rebuilt), rebuilt);
 });
 
-test('rv18 S18: a changed source-plan signature replays the current row window to the replacement pager', () => {
+test('rv18 S18: a changed source plan replays the current row window to the replacement pager', () => {
+  const all: SourcePlan = { owner: 'all', entries: [] };
+  const filtered: SourcePlan = { owner: 'filtered', entries: [] };
   const win = { first: 596, count: 18 };
-  const first = nextReportedRowWindow(null, win, 200, 'plan:all');
-  assert.deepEqual(first, { window: win, hour: 200, planSig: 'plan:all' });
-  assert.equal(nextReportedRowWindow(first, win, 200, 'plan:all'), null, 'same plan, same window, same hour is deduped');
-  assert.equal(nextReportedRowWindow(first, win, 205, 'plan:all'), null, 'same plan, same window while advancing forward is deduped');
-  assert.deepEqual(nextReportedRowWindow(first, win, 195, 'plan:all'), { window: win, hour: 195, planSig: 'plan:all' }, 'seeking back replays the window');
+  const first = nextReportedRowWindow(null, win, 200, all);
+  assert.deepEqual(first, { window: win, hour: 200, plan: all });
+  assert.equal(nextReportedRowWindow(first, win, 200, all), null, 'same plan, same window, same hour is deduped');
+  assert.equal(nextReportedRowWindow(first, win, 205, all), null, 'same plan, same window while advancing forward is deduped');
+  assert.deepEqual(nextReportedRowWindow(first, win, 195, all), { window: win, hour: 195, plan: all }, 'seeking back replays the window');
   assert.deepEqual(
-    nextReportedRowWindow(first, win, 200, 'plan:filtered'),
-    { window: win, hour: 200, planSig: 'plan:filtered' },
-    'changing the plan signature replays the unchanged window at the same hour',
+    nextReportedRowWindow(first, win, 200, filtered),
+    { window: win, hour: 200, plan: filtered },
+    'changing the plan replays the unchanged window at the same hour',
   );
   assert.deepEqual(
-    nextReportedRowWindow(first, win, 205, 'plan:filtered'),
-    { window: win, hour: 205, planSig: 'plan:filtered' },
-    'changing the plan signature replays the unchanged window even when the installed hour moved forward',
+    nextReportedRowWindow(first, win, 205, filtered),
+    { window: win, hour: 205, plan: filtered },
+    'changing the plan replays the unchanged window even when the installed hour moved forward',
   );
-  assert.equal(nextReportedRowWindow(first, null, 205, 'plan:filtered'), null, 'no requested window reports nothing');
+  assert.equal(nextReportedRowWindow(first, null, 205, filtered), null, 'no requested window reports nothing');
 });
 
 test('rv21 S2: a new installed head that pushes a gap below a stationary viewport reports the updated data window past the head', () => {
@@ -1280,7 +1283,7 @@ test('rv21 S2: a new installed head that pushes a gap below a stationary viewpor
   const viewport = { width: 600, height: 6 * rowHeight, dpr: 1, scrollLeft: 0, scrollTop: 247 * rowHeight, zoomWindow: null };
 
   const fieldsBefore = { table: { count: 301, totalHeight: 301 * rowHeight, gapBefore: [255] }, meta: {} };
-  const firstUpdate = reconcileInstalledRowWindow(null, null, tableHostAdapter, plan, viewport, settings, fieldsBefore, 100, 'plan:all');
+  const firstUpdate = reconcileInstalledRowWindow(null, null, tableHostAdapter, plan, viewport, settings, fieldsBefore, 100);
   assert.deepEqual(firstUpdate.requested, { first: 243, count: 14, dataFirst: 243, dataCount: 13 });
   assert.ok(firstUpdate.report);
 
@@ -1298,11 +1301,10 @@ test('rv21 S2: a new installed head that pushes a gap below a stationary viewpor
     settings,
     fieldsAfter,
     105,
-    'plan:all',
   );
   assert.equal(nextUpdate.changed, true, 'gap pushed below viewport changes dataCount from 13 to 14');
   assert.deepEqual(nextUpdate.requested, { first: 243, count: 14, dataFirst: 243, dataCount: 14 });
-  assert.deepEqual(nextUpdate.report, { window: { first: 243, count: 14, dataFirst: 243, dataCount: 14 }, hour: 105, planSig: 'plan:all' });
+  assert.deepEqual(nextUpdate.report, { window: { first: 243, count: 14, dataFirst: 243, dataCount: 14 }, hour: 105, plan });
 
   const afterStep = pager.window(nextUpdate.report!.window, nextUpdate.report!.hour);
   assert.deepEqual(
@@ -1323,7 +1325,6 @@ test('rv21 S2: a new installed head that pushes a gap below a stationary viewpor
     settings,
     fieldsAfter,
     106,
-    'plan:all',
   );
   assert.equal(quietUpdate.changed, false);
   assert.equal(quietUpdate.report, null, 'unchanged installed window on a forward step stays deduplicated');

@@ -1,9 +1,7 @@
 dashboard_base::register_products! {
     NATIONAL_FOCUS_NATIONALFOCUS => crate::products::national_focus::NationalFocus,
     TECHNOLOGY_ARTWORK_TECHNOLOGYARTWORK => crate::products::technology_artwork::TechnologyArtwork,
-    LOGS_LOGPAGE => crate::products::logs::LogPage,
     LOGS_LOGTAIL => crate::products::logs::LogTail,
-    LOGS_LOGCOUNTS => crate::products::logs::LogCounts,
     POLITICS_HISTORY_POLITICSSTATEHISTORY => crate::products::politics::history::PoliticsStateHistory,
     POLITICS_CIVIL_WARS_CIVILWARS => crate::products::politics::civil_wars::CivilWars,
     FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,

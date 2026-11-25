@@ -448,7 +448,13 @@ window.tableFamilyDom = {
     if (!body) throw new Error('No accessible mirror body');
     const fac: [bigint, bigint, bigint, bigint] = [15n, 95n, 30n, -1n];
     const cas: [bigint, bigint, bigint, bigint] = [1n, 2n, 0n, 0n];
-    let hour = pipeline.view(pipeId)?.h ?? 0;
+    let hour = clock.getSnapshot().hour + 1;
+    clock.seek(hour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(hour, fac, cas, true);
+    const seeded = await until(() => pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim
+      && body.querySelector('[data-row-key="FRA"] td:last-child')?.textContent === String(cas[1]));
+    if (!seeded) throw new Error(`Unchanged-content baseline did not install: ${body.textContent}`);
     const step = async () => {
       hour++;
       sendHour(hour, fac, cas);
@@ -456,7 +462,6 @@ window.tableFamilyDom = {
       clock.step(1);
       return until(() => installs > before && pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim && body.children.length > 0, 2000);
     };
-    await step();
     let mutations = 0;
     const observer = new MutationObserver(records => { mutations += records.length; });
     observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -673,8 +678,9 @@ window.tableFamilyDom = {
       totalInstallReads = 0;
       installs = 0;
       for (let i = 0; i < 4; i++) {
-        sendHour(settledHour, [20n, 90n, 80n, -1n], [casVal, casVal2, 3n, 4n]);
-        await nextPoll();
+        const before = installs;
+        sendHour(settledHour, [21n + BigInt(i), 90n, 80n, -1n], [casVal, casVal2, 3n, 4n]);
+        if (!await until(() => installs > before)) throw new Error('The changed Germany row did not install');
       }
       return {
         tipOverflowed: true,

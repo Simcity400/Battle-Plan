@@ -1,4 +1,4 @@
-use super::peace::{PeaceDeal, PeaceTransferCountry, PeaceUnobserved, PeaceWarning, assemble};
+use super::peace::{PeaceDeal, PeaceTransferCountry, PeaceUnobserved, PeaceWarning, assemble, deal_known_at};
 use dashboard_base::Source;
 use dashboard_base::products::{LoadContext, Product};
 use serde::{Deserialize, Serialize};
@@ -65,23 +65,6 @@ dashboard_base::reply_warnings!(TerritoryTransfersReply);
 const VP_NOT_RECORDED: &str = "Victory points of a transferred state are not recorded by this date";
 const PARTIAL: &str = "Settlements or ownership were not recorded for part of the campaign before this date: only the transfers observed are counted";
 
-fn deal_hour(deal: &PeaceDeal) -> i32 {
-    if let Some(captured) = &deal.captured {
-        return captured.hour;
-    }
-    let base = deal.end_hour.or(deal.first_finalized_hour).unwrap_or(deal.first_observed_hour);
-    deal.items.iter().fold(base, |hour, item| hour.max(item.dates.after_hour))
-}
-
-fn deal_known_at(deal: &PeaceDeal) -> i32 {
-    let hour = deal_hour(deal).max(deal.capture_observed_hour.unwrap_or(i32::MIN));
-    match (&deal.captured, deal.end_hour) {
-        (Some(captured), _) => hour.max(captured.publication_hour),
-        (None, Some(_)) => hour.max(deal.first_absent_hour.unwrap_or(hour)),
-        (None, None) => hour,
-    }
-}
-
 fn identity(country: &PeaceTransferCountry) -> String {
     format!("{}:{}", country.slot, country.country_id)
 }
@@ -111,7 +94,7 @@ impl TransfersIndex {
         let mut moves = Vec::new();
         for deal in deals {
             let known = deal_known_at(deal);
-            for state in deal.transfers.links.iter().flat_map(|link| &link.states) {
+            for state in &deal.transfers {
                 let shown = state.dates.after_hour.max(known);
                 let worth = match (state.victory_points.as_deref().map(str::parse::<i128>), state.victory_points_read_hour) {
                     (Some(Ok(points)), Some(read)) => Worth::Read { hour: read.max(shown), points },

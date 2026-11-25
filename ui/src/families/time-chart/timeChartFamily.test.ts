@@ -627,7 +627,7 @@ describe('time-chart laneView integration', () => {
     assert.deepEqual(model.markers?.map(marker => [marker.hour, marker.items?.map(item => `${item.title}: ${item.detail}`)]), [
       [H1936 + 20, ['Mobilise: −50', 'Hire advisor: −75.5']],
       [H1936 + 90, [`Law change: −150 · 3 payments from ${formatDateOnly(H1936 + 40)} to ${formatDateOnly(H1936 + 90)}`]],
-      [H1936 + 120, [`Unknown: Cost not recorded · Paid by ${formatDateOnly(H1936 + 120)}`]],
+      [H1936 + 120, [`Unknown: Cost not recorded · Paid ${formatDateOnly(H1936 + 120)}`]],
     ], 'one marker per hour a payment was made, never one at a bin’s closing hour');
     assert.equal(model.warnings?.length, 1, 'an hour whose spending was not recorded is said');
 
@@ -1152,8 +1152,9 @@ describe('multi-country order from the product', () => {
     const VIEW = { width: 800, height: 300 } as Parameters<typeof politicalPowerDeclaration.sources>[1];
     for (const following of [false, true]) {
       const plan = politicalPowerDeclaration.sources(ctx(following), VIEW);
-      const rank = plan.entries.find(entry => entry.name === 'rank')!.read as { product: string; followQuery: unknown };
-      assert.deepEqual([rank.product, rank.followQuery], ['series-rank', null], 'one rank product, whether following or not');
+      const rank = plan.entries.find(entry => entry.name === 'rank')!.read;
+      assert.ok(rank.shape === 'point' && rank.product === 'series-rank');
+      assert.deepEqual(rank.followQuery, { panel: 'series-rank', ...rank.params });
       const head = (plan.entries.find(entry => entry.name === 'main')!.read as { headQuery: { coverage?: string } }).headQuery;
       assert.equal(head.coverage, 'row', 'one unread country never hides a witnessed one');
     }

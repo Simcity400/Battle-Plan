@@ -49,8 +49,9 @@ export function useArtResolutions(
     const id = artHandleKey(handle);
     return !resolutions.has(id) && failures.get(id)?.retryable !== false;
   });
-  const askedKey = asked.map(artHandleKey).join('\0');
-  const wantedIds = useMemo(() => new Set(asked.map(artHandleKey)), [askedKey]);
+  const askedIds = asked.map(artHandleKey);
+  const askedKey = JSON.stringify(askedIds);
+  const wantedIds = useMemo(() => new Set(askedIds), [askedKey]);
   const wantedRef = useRef(wantedIds);
   wantedRef.current = wantedIds;
 
@@ -63,14 +64,14 @@ export function useArtResolutions(
       for (const id of wantedRef.current) {
         if (nextResolutions.has(id) || nextFailures.has(id)) { relevant = true; break; }
       }
-      if (!relevant && wantedRef.current.size > 0) return;
+      if (!relevant) return;
       scheduled = true;
       inFrame(() => {
         scheduled = false;
         setLanded(count => count + 1);
       });
     });
-    if (held.version(scope) !== settled) setLanded(count => count + 1);
+    if (wantedRef.current.size && held.version(scope) !== settled) setLanded(count => count + 1);
     return () => { stop(); release(); };
   }, [held, scope]);
 
@@ -88,47 +89,73 @@ export function useArtResolutions(
   }, [resolutions, failures, landed]);
 }
 
-const NO_DEMAND: readonly ArtHandle[] = [];
+export interface LaneArtResolutions {
+  readonly resolutions: ArtResolutions | undefined;
+  subscribe(changed: () => void): () => void;
+}
 
 export function useArtHandleResolutions(
   runtime: WidgetRuntime,
   track: BoundTrack | undefined,
   active: boolean,
   forward?: (handles: readonly ArtHandle[]) => void,
-): {
-  readonly resolutions: ArtResolutions | undefined;
-  readonly onArtDemands: (handles: readonly ArtHandle[]) => void;
-} {
-  const scope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
-  const artScope = useContentRevision(runtime.client);
-  const demandScope = track ? artCacheScope(track, artScope) : '';
-  const [demand, setDemand] = useState<{ readonly scope: string; readonly handles: readonly ArtHandle[] }>({ scope: '', handles: [] });
-  const demanded = demand.scope === demandScope ? demand.handles : NO_DEMAND;
+) {
+  const client = runtime.client;
+  const scope = useIdentityScope(client, track?.source, track?.branch.id, active && !!track);
+  const revision = useContentRevision(client);
+  const demandScope = track ? artCacheScope(track, revision) : '';
+  const cache = cachesOf(client);
+  const lane = useMemo(() => {
+    let handles: readonly ArtHandle[] = [];
+    let resolutions: ArtResolutions | undefined;
+    const listeners = new Set<() => void>();
+    return {
+      get resolutions() { return resolutions; },
+      subscribe(changed: () => void) {
+        listeners.add(changed);
+        return () => { listeners.delete(changed); };
+      },
+      demand(read: readonly ArtHandle[]) { handles = readArtDemands(handles, read); },
+      refresh(current: BoundTrack | undefined, enabled: boolean) {
+        if (!handles.length && !resolutions) return;
+        const settled = cache.resolutions(demandScope);
+        const failures = cache.failures(demandScope);
+        if (enabled && current && handles.length) {
+          cache.request(demandScope, handles, (batch, signal) => artCalls((request, sent) => loadTransientProduct<unknown>(client, request, sent), current, batch, signal));
+        }
+        const next: Record<string, ArtResolution> = {};
+        let changed = handles.length !== Object.keys(resolutions ?? {}).length;
+        for (const handle of handles) {
+          const id = artHandleKey(handle);
+          const failed = failures.get(id);
+          next[id] = failed ? failureArt(failed) : settled.get(id) ?? PENDING_ART;
+          if (next[id] !== resolutions?.[id]) changed = true;
+        }
+        if (changed) {
+          resolutions = handles.length ? next : undefined;
+          for (const listener of listeners) listener();
+        }
+      },
+    };
+  }, [client, cache, demandScope]);
+  useEffect(() => cache.hold(demandScope), [cache, demandScope]);
+  useEffect(() => {
+    const refresh = () => lane.refresh(track, active);
+    const stop = cache.watch(demandScope, refresh);
+    refresh();
+    return stop;
+  }, [cache, demandScope, lane, track, active]);
   const onArtDemands = useCallback((handles: readonly ArtHandle[]) => {
     forward?.(handles);
-    if (scope) requestDemandedFlags(identityBrokerFor(runtime.client), scope, handles, track?.source);
-    setDemand(held => {
-      const before = held.scope === demandScope ? held.handles : NO_DEMAND;
-      const next = readArtDemands(before, handles);
-      return held.scope === demandScope && next === before ? held : { scope: demandScope, handles: next };
-    });
-  }, [forward, scope, runtime.client, track?.source, demandScope]);
-  const resolve = useArtResolutions(runtime, track, demanded, active && demanded.length > 0);
-  const shown = useRef<Record<string, ArtResolution> | undefined>(undefined);
-  const resolutions = useMemo(() => {
-    if (!demanded.length) return shown.current = undefined;
-    const before = shown.current;
-    let changed = !before || Object.keys(before).length !== demanded.length;
-    const out: Record<string, ArtResolution> = {};
-    for (const handle of demanded) {
-      const id = artHandleKey(handle);
-      const art = resolve(handle);
-      out[id] = art;
-      if (!changed && before![id] !== art) changed = true;
-    }
-    return shown.current = changed ? out : before;
-  }, [demanded, resolve]);
-  return { resolutions, onArtDemands };
+    if (scope) requestDemandedFlags(identityBrokerFor(client), scope, handles, track?.source);
+    lane.demand(handles);
+    lane.refresh(track, active);
+  }, [forward, scope, client, track, active, lane]);
+  return useMemo(() => ({
+    get resolutions() { return lane.resolutions; },
+    subscribe: lane.subscribe,
+    onArtDemands,
+  }), [lane, onArtDemands]);
 }
 
 export function useDomArt(

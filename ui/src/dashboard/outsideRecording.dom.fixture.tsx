@@ -2,7 +2,6 @@
 import { createRoot } from 'react-dom/client';
 import '../styles.css';
 import '../widgets';
-import { isPlaybackDatedView } from '../widgets/manifest';
 import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import type { EngineFrame, FrameEngine } from '../engine/frame';
 import { PHASES } from '../engine/frame';
@@ -55,7 +54,7 @@ const tracks = branches.map((held, index) => ({ id: held.id, roleId: held.id, la
 const runtime = { tracks, campaignTracks: [], defaultRoleId: null, clock, client, maps: new MapViewsStore(client as never, clock), onMapBranch() {}, alignment: 'anchors',
   nativeHidden: false, addWidgetBelow() {}, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false } as unknown as WidgetRuntime;
 
-export interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean; dated: boolean }
+export interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean }
 let mounted: Mounted[] = [];
 const renders = new Map<string, number>();
 const counted = (id: string) => () => { renders.set(id, (renders.get(id) ?? 0) + 1); };
@@ -103,7 +102,7 @@ Object.assign(window, { outsideFixture: {
       const follows = definition.timeModes.includes('follow');
       const made = createWidget(definition.kind, track, id);
       const spec = { ...made, campaign: 'tracks', trackIds: [track], time: follows ? { mode: 'follow' } : made.time } as WidgetSpec;
-      const item: Mounted = { id, kind: definition.kind, track, follows, dated: follows && isPlaybackDatedView(definition.kind, spec.options, definition) };
+      const item: Mounted = { id, kind: definition.kind, track, follows };
       return { item, spec };
     });
     mounted = built.map(entry => entry.item);

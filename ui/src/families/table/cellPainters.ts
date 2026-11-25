@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
 import {
   drawActionButton,
   drawArtSlot,
@@ -25,12 +25,13 @@ import {
 import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
-import { formatDateParts, formatValueState } from '../valueFormat.ts';
+import { formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
+import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout, type TableRhythm } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
+  COL_GAP,
   showsIcon,
   type TableBarsMode,
   type TableCanvasContext,
@@ -39,6 +40,14 @@ import {
 } from './settings.ts';
 
 const CHILD_FLAG_GAP = 6;
+const KIND_TILE_ART = { width: 20, height: 16 } as const;
+const PAIR_FIGURE_LINE = 19.5;
+const PAIR_BAR_GAP = 4;
+const PAIR_BAR_HEIGHT = 3;
+const PAIR_LIT_SPILL = 6;
+const LOG_ACTION_IDLE_INSET = 6;
+const LOG_ACTION_BUTTON = { padLeft: 8, padRight: 10, gap: 6, height: 26 } as const;
+
 function signedText(text: string, signed: number): string {
   if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
   if (signed < 0) return text.replace(/^-/, '−');
@@ -74,6 +83,7 @@ export interface CellRenderContext {
   readonly density: TableDensity;
   readonly barsMode: TableBarsMode;
   readonly sortedColumn: string;
+  readonly rhythm?: TableRhythm;
   readonly treeColumn: number;
   readonly treeLevels: number;
   readonly hasActionColumn?: boolean;
@@ -83,6 +93,7 @@ export interface CellRenderContext {
 }
 
 export interface CellDrawArgs {
+  readonly labelLines?: readonly number[];
   readonly item: Extract<FlatTableRow, { kind: 'data' }>;
   readonly column: FamilyColumnLayout;
   readonly colIndex: number;
@@ -95,6 +106,7 @@ export interface CellDrawArgs {
   readonly fill: string;
   readonly rowHovered: boolean;
   readonly rowFocused: boolean;
+  readonly lastChild?: boolean;
 }
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -111,6 +123,7 @@ function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHei
   }
   if (shape === 'equipment') return { width: 30, height: 24 };
   if (shape === 'counter') return { width: 30, height: 18 };
+  if (shape === 'drawn') return { width: 28, height: 24 };
   if (shape === 'wide') {
     const h = Math.min(24, Math.max(18, rowHeight - 12));
     const w = Math.round(h * (46 / 28));
@@ -136,13 +149,6 @@ function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
-
-const BOUNDED_DATE_WORDS: Readonly<Record<'by' | 'since' | 'after' | 'before', string>> = {
-  by: 'by',
-  since: 'since',
-  after: 'after',
-  before: 'before',
-};
 
 function drawInlineRuns(
   rc: CellRenderContext,
@@ -202,6 +208,66 @@ function drawInlineRuns(
   return cursor - x;
 }
 
+const GLYPHS = {
+  helmet: { path: 'M2.6 10.8c0-3.4 2.4-6 5.4-6s5.4 2.6 5.4 6zM1.8 10.8h12.4M8 4.8v6', size: 14 },
+  place: { path: 'M8 14s4.5-4.6 4.5-8a4.5 4.5 0 1 0-9 0C3.5 9.4 8 14 8 14Z M9.5 6a1.5 1.5 0 1 1-3 0a1.5 1.5 0 1 1 3 0', size: 12 },
+  loss: { path: 'M4 4l8 8 M12 4l-8 8', size: 13 },
+  transfer: { path: 'M2.5 5.5h11l-2.5-2.5 M13.5 10.5h-11l2.5 2.5', size: 13 },
+} as const;
+const GLYPH_GAP = 6;
+
+const glyphs = new Map<keyof typeof GLYPHS, Path2D>();
+function drawGlyph(rc: CellRenderContext, glyph: keyof typeof GLYPHS, x: number, mid: number, color: string): number {
+  const { path: d, size } = GLYPHS[glyph];
+  let path = glyphs.get(glyph);
+  if (!path) { path = new Path2D(d); glyphs.set(glyph, path); }
+  const ctx = rc.ctx;
+  ctx.save();
+  ctx.translate(x, mid - size / 2);
+  ctx.scale(size / 16, size / 16);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke(path);
+  ctx.restore();
+  return size;
+}
+
+function glyphColor(rc: CellRenderContext, glyph: keyof typeof GLYPHS): string {
+  const tokens = resolveKitTokens(rc.theme);
+  if (glyph === 'helmet') return tokens.tileInk;
+  return glyph === 'transfer' ? rc.theme.muted : tokens.quiet;
+}
+
+function drawKindTile(rc: CellRenderContext, tile: NonNullable<TableCell['artTile']>, centerX: number, middle: number): void {
+  const { ctx, theme } = rc;
+  const tokens = resolveKitTokens(theme);
+  const width = tile === 'flat' ? 30 : 26;
+  const height = tile === 'flat' ? 24 : 26;
+  const x = Math.round(centerX - width / 2);
+  const y = Math.round(middle - height / 2);
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, 6);
+  if (tile === 'flat') {
+    ctx.fillStyle = tokens.tileFlat;
+    ctx.fill();
+  } else {
+    const fill = ctx.createLinearGradient(x, y, x + width * 0.35, y + height);
+    fill.addColorStop(0, tokens.tileTop);
+    fill.addColorStop(1, tokens.tileBottom);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = tokens.tileEdge;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x + 0.5, y + 0.5, width - 1, height - 1, 5.5);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): void {
   const { ctx, theme, density, measure, fit } = rc;
   const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, rowHovered, rowFocused } = args;
@@ -212,7 +278,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const middle = y + rowHeight / 2;
   let left = leftBase;
 
-  if (column.notRecordedReason) return;
+  if (column.notRecordedReason || column.width === 0) return;
   const kind = column.cellKind;
 
   if (kind === 'action') {
@@ -222,15 +288,36 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
     if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     const label = cell?.actionLabel ?? 'View';
-    drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme);
+    const active = rowHovered || rowFocused;
+    const log = rc.rhythm === 'log';
+    const idleInset = log && !active ? Math.max(0, Math.min(LOG_ACTION_IDLE_INSET, right - left - 13)) : 0;
+    drawActionButton(ctx, right - idleInset, middle, label, active, theme, cell?.actionIcon, log ? LOG_ACTION_BUTTON : undefined);
     return;
   }
 
-  if (cell?.blank) return;
+  if (cell?.blank) {
+    if (kind === 'kind' && item.row.pageParent) {
+      const branchX = Math.round(x + column.width / 2 - 8) + 0.5;
+      ctx.save();
+      ctx.strokeStyle = tokens.treeLine;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(branchX, y);
+      ctx.lineTo(branchX, Math.round(middle) + 0.5);
+      ctx.lineTo(branchX + 7, Math.round(middle) + 0.5);
+      if (!args.lastChild) {
+        ctx.moveTo(branchX, y + rowHeight - 10);
+        ctx.lineTo(branchX, y + rowHeight);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    return;
+  }
 
   if (colIndex === rc.treeColumn) {
-    if (rc.hasActionColumn) {
-      if (item.level > 1) left += (item.level - 1) * TREE_CHEVRON_LANE;
+    if (rc.hasActionColumn || (item.row.pageGroup && kind === 'date')) {
+      if (item.level > 1 && !item.row.pageParent) left += (item.level - 1) * TREE_CHEVRON_LANE;
     } else {
       left += treeTextStart(item.level, rc.treeLevels);
       if (item.isTreeGroup) drawChevron(ctx, left - TREE_CHEVRON_LANE - 2, middle, item.isOpen, theme);
@@ -242,11 +329,21 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'kind') {
+    const centerX = x + (column.leadInset ?? 0) + (column.width - (column.leadInset ?? 0) - (column.trailInset ?? 0)) / 2;
+    if (cell?.artTile) drawKindTile(rc, cell.artTile, centerX, middle);
+    if (cell?.glyph) {
+      drawGlyph(rc, cell.glyph, Math.round(centerX - GLYPHS[cell.glyph].size / 2), middle, glyphColor(rc, cell.glyph));
+      return;
+    }
     if (!cell || (!cell.art && !cell.iconSlot)) return;
-    const geom = artGeometry(cell.artShape ?? 'square', density, rowHeight);
+    const geom = cell.artTile ? KIND_TILE_ART : artGeometry(cell.artShape ?? 'square', density, rowHeight);
     const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
-    drawArtSlot(ctx, Math.round(x + (column.width - geom.width) / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 2 });
+    drawArtSlot(ctx, Math.round(centerX - geom.width / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme,
+      { radius: 2, trim: cell.artShape === 'drawn' });
     return;
+  }
+  if (cell?.glyph) {
+    left += drawGlyph(rc, cell.glyph, left, middle, glyphColor(rc, cell.glyph)) + GLYPH_GAP;
   }
 
   if (kind === 'twoWay') {
@@ -295,6 +392,51 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
     ctx.fillText(fit(signedText(formatted.text, signed), font, Math.max(0, right - left - 6)), right - 4, middle);
     ctx.restore();
+    return;
+  }
+
+  if (column.headerGroup?.kind === 'pair' && cell?.pair) {
+    if (column.key === rc.sortedColumn) {
+      ctx.save();
+      ctx.fillStyle = theme.text;
+      ctx.globalAlpha = 0.05;
+      ctx.fillRect(left - PAIR_LIT_SPILL, y, right - left + PAIR_LIT_SPILL * 2, rowHeight);
+      ctx.restore();
+    }
+    const midpoint = (left + right) / 2;
+    const bar = cell.splitBar;
+    const block = PAIR_FIGURE_LINE + PAIR_BAR_GAP + PAIR_BAR_HEIGHT;
+    const top = y + (rowHeight - block) / 2;
+    const figureMiddle = bar ? top + PAIR_FIGURE_LINE / 2 : middle;
+    const font = fontOf(theme, 13, 400);
+    for (const [i, value] of cell.pair.entries()) {
+      const slot = { left: i === 0 ? left : midpoint + COL_GAP / 2, right: i === 0 ? midpoint - COL_GAP / 2 : right };
+      const shown = formatValueState(value, paintModel.format);
+      if (shown.kind === 'known' || shown.kind === 'zero') {
+        ctx.save();
+        ctx.font = font;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = theme.text;
+        ctx.fillText(fit(shown.text, font, Math.max(0, slot.right - slot.left)), slot.right, figureMiddle);
+        ctx.restore();
+      } else {
+        drawFormattedValue(ctx, shown, { ...slot, middle: figureMiddle, endAligned: true, compactPartial: true }, theme, measure, fit);
+      }
+    }
+    const barY = top + PAIR_FIGURE_LINE + PAIR_BAR_GAP;
+    if (bar?.length === 0) {
+      ctx.save();
+      ctx.fillStyle = theme.text;
+      ctx.globalAlpha = 0.1;
+      ctx.beginPath();
+      ctx.roundRect(left, barY, right - left, PAIR_BAR_HEIGHT, PAIR_BAR_HEIGHT / 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (bar) {
+      drawSplitBar(ctx, left, barY, right - left, PAIR_BAR_HEIGHT,
+        bar.map(segment => (segment.hatched ? segment : { ...segment, fill: readableColour(segment.fill, theme.surface) })), theme, { gap: 2 });
+    }
     return;
   }
 
@@ -441,38 +583,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const hourVal = paintModel.value.kind === 'known' || paintModel.value.kind === 'zero' || paintModel.value.kind === 'partial'
       ? Number(paintModel.value.value)
       : null;
-    const width = Math.max(0, right - left);
-    if (cell?.boundedDate && hourVal !== null) {
-      const parts = formatDateParts(hourVal);
-      if (parts) {
-        const prefix = `${BOUNDED_DATE_WORDS[cell.boundedDate]} `;
-        const dayFont = fontOf(theme, rowHeight >= 32 ? 12.5 : 11.5, 500);
-        const yearFont = fontOf(theme, 10.5, 400);
-        const prefixW = measure(prefix, dayFont);
-        const dayY = rowHeight >= 32 ? middle - 6 : middle;
-        ctx.save();
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.font = dayFont;
-        if (prefixW < width - 8) {
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(prefix, left, dayY);
-          ctx.fillStyle = theme.text;
-          ctx.fillText(fit(parts.dayMonth, dayFont, Math.max(0, width - prefixW)), left + prefixW, dayY);
-        } else {
-          ctx.fillStyle = theme.text;
-          ctx.fillText(fit(`${prefix}${parts.dayMonth}`, dayFont, width), left, dayY);
-        }
-        if (rowHeight >= 32) {
-          ctx.font = yearFont;
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(fit(parts.year, yearFont, width), left, middle + 7);
-        }
-        ctx.restore();
-        return;
-      }
-    }
-    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width, align: column.numeric ? 'right' : 'left' });
+    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width: Math.max(0, right - left), align: column.numeric ? 'right' : 'left' });
     return;
   }
 
@@ -533,15 +644,79 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
+  const narrowText = column.narrowed ? cell?.narrowText : undefined;
+  if (column.inlineFlags?.length && !cell?.inlinePrefix) {
+    const marks = column.inlineFlags.flatMap(key => {
+      const tail = item.row.cells[key];
+      return tail && !tail.blank ? [tail] : [];
+    });
+    if (marks.length) {
+      const gap = 6;
+      const reserved = marks.reduce((sum, mark) => sum + (mark.glyph ? GLYPHS[mark.glyph].size + gap : 0)
+        + (mark.flags?.length ?? 0) * (FLAG_SLOT_WIDTH + gap) + (!mark.flags?.length && mark.value.kind === 'notRecorded' ? 16 + gap : 0), 0);
+      const room = Math.max(0, right - left - reserved);
+      const font = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
+      const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
+      let at = left + (missing ? drawMissingMark(ctx, left, middle, room, theme, { figure: cell?.missingFigure }).width
+        : drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, room, font, theme.text)) + gap;
+      for (const mark of marks) {
+        if (mark.glyph) at += drawGlyph(rc, mark.glyph, at, middle, glyphColor(rc, mark.glyph)) + gap;
+        for (const flag of mark.flags ?? []) {
+          drawFlagSlot(ctx, at, Math.round(middle - FLAG_SLOT_HEIGHT / 2), slotOf(flag.art, flag.tag, rc), theme, { dimmed: flag.dimmed });
+          at += FLAG_SLOT_WIDTH + gap;
+        }
+        if (!mark.flags?.length && mark.value.kind === 'notRecorded') {
+          drawMissingMark(ctx, at, middle, 16, theme);
+          at += 16 + gap;
+        }
+      }
+      return;
+    }
+  }
+
+  if (cell?.quantities?.length) {
+    for (const { figure, unit } of cell.quantities) {
+      if (left >= right) break;
+      left += drawInlineRuns(rc, figure, left, middle, right - left, fontOf(theme, 13, 600), theme.text) + 4;
+      left += drawInlineRuns(rc, unit, left, middle, right - left, fontOf(theme, 13, 400), theme.muted) + 12;
+    }
+    return;
+  }
+
+  if (cell?.inlinePrefix && !column.numeric) {
+    const font = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
+    const room = Math.max(0, right - left);
+    if (cell.flags?.length || measure(cell.inlinePrefix, font) + 10 < room) {
+      left += drawInlineRuns(rc, cell.inlinePrefix, left, middle, room, font, item.row.muted ? theme.muted : theme.text) + 8;
+      if (cell.flags?.length && right - left < FLAG_SLOT_WIDTH) return;
+    }
+  }
+
   if (cell?.flags && cell.flags.length > 0) {
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+    if (args.labelLines?.length) {
+      const font = fontOf(theme, theme.fontSize.body, 400);
+      for (const [line, start] of args.labelLines.entries()) {
+        fx = left;
+        const mid = y + (line + 0.5) * DETAIL_LINE_HEIGHT;
+        const end = args.labelLines[line + 1] ?? cell.flags.length;
+        for (let i = start; i < end; i++) {
+          const flag = cell.flags[i]!;
+          drawFlagSlot(ctx, fx, Math.round(mid - FLAG_SLOT_HEIGHT / 2), slotOf(flag.art, flag.tag, rc), theme, { dimmed: flag.dimmed });
+          fx += FLAG_SLOT_WIDTH + 5;
+          fx += drawInlineRuns(rc, flag.label ?? flag.tag, fx, mid, right - fx, font, tokens.childText) + 6;
+        }
+      }
+      return;
+    }
     for (const fl of cell.flags) {
+      if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
       const state = slotOf(fl.art, fl.tag, rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
     }
-    if (column.display === 'flag') return;
+    if (column.display === 'flag' || column.inlineFlags) return;
     left = fx + 2;
   } else if (cell?.artShape && (cell.art || cell.iconSlot)) {
     const geom = artGeometry(cell.artShape, density, rowHeight);
@@ -565,27 +740,12 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-    let nrLeft = left;
-    if (cell?.inlinePrefix && !column.numeric) {
-      const prefixFont = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
-      const prefixW = measure(cell.inlinePrefix, prefixFont);
-      if (prefixW + 10 < Math.max(0, right - nrLeft)) {
-        ctx.save();
-        ctx.font = prefixFont;
-        ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(cell.inlinePrefix, nrLeft, middle);
-        ctx.restore();
-        nrLeft += prefixW + 8;
-      }
-    }
     if (kind === 'item' && formatted.kind === 'notRecorded' && !cell?.missingFigure) {
-      const hatchW = Math.min(148, Math.max(48, right - nrLeft - 8));
-      drawHatchRect(ctx, nrLeft, Math.round(middle - 6), hatchW, 12, 3, theme);
+      const hatchW = Math.min(148, Math.max(0, right - left - 4));
+      drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
       return;
     }
-    drawFormattedValue(ctx, formatted, { left: nrLeft, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
+    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
     return;
   }
 
@@ -664,44 +824,33 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const isPrimary = colIndex === rc.treeColumn || kind === 'item' || column.display === 'flagName';
   const isChild = item.level > 1;
   const subtext = density !== 'compact' ? cell?.subtext : undefined;
-  let textLeft = left;
-  if (cell?.inlinePrefix) {
-    const prefixFont = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
-    const prefixW = measure(cell.inlinePrefix, prefixFont);
-    if (prefixW + 10 < Math.max(0, right - textLeft)) {
-      ctx.save();
-      ctx.font = prefixFont;
-      ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(cell.inlinePrefix, textLeft, middle);
-      ctx.restore();
-      textLeft += prefixW + 8;
-    }
-  }
-  const avail = Math.max(0, right - textLeft);
+  const avail = Math.max(0, right - left);
   if (subtext && rowHeight >= 36) {
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
     const titleColor = item.row.muted ? theme.muted : (isChild ? tokens.childText : theme.text);
-    drawInlineRuns(rc, formatted.text, textLeft, middle - 8, avail, titleFont, titleColor);
-    drawInlineRuns(rc, subtext, textLeft, middle + 9, avail, subFont, theme.muted);
+    drawInlineRuns(rc, narrowText ?? formatted.text, left, middle - 8, avail, titleFont, titleColor);
+    drawInlineRuns(rc, subtext, left, middle + 9, avail, subFont, theme.muted);
     return;
   }
 
-  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, isChild ? 500 : (isPrimary ? 600 : 400));
-  const textColor = item.row.muted
+  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, cell?.strong ? 600 : column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
+  const textColor = item.row.muted || cell?.tone === 'muted'
     ? theme.muted
-    : isChild
-      ? tokens.childText
-      : theme.text;
-  const drawnW = drawInlineRuns(rc, formatted.text, textLeft, middle, avail, textFont, textColor);
-  if (cell?.inlineSubtext) {
+    : cell?.strong
+      ? theme.text
+      : column.textTone === 'muted'
+        ? theme.muted
+        : isChild || column.textTone === 'secondary'
+          ? tokens.childText
+          : theme.text;
+  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail, textFont, textColor);
+  if (cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined) {
     const gap = 8;
     const rem = avail - drawnW - gap;
     if (rem >= 20) {
       const inlineFont = fontOf(theme, 12.5, 400);
-      drawInlineRuns(rc, cell.inlineSubtext, textLeft + drawnW + gap, middle, rem, inlineFont, theme.muted);
+      drawInlineRuns(rc, cell.inlineSubtext, left + drawnW + gap, middle, rem, inlineFont, theme.muted);
     }
   }
 }

@@ -455,6 +455,11 @@ fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only
     assert_eq!(early.current, Some(("b".to_owned(), false, false)));
     assert_eq!(early.progress, Some((200_000, Some(100_000))));
     assert_eq!(early.valid_through, 104, "the answer stands no later than its progress reading");
+    let mut delayed = fold.clone();
+    delayed.progress.retain(|run| run.first > 100);
+    let before = card_at(&delayed, 100);
+    assert_eq!((before.progress, before.valid_through), (None, 101));
+    assert!(card_at(&delayed, 102).progress.is_some());
     let later = card_at(&fold, 107);
     assert_eq!(later.completed, [("b".to_owned(), Some(105)), ("a".to_owned(), None)], "dated newest first, the undated after them");
     assert_eq!((later.undated, later.current.clone(), later.valid_through), (1, None, 109));

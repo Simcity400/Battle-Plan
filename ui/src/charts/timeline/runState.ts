@@ -115,7 +115,6 @@ export interface RunWords {
   since: (hour: number) => string;
   before: (hour: number) => string;
   ended: (hour: number) => string;
-  endedBy: (hour: number) => string;
   lastSeen: (hour: number) => string;
 }
 
@@ -124,7 +123,7 @@ export function describeRun(runs: readonly HourRange[], hour: number, words: Run
   const state = runState(runs, hour, unobserved);
   switch (state.kind) {
     case 'none': return null;
-    case 'ended': return state.lastSeen == null ? words.ended(state.at) : words.endedBy(state.at);
+    case 'ended': return words.ended(state.at);
     case 'unknown': return words.lastSeen(state.lastSeen);
     case 'held': return startUnseen(state.since, branchFirstHour, unobserved) ? words.before(state.since) : words.since(state.since);
   }

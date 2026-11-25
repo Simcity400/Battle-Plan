@@ -1,8 +1,0 @@
-.combat-log-details { margin-top: 1rem; border-top: 1px solid var(--border, #66708044); padding: .65rem .8rem; font-size: var(--type-sm); }
-.combat-log-details > summary { cursor: pointer; font-weight: 600; }
-.combat-log-details[open] { min-height: 0; overflow: auto; }
-.combat-log-snapshot { overflow: auto; font-size: .85rem; }
-.combat-log-snapshot table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-.combat-log-snapshot caption { text-align: left; font-weight: 600; margin-bottom: .5rem; }
-.combat-log-snapshot th, .combat-log-snapshot td { padding: .4rem .6rem; text-align: left; border-bottom: 1px solid var(--border, #66708033); font-variant-numeric: tabular-nums; vertical-align: top; }
-.combat-log-snapshot th { white-space: nowrap; }

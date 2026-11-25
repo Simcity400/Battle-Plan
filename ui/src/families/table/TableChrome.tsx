@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import type { FamilyChromeProps } from '../host/FamilyHost.tsx';
 import { syncTableEdges } from './edges.ts';
 import type { TableChromeState } from './hostAdapter.ts';
-import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
-import type { TableColumnSpec } from './model.ts';
+import { buildColumnLayouts, columnInset, layoutFamilyTable, type TableRhythm } from './layout.ts';
+import LogKindFilter from './LogKindFilter.tsx';
+import SubjectSummary from './SubjectSummary.tsx';
+import type { TableColumnSpec, TableModel } from './model.ts';
 import { updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn, type TableHeaderIdentity } from './TableHeader.tsx';
 import './tableFamily.css';
@@ -14,7 +16,10 @@ const NO_COLUMNS: readonly TableColumnSpec[] = [];
 const NO_WIDTHS: Readonly<Record<string, number>> = {};
 
 interface ChromeMeta {
+  readonly subjectSummary?: TableModel['subjectSummary'];
+  readonly kindFilter?: TableModel['kindFilter'];
   readonly hideHeader?: boolean;
+  readonly rhythm?: TableRhythm;
   readonly unsorted?: boolean;
   readonly rankShown?: boolean;
   readonly rankWidth?: number;
@@ -33,11 +38,12 @@ interface ChromePanes {
 interface ChromeWidths {
   readonly widths: Readonly<Record<string, number>>;
   readonly visible: readonly string[];
+  readonly totals?: readonly string[];
   readonly scrollable: boolean;
   readonly pinnedCount?: number;
 }
 
-export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets }: FamilyChromeProps<TableSettings>) {
+export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, shownHour, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
   const chrome = state as TableChromeState | undefined;
   const meta = (chrome?.meta ?? {}) as ChromeMeta;
   const measured = chrome?.widths as ChromeWidths | undefined;
@@ -82,10 +88,12 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
     return layoutFamilyTable(base, Math.max(1, panes?.width ?? (viewportWidth || 320)), {
       rankShown: meta.rankShown === true,
       rankWidth: meta.rankWidth || 36,
+      rhythm: meta.rhythm,
     });
-  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, viewportWidth, panes?.width]);
+  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, meta.rhythm, viewportWidth, panes?.width]);
 
   const specMap = useMemo(() => new Map(columns.map(col => [col.key, col])), [columns]);
+  const grouped = useMemo(() => columns.some(col => col.headerGroup?.kind === 'pair'), [columns]);
   const headerColumns = useMemo<TableHeaderColumn[]>(() => (layout?.columns ?? []).map(col => {
     const spec = specMap.get(col.key);
     return {
@@ -96,11 +104,11 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       sortable: spec?.sortable,
       hint: spec?.hint,
       notRecordedReason: spec?.notRecordedReason,
-      headerGroup: spec?.headerGroup,
+      headerGroup: measured?.totals?.includes(col.key) ? undefined : col.headerGroup,
       cellKind: spec?.cellKind,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
-  }), [layout, specMap]);
+  }), [layout, specMap, measured]);
 
   const widthVars = useMemo(() => {
     const vars: Record<string, string> = {};
@@ -156,6 +164,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       unsorted={meta.unsorted}
       treeLane={meta.hasTree === true}
       editableColumns={editable}
+      inset={columnInset(meta.rhythm)}
       rankWidth={meta.rankShown ? meta.rankWidth : 0}
       pinnedCount={layout.pinnedCount}
       pinned={layout.scrollable}
@@ -173,13 +182,35 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
 
   return (
     <>
+      {meta.subjectSummary && chrome && <SubjectSummary summary={meta.subjectSummary} figures={chrome.figures} compact={viewportWidth < 440} />}
+      {meta.kindFilter && setFilterOption ? <LogKindFilter
+        slot={filterSlot}
+        shownHour={shownHour}
+        single={meta.kindFilter.single}
+        allLabel={meta.kindFilter.allLabel}
+        noun={meta.kindFilter.noun}
+        items={meta.kindFilter.items}
+        onSelectAll={() => setFilterOption(meta.kindFilter!.key, '')}
+        onToggle={(token, checked) => {
+          const filter = meta.kindFilter!;
+          if (filter.single) {
+            setFilterOption(filter.key, token);
+            return;
+          }
+          const visible = filter.items.map(item => item.value);
+          const selected = new Set(filter.selected.length ? filter.selected : visible);
+          selected.delete('-');
+          if (checked) selected.add(token); else selected.delete(token);
+          setFilterOption(filter.key, visible.every(value => selected.has(value)) ? '' : [...selected].join(' ') || '-');
+        }}
+      /> : null}
       {!meta.hideHeader && panes ? (
         <div className="tf-head-clip tf-pane-heads" style={bodyBlocked ? { ...widthVars, display: 'none' } : { ...widthVars, columnGap: panes.gutter }}>
           {panes.titles.map(title => <div key={title.key} className="tf-pane-head" style={{ width: panes.width }}>{header(title)}</div>)}
           {panes.xs.slice(1).map(x => <i key={x} className="tf-pane-rule" style={{ left: Math.round(x - panes.gutter / 2) }} aria-hidden="true" />)}
         </div>
       ) : !meta.hideHeader ? (
-        <div className="tf-head-clip" style={bodyBlocked ? { ...widthVars, display: 'none' } : widthVars}>
+        <div className={`tf-head-clip${grouped ? ' is-grouped' : ''}`} style={bodyBlocked ? { ...widthVars, display: 'none' } : widthVars}>
           {header()}
         </div>
       ) : null}

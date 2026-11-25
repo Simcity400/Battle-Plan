@@ -1,10 +1,12 @@
+import type { Ref } from 'react';
 import type { HeaderSummary } from './headerSummary.ts';
 
-export function FamilyHeaderSummary({ summary }: { readonly summary: HeaderSummary | null }) {
+export function FamilyHeaderSummary({ summary, ref }: { readonly summary: HeaderSummary | null; readonly ref?: Ref<HTMLSpanElement> }) {
   if (!summary) return null;
   if (summary.hasMarker && summary.tooltip) {
     return (
       <span
+        ref={ref}
         className="fh-summary fh-summary-partial"
         tabIndex={0}
         data-tooltip={summary.tooltip}
@@ -15,5 +17,5 @@ export function FamilyHeaderSummary({ summary }: { readonly summary: HeaderSumma
       </span>
     );
   }
-  return <span className="fh-summary">{summary.label}</span>;
+  return <span ref={ref} className="fh-summary">{summary.label}</span>;
 }

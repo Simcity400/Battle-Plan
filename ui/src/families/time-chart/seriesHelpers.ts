@@ -1,3 +1,4 @@
+import { rankSource } from '../seriesRank.ts';
 import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
@@ -6,7 +7,6 @@ import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import { answerRowOf } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
-import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
 import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -402,6 +402,7 @@ export type SpendCurrency = PowerSpendMarkersParams['currency'];
 export function spendMarkerEntry(ctx: FamilyPlanContext, currency: SpendCurrency): SourceEntry | null {
   const tags = ctx.countries.tags;
   if (tags.length !== 1 || ctx.options.spendTicks === false) return null;
+  const params = { branchId: ctx.branch.id, country: countryFromKey(tags[0]!), currency };
   return {
     name: 'spending',
     source: ctx.track.source,
@@ -412,12 +413,8 @@ export function spendMarkerEntry(ctx: FamilyPlanContext, currency: SpendCurrency
       channel: 'panel',
       coverage: { mode: 'keyed', keys: tags },
       product: 'power-spend-markers',
-      followQuery: null,
-      params: { branchId: ctx.branch.id, country: countryFromKey(tags[0]!), currency },
-      provenInterval: (data, hour) => {
-        const next = (data as PowerSpendMarkersReply | null)?.nextChange;
-        return [hour, next == null ? Infinity : next - 1] as const;
-      },
+      followQuery: { panel: 'power-spend-markers', ...params },
+      params,
     },
   };
 }
@@ -434,7 +431,7 @@ function spendDetail(marker: PowerSpendMarker, decimals: number): string {
   if (marker.chargeRaw !== null) parts.push(formatSpend(Number(marker.chargeRaw) / 10 ** decimals));
   if (marker.unknown > 0) parts.push(marker.unknown === marker.payments ? 'Cost not recorded' : `${marker.unknown} costs not recorded`);
   if (marker.since !== null) parts.push(`${marker.payments} payments from ${formatDateOnly(marker.since)} to ${formatDateOnly(marker.hour)}`);
-  if (!marker.dated) parts.push(`Paid by ${formatDateOnly(marker.hour)}`);
+  if (!marker.dated) parts.push(`Paid ${formatDateOnly(marker.hour)}`);
   return parts.join(' · ');
 }
 
@@ -494,25 +491,7 @@ export function rankEntry(
   name = 'rank',
 ): SourceEntry | null {
   if (tags.length < 2) return null;
-  return {
-    name,
-    source: ctx.track.source,
-    branch: ctx.branch.id,
-    offset: ctx.track.axisOffset,
-    read: {
-      shape: 'point',
-      channel: 'followed',
-      coverage: { mode: 'keyed', keys: tags },
-      product: 'series-rank',
-      exactProduct: 'series-rank',
-      followQuery: null,
-      params: { branchId: ctx.branch.id, family, countries: tags.map(countryFromKey) },
-      buildExactParams: (params, hour) => ({ ...params, hour }),
-      dynamicKeys: ['hour'],
-      provenInterval: rankProvenInterval,
-      validate: validateRankReply,
-    },
-  };
+  return rankSource(ctx, name, family, { mode: 'keyed', keys: tags }, tags)[0] ?? null;
 }
 
 export interface RankedOrder {

@@ -1,3 +1,5 @@
+import { countryFromKey } from './countryKey.ts';
+import type { PointSourceRead } from '../families/plan.ts';
 import { isOrderedSpans } from '../charts/series.ts';
 import { artworkEntry, keepDrawableIcons } from './artwork.ts';
 import { contentTitle } from './contentTitles.ts';
@@ -23,17 +25,14 @@ export function holdingLabel(look: IdeaLook, holding: IdeaHolding): string {
 }
 
 export function holdingSince(holding: IdeaHolding): { readonly label: string; readonly value: string } {
-  const date = formatDateOnly(holding.firstHour);
-  if (holding.start === 'heldBefore') return { label: 'Held before', value: date };
-  if (holding.start === 'firstObserved') return { label: 'First observed', value: date };
-  return { label: 'Since', value: date };
+  return { label: holding.start === 'heldBefore' ? 'Held before' : 'Since', value: formatDateOnly(holding.firstHour) };
 }
 
 export function holdingUntil(holding: IdeaHolding): { readonly label: string; readonly value: string } {
   switch (holding.end.kind) {
     case 'held': return { label: 'Until', value: 'Held now' };
     case 'ended': return { label: 'Until', value: formatDateOnly(holding.lastHour) };
-    case 'endedBy': return { label: 'Ended by', value: formatDateOnly(holding.end.hour) };
+    case 'endedBy': return { label: 'Until', value: formatDateOnly(holding.end.hour) };
     case 'lastSeen': return { label: 'Last seen', value: formatDateOnly(holding.lastHour) };
   }
 }
@@ -108,8 +107,11 @@ export function validateIdeaHistoryReply(data: unknown): IdeaHistoryReply {
   return data;
 }
 
-export function ideaHistoryProof(data: unknown, _requested: readonly [number, number], hour: number): readonly [number, number] | null {
-  const reply = data as IdeaHistoryReply;
-  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
-  return reply.hour <= hour && hour <= last ? [reply.hour, last] : null;
+export function ideaHistoryRead(branchId: string, tag: string): PointSourceRead {
+  const params = { branchId, country: countryFromKey(tag) };
+  return {
+    shape: 'point', channel: 'panel', coverage: { mode: 'keyed', keys: [tag] },
+    product: 'idea-history', params, followQuery: { panel: 'idea-history', ...params },
+    validate: validateIdeaHistoryReply,
+  };
 }

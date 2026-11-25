@@ -164,7 +164,7 @@ test('26. Time settings: pinning a week-long window 3 hours into the branch pins
 }));
 
 test('32. A country chosen by slot whose groups fail but whose identities load re-resolves its tag at the identity change during continuous playback', () => onPage(async act => {
-  await act(scene({ kind: 'training-queue', time: { mode: 'follow' }, hour: 103, requestsWhilePlaying: true, countries: { kind: 'tags', tags: ['\u00001'] }, groups: RENAMED, failures: ['country-groups'],
+  await act(scene({ kind: 'training-queue', time: { mode: 'follow' }, hour: 103, countries: { kind: 'tags', tags: ['\u00001'] }, groups: RENAMED, failures: ['country-groups'],
     replies: { 'training-queue': QUEUE, 'country-identities': `({ branchId: '1', countries: ${JSON.stringify(RENAMED.countryIdentities)}, unknown: [], warnings: [] })` } }));
   const played = await act<Read & { hour: number; playing: boolean }>('play(1, 4, 1000)');
   assert.ok(played.playing && played.hour >= 106, `playback runs to ${played.hour}`);

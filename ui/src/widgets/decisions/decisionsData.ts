@@ -1,4 +1,3 @@
-import type { LogRow } from '../../charts/log/logData';
 import { formatScalar } from '../../families/valueFormat.ts';
 import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, lastEdge, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
@@ -54,9 +53,8 @@ export function decisionCard(occurrence: ScriptOccurrence | null): DecisionCard 
   return { occurrence, item: occurrenceItem(occurrence), country, target: target !== country ? target : null };
 }
 
-export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, breaks: readonly RecordingBreak[]): LogRow<DecisionAt> | null {
-  const card = row.item;
-  if (!card || (row.revealedHour ?? row.hour) > hour) return null;
+export function decisionAt(card: DecisionCard | null, hour: number, breaks: readonly RecordingBreak[]): DecisionAt | null {
+  if (!card || card.occurrence.edges[0].row.readHour > hour) return null;
   const edges = edgesAt(card.occurrence.edges, hour);
   const start = card.occurrence.opened && STARTS.includes(edges[0]?.row.kind) ? edges[0] : null;
   const latest = lastEdge(edges, [...ENDS, 'decisionActivated']);
@@ -89,7 +87,7 @@ export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, break
     pause = breakAfter(breaks, edges.at(-1)!.row.readHour, hour);
     if (pause) status = 'unknown';
   }
-  return { ...row, item: { card, hour, edges, status, start, end, failedAt, unsupportedState, failureMissing, timer, pause } };
+  return { card, hour, edges, status, start, end, failedAt, unsupportedState, failureMissing, timer, pause };
 }
 
 export const decisionName = (card: DecisionCard) => card.item?.name ?? NAME_UNAVAILABLE;

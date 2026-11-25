@@ -29,15 +29,7 @@ export interface TooltipContent {
   description?: string;
   spoken?: string;
 }
-export function countryNameDetails(...countries: readonly ({ name?: string; nameFailure?: Error; nameDetail?: string } | null | undefined)[]): Pick<TooltipContent, 'detail'> {
-  const messages = new Set(countries.flatMap(country => {
-    const message = country?.nameFailure?.message ?? country?.nameDetail;
-    return message === undefined ? [] : [message];
-  }));
-  return messages.size ? { detail: [...messages].join('\n') } : {};
-}
-
-export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number }
+export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number; detailRows?: readonly TooltipRow[] }
 
 function tooltipRowValueText(row: TooltipRow): string | undefined {
   if (row.valueState) return valueStateText(row.valueState);
@@ -141,8 +133,15 @@ export function showTooltip(owner: string, content: TooltipContent, x: number, y
   const scrollTop = sameScroll ? state?.scrollTop ?? 0 : 0;
   const scrollViewport = sameScroll ? state?.scrollViewport ?? 0 : 0;
   if (state?.owner !== owner || state.x !== x || state.y !== y) revision++;
+  const detailRows = sameScroll ? state?.detailRows : undefined;
   key = nextKey;
-  state = content.scrollable ? { owner, content, x, y, scrollTop, scrollViewport } : { owner, content, x, y };
+  state = content.scrollable ? { owner, content, x, y, scrollTop, scrollViewport, detailRows } : { owner, content, x, y };
+  emit();
+}
+
+export function setTooltipDetailRows(scrollId: string, rows: readonly TooltipRow[]): void {
+  if (!state || state.content.scrollId !== scrollId || state.detailRows === rows) return;
+  state = { ...state, detailRows: rows };
   emit();
 }
 

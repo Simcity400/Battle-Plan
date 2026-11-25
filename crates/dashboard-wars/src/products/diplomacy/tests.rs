@@ -105,7 +105,7 @@ fn a_group_is_its_members_at_the_asked_hour_and_unknown_membership_shows_no_owne
     };
     let held = |slot: u32| vec![HolderRun { first: 0, last: 1000, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
     let holders = Holders::new([("AAA".to_owned(), held(1)), ("BBB".to_owned(), held(2))].into_iter().collect(), Vec::new());
-    let context = DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings: Vec::new(), groups: GroupsAt::new(Arc::new(reply), 0) };
+    let context = DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), faction_edges: vec![650], warnings: Vec::new(), groups: GroupsAt::new(Arc::new(reply), 0) };
     let group = GroupSelection { kind: GroupKind::Humans, id: None, tag: None, membership: GroupMembership::Hour };
     let params = DiplomaticRelationsParams { branch_id: "1".into(), countries: Vec::new(), top: None, order: None, group: Some(group) };
     let live = Cells::default();
@@ -115,6 +115,9 @@ fn a_group_is_its_members_at_the_asked_hour_and_unknown_membership_shows_no_owne
         let reply = DiplomaticRelations::reply(&frame, &params, &at).unwrap();
         (reply.owners.iter().map(|owner| owner.tag.clone()).collect::<Vec<_>>(), reply.chosen_missing)
     };
+    let through = |hour| DiplomaticRelations::valid_through(&frame, &params, &At { owner: None, holders: &holders, hour, context: &context, cancelled: &cancelled, live: &live });
+    assert_eq!(through(500), 599);
+    assert_eq!(through(600), 649);
     assert_eq!(shown(500), (vec!["AAA".to_owned()], None), "a country joining at 600 is not shown at 500");
     assert_eq!(shown(700), (vec!["AAA".to_owned(), "BBB".to_owned()], None));
     let (none, refused) = shown(310);

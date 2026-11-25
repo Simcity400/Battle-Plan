@@ -13,8 +13,6 @@ fn joins() -> Joins {
     Joins {
         holders: HolderTags::from_runs(by),
         raw: HashMap::from([((11, 100), (A, "AAA".to_owned())), ((22, 100), (B, "BBB".to_owned()))]),
-        tokens: HashMap::from([(7, "take_states".to_owned())]),
-        action_key: Ok("take_states".into()),
         ..Joins::default()
     }
 }
@@ -58,7 +56,7 @@ fn a_settlement_overrides_its_compared_conference_and_an_unsampled_change_is_a_c
             ..Default::default()
         },
     }];
-    let (deals, graph, warnings) = fold(&[span(7, Some(100))], &outcomes, &settled, &joins());
+    let (deals, warnings) = fold(&[span(7, Some(100))], &outcomes, &settled, &joins());
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(deals.iter().map(|deal| deal.id.as_str()).collect::<Vec<_>>(), ["outcome:200:0", "conference:7:80"], "newest first");
     let unsampled = &deals[0];
@@ -75,8 +73,8 @@ fn a_settlement_overrides_its_compared_conference_and_an_unsampled_change_is_a_c
         other => panic!("{other:?}"),
     }
     let captured = conference.captured.as_ref().unwrap();
-    assert_eq!((captured.actions[0].token_name.as_deref(), captured.actions[0].giver_tag.as_deref()), (Some("take_states"), Some("AAA")));
-    assert_eq!(graph.links.iter().map(|link| link.state_count).sum::<u32>(), 2, "the campaign graph holds each transfer once");
+    assert_eq!(captured.actions[0].giver_tag.as_deref(), Some("AAA"));
+    assert_eq!(deals.iter().map(|deal| deal.transfers.len()).sum::<usize>(), 2, "each transfer is counted once");
 }
 
 #[test]
@@ -86,7 +84,7 @@ fn a_release_is_one_item_per_country_and_a_country_without_a_tag_is_left_out_by_
         Outcome { group: 3, ..outcome(160, 159, PeaceOutcomeRow::UNKNOWN, None, PeaceOutcomeRow::RELEASED, 2, B, C) },
         Outcome { group: 3, ..outcome(160, 159, PeaceOutcomeRow::UNKNOWN, None, PeaceOutcomeRow::TRANSFER, 8, A, (9, 99)) },
     ];
-    let (deals, graph, _) = fold(&[], &outcomes, &[], &joins());
+    let (deals, _) = fold(&[], &outcomes, &[], &joins());
     assert_eq!(deals.len(), 1);
     let deal = &deals[0];
     assert_eq!(deal.observation, PeaceObservation::ConferenceUnknown);
@@ -98,18 +96,18 @@ fn a_release_is_one_item_per_country_and_a_country_without_a_tag_is_left_out_by_
         other => panic!("{other:?}"),
     }
     assert!(deal.limitations.iter().any(|limitation| limitation.contains("{8}")), "the transfer to a holder without a tag is named, not dropped silently: {:?}", deal.limitations);
-    assert_eq!(graph.links.iter().map(|link| link.state_count).sum::<u32>(), 2);
+    assert_eq!(deals.iter().map(|deal| deal.transfers.len()).sum::<usize>(), 2);
 }
 
 #[test]
 fn a_conference_ends_at_its_last_read_when_the_next_read_misses_it_and_waits_with_its_reason() {
-    let (deals, _, _) = fold(&[span(9, None)], &[], &[], &joins());
+    let (deals, _) = fold(&[span(9, None)], &[], &[], &joins());
     let deal = &deals[0];
     assert_eq!((deal.end_hour, deal.end_is_by, deal.first_absent_hour), (Some(95), false, Some(96)));
     assert!(deal.limitations.iter().any(|limitation| limitation.starts_with("No complete ownership and war read after settlement")));
     let mut late = span(9, None);
     late.first_absent_hour = Some(120);
-    let (deals, _, _) = fold(&[late], &[], &[], &joins());
+    let (deals, _) = fold(&[late], &[], &[], &joins());
     assert_eq!((deals[0].end_hour, deals[0].end_is_by), (Some(120), true), "an absence after unread hours bounds the end");
 }
 
@@ -141,7 +139,7 @@ fn a_conference_listed_again_is_a_second_card_and_its_finalizer_joins_the_listin
         publication_hour: 311,
         row: PeaceSettlementRow { sequence: 5, conference: Some(7), hour: Some(310), winners: vec![22], losers: vec![11], ..Default::default() },
     }];
-    let (deals, _, warnings) = fold(&spans, &[], &settled, &joins());
+    let (deals, warnings) = fold(&spans, &[], &settled, &joins());
     assert!(warnings.is_empty(), "{warnings:?}");
     let mut ids: Vec<&str> = deals.iter().map(|deal| deal.id.as_str()).collect();
     ids.sort_unstable();
@@ -157,7 +155,7 @@ fn a_finalizer_without_a_conference_identity_warns_from_its_publication_not_from
         publication_hour: 311,
         row: PeaceSettlementRow { sequence: 5, conference: None, hour: Some(300), failure: Some(b"unreadable".to_vec()), ..Default::default() },
     }];
-    let (_, _, warnings) = fold(&[], &[], &settled, &joins());
+    let (_, warnings) = fold(&[], &[], &settled, &joins());
     assert_eq!(warnings.iter().map(|warning| warning.hour).collect::<Vec<_>>(), [Some(311)], "{warnings:?}");
 }
 
@@ -203,48 +201,4 @@ fn a_settlement_is_its_log_rows_cells_and_a_cell_not_recorded_leaves_it_out() {
     let mut unrecorded = row;
     unrecorded.cells[columns[4]] = log::Cell::Unrecorded;
     assert_eq!(settlement(&unrecorded, &columns), None, "a cell not recorded is never read as an empty list");
-}
-
-#[test]
-fn a_native_peace_action_is_named_by_the_games_demand_label_never_by_its_keyword() {
-    let (cat, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[(
-        "localisation/peace_l_english.yml",
-        "\u{feff}l_english:\n PEACE_TAKE_STATES_DEMAND:0 \"Take State\"\n PEACE_LIBERATE_LABEL:0 \"Liberate\"\n PEACE_FORCE_GOVERNMENT_LABEL:0 \"Change government\"\n PEACE_PUPPET_COUNTRY_LABEL:0 \"Puppet $COUNTRY$\"\n",
-    )]);
-    let action = |token: u32, keyword: &str| PeaceCapturedAction {
-        token_name: Some(keyword.to_owned()),
-        cached_name: Some(keyword.as_bytes().to_vec()),
-        ..captured_action(&SettledPeaceAction { country: 22, token, taker: 22, giver: 11, negotiator: 22, ..Default::default() }, &joins(), 100)
-    };
-    let puppet = |tag: Option<&str>| PeaceCapturedAction { country_operand: Some(33), country_operand_tag: tag.map(str::to_owned), ..action(10, "puppet") };
-    let mut deal = card("deal".into(), PeaceObservation::ConferenceUnknown, 100);
-    deal.captured = Some(PeaceCaptured {
-        hour: 100,
-        publication_hour: 100,
-        winners: Vec::new(),
-        losers: Vec::new(),
-        actions: vec![action(7, "take_states"), action(8, "force_government"), action(9, "liberate"), puppet(Some("SLO")), puppet(None)],
-        transfers: Vec::new(),
-        subjects: Vec::new(),
-    });
-    let mut reply = PeaceDealsReply {
-        branch_id: "1".into(),
-        derived: false,
-        deals: vec![deal],
-        transfers: PeaceTransferGraph::default(),
-        unobserved: PeaceUnobserved::default(),
-        warnings: Vec::new(),
-    };
-    name_actions(&mut reply, &cat.localisation, &cat.recorded_language);
-    let actions = &reply.deals[0].captured.as_ref().unwrap().actions;
-    let names: Vec<(Option<&str>, Option<&str>)> = actions.iter().map(|action| (action.name.as_deref(), action.name_country.as_deref())).collect();
-    assert_eq!(
-        names,
-        [(Some("Take State"), None), (Some("Change government"), None), (Some("Liberate"), None), (Some("Puppet {COUNTRY}"), Some("SLO")), (None, None)]
-    );
-    assert!(
-        reply.warnings.iter().any(|warning| warning.contains("PEACE_PUPPET_COUNTRY_LABEL") && warning.contains("the country it puppets is not recorded")),
-        "a puppet demand whose country is not recorded is refused by name: {:?}",
-        reply.warnings
-    );
 }

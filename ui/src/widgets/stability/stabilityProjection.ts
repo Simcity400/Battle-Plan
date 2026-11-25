@@ -384,6 +384,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
       });
       const marks = { focus: ctx.options.markFocus !== false, government: ctx.options.markGovernment !== false, wars: ctx.options.markWars !== false, factions: ctx.options.markFactions !== false };
       if (marks.focus || marks.government || marks.wars || marks.factions) {
+        const params = { branchId: ctx.branch.id, country: countries[0]!, ...marks };
         entries.push({
           name: 'markers',
           source: ctx.track.source,
@@ -394,12 +395,8 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
             channel: 'panel',
             coverage: { mode: 'keyed', keys: tags },
             product: 'stability-markers',
-            followQuery: null,
-            params: { branchId: ctx.branch.id, country: countries[0]!, ...marks },
-            provenInterval: (data, hour) => {
-              const next = (data as StabilityMarkersReply | null)?.nextChange;
-              return [hour, next == null ? Infinity : next - 1] as const;
-            },
+            followQuery: { panel: 'stability-markers', ...params },
+            params,
           },
         });
       }

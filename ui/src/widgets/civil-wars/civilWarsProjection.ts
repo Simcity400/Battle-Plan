@@ -12,7 +12,7 @@ import type { TimelineWidgetDeclaration } from '../../families/timeline/declarat
 import { countryLook, inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, type TimelineLane, type TimelineProjection, type TimelineSideLabel, type TimelineSpan } from '../../families/timeline/model.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
-import type { CivilWar, CivilWarSide, CivilWarsReply, HourSpan, SideExit } from '../../generated/dashboard';
+import type { CivilWar, CivilWarSide, CivilWarsReply, SideExit } from '../../generated/dashboard';
 
 export interface CivilWarsProjectionOptions {
   readonly showEnded: boolean;
@@ -208,14 +208,14 @@ function resolveSideLook(
   };
 }
 
-function sideAside(side: ResolvedSide, branchFirst: number, unread: readonly HourSpan[]): string {
+function sideAside(side: ResolvedSide): string {
   if (side.winner) return 'Winner';
   if (side.side.exit) return `Annexed ${formatDateOnly(side.side.exit.hour)}`;
   if (side.live || side.state.kind === 'held') {
-    return `Since ${startUnseen(side.side.firstHour, branchFirst, unread) ? 'by ' : ''}${formatDateOnly(side.side.firstHour)}`;
+    return `Since ${formatDateOnly(side.side.firstHour)}`;
   }
   if (side.state.kind === 'ended') {
-    return `Left ${side.state.lastSeen == null ? '' : 'by '}${formatDateOnly(side.state.at)}`;
+    return `Left ${formatDateOnly(side.state.at)}`;
   }
   return side.state.kind === 'unknown' ? `Last recorded ${formatDateOnly(side.state.lastSeen)}` : '';
 }
@@ -415,7 +415,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       });
 
       for (const side of sides) {
-        const aside = sideAside(side, opt.firstHour, unread);
+        const aside = sideAside(side);
         const sideOpen = side.live;
         lanes.push({
           key: `${warKey}:s:${side.index}`,

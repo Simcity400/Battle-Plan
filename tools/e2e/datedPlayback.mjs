@@ -106,7 +106,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const winRecords = forSession(sorted, w.session);
     const visibleWidgets = (w.widgets ?? []).filter(widget => widget.visible);
     if (!visibleWidgets.length) reasons.push('no visible dashboard placements');
-    if (!visibleWidgets.length || visibleWidgets.every(widget => widget.notMigrated)) reasons.push('nothing measured');
+    if (!visibleWidgets.length) reasons.push('nothing measured');
     if (Array.isArray(w.playbackReasons)) for (const reason of w.playbackReasons) reasons.push(reason);
     const ticks = winRecords.filter(r => r.t === 'tick' && r.playing && r.speed === 1440 && r.at >= w.from && r.at <= w.to);
     const first = ticks[0], last = ticks.at(-1);
@@ -239,14 +239,13 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       metrics.at(-1).inputs = checks;
       if (Number.isFinite(w.inputs.rewindSettledMs)) metrics.at(-1).rewindSettledMs = w.inputs.rewindSettledMs;
       if (Number.isFinite(w.inputs.scrubSettledMs)) metrics.at(-1).scrubSettledMs = w.inputs.scrubSettledMs;
-    } else if (!legacy && (w.widgets ?? []).some(widget => widget.visible && !widget.notMigrated)) reasons.push('Missing dashboard input sequence');
+    } else if (!legacy && (w.widgets ?? []).some(widget => widget.visible)) reasons.push('Missing dashboard input sequence');
     const expectedWidgets = (w.expectedWidgets ?? []).map(expected => typeof expected === 'string' ? { id: expected } : expected).filter(expected => expected?.id != null);
     const inventory = new Map((w.widgets ?? []).map(widget => [widget.id, widget]));
     for (const expected of expectedWidgets) if (!inventory.has(expected.id)) reasons.push('Missing expected widget inventory entry');
     const placementStart = placements.length;
     for (const widget of w.widgets ?? []) {
       if (!widget.visible) continue;
-      if (widget.notMigrated) { placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'not migrated', reason: 'not migrated', pass: false }); continue; }
       if (widget.outcome === 'refusal') {
         const detail = widget.detail ?? 'refused';
         placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'refused', reason: detail, pass: false });
@@ -345,25 +344,19 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       if (!placements.slice(placementStart).some(placement => placement.widget === expected.id)) reasons.push('Missing judged placement for expected widget');
     }
   }
-  const notMigratedPlacements = placements.filter(p => p.status === 'not migrated');
-  const notMigratedKinds = [...new Set(notMigratedPlacements.map(p => p.kind))];
-  if (notMigratedPlacements.length) {
-    reasons.unshift(`${notMigratedPlacements.length} placement${notMigratedPlacements.length === 1 ? '' : 's'} not migrated (${notMigratedKinds.length} kind${notMigratedKinds.length === 1 ? '' : 's'}: ${notMigratedKinds.join(', ')})`);
-  }
   const kinds = [...new Set(placements.map(p => p.kind))];
   const widgets = kinds.map(kind => {
-    const kept = placements.filter(p => p.kind === kind), migrated = kept.filter(p => p.status !== 'not migrated');
-    const notMigratedCount = kept.length - migrated.length;
-    const realFailed = migrated.some(p => !p.pass && p.status !== 'refused' && p.status !== 'error');
-    const pass = notMigratedCount === 0 && migrated.length > 0 && migrated.every(p => p.pass);
+    const kept = placements.filter(p => p.kind === kind);
+    const realFailed = kept.some(p => !p.pass && p.status !== 'refused' && p.status !== 'error');
+    const pass = kept.every(p => p.pass);
     if (realFailed) reasons.push('A widget missed its dated presentation or exact-read target');
-    return { kind, p95: migrated.length && migrated.every(p => p.p95 !== null && p.p95 !== undefined) ? Math.max(...migrated.map(p => p.p95)) : null,
-      eligibleP95: migrated.length && migrated.every(p => p.eligibleP95 !== null && p.eligibleP95 !== undefined) ? Math.max(...migrated.map(p => p.eligibleP95)) : null,
-      structureCrossings: migrated.reduce((sum, p) => sum + (p.structureCrossings ?? 0), 0), future: migrated.reduce((sum, p) => sum + (p.future ?? 0), 0),
-      exact: migrated.length > 0 && migrated.every(p => p.exact === true),
-      ...(notMigratedCount > 0 && { notMigrated: notMigratedCount }), pass };
+    return { kind, p95: kept.length && kept.every(p => p.p95 !== null && p.p95 !== undefined) ? Math.max(...kept.map(p => p.p95)) : null,
+      eligibleP95: kept.length && kept.every(p => p.eligibleP95 !== null && p.eligibleP95 !== undefined) ? Math.max(...kept.map(p => p.eligibleP95)) : null,
+      structureCrossings: kept.reduce((sum, p) => sum + (p.structureCrossings ?? 0), 0), future: kept.reduce((sum, p) => sum + (p.future ?? 0), 0),
+      exact: kept.length > 0 && kept.every(p => p.exact === true),
+      pass };
   });
-  return { pass: reasons.length === 0, reasons, notMigrated: notMigratedPlacements.length, notMigratedKinds, metrics, widgets, placements };
+  return { pass: reasons.length === 0, reasons, metrics, widgets, placements };
 }
 
 export const COST_FORMULA = 'mainDelta.p95 + worker.p95';
@@ -444,7 +437,7 @@ function countUnauditedPictures(paintedInWindow, auditedSamples) {
   return unauditedPictures;
 }
 
-export function summarizeWidgetCosts(windows, records, { baseline = null, baselines = null, profile = null, confinement = null, ungated = false } = {}) {
+export function summarizeWidgetCosts(windows, records, { baseline = null, baselines = null, profile = null, confinement = null } = {}) {
   const sorted = (records ?? []).toSorted((a, b) => a.at - b.at);
   const diff = (a, b) => Number.isFinite(a) && Number.isFinite(b) ? a - b : null;
   const frameStatsOf = (w, winRecords) => {
@@ -623,7 +616,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     if (exact === 'fail') correctnessErrors.push(exactError ? `audit: ${exactError}` : 'exact-read audit failed');
     if (futureFrames > 0) correctnessErrors.push(`${futureFrames} future frame${futureFrames === 1 ? '' : 's'}`);
     const complete = Boolean(w.complete ?? true) && lost === 0 && main.n > 0 && clock.ok && baselineUsable;
-    const pass = outcome !== 'error' && outcome !== 'placeholder' && complete && correctnessErrors.length === 0;
+    const pass = outcome !== 'error' && complete && correctnessErrors.length === 0;
     const belowBaselineNoise = Number.isFinite(mainDelta.p95) && mainDelta.p95 < 0;
     const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
     const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
@@ -643,7 +636,6 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     formula: COST_FORMULA,
     profile,
     confinement,
-    ungated,
     baseline: baselineSummary,
     widgets: rankWidgetCosts(widgets),
   };

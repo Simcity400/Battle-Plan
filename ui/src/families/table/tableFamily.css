@@ -454,6 +454,67 @@
   font-weight: 500;
 }
 
+.fh-body[data-family="table"] {
+  scrollbar-gutter: stable;
+}
+
 .fh-body[data-tf-panes]::-webkit-scrollbar:horizontal {
   height: 0;
 }
+
+.tf-subject {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  margin: 0 6px 4px;
+  padding: 6px 16px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 8.5%, transparent);
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+.tf-subject-art { display: grid; place-items: center; width: 44px; height: 36px; flex: none; border-radius: 7px; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.tf-subject-art img { width: 34px; height: 28px; object-fit: contain; }
+.tf-subject-art .val-picture-missing { width: 34px; height: 26px; }
+.tf-subject-text { flex: 1; min-width: 0; }
+.tf-subject-name { display: block; overflow: hidden; color: var(--text); font-size: 15px; font-weight: 600; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.tf-subject-line { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 3px; white-space: nowrap; }
+.tf-subject-line > * { flex: none; }
+.tf-subject-quiet { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; }
+.tf-subject-quiet:not(.tf-subject-dot) { flex: 0 1 auto; }
+.tf-subject-flag { width: 20px; height: 13px; border-radius: 2px; object-fit: cover; box-shadow: 0 0 0 .5px var(--shadow-color); }
+.tf-subject-level { display: inline-flex; align-items: center; gap: 6px; color: color-mix(in srgb, var(--text) 85%, var(--surface)); }
+.tf-subject-level img, .tf-subject-level .val-picture-missing { width: 20px; height: 20px; object-fit: contain; }
+.tf-subject-figures { display: flex; flex: none; align-items: center; gap: 22px; margin: 0 0 0 auto; }
+.tf-subject-figure { display: flex; flex-direction: column-reverse; align-items: flex-end; }
+.tf-subject-figure dt { color: var(--muted); font-size: 11.5px; line-height: 14px; }
+.tf-subject-figure dd { display: flex; align-items: center; gap: 4px; min-height: 22px; margin: 0; color: var(--text); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tf-subject-figure .val-missing { font-size: 12px; font-weight: 400; }
+.tf-subject-medal { display: inline-flex; align-items: center; gap: 2px; }
+.tf-subject-medal img { height: 22px; width: auto; }
+.tf-subject-medal .val-picture-missing { width: 14px; height: 22px; }
+.tf-subject-times { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.tf-subject[data-compact] { gap: 12px; padding: 4px 12px 8px; }
+.tf-subject[data-compact] .tf-subject-art { width: 36px; height: 30px; }
+.tf-subject[data-compact] .tf-subject-art img { width: 28px; height: 23px; }
+.tf-subject[data-compact] .tf-subject-name { font-size: 14px; }
+.tf-subject[data-compact] .tf-subject-quiet { display: none; }
+.tf-head-clip.is-grouped { padding-bottom: 4px; background: var(--surface); border-bottom: 0; }
+.tf-head-clip.is-grouped .tf-head-row { height: 53px; background: transparent; }
+.tf-head-clip.is-grouped .tf-head-row::before { content: ""; position: absolute; inset: 0 6px; border-radius: 8px; background: color-mix(in srgb, var(--text) 4%, transparent); pointer-events: none; }
+.tf-head-clip.is-grouped .tf-head-row.has-right-fade::after { background: linear-gradient(90deg, transparent, var(--surface)); }
+.tf-head-clip.is-grouped .tf-th { align-items: flex-end; padding-top: 2px; padding-bottom: 3px; background: transparent; font-size: 12px; line-height: 18px; color: color-mix(in srgb, var(--text) 90%, var(--surface)); }
+.tf-head-clip.is-grouped .tf-th.sorted { color: var(--text); }
+.tf-head-clip.is-grouped .tf-th.pinned { background: color-mix(in srgb, var(--text) 4%, var(--surface)); }
+.tf-head-clip.is-grouped .tf-th.pinned:first-child { background: linear-gradient(90deg, var(--surface) 6px, color-mix(in srgb, var(--text) 4%, var(--surface)) 6px); }
+.tf-head-clip.is-grouped .tf-th-static { padding: 4px 0; }
+.tf-head-clip.is-grouped .tf-sort-mark { color: inherit; }
+.tf-head-clip.is-grouped .tf-th.sorted:has(.tf-th-pair)::before { content: ""; position: absolute; top: 0; bottom: 0; left: calc(var(--tf-pad-l) - 6px); right: calc(var(--tf-pad-r) - 6px); border-radius: 3px; background: color-mix(in srgb, var(--text) 5%, transparent); pointer-events: none; }
+.tf-th:has(.tf-th-pair) > .tf-th-label { flex: none; width: calc(100% + 12px); max-width: none; }
+.tf-th-pair { display: grid; grid-template-rows: 18px 22px; align-items: end; width: 100%; }
+.tf-th-group { display: flex; align-self: start; justify-content: center; align-items: center; gap: 0; min-width: 0; padding-bottom: 3px; border-bottom: 1px solid color-mix(in srgb, var(--text) 16%, transparent); white-space: nowrap; }
+.tf-th-group > img { height: 16px; width: auto; max-width: 22px; object-fit: contain; margin-right: 6px; }
+.tf-th-group > .tf-th-hatch { margin-right: 6px; }
+.tf-th-group > .tf-sort-mark { margin-left: 4px; }
+.tf-th-sides { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; text-align: right; }

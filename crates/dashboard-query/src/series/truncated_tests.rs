@@ -343,6 +343,13 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is refused, never a union");
     assert!(answer(&query, ranked::PRODUCT, &group).is_err(), "a group is only answered where its membership is read");
 
+    for (first, last) in [(UNAVAIL_FIRST, UNAVAIL_LAST), (NOTREC_FIRST, NOTREC_LAST)] {
+        let params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-experience", "measure": "army" }, "countries": ["GER", "ITA"], "hour": last });
+        let reply: ranked::SeriesRankReply = serde_json::from_value(answer(&query, ranked::PRODUCT, &params).unwrap().unwrap()).unwrap();
+        assert_eq!((reply.from, reply.until), (first, last));
+        assert!(reply.rows.iter().all(|row| row.readings[0].missing.is_some()));
+    }
+
     let gap = Line::new(&query, &GAP_EXP, &GAP_EXP.measures[0]).unwrap();
     assert_eq!(gap.rank_at(BASE, 2, false).unwrap(), Err("GER's army was not recorded at this hour".to_owned()), "an unrecorded contender refuses the rank");
 

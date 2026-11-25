@@ -127,7 +127,7 @@ test('a pinned view with split on asks every part with the total in one rank of 
   assert.deepEqual(plan.entries.map(entry => entry.name), ['main']);
   const main = plan.entries[0]!.read;
   assert.equal(main.shape, 'point');
-  const params = main.shape === 'point' ? main.buildExactParams?.(main.params!, 500 as never, 'static') as { top?: number; countries?: string[]; measures?: string[] } : null;
+  const params = main.shape === 'point' ? main.followQuery as { top?: number; countries?: string[]; measures?: string[] } : null;
   assert.equal(params?.top, undefined, 'chosen countries are not a top');
   assert.deepEqual(params?.countries, ['ENG', 'GER'], 'the product ranks among the chosen countries');
   assert.ok(params?.measures?.length, 'every part is read in the same reply');
@@ -190,7 +190,7 @@ test('a faction is sent as the group, and a known empty group says so', () => {
   const main = factoriesDeclaration.sources(ctx, { following: false, staticSpan: null }).entries[0]!.read;
   assert.equal(main.shape, 'point');
   if (main.shape !== 'point') return;
-  const asked = main.buildExactParams?.(main.params!, 500 as never, 'static') as { group?: unknown; countries?: unknown };
+  const asked = main.followQuery as { group?: unknown; countries?: unknown };
   assert.deepEqual([asked.group, asked.countries], [{ type: 'war', tag: 'GER', membership: 'ever' }, undefined]);
   const model = factoriesProjection.project(partsView(500, panelOf(500, [])), { ...BASE_OPTS, top: null, group: true });
   assert.deepEqual([model.emptyKind, model.empty], ['empty', 'No country of this group at this date.']);

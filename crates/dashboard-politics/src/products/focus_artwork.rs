@@ -33,6 +33,8 @@ pub(crate) struct DatedFocusArtwork {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FocusArtworkReply {
+    #[serde(skip)]
+    pub valid_through: i32,
     pub branch_id: String,
     pub hour: i32,
     pub tag: String,
@@ -290,8 +292,18 @@ pub(crate) fn load(
     };
     let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
     check_cancel(cancelled)?;
-    let tag = dashboard_base::queries::query(source, branch)?.holders.name(&params.country, params.hour);
-    present_decoded(art, params, &tag, &decoded, cancelled)
+    let query = dashboard_base::queries::query(source, branch)?;
+    let tag = query.holders.name(&params.country, params.hour);
+    let mut reply = present_decoded(art, params, &tag, &decoded, cancelled)?;
+    if !needs_frame && let Some(block) = replay.block_at(branch, params.hour) {
+        let through = block.last_hour.min(query.holders.interval(params.hour).1);
+        if let Ok(campaign) = replay_lanes::lanes::history(replay.recording(), block.run, TableId::Campaign, &[0], replay_lanes::lanes::Keys::All, params.hour, through) {
+            let edges = campaign.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour))
+                .chain(campaign.statuses.iter().map(|status| status.first));
+            reply.valid_through = edges.filter(|&edge| edge > params.hour).min().map_or(through, |edge| edge - 1);
+        }
+    }
+    Ok(reply)
 }
 
 pub(crate) fn present_decoded(
@@ -342,6 +354,7 @@ fn reply_within(
     budget: usize,
 ) -> io::Result<FocusArtworkReply> {
     let mut reply = FocusArtworkReply {
+        valid_through: params.hour,
         branch_id: params.branch_id.clone(),
         hour: params.hour,
         tag: tag.to_owned(),

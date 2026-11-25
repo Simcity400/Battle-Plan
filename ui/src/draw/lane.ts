@@ -1778,6 +1778,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       widget.cost = widget.cost * 0.8 + paintMs * 0.2;
       widget.served = this.requests + Math.min(4, Math.floor(paintMs / budget));
       if (motion) this.stats.motion++;
+      if (this.targetOf(widget, request.now) > activeSelected.window[1]) {
+        this.syncWindowTracking(widget);
+        continue;
+      }
       const open = mode === 'failed' ? undefined : this.isOpenFollowed(widget, activeSelected) ? 'followed' : this.isOpenPanel(widget, activeSelected) ? 'panel' : undefined;
       const parts: (B | typeof SAME | null)[] = [];
       const entry = this.entry(widget, activeSelected, painted, mode, reason, parts, request.seek, paintMs, open, failureOrigin);

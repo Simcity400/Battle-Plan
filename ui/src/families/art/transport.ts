@@ -21,6 +21,17 @@ const spriteId = (sprite: SpriteFrame) => artHandleKey(spriteHandle(sprite));
 
 const optionalKey = (value: unknown) => value === undefined || typeof value === 'string' && value.length > 0;
 
+function compareSpriteFrames(a: SpriteFrame, b: SpriteFrame): number {
+  if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+  if (a.frame !== b.frame) return a.frame - b.frame;
+  if (a.recorded !== b.recorded) {
+    if (a.recorded === undefined) return 1;
+    if (b.recorded === undefined) return -1;
+    return a.recorded < b.recorded ? -1 : 1;
+  }
+  return Number(a.text === true) - Number(b.text === true);
+}
+
 export function spriteFrames(sprites: Iterable<SpriteFrame | null | undefined>): SpriteFrame[] {
   const shown = new Map<string, SpriteFrame>();
   for (const sprite of sprites)
@@ -28,7 +39,7 @@ export function spriteFrames(sprites: Iterable<SpriteFrame | null | undefined>):
       && optionalKey(sprite.recorded) && (sprite.text === undefined || typeof sprite.text === 'boolean'))
       shown.set(spriteId(sprite), { key: sprite.key, frame: sprite.frame, ...sprite.recorded === undefined ? {} : { recorded: sprite.recorded },
         ...sprite.text ? { text: true } : {} });
-  return [...shown.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, sprite]) => sprite);
+  return [...shown.values()].sort(compareSpriteFrames);
 }
 
 export function spriteResolutions(reply: unknown, asked: readonly SpriteFrame[]): Map<string, ArtResolution> {

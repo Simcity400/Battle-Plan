@@ -44,44 +44,36 @@ export function machineLine(run) {
 
 export function classifyWidgetSnapshot({
   domState = null, domDetail = null,
-  isPlaceholder = false,
-  placeholderText = null, unavailableText = null, errorDetail = null,
+  unavailableText = null, errorDetail = null,
   outsideText = null, notRecordedText = null, emptyText = null,
   probeState = null, probeDrawing = false,
 } = {}) {
   const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
   const state = clean(domState);
   const detail = clean(domDetail);
-  const ph = clean(placeholderText);
-  if (state === 'placeholder' || isPlaceholder) {
-    return { outcome: 'placeholder', detail: ph ?? detail ?? 'placeholder', notMigrated: true };
-  }
-  if (state === 'unavailable') return { outcome: 'refusal', detail: clean(unavailableText) ?? detail ?? 'unavailable', notMigrated: false };
-  if (state === 'error') return { outcome: 'error', detail: clean(errorDetail) ?? detail ?? 'error', notMigrated: false };
-  if (state === 'outside') return { outcome: 'outside', detail: clean(outsideText) ?? detail ?? 'outside', notMigrated: false };
-  if (state === 'not-recorded') return { outcome: 'not-recorded', detail: clean(notRecordedText) ?? detail ?? 'not-recorded', notMigrated: false };
-  if (state === 'empty') return { outcome: 'content', detail: clean(emptyText) ?? detail, notMigrated: false };
-  if (state === 'loading') return probeDrawing ? { outcome: 'content', detail: null, notMigrated: false } : { outcome: 'error', detail: detail ?? 'still loading', notMigrated: false };
+  if (state === 'unavailable') return { outcome: 'refusal', detail: clean(unavailableText) ?? detail ?? 'unavailable' };
+  if (state === 'error') return { outcome: 'error', detail: clean(errorDetail) ?? detail ?? 'error' };
+  if (state === 'outside') return { outcome: 'outside', detail: clean(outsideText) ?? detail ?? 'outside' };
+  if (state === 'not-recorded') return { outcome: 'not-recorded', detail: clean(notRecordedText) ?? detail ?? 'not-recorded' };
+  if (state === 'empty') return { outcome: 'content', detail: clean(emptyText) ?? detail };
+  if (state === 'loading') return probeDrawing ? { outcome: 'content', detail: null } : { outcome: 'error', detail: detail ?? 'still loading' };
   const unavail = clean(unavailableText);
-  if (unavail) return { outcome: 'refusal', detail: unavail, notMigrated: false };
+  if (unavail) return { outcome: 'refusal', detail: unavail };
   const err = clean(errorDetail);
-  if (err) return { outcome: 'error', detail: err, notMigrated: false };
+  if (err) return { outcome: 'error', detail: err };
   const out = clean(outsideText);
-  if (out) return { outcome: 'outside', detail: out, notMigrated: false };
+  if (out) return { outcome: 'outside', detail: out };
   const unrec = clean(notRecordedText);
-  if (unrec) return { outcome: 'not-recorded', detail: unrec, notMigrated: false };
+  if (unrec) return { outcome: 'not-recorded', detail: unrec };
   if (probeState === 'loading' && !probeDrawing) {
-    return { outcome: 'error', detail: 'still loading', notMigrated: false };
+    return { outcome: 'error', detail: 'still loading' };
   }
   if (probeState === 'blank') {
-    return { outcome: 'error', detail: 'blank widget body', notMigrated: false };
-  }
-  if (ph) {
-    return { outcome: 'error', detail: ph, notMigrated: false };
+    return { outcome: 'error', detail: 'blank widget body' };
   }
   const empty = clean(emptyText);
-  if (empty) return { outcome: 'content', detail: empty, notMigrated: false };
-  return { outcome: 'content', detail: null, notMigrated: false };
+  if (empty) return { outcome: 'content', detail: empty };
+  return { outcome: 'content', detail: null };
 }
 
 export function classifyPerfFile(name) {
@@ -174,11 +166,6 @@ export function profileLines(run, sweep, records = null) {
     if (profile || cores || throttle > 1) {
       lines.push('Profile caveat: this profile limits OS core affinity, slows JS main-thread execution via Chromium CPU throttling, and stretches drawing-lane worker work via stretch() in ui/src/draw/weakCpu.ts. It does not imitate a slower graphics card (GPU raster, compositing, or native viewer shaders), slower memory bandwidth or caches, or slower native Rust and IPC decoding.');
     }
-  }
-  const ungated = Boolean(run?.ungated || fallbackPage?.ungated || sweepSessions.some(meta => meta.confinement?.ungated)
-    || (records ?? []).some(record => record.t === 'page' && record.ungated));
-  if (ungated) {
-    lines.unshift('> **MEASUREMENT BUILD (UNGATED):** Built with `suite.py build-ui --ungated` (`ui/vite.ungated.config.ts`); the `playsBackDated` placeholder gate was bypassed at build time so unmigrated widgets ran while playing. Never ship this bundle.');
   }
   return lines;
 }
@@ -359,11 +346,9 @@ export const sessionStart = (starts, at) => Math.max(-Infinity, ...starts.filter
 
 export function freshnessByKind(records, playbackResults, hourChecks = [], starts = [], dated = []) {
   const kinds = new Map();
-  const notMigratedWidgets = new Set(dated.filter(picture => picture.status === 'not migrated').map(picture => picture.widget));
   const entryOf = kind => { const entry = kinds.get(kind) ?? { kind, placements: new Set(), unreported: new Set(), wrong: [], stale: [], worst: null, eligible: null }; kinds.set(kind, entry); return entry; };
   const shown = groupBy(shownHours(records).sort((a, b) => a.at - b.at), record => record.widget);
   for (const check of hourChecks) {
-    if (notMigratedWidgets.has(check.widget)) continue;
     const entry = entryOf(check.kind);
     const where = `${check.page}: ${check.title}`;
     entry.placements.add(where);
@@ -380,14 +365,12 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
       entry.placements.add(`${result.page}: ${widget.title}`);
       const picture = pictures.get(widget.id);
       if (picture) {
-        if (picture.status === 'not migrated') { entry.notMigrated = (entry.notMigrated ?? 0) + 1; continue; }
         if (picture.status === 'refused' || picture.status === 'error') { entry.stale.push(`${result.page}: ${picture.status}: ${picture.reason ?? picture.status}`); continue; }
         if (picture.p95 !== null) entry.worst = Math.max(entry.worst ?? -Infinity, picture.p95);
         if (picture.eligibleP95 !== null) entry.eligible = Math.max(entry.eligible ?? -Infinity, picture.eligibleP95);
         if (!picture.pass) entry.stale.push(`${result.page}: failed the worker presentation gate (${picture.future} future frames, exact reads ${picture.exact ? 'passed' : 'failed'})`);
         continue;
       }
-      if (widget.notMigrated) { entry.notMigrated = (entry.notMigrated ?? 0) + 1; continue; }
       reported ??= new Map(freshness(records, result.from, result.to, sessionStart(starts, result.from)).widgets.map(w => [w.widget, w]));
       const seen = reported.get(widget.id);
       if (!seen) { entry.unreported.add(`${result.page}: ${widget.title}`); continue; }
@@ -399,13 +382,9 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
     const reasons = [];
     if (entry.unreported.size) reasons.push(`does not report the hour it shows (${[...entry.unreported].join(', ')})`);
     reasons.push(...entry.wrong, ...entry.stale);
-    const notMigrated = entry.notMigrated ?? 0;
-    const realFailure = reasons.length > 0;
-    if (notMigrated > 0) reasons.push('not migrated');
     const pass = reasons.length === 0;
-    const status = pass ? 'pass' : (!realFailure && notMigrated > 0 ? 'not migrated' : 'fail');
     return { kind: entry.kind, placements: entry.placements.size, worst: entry.worst, eligible: entry.eligible,
-      notMigrated, status, pass, reasons };
+      pass, reasons };
   });
 }
 

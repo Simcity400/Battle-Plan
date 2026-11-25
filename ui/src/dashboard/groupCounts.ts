@@ -1,4 +1,4 @@
-import type { BranchToHourSourceRead } from '../families/plan.ts';
+import type { PointSourceRead } from '../families/plan.ts';
 import type { GroupCount, GroupCountsReply, CountedGroup } from '../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => value != null && typeof value === 'object';
@@ -14,22 +14,14 @@ export function validateGroupCounts(data: unknown): GroupCountsReply {
   return data as GroupCountsReply;
 }
 
-export function groupCountsProof(data: unknown, _requested: readonly [number, number], hour: number): readonly [number, number] | null {
-  const reply = data as GroupCountsReply;
-  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
-  return reply.hour <= hour && hour <= last ? [reply.hour, last] : null;
-}
-
-export function groupCountsRead(branchId: string, of: CountedGroup): BranchToHourSourceRead {
+export function groupCountsRead(branchId: string, of: CountedGroup): PointSourceRead {
   return {
-    shape: 'branch-to-hour',
+    shape: 'point',
+    channel: 'panel',
     coverage: { mode: 'population', form: 'all' },
     product: 'group-counts',
-    followQuery: null,
+    followQuery: { panel: 'group-counts', branchId, of },
     params: { branchId, of },
-    buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
-    provenInterval: groupCountsProof,
-    dynamicKeys: ['hour'],
     validate: validateGroupCounts,
   };
 }

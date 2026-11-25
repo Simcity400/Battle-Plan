@@ -7,4 +7,5 @@ pub mod registrations;
 
 pub fn forget(source: &dashboard_base::Source) {
     products::raids::tail::forget(source);
+    products::intelligence::espionage_tail::forget(source);
 }

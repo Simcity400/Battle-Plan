@@ -207,21 +207,21 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
         }
         const card = choiceCard(occ);
         const resolved = choiceAt(
-          { key: rawRow.key, id: occ.id, hour: card?.first.row.hour ?? rawRow.hour, revealedHour: card?.first.row.readHour ?? rawRow.hour, by: false, item: card },
+          card,
           hour,
           options.breaks,
         );
         if (!resolved) return null;
-        const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved.item);
+        const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved);
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
         const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
         if (open) {
-          const startHour = resolved.item.card.first.row.hour;
+          const startHour = resolved.card.first.row.hour;
           const elapsed = Math.max(0, daysBetween(startHour, hour));
           const nextDay = startHour + (elapsed + 1) * 24;
           if (nextDay > hour && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
-        return buildChoiceRow(readView, resolved.item, page, options.artwork, boundary);
+        return buildChoiceRow(readView, resolved, page, options.artwork, boundary);
       },
     );
 

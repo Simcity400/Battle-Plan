@@ -465,6 +465,83 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.constructionLogProjection, declaration: mod.constructionLogDeclaration }),
     ),
   },
+  {
+    kind: 'division-service-record',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'division-service-record',
+      DEFAULT_VIEW,
+      () => import('../division-service-record/serviceRecordProjection.ts'),
+      mod => ({ projection: mod.serviceRecordProjection, declaration: mod.serviceRecordDeclaration }),
+    ),
+  },
+  {
+    kind: 'peace-deals',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'peace-deals',
+      DEFAULT_VIEW,
+      () => import('../peace-deals/peaceDealsProjection.ts'),
+      mod => ({ projection: mod.peaceDealsProjection, declaration: mod.peaceDealsDeclaration }),
+    ),
+  },
+  {
+    kind: 'land-battles',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'land-battles',
+      DEFAULT_VIEW,
+      () => import('../land-battles/landBattlesProjection.ts'),
+      mod => ({ projection: mod.landBattlesProjection, declaration: mod.landBattlesDeclaration }),
+    ),
+  },
+  {
+    kind: 'naval-battles',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'naval-battles',
+      DEFAULT_VIEW,
+      () => import('../naval-battles/navalBattlesProjection.ts'),
+      mod => ({ projection: mod.navalBattlesProjection, declaration: mod.navalBattlesDeclaration }),
+    ),
+  },
+  {
+    kind: 'ships-sunk',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'ships-sunk',
+      DEFAULT_VIEW,
+      () => import('../ships-sunk/shipsSunkProjection.ts'),
+      mod => ({ projection: mod.shipsSunkProjection, declaration: mod.shipsSunkDeclaration }),
+    ),
+  },
+  {
+    kind: 'division-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'division-log',
+      DEFAULT_VIEW,
+      () => import('../division-log/divisionLogProjection.ts'),
+      mod => ({ projection: mod.divisionLogProjection, declaration: mod.divisionLogDeclaration }),
+    ),
+  },
+  {
+    kind: 'espionage-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'espionage-log',
+      DEFAULT_VIEW,
+      () => import('../espionage-log/espionageLogProjection.ts'),
+      mod => ({ projection: mod.espionageLogProjection, declaration: mod.espionageLogDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {

@@ -3,8 +3,6 @@ import { formatDate, gameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
 import { layoutEndLabels } from './labels.ts';
-import { curveSegments, heldSegments } from './series.ts';
-import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
@@ -14,14 +12,6 @@ export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weig
 export const LABEL_WEIGHT = 500;
 export const VALUE_WEIGHT = 600;
 const crisp = (value: number) => Math.round(value) + 0.5;
-
-export function tracePath(ctx: Canvas2D, commands: readonly PathCommand[]): void {
-  for (const command of commands) {
-    if (command[0] === 'M') ctx.moveTo(command[1], command[2]);
-    else if (command[0] === 'L') ctx.lineTo(command[1], command[2]);
-    else ctx.bezierCurveTo(command[1], command[2], command[3], command[4], command[5], command[6]);
-  }
-}
 
 export function valueTicks(frame: PlotFrame, tokens: ChartTokens): number[] {
   if (frame.valueTicks) return frame.valueTicks.filter(value => value >= frame.y[0] && value <= frame.y[1]);
@@ -107,32 +97,6 @@ export function clipToPlot(ctx: Canvas2D, frame: PlotFrame): void {
   ctx.beginPath();
   ctx.rect(frame.plotLeft, frame.plotTop - 2, frame.plotWidth + 2, frame.plotHeight + 4);
   ctx.clip();
-}
-
-export function drawLine(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, runs: readonly Run[],
-  color: string, options: { area?: boolean; endDot?: boolean; until?: number; dash?: readonly number[]; held?: boolean } = {}): { x: number; y: number } | null {
-  const until = Math.min(frame.x[1], options.until ?? Infinity);
-  let last: { x: number; y: number } | null = null;
-  const baseline = frame.toY(frame.log ? frame.y[0] : Math.max(frame.y[0], Math.min(0, frame.y[1])));
-  const lineSegments = options.held ? heldSegments : curveSegments;
-  for (const { points, path } of lineSegments(runs, frame.x[0], until, frame.toX, frame.toY)) {
-    if (options.area && points.length > 1) {
-      ctx.beginPath(); tracePath(ctx, path);
-      ctx.lineTo(points.at(-1)!.x, baseline); ctx.lineTo(points[0].x, baseline); ctx.closePath();
-      ctx.globalAlpha = 0.12; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
-    }
-    ctx.beginPath(); tracePath(ctx, path);
-    if (points.length === 1) ctx.arc(points[0].x, points[0].y, tokens.lineWidth.series / 2, 0, Math.PI * 2);
-    ctx.strokeStyle = color; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = options.dash ? 'butt' : 'round';
-    ctx.setLineDash(options.dash ?? []); ctx.stroke(); ctx.setLineDash([]);
-    last = points.at(-1)!;
-  }
-  if (last && options.endDot !== false) {
-    ctx.beginPath(); ctx.arc(last.x, last.y, tokens.lineWidth.series * 2, 0, Math.PI * 2);
-    ctx.fillStyle = color; ctx.fill();
-    ctx.lineWidth = tokens.lineWidth.series; ctx.strokeStyle = tokens.surface; ctx.stroke();
-  }
-  return last;
 }
 
 export function drawBands(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[],

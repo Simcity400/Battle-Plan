@@ -8,7 +8,6 @@ import { urlToArt } from '../families/art/adapters.ts';
 import { useDomArt } from '../families/art/react.ts';
 import { countryTagKey, useIdentity, useIdentityScope } from '../families/identity/react.ts';
 import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentation';
-export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
 
 export type FlagImage = { width: number; height: number } & ({ png: string } | { pixels: ArrayLike<number> });

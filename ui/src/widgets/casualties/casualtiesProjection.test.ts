@@ -84,15 +84,17 @@ const ctxOf = (countries: Record<string, unknown>): Ctx => ({
 function askedAt(ctx: Ctx, name: string, hour: number): Readonly<Record<string, unknown>> | null {
   const read = casualtiesButterflyDeclaration.sources(ctx, { following: false, staticSpan: null }).entries.find(entry => entry.name === name)!.read;
   assert.equal(read.shape, 'point');
-  return read.shape === 'point' ? read.buildExactParams!(read.params!, hour as never, 'static') : null;
+  return read.shape === 'point' ? { ...read.params, hour } : null;
 }
 
 test('under the default Top selection one rank reply carries every displayed measure for the ranked countries, valid only where the product proves it', () => {
   const asked = askedAt(ctxOf({ top: 10 }), 'rank', 500) as { top?: number; measures?: string[]; countries?: unknown };
   assert.deepEqual([asked.top, asked.measures, asked.countries], [10, ['dealt', 'taken', 'unknown', 'partial'], undefined]);
   const rank = casualtiesButterflyDeclaration.sources(ctxOf({ top: 10 }), { following: false, staticSpan: null }).entries.find(entry => entry.name === 'rank')!.read;
-  assert.deepEqual(rank.shape === 'point' ? rank.provenInterval?.({ ...butterflyReply(), from: 500, until: 500 }, 500) : null, [500, 500],
-    'a Top answer holds for its own hour until the product proves more');
+  assert.deepEqual(rank.shape === 'point' ? rank.followQuery : null, {
+    panel: 'series-rank', branchId: '1', family: { kind: 'casualty-totals', measure: 'dealtAndTaken' },
+    top: 10, measures: ['dealt', 'taken', 'unknown', 'partial'],
+  });
   const model = casualtiesButterflyProjection.project(view(), casualtiesButterflyDeclaration.projectionOptions(ctxOf({ top: 10 })));
   assert.deepEqual((model.rows as BarsDataRow[]).map(row => formatBarsValueField(row.right!.value).text).slice(0, 2), ['300', '500'], 'recorded casualties are drawn, not missing');
 });
