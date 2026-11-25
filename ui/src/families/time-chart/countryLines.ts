@@ -23,6 +23,7 @@ import {
   rankedOrder, unnamedLooks,
   rankedPanelKeys,
   withinMapOf,
+  type ExactReading,
   type HeadReading,
   type KnownHeadReading,
 } from './seriesHelpers.ts';
@@ -49,6 +50,7 @@ export interface CountryLine {
   readonly tag: string;
   readonly name: string;
   readonly color: string;
+  readonly exact?: ExactReading | null;
 }
 
 export interface CountryLinesOptions {
@@ -214,7 +216,14 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         const look = looks.get(tag)!;
         const { name, flag, color, identities } = look;
         const atDetail = detailHour === null ? look : seriesLookAt(look, detailHour);
-        lines.push({ tag, name: atDetail.name, color: atDetail.color });
+        if (detailHour === null || memberAt(options.membership, tag, detailHour)) {
+          lines.push({
+            tag,
+            name: atDetail.name,
+            color: atDetail.color,
+            exact: exact && (detailHour === null || exact.hour === detailHour) ? exact : null,
+          });
+        }
         const main: TimeChartSeriesModel = {
           id: tag,
           key: tag,
@@ -295,7 +304,26 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
       const family = { kind: measure.kind, measure: measure.measure };
       const secondFamily = second ? { kind: measure.kind, measure: second.measure } : null;
       const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
-      const hover = spec.hover ? [{ ...spec.hover.entry(ctx), name: 'detail' }] : [];
+      const detailEntry = (rankedMode: boolean): SourceEntry[] => {
+        if (!spec.hover) return [];
+        const base = { ...spec.hover.entry(ctx), name: 'detail' };
+        if (base.read.shape !== 'exact-hover') return [base];
+        const read = base.read;
+        if (rankedMode) {
+          return [{
+            ...base,
+            read: read.readsOf !== undefined ? read : { ...read, countriesOf: read.countriesOf ?? 'main' },
+          }];
+        }
+        return [{
+          ...base,
+          read: {
+            ...read,
+            ...(read.params && read.readsOf === undefined ? { params: { ...read.params, countries: tags.map(countryFromKey) } } : {}),
+            ...(ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
+          },
+        }];
+      };
       if (top !== null) {
         const params = { branchId: ctx.branch.id, family, top };
         const ranked: SourceEntry[] = [
@@ -327,7 +355,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
               }]
             : []),
           { name: 'hover', ...common, read: { shape: 'exact-hover', product: 'series-state', params: { branchId: ctx.branch.id, family }, readsOf: 'main' } },
-          ...hover,
+          ...detailEntry(true),
         ];
         return { owner, entries: ranked };
       }
@@ -365,9 +393,14 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         {
           name: 'hover',
           ...common,
-          read: { shape: 'exact-hover', product: 'series-state', params: { branchId: ctx.branch.id, family, reads } },
+          read: {
+            shape: 'exact-hover',
+            product: 'series-state',
+            params: { branchId: ctx.branch.id, family, reads },
+            ...(ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
+          },
         },
-        ...hover,
+        ...detailEntry(false),
       ];
       const rank = rankEntry(ctx, family, tags);
       if (rank) entries.push(rank);

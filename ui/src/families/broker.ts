@@ -1,4 +1,4 @@
-import { countryFromKey } from '../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../dashboard/countryKey.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import { canonical } from '../dashboard/follow/canonical.ts';
 import type { Channel } from '../dashboard/follow/facts';
@@ -13,6 +13,7 @@ import type {
   ArtProvider,
   BoundedReadView,
   CompiledFollowSubscription,
+  ExactHoverSourceRead,
   IdentityProvider,
   SourceCoverage,
   SourceEntry,
@@ -77,7 +78,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'pixel-binned':
       return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
     case 'exact-hover':
-      return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params];
+      return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params, read.readsOf ?? '', read.countriesOf ?? '', read.membership ?? null];
     case 'paged-rows':
       return ['paged-rows', read.tailQuery, read.pageSize ?? 0, read.followQuery];
   }
@@ -654,11 +655,8 @@ async function readEntryExact(
   }
 
   if (read.shape === 'exact-hover') {
-    if (!read.params) return null;
-    const reads = (read.params as { reads?: unknown }).reads;
-    const params = Array.isArray(reads)
-      ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: recorded })) }
-      : { ...read.params, [read.hourParam ?? 'hour']: recorded };
+    const params = resolveHoverParams(read, recorded, () => undefined);
+    if (!params) return null;
     const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
     return { name: entry.name, hour: recorded, hover: await fetchRaw(request) };
   }
@@ -749,6 +747,63 @@ export interface HeldHover {
   readonly data: unknown;
 }
 
+function hoverEligible(
+  membership: ExactHoverSourceRead['membership'],
+  key: string,
+  hour: number,
+): boolean {
+  if (!membership) return true;
+  const spans = membership[key];
+  if (!spans) return false;
+  for (const [first, last] of spans) {
+    if (first <= hour && hour <= last) return true;
+  }
+  return false;
+}
+
+function resolveHoverParams(
+  read: ExactHoverSourceRead,
+  hour: number,
+  displayed: (entry: string) => readonly string[] | undefined,
+): Readonly<Record<string, unknown>> | null {
+  if (!read.params) return null;
+  const hourParam = read.hourParam ?? 'hour';
+  if (read.readsOf !== undefined) {
+    const shown = displayed(read.readsOf);
+    if (!shown) return null;
+    const eligible = shown.filter(key => hoverEligible(read.membership, key, hour));
+    if (!eligible.length) return null;
+    return { ...read.params, reads: eligible.map(key => ({ country: countryFromKey(key), [hourParam]: hour })) };
+  }
+  const reads = (read.params as { reads?: unknown }).reads;
+  if (Array.isArray(reads)) {
+    const filtered = read.membership
+      ? reads.filter(asked => {
+          const country = (asked as { country?: string | number }).country;
+          return country !== undefined && hoverEligible(read.membership, countryKey(country), hour);
+        })
+      : reads;
+    if (read.membership && !filtered.length) return null;
+    return { ...read.params, reads: filtered.map(asked => ({ ...(asked as Record<string, unknown>), [hourParam]: hour })) };
+  }
+  if (read.countriesOf !== undefined) {
+    const shown = displayed(read.countriesOf);
+    if (!shown) return null;
+    const eligible = shown.filter(key => hoverEligible(read.membership, key, hour));
+    if (!eligible.length) return null;
+    return { ...read.params, countries: eligible.map(countryFromKey), [hourParam]: hour };
+  }
+  const countries = (read.params as { countries?: unknown }).countries;
+  if (read.membership && Array.isArray(countries)) {
+    const eligible = countries.filter(country =>
+      (typeof country === 'string' || typeof country === 'number') && hoverEligible(read.membership, countryKey(country), hour),
+    );
+    if (!eligible.length) return null;
+    return { ...read.params, countries: eligible, [hourParam]: hour };
+  }
+  return { ...read.params, [hourParam]: hour };
+}
+
 export function hoverAsks(
   plan: SourcePlan,
   hoverHour: number | null | undefined,
@@ -759,13 +814,9 @@ export function hoverAsks(
   const asks: HoverAsk[] = [];
   for (const entry of plan.entries) {
     const read = entry.read;
-    if (read.shape !== 'exact-hover' || !read.params) continue;
-    const shown = read.readsOf === undefined ? null : displayed(read.readsOf);
-    if (shown !== null && !shown?.length) continue;
-    const reads = shown ? shown.map(key => ({ country: countryFromKey(key) })) : (read.params as { reads?: unknown }).reads;
-    const params = Array.isArray(reads)
-      ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: hour })) }
-      : { ...read.params, [read.hourParam ?? 'hour']: hour };
+    if (read.shape !== 'exact-hover') continue;
+    const params = resolveHoverParams(read, hour, displayed);
+    if (!params) continue;
     asks.push({
       name: entry.name,
       key: planQueryKey(entry.source, entry.branch, read.product, params),
