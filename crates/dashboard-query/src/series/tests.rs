@@ -1965,30 +1965,16 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
 
 #[test]
 fn territory_ranking_skips_world_summary_row() {
-    use replay_data::rows::{Recorded, TerritoryTotalRow};
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("territory.battleplan");
-    let mut writer = RecordingWriter::create(&path, header()).unwrap();
-    let hour = FIRST;
-    let mut frame = DecodedFrame { hour, ..Default::default() };
-    frame.set_table(vec![
-        CountryIdentityRow { slot: 7, country_id: 7, tag: *b"GER\0", ..Default::default() },
-        CountryIdentityRow { slot: 9, country_id: 9, tag: *b"SOV\0", ..Default::default() },
-    ]);
-    frame.set_table(vec![
-        TerritoryTotalRow { slot: 7, controlled_states: Recorded::Value(40), ..Default::default() },
-        TerritoryTotalRow { slot: 9, controlled_states: Recorded::Value(60), ..Default::default() },
-        TerritoryTotalRow { slot: TerritoryTotalRow::WORLD, controlled_states: Recorded::Value(100), ..Default::default() },
-    ]);
-    writer.push_frame(&frame).unwrap();
-    writer.finish().unwrap();
-    let replay = Replay::open(&path).unwrap();
-    let query = Query::new(&replay, 1).unwrap();
+    let fixture = Fixture::new(Data::Faction, FIRST..=ITA_FROM + 10);
+    let query = fixture.query();
+    let hour = ITA_FROM + 10;
     let series = dashboard_declare::series("territory").unwrap();
     let measure = series.measure("controlledStates").unwrap();
     let line = Line::new(&query, series, measure).unwrap();
-    assert_eq!(line.rank_at(hour, 10, false).unwrap(), Ok(vec![Country::from("SOV"), Country::from("GER")]));
+    let ranked = line.rank_at(hour, 10, false).unwrap().unwrap();
+    assert!(!ranked.contains(&Country::Slot(replay_data::rows::TerritoryTotalRow::WORLD)));
+    assert_eq!(ranked, vec![Country::from("GER"), Country::from("ITA")]);
     let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour })).unwrap();
     assert_eq!(tiles.ranking.as_ref().and_then(|r| r.refused.as_deref()), None);
-    assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), vec![Country::from("SOV"), Country::from("GER")]);
+    assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), vec![Country::from("GER"), Country::from("ITA")]);
 }

@@ -1,5 +1,4 @@
 dashboard_base::register_products! {
-    FACTIONS_FACTIONLINES => crate::products::factions::FactionLines,
     DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts,
     CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown,
     PEACE_PEACEDEALS => crate::products::peace::PeaceDeals,
