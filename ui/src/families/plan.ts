@@ -272,7 +272,7 @@ export type ArtResult<TBitmap = ImageBitmap> =
   | (Extract<ArtResolution, { readonly status: 'failed' }> & { readonly retry?: () => void });
 
 export type IdentityDemand = (kind: EntityKind, key: string, atHour: DisplayedHour) => void;
-export type ArtDemand = (handle: ArtHandle) => void;
+export type ArtDemand = (handle: ArtHandle, result?: ArtResult) => void;
 
 export interface IdentityProvider {
   readonly demandOwner?: 'view';

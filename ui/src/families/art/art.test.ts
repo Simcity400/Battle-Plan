@@ -588,3 +588,27 @@ test('the lane pins exactly the painted window: scrolling 1,500 rows paused load
   assert.ok(back.every(art => cache.stateOfUrl(art.url) === 'ready'), 'scrolling back loads the first rows again');
   assert.ok(cache.cachedCount <= window + budget);
 });
+
+test('drawn flag resolution looks up by key without reparsing the choice and returns a stable reference', () => {
+  const index = new IdentityIndex({ sourceId: 's', revision: 'r', branchId: '1', content: 1 });
+  const choice: CountryFlagChoice = { keys: ['GER_fascism', 'GER', null], reasons: [null, null, null] };
+  index.setDrawnFlag('panel', choice, { url: 'flag://ger/panel' });
+  const handle = flagArtHandle(flagChoiceKey(choice), 'panel');
+  let objectLookups = 0;
+  const origGetDrawnFlag = index.getDrawnFlag.bind(index);
+  index.getDrawnFlag = (size, c) => { objectLookups++; return origGetDrawnFlag(size, c); };
+
+  const cache = new LaneArtCache({ fetchBitmap: async () => fakeBitmap() });
+  const provider = createLaneArtProvider(cache, { index });
+  const first = provider.resolve(handle);
+  const second = provider.resolve(handle);
+  assert.equal(first.status, 'ready');
+  assert.equal(first, second, 'repeated ready flag resolves keep the same reference');
+  assert.equal(artUrlForHandle(handle, index), 'flag://ger/panel');
+  const urls = new Set<string>();
+  const asks = new Map<string, ArtHandle>();
+  laneArtDemand(handle, index, undefined, urls, asks);
+  assert.deepEqual([...urls], ['flag://ger/panel']);
+  assert.equal(asks.size, 0);
+  assert.equal(objectLookups, 0, 'flag handles look up by serialized choice key without reparsing');
+});

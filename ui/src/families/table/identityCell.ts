@@ -60,6 +60,19 @@ export function resolveName(readView: BoundedReadView, kind: EntityKind, key: st
   return { value, name: value.kind === 'known' ? value.value : loading ? LOADING_NAME : key, loading, who };
 }
 
+export function resolveCountryColor(
+  readView: BoundedReadView,
+  key: string,
+  options: Pick<IdentityOptions, 'atHour' | 'boundary'> = {},
+): string | undefined {
+  const atHour = options.atHour ?? readView.hour;
+  const who = readView.who('country', key, atHour);
+  if (options.boundary && atHour >= readView.hour) {
+    options.boundary.next = Math.min(options.boundary.next, who.nextChangeAt);
+  }
+  return who.colour?.status === 'ready' ? who.colour.value : undefined;
+}
+
 export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key: string, options: IdentityOptions = {}): ResolvedIdentity {
   const { value, name, loading, who } = resolveName(readView, kind, key, options);
   return {
