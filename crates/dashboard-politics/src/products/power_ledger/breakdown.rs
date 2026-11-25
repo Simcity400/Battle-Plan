@@ -139,9 +139,23 @@ pub(super) fn unrecorded(timeline: &Timeline, holders: &Holders, country: &Count
             }
         }
         for stretch in timeline.within(first, last) {
-            for run in holders.within(country, stretch.first, stretch.last) {
-                if run.holder == Holder::Unresolved {
-                    out.push((run.first.max(stretch.first), run.last.min(stretch.last), "The country's holder was not recorded".into()));
+            match country {
+                Country::Tag(_) => {
+                    for run in holders.within(country, stretch.first, stretch.last) {
+                        if run.holder == Holder::Unresolved {
+                            out.push((run.first.max(stretch.first), run.last.min(stretch.last), "The country's holder was not recorded".into()));
+                        }
+                    }
+                }
+                Country::Slot(_) => {
+                    for run in holders.tags.values().flatten() {
+                        if run.holder == Holder::Unresolved {
+                            let (a, b) = (run.first.max(stretch.first), run.last.min(stretch.last));
+                            if a <= b {
+                                out.push((a, b, "The country's holder was not recorded".into()));
+                            }
+                        }
+                    }
                 }
             }
         }

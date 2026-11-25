@@ -243,7 +243,10 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             }
             if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
                 kept.push((line, false));
-            } else if names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)) {
+            } else if match country {
+                Country::Slot(slot) => links.slot_at(line.country, line.first_read) == Some(*slot),
+                Country::Tag(_) => names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
+            } {
                 kept.push((line, true));
             }
         }
