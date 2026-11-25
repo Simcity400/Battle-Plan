@@ -188,3 +188,22 @@ test('a settled failure keeps its object, so another widget settling does not ch
   for (let i = 0; i < 8; i++) { pass(0); pass(1); await tick(); }
   assert.strictEqual(shown[0].resolutions, record, 'an unrelated settlement leaves the record, so the lane is not rebound');
 }));
+
+test('useArtResolutions keeps NUL-delimited handle keys unambiguous across pending demand switches', () => withArtWidgets(1, async ({ useArtResolutions, use, requests, hold, release }) => {
+  const runtime = { client: {} };
+  const track = { source: { id: 's', revision: 'r' }, branch: { id: '1' } };
+  const second = { kind: 'sprite' as const, key: 'b', frame: 0 };
+  const pair = [{ kind: 'sprite' as const, key: 'a', frame: 0 }, second];
+  const merged = [{ kind: 'sprite' as const, key: `a\0${artHandleKey(second)}`, frame: 0 }];
+  hold(true);
+  const hooks = use(0);
+  hooks.render(() => useArtResolutions(runtime, track, pair, true));
+  hooks.commit();
+  await tick();
+  hooks.render(() => useArtResolutions(runtime, track, merged, true));
+  hooks.commit();
+  await tick();
+  release();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.ok(requests.some(keys => keys.includes(merged[0]!.key)), 'switching to a NUL-colliding sprite key while pending still fetches it');
+}));
