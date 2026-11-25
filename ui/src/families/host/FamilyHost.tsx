@@ -13,7 +13,6 @@ import { perfLog } from '../../shell/perf.ts';
 import type { ArtResolution } from '../art/types.ts';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
-import { planSignature } from '../broker.ts';
 import type {
   BoundedReadView,
   EntityKind,
@@ -495,7 +494,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       windowRef.current,
       requested,
       recordRef.current?.picture.hour ?? null,
-      planSignature(latestRef.current.plan),
+      latestRef.current.plan,
     );
     if (!next) return;
     windowRef.current = next;
@@ -949,7 +948,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         cur.settings,
         fields,
         installed.hour,
-        planSignature(cur.plan),
       );
       requestedWindowRef.current = installedUpdate.requested;
       if (!installedUpdate.requested) {
