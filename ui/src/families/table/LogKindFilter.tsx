@@ -30,8 +30,8 @@ export interface LogKindFilterProps {
 
 interface Filters { query: string; country: string; kind: string }
 
-function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onToggle, onSelectAll, close, filters, setFilters }:
-  LogKindFilterProps & { close: () => void; filters: Filters; setFilters: (filters: Filters) => void }) {
+function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onToggle, onSelectAll, close, filters, setFilters, notice }:
+  LogKindFilterProps & { close: () => void; filters: Filters; setFilters: (filters: Filters) => void; notice?: string | null }) {
   const allSelected = items.length > 0 && items.every(item => item.checked);
   const { query, country, kind } = filters;
   const countries = useMemo(() => [...new Set(items.flatMap(item => item.country ? [item.country] : []))].sort(), [items]);
@@ -65,6 +65,8 @@ function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onTogg
             onChange={event => setFilters({ ...filters, query: event.target.value })}
             placeholder={single ? `Search ${noun}` : `Search ${items.length} ${noun}`}
             aria-label={`Search ${noun}`}
+            aria-description={notice ?? undefined}
+            title={notice ?? undefined}
           />
         </div>
       ) : null}
@@ -129,7 +131,8 @@ export default function LogKindFilter(props: LogKindFilterProps) {
 
   if (!slot || (items.length === 0 && !single)) return null;
 
-  const list = (choices: readonly LogKindFilterItem[]) => <FilterList {...props} items={choices} filters={filters} setFilters={setFilters} close={menu.close} />;
+  const list = (choices: readonly LogKindFilterItem[], notice?: string | null) =>
+    <FilterList {...props} items={choices} filters={filters} setFilters={setFilters} notice={notice} close={menu.close} />;
   return createPortal(
     <>
       <button

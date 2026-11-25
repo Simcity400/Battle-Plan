@@ -4,7 +4,7 @@ import type { GatedHour } from '../../dashboard/regionTime';
 import type { FamilyPlanContext } from '../plan';
 import type { LogKindFilterItem } from './LogKindFilter';
 
-export type PickerList = (items: readonly LogKindFilterItem[]) => ReactNode;
+export type PickerList = (items: readonly LogKindFilterItem[], notice?: string | null) => ReactNode;
 
 export type PickerContextAtHour = Pick<FamilyPlanContext, 'track' | 'countries' | 'widget'>;
 

@@ -12,8 +12,5 @@ export default function ProductPicker({ spec, runtime, context, hour, selected, 
   const items = useMemo(() => data === undefined ? [] : spec.items(data, context, hour, selected), [spec, data, context, hour, selected]);
   const sprite = useSpriteArtwork(runtime, context.track, items.map(item => item.sprite ? { key: item.sprite, frame: 0 } : null), true);
   if (error || data === undefined) return <div role="status">{error?.message ?? 'Loading choices...'}</div>;
-  return <>
-    {data.partial && <div role="status">{data.partial}</div>}
-    {children(items.map(item => item.sprite ? { ...item, icon: sprite({ key: item.sprite, frame: 0 }) ?? undefined } : item))}
-  </>;
+  return children(items.map(item => item.sprite ? { ...item, icon: sprite({ key: item.sprite, frame: 0 }) ?? undefined } : item), data.partial);
 }
