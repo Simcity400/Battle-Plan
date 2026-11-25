@@ -22,6 +22,7 @@ use std::{
 use ts_rs::TS;
 
 pub mod at;
+pub mod breakdown;
 pub mod tiles;
 #[cfg(test)]
 mod reference;

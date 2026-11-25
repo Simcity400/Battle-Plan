@@ -155,7 +155,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     use dashboard_politics::products::{feed, national_focus, stability, technology_artwork};
     use dashboard_economy::products::{convoys, economy, trade_flow};
     use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending, production_spending_months};
-    use dashboard_air::products::aircraft_catalogue;
+    use dashboard_air::products::{air_ledger, aircraft_catalogue};
     use dashboard_players::products::{campaign_clock, player_apm};
     use dashboard_research::products::research;
     use dashboard_intelligence::products::intelligence;
@@ -479,6 +479,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         equipment_produced::EquipmentProduced::KEY | equipment_produced::EquipmentProducedTypes::KEY | equipment_produced::EquipmentProducedCountry::KEY | equipment_produced::EquipmentProducedAt::KEY | equipment_produced::EquipmentProducedRace::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve the recorded archetype spellings through the equipment database ({} types); design names localise the recorded naming operands; amounts are the recorded production totals and Rocket output.", units.equipment.len()))
+        }
+        air_ledger::breakdown::BombingDamageBreakdown::KEY => {
+            let catalogue = content.catalogue()?;
+            content_reader_key_names::buildings::read(&catalogue.content.layers).map_err(|error| error.to_string())?;
+            Ok("Building type names localise recorded lexical token spellings through the recorded buildings; state names resolve recorded custom/owner names and state templates at the hour; bombing damage is read from the recorded BuildingBombingDamage log.".into())
         }
         "raid-tally-at" => Ok("Raid availability comes from the recorded content stack's raid types; launch and success counts are the recorded Raids and RaidEnds rows.".into()),
         _ => Err("No content check is registered for this product.".into()),

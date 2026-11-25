@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'autonomy', view: 'lines', label: 'Lines', load: () => import('./autonomy') },
-  { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
   { kind: 'civil-wars', load: () => import('./civil-wars') },
   { kind: 'construction-log', load: () => import('./construction-log') },
   { kind: 'division-log', load: () => import('./division-log') },

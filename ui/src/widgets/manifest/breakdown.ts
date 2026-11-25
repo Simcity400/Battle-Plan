@@ -39,6 +39,7 @@ export const BREAKDOWN_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
   breakdownView('casualties-breakdown', () => import('../casualties-breakdown/casualtiesBreakdownProjection.ts').then(mod => mod.casualtiesBreakdown)),
   breakdownView('production-spending', () => import('../production-spending/productionSpendingProjection.ts').then(mod => mod.productionSpendingBreakdown)),
   breakdownView('equipment-losses', () => import('../equipment-losses/equipmentLossesProjection.ts').then(mod => mod.equipmentLossesBreakdown)),
+  breakdownView('bombing-damage-breakdown', () => import('../bombing-damage-breakdown/bombingBreakdownProjection.ts').then(mod => mod.bombingDamageBreakdown)),
   {
     kind: 'dockyard-spending',
     view: 'parts',
