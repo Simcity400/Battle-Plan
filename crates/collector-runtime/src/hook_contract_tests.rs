@@ -968,6 +968,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
     producer!(collector_economy::economy; [CountryExperience,ProvinceSupply,HubMotorization,DisruptedSupply,ForeignHomebases,ResourceDefinitions,CountryResources,ResourceExchanges,PurchaseContracts,CountryFuelConsumers,FuelDemandParts]);
     producer!(collector_equipment_destruction::extended::equipment_destruction; []);
     producer!(collector_experience_gains::tables; []);
+    producer!(collector_fuel_awards::tables; []);
     producer!(collector_ledger_tables::event_feed; []);
     producer!(collector_air::extended::fog; [VolunteerHosts,TheatreAreas,StationedUnits,UnitIntel,SentVolunteers]);
     producer!(collector_governance::governance; [ResearchSlots,DecisionCounts,Decisions,PreferredTactics,TechSharingGroups,TechSharingMembers,PowerBalances,PowerBalanceMembers,PowerBalanceRanges,PowerBalanceOverrides,PowerBalanceModifierBreakdowns,TimedIdeas,DecisionRandomItems]);

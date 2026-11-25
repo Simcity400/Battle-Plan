@@ -979,7 +979,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
             TableId::RailCooldowns,
         ] {
             assert!(
-                reads[id.index()].copy_calls > 0,
+                reads[id.index()].copy_calls + reads[id.index()].scattered_calls > 0,
                 "control did not read {id:?}"
             );
         }

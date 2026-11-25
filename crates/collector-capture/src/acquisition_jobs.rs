@@ -3420,7 +3420,8 @@ mod tests {
         assert!(loaned.log.spans.len() < native.log.spans.len());
         kit::assert_matches_direct(&kit::decode(&loaned), &kit::decode(&native));
         assert!(
-            loaned_reads.copy_calls < native_reads.copy_calls,
+            loaned_reads.copy_calls + loaned_reads.scattered_calls
+                < native_reads.copy_calls + native_reads.scattered_calls,
             "{loaned_reads:?} {native_reads:?}"
         );
     }
@@ -3523,7 +3524,8 @@ mod tests {
             assert_eq!(native, engine_native_memory::walk::Outcome::Unavailable { reason });
             assert_eq!(loaned, native, "alias {alias}");
             assert!(
-                loaned_reads.copy_calls < native_reads.copy_calls,
+                loaned_reads.copy_calls + loaned_reads.scattered_calls
+                    < native_reads.copy_calls + native_reads.scattered_calls,
                 "{loaned_reads:?} {native_reads:?}"
             );
         }

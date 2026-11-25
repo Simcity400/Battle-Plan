@@ -2411,6 +2411,7 @@ pub fn walk_stats_carried(
                 if batch_refusal.is_none()
                     && !slot_carried[slot]
                     && candidate_refusals[slot].iter().all(Option::is_none)
+                    && witness.quiet() == before
                     && let Some(fingerprint) = fingerprints[slot]
                 {
                     carry.remember_stats(

@@ -177,25 +177,12 @@ pub(super) struct Flight {
     thread: u32,
     admitted: bool,
 }
-thread_local! {
-    static THREAD_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-#[inline(always)]
-fn current_thread_id() -> u32 {
-    let cached = THREAD_ID.with(std::cell::Cell::get);
-    if cached != 0 {
-        return cached;
-    }
-    let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
-    THREAD_ID.with(|cell| cell.set(id));
-    id
-}
 pub(super) fn enter(pointer: usize, other: Option<usize>, footprint: Footprint) -> Option<Flight> {
     let Some(state) = WRITERS.get() else {
         unknown_receiver!();
         return None;
     };
-    let thread = current_thread_id();
+    let thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
     let mut state = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -266,15 +253,12 @@ impl Flight {
         let mut conflicted = false;
         let mut dependency = false;
         for (pointer, footprint) in pointers.into_iter().flatten() {
-            let std::collections::hash_map::Entry::Occupied(mut occupied) =
-                state.claims.entry(pointer)
-            else {
+            let Some(claim) = state.claims.get_mut(&pointer) else {
                 conflicted = true;
                 dependency = true;
                 unobserved!();
                 continue;
             };
-            let claim = occupied.get_mut();
             conflicted |= if footprint == Footprint::Identity {
                 claim.dependency_conflicted
             } else {
@@ -287,7 +271,7 @@ impl Flight {
             claim.ancestry -= usize::from(footprint == Footprint::Ancestry);
             claim.lifetime -= usize::from(footprint == Footprint::Lifetime);
             if claim.count == 0 {
-                occupied.remove();
+                state.claims.remove(&pointer);
             }
             state.ancestry -= usize::from(footprint == Footprint::Ancestry);
             state.lifetime -= usize::from(footprint == Footprint::Lifetime);

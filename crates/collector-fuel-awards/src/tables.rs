@@ -15,6 +15,8 @@ use std::{
     io,
 };
 
+pub const TABLES: [TableId; 1] = [TableId::FuelAwardRecipients];
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub entries: usize,

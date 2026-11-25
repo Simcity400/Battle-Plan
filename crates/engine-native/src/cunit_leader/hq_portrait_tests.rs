@@ -276,7 +276,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         walk_portrait_paths(&census, 0, GS, &sources, &mut rows),
         Outcome::Rows { len: 2 }
     );
-    assert_eq!((census.calls(), census.bytes()), (20, 160));
+    assert_eq!((census.calls(), census.bytes()), (19, 160));
     assert_eq!((rows[0].country, rows[0].tag_reference), (2, 1));
     assert_eq!(rows[0].tag.as_bytes(), b"GER");
     assert_eq!((rows[1].country, rows[1].tag_reference), (3, 0));
@@ -311,7 +311,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         [(2, 1), (3, 1)]
     );
     assert!(rows.iter().all(|row| row.tag.as_bytes() == b"GER"));
-    assert_eq!((census.calls(), census.bytes()), (26, 200));
+    assert_eq!((census.calls(), census.bytes()), (25, 200));
 
     struct Observed<'a> {
         source: &'a Bytes,
@@ -391,7 +391,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         Outcome::Rows { len: 2 }
     );
     assert!(rows.iter().all(|row| row.tag.as_bytes() == &heap_tag[..20]));
-    assert_eq!((census.calls(), census.bytes()), (27, 225));
+    assert_eq!((census.calls(), census.bytes()), (26, 225));
     f.put(TAGS + 0x20, &[0; 32]);
     f.put(TAGS + 0x20, b"GER");
     f.put(TAGS + 0x20 + 16, &3u64.to_le_bytes());
@@ -453,7 +453,7 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         rows.iter().map(|row| row.tag.as_bytes()).collect::<Vec<_>>(),
         [b"GER".as_slice(), b"FRA", b"GER"]
     );
-    assert_eq!((census.calls(), census.bytes()), (40, 288));
+    assert_eq!((census.calls(), census.bytes()), (39, 288));
 
     f.put(COUNTRY + ccountry::ORIGINAL_TAG, &0i32.to_le_bytes());
     assert_eq!(

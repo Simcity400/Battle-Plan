@@ -2086,7 +2086,7 @@ fn active_abilities_grow_every_row_and_token_past_the_default_storage() {
     let calls =
         |counts: engine_native_memory::read_counts::ReadCounts| counts.copy_calls + counts.scattered_calls;
     let countries = u64::from(COUNTRIES);
-    assert_eq!(calls(countries_only), 2 + 7 * countries);
+    assert_eq!(calls(countries_only), 1 + 7 * countries);
     assert_eq!(calls(with_records) - calls(countries_only), 3 * countries);
 }
 

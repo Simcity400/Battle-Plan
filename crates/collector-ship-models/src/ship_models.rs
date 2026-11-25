@@ -561,6 +561,9 @@ impl ShipStore {
     }
 
     fn accumulator(&self, (_, start, len): (usize, u32, u32)) -> &[[u8; 16]] {
+        if len == 0 {
+            return &[];
+        }
         let start = start as usize;
         &self.accumulators[start..start + len as usize]
     }
@@ -571,6 +574,11 @@ impl ShipStore {
             return false;
         }
         for (slot, array) in held.accumulators.iter_mut().zip(arrays) {
+            if array.is_empty() {
+                slot.1 = 0;
+                slot.2 = 0;
+                continue;
+            }
             let Ok(start) = u32::try_from(self.accumulators.len()) else {
                 return false;
             };

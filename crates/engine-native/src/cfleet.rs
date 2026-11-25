@@ -1019,35 +1019,31 @@ fn visit_task_forces_inner<M: Memory>(
                 let fleets_valid = fleet_page
                     .iter()
                     .all(|&fleet| fleet != 0 && fleet.checked_add(TASK_FORCES).is_some());
-                let complete_fleets = if fleets_valid && fleet_page.len() <= 64 {
-                    let copied = memory.copy_records(
+                let fleet_batch_copied = if fleets_valid && fleet_page.len() <= 64 {
+                    Some(memory.copy_records(
                         RecordSources::Pointers(fleet_page),
                         &fleet_layout,
                         &mut fleet_buf[..fleet_page.len() * fleet_stride],
-                    );
-                    copied / fleet_field_count
+                    ))
                 } else {
-                    0
+                    None
                 };
                 for (fleet_offset, &fleet) in fleet_page.iter().enumerate() {
-                    let (fleet_handle, tasks, leader) = if fleet_offset < complete_fleets {
-                        let rec = &fleet_buf
-                            [fleet_offset * fleet_stride..(fleet_offset + 1) * fleet_stride];
-                        let value = |at| u64::from_le_bytes(rec[at..at + 8].try_into().unwrap());
-                        if value(0) != fleet_vtable {
-                            return Err("fleet vtable mismatch");
-                        }
-                        let fleet_handle = value(8);
-                        if fleet_handle == 0 {
-                            return Err("non-null fleet has null handle");
-                        }
-                        if value(16) != country.pointer as u64 {
-                            return Err("fleet owner differs from country roster");
-                        }
-                        let tasks = Array::from_header(rec[24..40].try_into().unwrap(), 8)
-                            .ok_or("task force roster unreadable or invalid")?;
-                        let leader = if body_fields { value(40) } else { 0 };
-                        (fleet_handle, tasks, leader)
+                    let mut single_bytes = [0; 48];
+                    let (rec, copied) = if let Some(total_copied) = fleet_batch_copied {
+                        let complete_fleets = total_copied / fleet_field_count;
+                        let copied = if fleet_offset < complete_fleets {
+                            fleet_field_count
+                        } else if fleet_offset == complete_fleets {
+                            total_copied % fleet_field_count
+                        } else {
+                            0
+                        };
+                        (
+                            &fleet_buf
+                                [fleet_offset * fleet_stride..(fleet_offset + 1) * fleet_stride],
+                            copied,
+                        )
                     } else {
                         if fleet == 0 {
                             return Err("fleet roster pointer unreadable or null");
@@ -1055,36 +1051,36 @@ fn visit_task_forces_inner<M: Memory>(
                         fleet
                             .checked_add(TASK_FORCES)
                             .ok_or("fleet address overflow")?;
-                        let mut bytes = [0; 48];
                         let copied = memory.copy_records(
                             RecordSources::Pointers(&[fleet]),
                             &fleet_layout,
-                            &mut bytes,
+                            &mut single_bytes[..fleet_stride],
                         );
-                        let value = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-                        if copied < 1 || value(0) != fleet_vtable {
-                            return Err("fleet vtable mismatch");
-                        }
-                        if copied < 2 {
-                            return Err("fleet handle unreadable");
-                        }
-                        let fleet_handle = value(8);
-                        if fleet_handle == 0 {
-                            return Err("non-null fleet has null handle");
-                        }
-                        if copied < 3 || value(16) != country.pointer as u64 {
-                            return Err("fleet owner differs from country roster");
-                        }
-                        if copied < 4 {
-                            return Err("task force roster unreadable or invalid");
-                        }
-                        let tasks = Array::from_header(bytes[24..40].try_into().unwrap(), 8)
-                            .ok_or("task force roster unreadable or invalid")?;
-                        if body_fields && copied < 5 {
-                            return Err("fleet leader unreadable");
-                        }
-                        (fleet_handle, tasks, value(40))
+                        (&single_bytes[..fleet_stride], copied)
                     };
+                    let value = |at| u64::from_le_bytes(rec[at..at + 8].try_into().unwrap());
+                    if copied < 1 || value(0) != fleet_vtable {
+                        return Err("fleet vtable mismatch");
+                    }
+                    if copied < 2 {
+                        return Err("fleet handle unreadable");
+                    }
+                    let fleet_handle = value(8);
+                    if fleet_handle == 0 {
+                        return Err("non-null fleet has null handle");
+                    }
+                    if copied < 3 || value(16) != country.pointer as u64 {
+                        return Err("fleet owner differs from country roster");
+                    }
+                    if copied < 4 {
+                        return Err("task force roster unreadable or invalid");
+                    }
+                    let tasks = Array::from_header(rec[24..40].try_into().unwrap(), 8)
+                        .ok_or("task force roster unreadable or invalid")?;
+                    if body_fields && copied < 5 {
+                        return Err("fleet leader unreadable");
+                    }
+                    let leader = if body_fields { value(40) } else { 0 };
                     visit(Visit::Fleet {
                         country,
                         fleet,
@@ -1104,15 +1100,14 @@ fn visit_task_forces_inner<M: Memory>(
                             let tasks_valid = page
                                 .iter()
                                 .all(|&task| task != 0 && task.checked_add(check_offset).is_some());
-                            let complete_tasks = if tasks_valid && page.len() <= 64 {
-                                let copied = memory.copy_records(
+                            let task_batch_copied = if tasks_valid && page.len() <= 64 {
+                                Some(memory.copy_records(
                                     RecordSources::Pointers(page),
                                     &task_layout,
                                     &mut task_buf[..page.len() * task_stride],
-                                );
-                                copied / task_field_count
+                                ))
                             } else {
-                                0
+                                None
                             };
                             for (offset, &task) in page.iter().enumerate() {
                                 if let Some(&next) = page.get(offset + 1)
@@ -1125,59 +1120,56 @@ fn visit_task_forces_inner<M: Memory>(
                                         );
                                     }
                                 }
-                                let (id, kind) = if offset < complete_tasks {
-                                    let rec = &task_buf
-                                        [offset * task_stride..(offset + 1) * task_stride];
-                                    let value =
-                                        |at| u64::from_le_bytes(rec[at..at + 8].try_into().unwrap());
-                                    if value(0) != primary || value(8) != secondary {
-                                        return Err("task force vtable mismatch");
-                                    }
-                                    let id = value(16);
-                                    if id == 0 {
-                                        return Err("non-null task force has null handle");
-                                    }
-                                    if value(24) != fleet as u64 {
-                                        return Err("task force parent differs from fleet roster");
-                                    }
-                                    let kind = if body_fields {
-                                        u32::from_le_bytes(rec[32..36].try_into().unwrap())
+                                let mut single_bytes = [0; 36];
+                                let (rec, copied) = if let Some(total_copied) = task_batch_copied {
+                                    let complete_tasks = total_copied / task_field_count;
+                                    let copied = if offset < complete_tasks {
+                                        task_field_count
+                                    } else if offset == complete_tasks {
+                                        total_copied % task_field_count
                                     } else {
                                         0
                                     };
-                                    (id, kind)
+                                    (
+                                        &task_buf
+                                            [offset * task_stride..(offset + 1) * task_stride],
+                                        copied,
+                                    )
                                 } else {
                                     if task == 0 {
                                         return Err("task force pointer unreadable or null");
                                     }
                                     task.checked_add(check_offset)
                                         .ok_or("task force address overflow")?;
-                                    let mut bytes = [0; 36];
                                     let copied = memory.copy_records(
                                         RecordSources::Pointers(&[task]),
                                         &task_layout,
-                                        &mut bytes,
+                                        &mut single_bytes[..task_stride],
                                     );
-                                    let value = |at| {
-                                        u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
-                                    };
-                                    if copied < 2 || value(0) != primary || value(8) != secondary {
-                                        return Err("task force vtable mismatch");
-                                    }
-                                    if copied < 3 {
-                                        return Err("task force handle unreadable");
-                                    }
-                                    let id = value(16);
-                                    if id == 0 {
-                                        return Err("non-null task force has null handle");
-                                    }
-                                    if copied < 4 || value(24) != fleet as u64 {
-                                        return Err("task force parent differs from fleet roster");
-                                    }
-                                    if body_fields && copied < 5 {
-                                        return Err("task force mission unreadable");
-                                    }
-                                    (id, u32::from_le_bytes(bytes[32..36].try_into().unwrap()))
+                                    (&single_bytes[..task_stride], copied)
+                                };
+                                let value =
+                                    |at| u64::from_le_bytes(rec[at..at + 8].try_into().unwrap());
+                                if copied < 2 || value(0) != primary || value(8) != secondary {
+                                    return Err("task force vtable mismatch");
+                                }
+                                if copied < 3 {
+                                    return Err("task force handle unreadable");
+                                }
+                                let id = value(16);
+                                if id == 0 {
+                                    return Err("non-null task force has null handle");
+                                }
+                                if copied < 4 || value(24) != fleet as u64 {
+                                    return Err("task force parent differs from fleet roster");
+                                }
+                                if body_fields && copied < 5 {
+                                    return Err("task force mission unreadable");
+                                }
+                                let kind = if body_fields {
+                                    u32::from_le_bytes(rec[32..36].try_into().unwrap())
+                                } else {
+                                    0
                                 };
                                 select(task);
                                 visit(Visit::TaskForce(

@@ -362,7 +362,8 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     } else {
         None
     };
-    if copied != TASK_FIELDS.len() {
+    let local_modifiers_copied = copied == TASK_FIELDS.len();
+    if copied < TASK_FIELDS.len() - 1 {
         return Err("task force operands unreadable");
     }
     if u64_at(&bytes, 112) != vtable(base, cnaval_mission::VTABLE_RVA)?
@@ -419,6 +420,9 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
         let region = u64::from_le_bytes(region_bytes);
         row.region = engine_native_parts::cstrategic_region::id(memory, base, region as usize)?
             .ok_or("task-force location has no strategic region")?;
+        if !local_modifiers_copied {
+            return Err("modifier accumulator header unreadable or invalid");
+        }
         let local_empty = Array::from_header(
             bytes[128..144].try_into().expect("local modifier header"),
             engine_native_parts::modifier_entry::STRIDE,
@@ -922,22 +926,26 @@ impl PresenceMap {
                     }
                 }
             }
-            let complete = if batch_ok {
-                memory.copy_records(
+            let batch_complete = if batch_ok {
+                Some(memory.copy_records(
                     RecordSources::Pointers(&addrs[..count]),
                     &PRESENCE_ENTRY_LAYOUT,
                     &mut raw[..count * PRESENCE_STRIDE],
-                )
+                ))
             } else {
-                0
+                None
             };
             for i in 0..count {
-                out[first + i] = if i < complete {
-                    let entry: [u8; PRESENCE_STRIDE] = raw
-                        [i * PRESENCE_STRIDE..(i + 1) * PRESENCE_STRIDE]
-                        .try_into()
-                        .expect("presence entry width");
-                    self.resolve_from_home(memory, slots[first + i], homes[i], entry)?
+                out[first + i] = if let Some(complete) = batch_complete {
+                    if i < complete {
+                        let entry: [u8; PRESENCE_STRIDE] = raw
+                            [i * PRESENCE_STRIDE..(i + 1) * PRESENCE_STRIDE]
+                            .try_into()
+                            .expect("presence entry width");
+                        self.resolve_from_home(memory, slots[first + i], homes[i], entry)?
+                    } else {
+                        return Err("presence entry unreadable");
+                    }
                 } else {
                     self.presence(memory, slots[first + i])?
                 };

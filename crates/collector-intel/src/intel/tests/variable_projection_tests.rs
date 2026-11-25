@@ -707,7 +707,7 @@ fn complete_no_baseline_preserves_interned_variable_ids() {
     );
 
     let replaced = vec![(
-        Scope::Country(1),
+        cvariables::Scope::Country(1),
         Some(11),
         vec![("beta", 20), ("ephemeral_next", 77)],
     )];

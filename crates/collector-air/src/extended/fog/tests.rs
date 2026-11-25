@@ -619,8 +619,8 @@ fn radar_split_copy_matches_direct_walk() {
     let anchor = TableId::RadarCoverage;
     let mut expected = read_accounting::ZERO;
     expected[anchor.index()] = ReadCounts {
-        copy_calls: 17,
-        scattered_calls: 4,
+        copy_calls: 15,
+        scattered_calls: 5,
         record_calls: 0,
         plan_calls: 0,
         spans: 27,
