@@ -31,8 +31,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
       date: logDateCell(row.hour, row.key.startsWith('combat:') ? 'by' : undefined),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
-      place: { value: notRecorded('Ocean name not recorded') },
-      shipsSunk: logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined), icLost: logPairCell(row.icLost, 'IC lost', colors),
+      shipsSunk: logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined),
       ships: logPairCell(row.ships, 'Ships'), status,
     },
   };
@@ -46,7 +45,6 @@ interface Options {
 
 const sprites: Readonly<Record<string, string>> = {
   shipsSunk: 'GFX_naval_combat_icon',
-  icLost: 'GFX_industrial_capacity_icon',
   ships: 'GFX_naval_region_window_ship_icon',
 };
 

@@ -1,17 +1,15 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { columnsControl } from '../../families/settingsControls.ts';
-import { LOG_TABLE_BASE, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn, logPairColumn, logStatusColumn } from '../../families/table/logHelpers.ts';
+import { LOG_TABLE_BASE, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPairColumn, logStatusColumn } from '../../families/table/logHelpers.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const NAVAL_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ sortable: true, minWidth: 84, maxWidth: 90, widest: ['by 30 Aug'] }),
-  logKindColumn({ minWidth: 36 }),
-  logCountryColumn({ label: '', minWidth: 55, grow: 0 }),
+  logDateColumn({ sortable: true, minWidth: 80, maxWidth: 90, widest: ['by 30 May', 'by 30 Aug'] }),
+  logKindColumn({ minWidth: 26 }),
+  logCountryColumn({ label: '', grow: 0 }),
   logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary', grow: 6 }),
-  logPlaceColumn({ label: 'Ocean', minWidth: 134, maxWidth: 134, grow: 0, narrow: 'hide', textTone: 'muted' }),
-  logPairColumn('shipsSunk', 'Ships sunk', 'total'),
-  logPairColumn('icLost', 'IC lost', 'hide'),
+  { ...logPairColumn('shipsSunk', 'Ships sunk', 'total'), minWidth: 88 },
   logPairColumn('ships', 'Ships', 'hide'),
   logStatusColumn({ label: 'Result', widest: ['Defender won'], narrow: 'hide' }),
 ];

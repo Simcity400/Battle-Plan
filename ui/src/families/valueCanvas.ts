@@ -72,7 +72,7 @@ export function drawHatchRect(
 export function drawFormattedValue(
   ctx: ValueCanvasContext,
   formatted: FormattedValue,
-  bounds: { readonly left: number; readonly right: number; readonly middle: number; readonly endAligned: boolean; readonly muted?: boolean },
+  bounds: { readonly left: number; readonly right: number; readonly middle: number; readonly endAligned: boolean; readonly muted?: boolean; readonly compactPartial?: boolean },
   theme: ValueCanvasTheme,
   measure: (text: string, font: string) => number,
   fit: (text: string, font: string, maxWidth: number) => string,
@@ -121,7 +121,7 @@ export function drawFormattedValue(
     const wordWidth = measure(PARTIAL_LABEL, smallFont);
     const tabSpan = PARTIAL_TAB_GAP + PARTIAL_TAB_WIDTH;
     const wordSpan = PARTIAL_WORD_GAP + wordWidth;
-    const showWord = valueWidth + tabSpan + wordSpan <= available;
+    const showWord = !bounds.compactPartial && valueWidth + tabSpan + wordSpan <= available;
     const total = valueWidth + tabSpan + (showWord ? wordSpan : 0);
     const startX = endAligned ? Math.max(left, right - total) : left;
     const maxValueWidth = Math.max(1, available - tabSpan - (showWord ? wordSpan : 0));

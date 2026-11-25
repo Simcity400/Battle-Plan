@@ -80,7 +80,6 @@ pub struct NavalBattleLogRow {
     pub countries_hour: [i32; 2],
     pub read_hour: i32,
     pub ships_sunk: [Option<u32>; 2],
-    pub ic_lost: [Option<f64>; 2],
     pub ships: [Option<u32>; 2],
     pub result: NavalBattleStatus,
 }
@@ -116,7 +115,7 @@ const SHOWN: [u8; 4] = [
     NavalBattleStatus::AttackerWon as u8,
     NavalBattleStatus::DefenderWon as u8,
 ];
-const SORT_COLUMNS: &[&str] = &["shipsSunk", "icLost", "ships"];
+const SORT_COLUMNS: &[&str] = &["shipsSunk", "ships"];
 type Steps<T> = Vec<(i32, T)>;
 
 fn push<T: PartialEq>(steps: &mut Steps<T>, hour: i32, value: T) {
@@ -235,7 +234,8 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                 continue;
             };
             let first = step.hour.max(span.first).max(first_hour);
-            let last = battle.get(i + 1).map_or(span.last, |s| s.hour - 1);
+            let next_battle = battle.get(i + 1);
+            let last = next_battle.map_or(span.last, |s| s.hour - 1);
             if first > last {
                 continue;
             }
@@ -260,10 +260,6 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
             hours.sort_unstable();
             hours.dedup();
             for hour in hours {
-                if at(places, hour).is_none() && complete(provinces, hour) {
-                    line.end_live(hour);
-                    continue;
-                }
                 let mut ships = [complete(participants, hour).then_some(0); 2];
                 let mut countries = [Vec::new(), Vec::new()];
                 for (key, reads) in roster {
@@ -295,7 +291,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                     },
                 );
             }
-            if last < last_hour && !battle.get(i + 1).and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
+            if last < last_hour && !next_battle.and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
                 line.end_live(last + 1);
             }
         }
@@ -468,7 +464,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             roles: roles.into(),
             subjects: Box::default(),
             states: states.into(),
-            sort_keys: [SortKey::dated_numbers(sunk), SortKey::number(None), SortKey::dated_numbers(ships)].into(),
+            sort_keys: [SortKey::dated_numbers(sunk), SortKey::dated_numbers(ships)].into(),
             text: Box::default(),
             payload: line,
         });
@@ -542,7 +538,6 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
                 countries: read.countries.clone(),
                 countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
                 read_hour: *at,
-                ic_lost: [None; 2],
             }
         })
         .collect();
@@ -623,4 +618,27 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
         }
         reply(&prepared, &holders, &params, hour.min(last))
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_battle_stops_running_at_its_deletion_step() {
+        let battle = vec![
+            Step { hour: 10, cells: Some(Box::new([Cell::Number(10), Cell::Number(0), Cell::Number(0)])) },
+            Step { hour: 15, cells: Some(Box::new([Cell::Number(10), Cell::Number(1), Cell::Number(0)])) },
+            Step { hour: 20, cells: None },
+        ];
+        let battles = History { keys: vec![(7, battle)], ..History::default() };
+        let span = Stretch { run: 1, first: 10, last: 40, join: dashboard_query::timeline::Join::Start };
+        let mut lines = BTreeMap::new();
+        live_lines(&mut lines, span, span.last, &RunLinks::default(), &battles, &History::default(), &History::default());
+        let reads = &lines[&Battle::Live(7, 10)].reads;
+        assert_eq!(reads.iter().map(|(hour, read)| (*hour, read.result)).collect::<Vec<_>>(), [
+            (10, NavalBattleStatus::Ongoing), (15, NavalBattleStatus::Ongoing), (20, NavalBattleStatus::Unknown),
+        ]);
+        assert_eq!(reads.last().unwrap().1.detail_hour, Some(19));
+    }
 }

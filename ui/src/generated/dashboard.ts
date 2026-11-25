@@ -2427,7 +2427,7 @@ name: string | null, missing: string | null, };
 export type LandBattleTerrainReply = { provinces: Array<LandTerrainName>, warnings: Array<string>, };
 export type NavalBattlesTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, sort?: OccurrenceSort, limit: number, };
 export type NavalBattlesTailReply = { branchId: string, total: string, offset: string, rows: Array<NavalBattleLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
-export type NavalBattleLogRow = { key: string, hour: number, detailId: string, detailHour: number | null, province: number | null, countries: [Array<number>, Array<number>], countriesHour: [number, number], readHour: number, shipsSunk: [number | null, number | null], icLost: [number | null, number | null], ships: [number | null, number | null], result: NavalBattleStatus, };
+export type NavalBattleLogRow = { key: string, hour: number, detailId: string, detailHour: number | null, province: number | null, countries: [Array<number>, Array<number>], countriesHour: [number, number], readHour: number, shipsSunk: [number | null, number | null], ships: [number | null, number | null], result: NavalBattleStatus, };
 export type NavalBattleStatus = "ongoing" | "attackerWon" | "defenderWon" | "unknown";
 export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalBattleDetailRequest>, };
 export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };

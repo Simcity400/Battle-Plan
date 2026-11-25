@@ -48,7 +48,7 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
 test('the followed naval table shows the supplying read, partial sinkings and unrecorded sides', () => {
   const head: NavalBattlesTailReply = { branchId: '1', total: '1', offset: '0', missing: [], warnings: [], nextChange: null, rows: [{
     key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
-    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], icLost: [null, null], ships: [3, 0], result: 'ongoing',
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], ships: [3, 0], result: 'ongoing',
   }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]) });
@@ -58,7 +58,6 @@ test('the followed naval table shows the supplying read, partial sinkings and un
   assert.equal(row.cells.shipsSunk!.value.kind, 'notRecorded');
   assert.equal(row.cells.ships!.value.kind, 'known');
   assert.equal(row.cells.ships!.pair![1].kind, 'zero');
-  assert.equal(row.cells.place!.value.kind, 'notRecorded');
   assert.deepEqual(row.cells.country!.flags!.map(flag => flag.tag), ['?', '?']);
   assert.equal(row.live, true);
   assert.deepEqual(JSON.parse(row.tooltipScrollId!), ['test', 'combat:9:10', 15]);

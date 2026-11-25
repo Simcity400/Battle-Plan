@@ -366,7 +366,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     for (const [i, value] of cell.pair.entries()) {
       drawFormattedValue(ctx, formatValueState(value, paintModel.format), {
         left: i === 0 ? left : midpoint, right: i === 0 ? midpoint - CELL_INSET : right,
-        middle: bar ? middle - 3 : middle, endAligned: true,
+        middle: bar ? middle - 3 : middle, endAligned: true, compactPartial: true,
       }, theme, measure, fit);
     }
     if (bar) drawSplitBar(ctx, left, y + rowHeight - 6, right - left, 3, bar, theme);
