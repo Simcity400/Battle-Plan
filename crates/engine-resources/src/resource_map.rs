@@ -1374,17 +1374,19 @@ impl<M: Memory> Walk<'_, M> {
                     .memory
                     .modifier_accumulator_value(acc_addr, LOCAL_RESOURCES_FACTOR)
                 {
-                    batch.local_factors[i] = Some(if cached.present {
-                        effective_raw(
-                            self.memory,
-                            self.base,
-                            LOCAL_RESOURCES_FACTOR,
-                            cached.raw,
-                            &self.local_resources,
-                        )
-                    } else {
-                        Ok(0)
-                    });
+                    batch.local_factors[i] = Some(cached.and_then(|value| {
+                        if value.present {
+                            effective_raw(
+                                self.memory,
+                                self.base,
+                                LOCAL_RESOURCES_FACTOR,
+                                value.raw,
+                                &self.local_resources,
+                            )
+                        } else {
+                            Ok(0)
+                        }
+                    }));
                     continue;
                 }
                 base_rows[base_count] = i;

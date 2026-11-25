@@ -1513,9 +1513,9 @@ fn empty_convoy_lists_defer_vtable_resolution_and_batch_faults_never_retry() {
     country_mod.put(0x30000 + cstate::COUNTRY_MODIFIERS, &[0; 17]);
     country_mod.u64(0x30000 + cstate::COUNTRY_MODIFIERS, bucket_table as u64);
     country_mod.u32(0x30000 + cstate::COUNTRY_MODIFIERS + 12, 0);
-    country_mod.u8(0x30000 + cstate::COUNTRY_MODIFIERS + 16, 1);
+    country_mod.put(0x30000 + cstate::COUNTRY_MODIFIERS + 16, &[1]);
     country_mod.put(bucket_table, &[0; cstate::COUNTRY_MODIFIER_STRIDE]);
-    country_mod.u8(bucket_table + 4, 1);
+    country_mod.put(bucket_table + 4, &[1]);
     country_mod.u32(bucket_table + 8, 1);
     country_mod.array(bucket_table + 0x20, 0, 0);
     country_mod.bytes.retain(|&address, _| {
