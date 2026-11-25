@@ -1,7 +1,7 @@
-import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import type { GatedHour } from '../../dashboard/regionTime';
-import type { GroupSelection, SeriesRankReply, SeriesRankRow } from '../../generated/dashboard';
+import { rankSource } from '../seriesRank.ts';
+import { validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import type { SeriesRankReply, SeriesRankRow } from '../../generated/dashboard';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
@@ -10,15 +10,6 @@ import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment } from './model.ts';
 
 const ALL_POPULATION_TOP = 10_000;
-
-interface SeriesRaceBase {
-  readonly branchId: string;
-  readonly family: { readonly kind: string; readonly measure: string };
-  readonly measures: readonly string[];
-  readonly top: number | null;
-  readonly countries: readonly string[];
-  readonly group: GroupSelection | null;
-}
 
 export interface SeriesRaceBaseOptions {
   readonly top: number | null;
@@ -47,14 +38,6 @@ export interface SeriesRaceProjectConfig {
   readonly parts?: (reply: SeriesRankReply, row: SeriesRankRow) => SeriesRaceParts;
 }
 
-function seriesRaceParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
-  const cfg = base as unknown as SeriesRaceBase;
-  const asked = { branchId: cfg.branchId, family: cfg.family, hour, ...(cfg.measures.length ? { measures: cfg.measures } : {}) };
-  if (cfg.top != null) return { ...asked, top: cfg.top };
-  if (cfg.group) return { ...asked, group: cfg.group };
-  return cfg.countries.length ? { ...asked, countries: cfg.countries.map(countryFromKey) } : null;
-}
-
 export function seriesRaceSelection(ctx: FamilyPlanContext): SeriesRaceBaseOptions {
   return {
     top: ctx.countries.top,
@@ -71,35 +54,9 @@ export function seriesRaceSources(ctx: FamilyPlanContext, config: SeriesRaceConf
     : ctx.countries.all || group
       ? { mode: 'population', form: 'all' }
       : { mode: 'keyed', keys: ctx.countries.tags };
-  const base: SeriesRaceBase = {
-    branchId: ctx.branch.id,
-    family: config.family,
-    measures: config.measures ?? [],
-    top,
-    countries: top == null && !group ? ctx.countries.tags : [],
-    group,
-  };
   return {
     owner: `${config.kind}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${config.family.kind}:${config.family.measure}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-rank',
-        exactProduct: 'series-rank',
-        followQuery: null,
-        params: base as unknown as Readonly<Record<string, unknown>>,
-        buildExactParams: seriesRaceParams,
-        dynamicKeys: ['hour', 'countries'],
-        provenInterval: rankProvenInterval,
-        validate: validateRankReply,
-      },
-    }],
+    entries: rankSource(ctx, 'main', config.family, coverage, ctx.countries.tags, top, group, config.measures),
   };
 }
 

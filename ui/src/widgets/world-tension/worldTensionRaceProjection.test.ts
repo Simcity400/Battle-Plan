@@ -64,7 +64,7 @@ test('world-tension race keeps the product order, keys each row by its recorded 
   assert.throws(() => view.who('country', 'GER', displayedHour(501)), FutureDataError);
 });
 
-test('a group race sends the group to the product and changes at the hour a country enters it', async () => {
+test('a group race follows the group and shows its ranked members', async () => {
   const entry = BARS_VIEWS.find(view => view.kind === 'world-tension' && view.view === 'race')!;
   const spec = await entry.loadSpec();
   assert.equal(spec.projection, worldTensionRaceProjection);
@@ -79,17 +79,15 @@ test('a group race sends the group to the product and changes at the hour a coun
   const plan = declaration.sources(ctx, { following: true, staticSpan: null });
   assert.deepEqual(plan.entries.map(e => e.name), ['main'], 'one read: the rank, never a followed member list beside it');
   const read = plan.entries[0]!.read;
-  assert.ok(read.shape === 'point' && read.followQuery === null);
-  if (read.shape !== 'point') return;
-  const asked = read.buildExactParams?.(read.params!, 500 as never, 'static') as { group?: unknown; countries?: unknown; top?: unknown };
+  assert.ok(read.shape === 'point' && read.followQuery);
+  assert.deepEqual(read.followQuery, { panel: 'series-rank', ...read.params });
+  const asked = read.params!;
   assert.deepEqual([asked.group, asked.countries, asked.top], [{ type: 'faction', id: '42', membership: 'hour' }, undefined, undefined]);
   const reply = {
     branchId: '1', hour: 500, from: 321, until: 599, refused: null,
     measures: [{ name: 'contribution', decimals: 5 }],
     rows: [{ country: 'GER', slot: 7, readings: [reading('GER', 500, '4525000')] }],
   };
-  assert.deepEqual(read.provenInterval?.(reply, 500), [321, 599], 'ITA joins at 600, so the race is asked again then');
-  assert.deepEqual(read.provenInterval?.(reply, 600), [600, 600], 'a reply never stands for an hour past its membership');
   const options = declaration.projectionOptions(ctx);
   const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
   assert.deepEqual(worldTensionRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);

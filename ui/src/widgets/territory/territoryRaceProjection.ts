@@ -1,6 +1,6 @@
-import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import type { GatedHour } from '../../dashboard/regionTime';
+import { rankSource } from '../../families/seriesRank.ts';
+import { validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { measureOf, ruleOf, territoryMeasureLabel, territoryNote, territorySeriesMeasure, type TerritoryMeasure, type TerritoryRule } from '../../dashboard/territoryMeasure.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import {
@@ -19,7 +19,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { valueFromRawBigInt, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { GroupSelection } from '../../generated/dashboard';
 
 const ALL_POPULATION_TOP = 10_000;
 
@@ -34,27 +33,11 @@ export interface TerritoryRaceOptions {
   readonly factions: FactionTotalsRaceOptions;
 }
 
-interface TerritoryExactBase {
-  readonly branchId: string;
-  readonly measure: string;
-  readonly top: number | null;
-  readonly group: GroupSelection | null;
-  readonly tags: readonly string[];
-}
-
 function unitFor(measure: TerritoryMeasure): string {
   if (measure === 'provinces') return 'Provinces';
   if (measure === 'victoryPoints') return 'Victory points';
   if (measure === 'area') return 'Map cells';
   return 'States';
-}
-
-function buildTerritoryExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
-  const cfg = base as unknown as TerritoryExactBase;
-  const asked = { branchId: cfg.branchId, family: { kind: 'territory', measure: cfg.measure }, hour };
-  if (cfg.top != null) return { ...asked, top: cfg.top };
-  if (cfg.group) return { ...asked, group: cfg.group };
-  return cfg.tags.length ? { ...asked, countries: cfg.tags.map(countryFromKey) } : null;
 }
 
 function projectTerritoryCountries(readView: BoundedReadView, options: TerritoryRaceOptions): BarsModel {
@@ -152,35 +135,10 @@ function territoryRaceSources(ctx: FamilyPlanContext): SourcePlan {
     : ctx.countries.all || group
       ? { mode: 'population', form: 'all' }
       : { mode: 'keyed', keys: tags };
-  const exactBase: TerritoryExactBase = {
-    branchId: ctx.branch.id,
-    measure: seriesMeasure,
-    top,
-    group,
-    tags,
-  };
   const emptyExplicit = top == null && !group && !tags.length;
   return {
     owner: `territory:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${seriesMeasure}`,
-    entries: emptyExplicit ? [] : [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-rank',
-        exactProduct: 'series-rank',
-        followQuery: null,
-        params: exactBase as unknown as Readonly<Record<string, unknown>>,
-        buildExactParams: buildTerritoryExactParams,
-        dynamicKeys: ['hour'],
-        provenInterval: rankProvenInterval,
-        validate: validateRankReply,
-      },
-    }],
+    entries: rankSource(ctx, 'main', { kind: 'territory', measure: seriesMeasure }, coverage, tags, top, group),
     allowEmptyFollow: emptyExplicit,
   };
 }

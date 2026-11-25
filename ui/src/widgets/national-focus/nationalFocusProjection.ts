@@ -99,29 +99,28 @@ export const nationalFocusDeclaration: CardWidgetDeclaration<Record<string, neve
   countries: { mode: 'single', choose: 'Choose a country to see its national focus.' },
   keyByBranch: true,
   jumpToDate: true,
-  sources: ctx => ({
-    owner: `national-focus:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`,
-    entries: ctx.countryTag
-      ? [{
-          name: 'main',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
-          read: {
-            shape: 'point',
-            channel: 'followed',
-            coverage: { mode: 'keyed', keys: [ctx.countryTag] },
-            product: 'focus-card',
-            followQuery: null,
-            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            provenInterval: data => {
-              const reply = data as FocusCardReply | undefined;
-              return reply ? [reply.hour, reply.validThrough] : null;
+  sources: ctx => {
+    const params = { branchId: ctx.branch.id, country: ctx.countryTag ? countryFromKey(ctx.countryTag) : null };
+    return {
+      owner: `national-focus:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`,
+      entries: ctx.countryTag
+        ? [{
+            name: 'main',
+            source: ctx.track.source,
+            branch: ctx.branch.id,
+            offset: ctx.track.axisOffset,
+            read: {
+              shape: 'point',
+              channel: 'panel',
+              coverage: { mode: 'keyed', keys: [ctx.countryTag] },
+              product: 'focus-card',
+              followQuery: { panel: 'focus-card', ...params },
+              params,
             },
-          },
-        }]
-      : [],
-  }),
+          }]
+        : [],
+    };
+  },
   projection: nationalFocusProjection,
   projectionOptions: () => ({}),
 };

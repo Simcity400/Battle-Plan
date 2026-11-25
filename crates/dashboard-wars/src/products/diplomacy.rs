@@ -269,6 +269,7 @@ fn ranks_top(params: &DiplomaticRelationsParams) -> bool {
 pub struct DiplomacyContext {
     looks: Option<Arc<dashboard_world::products::styles::BranchLooks>>,
     factions: Arc<Vec<dashboard_world::products::groups::FactionGroup>>,
+    faction_edges: Vec<i32>,
     warnings: Vec<String>,
     groups: GroupsAt,
 }
@@ -277,7 +278,7 @@ impl AtHour for DiplomaticRelations {
     const KEY: &'static str = "diplomatic-relations";
     const TITLE: &'static str = "Diplomatic relations";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name/membership runs from branch history context at at.hour");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DiplomaticRelationsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, order, group];
     type Reply = DiplomaticRelationsReply;
@@ -334,25 +335,45 @@ impl AtHour for DiplomaticRelations {
         ]
     }
 
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage == 1 { at.context.groups.valid_through(params.group.as_ref(), at.hour) } else { i32::MAX };
+        (Self::reads_in(params, owner, stage, frame, at), through)
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let group = at.context.groups.valid_through(params.group.as_ref(), at.hour);
+        let look = at.context.looks.as_ref().map_or(i32::MAX, |looks| looks.next_change(at.hour).saturating_sub(1));
+        let edges = &at.context.faction_edges;
+        let faction = edges.get(edges.partition_point(|&edge| edge <= at.hour)).map_or(i32::MAX, |edge| edge - 1);
+        group.min(look).min(faction)
+    }
+
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings: Vec::new(), groups: GroupsAt::default() })
+        Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), faction_edges: Vec::new(), warnings: Vec::new(), groups: GroupsAt::default() })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
         let mut warnings = Vec::new();
         let groups = GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?;
         let Some(branch) = params.branch_id.parse::<u64>().ok() else {
-            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings, groups });
+            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), faction_edges: Vec::new(), warnings, groups });
         };
         let Ok(query) = dashboard_base::queries::query(source, branch) else {
-            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings, groups });
+            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), faction_edges: Vec::new(), warnings, groups });
         };
         let looks = Some(Arc::new(dashboard_world::products::styles::BranchLooks::load(source, &query.timeline, load, &mut warnings)?));
         let factions = match dashboard_world::products::groups::shared(source, &query, load, &AtomicBool::new(false)) {
             Ok(reply) => Arc::new(reply.factions.clone()),
             Err(_) => Arc::new(Vec::new()),
         };
-        Ok(DiplomacyContext { looks, factions, warnings, groups })
+        let mut faction_edges: Vec<i32> = factions.iter().flat_map(|faction| {
+            faction.names.iter().map(|run| (run.first_hour, run.last_hour))
+                .chain(faction.members.iter().map(|run| (run.first_hour, run.last_hour)))
+                .flat_map(|(first, last)| [Some(first), last.checked_add(1)].into_iter().flatten())
+        }).collect();
+        faction_edges.sort_unstable();
+        faction_edges.dedup();
+        Ok(DiplomacyContext { looks, factions, faction_edges, warnings, groups })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

@@ -138,7 +138,7 @@ fn main() -> io::Result<()> {
     let hourly = flags == ["--hourly-check"];
     if !flags.is_empty() && !hourly && !audit && !capacity { return Err(io::Error::other("unknown option")); }
     let path = PathBuf::from(recording);
-    let source = Source::open(SourceKey { source_id: "native-bench".into(), revision: dashboard_core::protocol::replay_revision(&path)? }, path.clone(), &false.into())?;
+    let source = std::sync::Arc::new(Source::open(SourceKey { source_id: "native-bench".into(), revision: dashboard_core::protocol::replay_revision(&path)? }, path.clone(), &false.into())?);
     engine_executable::executable_tables::enter(source.tables());
     let load = LoadContext { content: Some(ContentOptions {
         options: content_reader_layers::ResolveOptions { game_dir: game.into(), user_dir: user.into(), cache_dir: cache.into() },

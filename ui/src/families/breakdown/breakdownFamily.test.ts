@@ -14,7 +14,6 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
-import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, firstRow, installRecordingCanvas } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
@@ -414,7 +413,13 @@ test('territory asks the product for the chosen countries or the group itself, n
     { ...base, group: { type: 'humans', membership: 'ever' } }, 'the chosen membership is sent as chosen, never changed into another');
 });
 
-test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {
+function assertFollowsProduct(read: unknown): void {
+  const point = read as { channel: string; product: string; params: Readonly<Record<string, unknown>>; followQuery: unknown };
+  assert.equal(point.channel, 'panel');
+  assert.deepEqual(point.followQuery, { panel: point.product, ...point.params }, 'the product is followed with the parameters it is asked with');
+}
+
+test('an at-hour breakdown follows its product, so the product decides when a reply stops standing', () => {
   const ctx = {
     countryTag: 'AAA',
     countrySubject: countryKey(1),
@@ -422,12 +427,7 @@ test('a breakdown reply proves the stretch it stands through, so a quiet hundred
     branch: { id: '1', firstHour: START },
   } as unknown as Parameters<typeof ppSpendingBreakdown.sources>[0];
   const entry = ppSpendingBreakdown.sources(ctx, { width: 800, height: 300 } as Parameters<typeof ppSpendingBreakdown.sources>[1]).entries[0]!;
-  const quiet = reply(spent(), { hour: START + 10, through: START + 110 });
-  const proof = resolvePlaybackProvenInterval(entry.read, quiet, { anchorHour: START + 10, span: null }, START + 10_000);
-  assert.deepEqual(proof, [START + 10, START + 110], 'one reply stands for every hour up to its next change');
-  let asks = 1;
-  for (let hour = START + 11; hour <= START + 110; hour++) if (hour > proof[1]) asks++;
-  assert.equal(asks, 1);
+  assertFollowsProduct(entry.read);
 });
 
 test('the art asked for is the flags the laid-out rows draw, found once per layout, never a collapsed child and never again for a hover', async () => {
@@ -505,7 +505,7 @@ test('R3-S1/R3-S7: recorded corrections and partial totals lay out and hover wit
   assert.ok(JSON.stringify(partialTip).includes('Some costs were not recorded'), 'partial part keeps its reason on hover');
 });
 
-test('casualties breakdown resolves slot-keyed enemies at their live or ended hour, leaves unnamed slots neutral, and proves quiet stretches', () => {
+test('casualties breakdown resolves slot-keyed enemies at their live or ended hour, leaves unnamed slots neutral, and follows its product', () => {
   const asked: { key: string; atHour: number }[] = [];
   const identity: IdentityProvider = {
     resolve(kind, key, atHour) {
@@ -564,11 +564,7 @@ test('casualties breakdown resolves slot-keyed enemies at their live or ended ho
     branch: { id: '1', firstHour: START },
   } as unknown as Parameters<typeof casualtiesBreakdown.sources>[0];
   const entry = casualtiesBreakdown.sources(ctx, { width: 800, height: 300 } as Parameters<typeof casualtiesBreakdown.sources>[1]).entries[0]!;
-  const proof = resolvePlaybackProvenInterval(entry.read, reply, { anchorHour: START + 100, span: null }, START + 10_000);
-  assert.deepEqual(proof, [START + 100, START + 200]);
-  let asks = 1;
-  for (let hour = START + 101; hour <= START + 200; hour++) if (hour > proof[1]) asks++;
-  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+  assertFollowsProduct(entry.read);
 });
 
 test('territory share resolves slot-keyed countries, keeps Rest of the world neutral, refuses occupied rule, and subscribes via panel follow', () => {
@@ -640,7 +636,7 @@ test('territory share resolves slot-keyed countries, keeps Rest of the world neu
   assert.equal(territoryShare.sources(occupiedCtx, { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]).entries.length, 0);
 });
 
-test('production, dockyard and military factory spending share one at-hour product, keep quiet stretches to one request, and separate owners by scope', () => {
+test('production, dockyard and military factory spending share one at-hour product, follow it, and separate owners by scope', () => {
   const spendingReply: ProductionSpendingReply = {
     from: START,
     hour: START + 40,
@@ -698,11 +694,7 @@ test('production, dockyard and military factory spending share one at-hour produ
   assert.deepEqual((airPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'airPurposes' });
   assert.deepEqual((landPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'landPurposes' });
 
-  const proof = resolvePlaybackProvenInterval(dockPlan.entries[0]!.read, spendingReply, { anchorHour: START + 40, span: null }, START + 10_000);
-  assert.deepEqual(proof, [START + 40, START + 140]);
-  let asks = 1;
-  for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
-  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+  assertFollowsProduct(dockPlan.entries[0]!.read);
 });
 
 test('S6: at-hour breakdowns key plan owner and product request by recorded country slot across tag changes', () => {
@@ -739,7 +731,7 @@ test('S6: at-hour breakdowns key plan owner and product request by recorded coun
   }
 });
 
-test('equipment losses projects exact fractions, separates landSource owners, and keeps quiet stretches to one request', () => {
+test('equipment losses projects exact fractions, separates landSource owners, and follows its product', () => {
   const lossReply: EquipmentLossesReply = {
     from: START,
     hour: START + 40,
@@ -781,14 +773,10 @@ test('equipment losses projects exact fractions, separates landSource owners, an
   assert.equal(logPlan.entries[0]!.read.shape, 'point');
   assert.deepEqual(logPlan.entries[0]!.read.params, { branchId: '1', country: 7, landSource: 'combatLog' });
 
-  const proof = resolvePlaybackProvenInterval(destPlan.entries[0]!.read, lossReply, { anchorHour: START + 40, span: null }, START + 10_000);
-  assert.deepEqual(proof, [START + 40, START + 140]);
-  let asks = 1;
-  for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
-  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+  assertFollowsProduct(destPlan.entries[0]!.read);
 });
 
-test('bombing damage breakdown projects taken/dealt, keeps slivers non-zero, separates direction owners, and keeps quiet stretches to one request', () => {
+test('bombing damage breakdown projects taken/dealt, keeps slivers non-zero, separates direction owners, and follows its product', () => {
   const takenReply: BombingDamageBreakdownReply = {
     from: START,
     hour: START + 40,
@@ -836,9 +824,5 @@ test('bombing damage breakdown projects taken/dealt, keeps slivers non-zero, sep
   assert.equal(dealtPlan.entries[0]!.read.shape, 'point');
   assert.deepEqual(dealtPlan.entries[0]!.read.params, { branchId: '1', country: 7, direction: 'dealt' });
 
-  const proof = resolvePlaybackProvenInterval(takenPlan.entries[0]!.read, takenReply, { anchorHour: START + 40, span: null }, START + 10_000);
-  assert.deepEqual(proof, [START + 40, START + 140]);
-  let asks = 1;
-  for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
-  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+  assertFollowsProduct(takenPlan.entries[0]!.read);
 });

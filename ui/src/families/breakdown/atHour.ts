@@ -33,6 +33,7 @@ export function breakdownAtHourSource(
 ): SourcePlan {
   const subject = ctx.countrySubject;
   const extra = Object.keys(params).length ? `:${JSON.stringify(params)}` : '';
+  const query = { branchId: ctx.branch.id, country: subject ? countryFromKey(subject) : null, ...params };
   return {
     owner: `${product}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${subject ?? ''}${extra}`,
     entries: subject ? [{
@@ -42,16 +43,11 @@ export function breakdownAtHourSource(
       offset: ctx.track.axisOffset,
       read: {
         shape: 'point',
-        channel: 'followed',
+        channel: 'panel',
         coverage: { mode: 'population', form: 'parts' },
         product,
-        followQuery: null,
-        params: { branchId: ctx.branch.id, country: countryFromKey(subject), ...params },
-        hourParam: 'hour',
-        provenInterval: (data, hour) => {
-          const reply = data as BreakdownAtHour;
-          return reply.hour <= hour && hour <= reply.through ? [reply.hour, reply.through] : [hour, hour];
-        },
+        followQuery: { panel: product, ...query },
+        params: query,
         validate,
       },
     }] : [],

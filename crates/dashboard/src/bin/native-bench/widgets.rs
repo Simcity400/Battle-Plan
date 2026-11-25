@@ -129,7 +129,7 @@ fn rank(identity: &Identity, name: &'static str, product: &str, mut params: Valu
     Ok(Widget { name, declared: follow.declared()?, reader: Reader::Ranking { hook, result, query, previous: Vec::new() } })
 }
 
-pub fn page(source: &Source, load: &LoadContext, identity: &Identity, tag: &str) -> io::Result<Vec<Widget>> {
+pub fn page(source: &Arc<Source>, load: &LoadContext, identity: &Identity, tag: &str) -> io::Result<Vec<Widget>> {
     let product = |name: &'static str, mut params: Value| {
         params["panel"] = name.into();
         panel(name, dated_panel_of(source, load, &params).expect("registered dated product"))
