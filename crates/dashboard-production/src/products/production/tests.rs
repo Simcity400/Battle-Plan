@@ -149,11 +149,13 @@ fn a_breakdown_is_the_clicked_line_and_its_operands_at_the_clicked_hour_alone() 
     let unread = breakdown(&source, "1", 1_160).unwrap();
     let kept = unread.group.as_ref().expect("the witnessed efficiency total is kept when the country's modifiers are unread");
     assert_eq!(kept.total_raw.as_deref(), Some("5000000"));
-    assert!(kept.parts.iter().all(|part| part.unknown.as_deref() == Some("The country's production modifiers were not recorded at this hour")));
+    const UNREAD_MODIFIERS: &str = "Country production modifiers not available at this hour: country modifiers unread in the fixture";
+    assert!(kept.parts.iter().all(|part| part.unknown.as_deref() == Some(UNREAD_MODIFIERS)), "the table's own reason names why: {:?}", kept.parts);
+    assert!(unread.warnings.iter().any(|warning| warning == UNREAD_MODIFIERS), "and the kept total carries it as a warning: {:?}", unread.warnings);
     assert_eq!(unread.missing, None);
     assert_eq!(factor(&source, "1", "output", 1_160).unwrap().group.and_then(|group| group.total_raw), Some("200000".into()), "the recorded IC rate is the line's own");
     let start = factor(&source, "1", "start", 1_160).unwrap();
-    assert_eq!((start.group, start.missing.as_deref()), (None, Some("The country's production modifiers were not recorded at this hour")));
+    assert_eq!((start.group, start.missing.as_deref()), (None, Some(UNREAD_MODIFIERS)));
     assert!(breakdown(&source, "1", UNREAD.0).is_err(), "the lines are unread at the clicked hour: nothing from another hour stands in");
 }
 
