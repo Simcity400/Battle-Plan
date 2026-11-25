@@ -198,19 +198,19 @@ pub fn start_held(
     })()
     .is_some();
     let (country, taken, country_instance) = if second_ok {
-        let countries = match memory.authenticated_countries(base, game_state) {
-            Some(_) => ccountry::Reader::new(memory, base, game_state)?,
-            None => {
-                let countries = Array::from_header(countries_header, 8)
-                    .ok_or("country array unreadable or invalid")?;
-                let links = Array::from_header(links_header, 4)
-                    .ok_or("country links unreadable or invalid")?;
-                ccountry::Reader::from_arrays(memory, base, game_state, [countries, links])?
-            }
+        let authenticated = memory.authenticated_countries(base, game_state).is_some();
+        let countries = if authenticated {
+            ccountry::Reader::new(memory, base, game_state)?
+        } else {
+            let countries = Array::from_header(countries_header, 8)
+                .ok_or("country array unreadable or invalid")?;
+            let links = Array::from_header(links_header, 4)
+                .ok_or("country links unreadable or invalid")?;
+            ccountry::Reader::from_arrays(memory, base, game_state, [countries, links])?
         };
         let (country, taken) = match held {
             Some(held) if held.owner == owner => (held.country, true),
-            _ => {
+            _ if authenticated => {
                 let id = u32::from_le_bytes(owner_id);
                 let resolved = match countries.verify_canonical_pointer(owner, id) {
                     Some(country) => country,
@@ -218,6 +218,7 @@ pub fn start_held(
                 };
                 (resolved, false)
             }
+            _ => (countries.of_pointer(owner)?, false),
         };
         if u64::from_le_bytes(backlink) != status as u64 {
             return Err("fuel award owner backlink mismatch");
@@ -569,7 +570,7 @@ pub fn unit_with_name(
                         ))
                 })
         } else {
-            pointer.checked_add(0x258).and_then(|name_addr| {
+            pointer.checked_add(TASK_FORCE_NAME).and_then(|name_addr| {
                 let mut name_header = [0_u8; msvc_string::STRIDE];
                 (memory.copy_scattered(
                     [pointer, owner_addr, name_addr],
@@ -594,7 +595,9 @@ pub fn unit_with_name(
                     if let Some((header, cell, taken)) =
                         registry.0.first_cell(memory, base, handle)?
                     {
-                        if let Some(name_at) = name_ptr.checked_add(0x60) {
+                        if let Some(name_at) =
+                            name_ptr.checked_add(engine_native::cname_group_member::CACHED_NAME)
+                        {
                             let mut bucket = [0_u8; 24];
                             let mut desc = [0_u8; msvc_string::STRIDE];
                             if memory.copy_scattered([cell, name_at], &mut [&mut bucket, &mut desc])
@@ -630,7 +633,7 @@ pub fn unit_with_name(
                         msvc_string::Descriptor::from_header(memory, at, desc).map(StoredName)
                     }
                     None => name_ptr
-                        .checked_add(0x60)
+                        .checked_add(engine_native::cname_group_member::CACHED_NAME)
                         .ok_or("fuel recipient name address overflow")
                         .and_then(|at| msvc_string::Descriptor::read(memory, at).map(StoredName)),
                 }
@@ -852,6 +855,8 @@ impl StoredName {
         self.0.copy(memory, output)
     }
 }
+const TASK_FORCE_NAME: usize = 0x258;
+
 pub fn stored_name(
     memory: &impl Memory,
     pointer: usize,
@@ -863,10 +868,10 @@ pub fn stored_name(
             pointer,
             engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER,
         )? as usize)
-            .checked_add(0x60)
+            .checked_add(engine_native::cname_group_member::CACHED_NAME)
             .ok_or("fuel recipient name address overflow")?,
         2 => pointer
-            .checked_add(0x258)
+            .checked_add(TASK_FORCE_NAME)
             .ok_or("fuel recipient name address overflow")?,
         _ => return Err("fuel recipient has no native unit name"),
     };

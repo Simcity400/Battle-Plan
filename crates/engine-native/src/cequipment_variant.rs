@@ -949,6 +949,8 @@ pub struct VariantStatFingerprint {
     pub definition: usize,
     pub classifier_flags: u64,
     pub equipment_token: u32,
+    pub dlc_mask: Option<u32>,
+    pub thrust_factor: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -965,7 +967,21 @@ struct VariantStatMeta {
 }
 
 impl VariantStatMeta {
-    fn fingerprint(self) -> VariantStatFingerprint {
+    fn fingerprint(
+        self,
+        memory: &impl Memory,
+        base: usize,
+        sites: &mut WitnessSites,
+    ) -> VariantStatFingerprint {
+        let (dlc_mask, thrust_factor) =
+            if (self.classifier_flags & AIRCRAFT_DESIGNER_PLANE_MASK) != 0 {
+                (
+                    sites.dlc_mask(memory, base),
+                    sites.thrust_factor(memory, base),
+                )
+            } else {
+                (None, None)
+            };
         VariantStatFingerprint {
             upgrades: self.upgrades,
             modules: self.modules,
@@ -976,6 +992,8 @@ impl VariantStatMeta {
             definition: self.definition,
             classifier_flags: self.classifier_flags,
             equipment_token: self.equipment_token,
+            dlc_mask,
+            thrust_factor,
         }
     }
 
@@ -2145,6 +2163,7 @@ pub fn walk_stats_carried(
             let mut candidate_values = [[None; STAT_LANE_COUNT]; BATCH];
             let mut candidate_refusals = [[None; STAT_LANE_COUNT]; BATCH];
             let mut slot_carried = [false; BATCH];
+            let mut fingerprints: [Option<VariantStatFingerprint>; BATCH] = [None; BATCH];
             if pre_refusal.is_none()
                 && let Ok(before_token) = before
             {
@@ -2165,11 +2184,13 @@ pub fn walk_stats_carried(
                         }
                         continue;
                     };
+                    let fingerprint = meta.fingerprint(memory, base, &mut sites);
+                    fingerprints[slot] = Some(fingerprint);
                     if let Some((values, refusals)) = carry.stats_carried(
                         batch_start + slot,
                         source,
                         before_token,
-                        meta.fingerprint(),
+                        fingerprint,
                         &raw_batch[slot],
                         &lane_readable[slot],
                     ) {
@@ -2389,12 +2410,13 @@ pub fn walk_stats_carried(
                 carry.read(len, source);
                 if batch_refusal.is_none()
                     && !slot_carried[slot]
-                    && let Some(meta) = metas[slot]
+                    && candidate_refusals[slot].iter().all(Option::is_none)
+                    && let Some(fingerprint) = fingerprints[slot]
                 {
                     carry.remember_stats(
                         len,
                         source,
-                        meta.fingerprint(),
+                        fingerprint,
                         &raw_batch[slot],
                         &lane_readable[slot],
                         candidate_values[slot],

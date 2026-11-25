@@ -133,8 +133,7 @@ impl GovernanceRequest {
         })
     }
 
-    pub(crate) fn restore_buildings(&mut self, part: Box<BuildingsPart>, ok: bool) -> u64 {
-        let part = *part;
+    pub(crate) fn restore_buildings(&mut self, part: BuildingsPart, ok: bool) -> u64 {
         self.buildings = part.buildings;
         self.building_store = part.store;
         self.buildings_lent = false;

@@ -210,6 +210,7 @@ pub struct Variants {
     organisation_holds: Vec<DesignHeld>,
     organisations_complete: bool,
     all_carried: bool,
+    unique_ids: Vec<u64>,
     organisation_bytes: usize,
     dictionary: bonus_snapshots::Snapshot,
     context: design_context::Snapshot,
@@ -238,6 +239,7 @@ impl Variants {
             organisation_holds: Vec::new(),
             organisations_complete: false,
             all_carried: false,
+            unique_ids: Vec::new(),
             organisation_bytes: 0,
             daily_released: false,
             last_capacity: *capacities,
@@ -261,6 +263,7 @@ impl Variants {
             organisation_holds: Vec::new(),
             organisations_complete: false,
             all_carried: false,
+            unique_ids: Vec::new(),
             organisation_bytes: 0,
             daily_released: false,
             last_capacity: Capacities::default(),
@@ -299,6 +302,7 @@ impl Variants {
             + self.upgrades.allocated_bytes()
             + self.definition_bytes.allocated_bytes()
             + self.organisation_holds.capacity() * std::mem::size_of::<DesignHeld>()
+            + self.unique_ids.capacity() * std::mem::size_of::<u64>()
             + self.organisation_bytes
             + self.nested_bytes
     }
@@ -318,7 +322,9 @@ impl Variants {
         self.upgrades.release();
         self.definition_bytes.release();
         self.organisation_holds = Vec::new();
+        self.unique_ids = Vec::new();
         self.organisations_complete = false;
+        self.all_carried = false;
         self.organisation_bytes = 0;
         self.nested_bytes = 0;
         self.dictionary = None;
@@ -630,7 +636,10 @@ impl Variants {
         let census = (force_full && recovery_carry)
             .then(design_changes::held::census)
             .flatten();
-        let mut all_carried = !force_full && held.is_some();
+        let mut all_carried = !force_full
+            && held
+                .as_ref()
+                .is_some_and(|held| source.is_ok_and(|rows| held.len() == rows.len()));
         capture_text(
             &mut self.definitions,
             &mut self.definition_bytes,
@@ -678,7 +687,8 @@ impl Variants {
                 },
             );
         }
-        self.all_carried = all_carried;
+        self.all_carried = all_carried
+            && source.is_ok_and(|rows| unique_source_ids(&mut self.unique_ids, rows));
         ticks[3] = elapsed(begin);
         if !details {
             let skipped = Outcome::Unavailable {
@@ -768,6 +778,19 @@ static STAT_CACHE: std::sync::OnceLock<
 
 fn stat_cache() -> &'static std::sync::RwLock<std::collections::HashMap<u64, CachedStats>> {
     STAT_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+pub(super) fn unique_source_ids(
+    scratch: &mut Vec<u64>,
+    sources: &[cequipment_variant::RegistryRow],
+) -> bool {
+    scratch.clear();
+    if engine_allocation::reserve(scratch, sources.len()).is_err() {
+        return false;
+    }
+    scratch.extend(sources.iter().map(|row| row.id));
+    scratch.sort_unstable();
+    !scratch.windows(2).any(|pair| pair[0] == pair[1])
 }
 
 pub(super) fn release_stat_cache() {

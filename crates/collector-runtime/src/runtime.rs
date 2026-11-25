@@ -5581,12 +5581,14 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             last_freed = freed;
             reclaim_now = true;
         }
-        let reclaim_interval = if followup_reclaims > 0 {
-            Duration::from_millis(750)
-        } else {
-            Duration::from_secs(8)
+        let reclaim_interval = |followups: u8| {
+            if followups > 0 {
+                Duration::from_millis(750)
+            } else {
+                Duration::from_secs(8)
+            }
         };
-        if reclaim_now || last_reclaim.elapsed() >= reclaim_interval {
+        if reclaim_now || last_reclaim.elapsed() >= reclaim_interval(followup_reclaims) {
             last_reclaim = Instant::now();
             if reclaim_now {
                 followup_reclaims = followup_reclaims.max(1);
@@ -5632,12 +5634,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         let _span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
         unsafe { phases.span(Phase::Wait) };
-        let next_reclaim = last_reclaim
-            + if followup_reclaims > 0 {
-                Duration::from_millis(750)
-            } else {
-                Duration::from_secs(3)
-            };
+        let next_reclaim = last_reclaim + reclaim_interval(followup_reclaims);
         let wake_at = next_pass.min(next_reclaim);
         std::thread::park_timeout(wake_at.saturating_duration_since(Instant::now()));
     }

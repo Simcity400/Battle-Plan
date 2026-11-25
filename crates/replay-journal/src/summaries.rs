@@ -39,6 +39,12 @@ impl Summaries {
         Ok(Self::with_registry(level, replay_recording::summaries::registry()?))
     }
 
+    pub fn within(level: i32, tables: usize) -> io::Result<Self> {
+        let mut registry = replay_recording::summaries::registry()?;
+        registry.retain(|&(table, _)| table < tables);
+        Ok(Self::with_registry(level, registry))
+    }
+
     pub(crate) fn with_registry(level: i32, registry: Vec<(usize, Shape)>) -> Self {
         use engine_allocation::labels;
         let owners = registry

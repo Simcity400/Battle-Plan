@@ -666,7 +666,7 @@ fn complete_no_baseline_preserves_interned_variable_ids() {
     let in0 = cap0.variables_inputs(
         cap0.variables.outcome,
         VariableBaselines::default(),
-        Some((1, BranchId(1), Hour(0))),
+        Some((1, 1, 0)),
         &mut scratch,
     );
     let _ = encoder.encode_bytes(variables_frame(0, in0), true).unwrap();
@@ -677,7 +677,7 @@ fn complete_no_baseline_preserves_interned_variable_ids() {
     let in1 = cap1.variables_inputs(
         cap1.variables.outcome,
         shared_baselines(&encoder, 1, false),
-        Some((1, BranchId(1), Hour(1))),
+        Some((1, 1, 1)),
         &mut scratch,
     );
     let _ = encoder.encode_bytes(variables_frame(1, in1), false).unwrap();
@@ -686,7 +686,7 @@ fn complete_no_baseline_preserves_interned_variable_ids() {
     let in2 = cap2.variables_inputs(
         cap2.variables.outcome,
         VariableBaselines::default(),
-        Some((1, BranchId(1), Hour(2))),
+        Some((1, 1, 2)),
         &mut scratch,
     );
     let TableInput::SharedComplete(rows) = &in2[1] else {
@@ -705,4 +705,36 @@ fn complete_no_baseline_preserves_interned_variable_ids() {
             (3, b"aaa_new".as_slice()),
         ]
     );
+
+    let replaced = vec![(
+        Scope::Country(1),
+        Some(11),
+        vec![("beta", 20), ("ephemeral_next", 77)],
+    )];
+    let cap3 = captured(&replaced);
+    let in3 = cap3.variables_inputs(
+        cap3.variables.outcome,
+        VariableBaselines::default(),
+        Some((1, 1, 3)),
+        &mut scratch,
+    );
+    let TableInput::SharedComplete(names3) = &in3[1] else {
+        panic!("complete rotation must emit SharedComplete ScriptVariableNames");
+    };
+    let TableRows::ScriptVariableNames(names3) = names3.as_ref() else {
+        panic!("expected ScriptVariableNames");
+    };
+    let pairs3: Vec<(u32, &[u8])> = names3.iter().map(|r| (r.id, r.name.as_slice())).collect();
+    assert_eq!(
+        pairs3,
+        vec![(0, b"beta".as_slice()), (1, b"ephemeral_next".as_slice())]
+    );
+    let TableInput::SharedComplete(vals3) = &in3[2] else {
+        panic!("complete rotation must emit SharedComplete ScriptVariableValues");
+    };
+    let TableRows::ScriptVariableValues(vals3) = vals3.as_ref() else {
+        panic!("expected ScriptVariableValues");
+    };
+    let val_pairs3: Vec<(u32, i64)> = vals3.iter().map(|r| (r.var_id, r.value_raw)).collect();
+    assert_eq!(val_pairs3, vec![(0, 20), (1, 77)]);
 }

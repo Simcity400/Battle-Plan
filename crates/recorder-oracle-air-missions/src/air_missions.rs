@@ -1975,6 +1975,7 @@ mod tests {
         }));
         *frame.tables[TableId::AirGroundCrews.index()] =
             TableView::Complete(TableRows::AirGroundCrews(vec![supply_only]));
+        let context = super::super::country_context(&frame).unwrap();
         let mut report = Report::default();
         ground_crews(&frame, &saved, &context, &mut report).unwrap();
         assert!(report.differences.is_empty());
@@ -1984,6 +1985,7 @@ mod tests {
             TableView::Complete(TableRows::AirGroundCrews(vec![
                 replay_data::rows::AirGroundCrewRow::without_supply(7, 42, None),
             ]));
+        let context = super::super::country_context(&frame).unwrap();
         let mut report = Report::default();
         assert!(ground_crews(&frame, &saved, &context, &mut report).is_err());
     }

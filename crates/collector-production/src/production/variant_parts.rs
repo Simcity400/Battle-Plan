@@ -174,7 +174,10 @@ impl Variants {
         let census = (full && recovery_carry)
             .then(design_changes::held::census)
             .flatten();
-        let mut all_carried = !full && held.is_some();
+        let mut all_carried = !full
+            && held
+                .as_ref()
+                .is_some_and(|held| held.len() == sources.len());
         for source in sources {
             let entry = held
                 .as_ref()
@@ -187,6 +190,9 @@ impl Variants {
         }
         let census = census.map(design_changes::held::Census::release);
         drop(held);
+        if all_carried && !super::unique_source_ids(&mut self.unique_ids, sources) {
+            all_carried = false;
+        }
         let mut carried_all = carried_all.into_iter();
         let mut old_stats = std::mem::take(&mut self.stats.rows).into_iter();
         let mut old_holds = std::mem::take(&mut self.organisation_holds).into_iter();

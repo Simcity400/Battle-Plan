@@ -13,6 +13,9 @@ fn cache() -> MutexGuard<'static, HashMap<u64, Entry>> {
 }
 pub(in super::super) struct Certified(MutexGuard<'static, HashMap<u64, Entry>>);
 impl Certified {
+    pub(in super::super) fn len(&self) -> usize {
+        self.0.len()
+    }
     pub(in super::super) fn get(
         &self,
         source: &native::RegistryRow,

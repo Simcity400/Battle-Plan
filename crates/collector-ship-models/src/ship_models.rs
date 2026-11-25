@@ -2618,41 +2618,19 @@ impl Captured {
     fn project(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         if self.split > 1 && self.terminal_failure.is_none() {
             let parts = &self.extra[..self.split - 1];
-            let mut refs: Vec<(&cship::ModelRow, u64)> = Vec::new();
+            let mut refs: Vec<&cship::ModelRow> = Vec::new();
             if reserve(&mut refs, self.len).is_err() {
                 return crate::table_conversion::unavailable("collector allocation failed").into();
             }
             let own_len = self.part_len.min(self.rows.rows.len());
-            refs.extend(
-                self.rows.rows[..own_len]
-                    .iter()
-                    .enumerate()
-                    .map(|(at, row)| (row, self.row_versions.get(at).copied().unwrap_or(0))),
-            );
+            refs.extend(self.rows.rows[..own_len].iter());
             for part in parts {
                 let len = part.part_len.min(part.rows.rows.len());
-                refs.extend(
-                    part.rows.rows[..len]
-                        .iter()
-                        .enumerate()
-                        .map(|(at, row)| (row, part.row_versions.get(at).copied().unwrap_or(0))),
-                );
+                refs.extend(part.rows.rows[..len].iter());
             }
-            Self::project_slice(
-                projection,
-                self.outcomes()[0],
-                &refs,
-                |entry| entry.0,
-                |_, entry| entry.1,
-            )
+            Self::project_slice(projection, self.outcomes()[0], &refs, |entry| *entry)
         } else {
-            Self::project_slice(
-                projection,
-                self.outcomes()[0],
-                &self.rows.rows[..],
-                |row| row,
-                |at, _| self.row_versions.get(at).copied().unwrap_or(0),
-            )
+            Self::project_slice(projection, self.outcomes()[0], &self.rows.rows[..], |row| row)
         }
     }
 
@@ -2661,49 +2639,35 @@ impl Captured {
         outcome: Outcome,
         rows: &[R],
         row_of: impl Fn(&R) -> &cship::ModelRow,
-        version_of: impl Fn(usize, &R) -> u64,
     ) -> TableInput {
         #[derive(Clone, Copy, PartialEq, Eq)]
-        enum ShipLedger {
-            Versioned {
-                version: u64,
-                roster_ordinal: u32,
-            },
-            Full {
-                variant: u64,
-                model_number: i32,
-                formation_flags: u64,
-                roster_ordinal: u32,
-                definition_valid: u8,
-                carrier_air_base: u64,
-                maximum_strength: i64,
-                anti_air_base: i64,
-                maximum_organisation: i64,
-                has_criticals: Option<u32>,
-                air_capacity_kind: Option<u32>,
-                positive_equipment_flags: u64,
-                subunit_index: Option<i32>,
-                hull_variant: Option<cship::HullVariantInputs>,
-                naval_power: Option<[i64; 5]>,
-            },
+        struct ShipLedger {
+            variant: u64,
+            model_number: i32,
+            formation_flags: u64,
+            roster_ordinal: u32,
+            definition_valid: u8,
+            carrier_air_base: u64,
+            maximum_strength: i64,
+            anti_air_base: i64,
+            maximum_organisation: i64,
+            has_criticals: Option<u32>,
+            air_capacity_kind: Option<u32>,
+            positive_equipment_flags: u64,
+            subunit_index: Option<i32>,
+            hull_variant: Option<cship::HullVariantInputs>,
+            naval_power: Option<[i64; 5]>,
         }
         ledger_table::<tables::ShipModels, _, ShipLedger>(
             projection,
             outcome,
             rows,
             |entry| u128::from(row_of(entry).ship),
-            |at, entry, record| {
+            |_at, entry, record| {
                 let r = row_of(entry);
-                let version = version_of(at, entry);
-                if version != 0 {
-                    return Some(ShipLedger::Versioned {
-                        version,
-                        roster_ordinal: r.roster_ordinal,
-                    });
-                }
                 record.bytes(Some(r.hull_sprite.as_bytes()));
                 record.bytes(Some(r.fallback_sprite.as_bytes()));
-                Some(ShipLedger::Full {
+                Some(ShipLedger {
                     variant: r.variant,
                     model_number: r.model_number,
                     formation_flags: r.formation_flags,

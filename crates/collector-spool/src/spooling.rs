@@ -10597,7 +10597,7 @@ mod tests {
                 .unwrap(),
             TableRows::ResearchTechnologies(vec![
                 tech(1, 10, 100),
-                changed.clone(),
+                changed,
                 tech(2, 10, 350),
                 tech(2, 40, 450),
             ])

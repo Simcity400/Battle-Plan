@@ -568,28 +568,38 @@ struct Planned<'a> {
 
 fn visible_files(planned: &[Planned<'_>], excluded: impl Fn(usize) -> bool) -> Vec<Vec<usize>> {
     let mut visible = vec![Vec::new(); planned.len()];
-    let mut higher_exact: HashSet<&[u8]> = HashSet::new();
+    let mut higher_folder_folded: HashSet<Vec<u8>> = HashSet::new();
+    let mut higher_archive_exact: HashSet<&[u8]> = HashSet::new();
     let mut higher_replaces: Vec<Vec<u8>> = Vec::new();
     for (position, plan) in planned.iter().enumerate().rev() {
         if excluded(plan.index) {
             continue;
         }
+        let is_archive = matches!(plan.layer.source, LayerSource::Archive(_));
         let kept = &mut visible[position];
         kept.reserve(plan.files.len());
         for (file_index, (path, _)) in plan.files.iter().enumerate() {
-            if higher_exact.contains(path.as_slice()) {
+            if is_archive && higher_archive_exact.contains(path.as_slice()) {
                 continue;
             }
-            if !higher_replaces.is_empty() {
+            if !higher_folder_folded.is_empty() || !higher_replaces.is_empty() {
                 let lower = path.to_ascii_lowercase();
-                if higher_replaces.iter().any(|root| below(&lower, root)) {
+                if higher_folder_folded.contains(&lower)
+                    || higher_replaces.iter().any(|root| below(&lower, root))
+                {
                     continue;
                 }
             }
             kept.push(file_index);
         }
-        for (path, _) in &plan.files {
-            higher_exact.insert(path.as_slice());
+        if is_archive {
+            for (path, _) in &plan.files {
+                higher_archive_exact.insert(path.as_slice());
+            }
+        } else {
+            for (path, _) in &plan.files {
+                higher_folder_folded.insert(path.to_ascii_lowercase());
+            }
         }
         for replace in &plan.layer.replace_paths {
             higher_replaces.push(replace.to_ascii_lowercase());
@@ -1256,9 +1266,9 @@ mod tests {
             dlc: Vec::new(),
             mods: vec![replay_identity::Mod {
                 id: "overhaul".into(),
-                name: "Overhaul".into(),
+                display_name: "Overhaul".into(),
+                declared_version: "1.0".into(),
                 hash: mod_hash,
-                replace_paths: vec!["events".into()],
             }],
             coverage_policy: 5,
             language: "l_english".into(),
@@ -1311,6 +1321,82 @@ mod tests {
         )
         .unwrap();
         assert_eq!(withheld_stats.files, 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_over_folder_keeps_lower_folder_file_for_case_folded_lookups() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_facts_archive_case_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let zip_path = root.join("mod.zip");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut vanilla = super::super::fixtures::folder_of(
+            "vanilla",
+            &base,
+            &[("common/foo.txt", b"vanilla folder payload")],
+        );
+        vanilla.role = LayerRole::Vanilla;
+        let zip = super::super::fixtures::raw_zip(&[(b"common/foo.txt", 0, b"mod archive payload")]);
+        std::fs::write(&zip_path, zip).unwrap();
+        let mut archive = super::super::fixtures::archive_layer("archive_mod", &zip_path, &[]);
+        archive.role = LayerRole::Mod;
+        let vanilla_hash = super::super::layer_hash(&vanilla.hashes).unwrap();
+        let mod_hash = super::super::layer_hash(&archive.hashes).unwrap();
+        let layers = ResolvedLayers::from_test_layers(vec![vanilla, archive]).unwrap();
+        let identity = Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash,
+            dlc: Vec::new(),
+            mods: vec![replay_identity::Mod {
+                id: "archive_mod".into(),
+                display_name: "Archive Mod".into(),
+                declared_version: "1.0".into(),
+                hash: mod_hash,
+            }],
+            coverage_policy: 5,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [0; 32],
+            verification: replay_identity::Verification::Unchecked,
+        };
+        let source = Source {
+            layers: &layers,
+            withheld: BTreeMap::new(),
+        };
+        let (bytes, stats) = write(
+            &source,
+            &identity,
+            Err("none".to_owned()),
+            &cache,
+            &|| false,
+            |_| Err("none".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(stats.files, 2);
+        let opened = Arc::new(Pack::open(Arc::new(bytes), 0, stats.pack_bytes).unwrap());
+        let options = ResolveOptions {
+            game_dir: root.join("empty_game"),
+            user_dir: root.join("empty_user"),
+            cache_dir: cache.clone(),
+        };
+        std::fs::create_dir_all(&options.game_dir).unwrap();
+        std::fs::create_dir_all(&options.user_dir).unwrap();
+        let playback = super::super::playback(&identity, Ok(opened), &options).unwrap();
+        assert_eq!(
+            playback.layers.read("common/foo.txt").unwrap(),
+            b"mod archive payload"
+        );
+        assert_eq!(
+            playback.layers.read("common/FOO.txt").unwrap(),
+            b"vanilla folder payload"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

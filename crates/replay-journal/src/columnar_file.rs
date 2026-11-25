@@ -100,7 +100,7 @@ mod hours {
                 kinds.truncate(held);
             }
             let writers = writers(columns, &current);
-            Self::with_schema(file, settings, kinds, writers, Summaries::new(level)?)
+            Self::with_schema(file, settings, kinds, writers, Summaries::within(level, columns.len())?)
         }
 
         pub(crate) fn with_summaries(file: FileWriter<W>, level: i32, writers: Writers, summaries: Summaries) -> io::Result<Self> {

@@ -995,6 +995,7 @@ impl<'a> VariableReuse<'a> {
             return None;
         }
         let Some(snapshot) = store.held.snapshot.shallow_clone() else {
+            store.held.clear();
             return None;
         };
         store.quiet = true;

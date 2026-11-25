@@ -3781,13 +3781,24 @@ impl Captured {
             .iter()
             .map(|&i| self.variable_scope(i).unwrap().2.len())
             .sum();
+        let mut live_existing = Vec::new();
+        if !interner.names.is_empty() {
+            if reserve_exact(&mut live_existing, interner.names.len()).is_err() {
+                return all_unavailable("script variable allocation failed");
+            }
+            live_existing.resize(interner.names.len(), false);
+        }
         let mut added: Vec<&[u8]> = Vec::new();
         let mut seen_new: FastSet<&[u8]> = FastSet::default();
         for &i in &order {
             let (_, _, entries, names) = self.variable_scope(i).unwrap();
             for entry in entries {
                 let name = &names[entry.name_start..entry.name_start + entry.name_len];
-                if !interner.by_name.contains_key(name) && !seen_new.contains(name) {
+                if let Some(&id) = interner.by_name.get(name) {
+                    if let Some(flag) = live_existing.get_mut(id as usize) {
+                        *flag = true;
+                    }
+                } else if !seen_new.contains(name) {
                     if reserve(&mut added, 1).is_err()
                         || engine_allocation::reserve_set(&mut seen_new, 1).is_err()
                     {
@@ -3799,23 +3810,58 @@ impl Captured {
             }
         }
         added.sort_unstable();
-        if u32::try_from(interner.names.len().saturating_add(added.len())).is_err() {
+        let has_dead = live_existing.iter().any(|&alive| !alive);
+        let live_existing_count = if has_dead {
+            live_existing.iter().filter(|&&alive| alive).count()
+        } else {
+            interner.names.len()
+        };
+        if u32::try_from(live_existing_count.saturating_add(added.len())).is_err() {
             return all_unavailable("script variable name count exceeds its wire width");
         }
-        for &name in &added {
-            if interner.intern(name).is_none() {
-                interner.rollback();
+        let mut previous_interner: Option<VariableInterner> = None;
+        if has_dead {
+            let mut compacted = VariableInterner::default();
+            let total = live_existing_count + added.len();
+            if reserve_exact(&mut compacted.names, total).is_err()
+                || engine_allocation::reserve_map(&mut compacted.by_name, total).is_err()
+            {
                 return all_unavailable("script variable allocation failed");
             }
+            for (name, alive) in interner.names.iter().zip(&live_existing) {
+                if *alive && compacted.intern(name).is_none() {
+                    return all_unavailable("script variable allocation failed");
+                }
+            }
+            for &name in &added {
+                if compacted.intern(name).is_none() {
+                    return all_unavailable("script variable allocation failed");
+                }
+            }
+            previous_interner = Some(std::mem::replace(interner, compacted));
+        } else {
+            for &name in &added {
+                if interner.intern(name).is_none() {
+                    interner.rollback();
+                    return all_unavailable("script variable allocation failed");
+                }
+            }
         }
+        let restore_interner = |interner: &mut VariableInterner, previous: Option<VariableInterner>| {
+            if let Some(old) = previous {
+                *interner = old;
+            } else {
+                interner.rollback();
+            }
+        };
         let mut name_rows = Vec::new();
         if reserve_exact(&mut name_rows, interner.names.len()).is_err() {
-            interner.rollback();
+            restore_interner(interner, previous_interner);
             return all_unavailable("script variable allocation failed");
         }
         for (index, name) in interner.names.iter().enumerate() {
             let Ok(copied) = copy_vec(name) else {
-                interner.rollback();
+                restore_interner(interner, previous_interner);
                 return all_unavailable("script variable allocation failed");
             };
             name_rows.push(rows::ScriptVariableNameRow {
@@ -3828,7 +3874,7 @@ impl Captured {
         if reserve_exact(&mut scope_rows, len).is_err()
             || reserve_exact(&mut value_rows, total_entries).is_err()
         {
-            interner.rollback();
+            restore_interner(interner, previous_interner);
             return all_unavailable("script variable allocation failed");
         }
         let mut scope_vals: Vec<(u32, i64)> = Vec::new();
@@ -3842,9 +3888,8 @@ impl Captured {
                 seed: rows::Recorded::Value(seed),
             });
             scope_vals.clear();
-            let extra = entries.len().saturating_sub(scope_vals.capacity());
-            if reserve(&mut scope_vals, extra).is_err() {
-                interner.rollback();
+            if reserve(&mut scope_vals, entries.len()).is_err() {
+                restore_interner(interner, previous_interner);
                 return all_unavailable("script variable allocation failed");
             }
             for entry in entries {
@@ -3854,7 +3899,7 @@ impl Captured {
             }
             scope_vals.sort_unstable_by_key(|&(id, _)| id);
             if scope_vals.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-                interner.rollback();
+                restore_interner(interner, previous_interner);
                 return all_unavailable("duplicate literal script variable key");
             }
             for &(var_id, value_raw) in &scope_vals {
@@ -4349,8 +4394,7 @@ fn scope_edit(
     if !values_equal {
         let built = std::time::Instant::now();
         scratch.next_values.clear();
-        let extra = current.len().saturating_sub(scratch.next_values.capacity());
-        reserve(&mut scratch.next_values, extra).ok()?;
+        reserve(&mut scratch.next_values, current.len()).ok()?;
         let mut sorted = true;
         let mut prev_id = 0_u32;
         for entry in current {

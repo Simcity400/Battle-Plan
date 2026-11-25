@@ -790,16 +790,21 @@ fn append(
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
+    let attempted = match &name {
+        Some(name) => {
+            let bytes = name.byte_len() as u64;
+            NAME_ATTEMPTS
+                .fetch_add(bytes, Ordering::Relaxed)
+                .wrapping_add(bytes)
+        }
+        None => NAME_ATTEMPTS.load(Ordering::Relaxed),
+    };
+    raise(
+        &NAME_DEMAND,
+        attempted_since(attempted, &NAME_CONSUMED),
+        Ordering::Release,
+    );
     if let Some(name) = &name {
-        let bytes = name.byte_len() as u64;
-        let attempted = NAME_ATTEMPTS
-            .fetch_add(bytes, Ordering::Relaxed)
-            .wrapping_add(bytes);
-        raise(
-            &NAME_DEMAND,
-            attempted_since(attempted, &NAME_CONSUMED),
-            Ordering::Release,
-        );
         raise(&NAME_STRIDE, name.byte_len(), Ordering::Release);
     }
     let Some(buffer) = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing)

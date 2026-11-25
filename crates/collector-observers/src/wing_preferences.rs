@@ -466,7 +466,7 @@ mod tests {
             !CACHE
                 .get()
                 .unwrap()
-                .lock()
+                .read()
                 .unwrap()
                 .values
                 .contains_key(&0x3000)

@@ -256,19 +256,15 @@ impl<'a, M: Memory> Reader<'a, M> {
                 first += n;
                 continue;
             };
-            let ptrs_copied = if self.memory.copy(start, &mut ptr_bytes[..n * 8]) {
-                n
-            } else {
-                self.memory.copy_records(
-                    RecordSources::Strided {
-                        base: start,
-                        stride: 8,
-                        count: n,
-                    },
-                    &PTR_LAYOUT,
-                    &mut ptr_bytes[..n * 8],
-                )
-            };
+            let ptrs_copied = self.memory.copy_records(
+                RecordSources::Strided {
+                    base: start,
+                    stride: 8,
+                    count: n,
+                },
+                &PTR_LAYOUT,
+                &mut ptr_bytes[..n * 8],
+            );
             let mut live = 0_usize;
             let mut map = [usize::MAX; NAVY_BATCH];
             let mut raw_ptrs = [None; NAVY_BATCH];

@@ -6082,7 +6082,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 let (buildings_request, _, buildings_failure) =
                     completed!(buildings_pending, Buildings);
                 let buildings_ticks = governance_request
-                    .restore_buildings(buildings_request, buildings_failure.is_none());
+                    .restore_buildings(*buildings_request, buildings_failure.is_none());
                 if let Ok(report) = governance_report.as_mut() {
                     report.buildings = buildings_ticks;
                 }
