@@ -10,7 +10,9 @@ import type { TableModel, TableProjection, TableRow } from '../../families/table
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { LandBattleLogRow, LandBattlesTailReply } from '../../generated/dashboard';
-import { LAND_BATTLES_COLUMNS } from './definition.ts';
+import { LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition.ts';
+
+const IC_UNRECORDED = 'IC lost not recorded: a lost design has no recorded build cost, or the equipment lost was not read';
 
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
   const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
@@ -29,7 +31,8 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 }, 'square', 'Land battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
       place: { value: row.state === null ? notRecorded('Province state not recorded') : resolveName(view, 'state', String(row.state), { atHour: row.hour, boundary }).value },
-      casualties: logPairCell(row.casualties, 'Casualties', colors), icLost: logPairCell(row.icLost, 'IC lost', colors),
+      casualties: logPairCell(row.casualties, 'Casualties', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined),
+      icLost: logPairCell(row.icLost, 'IC lost', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined, IC_UNRECORDED),
       divisions: logPairCell(row.divisions, 'Divisions'), status, action: logWatchCell(),
     },
   };

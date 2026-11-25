@@ -42,8 +42,8 @@ export function logPairColumn(key: string, label: string, narrow: 'hide' | 'tota
     headerGroup: { kind: 'pair', labels: ['Attacker', 'Defender'], ...(slot ? { slot } : {}) }, minWidth: 82, grow: 0.45, narrow };
 }
 
-export function logPairCell([a, b]: [number | null, number | null], label: string, colors?: readonly (string | undefined)[], lowerBound?: string): TableCell {
-  const value = (n: number | null) => n === null ? notRecorded(label + ' not recorded') : lowerBound ? partialValue(n, lowerBound, { atLeast: true }) : knownValue(n);
+export function logPairCell([a, b]: [number | null, number | null], label: string, colors?: readonly (string | undefined)[], lowerBound?: string, missing = label + ' not recorded'): TableCell {
+  const value = (n: number | null) => n === null ? notRecorded(missing) : lowerBound ? partialValue(n, lowerBound, { atLeast: true }) : knownValue(n);
   const total = a === null || b === null ? null : a + b;
   const share = a !== null && total !== null && total > 0 ? a / total : null;
   const fraction = share !== null && share > 0 && share < 1 ? Math.min(1 - LEAST_SHARE, Math.max(LEAST_SHARE, share)) : share;

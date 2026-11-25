@@ -249,9 +249,11 @@ fn the_battle_log_shows_only_observed_losses_and_keeps_final_results_and_gaps() 
     assert_eq!(first.rows[0].casualties, [Some(2), Some(0)]);
     assert_eq!(first.rows[0].divisions, [Some(2), Some(1)]);
     assert_eq!(first.rows[0].ic_lost, [None, Some(0.0)]);
+    assert!(first.rows[0].losses_so_far, "a live battle's losses are the game's tally of divisions that have left it");
     assert_eq!(first.next_change, Some(103));
     assert_eq!(ask(103, None).rows[0].casualties, [Some(7), Some(0)]);
     let ended = ask(104, None);
+    assert!(!ended.rows[0].losses_so_far, "an ended battle's losses are its final ones");
     assert_eq!(ended.rows[0].result, LandBattleStatus::DefenderWon);
     assert_eq!(ended.rows[0].countries[1], [7], "a result missing its defending country retains the recorded census participant");
     assert_eq!(ended.rows[0].casualties, [Some(10), Some(0)]);
