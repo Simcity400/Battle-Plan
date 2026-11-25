@@ -748,7 +748,7 @@ struct WitnessSites {
     trait_bonus_vtable: Option<usize>,
     dlc_mask: Option<Option<u32>>,
     thrust_factor: Option<Option<i64>>,
-    token_names: Option<Option<cpdx_lexer::TokenNames>>,
+    token_names: Option<Option<(cpdx_lexer::TokenNames, cpdx_lexer::PreparedWitness)>>,
     token_lanes: Vec<(u32, Option<usize>)>,
 }
 
@@ -774,9 +774,9 @@ impl WitnessSites {
         if let Some(&(_, lane)) = self.token_lanes.iter().find(|(held, _)| *held == token) {
             return Ok(lane);
         }
-        let names = self
+        let (names, witness) = self
             .token_names
-            .get_or_insert_with(|| cpdx_lexer::TokenNames::witnessed(memory, base).ok().map(|(names, _)| names))
+            .get_or_insert_with(|| cpdx_lexer::TokenNames::witnessed(memory, base).ok())
             .ok_or("variant stat organisation bonus names unreadable")?;
         let text = names.text(memory, token)?;
         let mut name = [0_u8; 32];
@@ -787,6 +787,10 @@ impl WitnessSites {
             }
             None => None,
         };
+        if let Err(reason) = cpdx_lexer::unchanged(memory, base, witness) {
+            self.token_names = None;
+            return Err(reason);
+        }
         engine_allocation::reserve(&mut self.token_lanes, 1).map_err(|_| "variant stat allocation failed")?;
         self.token_lanes.push((token, lane));
         Ok(lane)
@@ -1140,7 +1144,17 @@ fn compute_modified_lanes(
         acc[lane].mult = acc[lane].mult.checked_add(value).ok_or("variant stat arithmetic overflow")?;
         Ok::<(), &'static str>(())
     };
-    if meta.named_bonuses > 0 {
+    let handles = if meta.named_bonuses > 0 {
+        Array::read(memory, at(variant, NAMED_BONUSES)?, 4).ok_or("variant stat named equipment bonus unreadable")?
+    } else {
+        Array::default()
+    };
+    let mut live = false;
+    for index in 0..handles.count {
+        let entry = handles.element(index, 4).ok_or("variant stat named equipment bonus unreadable")?;
+        live |= read::<u32>(memory, entry).ok_or("variant stat named equipment bonus unreadable")? != u32::MAX;
+    }
+    if live {
         visit_named_sources(memory, base, variant, |pointer, _, _| {
             let stats = stat_pair_array(
                 memory,
@@ -1160,24 +1174,15 @@ fn compute_modified_lanes(
             ORGANISATION_BONUSES,
             "variant stat organisation bonus unreadable",
         )?;
-        let mut applied = Vec::new();
         for_each_stat_pair(
             memory,
             bonuses,
             "variant stat organisation bonus unreadable",
-            |token, value| {
-                if value != 0 {
-                    engine_allocation::reserve(&mut applied, 1).map_err(|_| "variant stat allocation failed")?;
-                    applied.push((token as u32, value));
-                }
-                Ok(())
+            |token, value| match value {
+                0 => Ok(()),
+                _ => sites.token_lane(memory, base, token as u32)?.map_or(Ok(()), |lane| multiply(&mut acc, lane, value)),
             },
         )?;
-        for (token, value) in applied {
-            if let Some(lane) = sites.token_lane(memory, base, token)? {
-                multiply(&mut acc, lane, value)?;
-            }
-        }
     }
     if meta.bonus_sources > 0 {
         let (Some(specific_vtable), Some(trait_vtable)) =
