@@ -546,8 +546,9 @@ mod tests {
         };
         let first = group(&mut rows, 10_000);
         let second = group(&mut rows, 20_000);
+        let mut members = Vec::new();
         for (count, source_id) in [(second, 2), (first, 1)] {
-            slot_row(
+            members.push(slot_row(
                 &mut rows,
                 R {
                     kind: R::SHARING_MEMBER,
@@ -557,7 +558,7 @@ mod tests {
                     source_id,
                     ..Default::default()
                 },
-            );
+            ));
         }
         slot_row(
             &mut rows,
@@ -578,15 +579,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        let sharing = breakdown(&input, Some(&rows))
-            .unwrap()
-            .components
-            .into_iter()
-            .find(|c| c.kind == "sharing")
-            .unwrap();
-        assert_eq!(sharing.raw, "20000");
+        let sharing = |rows: &[R]| {
+            breakdown(&input, Some(rows))
+                .unwrap()
+                .components
+                .into_iter()
+                .find(|c| c.kind == "sharing")
+                .unwrap()
+        };
+        let held = sharing(&rows);
+        assert_eq!(held.raw, "20000");
         assert_eq!(
-            sharing
+            held
                 .sources
                 .iter()
                 .map(|s| (s.token.as_deref(), s.raw.as_str()))
@@ -594,6 +598,8 @@ mod tests {
             [(Some("pact"), "20000"), (Some("pact"), "0")],
             "each group keeps its own members and filters, in group order"
         );
+        rows[members[1] as usize].raw = 0;
+        assert_eq!(sharing(&rows).raw, "0", "the first group counts only its own member");
     }
 
     #[test]
