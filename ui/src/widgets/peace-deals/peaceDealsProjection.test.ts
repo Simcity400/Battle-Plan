@@ -33,8 +33,8 @@ test('a treaty counts once when expanded, its transfers show the former owner at
   assert.equal(model.rows[0]?.cells.country?.flags?.[1]?.dimmed, true);
   assert.equal(model.rows[2]?.cells.terms?.flags?.[0]?.label, 'state 7');
   assert.equal(model.rows[3]?.key, `all:${key}`);
-  assert.equal(model.rows[3]?.name, 'Show all 12 terms');
-  assert.equal(model.rows[3]?.cells.terms?.inlineSubtext, '11 more');
+  assert.equal(model.rows[3]?.name, 'Show all 12 terms · 11 more');
+  assert.equal(model.rows[3]?.cells.terms?.value.kind === 'known' && model.rows[3].cells.terms.value.value, model.rows[3]?.name);
   assert.ok(reads.includes('country AAA at 28'));
   assert.ok(reads.includes('state 7 at 32'));
 });
