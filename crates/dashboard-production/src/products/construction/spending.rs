@@ -55,6 +55,7 @@ pub(crate) type Delta = (i32, Option<i128>);
 pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
+    let mut unread = false;
     let mut lost = false;
     for &(hour, cell) in steps {
         match cell {
@@ -62,7 +63,13 @@ pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
                 if lost {
                     continue;
                 }
-                if hour >= from {
+                if hour < from {
+                    unread = false;
+                } else if unread {
+                    lost = true;
+                    out.push((hour.max(from), None));
+                    continue;
+                } else {
                     let by = i128::from(value) - i128::from(held.unwrap_or(0));
                     if by != 0 {
                         out.push((hour.max(from), Some(by)));
@@ -73,6 +80,10 @@ pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
             Some(Cell::Unrecorded) if hour >= from && !lost => {
                 lost = true;
                 out.push((hour, None));
+            }
+            Some(Cell::Unrecorded) if hour < from => {
+                held = None;
+                unread = true;
             }
             _ => {}
         }

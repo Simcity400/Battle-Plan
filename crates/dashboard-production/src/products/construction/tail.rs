@@ -583,6 +583,13 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         .collect();
     let mut first_spelled: BTreeMap<String, (i32, Option<String>, Option<String>)> = BTreeMap::new();
     let mut projects: Vec<ConstructionProject> = by_id.into_values().collect();
+    for project in &mut projects {
+        for list in [&mut project.built, &mut project.unaccounted, &mut project.possible, &mut project.added] {
+            list.shrink_to_fit();
+        }
+        project.runs.shrink_to_fit();
+        project.outputs.shrink_to_fit();
+    }
     projects.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
 
     for project in &projects {

@@ -230,6 +230,12 @@ fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_un
     let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50);
     assert_eq!(first, [(60, Some(50)), (80, Some(50))]);
     assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50), [(55, Some(30))]);
+    assert_eq!(
+        deltas(&[(49, Some(Cell::Unrecorded)), (60, Some(Cell::Number(450))), (70, Some(Cell::Number(470)))], 50),
+        [(60, None)],
+        "an unread total before the holding starts leaves its first total unknown, never credited from zero"
+    );
+    assert_eq!(deltas(&[(40, Some(Cell::Unrecorded)), (49, Some(Cell::Number(400))), (60, Some(Cell::Number(450)))], 50), [(60, Some(50))]);
     let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 90);
     assert_eq!(second, [(90, Some(20)), (95, None)]);
     let steps = totals([first, second].concat());
