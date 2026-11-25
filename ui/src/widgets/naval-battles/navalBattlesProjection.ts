@@ -23,7 +23,9 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown'
     ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('Winner not recorded') }] }
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
-  const shipsSunk = logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined);
+  const lowerBound = row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined;
+  const shipsSunk = logPairCell(row.shipsSunk, 'Ships sunk', colors, lowerBound);
+  const icLost = logPairCell(row.icLost, 'IC lost', colors, lowerBound);
   const ships = logPairCell(row.ships, 'Ships');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: row.hour,
@@ -32,13 +34,14 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
         value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },
       { label: 'Ships', value: ships.pair![i]!, indent: true },
       { label: 'Ships sunk', value: shipsSunk.pair![i]!, indent: true },
+      { label: 'IC lost', value: icLost.pair![i]!, indent: true },
     ]),
     tooltipScrollId: JSON.stringify([options.scope, row.detailId, row.detailHour ?? (options.following ? row.readHour : view.hour)]),
     cells: {
       date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
-      shipsSunk: { ...shipsSunk, tooltipRows: [] }, ships: { ...ships, tooltipRows: [] }, status,
+      shipsSunk: { ...shipsSunk, tooltipRows: [] }, icLost: { ...icLost, tooltipRows: [] }, ships: { ...ships, tooltipRows: [] }, status,
     },
   };
 }
@@ -51,6 +54,7 @@ interface Options {
 
 const sprites: Readonly<Record<string, string>> = {
   shipsSunk: 'GFX_naval_combat_icon',
+  icLost: 'GFX_industrial_capacity_icon',
   ships: 'GFX_ships_icon',
 };
 
