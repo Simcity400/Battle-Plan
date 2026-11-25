@@ -4,6 +4,7 @@ import { drawingSurface, sizeCanvas, watchCanvasSize } from '../../charts/surfac
 import { canvasMeasureText } from '../../charts/textWidth.ts';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
 import { useFamilyTheme } from '../../families/host/theme.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import { resolveTooltipEntryContent } from '../../families/host/tooltips.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from '../../families/time-chart/layout.ts';
@@ -18,7 +19,6 @@ export interface CourseSide {
   readonly runs: readonly Run[];
 }
 
-const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 function courseChartModel(title: string, sides: readonly CourseSide[], extent: readonly [number, number]): TimeChartModel {
   const [from, until] = extent;
@@ -37,7 +37,7 @@ function courseChartModel(title: string, sides: readonly CourseSide[], extent: r
         id: side.id, key: side.id, name: side.label, color: side.color, role: 'primary', step: true,
         points: coursePoints(side.runs, until),
         missingSpans: missing[index]!.map(span => ({ ...span, reason })),
-        endLabel: last ? { name: side.label, value: integer.format(last.value) } : null,
+        endLabel: last ? { name: side.label, value: formatScalar(last.value, 'integer') } : null,
       };
     }),
     gaps: missing.reduce((shared, spans) => sharedSpans(shared, spans)).map(span => ({ ...span, reason })),

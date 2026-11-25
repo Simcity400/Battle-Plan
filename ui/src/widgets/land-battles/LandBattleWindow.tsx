@@ -11,6 +11,7 @@ import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { mirrorRowSelector } from '../../families/host/mirror.ts';
 import { useFamilyTheme } from '../../families/host/theme.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import { parseColor } from '../../shell/appearance/color.ts';
 import BattleCourseChart, { type CourseSide } from './BattleCourseChart.tsx';
 import { courseDivisions, courseEquipment, courseManpower, exactEquipment, validateLandBattleCourse, validateLandBattleTerrain, wholeEquipment, type DesignLoss, type LandCourse } from './landBattleCourse';
@@ -26,7 +27,6 @@ export interface OpenedBattle {
 const ROLES = ['Attacker', 'Defender'] as const;
 const SIDE_IDS = ['attacker', 'defender'] as const;
 const COURSE_UNREAD = 'The battle’s course couldn’t be read.';
-const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 type Figure = { readonly value: string } | { readonly missing: string } | 'pending';
 
@@ -138,9 +138,9 @@ function BattleBody({ subject, hour, course, colours }: {
             <span className="lb-role">{ROLES[index]}</span>
           </div>
           <dl className="lb-figures">
-            <FigureItem label="Divisions" hint="Divisions at the last read" figure={division == null ? { missing: 'Divisions not recorded' } : { value: integer.format(division) }} />
-            <FigureItem label="Most at once" hint="Most divisions read at once" figure={pending ? 'pending' : peak == null ? { missing: unread ?? 'Divisions not recorded' } : { value: integer.format(peak) }} />
-            <FigureItem label="Casualties" figure={casualties == null ? { missing: 'Casualties not recorded' } : { value: integer.format(casualties) }} />
+            <FigureItem label="Divisions" hint="Divisions at the last read" figure={division == null ? { missing: 'Divisions not recorded' } : { value: formatScalar(division, 'integer') }} />
+            <FigureItem label="Most at once" hint="Most divisions read at once" figure={pending ? 'pending' : peak == null ? { missing: unread ?? 'Divisions not recorded' } : { value: formatScalar(peak, 'integer') }} />
+            <FigureItem label="Casualties" figure={casualties == null ? { missing: 'Casualties not recorded' } : { value: formatScalar(casualties, 'integer') }} />
             <FigureItem label="Equipment lost" figure={pending ? 'pending' : unread ? { missing: unread } : totalOf(equipment?.sides[index])} />
           </dl>
         </section>;
