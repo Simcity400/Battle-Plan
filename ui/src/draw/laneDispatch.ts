@@ -185,6 +185,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
     stage?.start(made, index);
     port.onmessage = ({ data }: MessageEvent<FromPull>) => {
       if (data.kind === 'failure') { post({ type: 'failure', lane: index, reason: data.reason }); return; }
+      performance.mark(`bp-recv-${data.kind}-${data.bytes.byteLength}`);
       try { made.receive(data.kind, data.bytes, data.kind === 'follow' ? data.resets : undefined); }
       catch (error) { post({ type: 'failure', lane: index, reason: error instanceof Error ? error.message : String(error) }); }
     };

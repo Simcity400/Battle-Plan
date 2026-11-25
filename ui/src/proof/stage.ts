@@ -117,6 +117,10 @@ export class Stage {
 
   exact(request: FrameRequest) {
     this.sent.set(request.serial, this.ticks);
+    if (!this.playing()) {
+      for (const held of this.widgets.values()) if (held.shown) held.shown.forwarded = false;
+      this.forwardShown();
+    }
     this.lane?.frame({ ...request, installed: [...request.installed, ...this.acks.splice(0)], refused: [...request.refused, ...this.refusals.splice(0)] });
   }
 

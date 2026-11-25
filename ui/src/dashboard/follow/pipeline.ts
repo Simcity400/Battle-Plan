@@ -118,6 +118,7 @@ export class Pipeline {
     this.stopClock = clock.subscribe(() => this.anchor());
     const s = clock.getSnapshot();
     if (WORKER_PRESENTS) this.tellClock(s);
+    (globalThis as { __bpPage?: unknown }).__bpPage = this.page;
     this.page.publish(s.hour, { playing: s.playing, speed: s.hoursPerSecond, step: 0 });
   }
 

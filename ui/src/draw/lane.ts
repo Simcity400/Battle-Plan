@@ -1893,6 +1893,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (presentEntries.length || moved) {
       this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...confirmed.length ? { confirmed } : {}, entries: presentEntries }, crops);
     }
+    performance.mark(`bp-serve-${crops.length}-${presentEntries.length}-${request.exact ? 1 : 0}`);
     this.stats.entries += presentEntries.length;
     this.prune(request.now);
     for (const id of this.facts.drain()) this.gone.add(id);
