@@ -7,11 +7,11 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots, urlArtHandle } from '../../families/table/logHelpers.ts';
-import type { TableCell, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
+import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded } from '../../families/value.ts';
+import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { ShipClassInfo, SinkingRow, ShipsSunkTailReply } from '../../generated/dashboard';
+import type { ShipClassInfo, ShipSinkingAttribution, SinkingRow, ShipsSunkTailReply } from '../../generated/dashboard';
 import { SHIPS_SUNK_COLUMNS } from './definition.ts';
 
 interface Options {
@@ -20,6 +20,25 @@ interface Options {
 }
 
 const base = { columns: SHIPS_SUNK_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false } as const;
+
+function killerBeside(cause: ShipSinkingAttribution): string | undefined {
+  if (cause.kind === 'ship') return `by ${cause.className ?? cause.classKey ?? cause.name}`;
+  if (cause.kind === 'airWing') return 'by aircraft';
+  return cause.kind === 'cause' ? cause.text : undefined;
+}
+
+function sunkBy(cause: ShipSinkingAttribution): Value {
+  if (cause.kind === 'ship') {
+    const shipClass = cause.className ?? cause.classKey;
+    return knownValue(shipClass ? `${cause.name} (${shipClass})` : cause.name);
+  }
+  if (cause.kind === 'airWing') {
+    const carrierClass = cause.carrierClassName ?? cause.carrierClassKey;
+    if (!cause.carrierName) return knownValue('Aircraft');
+    return knownValue(carrierClass ? `Aircraft from ${cause.carrierName} (${carrierClass})` : `Aircraft from ${cause.carrierName}`);
+  }
+  return cause.kind === 'cause' ? knownValue(cause.text) : notRecorded('Killer not recorded');
+}
 
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
   const name = row.name ?? 'Ship name not recorded';
@@ -30,14 +49,17 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   const country = logCountryCell(view, row.attacker === null && cause.kind === 'cause' ? [victim] : [attacker, victim], row.hour, boundary);
   const place = row.seaZone ? knownValue(row.seaZone) : notRecorded('Sea zone not recorded');
   let loss: TableCell;
+  let explained: readonly TooltipExtraRow[];
   if (row.battle.kind === 'linked') {
     const where = row.battleProvince === null ? null : resolveName(view, 'province', String(row.battleProvince), { atHour: row.hour, boundary }).value;
-    loss = where?.kind === 'known' ? { value: knownValue(`Battle of ${where.value}`) }
+    const killer = killerBeside(cause);
+    loss = where?.kind === 'known' ? { value: knownValue(`Battle of ${where.value}`), strong: true, narrowText: 'Battle', ...(killer ? { inlineSubtext: killer } : {}) }
       : { value: notRecorded('Naval battle recorded, battle name not recorded'), missingFigure: 'Battle name' };
-  } else if (cause.kind === 'cause' || cause.kind === 'airWing' || cause.kind === 'ship') {
-    loss = { value: knownValue(cause.kind === 'cause' ? cause.text : cause.kind === 'airWing' ? 'Air attack' : `Sunk by ${cause.name}`) };
+    explained = [{ label: 'Battle', value: loss.value }, { label: 'Sunk by', value: sunkBy(cause) }];
   } else {
-    loss = { value: notRecorded(cause.reason), missingFigure: 'Cause' };
+    loss = cause.kind === 'notRecorded' ? { value: notRecorded(cause.reason), missingFigure: 'Cause' }
+      : { value: knownValue(cause.kind === 'cause' ? cause.text : cause.kind === 'airWing' ? 'Air attack' : `Sunk by ${cause.name}`) };
+    explained = [{ label: 'Cause', value: loss.value }];
   }
   return {
     key: row.key, name, rowHour: row.hour, meta: row.hour,
@@ -52,7 +74,7 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
       { label: 'Class', value: className ? knownValue(className) : notRecorded('Ship class not recorded') },
       { label: 'Killer', value: row.attacker ? logCountryCell(view, [attacker], row.hour).value : notRecorded('Killer not recorded') },
       { label: 'Victim', value: row.victim ? logCountryCell(view, [victim], row.hour).value : notRecorded('Victim not recorded') },
-      { label: 'Sea zone', value: place }, { label: 'Cause', value: loss.value },
+      { label: 'Sea zone', value: place }, ...explained,
       { label: 'First recorded', value: knownValue(formatDateTime(row.observed)) },
     ],
   };

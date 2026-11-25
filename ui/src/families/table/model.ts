@@ -127,6 +127,8 @@ export interface TableCell {
   readonly glyph?: 'award' | 'battle' | 'helmet' | 'place' | 'loss' | 'transfer';
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
+  readonly narrowText?: string;
+  readonly strong?: boolean;
   readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
@@ -1363,7 +1365,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
+  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'narrowText' | 'strong' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;

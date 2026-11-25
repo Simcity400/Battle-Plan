@@ -19,11 +19,12 @@ use dashboard_query::{
 };
 use dashboard_text::metadata::check_cancel;
 use replay_columnar::manifest::Status;
-use replay_data::rows::{SunkShipEntry, TableId, tables};
+use replay_data::rows::{SunkShipEntry, TableId};
 use replay_lanes::{
-    at::{Read, Seeker},
-    lanes::{self, Keys},
+    at::Seeker,
+    lanes::{self, Cell, History, Keys, Reading},
 };
+use replay_recording::columnar_frames::TableCoverage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -125,37 +126,76 @@ struct Sighting {
     observed: i32,
 }
 
-fn battle_province(
-    seeker: &mut Seeker<'_>,
-    query: &Query<'_>,
-    battle: &ShipSinkingBattle,
-    entry: &SunkShipEntry,
-) -> io::Result<Option<u32>> {
-    let ShipSinkingBattle::Linked { first_hour, result_id, result_hour, .. } = battle else { return Ok(None) };
-    if let Some(first) = first_hour {
+struct ProvinceAsk {
+    combat: bool,
+    run: u32,
+    key: u128,
+    hour: i32,
+    before: Option<i32>,
+}
+
+fn province_ask(query: &Query<'_>, battle: &ShipSinkingBattle, entry: &SunkShipEntry) -> Option<ProvinceAsk> {
+    let ShipSinkingBattle::Linked { first_hour, result_id, result_hour, .. } = battle else { return None };
+    if let Some(first) = *first_hour {
         let hour = entry.sink_hour;
-        let Some(at) = query.timeline.at(hour) else { return Ok(None) };
-        let keys = [u128::from(entry.battle)];
-        let read = Read { table: TableId::NavalCombats, columns: Some(&[0]), keys: Keys::These(&keys) };
-        let frame = seeker.frame(at.run, hour, &[read])?;
-        let Ok(rows) = frame.complete::<tables::NavalCombats>() else { return Ok(None) };
-        if let Some(combat) = rows.first() {
-            return Ok(Some(combat.province));
-        }
-        if hour > *first && hour > at.first {
-            let previous = seeker.frame(at.run, hour - 1, &[read])?;
-            return Ok(previous.complete::<tables::NavalCombats>().ok().and_then(|rows| rows.first()).map(|combat| combat.province));
-        }
-        return Ok(None);
+        let at = query.timeline.at(hour)?;
+        let before = (hour > first && hour > at.first).then_some(hour - 1);
+        return Some(ProvinceAsk { combat: true, run: at.run, key: u128::from(entry.battle), hour, before });
     }
-    if let (Some(id), Some(hour)) = (result_id.as_deref().and_then(super::super::battles::parse_result_id), *result_hour)
-        && let Some(at) = query.timeline.at(hour)
-    {
-        let keys = [u128::from(id)];
-        let frame = seeker.frame(at.run, hour, &[Read { table: TableId::NavalResults, columns: Some(&[0]), keys: Keys::These(&keys) }])?;
-        return Ok(frame.complete::<tables::NavalResults>().ok().and_then(|rows| rows.first()).map(|result| result.province));
+    let id = result_id.as_deref().and_then(super::super::battles::parse_result_id)?;
+    let hour = (*result_hour)?;
+    let at = query.timeline.at(hour)?;
+    Some(ProvinceAsk { combat: false, run: at.run, key: u128::from(id), hour, before: None })
+}
+
+fn province_at(history: &History, key: u128, hour: i32) -> Option<Option<u32>> {
+    let at = history.statuses.partition_point(|held| held.last < hour);
+    history.statuses.get(at).filter(|held| held.first <= hour && matches!(held.status, Status::Complete))?;
+    Some(match history.reading(key, hour) {
+        Reading::Cells([Cell::Number(province), ..]) => u32::try_from(*province).ok(),
+        _ => None,
+    })
+}
+
+fn battle_provinces(query: &Query<'_>, asks: &[Option<ProvinceAsk>]) -> io::Result<Vec<Option<u32>>> {
+    let recording = query.replay.recording();
+    let mut groups = BTreeMap::<(bool, u32), (BTreeSet<u128>, i32, i32)>::new();
+    for ask in asks.iter().flatten() {
+        let (keys, from, to) = groups.entry((ask.combat, ask.run)).or_insert_with(|| (BTreeSet::new(), ask.hour, ask.hour));
+        keys.insert(ask.key);
+        *from = (*from).min(ask.before.unwrap_or(ask.hour));
+        *to = (*to).max(ask.hour);
     }
-    Ok(None)
+    let mut histories = HashMap::new();
+    for ((combat, run), (keys, from, to)) in groups {
+        let table = if combat { TableId::NavalCombats } else { TableId::NavalResults };
+        let index = table.index();
+        if recording.predates(index).is_some() || recording.withheld_reason(index).is_some() {
+            continue;
+        }
+        let from = match recording.table_coverage(index, run) {
+            TableCoverage::Valid => from,
+            TableCoverage::WithheldAll(_) => continue,
+            TableCoverage::WithheldBefore { ordinal, .. } => from.max(recording.run(run)?.first_hour.saturating_add_unsigned(ordinal)),
+        };
+        if from > to {
+            continue;
+        }
+        let keys: Vec<u128> = keys.into_iter().collect();
+        let history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[0], Keys::These(&keys), from, to))?;
+        histories.insert((combat, run), history);
+    }
+    Ok(asks
+        .iter()
+        .map(|ask| {
+            let ask = ask.as_ref()?;
+            let history = histories.get(&(ask.combat, ask.run))?;
+            match province_at(history, ask.key, ask.hour)? {
+                Some(province) => Some(province),
+                None => province_at(history, ask.key, ask.before?).flatten(),
+            }
+        })
+        .collect())
 }
 
 fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &AtomicBool) -> io::Result<Tail> {
@@ -232,12 +272,15 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
     let mut named = Named::from_literals(tokens, attr_tokens, &literals, &held, content);
     let combats = held.iter().map(|entry| entry.battle).filter(|id| *id != 0).collect();
     let battles = BattleIndex::build(source, query, query.timeline.last, &combats, &BTreeSet::new())?;
+    let resolved: Vec<_> = sightings.iter().map(|sight| battles.resolve_sinking(sight.entry.battle, sight.entry.sink_hour)).collect();
+    let asks: Vec<_> = sightings.iter().zip(&resolved).map(|(sight, battle)| province_ask(query, battle, &sight.entry)).collect();
+    let provinces = battle_provinces(query, &asks)?;
     let names = Names::new(&query.holders);
     let mut kinds = HashMap::new();
     let mut chips = BTreeMap::<u32, ShipClassChip>::new();
     let mut entries = Vec::with_capacity(sightings.len());
     let mut refused = std::mem::take(&mut named.refused);
-    for sight in sightings {
+    for ((sight, battle), battle_province) in sightings.into_iter().zip(resolved).zip(provinces) {
         let entry = sight.entry;
         let hour = entry.sink_hour;
         let observed = sight.observed;
@@ -257,8 +300,6 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
             .entry(entry.class_token)
             .and_modify(|chip| chip.first_hour = chip.first_hour.min(observed))
             .or_insert_with(|| ShipClassChip { class: class.clone(), first_hour: observed });
-        let battle = battles.resolve_sinking(entry.battle, hour);
-        let battle_province = battle_province(&mut seeker, query, &battle, &entry)?;
         let id = entries.len();
         entries.push(Occurrence {
             id: id as u128,

@@ -797,14 +797,19 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
-  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
-  const textColor = item.row.muted || column.textTone === 'muted'
+  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, cell?.strong ? 600 : column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
+  const textColor = item.row.muted
     ? theme.muted
-    : isChild || column.textTone === 'secondary'
-      ? tokens.childText
-      : theme.text;
-  const drawnW = drawInlineRuns(rc, formatted.text, left, middle, avail, textFont, textColor);
-  if (cell?.inlineSubtext && !column.inlineFlags) {
+    : cell?.strong
+      ? theme.text
+      : column.textTone === 'muted'
+        ? theme.muted
+        : isChild || column.textTone === 'secondary'
+          ? tokens.childText
+          : theme.text;
+  const narrowText = column.narrowed ? cell?.narrowText : undefined;
+  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail, textFont, textColor);
+  if (cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined) {
     const gap = 8;
     const rem = avail - drawnW - gap;
     if (rem >= 20) {
