@@ -1,4 +1,7 @@
 
+#[path = "factions/tiles.rs"]
+pub mod tiles;
+
 use dashboard_base::products::{Country, LoadContext, Product, validate_country};
 use dashboard_base::{Source, products::at_hour::{At, AtHour, Clock, Owner, Read, ReadsAt}};
 use dashboard_world::products::{group_members::GroupsAt, scalars::factory_channel_value, territory::{slot_tags, territory_value}};
@@ -7,7 +10,7 @@ use dashboard_query::{
     chart::{ChartBucket, ChartSummary},
     coverage::{Witness, witnessed},
     identity::Holder,
-    series::{Ask, Line, MissingSpan, grid, ranked::GroupSelection},
+    series::{Ask, Line, MissingSpan, grid, ranked::{GroupMembership, GroupSelection}},
 };
 use replay_data::rows::{CountryFactoriesRow, GroupSpanRow as Span, TableId, TerritoryTotalRow, tables};
 use replay_frame::frame::DecodedFrame;
@@ -453,6 +456,9 @@ pub struct FactionTotalsAtParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub group: Option<GroupSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub membership: Option<GroupMembership>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -521,13 +527,36 @@ fn witnessed_value(frame: &DecodedFrame, kind: &str, slot: u32, id: u32, measure
     }
 }
 
+fn ever_factions_valid_through(context: &GroupsAt, hour: i32) -> i32 {
+    let Some(reply) = context.reply() else { return hour };
+    let mut until = i32::MAX;
+    let mut edge = |start: i32| {
+        if start > hour {
+            until = until.min(start - 1);
+        }
+    };
+    for span in &reply.unobserved.factions {
+        edge(span.first_hour);
+    }
+    for faction in &reply.factions {
+        edge(faction.first_hour);
+        for run in &faction.members {
+            edge(run.first_hour);
+        }
+        for span in &faction.incomplete {
+            edge(span.first_hour);
+        }
+    }
+    until.max(hour)
+}
+
 impl AtHour for FactionTotalsAt {
     const KEY: &'static str = "faction-totals-at";
     const TITLE: &'static str = "Faction totals";
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK: Clock = Clock::Boundaries;
     type Params = FactionTotalsAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, measure, top, members, group, "members[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, measure, top, members, group, membership, "members[]"];
     type Reply = FactionTotalsAtReply;
     type Context = GroupsAt;
 
@@ -548,6 +577,9 @@ impl AtHour for FactionTotalsAt {
         if params.top.is_some() && (params.group.is_some() || params.members.is_some()) {
             return Err("top applies to factions, not an aggregated group");
         }
+        if params.membership.is_some() && (params.group.is_some() || params.members.is_some()) {
+            return Err("membership applies to factions; a group carries its own");
+        }
         if let Some(members) = &params.members {
             for country in members {
                 validate_country(country)?;
@@ -558,7 +590,7 @@ impl AtHour for FactionTotalsAt {
 
     fn tables(params: &Self::Params) -> Vec<TableId> {
         let target = if params.kind == "territory" { TableId::TerritoryTotals } else { TableId::CountryFactories };
-        if params.members.is_some() || params.group.is_some() {
+        if params.members.is_some() || params.group.is_some() || params.membership == Some(GroupMembership::Ever) {
             vec![target]
         } else {
             vec![TableId::GroupSpans, TableId::Groups, target]
@@ -599,10 +631,39 @@ impl AtHour for FactionTotalsAt {
                 .collect();
             return (vec![Read::these(target, keys)], i32::MAX);
         }
+        if params.membership == Some(GroupMembership::Ever) {
+            let valid = ever_factions_valid_through(at.context, at.hour);
+            let Some(reply) = at.context.reply() else {
+                return (Vec::new(), valid);
+            };
+            if reply.unobserved.factions.iter().any(|span| span.first_hour <= at.hour) {
+                return (Vec::new(), i32::MAX);
+            }
+            let mut keys: Vec<u128> = Vec::new();
+            for faction in &reply.factions {
+                if faction.first_hour > at.hour || faction.incomplete.iter().any(|span| span.first_hour <= at.hour) {
+                    continue;
+                }
+                for run in &faction.members {
+                    if run.first_hour > at.hour {
+                        continue;
+                    }
+                    if let Some(Holder::Found { slot, id }) = at.holders.at(&Country::Tag(run.tag.clone()), at.hour).map(|r| r.holder) {
+                        keys.push(key_of(slot, id));
+                    }
+                }
+            }
+            keys.sort_unstable();
+            keys.dedup();
+            return (vec![Read::these(target, keys)], valid);
+        }
         (vec![Read::all(TableId::GroupSpans), Read::all(TableId::Groups), Read::all(target)], i32::MAX)
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if params.membership == Some(GroupMembership::Ever) {
+            return ever_factions_valid_through(at.context, at.hour);
+        }
         at.context.valid_through(params.group.as_ref(), at.hour)
     }
 
@@ -611,6 +672,9 @@ impl AtHour for FactionTotalsAt {
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        if params.membership == Some(GroupMembership::Ever) {
+            return GroupsAt::load_all(source, load, &params.branch_id);
+        }
         GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
     }
 
@@ -688,6 +752,94 @@ impl AtHour for FactionTotalsAt {
                 kind: params.kind.clone(),
                 measure: params.measure.clone(),
                 rows: vec![row],
+                missing: None,
+                warnings: Vec::new(),
+            });
+        }
+
+        if params.membership == Some(GroupMembership::Ever) {
+            let Some(reply) = at.context.reply() else {
+                return Ok(empty("Faction memberships were not loaded".to_owned()));
+            };
+            if reply.unobserved.factions.iter().any(|span| span.first_hour <= frame.hour) {
+                return Ok(empty("Faction memberships were not read whole through this hour".to_owned()));
+            }
+            let mut rows_out: Vec<FactionTotalRow> = Vec::new();
+            for faction in &reply.factions {
+                if faction.first_hour > frame.hour {
+                    continue;
+                }
+                let mut missing = faction
+                    .incomplete
+                    .iter()
+                    .any(|span| span.first_hour <= frame.hour)
+                    .then(|| "Its roster was not read whole through this hour".to_owned());
+                let mut seen: BTreeSet<&str> = BTreeSet::new();
+                for run in &faction.members {
+                    if run.first_hour <= frame.hour {
+                        seen.insert(run.tag.as_str());
+                    }
+                }
+                if seen.is_empty() {
+                    continue;
+                }
+                let mut sum = 0i64;
+                let mut member_tags: Vec<String> = Vec::with_capacity(seen.len());
+                let mut member_countries: Vec<Country> = Vec::with_capacity(seen.len());
+                for tag in seen {
+                    member_tags.push(tag.to_owned());
+                    let country = Country::Tag(tag.to_owned());
+                    match at.holders.at(&country, frame.hour).map(|run| run.holder) {
+                        Some(Holder::Found { slot, id }) => {
+                            member_countries.push(Country::Slot(slot));
+                            if missing.is_none() {
+                                match witnessed_value(frame, &params.kind, slot, id, &params.measure, tag) {
+                                    Ok(value) => match sum.checked_add(value) {
+                                        Some(next) => sum = next,
+                                        None => missing = Some("Faction total overflowed at this hour".to_owned()),
+                                    },
+                                    Err(reason) => missing = Some(reason),
+                                }
+                            }
+                        }
+                        _ => {
+                            member_countries.push(country);
+                            if missing.is_none() {
+                                missing = Some(format!("A member ({tag}) is not present at this hour"));
+                            }
+                        }
+                    }
+                }
+                member_countries.sort_unstable();
+                member_countries.dedup();
+                rows_out.push(FactionTotalRow {
+                    id: faction.id.clone(),
+                    members: member_tags,
+                    member_countries,
+                    total: missing.is_none().then_some(sum),
+                    missing,
+                });
+            }
+            rows_out.sort_unstable_by(|a, b| match (a.total, b.total) {
+                (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.id.cmp(&b.id)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.id.cmp(&b.id),
+            });
+            if let Some(limit) = params.top {
+                let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+                if rows_out.iter().any(|row| row.missing.is_some()) {
+                    return Ok(empty(format!(
+                        "The top {limit} factions cannot be proved: a faction's total is not known at this hour"
+                    )));
+                }
+                rows_out.truncate(limit);
+            }
+            return Ok(FactionTotalsAtReply {
+                hour: frame.hour,
+                kind: params.kind.clone(),
+                measure: params.measure.clone(),
+                rows: rows_out,
                 missing: None,
                 warnings: Vec::new(),
             });
