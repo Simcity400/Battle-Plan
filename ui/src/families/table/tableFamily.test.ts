@@ -648,6 +648,9 @@ test('layout hides lowest-priority columns into tooltip or keeps all columns in 
   const scrollLayout = layoutFamilyTable(cols, 250);
   assert.equal(scrollLayout.scrollable, true);
   assert.equal(scrollLayout.pinnedWidth, 146);
+  const narrowing = buildColumnLayouts(specs.map(spec => spec.key === 'owner' ? { ...spec, narrow: 'hide' as const } : spec), settings, { state: 140, resistance: 130, owner: 140 });
+  assert.equal(layoutFamilyTable(narrowing, 500).columns.some(c => c.narrowed), false, 'a table that fits keeps every cell\'s full text');
+  assert.deepEqual(layoutFamilyTable(narrowing, 370).columns.map(c => [c.key, c.narrowed]), [['state', true], ['resistance', true]], 'a narrowed table lets cells draw their narrow text');
 
   const bigModel = {
     columns: specs.slice(0, 2),
@@ -2273,7 +2276,6 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     cost: number,
     opts: {
       live?: boolean;
-      boundedDate?: 'by';
       statusKind?: 'running' | 'waiting' | 'succeeded' | 'finished' | 'ended';
       statusLabel?: string;
       inlinePrefix?: string;
@@ -2288,7 +2290,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     ...(opts.live ? { live: true } : {}),
     ...(opts.children ? { children: opts.children } : {}),
     cells: {
-      date: { value: knownValue(hour), ...(opts.boundedDate ? { boundedDate: opts.boundedDate } : {}) },
+      date: { value: knownValue(hour) },
       kind: { value: knownValue('dec'), iconSlot: true, artShape: 'square', artName: 'Decision' },
       country: { value: knownValue('GER'), flags: [{ tag: 'GER', art: PENDING_ART }] },
       item: {
@@ -2316,7 +2318,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       { kind: 'data', row: mkLogRow('live1', DAY3 + 5, 50, { live: true, title: 'Stop the Strikes', inlineSubtext: 'Mission', statusKind: 'running', statusLabel: 'Running', children: [childRow] }) },
       { kind: 'data', row: mkLogRow('h1', DAY2 + 10, 25, { title: 'Event \uFFFC choice', inlinePrefix: 'A', statusKind: 'succeeded', statusLabel: 'Succeeded' }) },
       { kind: 'data', row: mkLogRow('h2', DAY2 + 4, 15, { title: 'Same day exact', statusKind: 'finished', statusLabel: 'Finished' }) },
-      { kind: 'data', row: mkLogRow('h3', DAY2 + 2, 5, { title: 'Same day bounded', boundedDate: 'by', statusKind: 'ended', statusLabel: 'Ended' }) },
+      { kind: 'data', row: mkLogRow('h3', DAY2 + 2, 5, { title: 'Same day again', statusKind: 'ended', statusLabel: 'Ended' }) },
       { kind: 'gap', key: 'gap:1', firstHour: DAY1 + 6, lastHour: DAY2 - 1, reason: 'Collector detached' },
       { kind: 'data', row: mkLogRow('h4', DAY1 + 3, 100, { title: 'Before gap' }) },
       { kind: 'refused', key: 'ref:1', reason: 'Block damaged' },
@@ -2341,7 +2343,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ['refused', 'ref:1'],
       ['loading', 'load:1'],
     ],
-    'same-day live rows suppress repeat date, live block band sits after its last open child, same-day repeats hide the date whether exact or bounded, and gap/refused/loading slots preserve order',
+    'same-day rows suppress repeat dates, the live block band follows its last open child, and gap/refused/loading slots preserve order',
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
@@ -2359,8 +2361,6 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns);
   assert.equal(gapTip?.title, 'Not recorded');
   assert.equal(gapTip?.detail, 'Collector detached');
-  const boundedTip = deriveTableTooltip(flatExpanded, 'h3', logColumns);
-  assert.ok(boundedTip?.rows.some(r => r.valueState?.text?.startsWith('By ')), 'bounded date hover carries By prefix and hour');
   const audit = deriveTableAudit({ model: slottedModel, flatRows: flatExpanded, visibleColumns: grown.columns });
   assert.ok(audit.some(r => r.key === 'gap:1:gap'));
   assert.ok(audit.some(r => r.key === 'ref:1:refused'));
@@ -2574,7 +2574,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     const correctedAt1: LogScene = {
       unsorted: true,
       rows: [
-        mkLogRow('e2', DAY2 + 8, 50, { title: 'Event Two', inlineSubtext: 'Revised', boundedDate: 'by', statusKind: 'succeeded', statusLabel: 'Succeeded' }),
+        mkLogRow('e2', DAY2 + 8, 50, { title: 'Event Two', inlineSubtext: 'Revised', statusKind: 'succeeded', statusLabel: 'Succeeded' }),
         mkLogRow('e1', DAY2 + 2, 25, { title: 'Event \uFFFC One', inlinePrefix: 'B', statusKind: 'ended', statusLabel: 'Ended' }),
         mkLogRow('e0', DAY1 + 6, 10, { title: 'Earlier Day', statusKind: 'ended', statusLabel: 'Ended' }),
       ],
@@ -2593,7 +2593,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
     assert.deepEqual(played.snap(), freshSnap(uniformAt1, DAY2 + 9, baseSettings), 'log seek back restores dates and hairlines identically to fresh paint');
 
     played.paint(correctedAt1, DAY2 + 9, baseSettings);
-    assert.deepEqual(played.snap(), freshSnap(correctedAt1, DAY2 + 9, baseSettings), 'same-hour log correction (boundedDate, inlinePrefix, inlineSubtext, statusKind) equals fresh paint');
+    assert.deepEqual(played.snap(), freshSnap(correctedAt1, DAY2 + 9, baseSettings), 'same-hour log correction (inlinePrefix, inlineSubtext, statusKind) equals fresh paint');
 
     played.paint(reorderScene, DAY2 + 9, sortByCost);
     assert.deepEqual(played.snap(), freshSnap(reorderScene, DAY2 + 9, sortByCost), 'reordering log by figure restores every row date identically to fresh paint');

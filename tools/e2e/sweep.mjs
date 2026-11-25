@@ -108,7 +108,6 @@ const readConfinement = () => app.evaluate(`({
   hardwareConcurrency: navigator.hardwareConcurrency,
   lanes: window.__perf?.lanes?.() ?? null,
   expectedLanes: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 2)),
-  ungated: window.__perf?.ungated === true,
 })`);
 const meta = { session, tier, requestedPages: onlyPages, cpuThrottle: rate, coresCount, confinement: null, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
 const save = async () => {
@@ -444,14 +443,14 @@ const DASHBOARD_INVENTORY = `(() => {
   };
   return [...grid.querySelectorAll('article.dash-widget')].map(a => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
-    const { outcome, detail, notMigrated } = classify(a);
+    const { outcome, detail } = classify(a);
     const byPlacement = new Map();
     for (const c of a.querySelectorAll('[data-surface]')) {
       const id = c.dataset.placement ?? c.dataset.surface, held = byPlacement.get(id);
       if (!held || held === 'page') byPlacement.set(id, c.dataset.surface);
     }
     const surfaces = [...new Set([...byPlacement.values()].filter(Boolean))];
-    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated, outcome, detail };
+    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, outcome, detail };
   });
 })()`;
 
@@ -521,7 +520,7 @@ async function playbackInputs() {
       if (canvases.length) return null;
       const content = article.querySelector('.dash-widget-content');
       if (!content) return 'no content';
-      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-playback-placeholder], [data-state="placeholder"], [data-state="empty"], [data-state="unavailable"], [data-state="outside"], [data-state="not-recorded"], [data-state="nothing-chosen"], [data-state="no-members"]')].some(visible)) return null;
+      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-state="empty"], [data-state="unavailable"], [data-state="outside"], [data-state="not-recorded"], [data-state="nothing-chosen"], [data-state="no-members"]')].some(visible)) return null;
       if ([...content.querySelectorAll('[data-row-ink="pending"]')].some(visible)) return 'pending rows';
       if ([...content.querySelectorAll('canvas, img, svg')].some(visible)) return null;
       return [...content.querySelectorAll('*')].some(node => {
@@ -933,7 +932,7 @@ await phase('widget-costs', async () => {
           const surfaces = [...new Set([...a.querySelectorAll('[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
           return { outcome, detail, surfaces, id: a.dataset.widget };
         })()`);
-        const merged = mergeWidgetOutcomes([{ id: snap.id ?? widget, outcome: snap.outcome, detail: snap.detail, notMigrated: snap.outcome === 'placeholder' }], observed)[0];
+        const merged = mergeWidgetOutcomes([{ id: snap.id ?? widget, outcome: snap.outcome, detail: snap.detail }], observed)[0];
         outcome = merged.outcome; detail = merged.detail; surfaces = snap.surfaces;
       }
       to = s.epoch + await app.evaluate('performance.now()');

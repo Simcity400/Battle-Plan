@@ -241,7 +241,7 @@ function buildEspionageRow(
     if (row.endedHour !== null) {
       out.push({
         label: row.status === 'completed' ? 'Completed' : 'Ended',
-        value: knownValue(row.exact ? formatDateTime(row.endedHour) : `by ${formatDateTime(row.endedHour)}`),
+        value: knownValue(formatDateTime(row.endedHour)),
       });
     }
     if (row.completion) {
@@ -284,7 +284,7 @@ function buildEspionageRow(
       live: row.live,
       muted: status.muted,
       cells: {
-        date: logDateCell(row.hour, row.exact ? undefined : 'by'),
+        date: logDateCell(row.hour),
         kind: kindCell,
         country: countryCell,
         item: itemCell,

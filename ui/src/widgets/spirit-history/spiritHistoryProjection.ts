@@ -40,11 +40,9 @@ function spiritRows(reply: IdeaHistoryReply): SpiritRow[] {
 function describe(holding: IdeaHolding): string {
   switch (holding.end.kind) {
     case 'held':
-      return holding.start === 'heldBefore' ? `Held before ${formatDateOnly(holding.firstHour)}`
-        : holding.start === 'firstObserved' ? `First observed ${formatDateOnly(holding.firstHour)}`
-          : `Active since ${formatDateOnly(holding.firstHour)}`;
+      return `${holding.start === 'heldBefore' ? 'Held before' : 'Active since'} ${formatDateOnly(holding.firstHour)}`;
     case 'ended': return `Ended ${formatDateOnly(holding.lastHour + 1)}`;
-    case 'endedBy': return `Ended by ${formatDateOnly(holding.end.hour)}`;
+    case 'endedBy': return `Ended ${formatDateOnly(holding.end.hour)}`;
     case 'lastSeen': return `Last recorded ${formatDateOnly(holding.lastHour)}`;
   }
 }

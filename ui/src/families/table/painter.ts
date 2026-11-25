@@ -387,7 +387,7 @@ export function drawFamilyTable(
     let colKey = '';
     for (let c = 0; c < layout.columns.length; c++) {
       const col = layout.columns[c]!;
-      colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
+      colKey += `${col.key}:${col.width}:${col.narrowed ? 1 : 0}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
     }
     frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${dateGrouped ? 1 : 0}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${endNote ?? ''}|${colKey}`;
   }
@@ -481,7 +481,7 @@ export function drawFamilyTable(
       const tail = item.row.cells[key];
       return tail && !tail.blank ? `${tail.glyph ?? ''}:${tail.value.kind}:${cellListSignature(tail)}` : '';
     }).join('|') ?? '';
-    const extraSig = `${flags}|${cell?.glyph ?? ''}|${cell?.artTile ?? ''}|${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}|${cell?.actionIcon ?? ''}|${pair}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
+    const extraSig = `${flags}|${cell?.glyph ?? ''}|${cell?.artTile ?? ''}|${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}|${cell?.actionIcon ?? ''}|${pair}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.narrowText ?? ''}\u0004${cell?.strong ? 1 : 0}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
     const key = `${formatted.kind}\u0002${textVal}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
     return { paintModel, formatted, fraction, fill, key };
   };
@@ -883,7 +883,7 @@ export function drawFamilyTable(
         ctx.fillRect(indent, y, 1, contentH);
         const look = computeLook(item, detail);
         drawApprovedCell(renderCtx, {
-          item, column: { ...detail, width, inlineFlags: undefined, leadInset: 0, trailInset: 0 }, labelLines: lines,
+          item, column: { ...detail, width, inlineFlags: undefined, narrowed: undefined, leadInset: 0, trailInset: 0 }, labelLines: lines,
           colIndex: -1, x: indent + CELL_INSET, y, rowHeight: contentH,
           paintModel: look.paintModel, formatted: look.formatted, fraction: look.fraction, fill: look.fill, rowHovered: inspected, rowFocused: focused, lastChild: isLastChildRow(rows, index),
         });

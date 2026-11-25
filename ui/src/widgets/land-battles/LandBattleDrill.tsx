@@ -80,7 +80,7 @@ function Designs({ side, index, colour, total }: { side: DesignLoss[] | string |
         : side.length === 0 ? <p className="lb-drill-note">No equipment lost</p>
           : <>{side.slice(0, DESIGNS).map(entry => <div className="lb-design" key={entry.name}
             data-tooltip={`${exactEquipment(entry.raw)}${entry.designs > 1 ? ` · ${entry.designs} designs share this name` : ''}`}>
-            <span>{entry.name}</span><span className="log-value">{wholeEquipment(entry.raw)}</span></div>)}
+            <span>{entry.name}</span><span>{wholeEquipment(entry.raw)}</span></div>)}
           {side.length > DESIGNS && <div className="lb-drill-note">{side.length - DESIGNS} more {side.length - DESIGNS === 1 ? 'design' : 'designs'}: {wholeEquipment(side.slice(DESIGNS).reduce((sum, entry) => sum + entry.raw, 0n))}</div>}</>}
   </div>;
 }
@@ -109,7 +109,7 @@ export default function LandBattleDrill({ subject, track, client, active, hour }
   });
   const ground = terrain.data?.provinces[0];
   return <div className="lb-drill">
-    <p className="lb-drill-facts">{ground?.name ?? ground?.missing ?? 'Terrain not recorded'} · {row.exact ? '' : 'by '}{dayLabel(row.hour)} · {row.result === 'ongoing' ? 'Ongoing' : row.result === 'unknown' ? 'Result not recorded' : row.result === 'attackerWon' ? 'Attacker won' : 'Defender won'}</p>
+    <p className="lb-drill-facts">{ground?.name ?? ground?.missing ?? 'Terrain not recorded'} · {dayLabel(row.hour)} · {row.result === 'ongoing' ? 'Ongoing' : row.result === 'unknown' ? 'Result not recorded' : row.result === 'attackerWon' ? 'Attacker won' : 'Defender won'}</p>
     <div className="lb-drill-sides">{sides.map((side, i) => {
       const peak = divisions?.[i]?.reduce<number | null>((peak, run) => Math.max(peak ?? run.value, run.value), null);
       return <div className="lb-drill-side" key={i}>

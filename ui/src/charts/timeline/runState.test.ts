@@ -23,9 +23,9 @@ test('fragmented, touching and overlapping unobserved spans bridge only fully co
 
 
 const words = { since: (h: number) => `since ${h}`, before: (h: number) => `before ${h}`, ended: (h: number) => `ended ${h}`,
-  endedBy: (h: number) => `ended by ${h}`, lastSeen: (h: number) => `last ${h}` };
+  lastSeen: (h: number) => `last ${h}` };
 
-test('a run is held, ended, ended by a day or unknown, honestly about unrecorded hours', () => {
+test('a run with a gap has an unknown end until the next recorded hour', () => {
   const runs = [{ firstHour: 10, lastHour: 19 }, { firstHour: 40, lastHour: 49 }];
   assert.deepEqual(runState(runs, 5), { kind: 'none' });
   assert.deepEqual(runState(runs, 15), { kind: 'held', since: 10 });
@@ -37,7 +37,7 @@ test('a run is held, ended, ended by a day or unknown, honestly about unrecorded
   assert.equal(describeRun(runs, 15, words, [], 0), 'since 10');
   assert.equal(describeRun(runs, 15, words, [], 10), 'before 10');
   assert.equal(describeRun(runs, 45, words, [{ firstHour: 30, lastHour: 39 }], 0), 'before 40');
-  assert.equal(describeRun(runs, 65, words, gap), 'ended by 60');
+  assert.equal(describeRun(runs, 65, words, gap), 'ended 60');
   assert.equal(describeRun(runs, 55, words, gap), 'last 49');
 });
 

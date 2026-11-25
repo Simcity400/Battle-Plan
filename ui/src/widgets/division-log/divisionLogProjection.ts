@@ -31,7 +31,7 @@ const statuses: Readonly<Record<string, string>> = {
 };
 
 function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
-  const date = logDateCell(row.hour, row.event?.kind === 1 && !row.event.exact ? 'by' : undefined);
+  const date = logDateCell(row.hour);
   const country = row.tag === null
     ? { value: notRecorded('Division owner not recorded'), missingFigure: 'Owner' }
     : logCountryCell(view, [{ tag: row.tag }], row.observed, boundary);

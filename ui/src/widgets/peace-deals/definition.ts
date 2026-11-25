@@ -5,7 +5,7 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const PEACE_DEALS_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ minWidth: 68, widest: ['by 30 Aug'] }),
+  logDateColumn({ minWidth: 68 }),
   logKindColumn({ minWidth: 36 }),
   logCountryColumn({ label: 'Sides', minWidth: 60, grow: 0 }),
   logItemColumn({ label: 'War', minWidth: 36, grow: 4, narrow: 'primary' }),

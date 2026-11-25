@@ -14,7 +14,6 @@ import type { WidgetTime } from './model';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
 import { WidgetFrameContext, widgetWording } from './widgetFrame';
-import { widgetDefinition } from './definitions';
 import { datedToken } from '../test-support/gated.ts';
 import { subjectToken } from './chosen';
 import { dayLabel } from '../charts/draw';
@@ -187,17 +186,7 @@ const read = () => {
 
 export interface Scene { kind: string; time: WidgetSpec['time']; options?: Record<string, unknown>; countries?: WidgetSpec['countries']; hour: number;
   replies?: Record<string, string>; failures?: string[]; groups?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[];
-  accept?: boolean; last?: number; requestsWhilePlaying?: boolean }
-
-const dated = new Map<string, boolean | undefined>();
-const observeRequestsWhilePlaying = (kind: string, observe: boolean | undefined) => {
-  for (const [held, was] of dated) Object.assign(widgetDefinition(held)!, { playsBackDated: was });
-  dated.clear();
-  const definition = widgetDefinition(kind);
-  if (!observe || !definition) return;
-  dated.set(kind, definition.playsBackDated);
-  Object.assign(definition, { playsBackDated: true });
-};
+  accept?: boolean; last?: number }
 
 const replyOf = (body: string): Reply => new Function('hour', 'params', `return (${body});`) as Reply;
 
@@ -218,7 +207,6 @@ Object.assign(window, { findings: {
     clock.setPlaying(false);
     clock.setBounds({ firstHour: 0, lastHour: Math.max(200, (scene.last ?? LAST) + 100) });
     clock.seek(scene.hour);
-    observeRequestsWhilePlaying(scene.kind, scene.requestsWhilePlaying);
     const made = createWidget(scene.kind, 'main', 'finding');
     const widget = { ...made, time: scene.time, countries: scene.countries ?? made.countries, options: { ...made.options, ...scene.options } } as WidgetSpec;
     const element = document.body.appendChild(document.createElement('div'));

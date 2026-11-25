@@ -21,5 +21,5 @@ export function useWars(widget: WidgetBase, runtime: WidgetRuntime, active: bool
 export function useWarChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const wars = useWars(widget, runtime, true);
   return useMemo(() => ({ war: (wars?.wars ?? []).map(war => ({ value: setToken(war.id),
-    label: `${warName(war.observations.at(-1) ?? null)} · ${war.startedBy ? 'by ' : ''}${dayLabel(war.firstHour)}` })) }), [wars]);
+    label: `${warName(war.observations.at(-1) ?? null)} · ${dayLabel(war.firstHour)}` })) }), [wars]);
 }

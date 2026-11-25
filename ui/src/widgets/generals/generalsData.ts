@@ -9,7 +9,6 @@ import type { LeaderRow as WireRow, LeaderKinds, LeaderRole, LeaderSelection, Le
 
 const KIND_ARMY = 1;
 const KIND_NAVY = 2;
-const DATES = ['Held before', 'Gained', 'Held by'] as const;
 
 function shaped(input: unknown, keys: readonly string[], what: string): void {
   if (typeof input !== 'object' || input === null || !keys.every(key => key in input)) throw new Error(`The ${what} reply is malformed.`);
@@ -58,7 +57,7 @@ export function withheldLeaderState(leaders: readonly LeaderWithheld[], country?
 }
 
 export function traitDateText(date: TraitDate | null): string {
-  return date ? `${DATES[date[1]] ?? 'Held by'} ${formatDateTime(date[0])}` : 'Date not recorded';
+  return date ? `${date[1] === 0 ? 'Held before' : 'Gained'} ${formatDateTime(date[0])}` : 'Date not recorded';
 }
 
 export function pinnedCareer(source: WidgetBase, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {

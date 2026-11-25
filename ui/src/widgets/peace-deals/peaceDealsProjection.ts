@@ -42,7 +42,7 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
       ...common, name: 'Peace deal',
       ...(d.members ? { pageGroup: { members: d.members, open: options.expanded.includes(row.key) } } : {}),
       cells: {
-        date: logDateCell(row.hour, d.bounded ? 'by' : undefined),
+        date: logDateCell(row.hour),
         kind: { ...artKindCell(view, { kind: 'sprite', key: 'GFX_global_diplorequest_icons', frame: 20 }, 'square', 'Peace deal', 'Peace deal artwork unavailable'), artTile: 'raised' },
         country,
         item: { value: notRecorded('War name not recorded') },

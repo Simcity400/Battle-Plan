@@ -459,7 +459,7 @@ function buildFeedTableRow(
       name: titleLabel,
       rowHour: event.hour,
       cells: {
-        date: logDateCell(event.hour, event.exact ? undefined : 'by'),
+        date: logDateCell(event.hour),
         kind: artwork
           ? {
               value: knownValue(titleLabel),

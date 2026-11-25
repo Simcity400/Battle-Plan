@@ -493,9 +493,7 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(ciphers.sections![2]!.chipLines![0]!.chips[0]!.targetName, 'German Reich');
   assert.ok(!ciphers.sections![2]!.chipLines![0]!.chips[0]!.dateText?.includes(':'), 'broken date omits hour');
   const chip = ciphers.sections![2]!.chipLines![0]!.chips[0]!;
-  assert.ok(chip.dateText?.startsWith('By '), 'a break first witnessed after a gap keeps its upper bound on the chip');
-  assert.match(chip.spoken, / By /);
-  assert.match(chip.audit, /\|broken\|By /);
+  assert.ok(chip.dateText && !/^by |earlier/i.test(chip.dateText), 'a break first witnessed after a gap shows its plain date');
 
   const partialReply: DecryptionReply = { ...reply, attemptsUnknown: 'Attempt starts and breaks are not known: history unreadable' };
   const partialView = createBoundedReadView({ hour, panels: new Map([['main', partialReply]]), live: new Map([['main', makeLive({ [liveKey('2:3', 'amount')]: 6200000 })]]), identity, art });
@@ -513,7 +511,7 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.deepEqual(matrix.columns.map(c => c.label), ['German Reich', 'Soviet Union']);
   const engGer = matrixCellAt(matrix, 0, 0);
   assert.equal(engGer.kind === 'value' && engGer.mark, 'square');
-  assert.ok(engGer.kind === 'value' && engGer.audit?.includes('|broken|By '), 'the matrix audit keeps the upper bound');
+  assert.ok(engGer.kind === 'value' && engGer.audit?.includes('|broken|') && !engGer.audit.includes('By '), 'the matrix audit carries the plain date');
   assert.equal(matrixCellAt(matrix, 0, 1).kind, 'missing');
   assert.equal(matrixCellAt(matrix, 1, 0).kind, 'diagonal');
   const gerSov = matrixCellAt(matrix, 1, 1);

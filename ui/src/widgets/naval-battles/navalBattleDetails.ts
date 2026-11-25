@@ -33,11 +33,6 @@ export function validateNavalBattleDetails(v: unknown): NavalBattleDetailsReply 
   }
   return v as unknown as NavalBattleDetailsReply;
 }
-export function navalFleetDescription(detail: NavalBattleDetail | undefined, read: { pending: boolean; error?: Failure | undefined }): string {
-  if (!detail) return read.error ? failureText(read.error, 'Fleets couldn’t load') : read.pending ? 'Loading fleets…' : 'Fleets not read for this battle';
-  return detail.fleets.map(side => side.names.length ? side.names.join(', ') + (side.unknown ? ' + unavailable' : '')
-    : side.unknown ? 'Fleet names not recorded' : 'No fleets').join(' v ');
-}
 export function navalDetailTooltip(detail: NavalBattleDetail | undefined, error?: Failure): TooltipRow[] {
   if (!detail) return [{ detail: error?.message, label: error ? failureText(error, 'Couldn’t load battle details.') : 'Loading battle details…', tone: 'muted', divider: true }];
   const rows: TooltipRow[] = [];

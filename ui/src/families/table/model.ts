@@ -25,7 +25,7 @@ import {
 } from '../value.ts';
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
-import { formatDateHover, formatValueState, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
+import { formatDateHover, formatValueState, spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
 import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
@@ -129,12 +129,14 @@ export interface TableCell {
   readonly glyph?: 'helmet' | 'place' | 'loss' | 'transfer';
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
+  readonly narrowText?: string;
+  readonly strong?: boolean;
+  readonly tooltipRows?: readonly TooltipExtraRow[];
   readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
   readonly loading?: boolean;
-  readonly boundedDate?: DateBoundKind;
   readonly splitBar?: readonly TableCellSplitSegment[];
   readonly secondaryValue?: Value;
   readonly pair?: readonly [Value, Value];
@@ -219,6 +221,7 @@ export interface TableRow {
   readonly initiallyOpen?: boolean;
   readonly muted?: boolean;
   readonly tooltipTitle?: string;
+  readonly tooltipScrollId?: string;
   readonly tooltipExtra?: readonly TooltipExtraRow[] | (() => readonly TooltipExtraRow[] | undefined);
   readonly tooltipNote?: string;
   readonly tooltipAction?: string;
@@ -348,6 +351,7 @@ function validateRowCells(row: TableRow): void {
     assertValue(cell.value, 'table cell');
     if (cell.bar) assertValue(cell.bar.fraction, 'table cell bar');
     if (cell.sortValue) assertValue(cell.sortValue, 'table cell sortValue');
+    for (const line of cell.tooltipRows ?? []) assertValue(line.value, `tooltipRows(${line.label})`);
   }
   if (Array.isArray(row.tooltipExtra)) {
     for (const extra of row.tooltipExtra) assertValue(extra.value, `tooltipExtra(${extra.label})`);
@@ -1209,13 +1213,6 @@ function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, 
   };
 }
 
-const BOUNDED_HOVER_PREFIX: Readonly<Record<DateBoundKind, string>> = {
-  by: 'By',
-  since: 'Since',
-  after: 'After',
-  before: 'Before',
-};
-
 export const ART_STATUS_ROW = 'art-status';
 
 function artStatuses(cell: TableCell, inTitle: boolean): { readonly label: string; readonly text: string }[] {
@@ -1237,6 +1234,16 @@ function tooltipFlag(art: ArtResult): NonNullable<TooltipContent['countryFlag']>
   return { flagReason: artHoverText(art) ?? '' };
 }
 
+function tooltipLine(line: TooltipExtraRow): TooltipRow {
+  return tooltipRowFromValue(line.label, line.value, line.format, {
+    ...(line.indent ? { indent: true } : {}),
+    ...(line.divider ? { divider: true } : {}),
+    ...(line.strong ? { strong: true } : {}),
+    ...(line.lookupKey ? { lookupKey: line.lookupKey } : {}),
+    ...(line.tone ? { tone: line.tone } : {}),
+  });
+}
+
 export function deriveRowTooltip(
   found: Extract<FlatTableRow, { kind: 'data' }>,
   allColumns: readonly TableColumnSpec[],
@@ -1256,12 +1263,15 @@ export function deriveRowTooltip(
     if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell || cell.blank) continue;
+    if (cell.tooltipRows) {
+      for (const line of cell.tooltipRows) rows.push(tooltipLine(line));
+      continue;
+    }
     const resolved = resolveCellAtHour(cell);
     if (col.cellKind === 'item' && hasMeasuredValue(resolved.value) && String(resolved.value.value) === title) continue;
     if (col.cellKind === 'date' && hasMeasuredValue(resolved.value) && typeof resolved.value.value === 'number') {
       const hoverDate = formatDateHover(resolved.value.value);
-      const text = cell.boundedDate ? `${BOUNDED_HOVER_PREFIX[cell.boundedDate]} ${hoverDate}` : hoverDate;
-      rows.push(tooltipRowFromValue(col.label || 'Date', knownValue(text)));
+      rows.push(tooltipRowFromValue(col.label || 'Date', knownValue(hoverDate)));
       continue;
     }
     if (col.headerGroup?.kind === 'pair' && cell.pair) {
@@ -1281,13 +1291,7 @@ export function deriveRowTooltip(
   if (extraRows) {
     for (const extra of extraRows) {
       assertValue(extra.value, `tooltipExtra(${extra.label})`);
-      rows.push(tooltipRowFromValue(extra.label, extra.value, extra.format, {
-        ...(extra.indent ? { indent: true } : {}),
-        ...(extra.divider ? { divider: true } : {}),
-        ...(extra.strong ? { strong: true } : {}),
-        ...(extra.lookupKey ? { lookupKey: extra.lookupKey } : {}),
-        ...(extra.tone ? { tone: extra.tone } : {}),
-      }));
+      rows.push(tooltipLine(extra));
     }
   }
   const noteParts = [row.tooltipNote, row.tooltipAction].filter((part): part is string => Boolean(part));
@@ -1296,6 +1300,7 @@ export function deriveRowTooltip(
     rows,
     ...(firstResolved?.art && firstCell?.country !== undefined ? { countryFlag: tooltipFlag(firstResolved.art) } : {}),
     ...(noteParts.length ? { note: noteParts.join(' \u00b7 ') } : {}),
+    ...(row.tooltipScrollId ? { scrollable: true, scrollId: row.tooltipScrollId } : {}),
     ...(row.tooltipDetail ? { detail: row.tooltipDetail } : {}),
   };
 }
@@ -1377,7 +1382,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
+  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'narrowText' | 'strong' | 'tooltipRows' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;

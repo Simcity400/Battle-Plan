@@ -44,7 +44,7 @@ function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | n
   return {
     key: row.key, name, rowHour: row.hour, meta: row.hour,
     cells: {
-      date: logDateCell(row.hour, row.exact ? undefined : 'by'),
+      date: logDateCell(row.hour),
       kind: kindCell(view, row, sprite, name),
       country: logCountryCell(view, countries, row.observed, boundary),
       item: { value: title ? knownValue(title) : notRecorded(name), missingFigure: award ? 'Medal' : 'Entry' },

@@ -14,6 +14,7 @@ export type TailProduct =
   | 'raid-log-tail'
   | 'peace-deals-tail'
   | 'land-battles-tail'
+  | 'naval-battles-tail'
   | 'ships-sunk-tail'
   | 'division-log-tail'
   | 'division-service-record-tail'

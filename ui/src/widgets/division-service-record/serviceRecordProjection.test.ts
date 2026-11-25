@@ -28,5 +28,4 @@ test('a removed division keeps its last recorded facts and the opponent of its r
   const cells = model.rows[0]!.cells;
   assert.deepEqual(cells.place!.value, { kind: 'known', value: '5 at 91' });
   assert.deepEqual(cells.country!.flags?.map(flag => [flag.tag, Boolean(flag.dimmed)]), [['DEF', false], ['ABC', true]]);
-  assert.equal(cells.date!.boundedDate, 'by');
 });

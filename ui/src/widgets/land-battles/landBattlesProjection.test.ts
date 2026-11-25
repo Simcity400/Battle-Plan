@@ -18,6 +18,5 @@ test('paired figures keep the recorded side when the other side or its IC cost i
   assert.deepEqual(row.cells.icLost!.splitBar, [{ fraction: 1, fill: '', hatched: true }]);
   assert.deepEqual(row.cells.divisions!.value, { kind: 'known', value: 6 });
   assert.equal(row.cells.status!.value.kind, 'notRecorded');
-  assert.equal(row.cells.date!.boundedDate, 'by');
   assert.equal(row.cells.action!.actionLabel, 'Watch');
 });

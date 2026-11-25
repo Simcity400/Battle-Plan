@@ -72,6 +72,7 @@ pub fn dated_panel_of(source: &Arc<Source>, load: &LoadContext, asked: &Value) -
         "raid-log-tail" => dashboard_intelligence::products::raids::tail::dated_panel(source, load, asked),
         "division-service-record-tail" => dashboard_land::products::divisions::careers::service_record::dated_panel(source, load, asked),
         "land-battles-tail" => dashboard_land::products::land_battles::tail::dated_panel(source, load, asked),
+        "naval-battles-tail" => dashboard_naval::products::naval::battles::tail::dated_panel(source, load, asked),
         "ships-sunk-tail" => dashboard_naval::products::naval::sunk::tail::dated_panel(source, load, asked),
         "peace-deals-tail" => dashboard_wars::products::peace::tail::dated_panel(source, load, asked),
         "division-log-tail" => dashboard_land::products::division_log::dated_panel(source, load, asked),

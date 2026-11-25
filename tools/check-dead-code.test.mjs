@@ -28,19 +28,18 @@ function baseFiles(overrides = {}) {
       import './styles.css';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS);
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS);
     `,
     'ui/src/styles.css': "@import './theme.css'; body {}",
     'ui/src/theme.css': ':root {}',
     'ui/src/types.ts': 'export interface SharedType { product: string; head: string; }',
     'ui/src/inlineType.ts': 'export interface Inline { ok: boolean; }',
-    'ui/src/lazy.ts': 'export default function Lazy() { return 1; } export const value = 1;',
+    'ui/src/lazy.ts': 'export const value = 1;',
     'ui/src/lane.worker.ts': 'self.postMessage("ready");',
     'ui/src/generated/dashboard.ts': `
 export const REQUEST_PATHS = {
@@ -54,8 +53,7 @@ export const REQUEST_PATHS = {
     'crates/dashboard-world/src/registrations.rs': 'dashboard_base::register_products! { LIVE => crate::Live, }',
     'tools/helper.mjs': 'export const used = "tool-product";',
     'crates/desktop/src/lib.rs': 'pub const USED: &str = "crate-product";',
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }];',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
     ...overrides,
   };
 }
@@ -77,7 +75,6 @@ test('passes on a clean graph with static, dynamic, type, worker, CSS, tool, and
     assert.deepEqual(result.ui.deadFixturesAndSupport, []);
     assert.deepEqual(result.rust.deadProducts, []);
     assert.deepEqual(result.rust.unwiredRegistrations, []);
-    assert.deepEqual(result.legacy.errors, []);
   });
 });
 
@@ -112,7 +109,7 @@ export const REQUEST_PATHS = {
   "kind-collision": {},
 };
 `,
-    'ui/src/lazy.ts': 'export default function Lazy() { return 1; } export const value = 1; export const family = { kind: "kind-collision" };',
+    'ui/src/lazy.ts': 'export const value = 1; export const family = { kind: "kind-collision" };',
     'ui/src/orphan.ts': 'export const p = "only-in-dead-ui";',
     'crates/dashboard-world/src/registrations.rs': 'dashboard_base::register_products! { LIVE => crate::Live, UNWIRED => crate::Unwired, }',
   }), async root => {
@@ -128,119 +125,41 @@ export const REQUEST_PATHS = {
   });
 });
 
-test('counts legacy (kind, view) pairs from definitions so splitting one converted view lowers the count', async () => {
-  const definitions = `
-    export const widgetMetas = [
-      {
-        kind: 'multi',
-        viewSwitch: { option: 'view', choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' }, { value: 'mix', label: 'Mix' }] },
-      },
-    ];
-  `;
-  await withRepo(baseFiles({
-    'ui/src/widgets/definitions.ts': definitions,
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "multi", load: () => import("../lazy.ts") }];',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 3, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const before = await runDeadCodeCheck(root);
-    assert.equal(before.legacy.count, 3);
-    assert.deepEqual(before.legacy.pairs, ['multi:lines', 'multi:mix', 'multi:race']);
-    assert.deepEqual(before.legacy.errors, []);
-  });
-
-  await withRepo(baseFiles({
-    'ui/src/widgets/definitions.ts': definitions,
-    'ui/src/widgets/multi/raceProj.ts': 'export const proj = 1;',
-    'ui/src/widgets/manifest/bars.ts': `
-      export const BARS_VIEWS = [
-        { kind: 'multi', view: 'race', family: 'bars', loadSpec: () => import('../multi/raceProj.ts') },
-      ];
-    `,
-    'ui/src/widgets/familyManifest.ts': "import { BARS_VIEWS } from './manifest/bars.ts'; export const FAMILY_VIEWS = [...BARS_VIEWS];",
-    'ui/src/widgets/legacyManifest.ts': `
-      export const LEGACY_WIDGETS = [
-        { kind: "multi", view: "lines", load: () => import("../lazy.ts") },
-        { kind: "multi", view: "mix", load: () => import("../lazy.ts") },
-      ];
-    `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 3, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const after = await runDeadCodeCheck(root);
-    assert.equal(after.legacy.count, 2);
-    assert.deepEqual(after.legacy.pairs, ['multi:lines', 'multi:mix']);
-    assert.deepEqual(after.legacy.errors, []);
-    assert.equal(after.legacy.notices.length, 1);
-    assert.match(after.legacy.notices[0], /lower maxLegacyViews .* to 2/);
-  });
-});
-
-test('enforces legacy view ratchet and requires deleting legacy infrastructure at zero', async () => {
-  await withRepo(baseFiles({
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }, { kind: "b", load: () => import("../lazy.ts") }];',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.equal(result.legacy.errors.length, 1);
-    assert.match(result.legacy.errors[0], /has 2 \(kind, view\) pair\(s\), above ratchet 1/);
-  });
-
-  await withRepo(baseFiles({
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [];',
-    'ui/src/families/manifest.ts': 'export interface LegacyWidgetEntry { kind: string }',
-    'ui/src/widgets/manifest.ts': 'export const legacyEntriesForKind = () => [];',
-    'ui/src/widgets/rendererLoaders.ts': 'export const x = LEGACY_WIDGETS;',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.ok(result.legacy.errors.some(err => err.includes('legacyManifest.ts is empty')));
-    assert.ok(result.legacy.errors.some(err => err.includes('LegacyWidgetEntry still exists')));
-    assert.ok(result.legacy.errors.some(err => err.includes('legacyEntriesForKind still exists')));
-    assert.ok(result.legacy.errors.some(err => err.includes('LEGACY_WIDGETS still exists')));
-    assert.ok(result.legacy.errors.some(err => err.includes('from 1 to 0')));
-  });
-});
-
-test('classifies inherited vs branch-added failures and names added legacy pairs', async () => {
+test('classifies inherited vs branch-added failures', async () => {
   const base = await withRepo(baseFiles({
     'ui/src/inheritedOrphan.ts': 'export const old = 1;',
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }, { kind: "b", load: () => import("../lazy.ts") }];',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), runDeadCodeCheck);
 
   const unchanged = await withRepo(baseFiles({
     'ui/src/inheritedOrphan.ts': 'export const old = 1;',
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }, { kind: "b", load: () => import("../lazy.ts") }];',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), runDeadCodeCheck);
 
   const inheritedOnly = classifyAgainstBase(unchanged, base, 'abc123456789');
   assert.equal(inheritedOnly.newIssues, 0);
-  assert.equal(inheritedOnly.inheritedIssues, 2);
+  assert.equal(inheritedOnly.inheritedIssues, 1);
   const inheritedReport = formatReport(unchanged, inheritedOnly);
   assert.match(inheritedReport, /inheritedOrphan\.ts \[inherited from abc123456\]/);
-  assert.match(inheritedReport, /above ratchet 1 \[inherited from abc123456\]/);
 
   const withAdded = await withRepo(baseFiles({
     'ui/src/inheritedOrphan.ts': 'export const old = 1;',
     'ui/src/newOrphan.ts': 'export const added = 2;',
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }, { kind: "b", load: () => import("../lazy.ts") }, { kind: "c", view: "lines", load: () => import("../lazy.ts") }];',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), runDeadCodeCheck);
 
   const addedCmp = classifyAgainstBase(withAdded, base, 'abc123456789');
-  assert.equal(addedCmp.newIssues, 2);
+  assert.equal(addedCmp.newIssues, 1);
   assert.equal(addedCmp.inheritedIssues, 1);
-  assert.deepEqual(addedCmp.addedLegacyPairs, ['c:lines']);
   const addedReport = formatReport(withAdded, addedCmp);
   assert.match(addedReport, /newOrphan\.ts \[new on this branch\]/);
-  assert.match(addedReport, /added: c:lines\) \[new on this branch\]/);
 });
 
 test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, and spending deletion headroom', async () => {
   await withRepo(baseFiles({
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1}',
+    'tools/legacy-widgets-ratchet.json': '{}',
   }), async root => {
-    await assert.rejects(runDeadCodeCheck(root), /maxLegacyRendererViews/);
+    await assert.rejects(runDeadCodeCheck(root), /maxUnusedExports/);
   });
 
   const base = await withRepo(baseFiles({
@@ -249,16 +168,15 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
       import './styles.css';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { live } from './mod.ts';
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, live);
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 2}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 2}',
   }), runDeadCodeCheck);
   assert.equal(base.totalIssues, 0);
 
@@ -268,16 +186,15 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
       import './styles.css';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { live } from './mod.ts';
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, live);
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 3}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 3}',
   }), runDeadCodeCheck);
   assert.equal(raisedCeiling.totalIssues, 0);
   const raisedCmp = classifyAgainstBase(raisedCeiling, base, 'abc123456789');
@@ -291,16 +208,15 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
       import './styles.css';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { live } from './mod.ts';
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, live);
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 1}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 1}',
   }), runDeadCodeCheck);
   assert.equal(swappedAndSpentHeadroom.totalIssues, 0);
   const swapCmp = classifyAgainstBase(swappedAndSpentHeadroom, base, 'abc123456789');
@@ -308,153 +224,7 @@ test('D1: blocks ceiling raises, missing ratchet fields, unused-export swaps, an
   assert.deepEqual(swapCmp.addedUnusedExports.map(e => e.key), ['ui/src/mod.ts:swappedNew']);
 });
 
-test('D2: resolves mapped shorthand kind entries and fails on unresolvable runtime FAMILY_VIEWS pairs', async () => {
-  await withRepo(baseFiles({
-    'ui/src/main.tsx': `
-      import './styles.css';
-      import type { SharedType } from './types.ts';
-      import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
-      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
-      const loadLazy = async () => (await import('./lazy.ts')).value;
-      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      type Ref = import('./inlineType.ts').Inline;
-      const used: SharedType = { product: 'live-product', head: 'live-head' };
-      const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS);
-    `,
-    'ui/src/charts/OldChart.tsx': 'export const OldChart = () => null;',
-    'ui/src/widgets/power/powerProjection.ts': "import { OldChart } from '../../charts/OldChart.tsx'; export const projA = () => OldChart(); export const projB = () => OldChart();",
-    'ui/src/widgets/manifest/table.ts': `
-      function tableSpec(kind: string, view: string, load: () => Promise<any>, pick: (m: any) => any) {
-        return () => load().then(pick);
-      }
-      export const TABLE_VIEWS = [
-        ...(['political-power-spending', 'command-power-spending'] as const).map((kind) => ({
-          kind,
-          view: 'default',
-          family: 'table',
-          loadSpec: tableSpec(kind, 'default', () => import('../power/powerProjection.ts'), mod => (kind === 'political-power-spending' ? mod.projA : mod.projB)),
-        })),
-      ];
-    `,
-    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.deepEqual(
-      result.convertedLegacy.violations.map(v => v.pair),
-      ['command-power-spending:default', 'political-power-spending:default'],
-    );
-    assert.deepEqual(result.convertedLegacy.unresolvedFamilyViews, []);
-  });
-
-  await withRepo(baseFiles({
-    'ui/src/widgets/familyManifest.ts': `
-      const opaqueLoader = (p: string) => () => import(p);
-      export const FAMILY_VIEWS = [{ kind: 'mystery', view: 'default', family: 'table', loadSpec: opaqueLoader('../lazy.ts') }];
-    `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.deepEqual(result.convertedLegacy.unresolvedFamilyViews.map(v => v.pair), ['mystery:default']);
-    assert.ok(result.convertedLegacy.errors.some(e => e.includes('unresolved FAMILY_VIEWS entry mystery:default')));
-  });
-});
-
-test('D3: detects old charts through family helpers, ignores pure chart utils, and catches widget-only legacy React renderers', async () => {
-  await withRepo(baseFiles({
-    'ui/src/main.tsx': `
-      import './styles.css';
-      import type { SharedType } from './types.ts';
-      import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
-      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
-      import { FAMILY_VIEW_UI } from './widgets/manifest.ts';
-      const loadLazy = async () => (await import('./lazy.ts')).value;
-      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      type Ref = import('./inlineType.ts').Inline;
-      const used: SharedType = { product: 'live-product', head: 'live-head' };
-      const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
-    `,
-    'ui/src/charts/pureUtil.ts': 'export const pureMath = () => 1;',
-    'ui/src/charts/OldChart.tsx': 'export const OldChart = () => null;',
-    'ui/src/families/table/helper.ts': "import { OldChart } from '../../charts/OldChart.tsx'; export const helper = () => OldChart();",
-    'ui/src/widgets/old-react/OldReactWidget.tsx': 'export const OldReactWidget = () => null;',
-    'ui/src/widgets/old-react/index.ts': "import { OldReactWidget } from './OldReactWidget.tsx'; export default OldReactWidget;",
-    'ui/src/widgets/clean-util/cleanProjection.ts': "import { pureMath } from '../../charts/pureUtil.ts'; export const proj = () => pureMath();",
-    'ui/src/widgets/via-family/viaFamilyProjection.ts': "import { helper } from '../../families/table/helper.ts'; export const proj = () => helper();",
-    'ui/src/widgets/reaches-widget/reachesProjection.ts': "import { OldReactWidget } from '../old-react/OldReactWidget.tsx'; export const proj = () => OldReactWidget();",
-    'ui/src/widgets/legacyManifest.ts': 'export const LEGACY_WIDGETS = [{ kind: "old-react", load: () => import("./old-react/index.ts") }];',
-    'ui/src/widgets/manifest/table.ts': `
-      export const TABLE_VIEWS = [
-        { kind: 'clean-util', view: 'default', family: 'table', loadSpec: () => import('../clean-util/cleanProjection.ts').then(m => m.proj) },
-        { kind: 'via-family', view: 'default', family: 'table', loadSpec: () => import('../via-family/viaFamilyProjection.ts').then(m => m.proj) },
-        { kind: 'reaches-widget', view: 'default', family: 'table', loadSpec: () => import('../reaches-widget/reachesProjection.ts').then(m => m.proj) },
-      ];
-    `,
-    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
-    'ui/src/widgets/manifest.ts': 'export const FAMILY_VIEW_UI = {};',
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.deepEqual(
-      result.convertedLegacy.violations.map(v => v.pair),
-      ['reaches-widget:default', 'via-family:default'],
-    );
-    assert.deepEqual(
-      result.convertedLegacy.violations[0].chain,
-      ['ui/src/widgets/reaches-widget/reachesProjection.ts', 'ui/src/widgets/old-react/OldReactWidget.tsx'],
-    );
-    assert.deepEqual(
-      result.convertedLegacy.violations[1].chain,
-      ['ui/src/widgets/via-family/viaFamilyProjection.ts', 'ui/src/families/table/helper.ts', 'ui/src/charts/OldChart.tsx'],
-    );
-  });
-});
-
-test('D4: expands explicit view default, evaluates spread legacy entries, and uses view option over viewSwitch', async () => {
-  await withRepo(baseFiles({
-    'ui/src/widgets/definitions.ts': `
-      export const widgetMetas = [
-        {
-          kind: 'dockyard-spending',
-          options: [{ key: 'view', kind: 'choice', choices: [{ value: 'circle' }, { value: 'months' }] }],
-        },
-        {
-          kind: 'equipment-produced',
-          viewSwitch: { option: 'count', choices: [{ value: 'units' }, { value: 'ic' }] },
-          options: [
-            { key: 'count', kind: 'choice', choices: [{ value: 'units' }, { value: 'ic' }] },
-            { key: 'view', kind: 'choice', choices: [{ value: 'race' }, { value: 'lines' }] },
-          ],
-        },
-      ];
-    `,
-    'ui/src/widgets/legacyManifest.ts': `
-      const extra = [{ kind: 'spread-widget', load: () => import('../lazy.ts') }];
-      export const LEGACY_WIDGETS = [
-        { kind: 'dockyard-spending', view: 'default', load: () => import('../lazy.ts') },
-        { kind: 'equipment-produced', load: () => import('../lazy.ts') },
-        ...extra,
-      ];
-    `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 5, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.deepEqual(result.legacy.pairs, [
-      'dockyard-spending:circle',
-      'dockyard-spending:months',
-      'equipment-produced:lines',
-      'equipment-produced:race',
-      'spread-widget:default',
-    ]);
-    assert.equal(result.legacy.count, 5);
-  });
-});
-
-test('D5: uses vite shipping entries, separates type/runtime/test reachability, and ignores unused re-exports and stale legacy loaders', async () => {
+test('D5: uses vite shipping entries, separates type/runtime/test reachability, and ignores unused re-exports', async () => {
   await withRepo(baseFiles({
     'ui/vite.config.ts': `
       export default {
@@ -468,16 +238,9 @@ test('D5: uses vite shipping entries, separates type/runtime/test reachability, 
     'ui/src/barrel.ts': "export { liveFromBarrel } from './liveSub.ts'; export { deadFromBarrel } from './deadSub.ts';",
     'ui/src/liveSub.ts': 'export const liveFromBarrel = () => 1;',
     'ui/src/deadSub.ts': 'export const deadFromBarrel = () => 2;',
-    'ui/src/staleTarget.ts': 'export default function Stale() { return 0; }',
     'ui/src/widgets/converted/proj.ts': 'export const proj = 1;',
     'ui/src/widgets/manifest/table.ts': "export const TABLE_VIEWS = [{ kind: 'converted', view: 'default', family: 'table', loadSpec: () => import('../converted/proj.ts').then(m => m.proj) }];",
     'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
-    'ui/src/widgets/legacyManifest.ts': `
-      export const LEGACY_WIDGETS = [
-        { kind: 'a', load: () => import('../lazy.ts') },
-        { kind: 'converted', load: () => import('../staleTarget.ts') },
-      ];
-    `,
     'ui/src/sneaky.fixture.tsx': "import { behindFixture } from './behindFixture.ts'; export const fx = () => behindFixture();",
     'ui/src/behindFixture.ts': 'export const behindFixture = () => 9;',
     'ui/src/main.tsx': `
@@ -487,16 +250,15 @@ test('D5: uses vite shipping entries, separates type/runtime/test reachability, 
       import { liveFromBarrel } from './barrel.ts';
       import { fx } from './sneaky.fixture.tsx';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline & UsefulType;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, liveFromBarrel(), fx());
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, FAMILY_VIEWS, liveFromBarrel(), fx());
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 10}',
   }), async root => {
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.entryPoints, ['ui/index.html']);
@@ -505,12 +267,10 @@ test('D5: uses vite shipping entries, separates type/runtime/test reachability, 
       'ui/src/deadSub.ts',
       'ui/src/runtimeLeak.ts',
       'ui/src/scratchOnly.ts',
-      'ui/src/staleTarget.ts',
     ]);
     assert.deepEqual(result.ui.productionTestImports, [
       { from: 'ui/src/main.tsx', to: 'ui/src/sneaky.fixture.tsx', role: 'fixture' },
     ]);
-    assert.deepEqual(result.legacy.staleEntries, ['converted:default']);
   });
 });
 
@@ -540,7 +300,6 @@ test('D6: resolves template/commented dynamic imports, ignores unused named impo
       import { lazy } from 'react';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { runChart, shadow, useNs } from './consumer.ts';
       const Lazy = lazy(() => import('./lazyComp.ts'));
       const loadLazy = async () => (await import('./lazy.ts')).value;
@@ -548,9 +307,9 @@ test('D6: resolves template/commented dynamic imports, ignores unused named impo
       type Ref = import('./inlineType.ts').Inline;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(REQUEST_PATHS, LEGACY_WIDGETS, Lazy, loadLazy, worker, used, ref, runChart(), shadow(1), useNs());
+      console.log(REQUEST_PATHS, Lazy, loadLazy, worker, used, ref, runChart(), shadow(1), useNs());
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), async root => {
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.deadProduction, ['ui/src/unusedTarget.ts']);
@@ -606,18 +365,6 @@ test('missing ratchet file at base commit is read as no ratchet instead of throw
     'ui/src/inheritedOrphan.ts': 'export const old = 1;',
   });
   delete files['tools/legacy-widgets-ratchet.json'];
-  delete files['ui/src/widgets/legacyManifest.ts'];
-  files['ui/src/main.tsx'] = `
-    import './styles.css';
-    import type { SharedType } from './types.ts';
-    import { REQUEST_PATHS } from './generated/dashboard.ts';
-    const loadLazy = async () => (await import('./lazy.ts')).value;
-    const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-    type Ref = import('./inlineType.ts').Inline;
-    const used: SharedType = { product: 'live-product', head: 'live-head' };
-    const ref: Ref = { ok: true };
-    console.log(loadLazy, worker, used, ref, REQUEST_PATHS);
-  `;
   await withRepo(files, async root => {
     const git = args => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').trim();
     git(['init', '-q', '-b', 'main']);
@@ -631,13 +378,7 @@ test('missing ratchet file at base commit is read as no ratchet instead of throw
 
     writeFileSync(
       join(root, 'tools/legacy-widgets-ratchet.json'),
-      '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 1}',
-      'utf8',
-    );
-    mkdirSync(join(root, 'ui/src/widgets'), { recursive: true });
-    writeFileSync(
-      join(root, 'ui/src/widgets/legacyManifest.ts'),
-      'export const LEGACY_WIDGETS = [{ kind: "a", load: () => import("../lazy.ts") }];',
+      '{"maxUnusedExports": 1}',
       'utf8',
     );
     writeFileSync(
@@ -646,14 +387,13 @@ test('missing ratchet file at base commit is read as no ratchet instead of throw
         import './styles.css';
         import type { SharedType } from './types.ts';
         import { REQUEST_PATHS } from './generated/dashboard.ts';
-        import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
         import { live } from './mod.ts';
         const loadLazy = async () => (await import('./lazy.ts')).value;
         const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
         type Ref = import('./inlineType.ts').Inline;
         const used: SharedType = { product: 'live-product', head: 'live-head' };
         const ref: Ref = { ok: true };
-        console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, live);
+        console.log(loadLazy, worker, used, ref, REQUEST_PATHS, live);
       `,
       'utf8',
     );
@@ -680,112 +420,9 @@ test('missing ratchet file at base commit is read as no ratchet instead of throw
 
     const cmp = classifyAgainstBase(headResult, baseResult, baseSha);
     assert.deepEqual(cmp.ratchetRaises, []);
-    assert.deepEqual(cmp.addedLegacyPairs, ['a:default']);
     assert.deepEqual(cmp.addedUnusedExports.map(e => e.key), ['ui/src/mod.ts:unusedAtHead']);
     assert.equal(cmp.deadProduction[0].inherited, true);
-    assert.equal(cmp.newIssues, 2);
-  });
-});
-
-test('R2-D1: walks every target in Promise.all loaders and fails unresolved dynamic imports', async () => {
-  await withRepo(baseFiles({
-    'ui/src/main.tsx': `
-      import './styles.css';
-      import type { SharedType } from './types.ts';
-      import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
-      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
-      const loadLazy = async () => (await import('./lazy.ts')).value;
-      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      type Ref = import('./inlineType.ts').Inline;
-      const used: SharedType = { product: 'live-product', head: 'live-head' };
-      const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS);
-    `,
-    'ui/src/charts/OldChart.tsx': 'export const OldChart = () => null;',
-    'ui/src/widgets/multi-imp/cleanHelper.ts': 'export const helper = 1;',
-    'ui/src/widgets/multi-imp/badProjection.ts': "import { OldChart } from '../../charts/OldChart.tsx'; export const proj = () => OldChart();",
-    'ui/src/widgets/manifest/table.ts': `
-      const dynPath = '../multi-imp/badProjection.ts';
-      export const TABLE_VIEWS = [
-        {
-          kind: 'hidden-behind-helper',
-          view: 'default',
-          family: 'table',
-          loadSpec: () => Promise.all([import('../multi-imp/cleanHelper.ts'), import('../multi-imp/badProjection.ts')]).then(([, m]) => m.proj),
-        },
-        {
-          kind: 'mixed-unresolved',
-          view: 'default',
-          family: 'table',
-          loadSpec: () => Promise.all([import('../multi-imp/cleanHelper.ts'), import(dynPath)]),
-        },
-      ];
-    `,
-    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.deepEqual(result.convertedLegacy.violations.map(v => v.pair), ['hidden-behind-helper:default']);
-    assert.deepEqual(
-      result.convertedLegacy.violations[0].chain,
-      ['ui/src/widgets/multi-imp/badProjection.ts', 'ui/src/charts/OldChart.tsx'],
-    );
-    assert.deepEqual(result.convertedLegacy.unresolvedFamilyViews.map(v => v.pair), ['mixed-unresolved:default']);
-  });
-});
-
-test('R2-D2: catches converted views calling loadWidgetRenderer or LEGACY_WIDGETS and allows theme hooks', async () => {
-  await withRepo(baseFiles({
-    'ui/src/main.tsx': `
-      import './styles.css';
-      import type { SharedType } from './types.ts';
-      import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
-      import { FAMILY_VIEWS } from './widgets/familyManifest.ts';
-      import { FAMILY_VIEW_UI } from './widgets/manifest.ts';
-      const loadLazy = async () => (await import('./lazy.ts')).value;
-      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
-      type Ref = import('./inlineType.ts').Inline;
-      const used: SharedType = { product: 'live-product', head: 'live-head' };
-      const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
-    `,
-    'ui/src/charts/useChartTokens.ts': "import { useState } from 'react'; export const useChartTokens = () => useState(0);",
-    'ui/src/widgets/rendererLoaders.ts': 'export const loadWidgetRenderer = (kind: string) => kind; export const preloadStatus = () => 1;',
-    'ui/src/widgets/manifest.ts': `
-      export { LEGACY_WIDGETS } from './legacyManifest.ts';
-      export const widgetViewOptions = () => ({});
-      export const FAMILY_VIEW_UI = {};
-    `,
-    'ui/src/widgets/via-loader/proj.ts': "import { loadWidgetRenderer } from '../rendererLoaders.ts'; export const proj = () => loadWidgetRenderer('wars');",
-    'ui/src/widgets/via-manifest/proj.ts': "import { LEGACY_WIDGETS } from '../manifest.ts'; export const proj = () => LEGACY_WIDGETS;",
-    'ui/src/widgets/clean-hook/proj.ts': "import { useChartTokens } from '../../charts/useChartTokens.ts'; import { widgetViewOptions } from '../manifest.ts'; export const proj = () => [useChartTokens, widgetViewOptions];",
-    'ui/src/widgets/clean-telemetry/proj.ts': "export const proj = async () => (await import('../rendererLoaders.ts')).preloadStatus();",
-    'ui/src/widgets/manifest/table.ts': `
-      export const TABLE_VIEWS = [
-        { kind: 'via-loader', view: 'default', family: 'table', loadSpec: () => import('../via-loader/proj.ts').then(m => m.proj) },
-        { kind: 'via-manifest', view: 'default', family: 'table', loadSpec: () => import('../via-manifest/proj.ts').then(m => m.proj) },
-        { kind: 'clean-hook', view: 'default', family: 'table', loadSpec: () => import('../clean-hook/proj.ts').then(m => m.proj) },
-        { kind: 'clean-telemetry', view: 'default', family: 'table', loadSpec: () => import('../clean-telemetry/proj.ts').then(m => m.proj) },
-      ];
-    `,
-    'ui/src/widgets/familyManifest.ts': "import { TABLE_VIEWS } from './manifest/table.ts'; export const FAMILY_VIEWS = [...TABLE_VIEWS];",
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 10}',
-  }), async root => {
-    const result = await runDeadCodeCheck(root);
-    assert.deepEqual(
-      result.convertedLegacy.violations.map(v => v.pair),
-      ['via-loader:default', 'via-manifest:default'],
-    );
-    assert.deepEqual(
-      result.convertedLegacy.violations[0].chain,
-      ['ui/src/widgets/via-loader/proj.ts', 'ui/src/widgets/rendererLoaders.ts'],
-    );
-    assert.deepEqual(
-      result.convertedLegacy.violations[1].chain,
-      ['ui/src/widgets/via-manifest/proj.ts', 'ui/src/widgets/manifest.ts'],
-    );
+    assert.equal(cmp.newIssues, 1);
   });
 });
 
@@ -804,7 +441,6 @@ test('R2-D3: does not seed uncalled functions in main.tsx and keeps side-effecti
       import './styles.css';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import { deadHelper } from './onlyUncalled.ts';
       import { liveValue } from './feature.ts';
       function uncalledInMain() { return deadHelper(); }
@@ -813,9 +449,9 @@ test('R2-D3: does not seed uncalled functions in main.tsx and keeps side-effecti
       type Ref = import('./inlineType.ts').Inline;
       const used: SharedType = { product: 'live-product', head: 'live-head' };
       const ref: Ref = { ok: true };
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, liveValue);
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, liveValue);
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), async root => {
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.deadProduction, ['ui/src/onlyUncalled.ts']);
@@ -834,7 +470,6 @@ test('R2-D4: tracks computed string namespace access and exported dynamic-import
       import './styles.css';
       import type { SharedType } from './types.ts';
       import { REQUEST_PATHS } from './generated/dashboard.ts';
-      import { LEGACY_WIDGETS } from './widgets/legacyManifest.ts';
       import * as ns from './nsTarget.ts';
       import { loadChart } from './chartLoader.ts';
       const loadLazy = async () => (await import('./lazy.ts')).value;
@@ -847,9 +482,9 @@ test('R2-D4: tracks computed string namespace access and exported dynamic-import
         const mod = await loadChart();
         return mod.draw() + a;
       }
-      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, LEGACY_WIDGETS, run());
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, run());
     `,
-    'tools/legacy-widgets-ratchet.json': '{"maxLegacyViews": 1, "maxLegacyRendererViews": 0, "maxUnusedExports": 0}',
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), async root => {
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.deadProduction, []);

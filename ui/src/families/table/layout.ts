@@ -36,6 +36,7 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly flagsWidth?: number;
   readonly textTone?: TableColumnSpec['textTone'];
   readonly inlineFlags?: readonly string[];
+  readonly narrowed?: boolean;
   readonly leadInset?: number;
   readonly trailInset?: number;
 }
@@ -307,10 +308,10 @@ export function layoutFamilyTable(
     const inlineFlags: string[] = [];
     for (let i = primary + 1; primary >= 0 && visible[i]?.narrow === 'flag'; i++) inlineFlags.push(visible[i]!.key);
     visible = visible.map(col => {
-      if (col.narrow === 'primary') return { ...col, inlineFlags };
-      if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width };
-      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0 };
-      return col.narrowWidth === undefined ? col : { ...col, width: col.narrowWidth };
+      if (col.narrow === 'primary') return { ...col, inlineFlags, narrowed: true };
+      if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width, narrowed: true };
+      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0, narrowed: true };
+      return col.narrowWidth === undefined ? { ...col, narrowed: true } : { ...col, width: col.narrowWidth, narrowed: true };
     });
   }
   const shown = withEdgeInsets(visible);

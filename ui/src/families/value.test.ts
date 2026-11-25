@@ -27,7 +27,6 @@ import { canonicalAuditData } from './audit.ts';
 import {
   GAME_WINDOW_MISSING_LABEL,
   auditValue,
-  formatBoundDate,
   formatCompactRational,
   formatCompactScalar,
   formatDateHover,
@@ -297,7 +296,7 @@ test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SA
   assert.equal(formatScalar(1e21, 'clockSeconds'), '277777777777777777:46:40');
 });
 
-test('dates omit hours on screen, carry exact hours on hover, and format bounded and missing dates', () => {
+test('dates show the day on screen and the hour on hover, and identify missing dates', () => {
   const hour = engineHour({ year: 1941, month: 9, day: 14, hour: 8 })!;
   assert.equal(formatDateOnly(hour), '14 Sep 1941');
   assert.equal(formatDateOnly(hour).includes(':'), false);
@@ -308,19 +307,14 @@ test('dates omit hours on screen, carry exact hours on hover, and format bounded
     full: '14 Sep 1941',
     hover: '14 Sep 1941 · 08:00',
   });
-  const bound = formatBoundDate(hour, 'by', 'First observed after recording started.');
-  assert.equal(bound.display, '14 Sep 1941');
-  assert.equal(bound.hover, 'By 14 Sep 1941 · 08:00');
-  assert.equal(bound.reason, 'First observed after recording started.');
-
   const missingDate = formatDateValue(notRecorded('Date was absent from the log.'));
   assert.equal(missingDate.kind, 'notRecorded');
   assert.equal(missingDate.label, 'Date not recorded');
 
-  const knownDate = formatDateValue(knownValue(hour), { bound: { kind: 'since', reason: 'Observed since gap end.' } });
+  const knownDate = formatDateValue(knownValue(hour));
   assert.equal(knownDate.kind, 'known');
   assert.equal(knownDate.text, '14 Sep 1941');
-  assert.equal(knownDate.hover, 'Since 14 Sep 1941 · 08:00');
+  assert.equal(knownDate.hover, '14 Sep 1941 · 08:00');
 });
 
 test('missing-value vocabulary, compact K/M formatting, and N / max preserve exact figures and missing caps', () => {

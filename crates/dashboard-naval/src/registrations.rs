@@ -1,8 +1,6 @@
 dashboard_base::register_products! {
     NAVAL_SUPREMACY_NAVALSUPREMACY => crate::products::naval_supremacy::NavalSupremacy,
-    NAVAL_BATTLES_NAVALBATTLESMANIFEST => crate::products::naval::battles::NavalBattlesManifest,
-    NAVAL_BATTLES_NAVALBATTLES => crate::products::naval::battles::NavalBattles,
-    NAVAL_BATTLES_NAVALBATTLESRANKING => crate::products::naval::battles::NavalBattlesRanking,
+    NAVAL_BATTLES_TAIL => crate::products::naval::battles::tail::NavalBattlesTail,
     NAVAL_BATTLES_NAVALBATTLEDETAILS => crate::products::naval::battles::NavalBattleDetails,
     NAVAL_SUNK_TAIL => crate::products::naval::sunk::tail::ShipsSunkTail,
     NAVAL_LOSSES_NAVALLOSSESAT => crate::products::naval::losses::NavalLossesAt,

@@ -1,13 +1,8 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { columnsControl } from '../../families/settingsControls.ts';
-import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn, logStatusColumn } from '../../families/table/logHelpers.ts';
+import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn, logPairColumn, logStatusColumn } from '../../families/table/logHelpers.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
-import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-
-function sides(key: string, label: string, narrow: 'hide' | 'total'): TableColumnSpec {
-  return { key, label, priority: 1, as: 'plain', numeric: true, format: 'integer', offered: OFFERED.text,
-    headerGroup: { kind: 'pair', labels: ['Attacker', 'Defender'] }, minWidth: 82, grow: 0.45, narrow };
-}
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const LAND_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
   logDateColumn({ sortable: true }),
@@ -15,9 +10,9 @@ export const LAND_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
   logCountryColumn({ label: '', minWidth: 55, grow: 0 }),
   logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary', grow: 6 }),
   logPlaceColumn({ label: 'Province', minWidth: 134, maxWidth: 134, grow: 0, narrow: 'hide', textTone: 'muted' }),
-  sides('casualties', 'Casualties', 'total'),
-  sides('icLost', 'IC lost', 'hide'),
-  sides('divisions', 'Divisions', 'hide'),
+  logPairColumn('casualties', 'Casualties', 'total'),
+  logPairColumn('icLost', 'IC lost', 'hide'),
+  logPairColumn('divisions', 'Divisions', 'hide'),
   logStatusColumn({ label: 'Result', widest: ['Defender won'], narrow: 'hide' }),
   logActionColumn({ narrow: 'hide' }),
 ];
