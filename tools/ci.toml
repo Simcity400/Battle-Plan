@@ -240,6 +240,7 @@ package = "dashboard"
 ci-only = true
 command = ["cargo", "nextest", "run", "--cargo-profile", "ci", "-p", "dashboard", "--lib", "--no-tests=fail", "the_ui_holds_the_current_contract"]
 warm = ["cargo", "test", "--profile", "ci", "-p", "dashboard", "--lib", "--no-run"]
+widen = [".config/nextest.toml"]
 
 [[job]]
 name = "dashboard-shipped"
