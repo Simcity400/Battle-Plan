@@ -259,10 +259,8 @@ impl Ranking {
                 continue;
             }
             let at = tags.by_key.get(&key).copied();
-            if at.is_none() && !(*population && unnamed_slot(series, key).is_some()) {
-                if *population {
-                    self.unknown.insert(slot, None);
-                }
+            let named = at.is_some() || (*population && unnamed_slot(series, key).is_some());
+            if !named && !*population {
                 continue;
             }
             read += 1;
@@ -274,7 +272,11 @@ impl Ranking {
                     continue;
                 }
             };
-            if drop_zero && value <= 0 {
+            if drop_zero && value == 0 {
+                continue;
+            }
+            if !named {
+                self.unknown.insert(slot, None);
                 continue;
             }
             let ranked = (if *least { value } else { !value }, at.map_or(0, |at| self.order[at as usize]), key);
@@ -541,23 +543,23 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                     continue;
                 }
                 let at = match tags.by_key.get(&key) {
-                    Some(&at) => at,
-                    None if *population && unnamed_slot(series, key).is_some() => UNNAMED,
-                    None if *population => {
-                        answer::not_recorded(&unknown_contender(query, lane, None), out);
-                        return;
-                    }
+                    Some(&at) => Some(at),
+                    None if *population && unnamed_slot(series, key).is_some() => Some(UNNAMED),
+                    None if *population => None,
                     None => continue,
                 };
                 match series_value(&source, cells, slot) {
+                    (value, State::Value, _) if drop_zero && value == 0 => {}
                     (value, State::Value, _) => {
-                        if !drop_zero || value > 0 {
-                            ranked.push((value, key, at));
-                        }
+                        let Some(at) = at else {
+                            answer::not_recorded(&unknown_contender(query, lane, None), out);
+                            return;
+                        };
+                        ranked.push((value, key, at));
                     }
                     (_, State::Missing, Some(_)) => {}
                     _ => {
-                        answer::not_recorded(&unknown_contender(query, lane, (at != UNNAMED).then_some(at)), out);
+                        answer::not_recorded(&unknown_contender(query, lane, at.filter(|&at| at != UNNAMED)), out);
                         return;
                     }
                 }
