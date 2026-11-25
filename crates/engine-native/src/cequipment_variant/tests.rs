@@ -1710,12 +1710,31 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
     let (values, _) = walk(&bytes, Some(lexer));
     assert_eq!(values[9], None, "a cached cost that disagrees with its bonuses stays withheld");
     assert_eq!(values[5], Some(84_000));
-    bytes[cost].copy_from_slice(&2_280_000_i64.to_le_bytes());
+    bytes[cost.clone()].copy_from_slice(&2_280_000_i64.to_le_bytes());
 
     let (values, withheld) = walk(&bytes, None);
     assert_eq!(values, [None; STAT_LANE_COUNT]);
     assert_eq!(withheld.len(), STAT_LANE_COUNT);
     assert!(withheld.iter().all(|(_, reason)| *reason == "variant stat organisation bonus names unreadable"));
+
+    let (entries_off, module_off, module_stats_off) = (0x1600, 0x1700, 0x1800);
+    let module_add = engine_native_parts::cequipment_module::ADD_STATS;
+    bytes[variant + MODULES + 8..variant + MODULES + 16].copy_from_slice(&((base_ptr + entries_off) as u64).to_le_bytes());
+    for offset in [16, 20] {
+        bytes[variant + MODULES + offset..variant + MODULES + offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+    }
+    bytes[entries_off + 8..entries_off + 16].copy_from_slice(&((base_ptr + module_off) as u64).to_le_bytes());
+    bytes[module_off..module_off + 8].copy_from_slice(&(engine_native_parts::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[module_off + module_add..module_off + module_add + 8].copy_from_slice(&((base_ptr + module_stats_off) as u64).to_le_bytes());
+    for offset in [8, 12] {
+        bytes[module_off + module_add + offset..module_off + module_add + offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+    }
+    bytes[module_stats_off..module_stats_off + 4].copy_from_slice(&77_i32.to_le_bytes());
+    bytes[module_stats_off + 8..module_stats_off + 16].copy_from_slice(&1_000_000_i64.to_le_bytes());
+    bytes[cost].copy_from_slice(&3_230_000_i64.to_le_bytes());
+    let (values, withheld) = walk(&bytes, Some(lexer));
+    assert_eq!(values[9], Some(3_230_000), "a module-built design's cost carries its organisation bonus: {withheld:?}");
+    assert_eq!(values[5], Some(84_000));
 }
 
 #[test]
