@@ -8,7 +8,8 @@ import type { TableCell, TableModel, TableProjection, TableRow } from '../../fam
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { ServiceDivision, ServiceEntry, ServiceRecordTailReply } from '../../generated/dashboard';
+import type { ServiceEntry, ServiceRecordTailReply } from '../../generated/dashboard';
+import { nameOf, removals, serviceRecordPicker } from './serviceRecordChoices.ts';
 import { SERVICE_COLUMNS } from './definition.ts';
 
 interface Options {
@@ -18,13 +19,6 @@ interface Options {
 
 const base = { columns: SERVICE_COLUMNS, hideHeader: true, unsorted: true, dateGrouped: true, dayDividersOnly: true, rowTimeBoundaries: false } as const;
 const blank: TableCell = { value: notApplicable('Does not apply to this entry'), blank: true };
-export const removals: Readonly<Record<string, string>> = {
-  loss: 'Lost', division_destroyed: 'Destroyed', division_overrun: 'Overrun', division_deleted: 'Removed', division_disbanded: 'Disbanded',
-  division_capitulation: 'Removed at capitulation', division_scripted: 'Removed by script', division_template_removed: 'Template removed',
-  returned: 'Returned', merged: 'Merged', hq_transferred: 'HQ transferred', volunteer_transferred: 'Volunteer transferred', exile_transferred: 'Exile transferred',
-};
-export const nameOf = (row: ServiceDivision) => row.name ?? `Division name not recorded (${row.division})`;
-
 function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | null, boundary: IdentityBoundary): TableRow {
   const award = row.kind === 'award';
   const created = row.kind === 'created';
@@ -103,7 +97,7 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
 });
 
 export const serviceRecordDeclaration: TableWidgetDeclaration<Options> = {
-  picker: () => import('./ServiceRecordPicker.tsx'),
+  picker: serviceRecordPicker,
   family: 'table', kind: 'division-service-record', jumpToDate: true, label: 'Division service record', subject: 'division', icon: 'medal',
   emptyCampaign: 'Load a campaign to see a division’s record.', countries: { mode: 'filter' }, columns: SERVICE_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },

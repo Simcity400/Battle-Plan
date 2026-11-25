@@ -71,7 +71,7 @@ export interface TableWidgetDeclaration<TProjectionOptions = Record<string, neve
   readonly projectionOptions: (ctx: DeclaredTableContext<TAux>) => TProjectionOptions;
   readonly unavailable?: (ctx: DeclaredTableContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: DeclaredTableContext<TAux>, followRefused: string | null) => readonly string[];
-  readonly picker?: () => Promise<{ default: import('react').ComponentType<import('../table/picker').PickerProps> }>;
+  readonly picker?: import('../table/picker').TablePicker;
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }

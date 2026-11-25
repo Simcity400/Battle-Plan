@@ -1,5 +1,6 @@
+import ProductPicker from '../table/ProductPicker.tsx';
 import { PickerContext } from '../table/picker.ts';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -67,7 +68,7 @@ export interface DeclaredFamilyWidgetDeclaration<
   readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, extra: DeclaredProjectionExtra) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
-  readonly picker?: () => Promise<{ default: import('react').ComponentType<import('../table/picker').PickerProps> }>;
+  readonly picker?: import('../table/picker').TablePicker;
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
@@ -371,10 +372,10 @@ export default function DeclaredFamilyWidget<
     />
   );
 
-  const Picker = useMemo(() => declaration.picker && lazy(declaration.picker), [declaration.picker]);
-  const widgetHost = Picker && displayedCtx ? <PickerContext.Provider value={(at, selected, children) => {
+  const picker = declaration.picker;
+  const widgetHost = picker && displayedCtx ? <PickerContext.Provider value={(at, selected, children) => {
     const hour = plan.recorded(at);
-    return hour === null ? null : <Suspense fallback={null}><Picker runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</Picker></Suspense>;
+    return hour === null ? null : <ProductPicker spec={picker} runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</ProductPicker>;
   }}>{host}</PickerContext.Provider> : host;
   if (!declaration.className && !bannerFailure) return regionChooser ? <>{widgetHost}{regionChooser}</> : widgetHost;
   return (
