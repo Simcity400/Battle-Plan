@@ -246,6 +246,39 @@ describe('time-chart layout & rules C1-C12', () => {
     assert.deepEqual(min.yTicks, [0, 100, 200]);
   });
 
+  it('uses whole ticks only for a whole-number format axis while preserving fractional ticks when decimals > 0', () => {
+    const h0 = H1936;
+    const hPlay = H1936 + 200 * 24;
+    const makeModel = (maxValue: number, decimals: number): TimeChartModel => ({
+      kind: 'nuclear-arsenal',
+      measureTitle: 'Nuclear arsenal',
+      mode: 'lines',
+      hour: hPlay,
+      extent: [h0, hPlay],
+      yAxis: { format: 'number', decimals },
+      series: [{
+        id: 'USA',
+        key: 'USA',
+        name: 'United States',
+        color: '#3987e5',
+        role: 'primary',
+        step: true,
+        points: [
+          { hour: h0, value: 0 },
+          { hour: hPlay, value: maxValue },
+        ],
+        headValue: maxValue,
+        headHour: hPlay,
+      }],
+    });
+    assert.deepEqual(layoutTimeChart(makeModel(2, 0), 722, 378, FONT, measure).yTicks, [0, 1, 2]);
+    assert.deepEqual(layoutTimeChart(makeModel(1, 0), 722, 378, FONT, measure).yTicks, [0, 1]);
+    assert.deepEqual(layoutTimeChart(makeModel(0, 0), 722, 378, FONT, measure).yTicks, [0, 1]);
+    assert.deepEqual(layoutTimeChart(makeModel(10, 0), 722, 378, FONT, measure).yTicks, [0, 5, 10]);
+    const fractional = layoutTimeChart(makeModel(2, 2), 722, 378, FONT, measure);
+    assert.ok(fractional.yTicks.some(tick => !Number.isInteger(tick)));
+  });
+
   it('clamps future points, gives room below zero, and relaxes colliding end labels via shared fitter', () => {
     const h0 = H1936;
     const hPlay = H1936 + 400 * 24;

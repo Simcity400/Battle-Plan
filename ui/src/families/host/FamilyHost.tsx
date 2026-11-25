@@ -13,6 +13,7 @@ import { perfLog } from '../../shell/perf.ts';
 import type { ArtResolution } from '../art/types.ts';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
+import { planSignature } from '../broker.ts';
 import type {
   BoundedReadView,
   EntityKind,
@@ -30,6 +31,7 @@ import {
   familyBinding,
   familyInspectToken,
   lazyActionKeys,
+  nextReportedRowWindow,
   parseFamilyHit,
   requestedRowWindow,
   type FamilyArtDemand,
@@ -43,6 +45,7 @@ import {
   type FamilyViewportChange,
   type FamilyViewportState,
   type ParsedFamilyHit,
+  type ReportedRowWindow,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
 import { boundDated, ownProof, StaticSupply } from './dated.ts';
@@ -289,7 +292,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const mirrorHeadRef = useRef<HTMLTableSectionElement>(null);
   const bodyWrapRef = useRef<HTMLDivElement>(null);
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
-  const windowRef = useRef<{ readonly window: FamilyRowWindow; readonly hour: number } | null>(null);
+  const windowRef = useRef<ReportedRowWindow | null>(null);
   const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
@@ -474,11 +477,19 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const reportWindow = useCallback(() => {
     const requested = requestedWindowRef.current;
-    const installed = recordRef.current?.picture;
-    const reported = windowRef.current;
-    if (!requested || !installed || (reported && reported.window === requested && installed.hour >= reported.hour)) return;
-    windowRef.current = { window: requested, hour: installed.hour };
-    latestRef.current.onWindowChange?.(requested, installed.hour);
+    if (!requested) {
+      windowRef.current = null;
+      return;
+    }
+    const next = nextReportedRowWindow(
+      windowRef.current,
+      requested,
+      recordRef.current?.picture.hour ?? null,
+      planSignature(latestRef.current.plan),
+    );
+    if (!next) return;
+    windowRef.current = next;
+    latestRef.current.onWindowChange?.(next.window, next.hour);
   }, []);
 
   const syncMirror = useCallback((mirror: MirrorModel | null) => {

@@ -11,7 +11,7 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
-import { familyBinding, lazyActionKeys, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
+import { familyBinding, lazyActionKeys, nextReportedRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
 import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { readPlanExact } from '../broker.ts';
@@ -1242,4 +1242,24 @@ test('rv10 R2-S5: rebuilt projection options equal in structure keep the earlier
   assert.equal(keepEqual(first, changed), changed, 'a changed selection is a new options object');
   assert.notEqual(keepEqual(first, { ...rebuilt, looks: new Map(looks) }), first, 'a map is compared by reference, never walked');
   assert.equal(keepEqual(undefined, rebuilt), rebuilt);
+});
+
+test('rv18 S18: a changed source-plan signature replays the current row window to the replacement pager', () => {
+  const win = { first: 596, count: 18 };
+  const first = nextReportedRowWindow(null, win, 200, 'plan:all');
+  assert.deepEqual(first, { window: win, hour: 200, planSig: 'plan:all' });
+  assert.equal(nextReportedRowWindow(first, win, 200, 'plan:all'), null, 'same plan, same window, same hour is deduped');
+  assert.equal(nextReportedRowWindow(first, win, 205, 'plan:all'), null, 'same plan, same window while advancing forward is deduped');
+  assert.deepEqual(nextReportedRowWindow(first, win, 195, 'plan:all'), { window: win, hour: 195, planSig: 'plan:all' }, 'seeking back replays the window');
+  assert.deepEqual(
+    nextReportedRowWindow(first, win, 200, 'plan:filtered'),
+    { window: win, hour: 200, planSig: 'plan:filtered' },
+    'changing the plan signature replays the unchanged window at the same hour',
+  );
+  assert.deepEqual(
+    nextReportedRowWindow(first, win, 205, 'plan:filtered'),
+    { window: win, hour: 205, planSig: 'plan:filtered' },
+    'changing the plan signature replays the unchanged window even when the installed hour moved forward',
+  );
+  assert.equal(nextReportedRowWindow(first, null, 205, 'plan:filtered'), null, 'no requested window reports nothing');
 });
