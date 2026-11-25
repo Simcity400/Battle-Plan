@@ -159,13 +159,17 @@ fn active_subjects_and_window(
     (active, from.min(hour), until.max(hour))
 }
 
+fn clone_spans(spans: &[Span]) -> Vec<Span> {
+    spans.iter().map(|span| Span { first_hour: span.first_hour, last_hour: span.last_hour }).collect()
+}
+
 fn spans_for_country(
     country: &Country,
     subject_spans: &BTreeMap<u32, Vec<Span>>,
     query: &Query<'_>,
 ) -> Vec<Span> {
     match country {
-        Country::Slot(slot) => subject_spans.get(slot).cloned().unwrap_or_default(),
+        Country::Slot(slot) => subject_spans.get(slot).map(|spans| clone_spans(spans)).unwrap_or_default(),
         Country::Tag(tag) => {
             let Some(runs) = query.holders.tags.get(tag) else {
                 return Vec::new();
@@ -262,7 +266,7 @@ pub fn tile(
             let asks: Vec<Ask> = active.iter().map(|&slot| Ask::whole(&Country::Slot(slot))).collect();
             let within: Vec<(Country, Vec<Span>)> = active
                 .iter()
-                .map(|&slot| (Country::Slot(slot), subject_spans.get(&slot).cloned().unwrap_or_default()))
+                .map(|&slot| (Country::Slot(slot), subject_spans.get(&slot).map(|spans| clone_spans(spans)).unwrap_or_default()))
                 .collect();
             (asks, within, Some(TileRanking { hour, from, until, refused: None }))
         }
@@ -323,8 +327,9 @@ mod tests {
         let stretches = [Stretch { run: 0, first: 100, last: 199, join: Join::Start }];
 
         let spans = subject_spans_from_held(&stretches, &held);
-        assert_eq!(spans[&20], vec![Span { first_hour: 100, last_hour: 179 }]);
-        assert_eq!(spans[&30], vec![Span { first_hour: 120, last_hour: 199 }]);
+        let pairs = |list: &[Span]| list.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>();
+        assert_eq!(pairs(&spans[&20]), vec![(100, 179)]);
+        assert_eq!(pairs(&spans[&30]), vec![(120, 199)]);
 
         assert_eq!(
             active_subjects_and_window(&spans, |_| true, 100, 199, &[], 110, 1500),

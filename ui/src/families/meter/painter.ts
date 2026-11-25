@@ -453,6 +453,51 @@ function drawStandardMeterRow(
     ctx.textBaseline = 'middle';
     ctx.fillText(ellipsise(row.secondary, daysW, s => textWidth(ctx, s)), rightX, midY);
     ctx.restore();
+  } else if (showDays && row.sparkline && row.sparkline.length >= 2) {
+    const pts = row.sparkline;
+    const sparkW = Math.min(58, daysW - 6);
+    const sparkH = 14;
+    const sparkLeft = rightX - sparkW - 2;
+    const sparkBottom = midY + sparkH / 2;
+    ctx.save();
+    ctx.strokeStyle = theme.muted;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 1.25;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    let penDown = false;
+    let lastX = 0;
+    let lastY = 0;
+    let hasPoint = false;
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      const value = pts[i];
+      if (value === null || value === undefined || !Number.isFinite(value)) {
+        penDown = false;
+        continue;
+      }
+      const clamped = Math.max(0, Math.min(1, value));
+      const px = sparkLeft + (i / (pts.length - 1)) * sparkW;
+      const py = sparkBottom - clamped * sparkH;
+      if (!penDown) {
+        ctx.moveTo(px, py);
+        penDown = true;
+      } else {
+        ctx.lineTo(px, py);
+      }
+      lastX = px;
+      lastY = py;
+      hasPoint = true;
+    }
+    ctx.stroke();
+    if (hasPoint) {
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = theme.muted;
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 1.75, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
   if (showDays) rightX -= daysW + 10;
 

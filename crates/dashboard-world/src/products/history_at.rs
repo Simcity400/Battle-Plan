@@ -1,7 +1,7 @@
 use super::groups::{Capitulation, CountryGroupReply, CountryIdentityHistory, FactionGroup, FactionNameRun, IdentityChange, MembershipRun, UnobservedHours, WarPairRun, WarStart};
 use super::identities::CountryIdentityRun;
 use super::subjects::{LevelStep, SubjectReply, SubjectRun};
-use dashboard_base::products::{BranchParams, LoadContext, Product};
+use dashboard_base::products::{LoadContext, Product};
 use dashboard_base::{Source, span::HourSpan};
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
