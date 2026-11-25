@@ -285,6 +285,10 @@
 button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { background: var(--press); }
 .dash-time-chip.is-static { background: transparent; color: var(--muted); padding: 0 6px; cursor: default; }
 .dash-time-chip.is-compact { padding: 0; width: 24px; gap: 0; }
+.kind-peace-deals { container: peace-deals / inline-size; }
+@container peace-deals (max-width: 320px) {
+  .dash-time-chip[data-time-mode='follow'] .dash-time-label { display: none; }
+}
 .dash-time-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
 .dash-time-dot.is-playing::after {
   content: ''; position: absolute; inset: -5px; z-index: -1; border-radius: 50%; background: var(--accent); opacity: 0;
