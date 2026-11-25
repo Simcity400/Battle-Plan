@@ -1,13 +1,22 @@
 import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
-import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { REFITS_OPTION } from '../../dashboard/equipment.ts';
 import type { OptionField } from '../../dashboard/options';
-import { MEASURES } from './producedData.ts';
-import { COUNTS } from './producedView.ts';
 import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
+
+const COUNTS = [
+  { value: 'units', label: 'Units' },
+  { value: 'ic', label: 'Factory IC' },
+] as const;
+
+const MEASURES = [
+  { value: 'day', label: 'Per day' },
+  { value: 'week', label: 'Per week' },
+  { value: 'month', label: 'Per month' },
+  { value: 'total', label: 'Since recording start' },
+] as const;
 
 const RACE_OPTIONS: readonly OptionField[] = partsRaceOptions('equipment').flatMap((field): OptionField[] => {
   if (field.key === 'split') return [];
@@ -24,7 +33,8 @@ export const OPTIONS: readonly OptionField[] = [
     choices: MEASURES.map(item => ({ value: item.value, label: item.label })) },
   { key: 'included', section: 'options', label: 'Equipment', hint: 'Units count one type, the one delivered most until you choose; IC counts all equipment until you choose. Several types add up.',
     kind: 'content-set', automatic: 'Most delivered, or all equipment in IC', default: '' },
-  REFITS_OPTION, NARROW_TABLE_OPTION];
+  REFITS_OPTION,
+];
 
 export const definition = {
   kind: 'equipment-produced', version: 1, title: 'Equipment produced', icon: 'layers',

@@ -35,7 +35,7 @@ export interface EquipmentProducedRaceOptions {
   readonly top: number | null;
 }
 
-const UNKNOWN_WORDS: Readonly<Record<ProducedUnknown, string>> = {
+export const UNKNOWN_WORDS: Readonly<Record<ProducedUnknown, string>> = {
   notRecorded: 'Production was not recorded for this country then.',
   unitsInexact: 'A production line left a delivery out of its count.',
   spendingUnavailable: 'The factory IC a line applied was not recorded.',
@@ -93,29 +93,29 @@ export function validateEquipmentProducedRace(value: unknown): EquipmentProduced
   return value as unknown as EquipmentProducedRaceReply;
 }
 
-function provenInterval(data: unknown): readonly [number, number] | null {
+export function provenInterval(data: unknown): readonly [number, number] | null {
   const reply = data as Partial<EquipmentProducedRaceReply> | null | undefined;
   return reply && typeof reply.firstHour === 'number' && typeof reply.lastHour === 'number' && reply.firstHour <= reply.lastHour
     ? [reply.firstHour, reply.lastHour]
     : null;
 }
 
-function measureOption(value: unknown): ProducedMeasure {
+export function measureOption(value: unknown): ProducedMeasure {
   return value === 'total' || value === 'month' || value === 'week' ? value : 'day';
 }
 
-function countOption(value: unknown): ProducedCount {
+export function countOption(value: unknown): ProducedCount {
   return value === 'ic' ? 'ic' : 'units';
 }
 
-function windowUnavailable(measure: ProducedMeasure): string {
+export function windowUnavailable(measure: ProducedMeasure): string {
   if (measure === 'day') return 'A full day of production data is unavailable.';
   if (measure === 'week') return 'A full week of production data is unavailable.';
   if (measure === 'month') return 'A full month of production data is unavailable.';
   return 'No production data at this time.';
 }
 
-function captionFor(count: ProducedCount, measure: ProducedMeasure, equipment: string, observationHour: number | null): string {
+export function captionFor(count: ProducedCount, measure: ProducedMeasure, equipment: string, observationHour: number | null): string {
   const what = count === 'ic' ? `IC · ${equipment}` : equipment;
   if (measure === 'total') {
     return observationHour !== null ? `${what} · since ${formatDateOnly(observationHour)}` : `${what} · since recording start`;
@@ -123,7 +123,7 @@ function captionFor(count: ProducedCount, measure: ProducedMeasure, equipment: s
   return `${what} · ${MEASURE_LABELS[measure].toLowerCase()}`;
 }
 
-interface ProducedRaceExactBase {
+export interface ProducedRaceExactBase {
   readonly branchId: string;
   readonly top: number | null;
   readonly all: boolean;
@@ -133,9 +133,10 @@ interface ProducedRaceExactBase {
   readonly measure: ProducedMeasure;
   readonly types: readonly string[];
   readonly refits: boolean;
+  readonly fromHour?: number;
 }
 
-function buildExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
+export function buildExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
   const cfg = base as unknown as ProducedRaceExactBase;
   const common = {
     branchId: cfg.branchId,
@@ -144,6 +145,7 @@ function buildExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHo
     measure: cfg.measure,
     types: [...cfg.types],
     refits: cfg.refits,
+    ...(cfg.fromHour !== undefined ? { fromHour: cfg.fromHour } : {}),
   };
   if (cfg.top != null || cfg.all) {
     return { ...common, countries: [], ...(cfg.top != null ? { top: cfg.top } : {}) };
@@ -251,7 +253,7 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
   },
 }, 'race');
 
-function resolvedEquipment(ctx: FamilyPlanContext<ProducedTypesReply>): {
+export function resolvedEquipment(ctx: FamilyPlanContext<ProducedTypesReply>): {
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
   readonly refits: boolean;
@@ -295,6 +297,7 @@ function equipmentProducedRaceSources(ctx: FamilyPlanContext<ProducedTypesReply>
     : all || group
       ? { mode: 'population', form: 'all' }
       : { mode: 'keyed', keys: ctx.countries.tags };
+  const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : undefined;
   const base: ProducedRaceExactBase = {
     branchId: ctx.branch.id,
     top,
@@ -305,10 +308,11 @@ function equipmentProducedRaceSources(ctx: FamilyPlanContext<ProducedTypesReply>
     measure,
     types: shownTypes,
     refits,
+    ...(fromHour !== undefined ? { fromHour } : {}),
   };
   const skip = waitingForDefault || noDataMessage !== null || emptySelection;
   return {
-    owner: `equipment-produced:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${count}:${measure}:${refits ? 1 : 0}:${shownTypes.join(',')}`,
+    owner: `equipment-produced:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${count}:${measure}:${refits ? 1 : 0}:${shownTypes.join(',')}:${fromHour ?? ''}`,
     entries: skip ? [] : [{
       name: 'main',
       source: ctx.track.source,

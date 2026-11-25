@@ -5,6 +5,7 @@ import { LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
 import { OPTIONS as AIR_KILLS_LOSSES_OPTIONS } from '../air-kills-losses/definition.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
+import { OPTIONS as EQUIPMENT_PRODUCED_OPTIONS } from '../equipment-produced/definition.ts';
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
 import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
@@ -26,6 +27,12 @@ const AIR_KILLS_LOSSES_LINES_OPTIONS = [
 ];
 const ARMY_SIZE_BREAKDOWN_OPTIONS = ARMY_SIZE_OPTIONS.filter(field => ['view', 'measure', 'countFor', 'log', 'yMin', 'yMax'].includes(field.key));
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
+const EQUIPMENT_PRODUCED_LINES_OPTIONS = [
+  ...EQUIPMENT_PRODUCED_OPTIONS
+    .filter(field => ['view', 'count', 'measure', 'included', 'refits', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
+    .map(field => ({ ...field, visibleWhen: undefined })),
+  ...LINES_VIEW_OPTIONS,
+];
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
 const FACTION_STRENGTH_LINES_OPTIONS = [
   ...FACTION_STRENGTH_OPTIONS.filter(field => ['view', 'measure', 'count', 'territoryMeasure', 'rule', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
@@ -438,6 +445,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../supply-health/supplyHealthProjection.ts'),
       mod => ({ projection: mod.supplyHealthProjection, declaration: mod.supplyHealthDeclaration }),
+    ),
+  },
+  {
+    kind: 'equipment-produced',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: EQUIPMENT_PRODUCED_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'equipment-produced',
+      'lines',
+      () => import('../equipment-produced/equipmentProducedLinesProjection.ts'),
+      mod => ({ projection: mod.equipmentProducedLinesProjection, declaration: mod.equipmentProducedLinesDeclaration }),
     ),
   },
   {

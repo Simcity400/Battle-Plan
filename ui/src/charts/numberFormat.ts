@@ -1,5 +1,4 @@
 export const usNumber = new Intl.NumberFormat('en-US');
-export const usWhole = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 export function formatMegabytes(bytes: number): string {
   const megabytes = Math.ceil(bytes / 2 ** 20);

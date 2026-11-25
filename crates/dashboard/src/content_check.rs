@@ -476,7 +476,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "scoreboard headings", findings);
             Ok("The game's own column headings checked through the recorded content stack.".into())
         }
-        equipment_produced::EquipmentProduced::KEY | equipment_produced::EquipmentProducedTypes::KEY | equipment_produced::EquipmentProducedCountry::KEY | equipment_produced::EquipmentProducedAt::KEY | equipment_produced::EquipmentProducedRace::KEY => {
+        equipment_produced::EquipmentProducedTypes::KEY | equipment_produced::EquipmentProducedAt::KEY | equipment_produced::EquipmentProducedRace::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve the recorded archetype spellings through the equipment database ({} types); design names localise the recorded naming operands; amounts are the recorded production totals and Rocket output.", units.equipment.len()))
         }

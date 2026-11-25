@@ -159,8 +159,8 @@ test('only checked hours leave for the native side: each field’s role comes fr
   assert.match(refusedHours('series-state', { branchId: '1', family: { kind: 'supply', measure: 'state' }, reads: [{ tag: 'GER', hour: 104 }] }, GAPPED) ?? '',
     /params\.reads\[0\]\.tag is not a field the request type has/, 'a field the Rust request type does not name is refused before it is sent');
   assert.match(refusedHours('raid-log', { from: 99, to: 104 }, GAPPED) ?? '', /outside branch/);
-  assert.match(refusedHours('equipment-produced', { rankHour: 105 }, GAPPED) ?? '', /rankHour names hour 105, which was not recorded/, 'a ranking hour is an exact read');
-  assert.match(refusedHours('equipment-produced', { windowHour: 95 }, GAPPED) ?? '', /params\.windowHour is not a field the request type has/,
+  assert.match(refusedHours('equipment-produced-race', { hour: 105 }, GAPPED) ?? '', /hour names hour 105, which was not recorded/, 'a race read is an exact read');
+  assert.match(refusedHours('equipment-produced-race', { windowHour: 95 }, GAPPED) ?? '', /params\.windowHour is not a field the request type has/,
     'a name ending in Hour is not an hour unless the contract says so: a field the contract does not name is refused for its name, never read as an hour');
   assert.match(refusedHours('production-line-breakdown', { hour: 105 }, GAPPED) ?? '', /not recorded/, 'a detail read at one hour asks a recorded hour');
   assert.match(refusedHours('series-tiles', { within: [[1, [{ firstHour: 100, lastHour: 120 }]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\]\.lastHour names hour 120/);

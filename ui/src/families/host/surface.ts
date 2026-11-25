@@ -183,6 +183,7 @@ export function mountFamilyCanvas(
   const drawn = pipeline.held(pipe, surfaceKind, () => {
     const canvas = document.createElement('canvas');
     canvas.className = canvasClassName;
+    canvas.style.display = 'block';
     canvas.setAttribute('aria-hidden', 'true');
     canvas.dataset.surface = surfaceKind;
     canvas.dataset.placement = String(pipe);
