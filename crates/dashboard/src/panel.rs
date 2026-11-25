@@ -25,6 +25,7 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "territory-share" => dashboard_world::registrations::EXACT_TERRITORYSHARE(source, load, asked),
         "occupation-reserve-manpower" => dashboard_wars::registrations::EXACT_OCCUPATIONRESERVE(source, load, asked),
         "lend-lease-balance" => dashboard_economy::registrations::EXACT_LENDLEASEBALANCE(source, load, asked),
+        "fuel-branches" => dashboard_economy::registrations::EXACT_FUELBRANCHES(source, load, asked),
         "occupied-states" => dashboard_wars::registrations::EXACT_OCCUPIEDSTATES(source, load, asked),
         "politics-state" => dashboard_politics::registrations::EXACT_POLITICSSTATE(source, load, asked),
         "air-force-at" => dashboard_land::registrations::EXACT_AIRFORCEAT(source, load, asked),

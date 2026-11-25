@@ -104,6 +104,8 @@ export interface BarsReadout {
   readonly secondary?: string;
   readonly tone?: 'default' | 'shortage' | 'muted';
   readonly shortfall?: string;
+  readonly icon?: ArtResult;
+  readonly iconLabel?: string;
 }
 
 export interface BarsStackedPair {

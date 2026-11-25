@@ -17,11 +17,17 @@ export function fuelDecimals(options: Readonly<Record<string, OptionValue>>): nu
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const raw = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
+const optText = (value: unknown) => value === null || typeof value === 'string';
+const optTextList = (value: unknown) => Array.isArray(value) && value.every(optText);
 
 export function validateFuelBranches(value: unknown): FuelBranchesReply {
-  if (!object(value) || typeof value.tag !== 'string' || value.scale !== 100000 || !Array.isArray(value.consumerNames)
-    || !value.consumerNames.every(name => name === null || typeof name === 'string')
-    || !(value.readHour === null || Number.isSafeInteger(value.readHour)) || !(value.missing === null || typeof value.missing === 'string')
+  if (!object(value) || typeof value.tag !== 'string' || value.scale !== 100000
+    || !optTextList(value.consumerNames)
+    || !optTextList(value.consumerIcons)
+    || !optTextList(value.consumerIconReasons)
+    || !optText(value.fuelIcon)
+    || !optText(value.fuelIconReason)
+    || !(value.readHour === null || Number.isSafeInteger(value.readHour)) || !optText(value.missing)
     || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')
     || !Array.isArray(value.consumers) || !value.consumers.every((row, at, rows) => object(row) && Number.isSafeInteger(row.index)
       && (at === 0 || (rows[at - 1] as { index: number }).index < (row.index as number)) && raw(row.requested) && raw(row.received)
@@ -30,35 +36,7 @@ export function validateFuelBranches(value: unknown): FuelBranchesReply {
   return value as unknown as FuelBranchesReply;
 }
 
-export interface BranchAt {
-  index: number;
-  name: string;
-  requested: bigint;
-  received: bigint;
-  unmet: bigint;
-  priority: number;
-}
-
 export const branchName = (names: readonly (string | null)[], index: number) => names[index] ?? 'Branch name unavailable';
-
-export function branchesAt(reply: FuelBranchesReply): BranchAt[] {
-  return reply.consumers.map(row => {
-    const requested = BigInt(row.requested), received = BigInt(row.received);
-    return { index: row.index, name: branchName(reply.consumerNames, row.index), requested, received,
-      unmet: requested > received ? requested - received : 0n, priority: row.priority };
-  });
-}
-
-export function fuelStructure(reply: FuelBranchesReply): string {
-  return JSON.stringify([reply.missing, reply.consumerNames, reply.consumers.map(row => [row.index, row.requested === '0', BigInt(row.requested) > BigInt(row.received)])]);
-}
-
-export function barWidths(rows: readonly BranchAt[]): Map<number, { delivered: string; unmet: string }> {
-  let largest = 0n;
-  for (const row of rows) for (const value of [row.requested, row.received]) if (value > largest) largest = value;
-  const width = (value: bigint) => largest > 0n ? `${Number(value * 100000n / largest) / 1000}%` : '0%';
-  return new Map(rows.map(row => [row.index, { delivered: width(row.received < row.requested ? row.received : row.requested), unmet: width(row.unmet) }]));
-}
 
 export const fuelAmount = (value: bigint, digits: number) => formatAmount(value, FUEL_PLACES, digits);
 

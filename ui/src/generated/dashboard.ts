@@ -5160,6 +5160,22 @@ export type FuelBranchesReply = { tag: string, scale: number,
  */
 consumerNames: Array<string | null>,
 /**
+ * Each consumer index's insignia artwork URL from the installed interface; null where unavailable.
+ */
+consumerIcons: Array<string | null>,
+/**
+ * Why a consumer index's insignia icon is unavailable; null when an icon URL is present.
+ */
+consumerIconReasons: Array<string | null>,
+/**
+ * The fuel artwork URL from the installed interface; null where unavailable.
+ */
+fuelIcon: string | null,
+/**
+ * Why the fuel icon is unavailable; null when an icon URL is present.
+ */
+fuelIconReason: string | null,
+/**
  * The hour the consumers were last read: they are read once a day.
  */
 readHour: number | null,

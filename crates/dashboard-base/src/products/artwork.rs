@@ -1881,6 +1881,32 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
         .ok_or_else(|| invalid("nukes artwork unavailable"))
 }
 
+pub fn window_icon_url(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    window: &str,
+    icon: &str,
+    edge: u32,
+) -> Result<String, String> {
+    let Some(content) = content else {
+        return Err("the recorded content stack is not configured".to_owned());
+    };
+    let catalogue = catalogue::catalogue(source, content).map_err(|error| error.to_string())?;
+    let guis = catalogue.guis().map_err(|error| error.to_string())?;
+    let name = content_reader_gui::gui::native::window_icon_sprite(
+        guis,
+        window,
+        icon,
+        &mut Vec::new(),
+    )
+    .map_err(|error| error.to_string())?;
+    let sprite =
+        catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|error| error.to_string())?;
+    resolve_sprite_type(&catalogue, sprite, 0, edge)
+        .into_result()?
+        .ok_or_else(|| format!("{window}.{icon}: icon artwork unavailable"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
