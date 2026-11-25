@@ -18,7 +18,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 export const definition = {
   kind: 'division-template', version: 1, title: 'Division template', icon: 'grid', category: 'Army',
-  description: 'A country’s current division templates and how many are fielded; each opens in the game’s division designer.',
+  description: 'A country’s current division templates and how many are fielded.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: 1 }, minSize: { w: 4, h: 5 }, defaultSize: { w: 7, h: 9 }, options: OPTIONS,
 } as const satisfies WidgetMeta;
