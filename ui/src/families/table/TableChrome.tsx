@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Icon } from '../../components/Icons';
 import { createPortal } from 'react-dom';
 import type { FamilyChromeProps } from '../host/FamilyHost.tsx';
 import { syncTableEdges } from './edges.ts';
@@ -15,6 +16,7 @@ const NO_COLUMNS: readonly TableColumnSpec[] = [];
 const NO_WIDTHS: Readonly<Record<string, number>> = {};
 
 interface ChromeMeta {
+  readonly subjectSummary?: TableModel['subjectSummary'];
   readonly kindFilter?: TableModel['kindFilter'];
   readonly hideHeader?: boolean;
   readonly unsorted?: boolean;
@@ -39,7 +41,7 @@ interface ChromeWidths {
   readonly pinnedCount?: number;
 }
 
-export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
+export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, shownHour, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
   const chrome = state as TableChromeState | undefined;
   const meta = (chrome?.meta ?? {}) as ChromeMeta;
   const measured = chrome?.widths as ChromeWidths | undefined;
@@ -175,15 +177,33 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
 
   return (
     <>
+      {meta.subjectSummary && <div className="tf-subject-summary" data-compact={viewportWidth < 440 || undefined}>
+        <span className="tf-subject-art">{meta.subjectSummary.icon ? <img src={meta.subjectSummary.icon} alt="" /> : <Icon name="helmet" />}</span>
+        <div className="tf-subject-name"><strong>{meta.subjectSummary.name}</strong>
+          <div>{meta.subjectSummary.flag && <img src={meta.subjectSummary.flag} alt={meta.subjectSummary.country} />}
+            <span className="tf-subject-detail">{meta.subjectSummary.country} &middot; {meta.subjectSummary.detail}</span>
+            {meta.subjectSummary.insignia && <img className="tf-level-icon" src={meta.subjectSummary.insignia} alt="" />}<span>{meta.subjectSummary.level}</span>
+          </div>
+        </div>
+        <dl>{meta.subjectSummary.metrics.map(metric => <div key={metric.label}><dt>{metric.label}</dt><dd>
+          {metric.icons?.length ? metric.icons.map((url, index) => <img key={index} src={url} alt="" />) : null}<span className={metric.icons?.length === 1 && metric.value === '1' ? 'sr-only' : undefined}>{metric.value}</span>
+        </dd></div>)}</dl>
+      </div>}
       {meta.kindFilter && setFilterOption ? <LogKindFilter
         slot={filterSlot}
+        shownHour={shownHour}
         compact={viewportWidth < 440}
+        single={meta.kindFilter.single}
         allLabel={meta.kindFilter.allLabel}
         noun={meta.kindFilter.noun}
         items={meta.kindFilter.items}
         onSelectAll={() => setFilterOption(meta.kindFilter!.key, '')}
         onToggle={(token, checked) => {
           const filter = meta.kindFilter!;
+          if (filter.single) {
+            setFilterOption(filter.key, token);
+            return;
+          }
           const visible = filter.items.map(item => item.value);
           const selected = new Set(filter.selected.length ? filter.selected : visible);
           selected.delete('-');

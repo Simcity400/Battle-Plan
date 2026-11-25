@@ -203,6 +203,8 @@ function drawInlineRuns(
 }
 
 const glyphPaths = {
+  award: 'M4 1h8l-2 5H6Z M8 5l1.7 3.4 3.8.6-2.8 2.7.7 3.8L8 13.7l-3.4 1.8.7-3.8L2.5 9l3.8-.6Z',
+  battle: 'M1 13l4-1-3-6 5 4 1-8 2 8 5-5-2 7 2 1Z',
   helmet: 'M2 12h12 M3 12a5 5 0 0 1 10 0 M8 7v5',
   place: 'M8 14s4.5-4.6 4.5-8a4.5 4.5 0 1 0-9 0C3.5 9.4 8 14 8 14Z M9.5 6a1.5 1.5 0 1 1-3 0a1.5 1.5 0 1 1 3 0',
   loss: 'M4 4l8 8 M12 4l-8 8',
@@ -220,7 +222,7 @@ function drawGlyph(rc: CellRenderContext, glyph: keyof typeof glyphPaths, x: num
   ctx.lineWidth = 1.5;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  ctx.stroke(path);
+  if (glyph === 'battle') { ctx.fillStyle = rc.theme.text; ctx.fill(path); } else ctx.stroke(path);
   ctx.restore();
 }
 
@@ -283,10 +285,10 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.roundRect(x + (column.width - 26) / 2, middle - 13, 26, 26, 5);
     ctx.fill();
     ctx.restore();
-    if (cell.glyph) {
-      drawGlyph(rc, cell.glyph, x + (column.width - 16) / 2, middle);
-      return;
-    }
+  }
+  if (kind === 'kind' && cell?.glyph) {
+    drawGlyph(rc, cell.glyph, x + (column.width - 16) / 2, middle);
+    return;
   }
   if (cell?.glyph) {
     drawGlyph(rc, cell.glyph, left, middle);
@@ -627,6 +629,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     for (const fl of cell.flags) {
+      if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
       const state = slotOf(fl.art, fl.tag, rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;

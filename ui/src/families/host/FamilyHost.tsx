@@ -163,6 +163,7 @@ export interface FamilyChromeProps<TSettings = unknown> {
   readonly bodyBlocked: boolean;
   readonly announce: (message: string) => void;
   readonly targets: FamilyChromeTargets;
+  readonly shownHour: () => number | null;
   readonly headerSlot: HTMLElement | null;
   readonly filterSlot?: HTMLElement | null;
   readonly setFilterOption?: (key: string, value: string) => void;
@@ -1381,6 +1382,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           bodyBlocked={!!bodyStateNode}
           announce={say}
           targets={targets}
+          shownHour={() => recordRef.current?.picture.hour ?? null}
           filterSlot={filterSlot}
           setFilterOption={setFilterOption}
           headerSlot={headerSlot}

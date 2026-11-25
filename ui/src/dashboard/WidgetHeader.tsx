@@ -104,7 +104,7 @@ export default function WidgetHeader({
   const CountryChip = definition?.countryChip ?? DefaultCountryChip;
   const viewMenuOnly = (activeSwitch?.options.length ?? 0) >= 4;
   const viewKey = activeSwitch ? `${activeSwitch.options.map(item => item.label).join('|')}:${activeSwitch.value}` : '';
-  const hasSubject = definition?.data !== false && definition?.countrySelection !== false;
+  const hasSubject = definition?.data !== false && definition?.countrySelection !== false && definition?.countrySelection !== 'settings';
   const showTime = definition?.data !== false && (definition?.timeModes.length ?? 0) > 0;
   const timeInfo = showTime ? timeChipSummary(widget, effective, campaignTrack, runtime.tracks, runtime.clock.getHour?.() ?? 0) : null;
   const timeKey = showTime ? (widget.time.mode === 'follow' ? 'follow' : (timeInfo?.label ?? '')) : '';
@@ -262,6 +262,7 @@ export default function WidgetHeader({
       : headerDropStage(available, {
           fixed,
           titleFull,
+          titleMin: definition?.countrySelection === 'settings' ? titleFull : undefined,
           hasSummary,
           pill: cache.pillKey === summaryKey ? cache.pill : 0,
           hasViewSwitch: viewPresent,
@@ -280,7 +281,7 @@ export default function WidgetHeader({
     setDrop(previous => previous.stage === next.stage && previous.dropPill === next.dropPill
       && previous.collapseView === next.collapseView && previous.compactSubject === next.compactSubject
       && previous.compactTime === next.compactTime ? previous : next);
-  }, [headerWidth, measureEpoch, readOnly, runtime.clock, widget.title, summaryKey, hasSummary, subjectKey, hasSubject, activeSwitch, viewKey, viewMenuOnly, showTime, timeKey, editing,
+  }, [headerWidth, measureEpoch, readOnly, runtime.clock, widget.title, definition?.countrySelection, summaryKey, hasSummary, subjectKey, hasSubject, activeSwitch, viewKey, viewMenuOnly, showTime, timeKey, editing,
     effectiveDrop.dropPill, effectiveDrop.collapseView, effectiveDrop.compactSubject, effectiveDrop.compactTime]);
 
   useLayoutEffect(() => {

@@ -356,7 +356,7 @@ pub struct PlaceNamesReply {
 
 dashboard_base::reply_warnings!(PlaceNamesReply);
 
-pub(crate) fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_>, hour: i32, provinces: &[u32], states: &[u32]) -> Result<DecodedFrame, String> {
+pub fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_>, hour: i32, provinces: &[u32], states: &[u32]) -> Result<DecodedFrame, String> {
     if query.timeline.at(hour).is_none() {
         let reason = query.timeline.unheld.iter().find(|unheld| unheld.first <= hour && hour <= unheld.last).map_or("the hour was not recorded", |unheld| unheld.reason.as_str());
         return Err(format!("Not in this recording: {reason}"));
