@@ -178,7 +178,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
 
   return (
     <>
-      {meta.subjectSummary && <SubjectSummary summary={meta.subjectSummary} compact={viewportWidth < 440} />}
+      {meta.subjectSummary && chrome && <SubjectSummary summary={meta.subjectSummary} figures={chrome.figures} compact={viewportWidth < 440} />}
       {meta.kindFilter && setFilterOption ? <LogKindFilter
         slot={filterSlot}
         shownHour={shownHour}

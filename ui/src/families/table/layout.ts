@@ -33,6 +33,7 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly grow?: number;
   readonly narrow?: TableColumnSpec['narrow'];
   readonly narrowWidth?: number;
+  readonly flagsWidth?: number;
   readonly textTone?: TableColumnSpec['textTone'];
   readonly inlineFlags?: readonly string[];
   readonly leadInset?: number;
@@ -106,6 +107,7 @@ export function buildColumnLayouts(
       textTone: spec.textTone,
       narrow: own?.width == null ? spec.narrow : undefined,
       narrowWidth: own?.width == null ? spec.narrowWidth : undefined,
+      flagsWidth: spec.flagsWidth,
       grow: own?.width != null ? 0 : spec.grow,
     });
   };
@@ -219,7 +221,7 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.display === 'flag') {
-      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 48, headerWidth));
+      out[column.key] = Math.ceil(Math.max(column.flagsWidth ?? column.minWidth ?? 48, headerWidth));
       continue;
     }
     const samples = column.widest?.length

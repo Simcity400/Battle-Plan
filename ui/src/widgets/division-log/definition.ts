@@ -8,9 +8,9 @@ export const DIVISION_LOG_COLUMNS: readonly TableColumnSpec[] = [
   logDateColumn({ minWidth: 68, maxWidth: 68 }),
   logKindColumn({ minWidth: 34, maxWidth: 34 }),
   logItemColumn({ label: 'Division', minWidth: 94, narrow: 'primary' }),
-  logCountryColumn({ as: 'flagName', showNamesDefault: true, minWidth: 224, maxWidth: 224, narrow: 'flag', textTone: 'secondary' }),
+  logCountryColumn({ as: 'flagName', showNamesDefault: true, flagsWidth: 48, minWidth: 224, maxWidth: 224, narrow: 'flag', textTone: 'secondary' }),
   logPlaceColumn({ narrow: 'hide', textTone: 'muted', minWidth: 164, maxWidth: 164 }),
-  logCountryColumn({ key: 'outcome', label: 'Removal', as: 'flagName', showNamesDefault: true, minWidth: 180, maxWidth: 180, narrow: 'flag', textTone: 'secondary' }),
+  logCountryColumn({ key: 'outcome', label: 'Removal', as: 'flagName', showNamesDefault: true, flagsWidth: 64, minWidth: 180, maxWidth: 180, narrow: 'flag', textTone: 'secondary' }),
   logActionColumn({ minWidth: 24, maxWidth: 24 }),
 ];
 

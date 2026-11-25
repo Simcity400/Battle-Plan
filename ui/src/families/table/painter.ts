@@ -236,9 +236,11 @@ function isLastChildRow(rows: readonly FlatTableRow[], index: number): boolean {
 
 function gapLength(firstHour: number, lastHour: number): string {
   const hours = Math.max(1, lastHour - firstHour + 1);
-  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
-  const days = Math.round(hours / 24);
-  return `${formatScalar(days, 'integer')} ${days === 1 ? 'day' : 'days'}`;
+  const days = Math.floor(hours / 24);
+  const rest = hours % 24;
+  const dayText = days ? `${formatScalar(days, 'integer')} ${days === 1 ? 'day' : 'days'}` : '';
+  const hourText = rest ? `${rest} ${rest === 1 ? 'hour' : 'hours'}` : '';
+  return [dayText, hourText].filter(Boolean).join(' ');
 }
 
 export function drawFamilyTable(

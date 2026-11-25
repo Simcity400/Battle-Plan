@@ -5,25 +5,16 @@ import { Popover, usePopover } from '../../components/Popover';
 import { Select } from '../../components/Select';
 import { ValueState } from '../../components/ValueState';
 import TrimmedArt from '../art/TrimmedArt.tsx';
-import type { StatusMarkKind } from '../../draw/kit.ts';
-import type { Value } from '../value.ts';
 import { formatScalar, formatValueState, valueStateProps } from '../valueFormat.ts';
 import { PickerContext, type PickerStatus } from './picker.ts';
+import { appliedFacets, facetChoices, layoutEntries, nextOption, visibleEntries, type Entry, type FacetChoices, type Filters, type LogKindFilterItem } from './pickerList.ts';
 import './logKindFilter.css';
 
-export interface LogKindFilterItem {
-  readonly value: string;
-  readonly label: string;
-  readonly group?: string;
-  readonly checked: boolean;
-  readonly country?: string;
-  readonly countryName?: string;
-  readonly countryFlag?: string;
-  readonly detail?: string;
-  readonly icon?: string;
-  readonly state?: { readonly kind: StatusMarkKind; readonly label: string };
-  readonly quantity?: { readonly value: Value<number>; readonly unit: string };
-}
+export type { LogKindFilterItem };
+
+const LIST_MAX: Readonly<Record<'single' | 'multi', number>> = { single: 360, multi: 288 };
+const ROW_HEIGHT = { single: 36, multi: 32 } as const;
+const READY: PickerStatus = { kind: 'ready' };
 
 export interface LogKindFilterProps {
   readonly shownHour?: () => number | null;
@@ -37,67 +28,8 @@ export interface LogKindFilterProps {
   readonly onSelectAll: () => void;
 }
 
-interface Filters { readonly query: string; readonly country: string; readonly kind: string }
-
-type Entry = { readonly kind: 'group'; readonly label: string; readonly top: number; readonly height: number }
-  | { readonly kind: 'item'; readonly item: LogKindFilterItem; readonly index: number; readonly last: boolean; readonly top: number; readonly height: number };
-
-const GROUP_HEIGHT = 29;
-const GROUP_GAP = 6;
-const OVERSCAN = 6;
-const LIST_MAX: Readonly<Record<'single' | 'multi', number>> = { single: 360, multi: 288 };
-const ROW_HEIGHT = { single: 36, multi: 32 } as const;
-const READY: PickerStatus = { kind: 'ready' };
-const collator = new Intl.Collator();
-
-function layoutEntries(items: readonly LogKindFilterItem[], rowHeight: number): { readonly entries: readonly Entry[]; readonly options: readonly Entry[]; readonly height: number } {
-  const entries: Entry[] = [];
-  const options: Entry[] = [];
-  let top = 0;
-  let group: string | undefined;
-  items.forEach((item, at) => {
-    if (item.group && item.group !== group) {
-      const height = GROUP_HEIGHT + (entries.length ? GROUP_GAP : 0);
-      entries.push({ kind: 'group', label: item.group, top, height });
-      top += height;
-    }
-    group = item.group;
-    const entry: Entry = { kind: 'item', item, index: options.length, last: items[at + 1]?.group !== item.group, top, height: rowHeight };
-    entries.push(entry);
-    options.push(entry);
-    top += rowHeight;
-  });
-  return { entries, options, height: top };
-}
-
-function visibleEntries(entries: readonly Entry[], scrollTop: number, height: number): readonly Entry[] {
-  let lo = 0;
-  let hi = entries.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (entries[mid]!.top + entries[mid]!.height <= scrollTop) lo = mid + 1;
-    else hi = mid;
-  }
-  let end = lo;
-  while (end < entries.length && entries[end]!.top < scrollTop + height) end++;
-  return entries.slice(Math.max(0, lo - OVERSCAN), Math.min(entries.length, end + OVERSCAN));
-}
-
-function nextOption(key: string, active: number, count: number, page: number): number | null {
-  if (!count) return null;
-  switch (key) {
-    case 'ArrowDown': return Math.min(count - 1, active + 1);
-    case 'ArrowUp': return active < 0 ? count - 1 : Math.max(0, active - 1);
-    case 'PageDown': return Math.min(count - 1, Math.max(0, active) + page);
-    case 'PageUp': return Math.max(0, active - page);
-    case 'Home': return 0;
-    case 'End': return count - 1;
-    default: return null;
-  }
-}
-
 function Mark({ state }: { state: NonNullable<LogKindFilterItem['state']> }) {
-  return <span className="tf-picker-state" data-mark={state.kind}><i aria-hidden="true" /><span>{state.label}</span></span>;
+  return <span className="tf-picker-state" data-mark={state.kind}><i aria-hidden="true" /><span data-tooltip-overflow={state.label}>{state.label}</span></span>;
 }
 
 function Quantity({ quantity }: { quantity: NonNullable<LogKindFilterItem['quantity']> }) {
@@ -112,33 +44,31 @@ function Row({ entry, single, active, id, onChoose, onPoint }: {
 }) {
   const { item } = entry;
   return <div id={id} role="option" aria-selected={item.checked} className="tf-picker-row" data-active={active || undefined} data-last={entry.last || undefined}
-    style={{ top: entry.top, height: entry.height }} data-tooltip-overflow={item.detail ? `${item.label} · ${item.detail}` : item.label}
-    onPointerMove={onPoint} onClick={onChoose}>
+    style={{ top: entry.top, height: entry.height }} onPointerMove={onPoint} onClick={onChoose}>
     {single
       ? <span className="tf-picker-art">{item.icon ? <TrimmedArt src={item.icon} /> : <span className="val-picture-missing" />}</span>
       : <span className="tf-picker-check" aria-hidden="true">{item.checked ? <Icon name="check" /> : null}</span>}
     {!single && item.icon ? <img className="tf-picker-kind" src={item.icon} alt="" /> : null}
-    <span className="tf-picker-name"><span className="tf-picker-label">{item.label}</span>{single && item.detail ? <span className="tf-picker-detail">{item.detail}</span> : null}</span>
+    <span className="tf-picker-name"><span className="tf-picker-label" data-tooltip-overflow={item.label}>{item.label}</span>
+      {single && item.detail ? <span className="tf-picker-detail" data-tooltip-overflow={item.detail}>{item.detail}</span> : null}
+      {single && !item.detail && item.detailMissing ? <span className="tf-picker-detail"><ValueState kind="missing" reason={item.detailMissing} /></span> : null}</span>
     {single ? <span className="tf-picker-note">{item.state ? <Mark state={item.state} /> : item.quantity ? <Quantity quantity={item.quantity} /> : null}</span> : null}
   </div>;
 }
 
-function Facets({ items, filters, setFilters }: { items: readonly LogKindFilterItem[]; filters: Filters; setFilters: (filters: Filters) => void }) {
-  const countries = useMemo(() => {
-    const byTag = new Map<string, { name: string; flag?: string }>();
-    for (const item of items) if (item.country && !byTag.has(item.country)) byTag.set(item.country, { name: item.countryName ?? item.country, ...(item.countryFlag ? { flag: item.countryFlag } : {}) });
-    return [...byTag].sort((a, b) => collator.compare(a[1].name, b[1].name));
-  }, [items]);
-  const kinds = useMemo(() => [...new Set(items.flatMap(item => item.detail ? [item.detail] : []))].sort(collator.compare), [items]);
+function Facets({ choices, country, kind, filters, setFilters }: {
+  choices: FacetChoices; country: string; kind: string; filters: Filters; setFilters: (filters: Filters) => void;
+}) {
+  const { countries, kinds } = choices;
   const only = countries.length === 1 ? countries[0]! : null;
-  const country = filters.country ? countries.find(([tag]) => tag === filters.country)?.[1] : only?.[1];
+  const shown = country ? countries.find(([tag]) => tag === country)?.[1] : only?.[1];
   return <div className="tf-picker-facets">
-    {countries.length ? <Select label="Country" value={only ? only[0] : filters.country} className="tf-picker-chip"
-      leading={country?.flag ? <img className="tf-picker-flag" src={country.flag} alt="" /> : <Icon name="globe" />}
+    {countries.length ? <Select label="Country" value={only ? only[0] : country} className="tf-picker-chip"
+      leading={shown?.flag ? <img className="tf-picker-flag" src={shown.flag} alt="" /> : <Icon name="globe" />}
       options={[...(only ? [] : [{ value: '', label: 'All countries' }]), ...countries.map(([tag, label]) => ({ value: tag, label: label.name }))]}
       onChange={value => setFilters({ ...filters, country: only ? '' : value })} /> : null}
-    {kinds.length ? <Select label="Kind" value={filters.kind} className="tf-picker-chip"
-      options={[{ value: '', label: 'All kinds' }, ...kinds.map(kind => ({ value: kind, label: kind }))]}
+    {kinds.length ? <Select label="Kind" value={kind} className="tf-picker-chip"
+      options={[{ value: '', label: 'All kinds' }, ...kinds.map(value => ({ value, label: value }))]}
       onChange={value => setFilters({ ...filters, kind: value })} /> : null}
   </div>;
 }
@@ -151,7 +81,9 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
   const listbox = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ scrollTop: 0, height: LIST_MAX[mode] });
   const [active, setActive] = useState(-1);
-  const { query, country, kind } = filters;
+  const choices = useMemo(() => facetChoices(items), [items]);
+  const { query } = filters;
+  const { country, kind } = appliedFacets(filters, choices);
   const showSearch = !!single || items.length >= searchThreshold;
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -217,10 +149,12 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
         onChange={event => setQuery({ ...filters, query: event.target.value })}
         onKeyDown={event => {
           if (event.key === 'Enter' && laid.options.length) { event.preventDefault(); choose(laid.options[Math.max(0, active)]); return; }
-          if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && move(event, active)) listbox.current?.focus({ preventScroll: true });
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+          listbox.current?.focus({ preventScroll: true });
+          move(event, active);
         }} />
     </label> : null}
-    {single ? <Facets items={items} filters={filters} setFilters={setQuery} /> : null}
+    {single ? <Facets choices={choices} country={country} kind={kind} filters={filters} setFilters={setQuery} /> : null}
     <div ref={list} className="tf-picker-list themed-scrollbar" style={{ maxHeight: LIST_MAX[mode] }}
       onScroll={event => setView({ scrollTop: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight || LIST_MAX[mode] })}>
       <div ref={listbox} id={`${id}-list`} role="listbox" aria-label={single ? `Choose ${noun}` : `Show ${noun}`} aria-multiselectable={!single || undefined}

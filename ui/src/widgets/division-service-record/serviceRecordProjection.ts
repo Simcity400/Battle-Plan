@@ -23,11 +23,11 @@ const BATTLE_ART = { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 } as 
 function kindCell(view: BoundedReadView, row: ServiceEntry, sprite: string | null, name: string): TableCell {
   if (row.kind === 'award') {
     const icon = row.medal?.icon;
-    return artKindCell(view, icon ? { kind: 'sprite', key: icon.key, frame: icon.frame } : null, 'square', row.medal?.name ?? name,
+    return artKindCell(view, icon ? { kind: 'sprite', key: icon.key, frame: icon.frame } : null, 'drawn', row.medal?.name ?? name,
       row.medal?.iconMissing ?? 'Medal artwork not recorded');
   }
   if (row.kind === 'battle' || row.kind === 'career') return artKindCell(view, BATTLE_ART, 'square', name, 'Land battle artwork not in your installation');
-  return artKindCell(view, sprite ? { kind: 'sprite', key: sprite, frame: 0 } : null, 'unit', name, 'Division artwork not recorded');
+  return artKindCell(view, sprite ? { kind: 'sprite', key: sprite, frame: 0 } : null, 'drawn', name, 'Division artwork not recorded');
 }
 
 function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | null, boundary: IdentityBoundary): TableRow {

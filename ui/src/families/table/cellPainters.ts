@@ -114,7 +114,7 @@ function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHei
   }
   if (shape === 'equipment') return { width: 30, height: 24 };
   if (shape === 'counter') return { width: 30, height: 18 };
-  if (shape === 'unit') return { width: 28, height: 24 };
+  if (shape === 'drawn') return { width: 28, height: 24 };
   if (shape === 'wide') {
     const h = Math.min(24, Math.max(18, rowHeight - 12));
     const w = Math.round(h * (46 / 28));
@@ -327,7 +327,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const geom = cell.artTile ? KIND_TILE_ART : artGeometry(cell.artShape ?? 'square', density, rowHeight);
     const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
     drawArtSlot(ctx, Math.round(centerX - geom.width / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme,
-      { radius: 2, trim: cell.artShape === 'unit' });
+      { radius: 2, trim: cell.artShape === 'drawn' });
     return;
   }
   if (cell?.glyph) {

@@ -2,7 +2,7 @@ import { createContext, type ReactNode } from 'react';
 import type { ProductRequest } from '../../dashboard/request';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { FamilyPlanContext } from '../plan';
-import type { LogKindFilterItem } from './LogKindFilter';
+import type { LogKindFilterItem } from './pickerList.ts';
 
 export type PickerStatus = { readonly kind: 'ready'; readonly notice?: string | null } | { readonly kind: 'loading' }
   | { readonly kind: 'failed'; readonly message: string } | { readonly kind: 'unrecorded' };

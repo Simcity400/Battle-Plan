@@ -32,7 +32,7 @@ export const serviceRecordPicker: TablePicker = {
     const { choices } = data as ServiceChoicesReply;
     return choices.map(row => ({
       value: subjectToken(track.source.metadata.campaignKey, row.division), label: nameOf(row), checked: row.division === selected,
-      ...(row.sprite ? { sprite: row.sprite } : {}), ...(row.tag ? { country: row.tag } : {}), ...(row.template ? { detail: row.template } : {}),
+      ...(row.sprite ? { sprite: row.sprite } : {}), ...(row.tag ? { country: row.tag } : {}), ...(row.template ? { detail: row.template } : { detailMissing: 'Template not recorded' }),
       group: row.removedAt !== null ? DESTROYED.has(row.removed ?? '') ? 'Recently destroyed' : 'Other removals'
         : row.lastSeen < hour ? 'Last observed' : 'Most decorated',
       ...(row.removedAt !== null

@@ -7,7 +7,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 export const SERVICE_COLUMNS: readonly TableColumnSpec[] = [
   logDateColumn({ minWidth: 70, maxWidth: 70 }),
   logKindColumn({ minWidth: 30, maxWidth: 30 }),
-  logCountryColumn({ minWidth: 68, maxWidth: 68, narrow: 'flag', narrowWidth: 40 }),
+  logCountryColumn({ flagsWidth: 68, minWidth: 68, narrow: 'flag', narrowWidth: 40 }),
   logItemColumn({ label: 'Entry', minWidth: 60, narrow: 'primary' }),
   logPlaceColumn({ minWidth: 154, maxWidth: 154, narrow: 'hide', textTone: 'muted' }),
   logStatusColumn({ minWidth: 124, maxWidth: 124, narrowWidth: 104 }),

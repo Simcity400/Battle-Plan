@@ -13,7 +13,7 @@ import { valuesOf } from '../../test-support/liveValues.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { datedIdentity } from '../identity/dated.fixture.ts';
 import { resolveHeadSpan } from '../broker.ts';
-import { tableHostAdapter } from './hostAdapter.ts';
+import { tableHostAdapter, type TableChromeState } from './hostAdapter.ts';
 import { tableLane } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, EventFeedPageRow, MarketLedgerTailReply, ScoreboardColumn, ScoreboardReply, ScriptPageRow } from '../../generated/dashboard';
@@ -41,7 +41,7 @@ import { SlotTags } from '../../dashboard/countrySlots.ts';
 import { groupUnobserved } from '../../dashboard/groups.ts';
 import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts';
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
-import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
+import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, glideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
@@ -2352,6 +2352,10 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
   const gapTop = geom.tops[6]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
+  const gapScreen = gridContext(720, 120);
+  drawFamilyTable(gapScreen.ctx as unknown as CanvasRenderingContext2D, { layout: grown, rows: [{ kind: 'gap', key: 'gap:36', firstHour: DAY1, lastHour: DAY1 + 35, reason: 'Collector detached' }],
+    settings: baseSettings, hour: DAY3, width: 720, height: 120, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, dpr: 1 });
+  assert.ok([...gapScreen.marks.values()].includes('1 day 12 hours'), 'a 36-hour gap is told as a day and hours, not rounded to two days');
   const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns);
   assert.equal(gapTip?.title, 'Not recorded');
   assert.equal(gapTip?.detail, 'Collector detached');
@@ -2625,6 +2629,17 @@ test('the table host adapter stores and resolves table settings through its decl
   assert.equal(rankOf({ ...round, showRank: false }), null, 'ranks hidden on the canvas are absent from the exact audit too');
   assert.notEqual(rankOf({ ...round, showRank: true }), null, 'and present when shown');
   assert.deepEqual(tableHostAdapter.parseHit!('toggle:GER'), { key: 'GER', toggle: true, inspectToken: 'row:GER' }, 'hovering a tree chevron inspects its row, so the row tooltip shows');
+
+  const subject = (taken: Value) => ({ hideHeader: true, subjectSummary: { name: knownValue('298. Division'), country: knownValue('Germany'), detail: knownValue('Infantry'),
+    level: knownValue('Regular'), figures: [{ label: 'Casualties taken', value: taken }, { label: 'Enemy killed', value: notRecorded('Kills are not recorded') }] } });
+  const widths = { widths: {}, totalWidth: 640 };
+  const first = tableHostAdapter.chromeState!({ meta: subject(knownValue(1904)), widths }, undefined) as TableChromeState;
+  const written: string[][] = [];
+  first.figures.attach(texts => { written.push([...texts]); });
+  const fought = tableHostAdapter.chromeState!({ meta: subject(knownValue(2536)), widths }, first);
+  assert.equal(fought, first, 'a summary figure that only changes its number keeps the chrome state, so playback commits nothing');
+  assert.deepEqual(written, [['1,904'], ['2,536']], 'and the new number is written to the band');
+  assert.notEqual(tableHostAdapter.chromeState!({ meta: subject(notRecorded('Casualties not recorded')), widths }, first), first, 'a figure that stops being recorded rebuilds the band');
 });
 
 test('batch 1 log projections: market-ledger contract grouping, decisions running-first, event-choices awaiting-first and detail meta, and event-feed missing dated faction name', () => {

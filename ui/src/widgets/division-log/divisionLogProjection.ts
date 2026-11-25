@@ -46,11 +46,12 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
   }
   const child = row.parent !== null;
   const place: TableCell = e.province !== null && e.placeHour !== null
-    ? { value: resolveName(view, 'province', String(e.province), { atHour: e.placeHour, boundary }).value, glyph: 'place', missingFigure: 'Place' }
+    ? { value: resolveName(view, 'province', String(e.province), { atHour: e.placeHour, boundary }).value, glyph: 'place', missingFigure: 'Place',
+      ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) }
     : { value: notRecorded('Location not recorded'), missingFigure: 'Place' };
   const name = e.name ?? 'Division name not recorded';
   const art = drawableIcon(e.icon);
-  const kind = artKindCell(view, urlArtHandle(art), 'unit', e.templateName, e.iconMissing ?? 'Division template artwork not recorded');
+  const kind = artKindCell(view, urlArtHandle(art), 'drawn', e.templateName, e.iconMissing ?? 'Division template artwork not recorded');
   const status = statuses[e.status] ?? 'Removal cause not recorded';
   const outcome: TableCell = e.kind === 0 ? blank
     : e.kind === 2 ? { value: knownValue('Transferred'), glyph: 'transfer', tone: 'muted' }
@@ -61,7 +62,6 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
     { label: 'Event', value: statuses[e.status] ? knownValue(status) : notRecorded(status) },
     ...(child ? [{ label: 'Country', value: country.value }] : []),
     { label: 'Template', value: e.templateName ? knownValue(e.templateName) : notRecorded(e.templateMissing ?? 'Template not recorded') },
-    ...(e.kind === 0 || e.exact ? [] : [{ label: 'Last seen at', value: place.value }]),
     { label: 'Observed', value: knownValue(formatDateTime(row.observed)) },
     ...(e.afterHour === null ? [] : [{ label: 'First seen after', value: knownValue(formatDateTime(e.afterHour)) }]),
     ...(e.matchedDeaths === null ? [] : [{ label: 'Killer', value: e.killerTag === null

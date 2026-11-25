@@ -106,6 +106,7 @@ export interface TableColumnSpec extends TableColumnDefaults {
   readonly grow?: number;
   readonly narrow?: 'hide' | 'flag' | 'primary' | 'total';
   readonly narrowWidth?: number;
+  readonly flagsWidth?: number;
   readonly textTone?: 'secondary' | 'muted';
 }
 
@@ -140,7 +141,7 @@ export interface TableCell {
   readonly art?: ArtResult;
   readonly artKey?: string;
   readonly iconSlot?: boolean;
-  readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter' | 'unit';
+  readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter' | 'drawn';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
   readonly blank?: boolean;
