@@ -137,7 +137,7 @@ impl OccurrenceReply for ServiceRecordTailReply {
 enum Entry {
     History { key: u128, read: i32 },
     Battle { combat: u128, start: i32, province: Option<u32>, defending: bool },
-    Event(ServiceEntry),
+    Event(Box<ServiceEntry>),
 }
 
 #[derive(Default)]
@@ -404,7 +404,7 @@ fn scan(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Tail> {
                 medal: None,
                 exact: num(c::EXACT) == Some(1),
             };
-            entries.push(occurrence(entries.len(), division, hour, row.hour.max(hour), CAREER, Entry::Event(data)));
+            entries.push(occurrence(entries.len(), division, hour, row.hour.max(hour), CAREER, Entry::Event(Box::new(data))));
         }
     }
     for division in divisions.values_mut() {
@@ -636,7 +636,7 @@ fn reply(
             let mut reads = vec![Read::these(TableId::Divisions, [key]), Read::all(TableId::CountryLinks)];
             let read_at = match event.payload {
                 Entry::Event(ref row) => {
-                    entries.push(row.clone());
+                    entries.push((**row).clone());
                     continue;
                 }
                 Entry::Battle { combat, .. } => {
