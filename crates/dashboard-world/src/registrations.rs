@@ -11,7 +11,6 @@ dashboard_base::register_products! {
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
     SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
-    SUBJECTS_SUBJECTS => crate::products::subjects::Subjects,
     PLACE_NAMES_PLACENAMES => crate::products::place_names::PlaceNames,
     PLACE_NAME_RUNS_PLACENAMERUNS => crate::products::place_name_runs::PlaceNameRuns,
     SEA_REGIONS_STRATEGICREGIONS => crate::products::sea_regions::StrategicRegions,

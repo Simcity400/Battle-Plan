@@ -1,5 +1,5 @@
 
-use dashboard_base::{products::{BranchParams, LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
+use dashboard_base::{products::LoadContext, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, span::HourSpan};
 use dashboard_query::{read, timeline::Stretch};
 use content_reader_politics::autonomy::AutonomyStates;
@@ -20,8 +20,6 @@ const START: usize = 0;
 const END: usize = 1;
 const CANCEL: usize = 2;
 const STATE: usize = 4;
-
-pub struct Subjects;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -91,14 +89,14 @@ fn relation_column() -> Column {
     Column::Computed { id: 0, inputs: 1 << START | 1 << END | 1 << CANCEL, value: relation }
 }
 
-fn split(cell: i64) -> (i32, i32) {
+pub(crate) fn split(cell: i64) -> (i32, i32) {
     ((cell >> 32) as i32, cell as i32)
 }
 
 #[derive(Default)]
 pub struct RunSubjects {
-    relations: Vec<(u32, u32, read::Runs)>,
-    levels: HashMap<u32, Vec<(i32, i32, Option<String>)>>,
+    pub(crate) relations: Vec<(u32, u32, read::Runs)>,
+    pub(crate) levels: HashMap<u32, Vec<(i32, i32, Option<String>)>>,
 }
 
 impl RunSubjects {
@@ -363,32 +361,15 @@ pub fn unknown_hours(query: &dashboard_query::Query<'_>) -> Vec<HourSpan> {
     out
 }
 
-impl Product for Subjects {
-    const KEY: &'static str = "subjects";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = BranchParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
-    type Reply = SubjectReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![BranchParams::decl(), SubjectLevel::decl(), LevelStep::decl(), SubjectRun::decl(), HourSpan::decl(), SubjectReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid subjects branch")
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid subjects branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        let (runs, mut unobserved) = history(source, &query, cancelled)?;
-        unobserved.extend(unknown_hours(&query));
-        let mut warnings = Vec::new();
-        let named: BTreeSet<&str> = runs.iter().flat_map(|run| run.steps.iter().filter_map(|step| step.level.as_deref())).collect();
-        let levels = named_levels(source, context, &named, &mut warnings);
-        Ok(SubjectReply { branch_id: params.branch_id.clone(), levels, runs, unobserved: settle(unobserved), warnings })
-    }
+pub(crate) fn load_branch(source: &Source, branch_id: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<SubjectReply> {
+    let branch = branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid subjects branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let (runs, mut unobserved) = history(source, &query, cancelled)?;
+    unobserved.extend(unknown_hours(&query));
+    let mut warnings = Vec::new();
+    let named: BTreeSet<&str> = runs.iter().flat_map(|run| run.steps.iter().filter_map(|step| step.level.as_deref())).collect();
+    let levels = named_levels(source, context, &named, &mut warnings);
+    Ok(SubjectReply { branch_id: branch_id.to_owned(), levels, runs, unobserved: settle(unobserved), warnings })
 }
 
 #[cfg(test)]

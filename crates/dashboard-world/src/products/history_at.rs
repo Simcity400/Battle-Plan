@@ -247,7 +247,9 @@ impl Product for SubjectsAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![SubjectsAtReply::decl()]
+        use super::subjects::{LevelStep, SubjectLevel, SubjectReply, SubjectRun};
+        use dashboard_base::span::HourSpan;
+        vec![SubjectLevel::decl(), LevelStep::decl(), SubjectRun::decl(), HourSpan::decl(), SubjectReply::decl(), SubjectsAtReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -255,7 +257,7 @@ impl Product for SubjectsAt {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let whole = super::subjects::Subjects::load(source, &BranchParams { branch_id: params.branch_id.clone() }, context, cancelled)?;
+        let whole = super::subjects::load_branch(source, &params.branch_id, context, cancelled)?;
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let hour = params.hour.min(query.timeline.last);
         let (subjects, next_change) = subjects_at(&whole, hour);
