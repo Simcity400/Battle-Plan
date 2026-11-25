@@ -2,12 +2,12 @@ use super::groups::{self, CountryGroupReply, MembershipRun};
 use dashboard_base::{Source, products::LoadContext, span::HourSpan};
 use dashboard_query::{
     Query,
-    identity::{Country, Holders},
+    identity::{Country, Holder, Holders, TAG_UNLINKED},
     log::{CountrySpan, UnobservedSpan, occurrence::Selection},
-    series::ranked::{GroupKind, GroupMembership, GroupSelection, Members},
+    series::{MissingSpan, ranked::{GroupKind, GroupMembership, GroupSelection, Members}},
 };
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -56,18 +56,60 @@ pub fn dated(source: &Source, query: &Query<'_>, context: &LoadContext, countrie
         (Some(countries), None) => Ok(Some(Selection {
             membership: countries.iter().map(|country| CountrySpan { country: country.clone(), first_hour: first, last_hour: last }).collect(),
             unobserved: Vec::new(),
+            unknown: Vec::new(),
         })),
         (None, Some(group)) => {
             let reply = groups::shared(source, query, context, cancelled)?;
             let found = runs(&reply, group)?.map_err(dashboard_core::refused)?;
-            let end = |run: &MembershipRun| match group.membership {
-                GroupMembership::Hour => run.last_hour,
-                GroupMembership::Ever => last,
-            };
-            Ok(Some(Selection {
-                membership: found.members.iter().map(|run| CountrySpan { country: Country::Tag(run.tag.clone()), first_hour: run.first_hour, last_hour: end(run) }).collect(),
-                unobserved: found.unknown.iter().map(|span| UnobservedSpan { first_hour: span.first_hour, last_hour: span.last_hour }).collect(),
-            }))
+            let unobserved = found.unknown.iter().map(|span| UnobservedSpan { first_hour: span.first_hour, last_hour: span.last_hour }).collect();
+            match group.membership {
+                GroupMembership::Hour => Ok(Some(Selection {
+                    membership: found.members.iter().map(|run| CountrySpan { country: Country::Tag(run.tag.clone()), first_hour: run.first_hour, last_hour: run.last_hour }).collect(),
+                    unobserved,
+                    unknown: Vec::new(),
+                })),
+                GroupMembership::Ever => {
+                    let mut slots: BTreeMap<u32, i32> = BTreeMap::new();
+                    let mut unknown: Vec<MissingSpan> = Vec::new();
+                    for run in &found.members {
+                        for held in query.holders.within(&run.tag, run.first_hour, run.last_hour) {
+                            let start = held.first.max(run.first_hour);
+                            let end = held.last.min(run.last_hour);
+                            if start > end {
+                                continue;
+                            }
+                            match held.holder {
+                                Holder::Found { slot, .. } => {
+                                    slots.entry(slot).and_modify(|prev| *prev = (*prev).min(start)).or_insert(start);
+                                }
+                                Holder::Unresolved => {
+                                    unknown.push(MissingSpan {
+                                        first_hour: start,
+                                        last_hour: last,
+                                        reason: format!("Who holds {} is not known: {TAG_UNLINKED}", run.tag),
+                                    });
+                                }
+                            }
+                        }
+                        for (u_first, u_last, reason) in &query.holders.unknown {
+                            let start = (*u_first).max(run.first_hour);
+                            let end = (*u_last).min(run.last_hour);
+                            if start <= end {
+                                unknown.push(MissingSpan {
+                                    first_hour: start,
+                                    last_hour: last,
+                                    reason: format!("Who holds {} is not known: {reason}", run.tag),
+                                });
+                            }
+                        }
+                    }
+                    let membership = slots
+                        .into_iter()
+                        .map(|(slot, start)| CountrySpan { country: Country::Slot(slot), first_hour: start, last_hour: last })
+                        .collect();
+                    Ok(Some(Selection { membership, unobserved, unknown }))
+                }
+            }
         }
     }
 }
@@ -239,5 +281,91 @@ mod tests {
         assert_eq!(groups.valid_through(Some(&group), 500), 599);
         assert_eq!(groups.valid_through(None, 500), i32::MAX);
         assert_eq!(groups.chosen_slots(None, &[Country::Tag("ITA".into())], &holders, 500).unwrap(), Ok(Some([8].into_iter().collect())));
+    }
+
+    #[test]
+    fn ever_dated_selection_resolves_slots_before_extending_past_tag_swap() {
+        use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records}};
+        use dashboard_query::log::occurrence::{Ask, Direction, Index, Occurrence, Order, Role};
+        use replay::campaign::Replay;
+        use replay_data::rows::{CampaignRow, CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, Recorded, TableId, TableRows};
+        use replay_frame::frame::{DecodedFrame, Metrics, TableView};
+
+        let links = vec![
+            CountryLinkRow { id: 9001, canonical_slot: 7 },
+            CountryLinkRow { id: 9002, canonical_slot: 8 },
+        ];
+        let factions = vec![FactionRow { id: 10, name: b"Axis".to_vec(), ..FactionRow::default() }];
+        let frames: Vec<DecodedFrame> = (100..=120)
+            .map(|hour| {
+                let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside fixture".into() });
+                tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.into() }]));
+                let countries = if hour <= 110 {
+                    vec![
+                        CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9001, canonical_slot: 7, tag: b"AAA".to_vec(), ..CountryRow::default() },
+                        CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9002, canonical_slot: 8, tag: b"CCC".to_vec(), ..CountryRow::default() },
+                    ]
+                } else {
+                    vec![
+                        CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9001, canonical_slot: 7, tag: b"BBB".to_vec(), ..CountryRow::default() },
+                        CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9002, canonical_slot: 8, tag: b"AAA".to_vec(), ..CountryRow::default() },
+                    ]
+                };
+                tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links.clone()));
+                tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions.clone()));
+                let members = if hour <= 110 {
+                    vec![FactionMemberRow { country: 9001, faction: 10, ordinal: 0 }]
+                } else {
+                    Vec::new()
+                };
+                tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+                DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() }
+            })
+            .collect();
+        let built = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(
+            SourceKey { source_id: "ever-tag-swap".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(built),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let group = GroupSelection { kind: GroupKind::Faction, id: Some("10".into()), tag: None, membership: GroupMembership::Ever };
+        let selection = dated(&source, &query, &LoadContext { content: None }, None, Some(&group), &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        let entries = vec![
+            Occurrence { id: 1, date: 105, observed: 105, kind: 0, roles: Box::new([Role { slot: Some(7), at: 105 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 2, date: 115, observed: 115, kind: 0, roles: Box::new([Role { slot: Some(7), at: 115 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 3, date: 116, observed: 116, kind: 0, roles: Box::new([Role { slot: Some(8), at: 116 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+        ];
+        let index = Index::new(entries, Vec::new(), &[]).unwrap();
+        let answer = index
+            .ask(
+                &query.holders,
+                &Ask {
+                    hour: 120,
+                    from: None,
+                    to: None,
+                    selection: Some(&selection),
+                    subject: None,
+                    kinds: None,
+                    states: None,
+                    search: None,
+                    order: Order::Date(Direction::Descending),
+                    live_first: false,
+                    offset: 0,
+                    limit: 64,
+                    chips: &[],
+                },
+            )
+            .unwrap();
+        let ids: Vec<u128> = answer.rows.iter().map(|shown| index.get(shown.at).id).collect();
+        assert_eq!(ids, [2, 1], "member slot 7 keeps its later BBB row and nonmember slot 8 taking AAA is excluded");
     }
 }

@@ -1,7 +1,7 @@
 
 use super::{CountrySpan, UnobservedSpan};
 use crate::{
-    identity::{Country, Holder, Holders},
+    identity::{Country, Holder, Holders, TAG_UNLINKED},
     series::MissingSpan,
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,71 @@ pub struct Role {
     pub at: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SortValue {
+    Number(i64),
+    Text(Box<str>),
+}
+
+impl SortValue {
+    fn cmp_value(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (Self::Number(a), Self::Number(b)) => a.cmp(b),
+            (Self::Text(a), Self::Text(b)) => a
+                .chars()
+                .flat_map(char::to_lowercase)
+                .cmp(b.chars().flat_map(char::to_lowercase))
+                .then_with(|| a.cmp(b)),
+            (Self::Number(_), Self::Text(_)) => std::cmp::Ordering::Less,
+            (Self::Text(_), Self::Number(_)) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SortKey {
+    Static(Option<SortValue>),
+    Dated(Box<[(i32, Option<SortValue>)]>),
+}
+
+impl SortKey {
+    pub fn number(value: Option<i64>) -> Self {
+        Self::Static(value.map(SortValue::Number))
+    }
+
+    pub fn text(value: Option<impl Into<Box<str>>>) -> Self {
+        Self::Static(value.map(|text| SortValue::Text(text.into())))
+    }
+
+    pub fn dated_numbers(steps: impl IntoIterator<Item = (i32, Option<i64>)>) -> Self {
+        Self::Dated(steps.into_iter().map(|(at, value)| (at, value.map(SortValue::Number))).collect())
+    }
+
+    pub fn dated_text(steps: impl IntoIterator<Item = (i32, Option<Box<str>>)>) -> Self {
+        Self::Dated(steps.into_iter().map(|(at, value)| (at, value.map(SortValue::Text))).collect())
+    }
+
+    pub fn at(&self, hour: i32) -> Option<&SortValue> {
+        match self {
+            Self::Static(value) => value.as_ref(),
+            Self::Dated(steps) => {
+                let at = steps.partition_point(|&(from, _)| from <= hour);
+                at.checked_sub(1).and_then(|at| steps[at].1.as_ref())
+            }
+        }
+    }
+
+    pub fn next_change(&self, hour: i32) -> Option<i32> {
+        match self {
+            Self::Static(_) => None,
+            Self::Dated(steps) => {
+                let at = steps.partition_point(|&(from, _)| from <= hour);
+                steps.get(at).map(|&(from, _)| from)
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Occurrence<P> {
     pub id: u128,
@@ -36,8 +101,9 @@ pub struct Occurrence<P> {
     pub observed: i32,
     pub kind: u16,
     pub roles: Box<[Role]>,
+    pub subjects: Box<[u128]>,
     pub states: Box<[(i32, u8)]>,
-    pub figures: Box<[Option<i64>]>,
+    pub sort_keys: Box<[SortKey]>,
     pub text: Box<str>,
     pub payload: P,
 }
@@ -53,6 +119,7 @@ impl<P> Occurrence<P> {
 pub struct Selection {
     pub membership: Vec<CountrySpan>,
     pub unobserved: Vec<UnobservedSpan>,
+    pub unknown: Vec<MissingSpan>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -67,7 +134,7 @@ pub enum Direction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Order {
     Date(Direction),
-    Figure(usize, Direction),
+    Key(usize, Direction),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -88,6 +155,7 @@ pub struct Ask<'a> {
     pub from: Option<i32>,
     pub to: Option<i32>,
     pub selection: Option<&'a Selection>,
+    pub subject: Option<u128>,
     pub kinds: Option<&'a [u16]>,
     pub states: Option<&'a [u8]>,
     pub search: Option<&'a str>,
@@ -134,8 +202,9 @@ pub struct Answer {
 struct Signature {
     from: Option<i32>,
     to: Option<i32>,
+    subject: Option<u128>,
     kinds: Option<Vec<u16>>,
-    selection: Option<(Vec<(String, i32, i32)>, Vec<(i32, i32)>)>,
+    selection: Option<(Vec<(String, i32, i32)>, Vec<(i32, i32)>, Vec<(i32, i32, String)>)>,
     search: Option<String>,
 }
 
@@ -144,11 +213,12 @@ struct Filtered {
     observed: Vec<i32>,
     changes: Vec<i32>,
     unattributed: Vec<i32>,
-    unknown: Vec<(i32, i32)>,
+    unknown: Vec<MissingSpan>,
 }
 
 pub struct Index<P> {
     entries: Vec<Occurrence<P>>,
+    by_subject: HashMap<u128, Vec<u32>>,
     gaps: Vec<MissingSpan>,
     live: u64,
     filtered: Mutex<VecDeque<(Signature, Arc<Filtered>)>>,
@@ -167,6 +237,22 @@ fn sorted_spans(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
     merged
 }
 
+fn merge_missing_spans(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
+    spans.retain(|span| span.first_hour <= span.last_hour);
+    spans.sort_unstable_by(|a, b| (&a.reason, a.first_hour, a.last_hour).cmp(&(&b.reason, b.first_hour, b.last_hour)));
+    let mut merged: Vec<MissingSpan> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match merged.last_mut() {
+            Some(held) if held.reason == span.reason && i64::from(held.last_hour) + 1 >= i64::from(span.first_hour) => {
+                held.last_hour = held.last_hour.max(span.last_hour);
+            }
+            _ => merged.push(span),
+        }
+    }
+    merged.sort_unstable_by(|a, b| (a.first_hour, a.last_hour, &a.reason).cmp(&(b.first_hour, b.last_hour, &b.reason)));
+    merged
+}
+
 fn within(spans: &[(i32, i32)], hour: i32) -> bool {
     let at = spans.partition_point(|&(_, last)| last < hour);
     spans.get(at).is_some_and(|&(first, _)| first <= hour)
@@ -181,27 +267,55 @@ enum Admit {
 
 struct Members {
     slots: HashMap<u32, Vec<(i32, i32)>>,
-    unknown: Vec<(i32, i32)>,
+    unknown: Vec<MissingSpan>,
+    unknown_hours: Vec<(i32, i32)>,
 }
 
 impl Members {
     fn resolve(holders: &Holders, selection: &Selection) -> Self {
         let mut slots: HashMap<u32, Vec<(i32, i32)>> = HashMap::new();
+        let mut unknown: Vec<MissingSpan> = selection
+            .unobserved
+            .iter()
+            .filter(|span| span.first_hour <= span.last_hour)
+            .map(|span| MissingSpan { first_hour: span.first_hour, last_hour: span.last_hour, reason: MEMBERSHIP_UNKNOWN.to_owned() })
+            .chain(selection.unknown.iter().filter(|span| span.first_hour <= span.last_hour).cloned())
+            .collect();
         for span in &selection.membership {
             if let Country::Slot(slot) = span.country {
                 slots.entry(slot).or_default().push((span.first_hour, span.last_hour));
                 continue;
             }
+            let Country::Tag(tag) = &span.country else { continue };
             for run in holders.within(&span.country, span.first_hour, span.last_hour) {
-                if let Holder::Found { slot, .. } = run.holder {
-                    slots.entry(slot).or_default().push((run.first.max(span.first_hour), run.last.min(span.last_hour)));
+                let first = run.first.max(span.first_hour);
+                let last = run.last.min(span.last_hour);
+                if first > last {
+                    continue;
+                }
+                match run.holder {
+                    Holder::Found { slot, .. } => {
+                        slots.entry(slot).or_default().push((first, last));
+                    }
+                    Holder::Unresolved => {
+                        unknown.push(MissingSpan { first_hour: first, last_hour: last, reason: format!("Who holds {tag} is not known: {TAG_UNLINKED}") });
+                    }
+                }
+            }
+            for (u_first, u_last, reason) in &holders.unknown {
+                let first = (*u_first).max(span.first_hour);
+                let last = (*u_last).min(span.last_hour);
+                if first <= last {
+                    unknown.push(MissingSpan { first_hour: first, last_hour: last, reason: format!("Who holds {tag} is not known: {reason}") });
                 }
             }
         }
         for spans in slots.values_mut() {
             *spans = sorted_spans(std::mem::take(spans));
         }
-        Self { slots, unknown: sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()) }
+        let unknown = merge_missing_spans(unknown);
+        let unknown_hours = sorted_spans(unknown.iter().map(|span| (span.first_hour, span.last_hour)).collect());
+        Self { slots, unknown, unknown_hours }
     }
 
     fn admits(&self, roles: &[Role], observed: i32) -> Admit {
@@ -216,7 +330,7 @@ impl Members {
                 admitted = Some(admitted.map_or(known, |held| held.min(known)));
                 continue;
             }
-            unknown |= within(&self.unknown, role.at);
+            unknown |= within(&self.unknown_hours, role.at);
         }
         match (admitted, unknown, named) {
             (Some(hour), ..) => Admit::Yes(hour),
@@ -229,6 +343,7 @@ impl Members {
 
 impl<P> Index<P> {
     pub fn new(mut entries: Vec<Occurrence<P>>, mut gaps: Vec<MissingSpan>, live: &[u8]) -> io::Result<Self> {
+        let expected_keys = entries.first().map_or(0, |entry| entry.sort_keys.len());
         for entry in &entries {
             if entry.date > entry.observed {
                 return Err(invalid(format!("Occurrence {} is dated {} after it was observed at {}", entry.id, entry.date, entry.observed)));
@@ -236,15 +351,34 @@ impl<P> Index<P> {
             if entry.states.first().is_some_and(|&(from, _)| from != entry.observed) || entry.states.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
                 return Err(invalid(format!("Occurrence {} has states out of order", entry.id)));
             }
+            if entry.sort_keys.len() != expected_keys {
+                return Err(invalid(format!("Occurrence {} has {} sort keys, expected {}", entry.id, entry.sort_keys.len(), expected_keys)));
+            }
+            for key in &entry.sort_keys {
+                if let SortKey::Dated(steps) = key
+                    && steps.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                {
+                    return Err(invalid(format!("Occurrence {} has dated sort keys out of order", entry.id)));
+                }
+            }
         }
         entries.sort_unstable_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
         if entries.windows(2).any(|pair| pair[0].id == pair[1].id) {
             return Err(invalid("Two occurrences share one id"));
         }
+        let mut by_subject: HashMap<u128, Vec<u32>> = HashMap::new();
+        for (at, entry) in entries.iter().enumerate() {
+            for &subject in &entry.subjects {
+                let list = by_subject.entry(subject).or_default();
+                if list.last().copied() != Some(at as u32) {
+                    list.push(at as u32);
+                }
+            }
+        }
         gaps.retain(|gap| gap.first_hour <= gap.last_hour);
         gaps.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
         let live = live.iter().fold(0u64, |mask, &state| mask | 1 << state);
-        Ok(Self { entries, gaps, live, filtered: Mutex::default() })
+        Ok(Self { entries, by_subject, gaps, live, filtered: Mutex::default() })
     }
 
     pub fn len(&self) -> usize {
@@ -277,10 +411,14 @@ impl<P> Index<P> {
         let selection = ask.selection.map(|selection| {
             let mut membership: Vec<(String, i32, i32)> = selection.membership.iter().map(|span| (span.country.key().into_owned(), span.first_hour, span.last_hour)).collect();
             membership.sort_unstable();
-            (membership, sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()))
+            let unknown: Vec<(i32, i32, String)> = merge_missing_spans(selection.unknown.clone())
+                .into_iter()
+                .map(|span| (span.first_hour, span.last_hour, span.reason))
+                .collect();
+            (membership, sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()), unknown)
         });
         let search = ask.search.map(str::trim).filter(|text| !text.is_empty()).map(str::to_lowercase);
-        Signature { from: ask.from, to: ask.to, kinds, selection, search }
+        Signature { from: ask.from, to: ask.to, subject: ask.subject, kinds, selection, search }
     }
 
     fn filtered(&self, holders: &Holders, ask: &Ask<'_>) -> Arc<Filtered> {
@@ -295,17 +433,29 @@ impl<P> Index<P> {
         let (from, to) = (signature.from.unwrap_or(i32::MIN), signature.to.unwrap_or(i32::MAX));
         let mut display = Vec::new();
         let mut unattributed = Vec::new();
-        for (at, entry) in self.entries.iter().enumerate() {
+        let mut visit = |at: usize| {
+            let entry = &self.entries[at];
             if entry.date < from || entry.date > to || signature.kinds.as_ref().is_some_and(|kinds| kinds.binary_search(&entry.kind).is_err()) {
-                continue;
+                return;
             }
             if signature.search.as_ref().is_some_and(|needle| !entry.text.to_lowercase().contains(needle.as_str())) {
-                continue;
+                return;
             }
             match members.as_ref().map_or(Admit::Yes(entry.observed), |members| members.admits(&entry.roles, entry.observed)) {
                 Admit::Yes(from) => display.push((at as u32, from)),
                 Admit::Unattributed => unattributed.push(entry.observed),
                 Admit::No | Admit::Unknown => {}
+            }
+        };
+        if let Some(subject) = signature.subject {
+            if let Some(indices) = self.by_subject.get(&subject) {
+                for &at in indices {
+                    visit(at as usize);
+                }
+            }
+        } else {
+            for at in 0..self.entries.len() {
+                visit(at);
             }
         }
         let mut observed: Vec<i32> = display.iter().map(|&(_, from)| from).collect();
@@ -313,7 +463,7 @@ impl<P> Index<P> {
         let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
         changes.sort_unstable();
         unattributed.sort_unstable();
-        let unknown = signature.selection.as_ref().map_or_else(Vec::new, |(_, unobserved)| unobserved.clone());
+        let unknown = members.map_or_else(Vec::new, |members| members.unknown);
         let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown });
         let mut kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
         kept.push_back((signature, Arc::clone(&made)));
@@ -334,8 +484,8 @@ impl<P> Index<P> {
         for gap in &self.gaps {
             clip(gap.first_hour, gap.last_hour, &gap.reason, &mut out);
         }
-        for &(first, last) in &filtered.unknown {
-            clip(first, last, MEMBERSHIP_UNKNOWN, &mut out);
+        for gap in &filtered.unknown {
+            clip(gap.first_hour, gap.last_hour, &gap.reason, &mut out);
         }
         out.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
         out
@@ -344,7 +494,7 @@ impl<P> Index<P> {
     fn next_change(&self, filtered: &Filtered, hour: i32) -> Option<i32> {
         let after = |hours: &[i32]| hours.get(hours.partition_point(|&at| at <= hour)).copied();
         let mut next = [after(&filtered.observed), after(&filtered.changes), after(&filtered.unattributed)].into_iter().flatten().min();
-        let spans = self.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)).chain(filtered.unknown.iter().copied());
+        let spans = self.gaps.iter().chain(&filtered.unknown).map(|gap| (gap.first_hour, gap.last_hour));
         for (first, last) in spans {
             let boundary = if first <= hour && hour < last { hour + 1 } else if first > hour { first } else { continue };
             next = Some(next.map_or(boundary, |held| held.min(boundary)));
@@ -356,10 +506,10 @@ impl<P> Index<P> {
         if ask.limit == 0 {
             return Err(invalid("An occurrence window holds one row or more"));
         }
-        if let Order::Figure(at, _) = ask.order
-            && self.entries.first().is_some_and(|entry| at >= entry.figures.len())
+        if let Order::Key(at, _) = ask.order
+            && self.entries.first().is_some_and(|entry| at >= entry.sort_keys.len())
         {
-            return Err(invalid(format!("This log has no figure {at}")));
+            return Err(invalid(format!("This log has no sort column {at}")));
         }
         let hour = ask.hour;
         let filtered = self.filtered(holders, ask);
@@ -370,6 +520,7 @@ impl<P> Index<P> {
         let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history_total = 0u64;
+        let mut next_sort_change: Option<i32> = None;
         let wanted_end = ask.offset.saturating_add(u64::from(ask.limit));
         let newest = ask.order == Order::Date(Direction::Descending);
         let mut placed: Vec<(usize, u64)> = Vec::new();
@@ -385,6 +536,11 @@ impl<P> Index<P> {
             let state = entry.state_at(hour);
             if !state_ok(state) {
                 continue;
+            }
+            if let Order::Key(column, _) = ask.order
+                && let Some(change) = entry.sort_keys[column].next_change(hour)
+            {
+                next_sort_change = Some(next_sort_change.map_or(change, |held| held.min(change)));
             }
             for (count, chip) in chips.iter_mut().zip(ask.chips) {
                 if chip.holds(entry.kind, state) {
@@ -431,20 +587,20 @@ impl<P> Index<P> {
                     placed.push((at, seen as u64));
                 }
             }
-            Order::Figure(figure, direction) => {
-                let key = |at: u32| self.entries[at as usize].figures[figure];
-                let by_figure = |a: &(u32, Option<u8>), b: &(u32, Option<u8>)| {
+            Order::Key(column, direction) => {
+                let key = |at: u32| self.entries[at as usize].sort_keys[column].at(hour);
+                let by_key = |a: &(u32, Option<u8>), b: &(u32, Option<u8>)| {
                     let ordered = match (key(a.0), key(b.0)) {
-                        (Some(x), Some(y)) if direction == Direction::Descending => y.cmp(&x),
-                        (Some(x), Some(y)) => x.cmp(&y),
+                        (Some(x), Some(y)) if direction == Direction::Descending => y.cmp_value(x),
+                        (Some(x), Some(y)) => x.cmp_value(y),
                         (Some(_), None) => std::cmp::Ordering::Less,
                         (None, Some(_)) => std::cmp::Ordering::Greater,
                         (None, None) => std::cmp::Ordering::Equal,
                     };
                     ordered.then(a.0.cmp(&b.0))
                 };
-                history.sort_by(by_figure);
-                live_rows.sort_by(by_figure);
+                history.sort_by(by_key);
+                live_rows.sort_by(by_key);
                 placed.extend((0..gaps.len()).map(|at| (at, history_total)));
             }
         }
@@ -471,7 +627,8 @@ impl<P> Index<P> {
             ordinal += 1;
         }
         let unattributed = filtered.unattributed.partition_point(|&observed| observed <= hour) as u64;
-        Ok(Answer { hour, total, live: live_total, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change: self.next_change(&filtered, hour) })
+        let next_change = [self.next_change(&filtered, hour), next_sort_change].into_iter().flatten().min();
+        Ok(Answer { hour, total, live: live_total, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
     }
 
     pub fn bins(&self, holders: &Holders, ask: &Ask<'_>, first: i32, last: i32, bin_hours: i64) -> io::Result<(u64, Vec<(u32, u64)>)> {

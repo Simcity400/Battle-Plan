@@ -395,8 +395,9 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content) -> io::Result<Tai
             observed: date,
             kind,
             roles: roles.into_boxed_slice(),
+            subjects: Box::new([]),
             states: states.into_boxed_slice(),
-            figures: Box::new([]),
+            sort_keys: Box::new([]),
             text: text.join(" ").into_boxed_str(),
             payload: Raid { episode, changes: changes.into_boxed_slice() },
         });
@@ -517,6 +518,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &RaidLogTailPara
             from: params.from,
             to: params.to,
             selection: prepared.selection.as_ref(),
+            subject: None,
             kinds: kinds.as_deref(),
             states: states.as_deref(),
             search: params.search.as_deref(),

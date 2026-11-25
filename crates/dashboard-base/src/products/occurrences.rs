@@ -54,14 +54,14 @@ pub fn window(offset: Option<&str>, limit: u32) -> io::Result<(u64, u32)> {
     Ok((offset, limit))
 }
 
-pub fn order(sort: Option<&OccurrenceSort>, figures: &[&str]) -> io::Result<(Order, bool)> {
+pub fn order(sort: Option<&OccurrenceSort>, columns: &[&str]) -> io::Result<(Order, bool)> {
     match sort {
         None => Ok((Order::Date(Direction::Descending), true)),
         Some(sort) if sort.column == "date" => Ok((Order::Date(sort.direction), sort.direction == Direction::Descending)),
-        Some(sort) => figures
+        Some(sort) => columns
             .iter()
             .position(|name| *name == sort.column)
-            .map(|at| (Order::Figure(at, sort.direction), false))
+            .map(|at| (Order::Key(at, sort.direction), false))
             .ok_or_else(|| invalid(format!("This log cannot be sorted by {}", sort.column))),
     }
 }
