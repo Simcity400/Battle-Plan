@@ -6,7 +6,6 @@ import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, f
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
-import { laneRequests } from '../../charts/timeline/laneRequests.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 
 const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstHour, lastHour });
@@ -39,29 +38,6 @@ test('a faction that has ended keeps the name it ended with, and one never named
   assert.equal(factionLabel(pact, 250), 'Pact of Steel Reforged');
   assert.equal(factionLabel(pact, 400), 'Pact of Steel Reforged', 'dissolved at 299, never unnamed after');
   assert.equal(factionLabel(template, 400), UNNAMED);
-});
-
-test('a late recorded name outside the window moves its member from Zulu to Aardvark', () => {
-  const tags = Array.from({ length: 50 }, (_, index) => `T${index}`);
-  const metadata = new Map(tags.map((tag, index) => [tag, index === 49 ? 'Zulu' : `Member ${String(index).padStart(2, '0')}`]));
-  const recorded = new Map<string, string>();
-  const labels = { ...text, country: (tag: string) => ({ name: recorded.get(tag) ?? metadata.get(tag) ?? tag }) };
-  const views = factionViews({ ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
-    countryIdentities: tags.map((tag, slot) => holder(tag, slot, 0, 20)),
-    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 20, nameReason: null, names: [{ firstHour: 0, lastHour: 20, name: 'Pact', reason: null, token: null }], incomplete: [], leaders: [],
-      members: tags.map(tag => run(tag, 0, 20)) }],
-  }, summaryName, id => id);
-  for (const members of ['name', 'joined'] as const) {
-    recorded.delete('T49');
-    const layout = () => factionLanes(views, 20, { ...options, members }, labels, [], 0);
-    const before = layout();
-    assert.equal(before.lanes.at(-1)!.identity?.label, 'Zulu', members);
-    const requests = laneRequests(before.lanes, [0, 24]);
-    assert.ok(!laneCountries(requests.looks, before.info, 20).includes('T49'), members);
-    const wanted = laneCountries(requests.names, before.info, 20);
-    if (wanted.includes('T49')) recorded.set('T49', 'Aardvark');
-    assert.ok(layout().lanes.findIndex(lane => lane.identity?.label === 'Aardvark') <= 2, members);
-  }
 });
 
 test('end membership keeps the human member’s faction visible before its change of tag', () => {

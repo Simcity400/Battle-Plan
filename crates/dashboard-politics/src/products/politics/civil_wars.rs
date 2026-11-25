@@ -27,6 +27,8 @@ pub struct Annexation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CivilWarsParams {
     pub branch_id: String,
+    #[doc = " The hour answered: nothing recorded after it is read into the reply."]
+    pub hour: i32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -53,6 +55,8 @@ pub struct SideExit {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarSide {
+    #[doc = " The holder's canonical slot."]
+    pub slot: u32,
     #[doc = " The holder's tags from each hour it held them."]
     pub tags: Vec<HolderTag>,
     pub first_hour: i32,
@@ -92,9 +96,11 @@ pub struct CivilWar {
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarsReply {
     pub branch_id: String,
-    #[doc = " The branch's last hour: the reply reads through it."]
-    pub last_hour: Option<i32>,
-    #[doc = " The hours the civil-war lists were read; others are unknown."]
+    #[doc = " The hour answered, never after the branch's last hour."]
+    pub hour: i32,
+    #[doc = " The first hour after `hour` at which a civil war, a side, a tag, an exit, an outcome or a read stretch changes; null when none does."]
+    pub next_change: Option<i32>,
+    #[doc = " The hours the civil-war lists were read through `hour`; others are unknown."]
     pub known: Vec<HourSpan>,
     pub wars: Vec<CivilWar>,
     pub warnings: Vec<String>,
@@ -108,7 +114,7 @@ impl Product for CivilWars {
     const KEY: &'static str = "civil-wars";
     const CONTENT_DEPENDENT: bool = false;
     type Params = CivilWarsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read];
     type Reply = CivilWarsReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -138,8 +144,64 @@ pub(crate) struct Listing {
 
 type HolderRuns = BTreeMap<u32, Vec<(i32, i32, i64)>>;
 
+struct Next(Option<i32>, i32);
+
+impl Next {
+    fn see(&mut self, at: i32) {
+        if at > self.1 && self.0.is_none_or(|next| at < next) {
+            self.0 = Some(at);
+        }
+    }
+
+    fn span(&mut self, first: i32, last: i32) {
+        self.see(first);
+        self.see(last.saturating_add(1));
+    }
+}
+
+fn cut_war(war: &CivilWar, hour: i32) -> CivilWar {
+    let mut remap: Vec<Option<u32>> = vec![None; war.sides.len()];
+    let mut sides = Vec::new();
+    for (old_idx, side) in war.sides.iter().enumerate() {
+        if side.first_hour > hour {
+            continue;
+        }
+        let new_idx = sides.len() as u32;
+        remap[old_idx] = Some(new_idx);
+        sides.push(CivilWarSide {
+            slot: side.slot,
+            tags: side.tags.iter().filter(|entry| entry.hour <= hour).cloned().collect(),
+            first_hour: side.first_hour,
+            last_hour: side.last_hour.min(hour),
+            parent: side.parent.and_then(|parent| remap.get(parent as usize).copied().flatten()),
+            existed_before: side.existed_before,
+            exit: side.exit.as_ref().filter(|exit| exit.read_hour <= hour && exit.hour <= hour).cloned(),
+        });
+    }
+    let outcome = war
+        .outcome
+        .as_ref()
+        .filter(|outcome| outcome.read_hour <= hour && outcome.hour <= hour)
+        .and_then(|outcome| {
+            remap.get(outcome.winner as usize).copied().flatten().map(|winner| CivilWarOutcome {
+                winner,
+                hour: outcome.hour,
+                read_hour: outcome.read_hour,
+            })
+        });
+    let at_war = war
+        .at_war
+        .iter()
+        .filter(|span| span.first_hour <= hour)
+        .map(|span| HourSpan { first_hour: span.first_hour, last_hour: span.last_hour.min(hour) })
+        .collect();
+    CivilWar { id: war.id.clone(), first_hour: war.first_hour, last_hour: war.last_hour.min(hour), at_war, sides, outcome }
+}
+
 pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBool) -> io::Result<CivilWarsReply> {
-    let mut reply = CivilWarsReply { branch_id: params.branch_id.clone(), last_hour: Some(query.timeline.last), known: Vec::new(), wars: Vec::new(), warnings: Vec::new() };
+    let hour = params.hour.min(query.timeline.last);
+    let mut next = Next(None, hour);
+    let mut full_known = Vec::new();
     let held = holdings(&query.holders);
     let ids = by_id(&held);
     let mut listings = Vec::new();
@@ -160,7 +222,11 @@ pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBoo
             let country = (key >> 32) as u32;
             for (first, last, target) in within(Some(runs), stretch.first, stretch.last) {
                 let (Some(own), Some(rivals)) = (ids.get(&country), u32::try_from(target).ok().and_then(|target| ids.get(&target))) else {
-                    unresolved += 1;
+                    if first <= hour {
+                        unresolved += 1;
+                    } else {
+                        next.see(first);
+                    }
                     continue;
                 };
                 for holding in own {
@@ -173,18 +239,55 @@ pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBoo
                 }
             }
         }
-        reply.known.push(HourSpan { first_hour: stretch.first, last_hour: stretch.last });
+        full_known.push(HourSpan { first_hour: stretch.first, last_hour: stretch.last });
     }
     for runs in exists.values_mut() {
         runs.sort_unstable_by_key(|run| run.0);
     }
     let evidence = crate::products::feed::annexations(query)?;
     let tags: BTreeMap<u32, Vec<HolderTag>> = held.iter().map(|(&slot, held)| (slot, tags_of(held))).collect();
-    reply.wars = episodes(listings, &tags, &exists, &evidence);
-    if unresolved != 0 {
-        reply.warnings.push(format!("{unresolved} refused civil-war listings: a listed country has no identity"));
+    let full_wars = episodes(listings, &tags, &exists, &evidence);
+    for span in &full_known {
+        next.span(span.first_hour, span.last_hour);
     }
-    Ok(reply)
+    for war in &full_wars {
+        next.span(war.first_hour, war.last_hour);
+        for span in &war.at_war {
+            next.span(span.first_hour, span.last_hour);
+        }
+        for side in &war.sides {
+            next.span(side.first_hour, side.last_hour);
+            for tag in &side.tags {
+                next.see(tag.hour);
+            }
+            if let Some(exit) = &side.exit {
+                next.see(exit.hour);
+                next.see(exit.read_hour);
+            }
+        }
+        if let Some(outcome) = &war.outcome {
+            next.see(outcome.hour);
+            next.see(outcome.read_hour);
+        }
+    }
+    let known = full_known
+        .into_iter()
+        .filter(|span| span.first_hour <= hour)
+        .map(|span| HourSpan { first_hour: span.first_hour, last_hour: span.last_hour.min(hour) })
+        .collect();
+    let wars = full_wars.iter().filter(|war| war.first_hour <= hour).map(|war| cut_war(war, hour)).collect();
+    let mut warnings = Vec::new();
+    if unresolved != 0 {
+        warnings.push(format!("{unresolved} refused civil-war listings: a listed country has no identity"));
+    }
+    Ok(CivilWarsReply {
+        branch_id: params.branch_id.clone(),
+        hour,
+        next_change: next.0.filter(|&at| at <= query.timeline.last),
+        known,
+        wars,
+        warnings,
+    })
 }
 
 type Tags = BTreeMap<u32, Vec<HolderTag>>;
@@ -262,7 +365,7 @@ fn war(mut group: Vec<Listing>, tags: &Tags, exists: &HolderRuns, annexations: &
                 })
                 .min()
                 .map(|(_, other)| index[&other]);
-            CivilWarSide { tags: tags_of(holder).to_vec(), first_hour: side_first, last_hour: side_last, parent, existed_before: existed(holder), exit: None }
+            CivilWarSide { slot: holder, tags: tags_of(holder).to_vec(), first_hour: side_first, last_hour: side_last, parent, existed_before: existed(holder), exit: None }
         })
         .collect();
     let side_at = |tag: &str, hour: i32| order.iter().position(|&holder| tag_at(tags_of(holder), hour) == Some(tag));
