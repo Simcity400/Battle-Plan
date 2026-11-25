@@ -23,10 +23,12 @@ const wars: WarsReply = {
 } as unknown as WarsReply;
 
 const waiting = new Promise<never>(() => {});
+let release = () => {};
+const recorded = new Promise<void>(resolve => { release = resolve; });
 const client = {
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string }) => request.product === 'wars'
-    ? { sourceId: request.sourceId, revision: request.revision, product: request.product, data: wars } : waiting,
+    ? recorded.then(() => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data: wars })) : waiting,
   releaseSource: async () => {},
 };
 const source = { id: 'menu', revision: '1', metadata: { countries: [], branches: [{ id: '1', firstHour: 0, lastHour: 200, gaps: [] }], campaignKey: 'campaign', captureMode: 'full' } };
@@ -47,24 +49,32 @@ const setOption = (key: string, value: OptionValue) => {
 };
 const onApply = (next: WidgetSpec) => { state.rebuilt++; state.widget = next; };
 
-const errors: string[] = [];
-const report = console.error.bind(console);
-console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); report(...args); };
-window.addEventListener('error', event => errors.push(String(event.error?.stack ?? event.message)));
 const host = document.body.appendChild(document.createElement('div'));
 const root = createRoot(host);
 const render = () => root.render(<WidgetCountryControl widget={state.widget} template={template} runtime={runtime} onApply={onApply} setOption={setOption}><span>War</span></WidgetCountryControl>);
 
-const settle = async (done: () => boolean) => { for (let turn = 0; turn < 200 && !done(); turn++) await new Promise<void>(resolve => setTimeout(resolve, 0)); return done(); };
+const until = (done: () => boolean) => new Promise<void>(resolve => {
+  if (done()) return resolve();
+  const observer = new MutationObserver(() => {
+    if (!done()) return;
+    observer.disconnect();
+    resolve();
+  });
+  observer.observe(host.ownerDocument.body, { childList: true, subtree: true, attributes: true, characterData: true });
+});
 const warRow = () => [...host.ownerDocument.querySelectorAll<HTMLButtonElement>('.war-menu-row')].find(row => row.textContent?.includes('German-Polish War'));
 
 Object.assign(window, { subjectMenu: {
   async chooseWar() {
     render();
-    await settle(() => !!host.querySelector('.dash-widget-country-button'));
+    await until(() => !!host.querySelector('.dash-widget-country-button'));
     host.querySelector<HTMLButtonElement>('.dash-widget-country-button')!.click();
-    const shown = await settle(() => !!warRow());
-    if (!shown) return { shown, html: `${host.innerHTML} ${errors.join(' | ')}` };
+    const pending = () => host.ownerDocument.querySelector('.war-menu-pending')?.textContent ?? null;
+    await until(() => pending() !== null);
+    const loading = { pending: pending(), rows: host.ownerDocument.querySelectorAll('.war-menu-row').length };
+    release();
+    await until(() => !!warRow());
+    const loaded = pending();
     const read = () => {
       const view = resolveWidgetActiveView(state.widget.kind, state.widget.options);
       const options = widgetViewOptions(state.widget.kind, state.widget.options, view);
@@ -72,7 +82,6 @@ Object.assign(window, { subjectMenu: {
     };
     const before = read();
     warRow()!.click();
-    await settle(() => state.widget.options !== template.widgets[0].options);
-    return { shown, rebuilt: state.rebuilt, stored: state.widget.options, before, after: read(), countries: state.widget.countries, title: state.widget.title };
+    return { loading, loaded, rebuilt: state.rebuilt, stored: state.widget.options, before, after: read(), countries: state.widget.countries, title: state.widget.title };
   },
 } });
