@@ -4,29 +4,12 @@ import type { FrameEngine } from '../engine/frame';
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { PlaybackController } from './playback';
-import type { EquipmentLossesReply } from '../generated/dashboard';
 import { WidgetBody } from './widgets';
 
 const engine = { every: () => ({ wake() {}, stop() {} }) } as unknown as FrameEngine;
 const clock = new PlaybackController(engine);
 clock.setBounds({ firstHour: 0, lastHour: 200 });
 
-const losses: EquipmentLossesReply = {
-  from: 100,
-  hour: 105,
-  through: 109,
-  landSource: 'destruction',
-  warnings: [],
-  breakdown: {
-    unrecordedHours: 0,
-    total: { amount: { numerator: '350001', denominator: '100000' }, state: 'known', reason: null },
-    parts: [{
-      key: 'destruction:landCombat', name: 'Land combat losses', nameMissing: null, ordinal: 0, other: false,
-      amount: { numerator: '350001', denominator: '100000' }, state: 'known', reason: null, share: 1, parentShare: 1,
-      count: null, last: null, art: null, children: [],
-    }],
-  },
-};
 const identities = {
   branchId: '1', warnings: [], known: [{ firstHour: 100, lastHour: 109 }],
   countries: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }], unresolved: [] }],
@@ -38,15 +21,18 @@ const groups = {
 };
 
 const waiting = new Promise<never>(() => {});
+const followed: unknown[] = [];
 const client = {
   available: true,
   openFollow: async () => {},
-  product: async (request: { sourceId: string; revision: string; product: string }) => {
+  product: async (request: { sourceId: string; revision: string; product: string; params?: { query?: unknown } }) => {
     const reply = (data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
     if (request.product === 'country-identities') return reply(identities);
     if (request.product === 'country-groups') return reply(groups);
-    if (request.product === 'equipment-losses') return reply(losses);
-    if (request.product === 'follow') return reply({ available: false, reason: 'not followed here' });
+    if (request.product === 'follow') {
+      followed.push(request.params?.query);
+      return reply({ available: false, reason: 'not followed here' });
+    }
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply({ available: true });
     return waiting;
   },
@@ -59,8 +45,8 @@ const spec = (id: string, kind: string) => ({ id, kind, configVersion: 1, title:
 
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 const settled = (host: HTMLElement) =>
-  !host.querySelector('[data-state="loading"], [data-family-pending]')
-  && Boolean(host.querySelector('[data-state], [data-family-visible]'));
+  Boolean(host.querySelector('[data-state]:not([data-state="loading"])'))
+  || !host.querySelector('[data-state], [data-family-pending]') && Boolean(host.querySelector('[data-family-visible]'));
 const settle = async (id: string) => {
   await nextFrame();
   await nextFrame();
@@ -88,6 +74,6 @@ Object.assign(window, { outsideWidgets: {
     await settle(id);
     return text(id);
   },
-  async seek(id: string, hour: number) { clock.seek(hour); await settle(id); return text(id); },
+  async seek(id: string, hour: number) { clock.seek(hour); await settle(id); return { text: text(id), followed }; },
   async step(id: string) { clock.step(1); await settle(id); return { hour: clock.getHour(), text: text(id) }; },
 } });
