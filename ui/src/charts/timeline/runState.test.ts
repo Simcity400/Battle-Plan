@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AXIS_HEIGHT, ROW_HEIGHT, lanesInView } from './layout.ts';
 import { bridgeGaps, coverCounts, describeRun, runState, stretchesOf, withoutHours } from './runState.ts';
 
 test('runs joined across unrecorded hours are one stretch; a recorded break is not', () => {
@@ -68,12 +67,4 @@ test('steps lose the hours spans cover, and split into unbroken stretches', () =
   ]);
   assert.deepEqual(stretchesOf(cut).map(stretch => [stretch.firstHour, stretch.lastHour, stretch.steps.length]), [[0, 2, 1], [5, 7, 1], [13, 18, 1]]);
   assert.deepEqual(stretchesOf(steps).map(stretch => [stretch.firstHour, stretch.lastHour, stretch.steps.length]), [[0, 19, 2]]);
-});
-
-test('only the lanes in a scrolled view are reported', () => {
-  const height = AXIS_HEIGHT + ROW_HEIGHT * 2.5;
-  assert.deepEqual(lanesInView(0, height, 1500), [0, 2]);
-  assert.deepEqual(lanesInView(ROW_HEIGHT * 1.5, height, 1500), [1, 3]);
-  assert.deepEqual(lanesInView(ROW_HEIGHT * 1498, height, 1500), [1498, 1499]);
-  assert.deepEqual(lanesInView(0, height, 0), [0, -1]);
 });

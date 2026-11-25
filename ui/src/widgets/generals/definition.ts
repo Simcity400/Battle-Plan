@@ -2,7 +2,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { choiceVariants } from '../../dashboard/options.ts';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
-import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'portrait', label: 'Portrait', as: 'plain', offered: ['plain'] },
@@ -28,7 +27,6 @@ export const LEADERS_OPTION = { key: 'leaders', section: 'options', label: 'Lead
 export const OPTIONS: readonly OptionField[] = [
   LEADERS_OPTION,
   ...tableFamilyOptions(COLUMNS, TABLE_BASE),
-  GROW_WITH_PLAYBACK_OPTION,
 ];
 export const definition = {
   kind: 'generals', version: 1, title: 'Generals', icon: 'star',

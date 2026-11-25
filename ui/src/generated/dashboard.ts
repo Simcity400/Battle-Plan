@@ -1829,7 +1829,11 @@ export type LeaderNameRunsReply = { from: number, to: number,
  * The hours inside `[from, to]` the recording does not hold, for every leader alike.
  */
 unknown: Array<RecordingGap>, leaders: Array<LeaderRuns>, warnings: Array<string>, };
-export type LeaderCareerParams = { branchId: string, reference: string, };
+export type LeaderCareerParams = { branchId: string, reference?: string, selection?: LeaderSelection,
+/**
+ * The hour answered: nothing recorded after it is read into the reply.
+ */
+hour: number, };
 export type CareerRun = { firstHour: number, lastHour: number, role: LeaderRole, skill: number | null, components: [number, number, number, number], };
 export type CareerBattle = { start: number, read: number, unknown: boolean, kind: number, won: boolean | null, resultHour: number | null, resultRead: number | null, };
 export type CommandKind = "army" | "armyGroup" | "fleet";
@@ -1838,9 +1842,17 @@ export type LeaderCommand = { firstHour: number, lastHour: number, formation: st
  * The formation's stored name at its first hour; none where it was not recorded.
  */
 name: string | null, };
-export type LeaderCareerReply = { reference: string, name: string | null,
+export type LeaderCareerReply = { reference: string | null,
 /**
- * The hour the name and portrait are read at: the leader's last on the timeline.
+ * The hour answered, never after the branch's last hour.
+ */
+hour: number,
+/**
+ * The first hour after `hour` at which the leader's career or selected top leader changes; null when none does.
+ */
+nextChange: number | null, name: string | null,
+/**
+ * The hour the name and portrait are read at: the leader's last on the timeline through `hour`.
  */
 portraitHour: number | null, runs: Array<CareerRun>,
 /**
@@ -1848,7 +1860,7 @@ portraitHour: number | null, runs: Array<CareerRun>,
  */
 traitGains: Array<[number, number, number]>, traits: Array<LeaderTrait>, commands: Array<LeaderCommand>, battles: Array<CareerBattle>,
 /**
- * The timeline's recorded stretches: a battle lane is drawn only over them.
+ * The timeline's recorded stretches through `hour`: a battle lane is drawn only over them.
  */
 observed: Array<[number, number]>, battlesPartialFrom: number | null, resultsMissing: string, missing: string | null, warnings: Array<string>, };
 export type LeaderChoicesParams = { branchId: string, selection: LeaderSelection, };
@@ -6975,7 +6987,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "territory-transfers": {},
   "trade-flow": { "hour": "read" },
   "training-queue": { "hour": "read" },
-  "unit-leader-career": {},
+  "unit-leader-career": { "hour": "read" },
   "unit-leader-choices": {},
   "unit-leader-hour": { "hour": "read" },
   "unit-leader-portraits": { "hour": "read" },
@@ -7163,7 +7175,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "unit-leader-career": { "branchId": "leaf", "reference": "leaf" },
+  "unit-leader-career": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
@@ -7351,7 +7363,7 @@ export type RequestParams<E, B> = {
   "territory-transfers": {};
   "trade-flow": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "training-queue": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "unit-leader-career": {};
+  "unit-leader-career": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "unit-leader-choices": {};
   "unit-leader-hour": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "unit-leader-portraits": { readonly [key: string]: unknown; readonly "hour"?: E | null };

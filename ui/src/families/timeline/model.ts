@@ -17,8 +17,39 @@ export interface TimelineSpan {
   readonly open: boolean;
   readonly halves?: readonly [string, string];
   readonly endCap?: boolean;
+  readonly histogram?: { readonly positive: number; readonly negative: number; readonly max: number };
+  readonly diamond?: { readonly color: string; readonly text?: string };
   readonly marks?: readonly TimelineMark[];
   readonly meta?: unknown;
+}
+
+export interface TimelineHeaderKpi {
+  readonly value: string;
+  readonly label: string;
+}
+
+export interface TimelineHeader {
+  readonly portrait?: ArtResult;
+  readonly portraitName?: string;
+  readonly title: string;
+  readonly subtitle?: string;
+  readonly flag?: ArtResult;
+  readonly flagTag?: string;
+  readonly kpis?: readonly TimelineHeaderKpi[];
+  readonly compactKpi?: string;
+}
+
+export interface TimelineMeterItem {
+  readonly key: string;
+  readonly label: string;
+  readonly figure: string;
+  readonly fraction: number | null;
+}
+
+export interface TimelineMeters {
+  readonly title: string;
+  readonly items: readonly TimelineMeterItem[];
+  readonly empty?: string;
 }
 
 export interface TimelineMark {
@@ -77,6 +108,9 @@ export interface TimelineModel {
   readonly hour: DisplayedHour;
   readonly firstHour: number;
   readonly lanes: readonly TimelineLane[];
+  readonly header?: TimelineHeader;
+  readonly meters?: TimelineMeters;
+  readonly axisPosition?: 'bottom' | 'top';
   readonly unobserved: readonly HourSpan[];
   readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars: boolean;

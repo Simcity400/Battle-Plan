@@ -3,6 +3,7 @@ import type { AnyTimelineWidgetDeclaration } from '../../families/timeline/decla
 import { timelineHostAdapter } from '../../families/timeline/hostAdapter.ts';
 import type { TimelineProjection } from '../../families/timeline/model.ts';
 import { OPTIONS as WARS_OPTIONS } from '../wars/definition.ts';
+import { LEADER_OPTION } from '../general-career/definition.ts';
 
 function timelineView<TModule>(
   kind: string,
@@ -52,6 +53,18 @@ export const TIMELINE_VIEWS: readonly FamilyViewEntry[] = [
     mod => ({ projection: mod.civilWarsProjection, declaration: mod.civilWarsDeclaration })),
   timelineView('diplomatic-pacts', () => import('../diplomatic-pacts/diplomaticPactsProjection.ts'),
     mod => ({ projection: mod.diplomaticPactsProjection, declaration: mod.diplomaticPactsDeclaration })),
+  {
+    kind: 'general-career',
+    view: 'timeline',
+    label: 'Timeline',
+    family: 'timeline',
+    viewOption: 'view',
+    options: [LEADER_OPTION],
+    loadSpec: () => import('../general-career/careerTimelineProjection.ts').then(mod => ({
+      family: 'timeline', kind: 'general-career', view: 'timeline',
+      projection: mod.careerTimelineProjection, declaration: mod.careerTimelineDeclaration,
+    })),
+  },
   timelineView('factions', () => import('../factions/factionsProjection.ts'),
     mod => ({ projection: mod.factionsProjection, declaration: mod.factionsDeclaration })),
   timelineView('idea-timeline', () => import('../idea-timeline/ideaTimelineProjection.ts'),

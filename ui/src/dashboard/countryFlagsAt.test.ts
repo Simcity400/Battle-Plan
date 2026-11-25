@@ -18,7 +18,7 @@ const host = globalThis as typeof globalThis & {
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'country-label-fixture', enforce: 'pre',
     transform(source, id) {
-      if (id.endsWith('/dashboard/countryNamesAt.ts')) return source.slice(0, source.indexOf('export function useCountryFactsAt'))
+      if (id.endsWith('/dashboard/countryNamesAt.ts')) return source.slice(0, source.indexOf('export function useCountryFactsRead'))
         + `export function useCountryNamesAt(...args) {
           globalThis.__labelFixture.calls.push({kind: 'names', args}); return globalThis.__labelFixture.names;
         }`;

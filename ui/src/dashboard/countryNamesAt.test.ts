@@ -48,9 +48,9 @@ test('dated fact hooks own independent reads and mask switched clients immediate
             `const ${name.trim()} = (...args) => globalThis.__datedFactHooks.${name.trim()}(...args);`).join('\n'));
       } }] });
   try {
-    const { useCountryFactsAt, useCountryFactsRead, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryNamesAt.ts') as typeof import('./countryNamesAt.ts');
+    const { useCountryFactsRead, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryNamesAt.ts') as typeof import('./countryNamesAt.ts');
     const track = { source: { id: 'synthetic', revision: '1' }, branch: { id: '1' } } as BoundTrack;
-    for (const hook of [useCountryFactsAt, useCountryFactsRead]) {
+    for (const hook of [useCountryFactsRead]) {
       const a = hooks(), b = hooks();
       const reads: { signal: AbortSignal; answer: () => void }[] = [];
       const client = { product: (request: ProductRequest, signal: AbortSignal) => new Promise<ProductReply<unknown>>(resolve => {

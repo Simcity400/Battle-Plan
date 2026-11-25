@@ -1,16 +1,12 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { choiceVariants } from '../../dashboard/options.ts';
-export const GROW_WITH_PLAYBACK_OPTION: OptionField = {
-  key: 'growWithPlayback', section: 'time', label: 'Grow with playback', kind: 'toggle', default: false,
-};
 export const LEADER_OPTION: OptionField = { key: 'leader', section: 'options', label: 'Leader', kind: 'content-choice', automatic: 'Top general', default: '', catalogue: true,
   hint: 'Automatic: the top army leader of this widget’s countries, ranked as the Generals table ranks by default' };
 export const VIEWS = [{ value: 'timeline', label: 'Timeline' }, { value: 'dossier', label: 'Dossier' }] as const;
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'timeline', choices: VIEWS },
   LEADER_OPTION,
-  GROW_WITH_PLAYBACK_OPTION,
 ];
 export const definition = {
   kind: 'general-career', version: 1, title: 'General career', icon: 'history',

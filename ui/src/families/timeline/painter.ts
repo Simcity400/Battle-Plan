@@ -1,4 +1,5 @@
 import { fitLine } from '../../charts/labels.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
@@ -26,7 +27,11 @@ import {
   GROUP_RULE_HEIGHT,
   hourToX,
   LANE_ICON,
+  LEGEND_HEIGHT,
+  METERS_HEADER_HEIGHT,
+  METERS_ROW_HEIGHT,
   placedLaneAt,
+  TOP_AXIS_HEIGHT,
   visibleRange,
   xToHour,
   type PlacedLane,
@@ -390,21 +395,212 @@ function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input:
   ctx.restore();
 }
 
+function drawHeader(ctx: Canvas2D, input: TimelinePaintInput): void {
+  const { model, layout, theme, artCache } = input;
+  const header = model.header;
+  if (!header || layout.headerHeight <= 0) return;
+  const mid = layout.headerHeight / 2;
+  let x = LABEL_PAD;
+  if (header.portrait) {
+    drawMediaSlot(
+      ctx,
+      x,
+      mid,
+      34,
+      44,
+      { kind: 'art', art: header.portrait, ...(header.portraitName ? { name: header.portraitName } : {}) },
+      theme,
+      { artCache, radius: 4 },
+    );
+    x += 44;
+  }
+  const showFullKpis = layout.width >= 560 && !!header.kpis?.length;
+  let rightEdge = layout.width - LABEL_PAD;
+  if (showFullKpis) {
+    ctx.save();
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const kpis = header.kpis!;
+    let kx = rightEdge;
+    for (let i = kpis.length - 1; i >= 0; i--) {
+      const kpi = kpis[i]!;
+      ctx.font = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
+      const valW = textWidth(ctx, kpi.value);
+      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      const labW = textWidth(ctx, kpi.label);
+      const colW = Math.max(valW, labW);
+      if (kx - colW < x + 120) break;
+      ctx.font = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
+      ctx.fillStyle = theme.text;
+      ctx.fillText(kpi.value, kx, mid - 8);
+      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(kpi.label, kx, mid + 9);
+      kx -= colW + 16;
+    }
+    rightEdge = kx - 8;
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
+  ctx.fillStyle = theme.text;
+  ctx.fillText(fitLine(header.title, Math.max(40, rightEdge - x), s => textWidth(ctx, s)).text, x, header.subtitle ? mid - 8 : mid);
+  if (header.subtitle || (!showFullKpis && header.compactKpi)) {
+    let sx = x;
+    const sy = mid + 9;
+    let subRight = rightEdge;
+    if (!showFullKpis && header.compactKpi) {
+      ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.text;
+      const cw = textWidth(ctx, header.compactKpi);
+      if (layout.width - LABEL_PAD - cw > sx + 70) {
+        ctx.textAlign = 'right';
+        ctx.fillText(header.compactKpi, layout.width - LABEL_PAD, sy);
+        ctx.textAlign = 'left';
+        subRight = layout.width - LABEL_PAD - cw - 10;
+      }
+    }
+    if (header.flag && sx + 18 <= subRight) {
+      drawMediaSlot(ctx, sx, sy, 15, 10, { kind: 'flag', art: header.flag, ...(header.flagTag ? { tag: header.flagTag } : {}) }, theme, { artCache });
+      sx += 20;
+    }
+    if (header.subtitle && subRight - sx > 20) {
+      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(fitLine(header.subtitle, subRight - sx, s => textWidth(ctx, s)).text, sx, sy);
+    }
+  }
+  ctx.restore();
+}
+
+function drawTopAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], input: TimelinePaintInput): void {
+  const { layout, theme } = input;
+  ctx.save();
+  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const y = layout.axisTop + TOP_AXIS_HEIGHT / 2;
+  let lastRight = -Infinity;
+  for (const tick of ticks) {
+    const x = hourToX(layout, tick.hour);
+    if (x < layout.plotLeft - 2 || x > layout.plotRight - 14) continue;
+    const w = textWidth(ctx, tick.label);
+    if (x < lastRight + 8) continue;
+    ctx.fillText(tick.label, x, y);
+    lastRight = x + w;
+  }
+  ctx.restore();
+}
+
+function drawMeters(ctx: Canvas2D, input: TimelinePaintInput): void {
+  const { model, layout, theme } = input;
+  const meters = model.meters;
+  if (!meters || layout.metersHeight <= 0) return;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = `600 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.fillStyle = theme.text;
+  ctx.fillText(meters.title, LABEL_PAD, layout.metersTop + 10);
+  if (!meters.items.length) {
+    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.muted;
+    ctx.fillText(meters.empty ?? 'None recorded', LABEL_PAD, layout.metersTop + METERS_HEADER_HEIGHT + 10);
+    ctx.restore();
+    return;
+  }
+  const cols = 3;
+  const gap = 16;
+  const colW = Math.max(80, (layout.width - LABEL_PAD * 2 - gap * (cols - 1)) / cols);
+  const shown = meters.items.slice(0, 6);
+  shown.forEach((item, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    const x = LABEL_PAD + col * (colW + gap);
+    const y = layout.metersTop + METERS_HEADER_HEIGHT + row * METERS_ROW_HEIGHT;
+    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'right';
+    const figW = textWidth(ctx, item.figure);
+    ctx.fillText(item.figure, x + colW, y + 6);
+    ctx.textAlign = 'left';
+    ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.text;
+    ctx.fillText(fitLine(item.label, Math.max(24, colW - figW - 8), s => textWidth(ctx, s)).text, x, y + 6);
+    const barY = y + 17;
+    const barH = 5;
+    ctx.globalAlpha = 0.45;
+    ctx.fillStyle = theme.hairline ?? theme.muted;
+    ctx.beginPath();
+    ctx.roundRect(x, barY, colW, barH, 2.5);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    if (item.fraction !== null && item.fraction > 0) {
+      ctx.fillStyle = theme.accent;
+      ctx.beginPath();
+      ctx.roundRect(x, barY, Math.max(4, Math.round(colW * Math.min(1, item.fraction))), barH, 2.5);
+      ctx.fill();
+    }
+  });
+  ctx.restore();
+}
+
 function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
   const { layout, model, theme, artCache } = input;
   const icons = model.iconsOnBars && laneHasIcons(lane);
   const barH = lane.barHeight ?? (icons ? BAR_HEIGHT_ICONS : BAR_HEIGHT);
   const y = Math.round(mid - barH / 2);
-  for (const { span, x0, x1 } of paintedSpans(input.resolution, lane, layout)) {
+  const painted = paintedSpans(input.resolution, lane, layout);
+  const hasHistogram = lane.spans.some(span => span.histogram !== undefined);
+  if (hasHistogram) {
+    ctx.save();
+    ctx.strokeStyle = theme.hairline ?? theme.muted;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(layout.plotLeft, Math.round(mid) + 0.5);
+    ctx.lineTo(layout.plotRight, Math.round(mid) + 0.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+  const diamondItems: { readonly cx: number; readonly color: string; readonly text?: string }[] = [];
+  for (const { span, x0, x1 } of painted) {
+    if (span.histogram) {
+      const { positive, negative, max } = span.histogram;
+      const halfMax = Math.max(4, Math.floor(barH / 2) - 1);
+      const w = Math.max(2, x1 - x0 - 1);
+      ctx.save();
+      if (positive > 0 && max > 0) {
+        const h = Math.max(2, Math.round((positive / max) * halfMax));
+        ctx.fillStyle = CHART_MEASURE_COLOURS.supplyOk;
+        ctx.fillRect(x0, Math.round(mid) - h, w, h);
+      }
+      if (negative > 0 && max > 0) {
+        const h = Math.max(2, Math.round((negative / max) * halfMax));
+        ctx.fillStyle = CHART_MEASURE_COLOURS.short;
+        ctx.fillRect(x0, Math.round(mid) + 1, w, h);
+      }
+      ctx.restore();
+      continue;
+    }
+    if (span.diamond) {
+      const cx = Math.max(layout.plotLeft + 4, Math.min(layout.plotRight - 4, x0));
+      diamondItems.push({ cx, color: span.diamond.color, ...(span.diamond.text ? { text: span.diamond.text } : {}) });
+      continue;
+    }
     if (span.halves) {
       drawSplit(ctx, span, x0, x1, mid, input);
       drawMarks(ctx, span, mid, input);
       continue;
     }
+    const barW = Math.max(1.5, x1 - x0 - (span.open ? 0 : 1));
     drawTimelineBar(ctx, {
       x: x0,
       y,
-      width: Math.max(1.5, x1 - x0 - (span.open ? 0 : 1)),
+      width: barW,
       height: barH,
       fill: span.color,
       theme,
@@ -413,9 +609,48 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
       startBy: span.startBy,
       endUnseen: span.endUnseen,
       ...(icons && span.icon ? { icon: toArtSlotState(resolveCachedArt(span.icon, artCache), span.label ?? lane.label) } : {}),
-      ...(span.label && barH >= BAR_HEIGHT ? { label: span.label } : {}),
+      ...(span.label && barH >= BAR_HEIGHT && barW >= 44 ? { label: span.label } : {}),
     });
     drawMarks(ctx, span, mid, input);
+  }
+  if (diamondItems.length) {
+    const r = 4.5;
+    ctx.save();
+    for (const item of diamondItems) {
+      ctx.fillStyle = item.color;
+      ctx.beginPath();
+      ctx.moveTo(item.cx, mid - r);
+      ctx.lineTo(item.cx + r, mid);
+      ctx.lineTo(item.cx, mid + r);
+      ctx.lineTo(item.cx - r, mid);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if (layout.width >= 560) {
+      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      let lastLabelRight = -Infinity;
+      for (let i = 0; i < diamondItems.length; i++) {
+        const item = diamondItems[i]!;
+        if (!item.text) continue;
+        const tx = item.cx + r + 5;
+        let nextX = layout.plotRight - 2;
+        for (let j = i + 1; j < diamondItems.length; j++) {
+          if (diamondItems[j]!.cx > item.cx + 1) {
+            nextX = diamondItems[j]!.cx - r - 6;
+            break;
+          }
+        }
+        const avail = nextX - tx;
+        if (tx < lastLabelRight || avail < 36) continue;
+        const fitted = fitLine(item.text, avail, s => textWidth(ctx, s)).text;
+        ctx.fillText(fitted, tx, mid);
+        lastLabelRight = tx + textWidth(ctx, fitted) + 10;
+      }
+    }
+    ctx.restore();
   }
 }
 
@@ -426,15 +661,22 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
   ctx.fillRect(0, 0, layout.width, layout.height);
   const ticks = computeTimeAxisTicks(layout.startHour, layout.endHour, layout.plotRight - layout.plotLeft);
 
-  if (model.legend?.length && layout.bodyTop > 0) {
-    drawLegendStrip(ctx, 0, 0, layout.width, layout.bodyTop, { entries: model.legend, padX: LABEL_PAD }, theme);
+  drawHeader(ctx, input);
+
+  if (model.legend?.length && layout.bodyTop > layout.headerHeight) {
+    drawLegendStrip(ctx, 0, layout.headerHeight, layout.width, LEGEND_HEIGHT, { entries: model.legend, padX: LABEL_PAD }, theme);
   }
 
+  if (layout.axisPosition === 'top') {
+    drawTopAxis(ctx, ticks, input);
+  }
+
+  const bodyBottom = layout.bodyTop + layout.bodyHeight;
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, layout.bodyTop, layout.width, layout.bodyHeight);
   ctx.clip();
-  drawTimeAxisGrid(ctx, ticks, layout, layout.bodyTop, layout.axisTop, theme);
+  drawTimeAxisGrid(ctx, ticks, layout, layout.bodyTop, bodyBottom, theme);
   for (const gap of coalescedGaps(input.resolution)) {
     const x0 = Math.max(layout.plotLeft, hourToX(layout, gap.firstHour));
     const x1 = gap.lastHour >= model.hour ? layout.plotRight : Math.min(layout.plotRight, hourToX(layout, gap.lastHour + 1));
@@ -458,26 +700,40 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
     }
     drawOutcome(ctx, lane, mid, input);
   }
+  if (layout.axisPosition === 'top') {
+    ctx.save();
+    ctx.strokeStyle = theme.accent;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(layout.plotRight - 0.5, layout.bodyTop);
+    ctx.lineTo(layout.plotRight - 0.5, Math.min(bodyBottom, layout.bodyTop + layout.contentHeight));
+    ctx.stroke();
+    ctx.restore();
+  }
   if (scrollTop + layout.bodyHeight < layout.contentHeight - 1) {
-    drawScrollFade(ctx, 0, layout.axisTop - 24, layout.width, 24, theme, 'bottom');
+    drawScrollFade(ctx, 0, bodyBottom - 24, layout.width, 24, theme, 'bottom');
   }
   ctx.restore();
 
-  drawTimeAxis(ctx, ticks, {
-    plotLeft: layout.plotLeft,
-    plotRight: layout.plotRight,
-    startHour: layout.startHour,
-    endHour: layout.endHour,
-    axisTop: layout.axisTop,
-    playhead: layout.endHour,
-    playheadLabel: formatDateOnly(layout.endHour),
-    theme,
-  });
+  if (layout.axisPosition === 'bottom') {
+    drawTimeAxis(ctx, ticks, {
+      plotLeft: layout.plotLeft,
+      plotRight: layout.plotRight,
+      startHour: layout.startHour,
+      endHour: layout.endHour,
+      axisTop: layout.axisTop,
+      playhead: layout.endHour,
+      playheadLabel: formatDateOnly(layout.endHour),
+      theme,
+    });
+  }
+
+  drawMeters(ctx, input);
   return ticks;
 }
 
 export function hitTimeline(layout: TimelineLayout, resolution: TimelineResolution, x: number, y: number, scrollTop: number): TimelineHit | null {
-  if (y < layout.bodyTop || y >= layout.axisTop) return null;
+  if (y < layout.bodyTop || y >= layout.bodyTop + layout.bodyHeight) return null;
   const placed = placedLaneAt(layout, y - layout.bodyTop + scrollTop);
   if (!placed) return null;
   const { lane } = placed;

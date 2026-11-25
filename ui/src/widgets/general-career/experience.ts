@@ -12,8 +12,3 @@ export function experienceWhole(raw: string, required: string | null): string {
   const whole = (text: string) => formatScalar(BigInt(text) / 100000n, 'integer');
   return required === null ? whole(raw) : `${whole(raw)} / ${whole(required)}`;
 }
-
-export function experienceFactorText(raw: string): string {
-  const value = BigInt(raw);
-  return `${value >= 0n ? '+' : ''}${experienceText((value * 100n).toString(), null)}%`;
-}

@@ -2,7 +2,6 @@ import { createContext, use, useCallback, useEffect, useId, useLayoutEffect, use
 import type { CSSProperties, ReactNode } from 'react';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { useContextMenu } from '../../components/ContextMenu';
-import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { hideTooltip, refreshTooltip, scrollTooltip, showTooltip, tooltipText } from '../tooltip';
@@ -738,11 +737,4 @@ export function CellBar({ value, maximum, children }: {
   const fraction = value === null ? null : barFraction(value, maximum);
   useLayoutEffect(() => { if (bar.current && fraction !== null) barGlides.to(bar.current.style, fraction, glide); }, [fraction, glide]);
   return <span className="table-cell">{fraction !== null && <i ref={bar} className="table-cellbar" aria-hidden="true" />}<span>{children}</span></span>;
-}
-
-export function CountryCell({ name, nameFailure, flag, flagReason, flagDetail, flagPending }: {
-  name: string; nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean;
-}) {
-  return <span className="table-country" data-detail={nameFailure?.message} title={name}><CountryFlagUrl className="table-country-flag"
-    url={flag} detail={flagDetail} reason={flagReason} pending={flagPending} fixedSize /><span>{name}</span></span>;
 }

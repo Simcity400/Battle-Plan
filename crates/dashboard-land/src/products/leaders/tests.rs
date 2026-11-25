@@ -338,3 +338,91 @@ fn leaders_order_by_skill_then_battles_won_and_fought() {
     super::sort_leaders(&mut rows);
     assert_eq!(rows.iter().map(|r| r.reference.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
 }
+
+#[test]
+fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
+    use super::career::{LeaderCareer, LeaderCareerParams};
+    use dashboard_base::{
+        Source,
+        products::{LoadContext, Product},
+        test_fixtures::{CAMPAIGN, snapshot_records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{CharacterRow, CountryLinkRow, CountryRow, Recorded, TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames: Vec<_> = (100..=120)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![CountryRow {
+                id: 9001,
+                canonical_slot: 7,
+                tag: b"JAP".to_vec(),
+                border_land_doctrine_level: Recorded::Value(None),
+                ..Default::default()
+            }]))
+            .into();
+            frame.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow { id: 9001, canonical_slot: 7 }])).into();
+            let leader = UnitLeaderRow {
+                id: 42,
+                reference_type: 1,
+                kind: KIND_ARMY,
+                owner: 9001,
+                character_id: 77,
+                skill_valid: 1,
+                skill_level: if hour < 110 { 3 } else { 5 },
+                components: [2, 2, 2, 2],
+                ..Default::default()
+            };
+            frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader])).into();
+            frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![CharacterRow {
+                id: 77,
+                token: b"JAP_yamashita".to_vec(),
+                ..Default::default()
+            }]))
+            .into();
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "career-at".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let cancelled = AtomicBool::new(false);
+    let handle_ref = ((42u64 << 32) | 1u64).to_string();
+
+    let early = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: Some(handle_ref.clone()), selection: None, hour: 105 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!((early.hour, early.next_change), (105, Some(110)));
+    assert_eq!(early.runs.len(), 1);
+    assert_eq!((early.runs[0].first_hour, early.runs[0].last_hour, early.runs[0].skill), (100, 105, Some(3)));
+    assert_eq!(early.portrait_hour, Some(105));
+    assert_eq!(early.observed, vec![(100, 105)]);
+
+    let late = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 115 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(late.reference.as_deref(), Some(handle_ref.as_str()));
+    assert_eq!((late.hour, late.next_change), (115, None));
+    assert_eq!(late.runs.len(), 2);
+    assert_eq!(late.runs[1].skill, Some(5));
+}
