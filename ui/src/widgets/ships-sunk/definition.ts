@@ -8,7 +8,7 @@ export const SHIPS_SUNK_COLUMNS: readonly TableColumnSpec[] = [
   logDateColumn({ minWidth: 70, maxWidth: 70 }),
   logKindColumn({ label: 'Class', minWidth: 52, maxWidth: 52 }),
   logCountryColumn({ label: 'Killer and victim', minWidth: 68, grow: 0 }),
-  logItemColumn({ label: 'Ship', minWidth: 48, maxWidth: 48, narrow: 'primary', grow: 2.4 }),
+  logItemColumn({ label: 'Ship', minWidth: 48, narrow: 'primary', grow: 2.4 }),
   logPlaceColumn({ label: 'Sea zone', minWidth: 210, maxWidth: 210, grow: 0, narrow: 'hide', textTone: 'muted' }),
   logPlaceColumn({ key: 'cause', label: 'Cause', minWidth: 270, maxWidth: 270, narrowWidth: 92, grow: 1, textTone: 'secondary' }),
 ];
