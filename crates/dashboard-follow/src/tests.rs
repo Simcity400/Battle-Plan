@@ -831,12 +831,6 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     }
     let wide = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "territory", "measure": "controlledStates" }, "top": 1_000 } });
     assert!(matches!(crate::parse(&wide, &nobody()).unwrap(), Query::Series { mode: SeriesMode::Top { n: 1_000, least: false, .. }, .. }));
-    let log =serde_json::json!({ "product": "log-page", "params": { "branchId": "1", "log": "market-events", "to": 9, "pageSize": 50, "columns": ["kind", "country"] } });
-    let columns = vec![dashboard_declare::field(TableId::MarketEvents, "kind").unwrap(), dashboard_declare::field(TableId::MarketEvents, "country").unwrap()];
-    match crate::parse(&log, &nobody()).unwrap() {
-        Query::Cells { table, columns: asked, rows } => assert_eq!((table, asked, rows), (TableId::MarketEvents.index(), columns, Rows::Appended)),
-        _ => panic!("a log's appended rows"),
-    }
     let naval_top = serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": [], "top": 10, "attribution": "lost", "kind": "both", "period": "running" } });
     assert!(crate::parse(&naval_top, &nobody()).is_ok(), "running naval-losses top must parse");
     let naval_chosen = serde_json::json!({ "product": "naval-losses", "params": { "branchId": "1", "countries": ["GER", "JAP"], "top": null, "attribution": "sunkBy", "kind": "ships", "period": "running" } });

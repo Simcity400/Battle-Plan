@@ -1,4 +1,3 @@
-import type { LogRow } from '../../charts/log/logData';
 import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import { plainScripted } from '../event-feed/scriptedGaps.ts';
@@ -39,12 +38,11 @@ export function choiceCard(occurrence: ScriptOccurrence | null): ChoiceCard | nu
   return { occurrence, item: occurrenceItem(occurrence), first, fired, country, sender };
 }
 
-export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: readonly RecordingBreak[]): LogRow<ChoiceAt> | null {
-  const card = row.item;
-  if (!card || (row.revealedHour ?? row.hour) > hour) return null;
+export function choiceAt(card: ChoiceCard | null, hour: number, breaks: readonly RecordingBreak[]): ChoiceAt | null {
+  if (!card || card.first.row.readHour > hour) return null;
   const choice = edgesAt(card.occurrence.edges, hour).filter(isChoice).at(-1) ?? null;
-  const pause = choice ? null : breakAfter(breaks, row.revealedHour ?? row.hour, hour);
-  return { ...row, item: { card, hour, choice, pause } };
+  const pause = choice ? null : breakAfter(breaks, card.first.row.readHour, hour);
+  return { card, hour, choice, pause };
 }
 
 export const isOpen = (at: ChoiceAt) => !at.choice && !at.pause;

@@ -5,7 +5,6 @@ import type { Sort, SortDirection } from './logic';
 export const NARROW_TABLE_OPTION: OptionField = { key: 'narrowTable', section: 'options', label: 'When narrow', kind: 'choice', default: 'hide',
   choices: [{ value: 'hide', label: 'Hide less important columns' }, { value: 'scroll', label: 'Scroll sideways' }] };
 export type NarrowTable = 'hide' | 'scroll';
-export const narrowTableOf = (options: Readonly<Record<string, unknown>> | undefined): NarrowTable => options?.narrowTable === 'scroll' ? 'scroll' : 'hide';
 
 export const TABLE_OPTIONS: readonly OptionField[] = [
   { key: 'cellBars', section: 'options', label: 'Cell bars', kind: 'toggle', default: true },

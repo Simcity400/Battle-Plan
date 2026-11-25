@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { WidgetMeta } from '../dashboard/definitions';
 import { parseStoredOptions, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import { addRegion, moveRegion, readRegionChoice, regionParams, removeRegion, writeRegionChoice } from '../families/regions/regionChoice.ts';
 import { chooserFor, keyboardMove, regionChooserGroups, regionDropAt, savedRegionName, type RegionRowsField } from '../families/regions/regionRows.ts';
@@ -13,7 +12,6 @@ import {
   scopedOptionFields,
   viewOwnedFields,
   type FamilyViewEntry,
-  type LegacyWidgetEntry,
 } from '../families/manifest.ts';
 import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, familyProjection, registeredFamilyProjections } from '../families/registry.ts';
 import { familyBinding, type FamilyBindingContext, type FamilyBindingIdentity } from '../families/host/adapter.ts';
@@ -32,11 +30,9 @@ import {
 import { encodeTableSettings, ROW_HEIGHT, tableDefaults, tableSettingsOf, updateTableSettings, type TableBase, type TableColumnDefaults } from '../families/table/settings.ts';
 import { widgetMetas } from './definitions.ts';
 import { FAMILY_MANIFESTS, FAMILY_VIEWS } from './familyManifest.ts';
-import { LEGACY_WIDGETS } from './legacyManifest.ts';
 import { drawnViews } from '../draw/views/drawn.ts';
 import {
   NATIVE_WIDGETS,
-  isPlaybackDatedView,
   manifestKinds,
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
@@ -49,19 +45,14 @@ import {
 import { viewSlotProps } from './viewProps.ts';
 import type { WidgetSpec } from '../dashboard/model';
 
-test('manifest accounts for every widget kind across family, native and legacy entries', () => {
+test('manifest accounts for every widget kind across family and native entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
-  const legacyKinds = new Set(LEGACY_WIDGETS.map(entry => entry.kind));
   assert.deepEqual([...manifestKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.ok(NATIVE_WIDGETS.some(entry => entry.kind === 'map'));
   for (const { kind } of NATIVE_WIDGETS) {
-    assert.ok(!familyKinds.has(kind) && !legacyKinds.has(kind), `${kind} has its own native renderer`);
+    assert.ok(!familyKinds.has(kind), `${kind} has its own native renderer`);
   }
   const familyPairs = new Set(FAMILY_VIEWS.map(entry => `${entry.kind}:${normalizeView(entry.view)}`));
-  for (const entry of LEGACY_WIDGETS) {
-    const pair = `${entry.kind}:${normalizeView(entry.view)}`;
-    assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
-  }
   assert.equal(FAMILY_VIEWS.length, familyPairs.size, 'each (kind, view) is declared once');
   for (const kind of ['factories', 'air-superiority-region', 'minefields', 'active-research', 'doctrine-mastery', 'decryption']) {
     assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
@@ -128,7 +119,7 @@ test('every manifest view reaches its own projection through the binding the hos
   assert.deepEqual(stray, [], 'every registered projection is under a view the manifest declares');
 });
 
-test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
+test('multi-view widget routes each (kind, view) to its own family entry with scoped options', () => {
   const familyFor = (kind: string, options?: WidgetOptions) => {
     const view = resolveWidgetActiveView(kind, options);
     return FAMILY_VIEWS.find(entry => entry.kind === kind && normalizeView(entry.view) === view);
@@ -161,20 +152,6 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
     { value: 'race', label: 'Race' },
     { value: 'lines', label: 'Lines over time' },
   ]);
-});
-
-test('playback placeholder gate uses the manifest as its single switch', () => {
-  const metaOf = (kind: string): WidgetMeta | undefined => widgetMetas.find(item => item.kind === kind);
-  for (const entry of FAMILY_VIEWS) {
-    const meta = metaOf(entry.kind);
-    assert.equal(meta?.playsBackDated, undefined, `${entry.kind} drops playsBackDated once ported`);
-    const opts = entry.view && entry.view !== DEFAULT_VIEW ? { [entry.viewOption ?? 'view']: entry.view } : undefined;
-    assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
-  }
-  assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
-  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), true);
-  assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
-  assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });
 
 test('worker projection registry loads table and bars projections lazily on demand and wakes waiters', async () => {
@@ -427,18 +404,17 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
       loadSpec: async () => ({ family: 'bars', kind: 'synthetic-dual', view: 'bars', projection: { family: 'bars', kind: 'synthetic-dual', project: () => ({}) } }),
     },
   ];
-  const legacy: readonly LegacyWidgetEntry[] = [];
-  const choices = declaredViewChoices(undefined, entries, legacy);
+  const choices = declaredViewChoices(undefined, entries);
   assert.deepEqual(choices.map(item => [item.value, item.label, item.family]), [
     ['table', 'Table', 'table'],
     ['bars', 'Bars', 'bars'],
   ]);
-  assert.equal(resolveActiveView(undefined, undefined, entries, legacy), 'table');
-  assert.equal(resolveActiveView({ view: 'bars' }, undefined, entries, legacy), 'bars');
-  assert.deepEqual(scopedOptionFields(undefined, 'table', entries, legacy).map(field => field.key), ['view', 'rowHeight', 'barsBehind']);
-  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions', 'rowHeight']);
-  const tableFields = scopedOptionFields(undefined, 'table', entries, legacy);
-  const barsFields = scopedOptionFields(undefined, 'bars', entries, legacy);
+  assert.equal(resolveActiveView(undefined, undefined, entries), 'table');
+  assert.equal(resolveActiveView({ view: 'bars' }, undefined, entries), 'bars');
+  assert.deepEqual(scopedOptionFields(undefined, 'table', entries).map(field => field.key), ['view', 'rowHeight', 'barsBehind']);
+  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries).map(field => field.key), ['view', 'regions', 'rowHeight']);
+  const tableFields = scopedOptionFields(undefined, 'table', entries);
+  const barsFields = scopedOptionFields(undefined, 'bars', entries);
   const rowHeightField = tableFields.find(field => field.key === 'rowHeight')!;
   const otherValue = rowHeightField.kind === 'choice' ? rowHeightField.choices.find(choice => choice.value !== rowHeightField.default)!.value : null;
   assert.ok(otherValue);
@@ -448,7 +424,7 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
   assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).view, 'bars', 'the view switch itself is shared by the kind');
   const picked = setOption(barsFields, { view: 'bars' }, 'regions', 'r:3a:16')!;
   assert.equal(resolveOptions(viewOwnedFields([regionPickerControl()], 'timeline'), picked).regions, 'r:3a:16', 'every view shows the same regions in the same order');
-  assert.deepEqual(manifestViewSwitch(undefined, entries, legacy), {
+  assert.deepEqual(manifestViewSwitch(undefined, entries), {
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],
   });

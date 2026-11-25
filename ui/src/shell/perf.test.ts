@@ -234,25 +234,6 @@ test('perf audit keys include pipeline generation and unregistering live readers
   await capturePicturesBatch(100);
 });
 
-test('stock vite config stays permanently gated while vite.ungated.config.ts enables ungated mode', async () => {
-  const stockMod = await import('../../vite.config.ts');
-  const ungatedMod = await import('../../vite.ungated.config.ts');
-  const stockFactory = stockMod.default as (env: { command: string; mode: string }) => { define?: Record<string, string> };
-  const ungatedFactory = ungatedMod.default as (env: { command: string; mode: string }) => { define?: Record<string, string> };
-  const prev = process.env.BATTLEPLAN_MEASURE_UNGATED;
-  try {
-    process.env.BATTLEPLAN_MEASURE_UNGATED = '1';
-    for (const mode of ['production', 'development', 'measure-ungated']) {
-      assert.equal(stockFactory({ command: 'build', mode }).define?.__BATTLEPLAN_MEASURE_UNGATED__, 'false');
-    }
-    assert.equal(ungatedFactory({ command: 'build', mode: 'production' }).define?.__BATTLEPLAN_MEASURE_UNGATED__, 'true');
-  } finally {
-    if (prev === undefined) delete process.env.BATTLEPLAN_MEASURE_UNGATED;
-    else process.env.BATTLEPLAN_MEASURE_UNGATED = prev;
-  }
-});
-
-
 function installPerfEnv() {
   const saved = new Map(['requestAnimationFrame', 'cancelAnimationFrame', 'PerformanceObserver', 'devicePixelRatio', 'innerWidth', 'innerHeight', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'MessageChannel', 'performance', 'window']
     .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));

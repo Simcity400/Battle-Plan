@@ -27,7 +27,7 @@ import {
 } from './rowSource.ts';
 import { OFFERED, type TableBase } from './settings.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { knownValue, notApplicable, notRecorded, type Value } from '../value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../value.ts';
 import type { DateBoundKind } from '../valueFormat.ts';
 
 export const LOG_TABLE_BASE: TableBase = {
@@ -35,6 +35,25 @@ export const LOG_TABLE_BASE: TableBase = {
   barsBehind: 'off',
   sort: { column: 'date', direction: 'descending' },
 };
+
+export function logPairColumn(key: string, label: string, narrow: 'hide' | 'total'): TableColumnSpec {
+  return { key, label, priority: 1, as: 'plain', numeric: true, format: 'integer', offered: OFFERED.text,
+    headerGroup: { kind: 'pair', labels: ['Attacker', 'Defender'] }, minWidth: 82, grow: 0.45, narrow };
+}
+
+export function logPairCell([a, b]: [number | null, number | null], label: string, colors?: readonly (string | undefined)[], lowerBound?: string): TableCell {
+  const value = (n: number | null) => n === null ? notRecorded(label + ' not recorded') : lowerBound ? partialValue(n, lowerBound, { atLeast: true }) : knownValue(n);
+  const total = a === null || b === null ? null : a + b;
+  const fraction = a !== null && total !== null && total > 0 ? a / total : null;
+  const cell: TableCell = { value: value(total), pair: [value(a), value(b)] };
+  if (!colors || total === 0) return cell;
+  if (fraction === null || fraction < 0 || fraction > 1) {
+    return { ...cell, splitBar: [{ fraction: 1, fill: '', hatched: true }] };
+  }
+  return { ...cell, splitBar: [fraction, 1 - fraction].map((share, i) => ({
+    fraction: share, fill: colors[i] ?? '', hatched: !colors[i],
+  })) };
+}
 
 export function logDateColumn(overrides?: Partial<TableColumnSpec>): TableColumnSpec {
   return {

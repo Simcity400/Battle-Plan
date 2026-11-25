@@ -15,4 +15,5 @@
 .lb-course canvas { flex: 1; min-height: 0; width: 100%; }
 .lb-design { display: flex; justify-content: space-between; gap: var(--space-4); padding: var(--space-1) 0; font-size: var(--type-sm); font-weight: 500; }
 .lb-design span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-design span:last-child { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lb-designs .lb-drill-side-head { margin-bottom: var(--space-2); }

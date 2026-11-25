@@ -689,16 +689,6 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
     Shaped { battle, course }
 }
 
-pub fn last_read(query: &Query<'_>, table: TableId, to: i32) -> io::Result<Option<i32>> {
-    for stretch in query.timeline.stretches.iter().rev().filter(|stretch| stretch.first <= to) {
-        let reads = dashboard_query::cost::storage(|| lanes::reads(query.replay.recording(), stretch.run, table, stretch.first, stretch.last.min(to)))?;
-        if let Some(&(_, last)) = reads.last() {
-            return Ok(Some(last));
-        }
-    }
-    Ok(None)
-}
-
 pub struct LandBattleCourses;
 
 pub fn parse_id(id: &str, branch: u64) -> Option<Key> {
@@ -740,7 +730,7 @@ impl Product for LandBattleCourses {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![LandBattleRun::decl(), LandManpower::decl(), LandBattleResultRead::decl(), LandBattleCourseParams::decl(), LandEquipmentDesign::decl(), LandLossSide::decl(), LandLossSides::decl(), LandBattleCourseRead::decl(), LandEdgeMember::decl(), LandBattleOpening::decl(), LandDivisionExit::decl(), LandEdgeGap::decl(), LandBattleEdges::decl(), LandBattleCourse::decl(), LandBattleCourseReply::decl()]
+        vec![BattleBound::decl(), BattleMoment::decl(), BattleEnd::decl(), BattleWinner::decl(), LandBattleRun::decl(), LandManpower::decl(), LandBattleResultRead::decl(), LandBattleCourseParams::decl(), LandEquipmentDesign::decl(), LandLossSide::decl(), LandLossSides::decl(), LandBattleCourseRead::decl(), LandEdgeMember::decl(), LandBattleOpening::decl(), LandDivisionExit::decl(), LandEdgeGap::decl(), LandBattleEdges::decl(), LandBattleCourse::decl(), LandBattleCourseReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
 import { placeTooltip } from './tooltipPlacement';
 import { tooltipStore } from './tooltip';
@@ -8,6 +8,9 @@ import { commitZone } from '../shell/commitCount';
 
 export default function TooltipLayer() {
   const state = useSyncExternalStore(tooltipStore.subscribe, tooltipStore.get, tooltipStore.get);
+  const content = useMemo(() => state?.detailRows
+    ? { ...state.content, rows: [...state.content.rows, ...state.detailRows] }
+    : state?.content, [state?.content, state?.detailRows]);
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const element = ref.current;
@@ -20,7 +23,7 @@ export default function TooltipLayer() {
     element.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }, [state]);
   return <div ref={ref} data-detail={state?.content.detail ?? state?.content.countryFlag?.nameFailure?.message} popover="manual" role="tooltip" className={`chart-tooltip${state?.content.scrollable ? ' is-scrollable' : ''}`} aria-live="off">
-    {state && <>
+    {state && content && <>
       {state.content.icon || state.content.countryFlag || state.content.subtitle
         ? <div className="chart-tooltip-head">
           {state.content.countryFlag ? <CountryFlagUrl className="chart-tooltip-flag" url={state.content.countryFlag.flag}
@@ -29,7 +32,7 @@ export default function TooltipLayer() {
           <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}</div>
         </div>
         : <strong>{state.content.title}</strong>}
-      {state.content.scrollable ? <ScrollableTooltipRows content={state.content} owner={state.owner} top={state.scrollTop ?? 0} />
+      {state.content.scrollable ? <ScrollableTooltipRows content={content} owner={state.owner} top={state.scrollTop ?? 0} />
         : state.content.rows.map((row, index) => <TooltipRowView key={index} row={row} />)}
       {state.content.description && <p className="chart-tooltip-description">{state.content.description}</p>}
       {state.content.note && <small>{state.content.note}</small>}

@@ -1,8 +1,8 @@
 import { registerWidgets } from '../dashboard/definitions.ts';
 import type { FamilyViewRenderer, WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
-import { DEFAULT_VIEW, normalizeView, viewKey, type FamilyViewEntry, type LegacyWidgetEntry, type NativeWidgetEntry } from '../families/manifest.ts';
-import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS, NATIVE_WIDGETS, OPTION_CHOICES } from './manifest.ts';
+import { DEFAULT_VIEW, normalizeView, viewKey, type FamilyViewEntry, type NativeWidgetEntry } from '../families/manifest.ts';
+import { FAMILY_VIEWS, FAMILY_VIEW_UI, NATIVE_WIDGETS, OPTION_CHOICES } from './manifest.ts';
 
 type RendererLoader = () => Promise<{ default: WidgetRenderer }>;
 
@@ -14,17 +14,12 @@ export interface RendererLoaderEntry {
 
 export function buildRendererLoaders(
   native: readonly NativeWidgetEntry[],
-  legacy: readonly LegacyWidgetEntry[],
   family: readonly FamilyViewEntry[],
   ui: Readonly<Record<string, { readonly load: () => Promise<{ default: FamilyViewRenderer }>; readonly views?: readonly string[] }>>,
 ): ReadonlyMap<string, RendererLoaderEntry> {
   const map = new Map<string, RendererLoaderEntry>();
   for (const { kind, load } of native) {
     map.set(viewKey(kind), { kind, view: DEFAULT_VIEW, load });
-  }
-  for (const entry of legacy) {
-    const key = viewKey(entry.kind, entry.view);
-    if (!map.has(key)) map.set(key, { kind: entry.kind, view: normalizeView(entry.view), load: entry.load as RendererLoader });
   }
   for (const entry of family) {
     const key = viewKey(entry.kind, entry.view);
@@ -43,7 +38,7 @@ export function buildRendererLoaders(
   return map;
 }
 
-const rendererLoaders = buildRendererLoaders(NATIVE_WIDGETS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
+const rendererLoaders = buildRendererLoaders(NATIVE_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI);
 const defaultViews = new Map<string, string>();
 for (const [key, entry] of rendererLoaders) if (!defaultViews.has(entry.kind)) defaultViews.set(entry.kind, key);
 const keyFor = (kind: string, view?: string) => view === undefined ? defaultViews.get(kind) : viewKey(kind, view);

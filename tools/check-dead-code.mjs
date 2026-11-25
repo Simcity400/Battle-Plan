@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
-import { astLang, extractImportSpecifiers, relPosix, resolveLocalImport, staticStringLiteral, walkAst, walkImportGraph } from './ui-import-graph.mjs';
+import { astLang, relPosix, staticStringLiteral, walkAst, walkImportGraph } from './ui-import-graph.mjs';
 import { analyzeUiSymbolGraph } from './ui-ts-graph.mjs';
 
 export const UI_FILE_RULES = [
@@ -37,47 +37,7 @@ const TOOL_CALLER_EXTENSIONS = new Set(['.mjs', '.ts', '.js', '.cjs', '.py', '.p
 const NON_CALLER_UI_FILES = new Set([
   'ui/src/dashboard/pages.ts',
   'ui/src/widgets/manifest.ts',
-  'ui/src/widgets/legacyManifest.ts',
   'ui/src/widgets/familyManifest.ts',
-]);
-const LEGACY_DISPATCH_MODULES = new Set([
-  'ui/src/widgets/legacyManifest.ts',
-  'ui/src/widgets/lazyWidget.tsx',
-  'ui/src/widgets/index.ts',
-]);
-const MIXED_MANIFEST_MODULE = 'ui/src/widgets/manifest.ts';
-const MIXED_LOADER_MODULE = 'ui/src/widgets/rendererLoaders.ts';
-const LEGACY_MANIFEST_EXPORTS = new Set([
-  'LEGACY_WIDGETS',
-  'legacyEntriesForKind',
-  'manifestLegacyEntry',
-]);
-const SAFE_LOADER_EXPORTS = new Set([
-  'preloadStatus',
-  'whenPreloadComplete',
-  'isPlaybackActive',
-  'setPlaybackActive',
-  'rendererKinds',
-]);
-const SAFE_REGISTRY_STOPS = new Set([
-  'ui/src/widgets/familyManifest.ts',
-  'ui/src/widgets/definitions.ts',
-]);
-const GLOBAL_REGISTRIES = new Set([
-  ...LEGACY_DISPATCH_MODULES,
-  MIXED_MANIFEST_MODULE,
-  MIXED_LOADER_MODULE,
-  ...SAFE_REGISTRY_STOPS,
-]);
-const REACT_ELEMENT_RENDER_APIS = new Set([
-  'createElement',
-  'cloneElement',
-  'createRoot',
-  'hydrateRoot',
-  'createPortal',
-  'jsx',
-  'jsxs',
-  'jsxDEV',
 ]);
 const NON_PRODUCT_PROPERTY_NAMES = new Set(['kind', 'view', 'owner', 'className', 'icon', 'category', 'family']);
 
@@ -173,302 +133,18 @@ function readRatchetFile(root, { allowMissing = false } = {}) {
   const ratchetPath = resolve(root, 'tools/legacy-widgets-ratchet.json');
   if (!existsSync(ratchetPath)) {
     if (allowMissing) {
-      return { missing: true, maxLegacyViews: 0, maxLegacyRendererViews: 0, maxUnusedExports: 0 };
+      return { missing: true, maxUnusedExports: 0 };
     }
     throw new Error('Missing tools/legacy-widgets-ratchet.json');
   }
   const data = JSON.parse(readFileSync(ratchetPath, 'utf8'));
-  const required = ['maxLegacyViews', 'maxLegacyRendererViews', 'maxUnusedExports'];
-  for (const field of required) {
-    const val = data[field];
-    if (typeof val !== 'number' || !Number.isInteger(val) || val < 0) {
-      throw new Error(`tools/legacy-widgets-ratchet.json must set integer ${field} >= 0`);
-    }
+  if (!Number.isInteger(data.maxUnusedExports) || data.maxUnusedExports < 0) {
+    throw new Error('tools/legacy-widgets-ratchet.json must set integer maxUnusedExports >= 0');
   }
   return { ...data, missing: false };
 }
 
-function collectAstBindings(ast) {
-  const bindings = new Map();
-  for (const stmt of ast.body) {
-    const declNode = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
-    if (declNode?.type === 'VariableDeclaration') {
-      for (const decl of declNode.declarations) {
-        if (decl.id?.type === 'Identifier' && decl.init) {
-          bindings.set(decl.id.name, decl.init);
-        }
-      }
-    } else if (declNode?.type === 'FunctionDeclaration' && declNode.id?.name) {
-      bindings.set(declNode.id.name, declNode);
-    }
-  }
-  return bindings;
-}
-
-function collectAllImportsIn(node, fromFile, root, localBindings = null, visiting = new Set()) {
-  const targets = [];
-  const seen = new Set();
-  let hasUnresolvedImport = false;
-
-  const visit = rootNode => {
-    walkAst(rootNode, (inner, parent, key) => {
-      if (inner.type === 'ImportExpression') {
-        const spec = staticStringLiteral(inner.source);
-        if (spec === null) {
-          hasUnresolvedImport = true;
-          return;
-        }
-        const resolved = resolveLocalImport(fromFile, spec, root);
-        if (!resolved) {
-          hasUnresolvedImport = true;
-          return;
-        }
-        const rel = relPosix(root, resolved);
-        if (!seen.has(rel)) {
-          seen.add(rel);
-          targets.push(rel);
-        }
-        return;
-      }
-      if (localBindings && inner.type === 'Identifier' && localBindings.has(inner.name) && !visiting.has(inner.name)) {
-        const isPropKey = (parent?.type === 'Property' && key === 'key' && !parent.computed && !parent.shorthand)
-          || (parent?.type === 'MemberExpression' && key === 'property' && !parent.computed);
-        if (!isPropKey) {
-          visiting.add(inner.name);
-          visit(localBindings.get(inner.name));
-        }
-      }
-    });
-  };
-
-  visit(node);
-  return { targets, hasUnresolvedImport };
-}
-
-function resolveImportsFromFunction(fn, fromFile, root) {
-  if (typeof fn !== 'function') return { targets: [], hasUnresolvedImport: false };
-  try {
-    const ast = parseAst(`(${fn.toString()})`, { lang: 'ts' });
-    return collectAllImportsIn(ast, fromFile, root);
-  } catch {
-    return { targets: [], hasUnresolvedImport: true };
-  }
-}
-
-function parseLegacyManifestAstFallback(legacyPath, root) {
-  const byKey = new Map();
-  if (!existsSync(legacyPath)) return byKey;
-  const ast = parseAst(readFileSync(legacyPath, 'utf8'), { lang: 'ts' });
-  const localBindings = collectAstBindings(ast);
-  walkAst(ast, node => {
-    if (node.type !== 'ObjectExpression') return;
-    let kind = null;
-    let view = '';
-    let collected = null;
-    for (const prop of node.properties) {
-      if (prop.type !== 'Property') continue;
-      const propName = prop.key?.name ?? prop.key?.value;
-      if (propName === 'kind') kind = staticStringLiteral(prop.value);
-      else if (propName === 'view') view = staticStringLiteral(prop.value) ?? '';
-      else if (propName === 'load') {
-        collected = collectAllImportsIn(prop.value, legacyPath, root, localBindings);
-      }
-    }
-    if (kind && collected) byKey.set(`${kind}\0${view}`, collected);
-  });
-  return byKey;
-}
-
-async function loadManifestData(root) {
-  const metaByKind = new Map();
-  const familyViews = [];
-  const familyByKind = new Map();
-  const legacyEntries = [];
-  const unresolvedNativeLoaders = [];
-  const familyViewUiEntries = new Map();
-  const familyViewUiViews = new Map();
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-  const definitionsPath = resolve(root, 'ui/src/widgets/definitions.ts');
-  if (existsSync(definitionsPath)) {
-    const mod = await import(`${pathToFileURL(definitionsPath).href}?t=${stamp}`);
-    for (const meta of mod.widgetMetas ?? []) {
-      if (meta && typeof meta.kind === 'string') metaByKind.set(meta.kind, meta);
-    }
-  }
-
-  const familyManifestPath = resolve(root, 'ui/src/widgets/familyManifest.ts');
-  if (existsSync(familyManifestPath)) {
-    const mod = await import(`${pathToFileURL(familyManifestPath).href}?t=${stamp}`);
-    for (const entry of mod.FAMILY_VIEWS ?? []) {
-      if (!entry || typeof entry.kind !== 'string') continue;
-      familyViews.push(entry);
-      const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
-      let set = familyByKind.get(entry.kind);
-      if (!set) familyByKind.set(entry.kind, set = new Set());
-      set.add(view);
-    }
-  }
-
-  const legacyPath = resolve(root, 'ui/src/widgets/legacyManifest.ts');
-  const legacyFileExists = existsSync(legacyPath);
-  if (legacyFileExists) {
-    const mod = await import(`${pathToFileURL(legacyPath).href}?t=${stamp}`);
-    const astFallback = parseLegacyManifestAstFallback(legacyPath, root);
-    const evaluated = mod.LEGACY_WIDGETS;
-    if (!Array.isArray(evaluated)) {
-      throw new Error('Could not find exported LEGACY_WIDGETS array in ui/src/widgets/legacyManifest.ts');
-    }
-    for (const entry of evaluated) {
-      if (!entry || typeof entry.kind !== 'string') continue;
-      const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : null;
-      const fromFn = resolveImportsFromFunction(entry.load, legacyPath, root);
-      const fromAst = astFallback.get(`${entry.kind}\0${view ?? ''}`);
-      const chosen = fromFn.targets.length > 0 || fromFn.hasUnresolvedImport ? fromFn : (fromAst ?? fromFn);
-      legacyEntries.push({
-        kind: entry.kind,
-        view,
-        loadTarget: chosen.targets[0] ?? null,
-        loadTargets: chosen.targets,
-        hasUnresolvedImport: chosen.hasUnresolvedImport,
-        hasLoader: typeof entry.load === 'function',
-      });
-    }
-  }
-
-  const manifestPath = resolve(root, 'ui/src/widgets/manifest.ts');
-  if (existsSync(manifestPath)) {
-    const ast = parseAst(readFileSync(manifestPath, 'utf8'), { lang: 'ts' });
-    const localBindings = collectAstBindings(ast);
-    const astUiTargets = new Map();
-    for (const node of ast.body) {
-      if (node.type !== 'ExportNamedDeclaration' || node.declaration?.type !== 'VariableDeclaration') continue;
-      for (const decl of node.declaration.declarations) {
-        if (decl.id?.type !== 'Identifier' || decl.id.name !== 'FAMILY_VIEW_UI') continue;
-        const init = unwrapExpression(decl.init);
-        if (init?.type !== 'ObjectExpression') continue;
-        for (const prop of init.properties) {
-          if (prop.type !== 'Property') continue;
-          const kind = prop.key?.value ?? prop.key?.name;
-          if (typeof kind !== 'string') continue;
-          astUiTargets.set(kind, collectAllImportsIn(prop.value, manifestPath, root, localBindings));
-        }
-      }
-    }
-    try {
-      const mod = await import(`${pathToFileURL(manifestPath).href}?t=${stamp}`);
-      for (const entry of mod.NATIVE_WIDGETS ?? []) {
-        const { targets, hasUnresolvedImport } = resolveImportsFromFunction(entry.load, manifestPath, root);
-        if (targets.length === 0 || hasUnresolvedImport) unresolvedNativeLoaders.push(entry.kind);
-      }
-      if (mod.FAMILY_VIEW_UI && typeof mod.FAMILY_VIEW_UI === 'object') {
-        for (const [kind, loader] of Object.entries(mod.FAMILY_VIEW_UI)) {
-          const fromFn = resolveImportsFromFunction(loader?.load, manifestPath, root);
-          const fromAst = astUiTargets.get(kind);
-          const chosen = fromFn.targets.length > 0 || fromFn.hasUnresolvedImport ? fromFn : (fromAst ?? fromFn);
-          familyViewUiEntries.set(kind, chosen);
-          if (Array.isArray(loader?.views)) familyViewUiViews.set(kind, loader.views);
-        }
-      }
-    } catch {
-      for (const [kind, collected] of astUiTargets) familyViewUiEntries.set(kind, collected);
-    }
-  }
-
-  return {
-    metaByKind,
-    familyViews,
-    familyByKind,
-    legacyFileExists,
-    legacyEntries,
-    unresolvedNativeLoaders,
-    familyViewUiEntries,
-    familyViewUiViews,
-  };
-}
-
-function selectLegacyViewChoices(meta) {
-  const viewField = meta?.options?.find(item => item.key === 'view' && item.kind === 'choice');
-  if (viewField?.choices?.length) return viewField.choices;
-  if (meta?.viewSwitch?.choices?.length) return meta.viewSwitch.choices;
-  if (meta?.viewSwitch?.option) {
-    const switchField = meta.options?.find(item => item.key === meta.viewSwitch.option && item.kind === 'choice');
-    if (switchField?.choices?.length) return switchField.choices;
-  }
-  return null;
-}
-
-function expandLegacyViewPairs(legacyEntries, metaByKind, familyByKind) {
-  const pairs = [];
-  const seen = new Set();
-  const staleEntries = [];
-  const activeLegacyTargets = new Set();
-  const unresolvedLoaders = [];
-
-  const addPair = (kind, view) => {
-    const pair = `${kind}:${view}`;
-    if (!seen.has(pair)) {
-      seen.add(pair);
-      pairs.push(pair);
-    }
-  };
-
-  for (const entry of legacyEntries) {
-    const explicitView = typeof entry.view === 'string' && entry.view.length > 0 && entry.view !== 'default'
-      ? entry.view
-      : null;
-    const label = explicitView ? `${entry.kind}:${explicitView}` : `${entry.kind}:default`;
-    const targets = entry.loadTargets ?? (entry.loadTarget ? [entry.loadTarget] : []);
-
-    if (entry.hasLoader && (entry.hasUnresolvedImport || targets.length === 0)) {
-      unresolvedLoaders.push(label);
-    }
-
-    const covered = familyByKind.get(entry.kind);
-    if (explicitView) {
-      if (covered?.has(explicitView)) {
-        staleEntries.push(label);
-        continue;
-      }
-      addPair(entry.kind, explicitView);
-      for (const target of targets) activeLegacyTargets.add(target);
-      continue;
-    }
-
-    const meta = metaByKind.get(entry.kind);
-    const choices = selectLegacyViewChoices(meta);
-    if (choices && choices.length > 0) {
-      let addedAny = false;
-      for (const choice of choices) {
-        if (!covered?.has(choice.value)) {
-          addPair(entry.kind, choice.value);
-          addedAny = true;
-        }
-      }
-      if (!addedAny) {
-        staleEntries.push(label);
-      } else {
-        for (const target of targets) activeLegacyTargets.add(target);
-      }
-    } else {
-      if (covered?.has('default')) {
-        staleEntries.push(label);
-      } else {
-        addPair(entry.kind, 'default');
-        for (const target of targets) activeLegacyTargets.add(target);
-      }
-    }
-  }
-
-  return {
-    pairs: pairs.sort(),
-    staleEntries: staleEntries.sort(),
-    unresolvedLoaders: unresolvedLoaders.sort(),
-    activeLegacyTargets,
-  };
-}
-
-export function checkUiAndExports(root, activeLegacyTargets, ratchetData = null) {
+export function checkUiAndExports(root, ratchetData = null) {
   const data = ratchetData ?? readRatchetFile(root);
   const maxUnusedExports = data.maxUnusedExports;
 
@@ -488,7 +164,7 @@ export function checkUiAndExports(root, activeLegacyTargets, ratchetData = null)
     typeOnlyLive,
     productionTestImports,
     unusedExports,
-  } = analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints, activeLegacyTargets);
+  } = analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints);
 
   const deadProduction = [];
   for (const file of allFiles) {
@@ -727,544 +403,18 @@ export function checkRustProducts(root, uiResult) {
   };
 }
 
-function parseFamilyManifestSpecs(root, runtimeFamilyViews) {
-  const dir = resolve(root, 'ui/src/widgets/manifest');
-  const byPair = new Map();
-  const runtimeViewsByKindFamily = new Map();
-  for (const entry of runtimeFamilyViews) {
-    const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
-    const key = `${entry.kind}\0${entry.family}`;
-    let list = runtimeViewsByKindFamily.get(key);
-    if (!list) runtimeViewsByKindFamily.set(key, list = []);
-    list.push(view);
-  }
-
-  const pushEntry = (kind, view, family, collected) => {
-    const pair = `${kind}:${view}`;
-    if (!byPair.has(pair)) {
-      byPair.set(pair, {
-        kind,
-        view,
-        family,
-        specTargets: collected.targets,
-        hasUnresolvedImport: collected.hasUnresolvedImport,
-      });
-    }
-  };
-
-  if (existsSync(dir)) {
-    const files = readdirSync(dir).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort();
-
-    for (const file of files) {
-      const full = resolve(dir, file);
-      const family = file.slice(0, -'.ts'.length);
-      const ast = parseAst(readFileSync(full, 'utf8'), { lang: 'ts' });
-      const localBindings = collectAstBindings(ast);
-
-      const localStringArrays = new Map();
-      for (const stmt of ast.body) {
-        const declNode = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
-        if (declNode?.type !== 'VariableDeclaration') continue;
-        for (const decl of declNode.declarations) {
-          if (decl.id?.type !== 'Identifier') continue;
-          const init = unwrapExpression(decl.init);
-          if (init?.type === 'ArrayExpression') {
-            const values = init.elements.map(el => staticStringLiteral(unwrapExpression(el)));
-            if (values.length > 0 && values.every(v => v !== null)) {
-              localStringArrays.set(decl.id.name, values);
-            }
-          }
-        }
-      }
-
-      const record = (kind, view, collected) => {
-        if (!kind || !collected) return;
-        if (view === '*') {
-          const concrete = runtimeViewsByKindFamily.get(`${kind}\0${family}`) ?? [];
-          for (const v of concrete) pushEntry(kind, v, family, collected);
-        } else {
-          pushEntry(kind, view, family, collected);
-        }
-      };
-
-      const resolveStringExpr = (expr, env) => {
-        const unwrapped = unwrapExpression(expr);
-        const lit = staticStringLiteral(unwrapped);
-        if (lit !== null) return lit;
-        if (unwrapped?.type === 'Identifier') {
-          if (env && env.has(unwrapped.name)) return env.get(unwrapped.name);
-          if (unwrapped.name === 'DEFAULT_VIEW') return 'default';
-        }
-        return null;
-      };
-
-      const visitEntryNode = (node, env = null) => {
-        const unwrapped = unwrapExpression(node);
-        if (!unwrapped) return;
-        if (unwrapped.type === 'ObjectExpression') {
-          let kind = null;
-          let view = 'default';
-          let collected = null;
-          for (const prop of unwrapped.properties) {
-            if (prop.type !== 'Property') continue;
-            const propName = prop.key?.name ?? prop.key?.value;
-            if (propName === 'kind') {
-              kind = resolveStringExpr(prop.value, env);
-            } else if (propName === 'view') {
-              const resolvedView = resolveStringExpr(prop.value, env);
-              view = resolvedView !== null ? resolvedView : '*';
-            } else if (propName === 'loadSpec') {
-              collected = collectAllImportsIn(prop.value, full, root, localBindings);
-            }
-          }
-          record(kind, view, collected);
-        } else if (unwrapped.type === 'CallExpression' && unwrapped.arguments.length >= 2) {
-          const kind = resolveStringExpr(unwrapped.arguments[0], env);
-          if (!kind) return;
-          const collected = collectAllImportsIn(unwrapped, full, root, localBindings);
-          const resolvedView = resolveStringExpr(unwrapped.arguments[1], env);
-          const view = resolvedView !== null ? resolvedView : 'default';
-          record(kind, view, collected);
-        }
-      };
-
-      const extractArrayStrings = expr => {
-        const unwrapped = unwrapExpression(expr);
-        if (unwrapped?.type === 'ArrayExpression') {
-          const vals = unwrapped.elements.map(el => staticStringLiteral(unwrapExpression(el)));
-          return vals.length > 0 && vals.every(v => v !== null) ? vals : null;
-        }
-        if (unwrapped?.type === 'Identifier' && localStringArrays.has(unwrapped.name)) {
-          return localStringArrays.get(unwrapped.name);
-        }
-        return null;
-      };
-
-      const visitSpread = arg => {
-        const unwrapped = unwrapExpression(arg);
-        if (unwrapped?.type === 'CallExpression'
-          && unwrapped.callee?.type === 'MemberExpression'
-          && !unwrapped.callee.computed
-          && unwrapped.callee.property?.name === 'map'
-          && unwrapped.arguments.length >= 1) {
-          const cb = unwrapExpression(unwrapped.arguments[0]);
-          const paramName = cb && (cb.type === 'ArrowFunctionExpression' || cb.type === 'FunctionExpression')
-            && cb.params[0]?.type === 'Identifier'
-            ? cb.params[0].name
-            : null;
-          const items = extractArrayStrings(unwrapped.callee.object);
-          if (paramName && items) {
-            for (const item of items) {
-              const env = new Map([[paramName, item]]);
-              walkAst(cb.body, inner => {
-                if (inner.type === 'ObjectExpression') visitEntryNode(inner, env);
-              });
-            }
-            return;
-          }
-        }
-        walkAst(arg, inner => {
-          if (inner.type === 'ObjectExpression') visitEntryNode(inner);
-        });
-      };
-
-      for (const stmt of ast.body) {
-        if (stmt.type !== 'ExportNamedDeclaration' || stmt.declaration?.type !== 'VariableDeclaration') continue;
-        for (const decl of stmt.declaration.declarations) {
-          const init = unwrapExpression(decl.init);
-          if (init?.type !== 'ArrayExpression') continue;
-          for (const el of init.elements) {
-            if (!el) continue;
-            if (el.type === 'SpreadElement') visitSpread(el.argument);
-            else visitEntryNode(el);
-          }
-        }
-      }
-    }
-  }
-
-  const resolved = [];
-  const unresolved = [];
-  const seenPairs = new Set();
-
-  for (const entry of runtimeFamilyViews) {
-    const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
-    const pair = `${entry.kind}:${view}`;
-    if (seenPairs.has(pair)) continue;
-    seenPairs.add(pair);
-    const hit = byPair.get(pair);
-    if (hit && !hit.hasUnresolvedImport && hit.specTargets.length > 0) {
-      resolved.push(hit);
-    } else if (hit?.hasUnresolvedImport) {
-      unresolved.push({ pair, kind: entry.kind, view, family: entry.family ?? 'unknown' });
-    } else {
-      const fromFile = entry.family ? resolve(root, 'ui/src/widgets/manifest', `${entry.family}.ts`) : resolve(root, 'ui/src/widgets/familyManifest.ts');
-      const fromFn = resolveImportsFromFunction(entry.loadSpec, fromFile, root);
-      if (!fromFn.hasUnresolvedImport && fromFn.targets.length > 0) {
-        resolved.push({ kind: entry.kind, view, family: entry.family ?? 'unknown', specTargets: fromFn.targets });
-      } else {
-        unresolved.push({ pair, kind: entry.kind, view, family: entry.family ?? 'unknown' });
-      }
-    }
-  }
-
-  resolved.sort((a, b) => `${a.kind}:${a.view}`.localeCompare(`${b.kind}:${b.view}`));
-  unresolved.sort((a, b) => a.pair.localeCompare(b.pair));
-  return { resolved, unresolved };
-}
-
-export function checkLegacyRatchet(root, loaded, ratchetData = null) {
-  const data = ratchetData ?? readRatchetFile(root);
-  const maxLegacyViews = data.maxLegacyViews;
-
-  const { pairs, staleEntries, unresolvedLoaders, activeLegacyTargets } = expandLegacyViewPairs(
-    loaded.legacyEntries,
-    loaded.metaByKind,
-    loaded.familyByKind,
-  );
-  const count = pairs.length;
-
-  const errors = loaded.unresolvedNativeLoaders.map(kind => `NATIVE_WIDGETS entry ${kind} has an unresolvable load target`);
-  const notices = [];
-
-  for (const stale of staleEntries) {
-    errors.push(`stale LEGACY_WIDGETS entry ${stale} is already covered by FAMILY_VIEWS`);
-  }
-  for (const bad of unresolvedLoaders) {
-    errors.push(`LEGACY_WIDGETS entry ${bad} has an unresolvable load target`);
-  }
-
-  if (count > maxLegacyViews) {
-    errors.push(`legacy renderer has ${count} (kind, view) pair(s), above ratchet ${maxLegacyViews}`);
-  } else if (count > 0 && count < maxLegacyViews) {
-    notices.push(`legacy renderer now has ${count} (kind, view) pair(s) (ratchet is ${maxLegacyViews}); lower maxLegacyViews in tools/legacy-widgets-ratchet.json to ${count}`);
-  }
-
-  if (count === 0) {
-    if (maxLegacyViews !== 0) {
-      errors.push(`legacy views are gone; lower maxLegacyViews in tools/legacy-widgets-ratchet.json from ${maxLegacyViews} to 0`);
-    }
-    if (loaded.legacyFileExists) {
-      errors.push('ui/src/widgets/legacyManifest.ts is empty and must be deleted');
-    }
-    const familyManifestPath = resolve(root, 'ui/src/families/manifest.ts');
-    if (existsSync(familyManifestPath) && /\bLegacyWidgetEntry\b/.test(readFileSync(familyManifestPath, 'utf8'))) {
-      errors.push('LegacyWidgetEntry still exists in ui/src/families/manifest.ts after legacy list reached 0');
-    }
-    const manifestPath = resolve(root, 'ui/src/widgets/manifest.ts');
-    if (existsSync(manifestPath)) {
-      const text = readFileSync(manifestPath, 'utf8');
-      for (const token of ['LEGACY_WIDGETS', 'legacyEntriesForKind', 'manifestLegacyEntry']) {
-        if (new RegExp(`\\b${token}\\b`).test(text)) {
-          errors.push(`${token} still exists in ui/src/widgets/manifest.ts after legacy list reached 0`);
-        }
-      }
-    }
-    const loaderPath = resolve(root, 'ui/src/widgets/rendererLoaders.ts');
-    if (existsSync(loaderPath)) {
-      const text = readFileSync(loaderPath, 'utf8');
-      for (const token of ['LEGACY_WIDGETS', 'LegacyWidgetEntry']) {
-        if (new RegExp(`\\b${token}\\b`).test(text)) {
-          errors.push(`${token} still exists in ui/src/widgets/rendererLoaders.ts after legacy list reached 0`);
-        }
-      }
-    }
-  }
-
-  return {
-    count,
-    maxLegacyViews,
-    maxLegacyWidgets: maxLegacyViews,
-    pairs,
-    staleEntries,
-    unresolvedLoaders,
-    activeLegacyTargets,
-    legacyEntries: loaded.legacyEntries,
-    errors,
-    notices,
-  };
-}
-
-function rendersReactElements(root, relPath) {
-  const full = resolve(root, relPath);
-  if (!existsSync(full)) return false;
-  const ext = extname(full).toLowerCase();
-  if (!SCRIPT_EXTENSIONS.has(ext)) return false;
-  const ast = parseAst(readFileSync(full, 'utf8'), { lang: astLang(full) });
-  const reactNamespaces = new Set();
-  for (const stmt of ast.body) {
-    if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type') continue;
-    const spec = staticStringLiteral(stmt.source);
-    if (spec !== 'react' && spec !== 'react-dom' && spec !== 'react-dom/client' && !spec?.startsWith('react/')) continue;
-    for (const item of stmt.specifiers) {
-      if (item.importKind === 'type') continue;
-      if (item.type === 'ImportSpecifier') {
-        const name = item.imported?.name ?? item.imported?.value;
-        if (REACT_ELEMENT_RENDER_APIS.has(name)) return true;
-      } else if (item.type === 'ImportDefaultSpecifier' || item.type === 'ImportNamespaceSpecifier') {
-        reactNamespaces.add(item.local.name);
-      }
-    }
-  }
-  if (reactNamespaces.size === 0) return false;
-  let found = false;
-  walkAst(ast, node => {
-    if (found) return;
-    if (node.type === 'MemberExpression' && !node.computed
-      && node.object?.type === 'Identifier' && reactNamespaces.has(node.object.name)
-      && node.property?.type === 'Identifier' && REACT_ELEMENT_RENDER_APIS.has(node.property.name)) {
-      found = true;
-    }
-  });
-  return found;
-}
-
-function importsLegacyFromMixedModule(root, fromRel, targetModule, isForbiddenExport, cache) {
-  const cacheKey = `${fromRel}\0${targetModule}`;
-  if (cache.has(cacheKey)) return cache.get(cacheKey);
-  const full = resolve(root, fromRel);
-  if (!existsSync(full) || !SCRIPT_EXTENSIONS.has(extname(full).toLowerCase())) {
-    cache.set(cacheKey, false);
-    return false;
-  }
-  const ast = parseAst(readFileSync(full, 'utf8'), { lang: astLang(full) });
-  let usesLegacy = false;
-  for (const stmt of ast.body) {
-    if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type') {
-      const spec = staticStringLiteral(stmt.source);
-      const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
-      if (!target || relPosix(root, target) !== targetModule) continue;
-      if (stmt.specifiers.length === 0) {
-        usesLegacy = true;
-        break;
-      }
-      for (const item of stmt.specifiers) {
-        if (item.importKind === 'type') continue;
-        if (item.type === 'ImportNamespaceSpecifier' || item.type === 'ImportDefaultSpecifier') {
-          usesLegacy = true;
-          break;
-        }
-        if (item.type === 'ImportSpecifier') {
-          const imported = item.imported?.name ?? item.imported?.value;
-          if (isForbiddenExport(imported)) {
-            usesLegacy = true;
-            break;
-          }
-        }
-      }
-    }
-    if (usesLegacy) break;
-  }
-  if (!usesLegacy) {
-    const parents = new Map();
-    walkAst(ast, (node, parent, key) => { parents.set(node, { parent, key }); });
-    walkAst(ast, node => {
-      if (usesLegacy || node.type !== 'ImportExpression') return;
-      const spec = staticStringLiteral(node.source);
-      const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
-      if (!target || relPosix(root, target) !== targetModule) return;
-      let cur = node;
-      let info = parents.get(cur);
-      while (info?.parent && (info.parent.type === 'AwaitExpression' || info.parent.type === 'ParenthesizedExpression')) {
-        cur = info.parent;
-        info = parents.get(cur);
-      }
-      if (info?.parent?.type === 'MemberExpression' && info.key === 'object' && !info.parent.computed && info.parent.property?.type === 'Identifier') {
-        if (isForbiddenExport(info.parent.property.name)) usesLegacy = true;
-      } else {
-        usesLegacy = true;
-      }
-    });
-  }
-  cache.set(cacheKey, usesLegacy);
-  return usesLegacy;
-}
-
-function importsCssDirectly(root, relPath) {
-  const full = resolve(root, relPath);
-  if (!existsSync(full)) return false;
-  const specs = extractImportSpecifiers(full, { includeTypes: false, includeDynamic: false, includeWorkerUrls: false });
-  return specs.some(spec => spec.specifier.endsWith('.css'));
-}
-
-export function checkConvertedLegacyReach(root, uiResult, legacyResult, loaded, ratchetData = null) {
-  const data = ratchetData ?? readRatchetFile(root);
-  const maxLegacyRendererViews = data.maxLegacyRendererViews;
-
-  const { resolved: familyViews, unresolved: unresolvedFamilyViews } = parseFamilyManifestSpecs(root, loaded.familyViews);
-  const familyViewUi = loaded.familyViewUiEntries;
-
-  const unresolvedUiLoaders = [];
-  for (const [kind, entry] of familyViewUi) {
-    if (!entry || entry.hasUnresolvedImport || entry.targets.length === 0) unresolvedUiLoaders.push(kind);
-  }
-  unresolvedUiLoaders.sort();
-
-  const legacyStarts = [...new Set(
-    legacyResult.legacyEntries.flatMap(entry => entry.loadTargets ?? (entry.loadTarget ? [entry.loadTarget] : [])).filter(Boolean),
-  )];
-  const legacyGraph = walkImportGraph(legacyStarts, root, {
-    includeTypes: false,
-    includeDynamic: true,
-    includeWorkerUrls: true,
-    shouldTraverse: file => {
-      const rel = relPosix(root, file);
-      return !rel.startsWith('ui/src/families/') && !GLOBAL_REGISTRIES.has(rel);
-    },
-  });
-  const legacyReach = new Set([...legacyGraph.visited].map(file => relPosix(root, file)));
-
-  const dashShellPath = resolve(root, 'ui/src/dashboard/Dashboard.tsx');
-  const shellReach = new Set();
-  if (existsSync(dashShellPath)) {
-    const shellGraph = walkImportGraph(['ui/src/dashboard/Dashboard.tsx'], root, {
-      includeTypes: false,
-      includeDynamic: true,
-      includeWorkerUrls: true,
-      shouldTraverse: file => {
-        const rel = relPosix(root, file);
-        return !rel.startsWith('ui/src/widgets/') && !rel.startsWith('ui/src/families/') && !GLOBAL_REGISTRIES.has(rel);
-      },
-    });
-    for (const file of shellGraph.visited) shellReach.add(relPosix(root, file));
-  }
-
-  const oldWidgetRenderers = new Set(legacyStarts);
-  for (const file of legacyReach) {
-    if (file.startsWith('ui/src/widgets/') && file.endsWith('.tsx')) {
-      oldWidgetRenderers.add(file);
-    }
-  }
-
-  const oldCharts = new Set();
-  for (const file of uiResult.runtimeLive) {
-    if (!file.startsWith('ui/src/charts/')) continue;
-    if (file.endsWith('.tsx') || rendersReactElements(root, file)) {
-      oldCharts.add(file);
-    }
-  }
-
-  const oldDash = new Set();
-  for (const file of legacyReach) {
-    if (!file.startsWith('ui/src/dashboard/') || shellReach.has(file)) continue;
-    if (file.endsWith('.tsx') && importsCssDirectly(root, file)) {
-      oldDash.add(file);
-    }
-  }
-
-  const oldRenderer = new Set([...oldWidgetRenderers, ...oldCharts, ...oldDash, ...LEGACY_DISPATCH_MODULES]);
-
-  const edgeCache = new Map();
-  const manifestLegacyCache = new Map();
-  const shortestChain = startFiles => {
-    const queue = startFiles.map(file => [file]);
-    const seen = new Set(startFiles);
-    while (queue.length > 0) {
-      const chain = queue.shift();
-      const cur = chain[chain.length - 1];
-      if (oldRenderer.has(cur)) return chain;
-      if (SAFE_REGISTRY_STOPS.has(cur)) continue;
-      const full = resolve(root, cur);
-      if (!existsSync(full)) continue;
-      let targets = edgeCache.get(full);
-      if (!targets) {
-        targets = [...new Set(extractImportSpecifiers(full, { includeTypes: false, includeDynamic: true, includeWorkerUrls: true })
-          .map(spec => resolveLocalImport(full, spec.specifier, root))
-          .filter(Boolean)
-          .map(target => relPosix(root, target)))].sort();
-        edgeCache.set(full, targets);
-      }
-      for (const next of targets) {
-        if (next === MIXED_MANIFEST_MODULE) {
-          if (importsLegacyFromMixedModule(root, cur, MIXED_MANIFEST_MODULE, name => LEGACY_MANIFEST_EXPORTS.has(name), manifestLegacyCache)) {
-            return [...chain, next];
-          }
-          continue;
-        }
-        if (next === MIXED_LOADER_MODULE) {
-          if (importsLegacyFromMixedModule(root, cur, MIXED_LOADER_MODULE, name => !SAFE_LOADER_EXPORTS.has(name), manifestLegacyCache)) {
-            return [...chain, next];
-          }
-          continue;
-        }
-        if (seen.has(next)) continue;
-        seen.add(next);
-        queue.push([...chain, next]);
-      }
-    }
-    return null;
-  };
-
-  const violations = [];
-  for (const entry of familyViews) {
-    const starts = [...entry.specTargets];
-    const uiViews = loaded.familyViewUiViews.get(entry.kind);
-    const uiEntry = !uiViews || uiViews.includes(entry.view) ? familyViewUi.get(entry.kind) : undefined;
-    if (uiEntry && !uiEntry.hasUnresolvedImport) {
-      for (const target of uiEntry.targets) {
-        if (!starts.includes(target)) starts.push(target);
-      }
-    }
-    const chain = shortestChain(starts);
-    if (chain) {
-      violations.push({
-        pair: `${entry.kind}:${entry.view}`,
-        kind: entry.kind,
-        view: entry.view,
-        family: entry.family,
-        target: chain[chain.length - 1],
-        chain,
-      });
-    }
-  }
-
-  const errors = [];
-  const notices = [];
-  for (const item of unresolvedFamilyViews) {
-    errors.push(`unresolved FAMILY_VIEWS entry ${item.pair} (${item.family}): could not resolve loadSpec target`);
-  }
-  for (const kind of unresolvedUiLoaders) {
-    errors.push(`unresolved FAMILY_VIEW_UI loader for ${kind}`);
-  }
-  if (violations.length > maxLegacyRendererViews) {
-    errors.push(`${violations.length} converted view(s) reach old-renderer modules, above ratchet ${maxLegacyRendererViews}`);
-  } else if (violations.length > 0 && violations.length < maxLegacyRendererViews) {
-    notices.push(`converted views reaching old-renderer modules dropped to ${violations.length} (ratchet is ${maxLegacyRendererViews}); lower maxLegacyRendererViews in tools/legacy-widgets-ratchet.json to ${violations.length}`);
-  } else if (violations.length === 0 && maxLegacyRendererViews !== 0) {
-    errors.push(`no converted view reaches old-renderer modules; lower maxLegacyRendererViews in tools/legacy-widgets-ratchet.json from ${maxLegacyRendererViews} to 0`);
-  }
-
-  return {
-    totalConvertedViews: familyViews.length,
-    unresolvedFamilyViews,
-    unresolvedUiLoaders,
-    oldWidgetCount: oldWidgetRenderers.size,
-    oldChartCount: oldCharts.size,
-    oldDashboardCount: oldDash.size,
-    maxLegacyRendererViews,
-    violations,
-    errors,
-    notices,
-  };
-}
-
 export async function runDeadCodeCheck(root, options = {}) {
   const ratchetData = readRatchetFile(root, { allowMissing: Boolean(options.allowMissingRatchet) });
-  const loaded = await loadManifestData(root);
-  const legacy = checkLegacyRatchet(root, loaded, ratchetData);
-  const { ui, exports } = checkUiAndExports(root, legacy.activeLegacyTargets, ratchetData);
+  const { ui, exports } = checkUiAndExports(root, ratchetData);
   const rust = checkRustProducts(root, ui);
-  const convertedLegacy = checkConvertedLegacyReach(root, ui, legacy, loaded, ratchetData);
   const totalIssues = ui.deadProduction.length
     + ui.deadTests.length
     + ui.deadFixturesAndSupport.length
     + ui.productionTestImports.length
     + rust.deadProducts.length
     + rust.unwiredRegistrations.length
-    + legacy.errors.length
-    + convertedLegacy.errors.length
     + exports.errors.length;
-  return { ui, rust, legacy, convertedLegacy, exports, totalIssues, ratchetMissing: Boolean(ratchetData.missing) };
+  return { ui, rust, exports, totalIssues, ratchetMissing: Boolean(ratchetData.missing) };
 }
 
 export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
@@ -1276,37 +426,15 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
   const baseProdTestImports = new Set((baseResult.ui.productionTestImports ?? []).map(e => `${e.from}->${e.to}`));
   const baseDeadProducts = new Set(baseResult.rust.deadProducts.map(entry => entry.product));
   const baseUnwired = new Set(baseResult.rust.unwiredRegistrations);
-  const baseLegacyPairs = baseRatchetMissing ? new Set() : new Set(baseResult.legacy.pairs);
-  const baseLegacyErrors = baseRatchetMissing ? new Set() : new Set(baseResult.legacy.errors);
-  const baseOverRatchet = !baseRatchetMissing && baseResult.legacy.count > baseResult.legacy.maxLegacyViews;
-
-  const baseConvertedPairs = baseRatchetMissing ? new Set() : new Set((baseResult.convertedLegacy?.violations ?? []).map(v => v.pair));
-  const baseConvertedErrors = baseRatchetMissing ? new Set() : new Set(baseResult.convertedLegacy?.errors ?? []);
-  const baseConvertedOver = !baseRatchetMissing && (baseResult.convertedLegacy?.violations?.length ?? 0) > baseResult.convertedLegacy.maxLegacyRendererViews;
-
   const baseUnusedExportKeys = baseRatchetMissing ? new Set() : new Set((baseResult.exports?.unusedExports ?? []).map(item => item.key));
   const baseExportErrors = baseRatchetMissing ? new Set() : new Set(baseResult.exports?.errors ?? []);
   const baseExportsOver = !baseRatchetMissing && (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
 
-  const kindOf = pair => pair.slice(0, pair.indexOf(':'));
-  const legacyViewsOf = (pairs, kind) => pairs.filter(pair => kindOf(pair) === kind).length;
-  const namedDefault = pair => baseLegacyPairs.has(`${kindOf(pair)}:default`) && !result.legacy.pairs.includes(`${kindOf(pair)}:default`)
-    && legacyViewsOf(result.legacy.pairs, kindOf(pair)) === 1 && legacyViewsOf([...baseLegacyPairs], kindOf(pair)) === 1;
-  const addedLegacyPairs = result.legacy.pairs.filter(pair => !baseLegacyPairs.has(pair) && !namedDefault(pair));
-  const addedConvertedViolations = result.convertedLegacy.violations.filter(v => !baseConvertedPairs.has(v.pair));
   const addedUnusedExports = result.exports.unusedExports.filter(item => !baseUnusedExportKeys.has(item.key));
 
   const ratchetRaises = [];
-  if (!baseRatchetMissing) {
-    if (result.legacy.maxLegacyViews > baseResult.legacy.maxLegacyViews) {
-      ratchetRaises.push(`maxLegacyViews raised from ${baseResult.legacy.maxLegacyViews} to ${result.legacy.maxLegacyViews}`);
-    }
-    if (result.convertedLegacy.maxLegacyRendererViews > baseResult.convertedLegacy.maxLegacyRendererViews) {
-      ratchetRaises.push(`maxLegacyRendererViews raised from ${baseResult.convertedLegacy.maxLegacyRendererViews} to ${result.convertedLegacy.maxLegacyRendererViews}`);
-    }
-    if (result.exports.maxUnusedExports > baseResult.exports.maxUnusedExports) {
-      ratchetRaises.push(`maxUnusedExports raised from ${baseResult.exports.maxUnusedExports} to ${result.exports.maxUnusedExports}`);
-    }
+  if (!baseRatchetMissing && result.exports.maxUnusedExports > baseResult.exports.maxUnusedExports) {
+    ratchetRaises.push(`maxUnusedExports raised from ${baseResult.exports.maxUnusedExports} to ${result.exports.maxUnusedExports}`);
   }
 
   let newIssues = 0;
@@ -1358,53 +486,6 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     tag: tag(false),
   }));
 
-  let legacyAddedReported = false;
-  const legacyErrors = result.legacy.errors.map(err => {
-    if (err.includes('above ratchet')) {
-      legacyAddedReported = true;
-      const text = addedLegacyPairs.length > 0 ? `${err} (added: ${addedLegacyPairs.join(', ')})` : err;
-      const inherited = baseOverRatchet && addedLegacyPairs.length === 0 && result.legacy.count <= baseResult.legacy.count;
-      return { error: text, inherited, tag: tag(inherited) };
-    }
-    const inherited = baseLegacyErrors.has(err);
-    return { error: err, inherited, tag: tag(inherited) };
-  });
-  if (!legacyAddedReported && (addedLegacyPairs.length > 0 || result.legacy.count > baseResult.legacy.count)) {
-    const detail = addedLegacyPairs.length > 0
-      ? `legacy renderer added ${addedLegacyPairs.length} (kind, view) pair(s) vs ${shortBase}: ${addedLegacyPairs.join(', ')}`
-      : `legacy renderer count increased from ${baseResult.legacy.count} to ${result.legacy.count}`;
-    legacyErrors.push({ error: detail, inherited: false, tag: tag(false) });
-  }
-
-  let convertedAddedReported = false;
-  const convertedLegacyErrors = result.convertedLegacy.errors.map(err => {
-    if (err.includes('above ratchet')) {
-      convertedAddedReported = true;
-      const addedText = addedConvertedViolations.length > 0
-        ? ` (added: ${addedConvertedViolations.map(v => v.pair).join(', ')})`
-        : '';
-      const inherited = baseConvertedOver
-        && addedConvertedViolations.length === 0
-        && result.convertedLegacy.violations.length <= (baseResult.convertedLegacy?.violations?.length ?? 0);
-      return { error: `${err}${addedText}`, inherited, tag: tag(inherited) };
-    }
-    const inherited = baseConvertedErrors.has(err);
-    return { error: err, inherited, tag: tag(inherited) };
-  });
-  if (!convertedAddedReported && addedConvertedViolations.length > 0) {
-    convertedLegacyErrors.push({
-      error: `converted views added ${addedConvertedViolations.length} old-renderer violation(s) vs ${shortBase}: ${addedConvertedViolations.map(v => v.pair).join(', ')}`,
-      inherited: false,
-      tag: tag(false),
-    });
-  }
-
-  const convertedViolations = result.convertedLegacy.violations.map(v => ({
-    ...v,
-    inherited: baseConvertedPairs.has(v.pair),
-    tag: baseConvertedPairs.has(v.pair) ? `[inherited from ${shortBase}]` : '[new on this branch]',
-  }));
-
   let exportsAddedReported = false;
   const unusedExportErrors = result.exports.errors.map(err => {
     if (err.includes('above ratchet')) {
@@ -1436,8 +517,6 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
 
   return {
     shortBase,
-    addedLegacyPairs,
-    addedConvertedViolations,
     addedUnusedExports,
     ratchetRaises,
     newIssues,
@@ -1449,9 +528,6 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     deadProducts,
     unwiredRegistrations,
     ratchetErrors,
-    legacyErrors,
-    convertedLegacyErrors,
-    convertedViolations,
     unusedExportErrors,
     unusedExports,
   };
@@ -1513,22 +589,6 @@ export function formatReport(result, comparison = null, options = {}) {
     lines.push(`Ratchet ceiling regressions (${comparison.ratchetErrors.length}):`);
     for (const entry of comparison.ratchetErrors) lines.push(`  - ${entry.error} ${entry.tag}`);
   }
-  const legErrors = comparison ? comparison.legacyErrors : result.legacy.errors.map(error => ({ error, tag: '' }));
-  if (legErrors.length > 0) {
-    lines.push(`Legacy view ratchet errors (${legErrors.length}):`);
-    for (const entry of legErrors) lines.push(`  - ${entry.error}${entry.tag ? ` ${entry.tag}` : ''}`);
-  }
-  const convErrors = comparison ? comparison.convertedLegacyErrors : result.convertedLegacy.errors.map(error => ({ error, tag: '' }));
-  if (convErrors.length > 0 || (showAllInFile && result.convertedLegacy.violations.length > 0)) {
-    lines.push(`Converted views reaching old-renderer modules (${result.convertedLegacy.violations.length}/${result.convertedLegacy.maxLegacyRendererViews}):`);
-    for (const entry of convErrors) lines.push(`  - ${entry.error}${entry.tag ? ` ${entry.tag}` : ''}`);
-    const list = comparison ? comparison.convertedViolations : result.convertedLegacy.violations;
-    for (const entry of list) {
-      if (!showAllInFile && comparison && entry.inherited && result.convertedLegacy.errors.length === 0) continue;
-      const suffix = entry.tag ? ` ${entry.tag}` : '';
-      lines.push(`  - ${entry.pair} (${entry.family}): ${entry.chain.join(' -> ')}${suffix}`);
-    }
-  }
   const expErrors = comparison ? comparison.unusedExportErrors : result.exports.errors.map(error => ({ error, tag: '' }));
   if (expErrors.length > 0 || (showAllInFile && result.exports.unusedExports.length > 0)) {
     lines.push(`Unused exports in ui/src (${result.exports.unusedExports.length}/${result.exports.maxUnusedExports}):`);
@@ -1541,7 +601,7 @@ export function formatReport(result, comparison = null, options = {}) {
       lines.push(`  - ${entry.file}: ${entry.name}${kind}${suffix}`);
     }
   }
-  for (const notice of [...result.legacy.notices, ...result.convertedLegacy.notices, ...result.exports.notices]) {
+  for (const notice of result.exports.notices) {
     lines.push(`dead-code notice: ${notice}`);
   }
   return lines.join('\n');
@@ -1697,8 +757,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     + `${result.ui.deadFixturesAndSupport.length} dead fixture/support file(s), `
     + `${result.rust.deadProducts.length} dead Rust product(s), `
     + `${result.rust.unwiredRegistrations.length} unwired registration(s), `
-    + `${result.legacy.count}/${result.legacy.maxLegacyViews} legacy view(s), `
-    + `${result.convertedLegacy.violations.length}/${result.convertedLegacy.maxLegacyRendererViews} converted view(s) reaching old renderer, `
     + `${result.exports.unusedExports.length}/${result.exports.maxUnusedExports} unused export(s)`;
   const failed = comparison ? comparison.newIssues > 0 : result.totalIssues > 0;
   if (failed) {
