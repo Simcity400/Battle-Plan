@@ -1,6 +1,6 @@
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -560,6 +560,44 @@ pub struct Source<'a> {
     pub withheld: BTreeMap<usize, String>,
 }
 
+struct Planned<'a> {
+    layer: &'a ResolvedLayer,
+    index: usize,
+    files: Vec<(LayerPath, [u8; 32])>,
+}
+
+fn visible_files(planned: &[Planned<'_>], excluded: impl Fn(usize) -> bool) -> Vec<Vec<usize>> {
+    let mut visible = vec![Vec::new(); planned.len()];
+    let mut higher_exact: HashSet<&[u8]> = HashSet::new();
+    let mut higher_replaces: Vec<Vec<u8>> = Vec::new();
+    for (position, plan) in planned.iter().enumerate().rev() {
+        if excluded(plan.index) {
+            continue;
+        }
+        let kept = &mut visible[position];
+        kept.reserve(plan.files.len());
+        for (file_index, (path, _)) in plan.files.iter().enumerate() {
+            if higher_exact.contains(path.as_slice()) {
+                continue;
+            }
+            if !higher_replaces.is_empty() {
+                let lower = path.to_ascii_lowercase();
+                if higher_replaces.iter().any(|root| below(&lower, root)) {
+                    continue;
+                }
+            }
+            kept.push(file_index);
+        }
+        for (path, _) in &plan.files {
+            higher_exact.insert(path.as_slice());
+        }
+        for replace in &plan.layer.replace_paths {
+            higher_replaces.push(replace.to_ascii_lowercase());
+        }
+    }
+    visible
+}
+
 pub fn write(
     source: &Source<'_>,
     identity: &Identity,
@@ -569,11 +607,6 @@ pub fn write(
     gather_equipment_section: impl FnOnce(&ResolvedLayers) -> Result<Vec<u8>, String>,
 ) -> io::Result<(Vec<u8>, WriteStats)> {
     let language = identity.language.strip_prefix("l_").unwrap_or(&identity.language);
-    struct Planned<'a> {
-        layer: &'a ResolvedLayer,
-        index: usize,
-        files: Vec<(LayerPath, [u8; 32])>,
-    }
     let mut planned = Vec::new();
     for (index, layer) in source.layers.layers.iter().enumerate() {
         if matches!(layer.role, LayerRole::UserDirectory | LayerRole::Visual) {
@@ -591,68 +624,87 @@ pub fn write(
             files,
         });
     }
-    let mut wanted: Vec<(usize, LayerPath, [u8; 32])> = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (position, plan) in planned.iter().enumerate() {
-        if source.withheld.contains_key(&plan.index) {
-            continue;
-        }
-        for (path, digest) in &plan.files {
-            if seen.insert(*digest) {
-                wanted.push((position, path.clone(), *digest));
-            }
-        }
-    }
-    let read = crate::parallel::map(&wanted, |(position, path, digest)| {
-        if cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"));
-        }
-        let bytes = read_layer_file(planned[*position].layer, path)?;
-        let actual: [u8; 32] = Sha256::digest(&bytes).into();
-        if actual != *digest {
-            return Err(invalid(format!(
-                "{} changed while its facts were gathered: {}",
-                planned[*position].layer.id,
-                display(path)
-            )));
-        }
-        Ok(bytes)
-    });
     let mut contents: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
     let mut failed: BTreeMap<usize, String> = BTreeMap::new();
-    for ((position, _, digest), bytes) in wanted.iter().zip(read) {
-        match bytes {
-            Ok(bytes) => {
-                contents.insert(*digest, bytes);
+    let visible = loop {
+        let visible = visible_files(&planned, |index| {
+            source.withheld.contains_key(&index) || failed.contains_key(&index)
+        });
+        let mut wanted: Vec<(usize, LayerPath, [u8; 32])> = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (position, indices) in visible.iter().enumerate() {
+            let plan = &planned[position];
+            if source.withheld.contains_key(&plan.index) || failed.contains_key(&plan.index) {
+                continue;
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-            Err(error) => {
-                failed
-                    .entry(planned[*position].index)
-                    .or_insert_with(|| error.to_string());
+            for &file_index in indices {
+                let (path, digest) = &plan.files[file_index];
+                if !contents.contains_key(digest) && seen.insert(*digest) {
+                    wanted.push((position, path.clone(), *digest));
+                }
             }
         }
-    }
-    for plan in &planned {
-        if source.withheld.contains_key(&plan.index) || failed.contains_key(&plan.index) {
-            continue;
+        if wanted.is_empty() {
+            break visible;
         }
-        if plan.files.iter().any(|(_, digest)| !contents.contains_key(digest)) {
-            let reason = failed
-                .values()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| "a file it holds could not be read".to_owned());
-            failed.insert(plan.index, reason);
+        let read = crate::parallel::map(&wanted, |(position, path, digest)| {
+            if cancelled() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"));
+            }
+            let bytes = read_layer_file(planned[*position].layer, path)?;
+            let actual: [u8; 32] = Sha256::digest(&bytes).into();
+            if actual != *digest {
+                return Err(invalid(format!(
+                    "{} changed while its facts were gathered: {}",
+                    planned[*position].layer.id,
+                    display(path)
+                )));
+            }
+            Ok(bytes)
+        });
+        let before_failed = failed.len();
+        for ((position, _, digest), bytes) in wanted.iter().zip(read) {
+            match bytes {
+                Ok(bytes) => {
+                    contents.insert(*digest, bytes);
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                Err(error) => {
+                    failed
+                        .entry(planned[*position].index)
+                        .or_insert_with(|| error.to_string());
+                }
+            }
         }
-    }
+        for (position, indices) in visible.iter().enumerate() {
+            let plan = &planned[position];
+            if source.withheld.contains_key(&plan.index) || failed.contains_key(&plan.index) {
+                continue;
+            }
+            if indices
+                .iter()
+                .any(|&file_index| !contents.contains_key(&plan.files[file_index].1))
+            {
+                let reason = failed
+                    .values()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "a file it holds could not be read".to_owned());
+                failed.insert(plan.index, reason);
+            }
+        }
+        if failed.len() == before_failed {
+            break visible;
+        }
+    };
     let localisation = |path: &[u8]| {
         let lower = path.to_ascii_lowercase();
         below(&lower, b"localisation") && lower.ends_with(b".yml")
     };
     let dropped: BTreeSet<[u8; 32]> = planned
         .iter()
-        .flat_map(|plan| &plan.files)
+        .zip(&visible)
+        .flat_map(|(plan, indices)| indices.iter().map(|&i| &plan.files[i]))
         .filter(|(path, digest)| {
             localisation(path)
                 && contents
@@ -662,8 +714,9 @@ pub fn write(
         .map(|(_, digest)| *digest)
         .collect();
     let mut carried_paths = BTreeSet::new();
-    for plan in &planned {
-        for (path, digest) in &plan.files {
+    for (plan, indices) in planned.iter().zip(&visible) {
+        for &file_index in indices {
+            let (path, digest) = &plan.files[file_index];
             if localisation(path) && !dropped.contains(digest) {
                 carried_paths.insert(path.to_ascii_lowercase());
             }
@@ -677,7 +730,7 @@ pub fn write(
     let mut stream_order: Vec<[u8; 32]> = Vec::new();
     let mut offset = 0u64;
     let mut layer_files: Vec<Result<BTreeMap<LayerPath, u32>, String>> = Vec::new();
-    for plan in &planned {
+    for (plan, indices) in planned.iter().zip(&visible) {
         let reason = source
             .withheld
             .get(&plan.index)
@@ -687,7 +740,8 @@ pub fn write(
             continue;
         }
         let mut carried = BTreeMap::new();
-        for (path, digest) in &plan.files {
+        for &file_index in indices {
+            let (path, digest) = &plan.files[file_index];
             if !carries(path, digest) {
                 continue;
             }
@@ -1161,5 +1215,102 @@ mod tests {
         let damaged = pack(&raws, 4, 26, Some([7; 32]));
         let refused = damaged.read_pieces(0, &mut |_| Ok(())).unwrap_err().to_string();
         assert!(refused.contains("does not match its digest"), "{refused}");
+    }
+
+    #[test]
+    fn shadowed_lower_layer_facts_are_omitted_without_changing_playback() {
+        let root = std::env::temp_dir().join(format!("hoi4_facts_shadowed_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let mod_dir = root.join("mod");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut vanilla = super::super::fixtures::folder_of(
+            "vanilla",
+            &base,
+            &[
+                ("common/kept.txt", b"vanilla kept"),
+                ("common/overridden.txt", b"vanilla overridden payload"),
+                ("events/replaced_out.txt", b"vanilla replaced payload"),
+            ],
+        );
+        vanilla.role = LayerRole::Vanilla;
+        let mut overhaul = super::super::fixtures::folder_of(
+            "overhaul",
+            &mod_dir,
+            &[
+                ("common/overridden.txt", b"mod override"),
+                ("events/mod_only.txt", b"mod event"),
+            ],
+        );
+        overhaul.role = LayerRole::Mod;
+        overhaul.replace_paths = vec![b"events".to_vec()];
+        let vanilla_hash = super::super::layer_hash(&vanilla.hashes).unwrap();
+        let mod_hash = super::super::layer_hash(&overhaul.hashes).unwrap();
+        let layers = ResolvedLayers::from_test_layers(vec![vanilla, overhaul]).unwrap();
+        let identity = Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash,
+            dlc: Vec::new(),
+            mods: vec![replay_identity::Mod {
+                id: "overhaul".into(),
+                name: "Overhaul".into(),
+                hash: mod_hash,
+                replace_paths: vec!["events".into()],
+            }],
+            coverage_policy: 5,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [0; 32],
+            verification: replay_identity::Verification::Unchecked,
+        };
+        let source = Source {
+            layers: &layers,
+            withheld: BTreeMap::new(),
+        };
+        let (bytes, stats) = write(
+            &source,
+            &identity,
+            Err("none".to_owned()),
+            &cache,
+            &|| false,
+            |_| Err("none".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(stats.files, 3);
+        let opened = Arc::new(Pack::open(Arc::new(bytes), 0, stats.pack_bytes).unwrap());
+        assert_eq!(opened.stats().0, 3);
+        let options = ResolveOptions {
+            game_dir: root.join("empty_game"),
+            user_dir: root.join("empty_user"),
+            cache_dir: cache.clone(),
+        };
+        std::fs::create_dir_all(&options.game_dir).unwrap();
+        std::fs::create_dir_all(&options.user_dir).unwrap();
+        let playback = super::super::playback(&identity, Ok(opened), &options).unwrap();
+        assert_eq!(playback.layers.read("common/kept.txt").unwrap(), b"vanilla kept");
+        assert_eq!(playback.layers.read("common/overridden.txt").unwrap(), b"mod override");
+        assert_eq!(playback.layers.read("events/mod_only.txt").unwrap(), b"mod event");
+        assert_eq!(
+            playback.layers.read("events/replaced_out.txt").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let withheld_source = Source {
+            layers: &layers,
+            withheld: BTreeMap::from([(1, "mod withheld".to_owned())]),
+        };
+        let (_, withheld_stats) = write(
+            &withheld_source,
+            &identity,
+            Err("none".to_owned()),
+            &cache,
+            &|| false,
+            |_| Err("none".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(withheld_stats.files, 3);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
