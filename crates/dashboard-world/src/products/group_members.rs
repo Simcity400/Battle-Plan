@@ -139,6 +139,17 @@ impl GroupsAt {
         Ok(Self { reply: Some(reply), first: query.timeline.first })
     }
 
+    pub fn load_all(source: &Source, load: &LoadContext, branch_id: &str) -> io::Result<Self> {
+        let Ok(branch) = branch_id.parse::<u64>() else { return Ok(Self::default()) };
+        let query = dashboard_base::queries::query(source, branch)?;
+        let reply = groups::shared(source, &query, load, &AtomicBool::new(false))?;
+        Ok(Self { reply: Some(reply), first: query.timeline.first })
+    }
+
+    pub fn reply(&self) -> Option<&CountryGroupReply> {
+        self.reply.as_deref()
+    }
+
     pub fn members(&self, group: &GroupSelection, hour: i32) -> io::Result<Members> {
         let reply = self.reply.as_deref().ok_or_else(|| invalid("The group's memberships were not loaded"))?;
         members_at(reply, group, hour, self.first)

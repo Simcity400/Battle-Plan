@@ -36,10 +36,10 @@ import {
   FamilySourceBroker,
   hoverAsks,
   type HeldHover,
-  planSignature,
   readPlanExact,
   stabilizeCanvasDimension,
 } from '../broker.ts';
+import { plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
@@ -505,7 +505,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [kind, track, widget.time, isSingle, countryTag, widget.countries],
   );
 
-  const ctx = useMemo<FamilyPlanContext<TAux> | null>(() => {
+  const rangeSpan = useMemo(
+    () => (track ? plannedRangeSpan(widget.time.mode, track.branch, window) : null),
+    [track, widget.time.mode, window],
+  );
+
+  const baseCtx = useMemo<Omit<FamilyPlanContext<TAux>, 'staticSpan'> | null>(() => {
     if (!track) return null;
     return {
       track,
@@ -520,28 +525,29 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       countryName,
       countries: countriesState,
       gateSpan: gate.span,
-      staticSpan: null,
     };
   }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span]);
 
-  const inputsReady = !!ctx
+  const inputsReady = !!baseCtx
     && (!isSingle || (gate.open && countryTag !== null))
     && (!isFilter || (!!filterMatch?.ready && !filterMatch.reason && !!groups.data))
     && (!auxEnabled || auxResult.data !== undefined)
     && (!isMulti || (!countriesState.reason && (!needsGroups || !!groups.data) && (!needsSlots || !!slots)));
 
-  const rawPlan = useMemo<SourcePlan | null>(() => {
-    if (!ctx || !inputsReady) return null;
-    return buildSources(ctx, {
+  const planned = useMemo(() => {
+    if (!baseCtx) return null;
+    return planFamilySources(baseCtx, window, inputsReady, buildSources, {
       following,
       ...(stableWidth !== undefined ? { width: stableWidth } : {}),
       ...(stableHeight !== undefined ? { height: stableHeight } : {}),
-      staticSpan: null,
     });
-  }, [ctx, inputsReady, buildSources, following, stableWidth, stableHeight]);
+  }, [baseCtx, window, inputsReady, buildSources, following, stableWidth, stableHeight]);
+
+  const ctx = planned?.ctx ?? null;
+  const rawPlan = planned?.plan ?? null;
 
   const stablePlanRef = useRef<{ sig: string; plan: SourcePlan | null }>({ sig: '', plan: null });
-  const sig = planSignature(rawPlan);
+  const sig = planned?.sig ?? plannedSignature(rawPlan, rangeSpan);
   if (sig !== stablePlanRef.current.sig) {
     stablePlanRef.current = { sig, plan: rawPlan };
   }
@@ -955,12 +961,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     subscribe: changed => readTarget().subscribeProof(changed),
   }), [readTarget]);
 
-  const shownSpan = view.bundle?.span ?? null;
+  const shownSpan = view.bundle?.span ?? rangeSpan;
   const spanStart = shownSpan ? shownSpan[0] : null;
   const spanEnd = shownSpan && !following ? shownSpan[1] : Infinity;
   const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(() => {
     if (!ctx) return null;
     if (spanStart === null) return ctx;
+    if (ctx.staticSpan && ctx.staticSpan[0] === spanStart && ctx.staticSpan[1] === spanEnd) return ctx;
     return { ...ctx, staticSpan: [spanStart, spanEnd] as const };
   }, [ctx, spanStart, spanEnd]);
 

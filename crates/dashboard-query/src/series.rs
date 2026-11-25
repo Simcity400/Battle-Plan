@@ -1538,6 +1538,37 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
+    pub fn tile_buckets(&self, drawn: &[(Ask, Vec<(i32, i32)>)], first: i32, last: i32, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<MissingSpan>)>> {
+        let level = crate::tile::level_of(bin_hours)?;
+        let read_from = first - bin_hours as i32;
+        let clipped: Vec<(Ask, Vec<(i32, i32)>)> = drawn
+            .iter()
+            .map(|(ask, spans)| {
+                (
+                    ask.clone(),
+                    spans
+                        .iter()
+                        .filter_map(|&(a, b)| {
+                            let lo = a.max(read_from);
+                            let hi = b.min(last);
+                            (lo <= hi).then_some((lo, hi))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let binned = self.binned_for_tile(&clipped, read_from, last, level, bin_hours)?;
+        let held_parts: Vec<Vec<Part>> = drawn.iter().map(|(ask, _)| self.held(ask, first, last)).collect();
+        let all_parts: Vec<&Part> = held_parts.iter().flatten().collect();
+        self.prefetch_unwitnessed(&all_parts, first, last)?;
+        let mut out = Vec::with_capacity(drawn.len());
+        for (((ask, _), (bins, _)), parts) in drawn.iter().zip(binned).zip(held_parts) {
+            let missing = self.missing_for_tile(ask.country.clone(), first, last, &parts)?;
+            out.push((bins.into_iter().skip(1).collect(), missing));
+        }
+        Ok(out)
+    }
+
     pub(crate) fn binned_for_tile(
         &self,
         drawn: &[(Ask, Vec<(i32, i32)>)],
