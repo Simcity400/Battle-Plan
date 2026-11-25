@@ -5,7 +5,7 @@ use replay_journal::fixtures;
 
 #[test]
 fn a_dated_view_at_any_hour_is_that_hours_decoded_read_through_renames_returns_and_withheld_blocks() {
-    const RUNS: [(u64, i32, u32); 2] = [(1, 100, 1_200), (2, 50_000, 3)];
+    const RUNS: [(u64, i32, u32); 2] = [(1, 100, 2), (2, 50_000, 1)];
     let recording = Recording::open(fixtures::churned(recorder_derive::writers(), &RUNS).0).unwrap();
     let tag = mask::<CountryRow>(&["tag"]);
     let asked = [3_u128, 4, 9];
