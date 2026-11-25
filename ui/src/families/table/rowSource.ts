@@ -6,6 +6,7 @@ export type TailProduct =
   | 'log-tail'
   | 'market-ledger-tail'
   | 'raid-log-tail'
+  | 'espionage-log-tail'
   | 'construction-log-tail'
   | 'event-feed-tail'
   | 'decisions-tail'
