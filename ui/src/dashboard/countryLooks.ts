@@ -40,13 +40,6 @@ export function lookPlan(branch: RecordedBranch | undefined, tags: readonly stri
   return { samples, wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
-export function looksRead(following: boolean, identityHour: number | null, moment: number,
-  segmentAt?: (tag: string, hour: number) => number | null, hours?: ReadonlyMap<string, number>, exact = false) {
-  return following && identityHour !== null
-    ? { hour: identityHour, segmentAt: undefined, hours: undefined, exact: true }
-    : { hour: moment, segmentAt, hours, exact };
-}
-
 const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
   product: 'country-styles', perRequest: Infinity,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),

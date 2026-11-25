@@ -48,6 +48,8 @@ export const TIMELINE_VIEWS: readonly FamilyViewEntry[] = [
       projection: mod.specialProjectsHistoryProjection, declaration: mod.specialProjectsHistoryDeclaration,
     })),
   },
+  timelineView('civil-wars', () => import('../civil-wars/civilWarsProjection.ts'),
+    mod => ({ projection: mod.civilWarsProjection, declaration: mod.civilWarsDeclaration })),
   timelineView('diplomatic-pacts', () => import('../diplomatic-pacts/diplomaticPactsProjection.ts'),
     mod => ({ projection: mod.diplomaticPactsProjection, declaration: mod.diplomaticPactsDeclaration })),
   timelineView('factions', () => import('../factions/factionsProjection.ts'),

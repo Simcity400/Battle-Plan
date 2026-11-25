@@ -63,7 +63,7 @@ export function placeTimeline(
     ? MIN_LABEL_WIDTH
     : Math.max(MIN_LABEL_WIDTH, Math.min(model.labelWidth, Math.floor(w * 0.38)));
   const plotLeft = labelWidth + PLOT_GAP;
-  const outcome = compact ? 0 : Math.min(model.outcomeWidth ?? 0, Math.floor(w * 0.25));
+  const outcome = compact || w < 540 ? 0 : Math.min(model.outcomeWidth ?? 0, Math.floor(w * 0.25));
   const plotRight = Math.max(plotLeft + 24, w - RIGHT_PAD - outcome);
   const lanes: PlacedLane[] = [];
   let y = TOP_PAD;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, FactRequests, factsKey, HourStore, nameKey, transientError } from './countryFacts.ts';
-import { lookHour, lookPlan, looksRead, LOOK_STEP } from './countryLooks.ts';
+import { lookHour, lookPlan, LOOK_STEP } from './countryLooks.ts';
 import { matchesLookSegment, nextLooks, retainLooks, sampledLooks } from './looks.ts';
 import type { Look, LookRead } from './looks';
 import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
@@ -92,19 +92,6 @@ test('without an identity lookup looks still follow the recorded sample grid', (
   const branch = { firstHour: 100, lastHour: 3000, gaps: [{ firstHour: 800, lastHour: 830 }] };
   assert.deepEqual(lookPlan(branch, ['ABC'], 102).samples, [{ tag: 'ABC', hour: 100, stretch: 100 }]);
   assert.deepEqual(lookPlan(branch, ['ABC'], 831).samples, [{ tag: 'ABC', hour: 831, stretch: 831 }]);
-});
-
-test("a view following the head reads its rows' looks exactly where one of them last changed, never at a bound its windows do not hold", () => {
-  const branch = { firstHour: 1000, lastHour: 100_000, gaps: [{ firstHour: 50_000, lastHour: 50_010 }] };
-  const heldBound = (_tag: string, hour: number) => hour >= 90_000 ? 90_000 : null;
-  assert.deepEqual(lookPlan(branch, ['GER', 'ITA'], 5_000, heldBound).wanted, []);
-  const read = looksRead(true, 4_321, 5_000, heldBound);
-  assert.deepEqual(read, { hour: 4_321, segmentAt: undefined, hours: undefined, exact: true });
-  assert.deepEqual(lookPlan(branch, ['GER', 'ITA'], read.hour, read.segmentAt, read.hours, read.exact).wanted,
-    [{ tag: 'GER', hour: 4_321 }, { tag: 'ITA', hour: 4_321 }]);
-  const hours = new Map([['GER', 7_000]]);
-  assert.deepEqual(looksRead(false, 4_321, 5_000, heldBound, hours, true), { hour: 5_000, segmentAt: heldBound, hours, exact: true });
-  assert.deepEqual(looksRead(true, null, 5_000, heldBound), { hour: 5_000, segmentAt: heldBound, hours: undefined, exact: false });
 });
 
 test("a coarse step of the head is a step from the branch's first hour, never one before it", () => {

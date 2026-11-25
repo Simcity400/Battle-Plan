@@ -6,8 +6,7 @@ import { changeHours, laneCountries, levelColours, levelName, overlordTagAt, ove
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
 import { worldFilter } from '../../dashboard/groups.ts';
-import { laneRequests } from '../../charts/timeline/laneRequests.ts';
-import { changesBy } from '../../charts/timeline/runState.ts';
+import { nextBoundaryAfter } from '../../families/timeline/helpers.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 
 const levels: SubjectLevel[] = [
@@ -38,27 +37,6 @@ const options: LaneOptions = { order: 'first', subjects: 'since', ended: true, c
 const byToken = new Map(levels.map(level => [level.token, level]));
 const holder = (tag: string, slot: number, firstHour = 0, lastHour = 500, countryId = slot) => ({ tag, identities: [{ slot, countryId, firstHour, lastHour }] });
 const identities = countryIdentityIndex(['D01', 'MY TAG', 'A:B', 'ENG', 'CAN'].map((tag, slot) => holder(tag, slot)));
-
-test('a late recorded name outside the window reorders both overlords and subjects', () => {
-  for (const field of ['subject', 'overlord'] as const) {
-    const tags = Array.from({ length: 50 }, (_, index) => `T${index}`);
-    const metadata = new Map(tags.map((tag, index) => [tag, index === 49 ? 'Zulu' : `Country ${String(index).padStart(2, '0')}`]));
-    const recorded = new Map<string, string>();
-    const labels = { ...text, country: (tag: string) => ({ name: recorded.get(tag) ?? metadata.get(tag) ?? tag }) };
-    const views = overlordViews({ ...reply, unobserved: [], runs: tags.map((tag, index) => ({
-      overlord: field === 'overlord' ? tag : 'OVR', subject: field === 'subject' ? tag : `S${index}`,
-      startHour: 0, firstHour: 0, lastHour: 20, steps: [step(0, 20, null)],
-    })) });
-    const layout = () => subjectLanes(views, byToken, new Map(), 20,
-      { ...options, order: field === 'overlord' ? 'name' : 'first', subjects: field === 'subject' ? 'name' : 'since' }, labels, []);
-    const before = layout();
-    const requests = laneRequests(before.lanes, [0, 24]);
-    assert.ok(!laneCountries(requests.looks, before.info, 20).includes('T49'), field);
-    const wanted = laneCountries(requests.names, before.info, 20);
-    if (wanted.includes('T49')) recorded.set('T49', 'Aardvark');
-    assert.equal(layout().lanes[field === 'overlord' ? 0 : 1].identity?.label, 'Aardvark', field);
-  }
-});
 
 test('end membership keeps the human subject’s overlord visible before its change of tag', () => {
   const groups: CountryGroupReply = { branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [],
@@ -360,8 +338,8 @@ test('the timeline renders only where a relation, a level, a stretch not recorde
   const hours = changeHours(reply, [{ hour: 120 }]);
   assert.ok(hours.every((hour, index) => index === 0 || hours[index - 1] < hour), 'ascending and distinct');
   for (const hour of [100, 120, 150, 200, 300, 310]) assert.ok(hours.includes(hour), `${hour} is a change`);
-  assert.equal(changesBy(hours, 101), changesBy(hours, 119));
-  assert.notEqual(changesBy(hours, 119), changesBy(hours, 120));
-  assert.equal(changesBy(hours, 0), 0);
-  assert.equal(changesBy(hours, 1_000_000), hours.length);
+  assert.equal(nextBoundaryAfter(hours, 101), 120);
+  assert.equal(nextBoundaryAfter(hours, 119), 120);
+  assert.equal(nextBoundaryAfter(hours, 120), 150);
+  assert.equal(nextBoundaryAfter(hours, 1_000_000), Infinity);
 });

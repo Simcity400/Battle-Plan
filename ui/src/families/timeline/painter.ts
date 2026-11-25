@@ -90,7 +90,26 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
   }
   const width = Math.max(0, right - x);
   if (lane.sides) {
-    drawSides(ctx, lane.sides, x, right, lane.subtitle && !layout.compact ? mid - 7 : mid, input);
+    if (lane.sidesBelowLabel && !layout.compact) {
+      ctx.save();
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+      ctx.fillStyle = theme.text;
+      ctx.fillText(fitLine(lane.label, width, s => textWidth(ctx, s)).text, x, mid - 9);
+      ctx.restore();
+      drawSides(ctx, lane.sides, x, right, mid + 9, input, {
+        separator: lane.sidesSeparator,
+        extraSides: lane.extraSides,
+        smallFlags: true,
+      });
+      return;
+    }
+    drawSides(ctx, lane.sides, x, right, lane.subtitle && !layout.compact ? mid - 7 : mid, input, {
+      separator: lane.sidesSeparator,
+      extraSides: lane.extraSides,
+      smallFlags: lane.sidesBelowLabel,
+    });
     if (lane.subtitle && !layout.compact) {
       ctx.save();
       ctx.textAlign = 'left';
@@ -136,13 +155,24 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
   ctx.restore();
 }
 
-function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: number, mid: number, input: TimelinePaintInput, leadName: boolean, stripLimit = right): number {
+function drawSide(
+  ctx: Canvas2D,
+  side: TimelineSideLabel,
+  x: number,
+  right: number,
+  mid: number,
+  input: TimelinePaintInput,
+  leadName: boolean,
+  stripLimit = right,
+  flagSize: readonly [number, number] = [FLAG_W, FLAG_H],
+): number {
   const { theme, artCache } = input;
+  const [fw, fh] = flagSize;
   ctx.save();
   if (side.dim) ctx.globalAlpha = LOSER_ALPHA;
-  if (x + FLAG_W <= right) {
-    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, { kind: 'flag', art: side.flag, tag: side.flagTag }, theme, { artCache });
-    x += FLAG_W + 6;
+  if (x + fw <= right) {
+    drawMediaSlot(ctx, x, mid, fw, fh, { kind: 'flag', art: side.flag, tag: side.flagTag }, theme, { artCache });
+    x += fw + 6;
   }
   if (leadName) {
     ctx.textAlign = 'left';
@@ -162,20 +192,64 @@ function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: numb
   return x;
 }
 
-function drawSides(ctx: Canvas2D, sides: readonly [TimelineSideLabel, TimelineSideLabel], x: number, right: number, mid: number, input: TimelinePaintInput): void {
+interface DrawSidesStyle {
+  readonly separator?: string;
+  readonly extraSides?: number;
+  readonly smallFlags?: boolean;
+}
+
+function drawSides(
+  ctx: Canvas2D,
+  sides: readonly [TimelineSideLabel, TimelineSideLabel],
+  x: number,
+  right: number,
+  mid: number,
+  input: TimelinePaintInput,
+  style: DrawSidesStyle = {},
+): void {
   const { theme } = input;
   const names = !input.layout.compact;
-  const half = x + (right - x) * 0.5;
-  x = drawSide(ctx, sides[0], x, right, mid, input, names, half) + 4;
-  if (x + 20 > right) return;
+  const sep = style.separator ?? '\u2013';
+  const flagSize: readonly [number, number] = style.smallFlags ? [16, 11] : [FLAG_W, FLAG_H];
+  const extraText = style.extraSides && style.extraSides > 0 ? `+${style.extraSides}` : null;
+  let pillW = 0;
+  if (extraText) {
+    ctx.save();
+    ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+    pillW = Math.ceil(textWidth(ctx, extraText)) + 10;
+    ctx.restore();
+  }
+  const contentRight = extraText ? right - pillW - 10 : right;
+  const half = x + (contentRight - x) * 0.54;
+  x = drawSide(ctx, sides[0], x, Math.min(contentRight, half), mid, input, names, half, flagSize) + 2;
+  if (x + 18 > contentRight) return;
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
+  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
   ctx.fillStyle = theme.muted;
-  ctx.fillText('\u2013', x, mid);
+  ctx.fillText(sep, x, mid);
+  const sepW = textWidth(ctx, sep);
   ctx.restore();
-  drawSide(ctx, sides[1], x + 14, right, mid, input, names);
+  const afterSecond = drawSide(ctx, sides[1], x + sepW + 6, contentRight, mid, input, names, contentRight, flagSize);
+  if (extraText && right - pillW >= x + sepW + 6) {
+    ctx.save();
+    const px = Math.min(afterSecond, right - pillW);
+    const ph = 15;
+    const py = Math.round(mid - ph / 2);
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = theme.hairline ?? theme.muted;
+    ctx.beginPath();
+    ctx.roundRect(px, py, pillW, ph, 7.5);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(extraText, px + pillW / 2, mid + 0.5);
+    ctx.restore();
+  }
 }
 
 function drawOutcome(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
@@ -188,13 +262,20 @@ function drawOutcome(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Time
   ctx.save();
   if (outcome.mark === 'flag') {
     drawMediaSlot(ctx, x, mid, MARK, MARK, { kind: 'art', art: outcome.flag ?? NO_ART, resolvedName: outcome.text }, theme, { artCache });
+    x += MARK + 6;
+  } else if (outcome.mark === 'bar') {
+    ctx.fillStyle = theme.text;
+    ctx.globalAlpha = 0.78;
+    ctx.fillRect(Math.round(x + 2), Math.round(mid - 6), 2, 12);
+    ctx.globalAlpha = 1;
+    x += 12;
   } else {
     ctx.fillStyle = outcome.mark === 'ongoing' ? theme.accent : theme.muted;
     ctx.beginPath();
     ctx.arc(x + 4, mid, 3.5, 0, Math.PI * 2);
     ctx.fill();
+    x += MARK + 6;
   }
-  x += MARK + 6;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
@@ -231,6 +312,13 @@ function drawSplit(ctx: Canvas2D, span: TimelineSpan, x0: number, x1: number, mi
   }
   for (const [fill, y] of [[top, Math.round(mid - HALF - 0.5)], [bottom, Math.round(mid + 0.5)]] as const) {
     drawTimelineBar(ctx, { x: x0, y, width: Math.max(1.5, x1 - x0), height: HALF, fill, theme, open: true, heldBefore: false, startBy: span.startBy, endUnseen: span.endUnseen });
+  }
+  if (span.endCap && !span.open) {
+    ctx.save();
+    ctx.fillStyle = theme.text;
+    ctx.globalAlpha = 0.82;
+    ctx.fillRect(Math.round(x1) + 3, Math.round(mid - HALF - 1), 1.5, HALF * 2 + 2);
+    ctx.restore();
   }
 }
 

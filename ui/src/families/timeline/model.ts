@@ -16,6 +16,7 @@ export interface TimelineSpan {
   readonly endUnseen?: boolean;
   readonly open: boolean;
   readonly halves?: readonly [string, string];
+  readonly endCap?: boolean;
   readonly marks?: readonly TimelineMark[];
   readonly meta?: unknown;
 }
@@ -35,7 +36,7 @@ export interface TimelineSideLabel {
 }
 
 export interface TimelineOutcome {
-  readonly mark: 'ongoing' | 'ended' | 'flag';
+  readonly mark: 'ongoing' | 'ended' | 'flag' | 'bar';
   readonly text: string;
   readonly detail?: string;
   readonly flag?: ArtResult;
@@ -62,6 +63,9 @@ export interface TimelineLane {
   readonly ruleColor?: string;
   readonly endText?: string;
   readonly sides?: readonly [TimelineSideLabel, TimelineSideLabel];
+  readonly sidesBelowLabel?: boolean;
+  readonly sidesSeparator?: string;
+  readonly extraSides?: number;
   readonly outcome?: TimelineOutcome;
   readonly barHeight?: number;
   readonly height?: number;

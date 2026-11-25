@@ -1206,14 +1206,22 @@ export type HolderBalances = { holder: string, tags: Array<HolderTag>, balances:
  * The balance the game shows the holder, by token.
  */
 shown: Array<PoliticsRun>, };
-export type CivilWarsParams = { branchId: string, };
+export type CivilWarsParams = { branchId: string,
+/**
+ * The hour answered: nothing recorded after it is read into the reply.
+ */
+hour: number, };
 export type CivilWarsReply = { branchId: string,
 /**
- * The branch's last hour: the reply reads through it.
+ * The hour answered, never after the branch's last hour.
  */
-lastHour: number | null,
+hour: number,
 /**
- * The hours the civil-war lists were read; others are unknown.
+ * The first hour after `hour` at which a civil war, a side, a tag, an exit, an outcome or a read stretch changes; null when none does.
+ */
+nextChange: number | null,
+/**
+ * The hours the civil-war lists were read through `hour`; others are unknown.
  */
 known: Array<HourSpan>, wars: Array<CivilWar>, warnings: Array<string>, };
 export type SideExitKind = "annexedBySide" | "annexedBySideOtherwise" | "annexedByOther";
@@ -1223,6 +1231,10 @@ export type SideExit = { kind: SideExitKind, hour: number, readHour: number,
  */
 by: string | null, };
 export type CivilWarSide = {
+/**
+ * The holder's canonical slot.
+ */
+slot: number,
 /**
  * The holder's tags from each hour it held them.
  */
@@ -6809,7 +6821,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "campaign-clock": { "firstHour": "start", "lastHour": "end" },
   "casualty-breakdown": { "hour": "end" },
   "casualty-matrix": { "hour": "read" },
-  "civil-wars": {},
+  "civil-wars": { "hour": "read" },
   "combat-log-history": { "hour": "read", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
   "construction-breakdown": { "hour": "end" },
   "construction-log": {},
@@ -6997,7 +7009,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "casualty-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "casualty-matrix": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "subject": "any", "top": "leaf" },
-  "civil-wars": { "branchId": "leaf" },
+  "civil-wars": { "branchId": "leaf", "hour": "leaf" },
   "combat-log-history": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "hour": "leaf" },
   "construction-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "construction-log": { "branchId": "leaf", "window": "leaf" },
@@ -7185,7 +7197,7 @@ export type RequestParams<E, B> = {
   "campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "casualty-breakdown": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "casualty-matrix": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "civil-wars": {};
+  "civil-wars": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "combat-log-history": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
   "construction-breakdown": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "construction-log": {};

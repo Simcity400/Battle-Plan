@@ -198,11 +198,25 @@ fn memberships_list_every_holders_balances_by_the_records_listing_it_without_rea
 fn a_civil_war_is_an_episode_of_listings_ongoing_while_a_listed_country_exists() {
     let source = recording();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let reply = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into() }, &AtomicBool::new(false)).unwrap();
+    let before = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: 104 }, &AtomicBool::new(false)).unwrap();
+    assert_eq!((before.hour, before.next_change), (104, Some(105)));
+    assert!(before.wars.is_empty(), "a war starting at 105 is not leaked at 104");
+    assert_eq!(before.known.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>(), [(FIRST, 104)]);
+
+    let during = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: 110 }, &AtomicBool::new(false)).unwrap();
+    assert_eq!((during.hour, during.next_change), (110, Some(116)), "next change is when the predicate stops at 116");
+    assert_eq!(during.wars.len(), 1);
+    assert_eq!((during.wars[0].first_hour, during.wars[0].last_hour), (105, 110), "cut at the asked hour");
+    assert_eq!(during.wars[0].at_war.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>(), [(105, 110)]);
+    assert_eq!(during.wars[0].sides.iter().map(|s| (s.slot, s.last_hour)).collect::<Vec<_>>(), [(7, 110), (8, 110)]);
+
+    let reply = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: LAST }, &AtomicBool::new(false)).unwrap();
+    assert_eq!((reply.hour, reply.next_change), (LAST, None));
     assert_eq!(reply.wars.len(), 1);
     let war = &reply.wars[0];
     assert_eq!((war.first_hour, war.last_hour), (105, 120));
     assert_eq!(war.sides.len(), 2);
+    assert_eq!(war.sides[0].slot, 7);
     assert_eq!(war.sides[0].tags[0].tag, "GER");
     assert!(war.sides.iter().all(|side| side.existed_before && side.parent.is_none() && side.exit.is_none()));
     assert_eq!(war.at_war.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(105, 115)], "neither side exists after hour 115");
