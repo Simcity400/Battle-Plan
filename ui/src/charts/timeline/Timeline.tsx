@@ -34,8 +34,6 @@ import { barContent, barNameFits, END_MARK_ROOM } from './barLabel';
 import '../charts.css';
 import { textWidth as measuredWidth } from '../textWidth.ts';
 
-export type { LaneGeometry, TimelineLane } from './layout';
-
 export interface TimelineProps {
   label: string;
   gaps?: readonly LostSpan[];

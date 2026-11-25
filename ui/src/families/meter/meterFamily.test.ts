@@ -4,7 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import type { Canvas2D } from '../../charts/textWidth.ts';
-import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { createBoundedReadView, createBoundedSlice, FutureDataError } from '../boundedView.ts';
 import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { PENDING_ART, productArt, readyArt } from '../art/types.ts';
 
@@ -17,7 +17,7 @@ import { assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LANE
 import { registerFamilyProjection } from '../registry.ts';
 import { meterLane } from './laneView.ts';
 import { deriveMeterAudit, deriveMeterMirror, deriveMeterNav, findMeterTooltip } from './model.ts';
-import { hitMeterModel, layoutMeterModel } from './painter.ts';
+import { drawMeterModel, hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
 import { matrixCellAt } from '../heat/matrixModel.ts';
@@ -569,6 +569,91 @@ test('autonomyLevelsProjection keeps the product order, lists an unread subject 
   assert.deepEqual(autonomyLevelsProjection.project(view, { filter: onlyGerman, filterAll: false, bySubject: false, surface: '#111111' }).sections![0]!.rows!.map(row => row.name), ['Slovakia']);
   const onlyCanada = { passing: { CAN: [[0, hour + 10]] as [number, number][] }, unrecorded: [], bounds: [] };
   assert.deepEqual(autonomyLevelsProjection.project(view, { filter: onlyCanada, filterAll: false, bySubject: true, surface: '#111111' }).sections![0]!.rows!.map(row => row.name), ['Dominion of Canada']);
+
+  const trendTile = {
+    tag: 'RAJ',
+    from: hour - 200,
+    binHours: 1,
+    decimals: 5,
+    buckets: createBoundedSlice([
+      { firstHour: hour - 200, lastHour: hour - 100, firstValue: 0.4, lastValue: 0.7, lastValueHour: hour - 100, minValue: 0.4, minHour: hour - 200, maxValue: 0.7, maxHour: hour - 100, firstBreak: true, hasBreak: false },
+      { firstHour: hour - 99, lastHour: hour, firstValue: 0.7, lastValue: 0.97, lastValueHour: hour, minValue: 0.7, minHour: hour - 99, maxValue: 0.97, maxHour: hour, firstBreak: false, hasBreak: false },
+    ], 2),
+    straddling: 'none' as const,
+    missing: createBoundedSlice([], 0),
+    validInterval: [hour - 200, hour] as const,
+  };
+  const withTrend = createBoundedReadView({
+    hour,
+    panels: new Map([['main', reply]]),
+    series: new Map([['trend', new Map([['RAJ', trendTile]])]]),
+    identity: makeIdentity({ RAJ: { name: 'British Raj' }, CAN: { name: 'Dominion of Canada' }, SLO: { name: 'Slovakia' } }),
+  });
+  const trendModel = autonomyLevelsProjection.project(withTrend, { filter: all, filterAll: true, bySubject: false, surface: '#111111' });
+  const rajRow = trendModel.sections![0]!.rows![0]!;
+  assert.ok(rajRow.sparkline && rajRow.sparkline.length === 16, 'sparkline sampled from trend tile');
+  assert.equal(rajRow.sparkline![0], 0.4);
+  assert.equal(rajRow.sparkline![15], 0.97);
+
+  let wideLines = 0;
+  let narrowLines = 0;
+  const recordingCtx = (onLineTo: () => void) => ({
+    font: '',
+    fillStyle: '',
+    strokeStyle: '',
+    globalAlpha: 1,
+    lineWidth: 1,
+    lineCap: 'butt',
+    lineJoin: 'miter',
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    measureText: (s: string) => ({ width: s.length * 7 }),
+    save() {},
+    restore() {},
+    translate() {},
+    beginPath() {},
+    closePath() {},
+    moveTo() {},
+    lineTo() { onLineTo(); },
+    arc() {},
+    rect() {},
+    roundRect() {},
+    fill() {},
+    stroke() {},
+    fillRect() {},
+    strokeRect() {},
+    clearRect() {},
+    clip() {},
+    setLineDash() {},
+    fillText() {},
+    drawImage() {},
+    createLinearGradient() { return { addColorStop() {} }; },
+  }) as unknown as Canvas2D;
+  const wideCtx = recordingCtx(() => { wideLines++; });
+  const narrowCtx = recordingCtx(() => { narrowLines++; });
+  drawMeterModel(wideCtx, {
+    layout: layoutMeterModel(wideCtx, trendModel, 600, THEME),
+    width: 600,
+    height: 300,
+    scrollLeft: 0,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+  });
+  drawMeterModel(narrowCtx, {
+    layout: layoutMeterModel(narrowCtx, trendModel, 380, THEME),
+    width: 380,
+    height: 300,
+    scrollLeft: 0,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+  });
+  assert.ok(wideLines > narrowLines, `wide meter paints sparkline (${wideLines} > ${narrowLines} lineTo calls)`);
 });
 
 test('bounded readView throws FutureDataError on future who() lookups', () => {

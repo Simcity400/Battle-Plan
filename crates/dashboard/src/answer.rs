@@ -122,6 +122,7 @@ pub fn answers(product: &str, params: &Value) -> bool {
                 || (product == dashboard_query::tile::PRODUCT && dashboard_naval::products::naval::losses::tiles::SERIES == kind)
                 || (product == dashboard_query::tile::PRODUCT && dashboard_wars::products::factions::tiles::SERIES == kind)
                 || (product == dashboard_query::tile::PRODUCT && dashboard_production::products::equipment_produced::tiles::SERIES == kind)
+                || (product == dashboard_query::tile::PRODUCT && dashboard_world::products::autonomy_lines::SERIES == kind)
         });
     }
     crate::products::MOVED.contains(&product)
@@ -186,6 +187,12 @@ pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadCont
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "Equipment produced over time is served as tiles and equipment-produced-race"));
             }
             return Ok(serde_json::to_value(dashboard_production::products::equipment_produced::tiles::tile(source, &query, params, context, cancelled)?)?);
+        }
+        if kind(params) == Some(dashboard_world::products::autonomy_lines::SERIES) {
+            if product != dashboard_query::tile::PRODUCT {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Autonomy over time is served as tiles and autonomy-levels"));
+            }
+            return Ok(serde_json::to_value(dashboard_world::products::autonomy_lines::tile(source, &query, params, cancelled)?)?);
         }
         if kind(params) == Some(dashboard_land::products::army::SERIES) {
             if product == dashboard_query::tile::PRODUCT {

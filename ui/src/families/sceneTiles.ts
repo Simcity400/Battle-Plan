@@ -39,6 +39,41 @@ export interface TiledSources {
   readonly headSourceBySeries?: Readonly<Record<string, SeriesHeadSource>>;
 }
 
+const serializedLines = new WeakMap<TiledLine, SerializedTiledLine>();
+
+function serializeTiledLine(source: string, line: TiledLine): SerializedTiledLine {
+  const cached = serializedLines.get(line);
+  if (cached && cached.source === source) return cached;
+  const serialized: SerializedTiledLine = {
+    source,
+    tag: line.tag,
+    head: line.head,
+    decimals: line.decimals,
+    binHours: line.summary.tiles?.binHours ?? 1,
+    from: line.summary.from,
+    to: line.summary.to,
+    width: line.summary.width,
+    buckets: line.summary.buckets,
+    ...(line.summary.runs ? { runs: line.summary.runs } : {}),
+    missing: line.missing,
+    parts: line.parts,
+  };
+  serializedLines.set(line, serialized);
+  return serialized;
+}
+
+export function serializeTiledBySource(
+  tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>,
+): Record<string, Record<string, SerializedTiledLine>> {
+  const tiledBySource: Record<string, Record<string, SerializedTiledLine>> = {};
+  for (const [sourceName, lines] of Object.entries(tiledSeries)) {
+    const byTag: Record<string, SerializedTiledLine> = {};
+    for (const [tag, line] of lines) byTag[tag] = serializeTiledLine(sourceName, line);
+    tiledBySource[sourceName] = byTag;
+  }
+  return tiledBySource;
+}
+
 const hydrated = new WeakMap<SerializedTiledLine, TiledLine>();
 
 function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {

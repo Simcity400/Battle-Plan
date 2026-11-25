@@ -45,15 +45,6 @@ function slotIdentitySince(timeline: Parameters<typeof identitySince>[0], slots:
   return held === undefined ? undefined : Math.max(held, since);
 }
 
-export function useIdentityKey(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, on: boolean): (hour: number, tags: readonly string[]) => string | null {
-  const content = useContentRevision(client);
-  const timeline = useHeldTimeline(client, track, content, on);
-  return useCallback((hour: number, tags: readonly string[]) => {
-    const since = timeline && identitySince(timeline, hour, tags);
-    return since === undefined || since === null ? null : String(since);
-  }, [timeline]);
-}
-
 export function useIdentityHour(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tags: readonly string[],
   clock: PlaybackController, on: boolean, trackHour: (clockHour: number) => number | null): number | null {
   const content = useContentRevision(client);

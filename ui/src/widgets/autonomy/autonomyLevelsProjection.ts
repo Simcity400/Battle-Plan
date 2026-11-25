@@ -1,5 +1,6 @@
 import { colour } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { flagChoiceArt } from '../../families/art/provider.ts';
 import { unavailableArt } from '../../families/art/types.ts';
 import type { HourRanges } from '../../families/holders.ts';
@@ -7,7 +8,7 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext } from '../../families/plan.ts';
+import type { BoundedReadView, BoundedSeries, DeclaredCountryFilter, FamilyPlanContext } from '../../families/plan.ts';
 import type { ArtResult } from '../../families/contract.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
@@ -24,21 +25,25 @@ const text = (value: unknown) => typeof value === 'string' && value.length > 0;
 const optionalText = (value: unknown) => value === null || text(value);
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const id = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+const optionalId = (value: unknown) => value === undefined || value === null || id(value);
+const optionalNumber = (value: unknown) => value === undefined || value === null || (typeof value === 'number' && Number.isFinite(value));
 
 export function validateAutonomyLevels(value: unknown): AutonomyLevelsReply {
   const ok = object(value) && Array.isArray(value.levels) && Array.isArray(value.subjects) && optionalText(value.missing)
     && Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string')
     && value.levels.every(level => object(level) && text(level.token) && optionalText(level.name) && typeof level.ordered === 'boolean')
-    && value.subjects.every(item => object(item) && id(item.overlordId) && optionalText(item.overlord) && id(item.subjectId) && optionalText(item.subject)
+    && value.subjects.every(item => object(item) && id(item.overlordId) && optionalId(item.overlordSlot) && optionalText(item.overlord)
+      && id(item.subjectId) && optionalId(item.subjectSlot) && optionalText(item.subject)
       && optionalText(item.level) && optionalText(item.levelBelow) && optionalText(item.levelAbove) && optionalText(item.levelsUnknown)
+      && optionalNumber(item.score) && optionalNumber(item.lowerScore) && optionalNumber(item.upperScore)
       && (item.progressMilli === null ? text(item.progressUnknown) : Number.isSafeInteger(item.progressMilli) && item.progressUnknown === null));
   if (!ok) throw new Error('The autonomy levels reply is malformed.');
   return value as unknown as AutonomyLevelsReply;
 }
 
-const within = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);
+export const within = (ranges: HourRanges | undefined, hour: number) => !!ranges?.some(([first, last]) => first <= hour && hour <= last);
 
-function filterNext(filter: DeclaredCountryFilter, hour: number): number {
+export function filterNext(filter: DeclaredCountryFilter, hour: number): number {
   let low = 0, high = filter.bounds.length;
   while (low < high) {
     const mid = (low + high) >> 1;
@@ -48,18 +53,62 @@ function filterNext(filter: DeclaredCountryFilter, hour: number): number {
   return filter.bounds[low] ?? Infinity;
 }
 
+export function subjectKeyOf(item: Pick<AutonomySubject, 'subjectSlot' | 'subject' | 'subjectId'>): string {
+  if (item.subjectSlot != null) return countryKey(item.subjectSlot);
+  return item.subject ?? `subject:${item.subjectId}`;
+}
+
+export function overlordKeyOf(item: Pick<AutonomySubject, 'overlordSlot' | 'overlord' | 'overlordId'>): string {
+  if (item.overlordSlot != null) return countryKey(item.overlordSlot);
+  return item.overlord ?? `overlord:${item.overlordId}`;
+}
+
+export function sampleSparkline(series: BoundedSeries | undefined, hour: number, points = 16): readonly (number | null)[] | undefined {
+  if (!series || series.buckets.length === 0) return undefined;
+  const values: { readonly hour: number; readonly value: number }[] = [];
+  for (const bucket of series.buckets) {
+    if (!bucket) continue;
+    if (bucket.firstHour > hour) break;
+    const clampedHour = Math.min(bucket.lastHour, hour);
+    values.push({ hour: bucket.firstHour, value: bucket.firstValue });
+    if (clampedHour > bucket.firstHour) {
+      values.push({ hour: clampedHour, value: bucket.lastValue });
+    }
+  }
+  if (values.length < 2) return undefined;
+  const first = values[0]!.hour;
+  const last = values[values.length - 1]!.hour;
+  if (last <= first) return undefined;
+  const out: (number | null)[] = [];
+  let cursor = 0;
+  let known = 0;
+  for (let i = 0; i < points; i++) {
+    const target = first + ((last - first) * i) / (points - 1);
+    while (cursor + 1 < values.length && values[cursor + 1]!.hour <= target) cursor++;
+    const hit = values[cursor];
+    if (hit) {
+      out.push(hit.value);
+      known++;
+    } else {
+      out.push(null);
+    }
+  }
+  return known >= 2 ? out : undefined;
+}
+
 interface Named {
   readonly name: string;
   readonly flag: ArtResult;
   readonly tag: string;
 }
 
-function named(readView: BoundedReadView, tag: string | null, rawId: number): Named {
-  if (!tag) return { name: `Country ${rawId}`, tag: '?', flag: unavailableArt('Country tag not recorded') };
-  const who = readView.who('country', tag, readView.hour);
-  const name = identityName(readView, 'country', tag);
+function named(readView: BoundedReadView, slot: number | null | undefined, tag: string | null, rawId: number): Named {
+  const key = slot != null ? countryKey(slot) : tag;
+  if (!key) return { name: `Country ${rawId}`, tag: '?', flag: unavailableArt('Country tag not recorded') };
+  const who = readView.who('country', key, readView.hour);
+  const name = identityName(readView, 'country', key);
   const flag = flagChoiceArt(readView, who.flagChoice);
-  return { name, tag, flag };
+  return { name, tag: tag ?? (who.tag?.status === 'ready' ? who.tag.value : '?'), flag };
 }
 
 export function levelTitle(levels: readonly SubjectLevel[], token: string | null): string {
@@ -71,14 +120,23 @@ export function percentText(milli: number): string {
   return formatProgress(milli / 100_000);
 }
 
-function row(readView: BoundedReadView, reply: AutonomyLevelsReply, item: AutonomySubject, surface: string): MeterRow {
-  const subject = named(readView, item.subject, item.subjectId);
-  const overlord = named(readView, item.overlord, item.overlordId);
+function row(
+  readView: BoundedReadView,
+  reply: AutonomyLevelsReply,
+  item: AutonomySubject,
+  surface: string,
+  trend: ReadonlyMap<string, BoundedSeries> | undefined,
+): MeterRow {
+  const subject = named(readView, item.subjectSlot, item.subject, item.subjectId);
+  const overlord = named(readView, item.overlordSlot, item.overlord, item.overlordId);
   const levelName = levelTitle(reply.levels, item.level);
   const order = item.level === null ? -1 : reply.levels.findIndex(level => level.token === item.level);
   const fill = order < 0 ? undefined : colour(surface, order);
   const known = item.progressMilli !== null;
   const figure = known ? percentText(item.progressMilli!) : undefined;
+  const tile = (item.subjectSlot != null ? trend?.get(countryKey(item.subjectSlot)) : undefined)
+    ?? (item.subject ? trend?.get(item.subject) : undefined);
+  const sparkline = sampleSparkline(tile, readView.hour);
   const items: TooltipListItem[] = [
     { label: 'Overlord', value: overlord.name },
     { label: 'Level', value: levelName, ...(fill ? { swatch: fill } : {}) },
@@ -95,6 +153,7 @@ function row(readView: BoundedReadView, reply: AutonomyLevelsReply, item: Autono
     flag: { tag: subject.tag, result: subject.flag },
     bar: { kind: 'threshold', fraction: known ? Math.max(0, Math.min(1, item.progressMilli! / 100_000)) : null, ticks: [], ends: true, ...(fill ? { color: fill } : {}), height: 7 },
     ...(figure ? { figure } : { figureMissing: true, figureMissingLabel: 'Not recorded' }),
+    ...(sparkline ? { sparkline } : {}),
     spoken: `${subject.name}, ${levelName}, ${figure ?? `not recorded: ${item.progressUnknown}`} within level`,
     audit: `${item.overlord ?? item.overlordId}>${item.subject ?? item.subjectId}|${item.level ?? 'not-recorded'}|${figure ?? 'not-recorded'}`,
     tooltip: { title: subject.name, hour: readView.hour, items },
@@ -136,6 +195,7 @@ export const autonomyLevelsProjection: MeterProjection<AutonomyLevelsOptions> = 
         warnings: reply.warnings,
       };
     }
+    const trend = readView.series('trend');
     return {
       hour: readView.hour,
       layout: 'rows',
@@ -144,7 +204,7 @@ export const autonomyLevelsProjection: MeterProjection<AutonomyLevelsOptions> = 
         key: 'subjects',
         title: 'Within each level',
         rightCaption: 'Left: level below · Right: level above',
-        rows: shown.map(item => row(readView, reply, item, options.surface)),
+        rows: shown.map(item => row(readView, reply, item, options.surface, trend)),
       }],
       warnings: reply.warnings,
     };
@@ -161,21 +221,37 @@ export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOpt
   countries: { mode: 'filter' },
   sources: (ctx: FamilyPlanContext) => ({
     owner: `autonomy-levels:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'autonomy-levels',
-        followQuery: { panel: 'autonomy-levels', branchId: ctx.branch.id },
-        params: { branchId: ctx.branch.id },
-        validate: validateAutonomyLevels,
+    entries: [
+      {
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'point',
+          channel: 'panel',
+          coverage: { mode: 'population', form: 'all' },
+          product: 'autonomy-levels',
+          followQuery: { panel: 'autonomy-levels', branchId: ctx.branch.id },
+          params: { branchId: ctx.branch.id },
+          validate: validateAutonomyLevels,
+        },
       },
-    }],
+      {
+        name: 'trend',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'pixel-binned',
+          coverage: { mode: 'population', form: 'all' },
+          family: { kind: 'autonomy-lines' },
+          tags: [],
+          top: { n: 1500 },
+          headQuery: null,
+        },
+      },
+    ],
   }),
   projection: autonomyLevelsProjection,
   projectionOptions: (ctx, extra) => ({

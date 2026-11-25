@@ -4,6 +4,7 @@ import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
 import { OPTIONS as AIR_KILLS_LOSSES_OPTIONS } from '../air-kills-losses/definition.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
+import { OPTIONS as AUTONOMY_OPTIONS } from '../autonomy/definition.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { OPTIONS as EQUIPMENT_PRODUCED_OPTIONS } from '../equipment-produced/definition.ts';
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
@@ -26,6 +27,7 @@ const AIR_KILLS_LOSSES_LINES_OPTIONS = [
   ...LINES_VIEW_OPTIONS,
 ];
 const ARMY_SIZE_BREAKDOWN_OPTIONS = ARMY_SIZE_OPTIONS.filter(field => ['view', 'measure', 'countFor', 'log', 'yMin', 'yMax'].includes(field.key));
+const AUTONOMY_LINES_OPTIONS = AUTONOMY_OPTIONS.filter(field => ['view', 'countriesAre', 'grow'].includes(field.key));
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
 const EQUIPMENT_PRODUCED_LINES_OPTIONS = [
   ...EQUIPMENT_PRODUCED_OPTIONS
@@ -445,6 +447,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../supply-health/supplyHealthProjection.ts'),
       mod => ({ projection: mod.supplyHealthProjection, declaration: mod.supplyHealthDeclaration }),
+    ),
+  },
+  {
+    kind: 'autonomy',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: AUTONOMY_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'autonomy',
+      'lines',
+      () => import('../autonomy/autonomyLinesProjection.ts'),
+      mod => ({ projection: mod.autonomyLinesProjection, declaration: mod.autonomyLinesDeclaration }),
     ),
   },
   {
