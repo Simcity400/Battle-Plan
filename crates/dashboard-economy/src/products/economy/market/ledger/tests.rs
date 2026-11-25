@@ -63,6 +63,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     let query = dashboard_base::queries::query(&src, 1).unwrap();
     let mut prepared = prepare(&src, &query, 1, &LoadContext { content: None }, &ask(105), &AtomicBool::new(false)).unwrap();
     prepared.context = Arc::new(context);
+    prepared.namings = Arc::new(namings(&src, &query).unwrap());
     let mid = load_tail_at(&prepared, &query, &ask(105), 105, &AtomicBool::new(false)).unwrap();
     assert_eq!(mid.total, "1");
     let contract = &mid.rows[0];

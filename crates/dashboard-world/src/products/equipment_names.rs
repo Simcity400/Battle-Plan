@@ -434,7 +434,7 @@ pub fn name_at(recording: &Recording, run: u32, hour: i32, variants: &[u64], org
     Ok(())
 }
 
-const VARIANT_FIELDS: u64 = !mask::<VariantDefinitionRow>(&["design"]);
+const VARIANT_FIELDS: u64 = mask::<VariantDefinitionRow>(&["equipment_token", "creator_link", "origin_link", "append_variant_name", "classifier_flags", "display_name", "variant_name", "icon_active", "icon_kind", "icon"]);
 
 const WHOLE_FIELDS: [(TableId, u64); 8] = [
     (TableId::Countries, mask::<CountryRow>(&["canonical_slot", "tag"])),
@@ -460,7 +460,7 @@ pub struct Naming {
 #[derive(Default)]
 struct Spelled {
     rows: BTreeMap<u32, Option<LexicalTokenRow>>,
-    refused: Option<SharedView>,
+    refused: bool,
 }
 
 const KEPT_ICON_HOURS: usize = 8;
@@ -488,24 +488,30 @@ impl Naming {
         })
     }
 
-    fn spellings(&self, recording: &Recording, tokens: &BTreeSet<u32>) -> io::Result<SharedView> {
+    fn spellings(&self, recording: &Recording, hour: i32, tokens: &BTreeSet<u32>) -> io::Result<SharedView> {
+        let keyed_at = |at: i32, keys: &[u128]| -> io::Result<SharedView> {
+            let mut frame = DecodedFrame { branch: self.branch, hour: at, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+            read_into(recording, self.run, at, &mut frame, &[Read::these(TableId::LexicalTokens, keys.iter().copied())])?;
+            Ok(frame.tables[TableId::LexicalTokens.index()].clone())
+        };
         let mut held = self.spelled.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.refused.is_none() {
+        if !held.refused {
             let missing: Vec<u128> = tokens.iter().filter(|token| !held.rows.contains_key(token)).map(|&token| u128::from(token)).collect();
             if !missing.is_empty() {
-                let mut frame = DecodedFrame { branch: self.branch, hour: self.last, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
-                read_into(recording, self.run, self.last, &mut frame, &[Read::these(TableId::LexicalTokens, missing.iter().copied())])?;
-                match frame.complete::<tables::LexicalTokens>() {
-                    Ok(rows) => {
+                let last = keyed_at(self.last, &missing)?;
+                match last.held() {
+                    TableView::Complete(rows) => {
                         held.rows.extend(missing.iter().map(|&token| (token as u32, None)));
-                        held.rows.extend(rows.iter().map(|row| (row.token, Some(row.clone()))));
+                        held.rows.extend(rows.rows::<tables::LexicalTokens>().into_iter().flatten().map(|row| (row.token, Some(row.clone()))));
                     }
-                    Err(_) => held.refused = Some(frame.tables[TableId::LexicalTokens.index()].clone()),
+                    _ => held.refused = true,
                 }
             }
         }
-        if let Some(refused) = &held.refused {
-            return Ok(refused.clone());
+        if held.refused {
+            drop(held);
+            let keys: Vec<u128> = tokens.iter().map(|&token| u128::from(token)).collect();
+            return keyed_at(hour, &keys);
         }
         let rows = tokens.iter().filter_map(|token| held.rows.get(token).cloned().flatten()).collect();
         Ok(TableView::Complete(replay_data::rows::TableRows::LexicalTokens(rows)).into())
@@ -519,7 +525,9 @@ impl Naming {
         let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
         frame.tables[TableId::VariantDefinitions.index()] = self.variants.view_of(hour, &keys)?;
         let tokens: BTreeSet<u32> = variant_tokens(&frame).collect();
-        frame.tables[TableId::LexicalTokens.index()] = self.spellings(recording, &tokens)?;
+        if !tokens.is_empty() {
+            frame.tables[TableId::LexicalTokens.index()] = self.spellings(recording, hour, &tokens)?;
+        }
         Ok(frame)
     }
 
