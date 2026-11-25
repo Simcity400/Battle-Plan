@@ -285,7 +285,3 @@ export function samePictures(prev: readonly (readonly unknown[])[], pictures: re
 export function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (readonly unknown[])[] {
   return pictures.map(picture => picture.parts.slice());
 }
-
-export function stringifyTooltipPayload(payload: unknown): string {
-  return JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
-}

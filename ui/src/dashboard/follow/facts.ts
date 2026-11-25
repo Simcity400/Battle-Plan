@@ -409,22 +409,64 @@ export class Facts<V> {
 
   private join(fact: Fact<V>, target: number, cover: boolean): Picture<V> | null {
     if (cover && !(fact.h <= target && target <= fact.c)) return null;
-    if (!fact.cells.length) return { h: fact.h, c: fact.c, parts: [fact], value: fact.value, refused: fact.refused };
-    const lists = fact.cells.map(id => {
-      const own = this.groups.get(id)?.facts ?? [], seed = fact.seeds.get(id);
-      return seed ? [...own, seed] : own;
-    });
-    const starts = new Set([fact.h]);
-    for (const list of lists) for (const part of list) if (part.h > fact.h && part.h <= fact.c && part.h <= target) starts.add(part.h);
-    for (const start of [...starts].sort((a, b) => b - a)) {
-      const need = cover ? target : start;
-      let h = fact.h, c = fact.c, complete = true;
-      const parts = [fact];
-      for (const list of lists) {
+    const cells = fact.cells;
+    if (!cells.length) return { h: fact.h, c: fact.c, parts: [fact], value: fact.value, refused: fact.refused };
+    if (cover) {
+      let h = fact.h, c = fact.c;
+      const parts: Fact<V>[] = [fact];
+      for (let i = 0; i < cells.length; i++) {
+        const id = cells[i]!;
+        const own = this.groups.get(id)?.facts;
+        const seed = fact.seeds.get(id);
         let best: Fact<V> | null = null;
-        for (const part of list) if (part.h <= start && part.c >= need && (!best || part.c > best.c || (part.c === best.c && part.h > best.h))) best = part;
+        if (own) {
+          for (let j = 0; j < own.length; j++) {
+            const part = own[j]!;
+            if (part.h <= target && part.c >= target && (!best || part.c > best.c || (part.c === best.c && part.h > best.h))) best = part;
+          }
+        }
+        if (seed && seed.h <= target && seed.c >= target && (!best || seed.c > best.c || (seed.c === best.c && seed.h > best.h))) best = seed;
+        if (!best) return null;
+        if (best.h > h) h = best.h;
+        if (best.c < c) c = best.c;
+        parts.push(best);
+      }
+      return { h, c, parts, value: fact.value, refused: fact.refused };
+    }
+    let extraStarts: Set<number> | null = null;
+    for (let i = 0; i < cells.length; i++) {
+      const id = cells[i]!;
+      const own = this.groups.get(id)?.facts;
+      if (own) {
+        for (let j = 0; j < own.length; j++) {
+          const ph = own[j]!.h;
+          if (ph > fact.h && ph <= fact.c && ph <= target) (extraStarts ??= new Set([fact.h])).add(ph);
+        }
+      }
+      const seed = fact.seeds.get(id);
+      if (seed && seed.h > fact.h && seed.h <= fact.c && seed.h <= target) (extraStarts ??= new Set([fact.h])).add(seed.h);
+    }
+    const ordered = extraStarts ? [...extraStarts].sort((a, b) => b - a) : [fact.h];
+    for (let si = 0; si < ordered.length; si++) {
+      const start = ordered[si]!;
+      let h = fact.h, c = fact.c, complete = true;
+      const parts: Fact<V>[] = [fact];
+      for (let i = 0; i < cells.length; i++) {
+        const id = cells[i]!;
+        const own = this.groups.get(id)?.facts;
+        const seed = fact.seeds.get(id);
+        let best: Fact<V> | null = null;
+        if (own) {
+          for (let j = 0; j < own.length; j++) {
+            const part = own[j]!;
+            if (part.h <= start && part.c >= start && (!best || part.c > best.c || (part.c === best.c && part.h > best.h))) best = part;
+          }
+        }
+        if (seed && seed.h <= start && seed.c >= start && (!best || seed.c > best.c || (seed.c === best.c && seed.h > best.h))) best = seed;
         if (!best) { complete = false; break; }
-        h = Math.max(h, best.h); c = Math.min(c, best.c); parts.push(best);
+        if (best.h > h) h = best.h;
+        if (best.c < c) c = best.c;
+        parts.push(best);
       }
       if (complete) return { h, c, parts, value: fact.value, refused: fact.refused };
     }
@@ -516,11 +558,26 @@ export class Facts<V> {
     if (!current || current.c < actual) {
       for (let at = sub.facts.length - 1; at >= 0; at--) if (sub.facts[at]!.h <= actual) { floor = Math.min(floor, sub.facts[at]!.h); break; }
     }
-    return { floor, parts: new Set([...current?.parts ?? [], ...keep.flatMap(picture => picture?.parts ?? [])]) };
+    const parts = new Set<Fact<V>>();
+    if (current) for (let i = 0; i < current.parts.length; i++) parts.add(current.parts[i]!);
+    for (let i = 0; i < keep.length; i++) {
+      const pic = keep[i];
+      if (pic) for (let j = 0; j < pic.parts.length; j++) parts.add(pic.parts[j]!);
+    }
+    return { floor, parts };
   }
 
-  private retain(sub: Sub<V>, uses = new Set([...sub.facts.flatMap(fact => fact.cells), ...sub.carried?.parts[0]?.cells ?? [], ...sub.nativeCells]),
+  private retain(sub: Sub<V>, uses?: Set<number>,
     actual?: number, keep: readonly (Picture<V> | null | undefined)[] = []) {
+    if (!uses) {
+      uses = new Set<number>(sub.nativeCells);
+      for (let i = 0; i < sub.facts.length; i++) {
+        const cells = sub.facts[i]!.cells;
+        for (let j = 0; j < cells.length; j++) uses.add(cells[j]!);
+      }
+      const carriedCells = sub.carried?.parts[0]?.cells;
+      if (carriedCells) for (let i = 0; i < carriedCells.length; i++) uses.add(carriedCells[i]!);
+    }
     for (const id of [...sub.uses]) if (!uses.has(id)) {
       sub.uses.delete(id);
       const group = this.groups.get(id);
