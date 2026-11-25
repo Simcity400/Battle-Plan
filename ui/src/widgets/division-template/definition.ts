@@ -2,7 +2,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { REACHED_COUNTRY_OPTION } from '../../dashboard/reachedCountry.ts';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const COLUMNS = [
   { key: 'template', label: 'Template' }, { key: 'fielded', label: 'Fielded' },
@@ -14,7 +13,7 @@ const COLUMN_DEFAULTS: readonly TableColumnDefaults[] = COLUMNS.map(column => ({
 export const COUNT_FOR_OPTION: OptionField = { key: 'countFor', section: 'options', label: 'Expeditionary forces count for', kind: 'choice', default: 'owner',
   choices: [{ value: 'owner', label: 'Owner' }, { value: 'host', label: 'Host' }] };
 export const OPTIONS: readonly OptionField[] = [
-  REACHED_COUNTRY_OPTION, COUNT_FOR_OPTION, ...tableFamilyOptions(COLUMN_DEFAULTS, TABLE_BASE), DRILL_OPTION,
+  REACHED_COUNTRY_OPTION, COUNT_FOR_OPTION, ...tableFamilyOptions(COLUMN_DEFAULTS, TABLE_BASE),
 ];
 export const definition = {
   kind: 'division-template', version: 1, title: 'Division template', icon: 'grid', category: 'Army',
