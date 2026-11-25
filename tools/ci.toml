@@ -198,7 +198,7 @@ command = ["{npm}", "run", "test:parity"]
 [[job]]
 name = "ui-browser-tests"
 group = "windows"
-tier = "main"
+tier = "check"
 toolchain = "node"
 ci-only = true
 inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js", "crates/**/*.json", "crates/**/*.golden"]
