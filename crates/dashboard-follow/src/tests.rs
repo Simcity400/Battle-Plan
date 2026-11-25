@@ -1937,3 +1937,89 @@ fn a_followed_top_ranks_a_recorded_row_whose_holder_is_not_resolved_under_its_sl
         assert_eq!(names[row], Some(wanted.as_str()), "row {row} is named by its tag or its slot");
     }
 }
+
+#[test]
+fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming() {
+    use crate::{
+        host::PlayheadHost,
+        panel::{AtHour, ExactReader, PanelRows, ProductRead, ProductReader, Wake, dated},
+        push::{PANEL, Push},
+        registry::{Anchor, Hosted},
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct NoRows;
+    impl PanelRows for NoRows {
+        fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+            Err(io::Error::other("unused"))
+        }
+    }
+
+    let pages = record(quiet);
+    let follow = Follow::new(0);
+    let hook = follow.hook(Box::new(|_, _| {}));
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap());
+    let anchored = |playhead: &Playhead, anchor: Anchor| {
+        playhead.frame_rate(anchor.frame_rate);
+        if anchor.sought {
+            playhead.seek(anchor.hour);
+        }
+        if !anchor.playing {
+            playhead.pause();
+        }
+    };
+    let held = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host = PlayheadHost::new(Arc::clone(&playhead), |p| p, anchored, follow, held).unwrap();
+    let push = Arc::new(Push::default());
+    host.show_panels(Arc::new(NoRows), Arc::clone(&push));
+
+    let ready = Arc::new(AtomicBool::new(false));
+    let wake_slot: Arc<Mutex<Option<Wake>>> = Arc::new(Mutex::new(None));
+    let ready_reader = Arc::clone(&ready);
+    let wake_reader = Arc::clone(&wake_slot);
+    let advance: ProductReader = Arc::new(move |hour, _values, _cancelled, step| {
+        if step.is_some() && !ready_reader.load(Ordering::Acquire) {
+            if let Some(wake) = step.and_then(|s| s.wake.cloned()) {
+                *wake_reader.lock().unwrap() = Some(wake);
+            }
+            return ProductRead { value: Arc::new(Err(String::new())), rows: 0, fresh: false, pending: true, live: None, lanes: Vec::new() };
+        }
+        ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() }
+    });
+    let cold: ExactReader = Arc::new(|hour, _: &AtomicBool| Ok(serde_json::json!({ "hour": hour })));
+    let panel = Box::new(AtHour { read: Arc::clone(&cold), cold, advance });
+    host.panel(8, panel, 4).unwrap();
+    host.anchor(Anchor { seek: 4, frame_rate: 60.0, hour: 50, position: 50.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+
+    let mut led_past = false;
+    while !led_past {
+        let (kind, bytes, _) = push.take_sent().expect("panel packet");
+        if kind != PANEL || dated::stamp(&bytes).map(|(_, seek)| seek) != Some(4) {
+            continue;
+        }
+        for r in dated::records(&bytes).unwrap() {
+            if r.kind == dated::COMPLETED && r.hour > 50 {
+                led_past = true;
+            }
+        }
+    }
+    let wake = wake_slot.lock().unwrap().take().expect("wake callback captured while pending");
+    ready.store(true, Ordering::Release);
+    wake();
+
+    let mut data_hours = Vec::new();
+    while data_hours.is_empty() {
+        let (kind, bytes, _) = push.take_sent().expect("panel packet after wake");
+        if kind != PANEL || dated::stamp(&bytes).map(|(_, seek)| seek) != Some(4) {
+            continue;
+        }
+        for r in dated::records(&bytes).unwrap() {
+            if r.id == 8 && r.kind == dated::DATA {
+                data_hours.push(r.hour);
+            }
+        }
+    }
+    assert!(data_hours.contains(&50), "anchored hour 50 must be delivered after pending warm finishes, got data at {data_hours:?}");
+    drop(host);
+}

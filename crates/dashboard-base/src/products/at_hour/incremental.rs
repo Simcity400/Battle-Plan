@@ -71,6 +71,7 @@ impl Projection {
     }
 
     fn lane<'s>(&self, table: TableId, hour: i32, step: ProductStep<'s>) -> Option<(&'s Step, &'s Lane, &'s Changes)> {
+        if step.step.last() != hour { return None; }
         let lane = step.lanes.get(table.index())?;
         let change = step.step.table(table.index())?;
         (lane.run() == self.run && change.head() == Some(hour) && change.log().is_none() && lane.keyed()
@@ -399,7 +400,7 @@ where P::Context: Sync, P::Params: Sync {
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
-            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: step.filter(|s| s.step.last() == hour), placed: None };
+            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None };
             if let Some(state) = held.as_mut().filter(|s| s.frame.hour == hour && s.run == run && !s.rebuild) {
                 return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
