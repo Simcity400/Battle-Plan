@@ -154,6 +154,8 @@ export interface FamilyMetaState {
 export interface FamilyRowWindow {
   readonly first: number;
   readonly count: number;
+  readonly dataFirst?: number;
+  readonly dataCount?: number;
 }
 
 export interface FamilyBindingContext<TOptions, TSettings = unknown> {

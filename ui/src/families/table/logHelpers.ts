@@ -3,7 +3,9 @@ import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
 import type { CountryRef, GroupSelection, MissingSpan } from '../../generated/dashboard';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
+import type { CountrySelection } from '../../dashboard/model';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
@@ -16,8 +18,11 @@ import type { TableCell, TableCellFlag, TableColumnSpec, TableModelSlot, TableRo
 import {
   buildNavigableSlots,
   DEFAULT_TAIL_PAGE_SIZE,
+  displayWindowToData,
+  gapsBeforeDisplay,
   type DatedLogRow,
   type LogTailQuery,
+  type PlacedSpan,
   type TableRowSource,
 } from './rowSource.ts';
 import { OFFERED, type TableBase } from './settings.ts';
@@ -207,14 +212,55 @@ export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {
   };
 }
 
+export function resolveSelectedCountryRefs(
+  selection: CountrySelection,
+  selectedKeys: readonly string[],
+  identities: CountryIdentityIndex | null,
+): readonly CountryRef[] | undefined {
+  if (selection.kind !== 'tags' && selection.kind !== 'selected') return undefined;
+  if (selectedKeys.length === 0) return [];
+  const out: CountryRef[] = [];
+  const seenSlots = new Set<number>();
+  const seenTags = new Set<string>();
+  for (const key of selectedKeys) {
+    const parsed = countryFromKey(key);
+    if (typeof parsed === 'number') {
+      if (!seenSlots.has(parsed)) {
+        seenSlots.add(parsed);
+        out.push(parsed);
+      }
+      continue;
+    }
+    if (identities) {
+      const ids = identities.selected([key]);
+      if (ids.size > 0) {
+        for (const idKey of ids) {
+          const { slot } = identities.identityOf(idKey);
+          if (!seenSlots.has(slot)) {
+            seenSlots.add(slot);
+            out.push(slot);
+          }
+        }
+        continue;
+      }
+    }
+    if (!seenTags.has(parsed)) {
+      seenTags.add(parsed);
+      out.push(parsed);
+    }
+  }
+  return out;
+}
+
 export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'widget' | 'track'>): { readonly countries?: readonly CountryRef[]; readonly group?: GroupSelection } | undefined {
   const group = groupSelection(ctx.widget.countries);
   if (group) return { group };
   if (ctx.widget.countries.kind === 'all' || ctx.countries.all) return undefined;
-  const keys = ctx.widget.countries.kind === 'tags' || ctx.widget.countries.kind === 'selected'
-    ? selectedCountryKeys(ctx.widget.countries, ctx.track)
-    : ctx.countries.tags;
-  return { countries: keys.map(countryFromKey) };
+  if (ctx.widget.countries.kind === 'tags' || ctx.widget.countries.kind === 'selected') {
+    if (ctx.countries.selectedSlots !== undefined) return { countries: ctx.countries.selectedSlots };
+    return { countries: selectedCountryKeys(ctx.widget.countries, ctx.track).map(countryFromKey) };
+  }
+  return { countries: ctx.countries.tags.map(countryFromKey) };
 }
 
 export function pagedTailEntry(
@@ -251,15 +297,71 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
   readonly rows: TableRow[];
   readonly windowOffset: number;
   readonly totalRows: number;
+  readonly gapBefore?: readonly number[];
 } {
-  const first = window ? Math.max(0, window.first) : 0;
-  const count = window ? Math.max(1, window.count) : 64;
+  const first = window ? Math.max(0, Math.floor(window.first)) : 0;
+  const count = window ? Math.max(1, Math.floor(window.count)) : 64;
+  const allMissing: readonly PlacedSpan[] = extraMissing?.length ? [...source.missing, ...extraMissing] : source.missing;
+  const activeMissing = allMissing.filter(span => span.firstHour <= hour);
+
+  if (activeMissing.length > 0 && activeMissing.every(span => span.before !== undefined)) {
+    const placed = activeMissing
+      .map(span => ({
+        firstHour: span.firstHour,
+        lastHour: Math.min(span.lastHour, hour),
+        reason: span.reason,
+        before: Math.max(0, Math.min(source.total, Number(span.before))),
+      }))
+      .sort((a, b) => a.before - b.before || b.lastHour - a.lastHour || b.firstHour - a.firstHour);
+    const gapBefore = placed.map(span => span.before);
+    const totalDisplay = source.total + placed.length;
+    const startDisp = Math.min(totalDisplay, first);
+    const endDisp = Math.min(totalDisplay, startDisp + count);
+    const dataSlice = displayWindowToData({ first: startDisp, count: endDisp - startDisp }, gapBefore, source.total);
+    const rawSlots = dataSlice.count > 0 ? source.sliceAt(hour, dataSlice.first, dataSlice.count) : [];
+    const slots: TableModelSlot[] = [];
+    const rows: TableRow[] = [];
+    let gi = gapsBeforeDisplay(startDisp, gapBefore);
+    let di = 0;
+    for (let d = startDisp; d < endDisp; d++) {
+      if (gi < placed.length && placed[gi]!.before + gi === d) {
+        const span = placed[gi++]!;
+        slots.push({
+          kind: 'gap',
+          key: `gap:${span.firstHour}:${span.lastHour}:${span.reason}`,
+          firstHour: span.firstHour,
+          lastHour: span.lastHour,
+          reason: span.reason,
+        });
+        continue;
+      }
+      const slot = rawSlots[di++];
+      if (!slot) continue;
+      if (slot.kind === 'data') {
+        const built = mapRow(slot.row, slot.ordinal);
+        if (built) {
+          slots.push({ kind: 'data', row: built });
+          rows.push(built);
+        }
+      } else if (slot.kind === 'refused') {
+        slots.push({ kind: 'refused', key: `refused:${slot.ordinal}`, reason: slot.reason });
+      } else if (slot.kind === 'loading') {
+        slots.push({ kind: 'loading', key: `loading:${slot.ordinal}` });
+      }
+    }
+    return {
+      slots,
+      rows,
+      windowOffset: startDisp,
+      totalRows: totalDisplay,
+      gapBefore,
+    };
+  }
+
   const rawSlots = source.sliceAt(hour, first, count);
-  const allMissing = extraMissing?.length ? [...source.missing, ...extraMissing] : source.missing;
   const navigable = buildNavigableSlots(hour, rawSlots, allMissing, source.total);
   const slots: TableModelSlot[] = [];
   const rows: TableRow[] = [];
-  let gapCount = 0;
   for (const slot of navigable) {
     if (slot.kind === 'data') {
       const built = mapRow(slot.row, slot.ordinal);
@@ -268,7 +370,6 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
         rows.push(built);
       }
     } else if (slot.kind === 'gap') {
-      gapCount++;
       slots.push({ kind: 'gap', key: slot.key, firstHour: slot.firstHour, lastHour: slot.lastHour, reason: slot.reason });
     } else if (slot.kind === 'refused') {
       slots.push({ kind: 'refused', key: `refused:${slot.ordinal}`, reason: slot.reason });
@@ -280,6 +381,6 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
     slots,
     rows,
     windowOffset: first,
-    totalRows: Math.max(source.total + gapCount, first + slots.length),
+    totalRows: Math.max(source.total + activeMissing.length, first + slots.length),
   };
 }

@@ -428,8 +428,9 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             observed,
             kind: u16::from(contract.request),
             roles: roles.into(),
+            subjects: Box::new([]),
             states: states.into_boxed_slice(),
-            figures: Box::new([]),
+            sort_keys: Box::new([]),
             text: text.into_boxed_str(),
             payload: contract,
         });
@@ -586,6 +587,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             from: params.from,
             to: params.to,
             selection: prepared.selection.as_ref(),
+            subject: None,
             kinds: None,
             states: states.as_deref(),
             search: params.search.as_deref(),

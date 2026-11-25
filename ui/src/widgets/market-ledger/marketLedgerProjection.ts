@@ -327,7 +327,7 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
     }
     const boundary = newIdentityBoundary();
-    const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
+    const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
@@ -344,6 +344,7 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       dateGrouped: true,
       windowOffset,
       totalRows,
+      ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       warnings: rawHead?.warnings,

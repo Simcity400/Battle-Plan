@@ -175,7 +175,7 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
     let text = text_of(token, tags(&roles).into_iter());
-    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), states: Box::new([]), figures: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]) } }
+    Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text, payload: Item::Log { head: at, edges: Box::new([]) } }
 }
 
 fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Scanned> {
@@ -390,8 +390,9 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
         observed: head.at.hour,
         kind: kind_code(head.kind),
         roles: roles.into_boxed_slice(),
+        subjects: Box::new([]),
         states,
-        figures: Box::new([]),
+        sort_keys: Box::new([]),
         text: text_of(card.edges.iter().find_map(|edge| edge.token.as_deref()), tags.into_iter()),
         payload: Item::Log { head: head.at, edges: card.edges.iter().map(|edge| edge.at).collect() },
     }
@@ -463,8 +464,9 @@ fn family_occurrence(query: &Query<'_>, row: EventFeedRow) -> Occurrence<Item> {
         observed: row.read_hour.max(row.hour),
         kind: kind_code(row.kind),
         roles: roles.into_boxed_slice(),
+        subjects: Box::new([]),
         states: Box::new([]),
-        figures: Box::new([]),
+        sort_keys: Box::new([]),
         text,
         payload: Item::Family(Box::new(row)),
     }

@@ -48,6 +48,8 @@ export type LogRowSlot<TRow extends DatedLogRow> =
 export interface RowWindow {
   readonly first: number;
   readonly count: number;
+  readonly dataFirst?: number;
+  readonly dataCount?: number;
 }
 
 export interface PageFetchAsk {
@@ -175,6 +177,33 @@ export function validateGenericTailReply(value: unknown, readAt?: number): TailR
 
 export function isTailReplyLike(value: unknown): boolean {
   return isObject(value) && Array.isArray(value.rows) && typeof value.total === 'string' && typeof value.offset === 'string';
+}
+
+export function gapsBeforeDisplay(displayIndex: number, gapBefore: readonly number[]): number {
+  let lo = 0;
+  let hi = gapBefore.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (gapBefore[mid]! + mid < displayIndex) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+export function displayWindowToData(
+  window: RowWindow,
+  gapBefore: readonly number[],
+  dataTotal?: number,
+): { readonly first: number; readonly count: number } {
+  const startDisp = Math.max(0, Math.floor(window.first));
+  const count = Math.max(0, Math.floor(window.count));
+  const totalDisplay = dataTotal === undefined ? undefined : dataTotal + gapBefore.length;
+  const clampedStart = totalDisplay === undefined ? startDisp : Math.min(totalDisplay, startDisp);
+  const endDisp = totalDisplay === undefined ? startDisp + count : Math.min(totalDisplay, clampedStart + count);
+  const dataFirst = Math.max(0, clampedStart - gapsBeforeDisplay(clampedStart, gapBefore));
+  if (endDisp <= clampedStart) return { first: dataFirst, count: 0 };
+  const dataEnd = Math.max(dataFirst, endDisp - gapsBeforeDisplay(endDisp, gapBefore));
+  return { first: dataFirst, count: dataEnd - dataFirst };
 }
 
 export function pageOffsets(window: RowWindow, pageSize: number): readonly number[] {
@@ -408,10 +437,12 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   }
 
   window(window: RowWindow, installedHour: number | null): PagerStep {
-    const first = Math.max(0, Math.floor(window.first));
-    const count = Math.max(0, Math.floor(window.count));
-    if (count === 0) return NO_STEP;
+    const displayCount = Math.max(0, Math.floor(window.count));
+    if (displayCount === 0) return NO_STEP;
+    const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
+    const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
     if (first + count <= this.#headLimit) return { fetch: [], cancel: this.#release() };
+    if (count === 0) return NO_STEP;
     if (installedHour === null || !Number.isFinite(installedHour)) return NO_STEP;
     const hour = Math.floor(installedHour);
     const cancel: number[] = [];
