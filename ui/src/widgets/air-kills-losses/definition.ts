@@ -2,7 +2,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { END_LABELS_OPTION } from '../../dashboard/lineChartOptions.ts';
 import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'butterfly',
@@ -15,7 +14,6 @@ export const OPTIONS: readonly OptionField[] = [
   ...RACE_TIME_OPTIONS.map(field => ({ ...field, visibleWhen: options => options.view === 'lines' && (field.visibleWhen?.(options) ?? true) } satisfies OptionField)),
   ...RACE_AXIS_OPTIONS.map(field => ({ ...field, visibleWhen: options => options.view === 'lines'
     && (field.visibleWhen?.(options) ?? true) } satisfies OptionField)),
-  { ...DRILL_OPTION, visibleWhen: options => options.view === 'lines' },
 ];
 
 export const definition = {
