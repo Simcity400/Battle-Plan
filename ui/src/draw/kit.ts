@@ -673,10 +673,31 @@ export function drawSplitBar(
   height: number,
   segments: readonly SplitBarSegment[],
   theme: FamilyTheme,
+  options?: { readonly gap?: number },
 ): void {
   if (width <= 0 || height <= 0) return;
   const active = segments.filter(s => s.fraction > 0);
   if (!active.length) return;
+  const gap = options?.gap ?? 0;
+  if (gap > 0) {
+    const span = Math.max(0, width - gap * (active.length - 1));
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, Math.min(2, height / 2));
+    ctx.clip();
+    let at = x;
+    for (const segment of active) {
+      const segW = span * segment.fraction;
+      if (segment.hatched) drawHatchRect(ctx, at, y, segW, height, 0, theme);
+      else {
+        ctx.fillStyle = segment.fill;
+        ctx.fillRect(at, y, segW, height);
+      }
+      at += segW + gap;
+    }
+    ctx.restore();
+    return;
+  }
   const radius = barCornerRadius(height);
   let cursor = x;
   for (let i = 0; i < active.length; i++) {
@@ -1797,6 +1818,15 @@ export function drawIconStrip(
   return { drawnCount, overflowCount };
 }
 
+let playPath: Path2D | null = null;
+
+export interface ActionButtonShape {
+  readonly padLeft: number;
+  readonly padRight: number;
+  readonly gap: number;
+  readonly height: number;
+}
+
 export function drawActionButton(
   ctx: Canvas2D,
   right: number,
@@ -1805,6 +1835,7 @@ export function drawActionButton(
   active: boolean,
   theme: FamilyTheme,
   icon?: 'play',
+  shape: ActionButtonShape = { padLeft: 8, padRight: 8, gap: 5, height: 24 },
 ): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
   const tokens = resolveKitTokens(theme);
   const iconSize = 13;
@@ -1812,13 +1843,11 @@ export function drawActionButton(
     ctx.save();
     ctx.globalAlpha = alpha;
     if (icon === 'play') {
+      playPath ??= new Path2D('M5.2 3.4v9.2c0 .5.5.8.9.5l7-4.6c.4-.3.4-.8 0-1.1l-7-4.6c-.4-.2-.9 0-.9.6z');
       ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(ix + 3, iy + 1);
-      ctx.lineTo(ix + 12, iy + iconSize / 2);
-      ctx.lineTo(ix + 3, iy + iconSize - 1);
-      ctx.closePath();
-      ctx.fill();
+      ctx.translate(ix, iy);
+      ctx.scale(iconSize / 16, iconSize / 16);
+      ctx.fill(playPath);
       ctx.restore();
       return;
     }
@@ -1843,21 +1872,19 @@ export function drawActionButton(
   ctx.save();
   ctx.font = font;
   const labelW = textWidth(ctx, label);
-  const padX = 8;
-  const gap = 5;
-  const h = 24;
-  const w = Math.ceil(padX * 2 + iconSize + gap + labelW);
+  const { padLeft, padRight, gap, height: h } = shape;
+  const w = Math.ceil(padLeft + padRight + iconSize + gap + labelW);
   const x = right - w;
   const y = Math.round(middleY - h / 2);
   ctx.fillStyle = tokens.dark ? 'rgba(255, 255, 255, 0.09)' : 'rgba(15, 23, 42, 0.08)';
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, ROW_CORNER_RADIUS);
   ctx.fill();
-  drawIcon(x + padX, Math.round(middleY - iconSize / 2), theme.text, 0.9);
+  drawIcon(x + padLeft, Math.round(middleY - iconSize / 2), theme.text, 0.9);
   ctx.fillStyle = theme.text;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, x + padX + iconSize + gap, middleY);
+  ctx.fillText(label, x + padLeft + iconSize + gap, middleY);
   ctx.restore();
   return { x, y, width: w, height: h };
 }

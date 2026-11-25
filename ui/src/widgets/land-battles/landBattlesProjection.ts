@@ -45,10 +45,10 @@ export interface BattleDetailSubject {
 const sprites: Readonly<Record<string, string>> = {
   casualties: 'GFX_manpower_icon',
   icLost: 'GFX_industrial_capacity_icon',
-  divisions: 'GFX_unit_infantry_icon_small',
+  divisions: 'GFX_unit_infantry_icon_medium',
 };
 
-const base = { columns: LAND_BATTLES_COLUMNS, dayDividersOnly: true, rowTimeBoundaries: false } as const;
+const base = { columns: LAND_BATTLES_COLUMNS, rowTimeBoundaries: false, rhythm: 'log' } as const;
 export const landBattlesProjection: TableProjection<{ byDate: boolean }> = registerFamilyProjection({
   kind: 'land-battles', family: 'table',
   project(view, options): TableModel {
@@ -65,7 +65,7 @@ export const landBattlesProjection: TableProjection<{ byDate: boolean }> = regis
       const icon = art.status === 'ready' ? { icon: art.url } : { iconMissing: artHoverText(art) ?? undefined };
       return { ...column, headerGroup: { ...column.headerGroup, ...icon } };
     });
-    return { ...base, columns, ...page, dateGrouped: options.byDate, dayDividersOnly: options.byDate, hour, nextChangeAt: boundary.next,
+    return { ...base, columns, ...page, dateGrouped: options.byDate, hour, nextChangeAt: boundary.next,
       warnings: (source.rawHead as LandBattlesTailReply | undefined)?.warnings,
       ...(page.slots.length ? {} : { empty: 'No recorded battles match these settings.' }) };
   },

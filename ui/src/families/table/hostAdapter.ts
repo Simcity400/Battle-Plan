@@ -108,6 +108,7 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     const layout = layoutFamilyTable(buildColumnLayouts(model.columns, settings, measured), Math.max(1, layoutWidth), {
       rankShown,
       rankWidth,
+      rhythm: model.rhythm,
     });
     return deriveTableAudit({
       model,

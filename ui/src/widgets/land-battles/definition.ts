@@ -5,16 +5,16 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const LAND_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ sortable: true }),
-  logKindColumn({ minWidth: 36 }),
-  logCountryColumn({ label: '', minWidth: 55, grow: 0 }),
-  logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary', grow: 6 }),
-  logPlaceColumn({ label: 'Province', minWidth: 134, maxWidth: 134, grow: 0, narrow: 'hide', textTone: 'muted' }),
-  logPairColumn('casualties', 'Casualties', 'total'),
-  logPairColumn('icLost', 'IC lost', 'hide'),
-  logPairColumn('divisions', 'Divisions', 'hide'),
-  logStatusColumn({ label: 'Result', widest: ['Defender won'], narrow: 'hide' }),
-  logActionColumn({ narrow: 'hide' }),
+  logDateColumn({ sortable: true, minWidth: 70, maxWidth: 70 }),
+  logKindColumn({ minWidth: 52, maxWidth: 52 }),
+  logCountryColumn({ label: '', minWidth: 68, grow: 0 }),
+  logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary' }),
+  logPlaceColumn({ label: 'Province', minWidth: 140, maxWidth: 140, grow: 0, narrow: 'hide', textTone: 'muted' }),
+  { ...logPairColumn('casualties', 'Casualties', 'total', 68), grow: 0 },
+  { ...logPairColumn('icLost', 'IC lost', 'hide', 57), grow: 0 },
+  { ...logPairColumn('divisions', 'Divisions', 'hide', 58), grow: 0 },
+  logStatusColumn({ label: 'Result', widest: ['Defender won'], minWidth: 136, maxWidth: 136, narrow: 'hide' }),
+  logActionColumn({ minWidth: 84, narrow: 'hide' }),
 ];
 
 export const definition = {

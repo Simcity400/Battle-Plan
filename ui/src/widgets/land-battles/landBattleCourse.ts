@@ -2,11 +2,13 @@ import { isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import type { Run } from '../../charts/series';
+import type { ChartInlinePoint } from '../../families/time-chart/model.ts';
 
 export interface LandDesign { name: string | null; variant: string }
 export interface CourseSide { manpower: number | string; equipment: Map<number, bigint> | string }
 export interface CourseRead { hour: number; terminal: boolean; sides: [CourseSide, CourseSide] | string }
-export interface LandCourse { id: string; runs: { firstHour: number; lastHour: number; counts: [number, number]; rosterUnknown: boolean }[];
+export type CourseEnd = { hour: number; bound: 'exact' | 'by' } | { unknown: string } | null;
+export interface LandCourse { id: string; end: CourseEnd; runs: { firstHour: number; lastHour: number; counts: [number, number]; rosterUnknown: boolean }[];
   reads: CourseRead[]; designs: LandDesign[]; contentWarnings: string[] }
 export interface LandTerrain { provinceId: number; name: string | null; missing: string | null }
 
@@ -26,6 +28,11 @@ export function validateLandBattleCourse(v: unknown): LandCourse {
   }
   const battle = v.battle;
   if (!Array.isArray(battle.runs) || !Array.isArray(battle.losses)) throw malformed();
+  const ending = battle.end;
+  const end: CourseEnd = ending === null ? null
+    : object(ending) && typeof ending.unknown === 'string' ? { unknown: ending.unknown }
+      : object(ending) && hour(ending.hour) && (ending.bound === 'exact' || ending.bound === 'by') ? { hour: ending.hour, bound: ending.bound }
+        : (() => { throw malformed(); })();
   const runs = battle.runs.map(run => {
     if (!object(run) || !hour(run.firstHour) || !hour(run.lastHour) || run.firstHour > run.lastHour || typeof run.rosterUnknown !== 'boolean'
       || !Array.isArray(run.counts) || run.counts.length !== 2 || !run.counts.every(count => int(count) && count >= 0)) throw malformed();
@@ -54,7 +61,7 @@ export function validateLandBattleCourse(v: unknown): LandCourse {
     }) as [CourseSide, CourseSide];
     reads.push({ hour: read.hour, terminal: read.terminal, sides });
   }
-  return { id: battle.id as string, runs, reads, designs, contentWarnings: v.contentWarnings };
+  return { id: battle.id as string, end, runs, reads, designs, contentWarnings: v.contentWarnings };
 }
 
 export function validateLandBattleTerrain(v: unknown): { provinces: LandTerrain[]; warnings: string[] } {
@@ -63,10 +70,43 @@ export function validateLandBattleTerrain(v: unknown): { provinces: LandTerrain[
   return v as { provinces: LandTerrain[]; warnings: string[] };
 }
 
-export function courseExtent(runs: readonly (readonly Run[])[]): [number, number] | null {
-  let most = 1, any = false;
-  for (const side of runs) for (const run of side) { any = true; if (run.value > most) most = run.value; }
-  return any ? [0, most] : null;
+export interface CourseSpan { readonly firstHour: number; readonly lastHour: number }
+
+export function coursePoints(runs: readonly Run[], until: number): ChartInlinePoint[] {
+  const points: ChartInlinePoint[] = [];
+  runs.forEach((run, index) => {
+    const previous = runs[index - 1];
+    if (previous && run.breakBefore) points.push({ hour: previous.lastHour + 1, value: previous.value }, { hour: previous.lastHour + 1, value: null });
+    points.push({ hour: run.firstHour, value: run.value });
+  });
+  const last = runs.at(-1);
+  if (last) points.push({ hour: Math.min(last.lastHour + 1, until), value: last.value });
+  if (last && last.lastHour < until) points.push({ hour: last.lastHour + 1, value: null });
+  return points;
+}
+
+export function courseMissing(runs: readonly Run[], from: number, until: number): CourseSpan[] {
+  const missing: CourseSpan[] = [];
+  let next = from;
+  for (const run of runs) {
+    if (run.firstHour > until) break;
+    if (run.firstHour > next) missing.push({ firstHour: next, lastHour: run.firstHour - 1 });
+    next = Math.max(next, run.lastHour + 1);
+  }
+  if (next <= until) missing.push({ firstHour: next, lastHour: until });
+  return missing;
+}
+
+export function sharedSpans(first: readonly CourseSpan[], second: readonly CourseSpan[]): CourseSpan[] {
+  const shared: CourseSpan[] = [];
+  let i = 0, j = 0;
+  while (i < first.length && j < second.length) {
+    const a = first[i]!, b = second[j]!;
+    const firstHour = Math.max(a.firstHour, b.firstHour), lastHour = Math.min(a.lastHour, b.lastHour);
+    if (firstHour <= lastHour) shared.push({ firstHour, lastHour });
+    if (a.lastHour < b.lastHour) i++; else j++;
+  }
+  return shared;
 }
 
 export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {

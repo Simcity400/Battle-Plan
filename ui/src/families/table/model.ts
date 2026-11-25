@@ -26,7 +26,7 @@ import {
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { formatDateHover, formatValueState, spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
-import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
+import { treeColumnOf, type FamilyColumnLayout, type TableRhythm } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
 import { newIdentityBoundary, resolveCountryColor, resolveIdentity, type IdentityBoundary, type ResolvedIdentity } from './identityCell.ts';
@@ -55,7 +55,7 @@ export type TableCellKind =
 
 export type TableHeaderGroup =
   | { readonly kind: 'shortOver' }
-  | { readonly kind: 'pair'; readonly labels: readonly [string, string]; readonly icon?: string; readonly iconMissing?: string }
+  | { readonly kind: 'pair'; readonly labels: readonly [string, string]; readonly slot?: number; readonly icon?: string; readonly iconMissing?: string }
   | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly operator?: string; readonly notRecordedReason?: string }[] };
 
 export interface TableCellFlag {
@@ -267,6 +267,7 @@ export interface TableModel {
   readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
   readonly dayDividersOnly?: boolean;
+  readonly rhythm?: TableRhythm;
   readonly endNote?: string;
   readonly subjectSummary?: TableSubjectSummary;
   readonly kindFilter?: {

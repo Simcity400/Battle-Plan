@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
 import {
   drawActionButton,
   drawArtSlot,
@@ -27,10 +27,11 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
+import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout, type TableRhythm } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
+  COL_GAP,
   showsIcon,
   type TableBarsMode,
   type TableCanvasContext,
@@ -40,6 +41,13 @@ import {
 
 const CHILD_FLAG_GAP = 6;
 const KIND_TILE_ART = { width: 20, height: 16 } as const;
+const PAIR_FIGURE_LINE = 19.5;
+const PAIR_BAR_GAP = 4;
+const PAIR_BAR_HEIGHT = 3;
+const PAIR_LIT_SPILL = 6;
+const LOG_ACTION_IDLE_INSET = 6;
+const LOG_ACTION_BUTTON = { padLeft: 8, padRight: 10, gap: 6, height: 26 } as const;
+
 function signedText(text: string, signed: number): string {
   if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
   if (signed < 0) return text.replace(/^-/, '−');
@@ -75,6 +83,7 @@ export interface CellRenderContext {
   readonly density: TableDensity;
   readonly barsMode: TableBarsMode;
   readonly sortedColumn: string;
+  readonly rhythm?: TableRhythm;
   readonly treeColumn: number;
   readonly treeLevels: number;
   readonly hasActionColumn?: boolean;
@@ -279,7 +288,10 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
     if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     const label = cell?.actionLabel ?? 'View';
-    drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme, cell?.actionIcon);
+    const active = rowHovered || rowFocused;
+    const log = rc.rhythm === 'log';
+    const idleInset = log && !active ? Math.max(0, Math.min(LOG_ACTION_IDLE_INSET, right - left - 13)) : 0;
+    drawActionButton(ctx, right - idleInset, middle, label, active, theme, cell?.actionIcon, log ? LOG_ACTION_BUTTON : undefined);
     return;
   }
 
@@ -387,19 +399,44 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     if (column.key === rc.sortedColumn) {
       ctx.save();
       ctx.fillStyle = theme.text;
-      ctx.globalAlpha = 0.06;
-      ctx.fillRect(x, y + 1, column.width, rowHeight - 2);
+      ctx.globalAlpha = 0.05;
+      ctx.fillRect(left - PAIR_LIT_SPILL, y, right - left + PAIR_LIT_SPILL * 2, rowHeight);
       ctx.restore();
     }
     const midpoint = (left + right) / 2;
     const bar = cell.splitBar;
+    const block = PAIR_FIGURE_LINE + PAIR_BAR_GAP + PAIR_BAR_HEIGHT;
+    const top = y + (rowHeight - block) / 2;
+    const figureMiddle = bar ? top + PAIR_FIGURE_LINE / 2 : middle;
+    const font = fontOf(theme, 13, 400);
     for (const [i, value] of cell.pair.entries()) {
-      drawFormattedValue(ctx, formatValueState(value, paintModel.format), {
-        left: i === 0 ? left : midpoint, right: i === 0 ? midpoint - CELL_INSET : right,
-        middle: bar ? middle - 3 : middle, endAligned: true, compactPartial: true,
-      }, theme, measure, fit);
+      const slot = { left: i === 0 ? left : midpoint + COL_GAP / 2, right: i === 0 ? midpoint - COL_GAP / 2 : right };
+      const shown = formatValueState(value, paintModel.format);
+      if (shown.kind === 'known' || shown.kind === 'zero') {
+        ctx.save();
+        ctx.font = font;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = theme.text;
+        ctx.fillText(fit(shown.text, font, Math.max(0, slot.right - slot.left)), slot.right, figureMiddle);
+        ctx.restore();
+      } else {
+        drawFormattedValue(ctx, shown, { ...slot, middle: figureMiddle, endAligned: true, compactPartial: true }, theme, measure, fit);
+      }
     }
-    if (bar) drawSplitBar(ctx, left, y + rowHeight - 6, right - left, 3, bar, theme);
+    const barY = top + PAIR_FIGURE_LINE + PAIR_BAR_GAP;
+    if (bar?.length === 0) {
+      ctx.save();
+      ctx.fillStyle = theme.text;
+      ctx.globalAlpha = 0.1;
+      ctx.beginPath();
+      ctx.roundRect(left, barY, right - left, PAIR_BAR_HEIGHT, PAIR_BAR_HEIGHT / 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (bar) {
+      drawSplitBar(ctx, left, barY, right - left, PAIR_BAR_HEIGHT,
+        bar.map(segment => (segment.hatched ? segment : { ...segment, fill: readableColour(segment.fill, theme.surface) })), theme, { gap: 2 });
+    }
     return;
   }
 

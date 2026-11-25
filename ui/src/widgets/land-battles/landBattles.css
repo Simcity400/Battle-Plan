@@ -1,19 +1,76 @@
-.lb-window { width: min(640px, calc(100vw - 24px)); }
-.lb-drill { display: flex; flex-direction: column; gap: var(--space-3); padding: 0 var(--space-4) var(--space-4); }
-.lb-drill-facts { margin: 0; color: var(--muted); font-size: var(--type-sm); }
-.lb-drill-sides, .lb-designs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-5); }
-.lb-drill-side-head { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--type-xs); font-weight: 600; }
-.lb-drill-side-head i { width: 8px; height: 8px; border-radius: 2px; }
-.lb-drill-countries { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin: var(--space-3) 0; font-size: var(--type-sm); font-weight: 500; }
-.lb-drill-countries span { display: inline-flex; align-items: center; gap: var(--space-2); }
-.lb-drill-facts-list { display: grid; grid-template-columns: 1fr auto; gap: var(--space-1) var(--space-4); margin: 0; font-size: var(--type-sm); }
-.lb-drill-facts-list dt { color: var(--muted); }
-.lb-drill-facts-list dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
-.lb-drill-label { color: var(--muted); font-size: var(--type-xs); font-weight: 600; }
-.lb-drill-note { margin: 0; color: var(--muted); font-size: var(--type-sm); }
-.lb-course { display: flex; flex-direction: column; gap: var(--space-2); height: 150px; }
-.lb-course canvas { flex: 1; min-height: 0; width: 100%; }
-.lb-design { display: flex; justify-content: space-between; gap: var(--space-4); padding: var(--space-1) 0; font-size: var(--type-sm); font-weight: 500; }
-.lb-design span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-design span:last-child { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.lb-designs .lb-drill-side-head { margin-bottom: var(--space-2); }
+.lb-window {
+  --lb-ink: color-mix(in srgb, var(--text) 86%, var(--surface));
+  --lb-label: color-mix(in srgb, var(--text) 90%, var(--surface));
+  --lb-hair: color-mix(in srgb, var(--text) 6%, transparent);
+  width: min(960px, calc(100vw - 24px));
+  height: min(560px, calc(100dvh - 24px));
+}
+.lb-window .detail-window-header { flex: none; flex-wrap: nowrap; gap: 10px; height: 44px; padding: 0 8px 0 18px; border-bottom: 0; }
+.lb-window .detail-window-header > strong { min-width: 0; overflow: hidden; font-size: 14.5px; font-weight: 600; letter-spacing: -0.005em; text-overflow: ellipsis; white-space: nowrap; }
+.lb-window .detail-window-day { flex: none; font-size: 12.5px; white-space: nowrap; }
+.lb-window .detail-window-actions { gap: 16px; }
+.lb-window .detail-window-actions .icon-button { width: 30px; height: 30px; border-radius: 8px; }
+.lb-window .detail-window-body { padding: 0; overflow: hidden; }
+
+.lb-when { display: inline-flex; align-items: baseline; }
+.lb-terrain::before { content: "·"; margin: 0 7px; }
+.lb-result { display: inline-flex; align-items: center; gap: 8px; color: var(--lb-ink); font-size: 12.5px; white-space: nowrap; }
+.lb-result::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.lb-result.is-running::before { background: var(--accent); }
+
+.lb-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.lb-sides { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 10px 28px; max-height: 45%; overflow: auto; padding: 2px 18px 14px; }
+.lb-side { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.lb-side.is-defender { align-items: flex-end; }
+.lb-who { display: flex; align-items: center; gap: 10px; max-width: 100%; min-width: 0; }
+.lb-countries { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.lb-countries li { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.lb-side.is-defender .lb-who,
+.lb-side.is-defender .lb-countries,
+.lb-side.is-defender .lb-countries li,
+.lb-side.is-defender .lb-figures { flex-direction: row-reverse; }
+.lb-flag { width: 30px; height: 20px; flex: 0 0 30px; border-radius: 3px; object-fit: cover; }
+.lb-country { min-width: 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.lb-role { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.lb-figures { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; font-variant-numeric: tabular-nums; }
+.lb-figure { display: flex; flex-direction: row-reverse; align-items: baseline; gap: 4px; white-space: nowrap; }
+.lb-figure dt { color: var(--muted); font-size: 12.5px; }
+.lb-figure dd { display: inline-flex; align-self: center; margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+
+.lb-body { display: flex; flex: 1; flex-direction: column; gap: 20px; min-height: 0; overflow: auto; padding: 14px 18px 18px; border-top: 1px solid var(--lb-hair); }
+.lb-courses { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.lb-course { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; }
+.lb-course figcaption, .lb-equipment h3 { margin: 0; color: var(--lb-label); font-size: 12px; font-weight: 600; }
+.lb-course canvas, .lb-course-state { display: block; width: 100%; height: 176px; }
+.lb-course-state { display: flex; align-items: center; justify-content: center; gap: 12px; border-radius: 8px; background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+
+.lb-equipment header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.lb-equipment header span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.lb-equipment-sides { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 28px; }
+.lb-designs { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 13px; }
+.lb-designs thead th { height: 30px; padding: 0 10px; background: color-mix(in srgb, var(--text) 4%, transparent); color: var(--lb-label); font-size: 12px; font-weight: 600; text-align: left; }
+.lb-designs thead th:first-child { border-radius: 8px 0 0 8px; }
+.lb-designs thead th:last-child { width: 96px; border-radius: 0 8px 8px 0; text-align: right; }
+.lb-designs tbody th, .lb-designs tbody td { height: 32px; padding: 0 10px; border-bottom: 1px solid color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+.lb-designs tbody th { overflow: hidden; font-weight: 500; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.lb-designs tbody td { font-variant-numeric: tabular-nums; text-align: right; }
+.lb-designs tbody td[colspan] { text-align: left; }
+.lb-designs tbody td.lb-note { color: var(--muted); }
+.lb-designs tbody tr:last-child > * { border-bottom: 0; }
+.lb-designs tbody tr[data-tooltip]:hover > * { background: color-mix(in srgb, var(--text) 4.5%, transparent); }
+
+.lb-note { color: var(--muted); font-size: 12px; }
+.lb-missing { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }
+.lb-hatch, .lb-name-missing { display: inline-block; flex: none; border-radius: 2px; background: repeating-linear-gradient(135deg, var(--hatch) 0 1.2px, transparent 1.2px 4px); box-shadow: inset 0 0 0 1px var(--hatch-edge); }
+.lb-hatch { width: 10px; height: 10px; }
+.lb-name-missing { width: 64px; height: 12px; border-radius: 3px; }
+.lb-skeleton { display: inline-block; width: 22px; height: 10px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+@media (max-width: 720px) {
+  .lb-sides, .lb-courses, .lb-equipment-sides { grid-template-columns: minmax(0, 1fr); }
+  .lb-side.is-defender { align-items: flex-start; }
+  .lb-side.is-defender .lb-who,
+  .lb-side.is-defender .lb-countries,
+  .lb-side.is-defender .lb-countries li,
+  .lb-side.is-defender .lb-figures { flex-direction: row; }
+}
