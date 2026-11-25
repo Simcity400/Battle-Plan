@@ -29,14 +29,6 @@ export interface TooltipContent {
   description?: string;
   spoken?: string;
 }
-export function countryNameDetails(...countries: readonly ({ name?: string; nameFailure?: Error; nameDetail?: string } | null | undefined)[]): Pick<TooltipContent, 'detail'> {
-  const messages = new Set(countries.flatMap(country => {
-    const message = country?.nameFailure?.message ?? country?.nameDetail;
-    return message === undefined ? [] : [message];
-  }));
-  return messages.size ? { detail: [...messages].join('\n') } : {};
-}
-
 export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number }
 
 function tooltipRowValueText(row: TooltipRow): string | undefined {

@@ -799,7 +799,7 @@ pub struct NavalBattleNamedShip {
     pub known_at: i32,
     pub name: Option<String>,
     pub class_name: Option<String>,
-    pub sinking_cause: sunk::ShipSinkingAttribution,
+    pub sinking_cause: super::sinking_details::ShipSinkingAttribution,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
