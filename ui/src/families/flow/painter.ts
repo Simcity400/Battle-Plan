@@ -39,6 +39,7 @@ export interface FlowRibbonBox {
   readonly a1: number;
   readonly b0: number;
   readonly b1: number;
+  readonly known: number;
 }
 
 export interface FlowLayout {
@@ -64,42 +65,36 @@ function heightOf(value: number | null, scale: number): number {
   return Math.max(2, value * scale);
 }
 
-function solveScale(sides: readonly (readonly FlowNode[])[], available: number, extra: number): number {
-  let best = Infinity;
-  for (const nodes of sides) {
-    if (!nodes.length) continue;
-    const gaps = FLOW_NODE_GAP * (nodes.length - 1);
-    let fixed = 0;
-    let total = 0;
-    for (const node of nodes) {
-      if (node.numeric === null) fixed += Math.max(FLOW_MISSING_HEIGHT, FLOW_LABEL_MIN);
-      else total += Math.max(0, node.numeric);
-    }
-    if (total <= 0) continue;
-    let scale = Math.max(0, (available - gaps - fixed) / total);
-    for (let pass = 0; pass < 3; pass++) {
-      let small = 0;
-      let large = 0;
-      for (const node of nodes) {
-        if (node.numeric === null) continue;
-        const h = heightOf(node.numeric, scale);
-        if (h < FLOW_LABEL_MIN) small += FLOW_LABEL_MIN;
-        else large += Math.max(0, node.numeric);
-      }
-      if (large <= 0) break;
-      scale = Math.max(0, (available - gaps - fixed - small) / large);
-    }
-    best = Math.min(best, scale);
-  }
-  if (extra > 0) best = Math.min(best, available / extra);
-  return Number.isFinite(best) ? best : 0;
+function knownOf(ribbon: FlowRibbon): number {
+  return ribbon.bands.reduce((sum, band) => sum + Math.max(0, band.numeric), 0);
 }
 
-function stack(nodes: readonly FlowNode[], x: number, top: number, scale: number, need: ReadonlyMap<string, number>): FlowNodeBox[] {
+function ribbonWidth(ribbon: FlowRibbon, scale: number): number {
+  if (!ribbon.missing) return heightOf(ribbon.numeric, scale);
+  const known = knownOf(ribbon);
+  return (known > 0 ? Math.max(2, known * scale) : 0) + FLOW_MISSING_HEIGHT;
+}
+
+function knownShare(ribbon: FlowRibbon, width: number): number {
+  return ribbon.missing && width > 0 ? Math.max(0, width - FLOW_MISSING_HEIGHT) / width : 1;
+}
+
+function nodeHeight(node: FlowNode, scale: number, touching: ReadonlyMap<string, readonly FlowRibbon[]>): number {
+  if (node.numeric !== null) return heightOf(node.numeric, scale);
+  const ribbons = touching.get(node.key) ?? [];
+  return Math.max(FLOW_MISSING_HEIGHT, ribbons.reduce((sum, ribbon) => sum + ribbonWidth(ribbon, scale), 0));
+}
+
+function sideExtent(nodes: readonly FlowNode[], scale: number, touching: ReadonlyMap<string, readonly FlowRibbon[]>): number {
+  if (!nodes.length) return 0;
+  return nodes.reduce((sum, node) => sum + Math.max(nodeHeight(node, scale, touching), FLOW_LABEL_MIN), FLOW_NODE_GAP * (nodes.length - 1));
+}
+
+function stack(nodes: readonly FlowNode[], x: number, top: number, scale: number, touching: ReadonlyMap<string, readonly FlowRibbon[]>): FlowNodeBox[] {
   const out: FlowNodeBox[] = [];
   let cursor = top;
   for (const node of nodes) {
-    const height = node.numeric === null ? Math.max(FLOW_MISSING_HEIGHT, need.get(node.key) ?? 0) : heightOf(node.numeric, scale);
+    const height = nodeHeight(node, scale, touching);
     const slotHeight = Math.max(height, FLOW_LABEL_MIN);
     out.push({ node, x, y: cursor + (slotHeight - height) / 2, height, slotTop: cursor, slotHeight });
     cursor += slotHeight + FLOW_NODE_GAP;
@@ -115,33 +110,54 @@ export function layoutFlow(model: FlowModel, width: number, height: number): Flo
   const hasHeader = Boolean(model.leftHeader || model.rightHeader || model.unitNote);
   const centred = model.mode === 'centred' && model.centre !== undefined;
   const bodyTop = headerTop + (hasHeader ? FLOW_HEADER_HEIGHT : 0) + 4 + (centred ? FLOW_CENTRE_LABEL_HEIGHT : 0);
-  const available = Math.max(20, h - bodyTop - FLOW_PAD / 2);
+  const viewport = Math.max(20, h - bodyTop - FLOW_PAD / 2);
   const labelWidth = Math.max(70, Math.min(210, Math.round(w * 0.22)));
   const leftBarX = FLOW_PAD + labelWidth;
   const rightBarX = w - FLOW_PAD - labelWidth - FLOW_BAR_WIDTH;
   const centreX = Math.round((leftBarX + FLOW_BAR_WIDTH + rightBarX) / 2 - FLOW_CENTRE_WIDTH / 2);
 
-  const sumOf = (nodes: readonly FlowNode[]) => nodes.reduce((sum, node) => sum + Math.max(0, node.numeric ?? 0), 0);
-  const centreExtra = centred ? Math.max(sumOf(model.left), sumOf(model.right)) : 0;
-  const scale = solveScale([model.left, model.right], available, centreExtra);
-  const need = new Map<string, number>();
-  if (!centred) {
-    for (const ribbon of model.ribbons) {
-      const width = heightOf(ribbon.numeric, scale);
-      need.set(ribbon.from, (need.get(ribbon.from) ?? 0) + width);
-      need.set(ribbon.to, (need.get(ribbon.to) ?? 0) + width);
+  const touching = new Map<string, FlowRibbon[]>();
+  for (const ribbon of model.ribbons) {
+    for (const end of [ribbon.from, ribbon.to]) {
+      if (end === model.centre?.key) continue;
+      const held = touching.get(end);
+      if (held) held.push(ribbon);
+      else touching.set(end, [ribbon]);
     }
   }
-  const left = stack(model.left, leftBarX, bodyTop, scale, need);
-  const right = stack(model.right, rightBarX, bodyTop, scale, need);
+  const inbound = centred ? model.ribbons.filter(ribbon => ribbon.to === model.centre!.key) : [];
+  const outbound = centred ? model.ribbons.filter(ribbon => ribbon.from === model.centre!.key) : [];
+  const widthsOf = (ribbons: readonly FlowRibbon[], scale: number) => ribbons.reduce((sum, ribbon) => sum + ribbonWidth(ribbon, scale), 0);
+  const extent = (scale: number) => Math.max(
+    sideExtent(model.left, scale, touching),
+    sideExtent(model.right, scale, touching),
+    widthsOf(inbound, scale),
+    widthsOf(outbound, scale),
+  );
+  const knownSide = (nodes: readonly FlowNode[]) => nodes.reduce((sum, node) => sum + (node.numeric !== null ? Math.max(0, node.numeric) : (touching.get(node.key) ?? []).reduce((held, ribbon) => held + knownOf(ribbon), 0)), 0);
+  const most = Math.max(knownSide(model.left), knownSide(model.right));
+  const floor = extent(0);
+  const available = floor > viewport ? floor + viewport : viewport;
+  let scale = 0;
+  if (most > 0) {
+    let low = 0;
+    let high = available / most;
+    for (let pass = 0; pass < 40; pass++) {
+      const middle = (low + high) / 2;
+      if (extent(middle) <= available) low = middle;
+      else high = middle;
+    }
+    scale = low;
+  }
+  const left = stack(model.left, leftBarX, bodyTop, scale, touching);
+  const right = stack(model.right, rightBarX, bodyTop, scale, touching);
   const nodes: FlowNodeBox[] = [...left, ...right];
   const ribbons: FlowRibbonBox[] = [];
-  const widthOf = (ribbon: FlowRibbon) => heightOf(ribbon.numeric, scale);
+  const widthOf = (ribbon: FlowRibbon) => ribbonWidth(ribbon, scale);
+  const contentHeight = Math.ceil(bodyTop + extent(scale) + FLOW_PAD / 2);
 
   if (centred) {
     const span = (boxes: readonly FlowNodeBox[]) => boxes.length ? boxes[boxes.length - 1]!.slotTop + boxes[boxes.length - 1]!.slotHeight - bodyTop : 0;
-    const inbound = model.ribbons.filter(ribbon => ribbon.to === model.centre!.key);
-    const outbound = model.ribbons.filter(ribbon => ribbon.from === model.centre!.key);
     const inHeight = inbound.reduce((sum, ribbon) => sum + widthOf(ribbon), 0);
     const outHeight = outbound.reduce((sum, ribbon) => sum + widthOf(ribbon), 0);
     const centreHeight = Math.max(inHeight, outHeight, 2);
@@ -153,7 +169,7 @@ export function layoutFlow(model: FlowModel, width: number, height: number): Flo
       const from = byKey.get(ribbon.from);
       if (!from) continue;
       const rw = widthOf(ribbon);
-      ribbons.push({ ribbon, x0: from.x + FLOW_BAR_WIDTH, x1: centreX, a0: from.y, a1: from.y + Math.min(rw, from.height || rw), b0: leftCursor, b1: leftCursor + rw });
+      ribbons.push({ ribbon, x0: from.x + FLOW_BAR_WIDTH, x1: centreX, a0: from.y, a1: from.y + Math.min(rw, from.height || rw), b0: leftCursor, b1: leftCursor + rw, known: knownShare(ribbon, rw) });
       leftCursor += rw;
     }
     let rightCursor = centreTop + (centreHeight - outHeight) / 2;
@@ -161,28 +177,26 @@ export function layoutFlow(model: FlowModel, width: number, height: number): Flo
       const to = byKey.get(ribbon.to);
       if (!to) continue;
       const rw = widthOf(ribbon);
-      ribbons.push({ ribbon, x0: centreX + FLOW_CENTRE_WIDTH, x1: to.x, a0: rightCursor, a1: rightCursor + rw, b0: to.y, b1: to.y + Math.min(rw, to.height || rw) });
+      ribbons.push({ ribbon, x0: centreX + FLOW_CENTRE_WIDTH, x1: to.x, a0: rightCursor, a1: rightCursor + rw, b0: to.y, b1: to.y + Math.min(rw, to.height || rw), known: knownShare(ribbon, rw) });
       rightCursor += rw;
     }
   } else {
     const byKey = new Map(nodes.map(box => [box.node.key, box]));
     const outCursor = new Map<string, number>();
     const inCursor = new Map<string, number>();
-    const order = new Map(right.map((box, index) => [box.node.key, index]));
-    const sorted = [...model.ribbons].sort((a, b) => (order.get(a.to) ?? 0) - (order.get(b.to) ?? 0));
-    for (const ribbon of sorted) {
+    for (const ribbon of model.ribbons) {
       const from = byKey.get(ribbon.from);
       const to = byKey.get(ribbon.to);
       if (!from || !to) continue;
       const rw = widthOf(ribbon);
       const a = outCursor.get(from.node.key) ?? from.y;
       const b = inCursor.get(to.node.key) ?? to.y;
-      ribbons.push({ ribbon, x0: from.x + FLOW_BAR_WIDTH, x1: to.x, a0: a, a1: a + rw, b0: b, b1: b + rw });
+      ribbons.push({ ribbon, x0: from.x + FLOW_BAR_WIDTH, x1: to.x, a0: a, a1: a + rw, b0: b, b1: b + rw, known: knownShare(ribbon, rw) });
       outCursor.set(from.node.key, a + rw);
       inCursor.set(to.node.key, b + rw);
     }
   }
-  return { width: w, height: h, legendHeight, headerTop, bodyTop, labelWidth, leftBarX, rightBarX, centreX, nodes, ribbons, scale };
+  return { width: w, height: Math.max(h, contentHeight), legendHeight, headerTop, bodyTop, labelWidth, leftBarX, rightBarX, centreX, nodes, ribbons, scale };
 }
 
 function edgeAt(u: number, start: number, end: number): number {
@@ -239,6 +253,7 @@ export interface DrawFlowInput {
   readonly inspected: string | null;
   readonly focused: string | null;
   readonly artCache?: LaneArtCache;
+  readonly scrollTop?: number;
 }
 
 function flagState(art: ArtResult | undefined, tag: string | undefined, cache?: LaneArtCache): ArtSlotState {
@@ -297,9 +312,10 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
 }
 
 export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
-  const { model, layout, theme, inspected, focused, artCache } = input;
+  const { model, layout, theme, inspected, focused, artCache, scrollTop = 0 } = input;
   const tokens = resolveKitTokens(theme);
   ctx.save();
+  ctx.translate(0, -scrollTop);
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, layout.width, layout.height);
 
@@ -347,37 +363,37 @@ export function drawFlow(ctx: Canvas2D, input: DrawFlowInput): void {
     const ribbon = box.ribbon;
     const on = lit(ribbon);
     const alpha = on === null ? 0.62 : on ? 0.9 : 0.16;
-    if (ribbon.numeric === null) {
+    const total = knownOf(ribbon);
+    const knownTo = ribbon.missing ? box.known : 1;
+    if (total > 0 && knownTo > 0) {
+      ctx.globalAlpha = alpha;
+      if (ribbon.others) {
+        ctx.globalAlpha = alpha * FLOW_OTHERS_ALPHA;
+        ctx.fillStyle = tokens.barNeutral;
+        ribbonPath(ctx, box, 0, knownTo);
+        ctx.fill();
+      } else {
+        let from = 0;
+        for (const band of ribbon.bands) {
+          const share = (Math.max(0, band.numeric) / total) * knownTo;
+          if (share <= 0) continue;
+          const part = model.parts[band.part];
+          ctx.fillStyle = colour(theme.surface, part?.ordinal ?? band.part);
+          ribbonPath(ctx, box, from, from + share);
+          ctx.fill();
+          from += share;
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+    if (ribbon.missing && knownTo < 1) {
       ctx.save();
       ctx.globalAlpha = on === false ? 0.3 : 1;
-      ribbonPath(ctx, box, 0, 1);
+      ribbonPath(ctx, box, knownTo, 1);
       ctx.clip();
       drawHatchRect(ctx, box.x0, Math.min(box.a0, box.b0) - 1, box.x1 - box.x0, Math.max(box.a1, box.b1) - Math.min(box.a0, box.b0) + 2, 0, theme);
       ctx.restore();
-      continue;
     }
-    const total = ribbon.bands.reduce((sum, band) => sum + Math.max(0, band.numeric), 0);
-    if (total <= 0) continue;
-    ctx.globalAlpha = alpha;
-    if (ribbon.others) {
-      ctx.globalAlpha = alpha * FLOW_OTHERS_ALPHA;
-      ctx.fillStyle = tokens.barNeutral;
-      ribbonPath(ctx, box, 0, 1);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      continue;
-    }
-    let from = 0;
-    for (const band of ribbon.bands) {
-      const share = Math.max(0, band.numeric) / total;
-      if (share <= 0) continue;
-      const part = model.parts[band.part];
-      ctx.fillStyle = colour(theme.surface, part?.ordinal ?? band.part);
-      ribbonPath(ctx, box, from, from + share);
-      ctx.fill();
-      from += share;
-    }
-    ctx.globalAlpha = 1;
   }
 
   for (const box of layout.nodes) {

@@ -140,7 +140,7 @@ pub fn parts_at(named: &[ResourceInfo], unresolved: &BTreeMap<u32, String>) -> (
         parts.insert(id, FlowPart { key: format!("resource:{id}"), name: None, name_missing: Some(why.clone()), ordinal: 0, icon: None });
     }
     let index = parts.keys().enumerate().map(|(at, &id)| (id, at as u32)).collect();
-    let parts = parts.into_values().enumerate().map(|(at, part)| FlowPart { ordinal: at as u32, ..part }).collect();
+    let parts = parts.into_iter().map(|(id, part)| FlowPart { ordinal: id, ..part }).collect();
     (parts, index)
 }
 
@@ -179,7 +179,8 @@ impl AtHour for TradeFlow {
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
         params.countries.iter().try_for_each(validate_country)?;
-        params.subject.as_ref().map_or(Ok(()), validate_country)
+        params.subject.as_ref().map_or(Ok(()), validate_country)?;
+        dashboard_base::products::flows::validate_chosen(params.subject.as_ref(), &params.countries, params.group.is_some())
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -301,11 +302,13 @@ mod tests {
         assert_eq!(at.unresolved.get(&12).map(String::as_str), Some("Resource 12 has no recorded definition at this hour"), "a mod's resource missing here is named by its id, never dropped");
         let (parts, index) = parts_at(&[info(3, "oil"), info(9, "steel")], &at.unresolved);
         assert_eq!(parts.iter().map(|part| (part.key.as_str(), part.ordinal, part.name_missing.is_some())).collect::<Vec<_>>(), [
-            ("oil", 0, false),
-            ("resource:7", 1, true),
-            ("steel", 2, false),
-            ("resource:12", 3, true),
-        ]);
+            ("oil", 3, false),
+            ("resource:7", 7, true),
+            ("steel", 9, false),
+            ("resource:12", 12, true),
+        ], "a part's colour follows its recorded id: an undefined resource between two named ones moves neither");
+        let (without, _) = parts_at(&[info(3, "oil"), info(9, "steel")], &BTreeMap::new());
+        assert_eq!(without.iter().map(|part| part.ordinal).collect::<Vec<_>>(), [3, 9]);
         let deals = edges(&[row(1, 2, 12, Recorded::Value(4))], &index, None);
         assert_eq!(deals, [FlowEdge { from: FlowEnd::Slot(1), to: FlowEnd::Slot(2), part: 3, amount: Some(4) }], "the deal stays, in its own part");
         let unread = resources_at(&[], Some("not read"), spell, [3]);

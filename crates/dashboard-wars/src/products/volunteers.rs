@@ -109,7 +109,8 @@ impl AtHour for VolunteerFlow {
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
         params.countries.iter().try_for_each(validate_country)?;
-        params.subject.as_ref().map_or(Ok(()), validate_country)
+        params.subject.as_ref().map_or(Ok(()), validate_country)?;
+        dashboard_base::products::flows::validate_chosen(params.subject.as_ref(), &params.countries, params.group.is_some())
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

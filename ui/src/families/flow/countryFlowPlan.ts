@@ -18,6 +18,10 @@ export function flowSubject(ctx: FamilyPlanContext): string | null {
   return !ctx.countries.all && ctx.countries.top === null && ctx.countries.tags.length === 1 ? ctx.countries.tags[0]! : null;
 }
 
+export function flowViewSubject(ctx: FamilyPlanContext): string | null {
+  return ctx.options.between === 'between' && !ctx.countryTag ? null : flowSubject(ctx);
+}
+
 export function countryFlowPlan(
   ctx: FamilyPlanContext,
   product: 'trade-flow' | 'production-licences' | 'volunteer-flow',

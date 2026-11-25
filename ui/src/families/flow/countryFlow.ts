@@ -10,7 +10,7 @@ export interface CountryFlowText {
   readonly leftHeader: string;
   readonly rightHeader: string;
   readonly unitNote?: string;
-  readonly unit?: string;
+  readonly unit?: string | readonly [one: string, many: string];
   readonly groupLeftHeader: string;
   readonly groupRightHeader: string;
   readonly notRecorded: string;
@@ -87,19 +87,38 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
 
   const decimals = reply.decimals;
   const shownFormat: ValueFormat = { decimals, maxDecimals: 1 };
-  const exactFormat: ValueFormat = { decimals, ...(text.unit ? { unit: text.unit } : {}) };
+  const plainFormat: ValueFormat = { decimals };
+  const one = 10n ** BigInt(decimals);
+  const unitOf = (raw: bigint) => (typeof text.unit === 'string' ? text.unit : text.unit?.[raw === one ? 0 : 1]);
   const value = (amount: string | null) => (amount === null ? null : scaledAmount(amount, decimals));
   const figure = (amount: string | null) => (amount === null ? 'Not recorded' : formatCompactScalar(BigInt(amount), shownFormat).text);
-  const exact = (amount: string | null) => (amount === null ? 'Not recorded' : formatScalar(BigInt(amount), exactFormat));
-  const parts: FlowPartKey[] = reply.parts.map((part, index) => ({ key: part.key, label: part.name ?? part.key, ordinal: part.ordinal ?? index }));
-  const items = (link: FlowLink): TooltipListItem[] => link.amounts.map(amount => {
-    const part = parts[amount.part];
-    return amount.amount === null
-      ? { label: part?.label ?? '', missingReason: link.missing ?? text.notRecorded }
-      : { label: part?.label ?? '', value: exact(amount.amount) };
-  });
+  const exact = (amount: string | null) => {
+    if (amount === null) return 'Not recorded';
+    const raw = BigInt(amount);
+    const unit = unitOf(raw);
+    return formatScalar(raw, unit ? { decimals, unit } : plainFormat);
+  };
+  const parts: FlowPartKey[] = reply.parts.map((part, index) => ({ key: part.key, label: part.name ?? part.key, ordinal: part.ordinal ?? index, ...(part.nameMissing ? { missing: part.nameMissing } : {}) }));
+  const partNote = (part: FlowPartKey | undefined): TooltipListItem[] => (part?.missing ? [{ label: part.missing, tone: 'muted', indent: true }] : []);
+  const partSaid = (part: FlowPartKey | undefined) => `${part?.label ?? ''}${part?.missing ? ` (${part.missing})` : ''}`;
+  const items = (link: FlowLink): TooltipListItem[] => {
+    const listed = link.amounts.flatMap((amount): TooltipListItem[] => {
+      const part = parts[amount.part];
+      const shown: TooltipListItem = amount.amount === null
+        ? { label: part?.label ?? '', missingReason: link.missing ?? text.notRecorded }
+        : { label: part?.label ?? '', value: exact(amount.amount) };
+      return [shown, ...partNote(part)];
+    });
+    const total = link.total;
+    const loses = total !== null && formatCompactScalar(BigInt(total), shownFormat).text !== formatScalar(BigInt(total), plainFormat);
+    if (link.amounts.length < 2 && !loses) return listed;
+    const sum: TooltipListItem = total === null
+      ? { label: 'Total', strong: true, missingReason: link.missing ?? text.notRecorded }
+      : { label: 'Total', strong: true, value: exact(total) };
+    return [sum, ...listed];
+  };
   const detail = (link: FlowLink) => {
-    const said = link.amounts.map(amount => `${parts[amount.part]?.label ?? ''}: ${amount.amount === null ? `Not recorded (${link.missing ?? text.notRecorded})` : exact(amount.amount)}`);
+    const said = link.amounts.map(amount => `${partSaid(parts[amount.part])}: ${amount.amount === null ? `Not recorded (${link.missing ?? text.notRecorded})` : exact(amount.amount)}`);
     return `${exact(link.total)} · ${said.join('; ')}`;
   };
   const identity = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]): TooltipListItem[] =>
@@ -129,7 +148,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
         figure: figure(amount),
         others: others ?? 0,
         spoken: `${label}: ${detail(link)}`,
-        audit: detail(link),
+        audit: `${label} · ${detail(link)}`,
         tooltip: { title: label, hour, items: items(link) },
       };
     }
@@ -158,6 +177,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     from: from.key,
     to: to.key,
     bands: bands(link),
+    ...(link.total === null ? { missing: true } : {}),
     ...(from.others !== undefined || to.others !== undefined ? { others: true } : {}),
     numeric: value(link.total),
     audit: `${detail(link)}${identityAudit(from, to)}`,
@@ -225,11 +245,14 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
   const left = senders.links.map(link => node(link.from, 'left', link, link.others ?? undefined));
   const right = receivers.links.map(link => node(link.to, 'right', link, link.others ?? undefined));
   const byKey = new Map([...left, ...right].map(item => [item.key, item]));
-  const ribbons = reply.links.flatMap(link => {
-    const from = byKey.get(keyOf(link.from, 'left'));
-    const to = byKey.get(keyOf(link.to, 'right'));
-    return from && to ? [ribbon(link, from, to)] : [];
-  });
+  const receiverOrder = new Map(right.map((item, index) => [item.key, index]));
+  const ribbons = reply.links
+    .flatMap(link => {
+      const from = byKey.get(keyOf(link.from, 'left'));
+      const to = byKey.get(keyOf(link.to, 'right'));
+      return from && to ? [ribbon(link, from, to)] : [];
+    })
+    .sort((a, b) => receiverOrder.get(a.to)! - receiverOrder.get(b.to)!);
   return {
     hour,
     mode: 'bipartite',

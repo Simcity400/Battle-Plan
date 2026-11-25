@@ -1,5 +1,5 @@
 import { projectCountryFlow } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide, flowViewSubject } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 
@@ -12,6 +12,7 @@ export const volunteersProjection: FlowProjection = {
     leftHeader: 'Hosted from',
     rightHeader: 'Sent to',
     unitNote: 'divisions',
+    unit: ['division', 'divisions'],
     groupLeftHeader: 'Senders',
     groupRightHeader: 'Hosts',
     notRecorded: 'Volunteers and expeditionary forces were not recorded at this date.',
@@ -29,7 +30,7 @@ export const volunteersDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its volunteers and expeditionary forces.',
   icon: 'flows',
   countries: { mode: 'multi' },
-  sources: (ctx, view) => countryFlowPlan(ctx, 'volunteer-flow', { limit: flowPerSide(view) }),
+  sources: (ctx, view) => countryFlowPlan(ctx, 'volunteer-flow', { limit: flowPerSide(view) }, flowViewSubject(ctx)),
   projection: volunteersProjection,
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,

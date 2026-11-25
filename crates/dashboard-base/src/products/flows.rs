@@ -11,7 +11,7 @@ pub struct FlowPart {
     pub key: String,
     pub name: Option<String>,
     pub name_missing: Option<String>,
-    #[doc = " The part's place in the recording's own order, for its colour."]
+    #[doc = " The part's recorded id, for a colour that stays with it from hour to hour."]
     pub ordinal: u32,
     pub icon: Option<String>,
 }
@@ -215,6 +215,14 @@ impl FlowGap {
 
     fn covers(&self, from: Key, to: Key) -> bool {
         self.from.covers(from) && self.to.covers(to)
+    }
+}
+
+pub fn validate_chosen(subject: Option<&Country>, countries: &[Country], group: bool) -> Result<(), &'static str> {
+    match (subject.is_some(), !countries.is_empty(), group) {
+        (true, true, _) | (true, _, true) => Err("Ask one country, or a group or countries, never both"),
+        (_, true, true) => Err("Ask a group or countries, never both"),
+        _ => Ok(()),
     }
 }
 
@@ -600,6 +608,16 @@ mod tests {
 
     fn rows(reply: &CountryFlowReply, side: &FlowSide, from: bool) -> Vec<(Option<Slot>, Option<String>, Option<u32>)> {
         side.links.iter().map(|link| (slot(reply, if from { link.from } else { link.to }), link.total.clone(), link.others)).collect()
+    }
+
+    #[test]
+    fn a_request_names_one_country_or_a_group_or_countries_never_two_of_them() {
+        let one = Country::Tag("GER".into());
+        assert!(validate_chosen(Some(&one), &[], true).is_err(), "a centre outside the group would silently drop the group");
+        assert!(validate_chosen(Some(&one), std::slice::from_ref(&one), false).is_err());
+        assert!(validate_chosen(None, std::slice::from_ref(&one), true).is_err());
+        assert!(validate_chosen(Some(&one), &[], false).is_ok());
+        assert!(validate_chosen(None, &[], true).is_ok());
     }
 
     #[test]

@@ -26,6 +26,7 @@ export const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
       inspected: inspectedItem(frame.inspect),
       focused: frame.binding.focusedKey ?? null,
       artCache: frame.art,
+      scrollTop: frame.binding.scrollTop,
     });
     return false;
   },

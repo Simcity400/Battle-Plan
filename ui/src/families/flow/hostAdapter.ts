@@ -10,10 +10,14 @@ export function parseFlowHit(hitKey: string | null): ParsedFamilyHit | null {
 
 export const flowHostAdapter: FamilyHostAdapter<FlowModel, unknown, FamilyFlowBinding> = {
   family: 'flow',
-  scroll: 'none',
+  scroll: 'vertical',
   navigation: 'rows',
   mirror: 'listbox',
   auditOwnerId: -8,
+  getScrollExtent: fields => {
+    const extent = fields.extent as { readonly height?: number } | undefined;
+    return extent?.height !== undefined ? { height: extent.height } : null;
+  },
   parseHit: parseFlowHit,
   inspectToken: key => key,
   deriveAuditRows: model => deriveFlowAudit(model),
