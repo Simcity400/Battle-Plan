@@ -428,6 +428,8 @@ fn baseline_retention(
                 | TableId::VariantUpgrades
                 | TableId::WeatherProvinces
                 | TableId::ScriptVariables
+                | TableId::ScriptVariableNames
+                | TableId::ScriptVariableValues
                 | TableId::Provinces
                 | TableId::States
         )
@@ -2737,21 +2739,30 @@ impl<S: Schedule> Processor<S> {
                 (qpc, clock.hour, clock.play_session_started_at),
             );
         }
-        let variables_baseline = campaign
-            .encoder
-            .slice_baseline(
-                TableId::ScriptVariables,
-                branch,
-                clock.hour,
-                !campaign.spool.is_open(),
-            )
-            .and_then(|(token, rows)| Some((token, rows.rows::<tables::ScriptVariables>()?)));
+        let force = !campaign.spool.is_open();
+        let variables_baseline = collector_intel::intel::VariableBaselines {
+            scopes: campaign
+                .encoder
+                .slice_baseline(TableId::ScriptVariables, branch, clock.hour, force)
+                .and_then(|(token, rows)| Some((token, rows.rows::<tables::ScriptVariables>()?))),
+            names: campaign
+                .encoder
+                .slice_baseline(TableId::ScriptVariableNames, branch, clock.hour, force)
+                .and_then(|(token, rows)| {
+                    Some((token, rows.rows::<tables::ScriptVariableNames>()?))
+                }),
+            values: campaign
+                .encoder
+                .slice_baseline(TableId::ScriptVariableValues, branch, clock.hour, force)
+                .and_then(|(token, rows)| {
+                    Some((token, rows.rows::<tables::ScriptVariableValues>()?))
+                }),
+        };
         if captured.force_full {
             for (_, table) in REPUBLISHING {
                 campaign.projection_scratch.forget(table);
             }
         }
-        let force = !campaign.spool.is_open();
         let sliced_skip = {
             let can_skip_carried = |table: TableId| {
                 campaign.owner_sliced(table)
@@ -4298,7 +4309,7 @@ fn decoded(
             clock.borrowed(),
             branch,
             &mut SpoolConversion {
-                variables_baseline: None,
+                variables_baseline: Default::default(),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -4694,7 +4705,7 @@ fn convert_with_helper(
     });
     let mut spare_scratch = ScriptVariableComparison::default();
     let mut conversion = SpoolConversion {
-        variables_baseline: None,
+        variables_baseline: Default::default(),
         variables_scratch: &mut spare_scratch,
         characters: None,
         lexical: lexical.as_deref_mut(),
@@ -5055,9 +5066,11 @@ mod tests {
         encoder
             .encode(staggered_frame(1, 10, false), false)
             .unwrap();
-        let baseline = encoder
-            .comparison_baseline::<tables::ScriptVariables>(1, 11, false)
-            .unwrap();
+        let baseline = collector_intel::intel::VariableBaselines {
+            scopes: encoder.comparison_baseline::<tables::ScriptVariables>(1, 11, false),
+            names: encoder.comparison_baseline::<tables::ScriptVariableNames>(1, 11, false),
+            values: encoder.comparison_baseline::<tables::ScriptVariableValues>(1, 11, false),
+        };
         let mut capture = captured(11);
         capture.clock = None;
         let (input, _) = decoded_with_costs(
@@ -5065,7 +5078,7 @@ mod tests {
             clock(11).borrowed(),
             1,
             &mut SpoolConversion {
-                variables_baseline: Some(baseline),
+                variables_baseline: baseline,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -9294,7 +9307,7 @@ mod tests {
             clock(1).borrowed(),
             branch,
             &mut SpoolConversion {
-                variables_baseline: None,
+                variables_baseline: Default::default(),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: Some(&mut reuse),
@@ -9345,7 +9358,7 @@ mod tests {
     ) -> FrameInput {
         let native = collector_intel::intel::intel_shadow_fixture(value);
         let inputs = native.table_inputs(
-            None,
+            Default::default(),
             &mut ScriptVariableComparison::default(),
             Some(&mut IntelConversion::new(
                 branch,
@@ -9473,7 +9486,7 @@ mod tests {
             clock(0).borrowed(),
             1,
             &mut SpoolConversion {
-                variables_baseline: None,
+                variables_baseline: Default::default(),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -9536,7 +9549,7 @@ mod tests {
                             clock(1).borrowed(),
                             branch,
                             &mut SpoolConversion {
-                                variables_baseline: None,
+                                variables_baseline: Default::default(),
                                 variables_scratch: &mut ScriptVariableComparison::default(),
                                 characters: Some(&mut reuse),
                                 lexical: None,

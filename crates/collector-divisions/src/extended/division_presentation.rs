@@ -118,7 +118,7 @@ macro_rules! status_fields {
 }
 
 macro_rules! project_status_fields {
-    ([$row:expr, $supply_grace:expr, $naming:expr, $supply:expr, $dig_in:expr, $block:expr, $name:expr, $attack_stats:expr, $witness:expr, $movement:expr, $experience:expr, $pending_template:expr, $officer:expr, $career:expr, $source:expr, $combat_movement:expr], {$($field:ident: $value:expr),* $(,)?}) => {{
+    ([$row:expr, $naming:expr, $supply:expr, $dig_in:expr, $block:expr, $name:expr, $attack_stats:expr, $witness:expr, $movement:expr, $experience:expr, $pending_template:expr, $officer:expr, $career:expr, $source:expr, $combat_movement:expr], {$($field:ident: $value:expr),* $(,)?}) => {{
         let block = $block;
         DivisionStatusRow {
             $($field: $value,)*
@@ -127,7 +127,7 @@ macro_rules! project_status_fields {
             camouflage: Recorded::Value(camouflage($row.camouflage)),
             border_combat_stats: Recorded::Value($row.border_combat_stats),
             supply_grace_maximum: Recorded::Value($row.supply_grace_maximum),
-            supply_grace_remaining: Recorded::Value(DivisionStatusRow::displayed_grace($row.supply_grace_remaining, $supply_grace)),
+            supply_grace_remaining: Recorded::Value(0),
             name_template: Recorded::Value(name_template($row.naming)),
             naming: Recorded::Value($naming),
             country_ordinal: Recorded::Value($row.country_ordinal),
@@ -168,7 +168,6 @@ struct StatusInputs {
     supply_ratio: i64,
     strength_factor: i64,
     supply_grace_remaining: i64,
-    supply_grace_displayed: i64,
     experience: i64,
     dig_in: i64,
     flags: u32,
@@ -658,7 +657,6 @@ pub struct Captured {
     decode_pending: bool,
     status_omitted: bool,
     movement_owned_pending: bool,
-    supply_grace: Option<i32>,
     pub speed_terms: speed_terms::SpeedTerms,
 }
 
@@ -735,7 +733,6 @@ impl Captured {
             decode_pending: false,
             status_omitted: false,
             movement_owned_pending: false,
-            supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
         }
     }
@@ -799,7 +796,6 @@ impl Captured {
             decode_pending: false,
             status_omitted: false,
             movement_owned_pending: false,
-            supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
         }
     }
@@ -827,7 +823,6 @@ impl Captured {
         self.prefetching = false;
         self.probes_ready = false;
         self.attack_ready = false;
-        self.supply_grace = None;
         self.daily_status.reset();
         self.status.reset();
         self.bans.reset();
@@ -1797,9 +1792,6 @@ impl Captured {
         self.status_prepared = prepare_only;
         let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
-        self.supply_grace =
-            engine_sites::at(base, engine_land_inputs::carmy_attrition::SUPPLY_GRACE_RVA)
-                .and_then(|address| engine_native_memory::read::<i32>(memory, address));
         if !grow_vec(&mut self.status.rows, rows.len()) {
             self.fail_owned_capture("presentation row allocation failed");
             return 0;
@@ -2580,10 +2572,6 @@ impl Captured {
                     supply_ratio: r.supply_ratio,
                     strength_factor: r.strength_factor,
                     supply_grace_remaining: r.supply_grace_remaining,
-                    supply_grace_displayed: DivisionStatusRow::displayed_grace(
-                        r.supply_grace_remaining,
-                        self.supply_grace,
-                    ),
                     experience: experience_val,
                     dig_in: dig_in_val,
                     flags,
@@ -2634,7 +2622,6 @@ impl Captured {
                     project_status_fields,
                     [
                         r,
-                        self.supply_grace,
                         r.naming.map(|n| NameOperands {
                             kind: n.kind,
                             order: n.order,
@@ -5062,7 +5049,9 @@ pub mod tests {
             (i64::MIN, 0, 57_038)
         );
         assert_eq!(s[0].supply_grace_maximum, Recorded::Value(i64::MAX));
-        assert_eq!(s[0].supply_grace_remaining, Recorded::Value(i64::MIN));
+        assert_eq!(s[0].supply_grace_remaining, Recorded::Value(0));
+        assert_eq!(s[0].supply_grace_exact, Recorded::Value(Some(i64::MIN)));
+        assert_eq!(s[0].displayed_supply_grace(None), Some(i64::MIN));
         assert_eq!(
             s[0].supply,
             Recorded::Value(Some(replay_data::rows::DivisionSupplyFooter {
@@ -5175,12 +5164,13 @@ pub mod tests {
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         assert!(matches!(capture.tables()[1], TableView::Complete(_)));
         capture.status.rows[0].supply_grace_remaining = 3_659_999;
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = &capture.tables()[1] else {
+            panic!("complete status");
+        };
+        assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(0));
+        assert_eq!(rows[0].supply_grace_exact, Recorded::Value(Some(3_659_999)));
         for (grace, stored) in [(Some(72), 3_600_000), (None, 3_659_000)] {
-            capture.supply_grace = grace;
-            let TableView::Complete(TableRows::DivisionStatus(rows)) = &capture.tables()[1] else {
-                panic!("complete status");
-            };
-            assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(stored));
+            assert_eq!(rows[0].displayed_supply_grace(grace), Some(stored));
         }
     }
 
@@ -5193,7 +5183,6 @@ pub mod tests {
             paths: 0,
             ..Capacities::default()
         });
-        capture.supply_grace = Some(72);
         capture.status.outcome = Outcome::Rows { len: 1 };
         capture.status.rows[0] = carmy::StatusRow {
             division: 42,
@@ -5210,7 +5199,8 @@ pub mod tests {
         assert_eq!(rows[0].supply_ratio, None);
         assert_eq!(rows[0].supply_ratio_exact, Recorded::Value(Some(35_499)));
         assert_eq!(rows[0].supply_grace_exact, Recorded::Value(Some(3_635_999)));
-        assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(3_600_000));
+        assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(0));
+        assert_eq!(rows[0].displayed_supply_grace(Some(72)), Some(3_600_000));
         assert_eq!(rows[0].displayed_supply_ratio(), Some(35_000));
         let mut baseline = std::array::from_fn(|_| unavailable("outside presentation fixture"));
         for (id, view) in TABLES.into_iter().zip(capture.tables()) {

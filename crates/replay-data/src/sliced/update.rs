@@ -47,7 +47,7 @@ macro_rules! keyed_pair {
             Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
             DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
             RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables,
+            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables, ScriptVariableNames, ScriptVariableValues,
             RailCooldowns, IntelContributions, IntelSources, ShipModels, CountryCounterInputs,
             ArmyOrderPlans, OrdersGroupPlans, Fronts, InvasionPreparations,
             LandCombatDivisions, LandCombatSides, LandCombatModifiers, ReserveModifierTrees,
@@ -80,6 +80,8 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
             | TableId::AirBaseRegistrations
             | TableId::CharacterRoleTraits
             | TableId::ScriptVariables
+            | TableId::ScriptVariableNames
+            | TableId::ScriptVariableValues
             | TableId::RailCooldowns
             | TableId::IntelContributions
             | TableId::IntelSources

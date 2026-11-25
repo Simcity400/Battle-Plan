@@ -911,7 +911,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                     hour,
                     &mut tables,
                     &mut crate::pack_conversion::SpoolConversion {
-                        variables_baseline: None,
+                        variables_baseline: Default::default(),
                         variables_scratch: &mut Default::default(),
                         characters: None,
                         lexical: None,

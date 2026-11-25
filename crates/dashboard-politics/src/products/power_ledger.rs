@@ -686,6 +686,18 @@ const CHANGE_COLS: [&str; 9] = [
     "site",
 ];
 
+const CHANGE_COLS_DELTA: [&str; 9] = [
+    "epoch",
+    "hour",
+    "currency",
+    "operation",
+    "balance_before_raw",
+    "realized_delta_raw",
+    "requested_delta_raw",
+    "cause",
+    "site",
+];
+
 fn is_hold(currency: PowerCurrency, site: PowerSite, cause: PowerCause) -> bool {
     currency == PowerCurrency::Command
         && (matches!(site, PowerSite::AllocateCommandPower | PowerSite::ReleaseCommandPower | PowerSite::GroundCrew) || cause == PowerCause::AllocationRefund)
@@ -872,7 +884,9 @@ fn instant_gains(
     if ranges.is_empty() {
         return Ok(());
     }
-    let columns: Vec<usize> = CHANGE_COLS.iter().map(|name| dashboard_declare::field(TableId::CountryPowerChanges, name)).collect::<io::Result<_>>()?;
+    let uses_delta = recording.format() >= replay_data::rows::compatibility::RECORDING_SIZE_FORMAT;
+    let col_names = if uses_delta { &CHANGE_COLS_DELTA } else { &CHANGE_COLS };
+    let columns: Vec<usize> = col_names.iter().map(|name| dashboard_declare::field(TableId::CountryPowerChanges, name)).collect::<io::Result<_>>()?;
     let history = dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::CountryPowerChanges, &columns, Keys::Ranges(&ranges), start, piece.last))?;
     let order: Vec<usize> = columns.iter().map(|column| history.columns.binary_search(column).map_err(|_| dashboard_core::invalid("A power change column was not read"))).collect::<io::Result<_>>()?;
     let wanted_currency = match currency {
@@ -918,7 +932,13 @@ fn instant_gains(
             };
             let event_hour = Value::of(cells[order[1]]).number().map(|value| value as i32);
             let before = Value::of(cells[order[4]]).number();
-            let after = Value::of(cells[order[5]]).number();
+            let after = Value::of(cells[order[5]]).number().and_then(|value| {
+                if uses_delta {
+                    before.map(|before| before.wrapping_add(value))
+                } else {
+                    Some(value)
+                }
+            });
             let requested = Value::of(cells[order[6]]).number();
             if is_hold(row_currency, site, cause) {
                 match operation {

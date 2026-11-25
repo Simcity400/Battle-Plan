@@ -81,6 +81,8 @@ compared_tables!(
     DivisionModelInputs,
     CountryCounterInputs,
     ScriptVariables,
+    ScriptVariableNames,
+    ScriptVariableValues,
     AdvisorRoles,
     DivisionMovement,
     CharacterPortraits,

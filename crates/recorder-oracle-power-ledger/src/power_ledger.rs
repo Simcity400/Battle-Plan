@@ -103,7 +103,7 @@ fn changes(
         report.scalar(
             &String::from_utf8_lossy(tag),
             &format!("CountryPowerChanges final {field}"),
-            Some(row.balance_after_raw),
+            Some(row.balance_after()),
             value,
         );
     }
@@ -307,7 +307,7 @@ mod tests {
                     epoch: 1,
                     sequence: 4,
                     hour: frame.hour,
-                    balance_after_raw: 1_000_001,
+                    realized_delta_raw: replay_data::rows::Recorded::Value(1_000_001),
                     ..Default::default()
                 },
             ]));
@@ -335,7 +335,7 @@ mod tests {
                     epoch: 1,
                     sequence: 4,
                     hour: frame.hour,
-                    balance_after_raw: 1_000_002,
+                    realized_delta_raw: replay_data::rows::Recorded::Value(1_000_002),
                     ..Default::default()
                 },
             ]));

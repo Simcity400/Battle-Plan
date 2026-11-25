@@ -2332,6 +2332,15 @@ fn division_status_accepts_always_exact_supply_at_zero_days_and_historical_absen
     };
     let report = run(base.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let zeroed_grace = run(DivisionStatusRow {
+        supply_grace_remaining: Recorded::Value(0),
+        ..base.clone()
+    });
+    assert!(
+        zeroed_grace.differences.is_empty(),
+        "{:?}",
+        zeroed_grace.differences
+    );
     let wrong_grace = run(DivisionStatusRow {
         supply_grace_exact: Recorded::Value(Some(3_636_000)),
         ..base.clone()

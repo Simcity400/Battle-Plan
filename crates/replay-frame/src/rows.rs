@@ -1,3 +1,4 @@
+pub use crate::fuel_awards::with_award_recipients;
 pub use crate::fuel_demand::with_demand_parts;
 pub use replay_data::rows::*;
 

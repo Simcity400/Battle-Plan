@@ -309,7 +309,7 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
                 native.requested_delta_raw.map(|amount| -amount)
             );
             assert_eq!(
-                (correction.balance_before_raw, correction.balance_after_raw),
+                (correction.balance_before_raw, correction.balance_after()),
                 (200, 200)
             );
         }
@@ -505,7 +505,7 @@ fn politics_tfix2_extreme_clamp_chunks_cannot_collide_with_next_observation() {
                 .sum::<i128>(),
             expected
         );
-        if native.balance_before_raw == i64::MIN && native.balance_after_raw == i64::MAX {
+        if native.balance_before_raw == i64::MIN && native.balance_after() == i64::MAX {
             assert_eq!(corrections.len(), 4);
         }
     }

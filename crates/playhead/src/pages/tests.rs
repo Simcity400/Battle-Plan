@@ -95,7 +95,7 @@ fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_
     });
     for span in [Span::Whole, Span::Hours { from: BLOCK as i32 + 30, hours: 50 }] {
         let opened = WorldPages::over(Recording::open(bytes.clone()).unwrap(), span).unwrap();
-        for table in [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges] {
+        for table in [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues] {
             let gap = table.last_change().table_gap(table, format).unwrap();
             assert_eq!(opened.withheld(table.index()), Some(gap.as_str()));
             assert!(opened.schema()[table.index()].is_empty());

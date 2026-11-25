@@ -103,6 +103,8 @@ mod folds;
 use folds::Folds;
 thread_local! {
     static FOLDS: RefCell<Vec<(ViewIdentity, Arc<Folds>)>> = const { RefCell::new(Vec::new()) };
+    static VAR_NAMES: RefCell<Vec<(ViewIdentity, Arc<std::collections::HashMap<Vec<u8>, u32>>)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 pub(in crate::triggers) enum Names {
@@ -519,6 +521,7 @@ pub struct World<'a> {
     aliases: &'a Arc<TagAliases>,
     recorded: OnceLock<RecordedScopes<'a>>,
     names: Index<Names>,
+    variable_names: Index<Arc<std::collections::HashMap<Vec<u8>, u32>>>,
     literals: Index<literals::Lookup<'a>>,
     factions: Index<Linked<BTreeMap<u32, u64>>>,
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
@@ -1470,6 +1473,7 @@ impl<'a> World<'a> {
             aliases: content.tag_aliases,
             recorded: OnceLock::new(),
             names: OnceLock::new(),
+            variable_names: OnceLock::new(),
             literals: OnceLock::new(),
             factions: OnceLock::new(),
             wars: OnceLock::new(),
@@ -3226,12 +3230,65 @@ impl<'a> World<'a> {
                 .map(|entry| entry.value_raw));
         }
         let variables = self.variable_store(store)?;
-        Ok(variables
-            .entries
-            .iter()
-            .rev()
-            .find(|entry| entry.name == key)
-            .map(|entry| entry.value_raw))
+        if !variables.entries.is_empty() {
+            return Ok(variables
+                .entries
+                .iter()
+                .rev()
+                .find(|entry| entry.name == key)
+                .map(|entry| entry.value_raw));
+        }
+        if matches!(
+            self.frame
+                .status(replay_data::rows::TableId::ScriptVariableValues),
+            OperandStatus::NotRecorded(_)
+        ) {
+            return Ok(None);
+        }
+        const VALUE: u64 = mask::<replay_data::rows::ScriptVariableValueRow>(&["value_raw"]);
+        let values = table::<tables::ScriptVariableValues>(self.frame, VALUE)?;
+        let names = self.variable_names()?;
+        let Some(&var_id) = names.get(key) else {
+            return Ok(None);
+        };
+        let row_key = (u128::from(variables.scope_kind) << 64)
+            | (u128::from(variables.scope_id) << 32)
+            | u128::from(var_id);
+        Ok(keyed::<tables::ScriptVariableValues>(&values, row_key)?.map(|row| row.value_raw))
+    }
+
+    fn variable_names(&self) -> Result<&std::collections::HashMap<Vec<u8>, u32>, Failure> {
+        const NAME: u64 = mask::<replay_data::rows::ScriptVariableNameRow>(&["name"]);
+        super::inputs::table(self.frame, replay_data::rows::TableId::ScriptVariableNames);
+        get(&self.variable_names, || {
+            let view = self
+                .frame
+                .identity(replay_data::rows::TableId::ScriptVariableNames);
+            let cached = VAR_NAMES.with_borrow(|cache| {
+                cache
+                    .iter()
+                    .find(|(source, _)| view.as_ref().is_some_and(|view| source.same(view)))
+                    .map(|(_, names)| Arc::clone(names))
+            });
+            if let Some(names) = cached {
+                return Ok(names);
+            }
+            let rows = table::<tables::ScriptVariableNames>(self.frame, NAME)?;
+            let mut out = std::collections::HashMap::with_capacity(rows.len());
+            for row in each::<tables::ScriptVariableNames>(rows) {
+                let row = row?;
+                out.insert(row.name.clone(), row.id);
+            }
+            let out = Arc::new(out);
+            if let Some(view) = view {
+                VAR_NAMES.with_borrow_mut(|cache| {
+                    cache.insert(0, (view, Arc::clone(&out)));
+                    cache.truncate(2);
+                });
+            }
+            Ok(out)
+        })
+        .map(Arc::as_ref)
     }
 
     pub(super) fn variable_seed(&self, store: Store) -> Result<u32, Failure> {

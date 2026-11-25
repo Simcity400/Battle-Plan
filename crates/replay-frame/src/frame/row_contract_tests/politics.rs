@@ -111,10 +111,20 @@ fn charges_and_reconciliation_keep_signed_extremes_and_absence() {
         instance: 3,
         sequence: u64::MAX,
         balance_before_raw: i64::MIN,
-        balance_after_raw: i64::MAX,
+        balance_after_raw: RetiredI64(0),
+        realized_delta_raw: Recorded::Value(i64::MAX.wrapping_sub(i64::MIN)),
         ..Default::default()
     };
+    assert_eq!(previous.balance_after(), i64::MAX);
     assert_eq!(previous.realized_delta_raw(), i128::from(u64::MAX));
+    let historical = CountryPowerChangeRow {
+        balance_before_raw: 100,
+        balance_after_raw: RetiredI64(125),
+        realized_delta_raw: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    assert_eq!(historical.balance_after(), 125);
+    assert_eq!(historical.realized_delta_raw(), 25);
     let next = CountryPowerChangeRow {
         requested_delta_raw: Some(0),
         operation: PowerOperation::Clamp,

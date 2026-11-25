@@ -267,10 +267,7 @@ pub(crate) struct HelperConversion<'a, 'cache> {
     pub projection: Option<&'a mut collector_projection::projection::Projection<'cache>>,
     pub characters: Option<&'a mut characters::CharacterConversion<'cache>>,
     pub intel: Option<&'a mut intel::IntelConversion<'cache>>,
-    pub variables_baseline: Option<(
-        replay_frame::frame::BaselineToken,
-        &'a [replay_data::rows::ScriptVariablesRow],
-    )>,
+    pub variables_baseline: intel::VariableBaselines<'a>,
     pub variables_scratch: &'a mut intel::ScriptVariableComparison,
 }
 
@@ -278,10 +275,7 @@ pub(crate) struct HelperConversion<'a, 'cache> {
 pub struct LentCaches<'a, 'cache> {
     pub characters: Option<&'a mut characters::CharacterConversion<'cache>>,
     pub intel: Option<&'a mut intel::IntelConversion<'cache>>,
-    pub variables_baseline: Option<(
-        replay_frame::frame::BaselineToken,
-        &'a [replay_data::rows::ScriptVariablesRow],
-    )>,
+    pub variables_baseline: intel::VariableBaselines<'a>,
     pub variables_scratch: Option<&'a mut intel::ScriptVariableComparison>,
 }
 
@@ -1247,7 +1241,7 @@ impl Captured {
                         projection: projection.as_deref_mut(),
                         characters: None,
                         intel: None,
-                        variables_baseline: None,
+                        variables_baseline: intel::VariableBaselines::default(),
                         variables_scratch: &mut spare,
                     };
                     let mut pack = 0;

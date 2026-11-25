@@ -1,9 +1,7 @@
 use collector_characters::extended::characters::CharacterConversion;
-use collector_intel::intel::{IntelConversion, ScriptVariableComparison};
+use collector_intel::intel::{IntelConversion, ScriptVariableComparison, VariableBaselines};
 use collector_lexical::lexical::LexicalConversion;
 use collector_projection::projection::Projection;
-use replay_data::rows::ScriptVariablesRow;
-use replay_frame::frame::BaselineToken;
 
 use crate::extended::HELPER_PACKS;
 use crate::extended::PACK_NAMES;
@@ -635,7 +633,7 @@ mod tests {
 }
 
 pub struct SpoolConversion<'a, 'cache> {
-    pub variables_baseline: Option<(BaselineToken, &'a [ScriptVariablesRow])>,
+    pub variables_baseline: VariableBaselines<'a>,
     pub variables_scratch: &'a mut ScriptVariableComparison,
     pub characters: Option<&'a mut CharacterConversion<'cache>>,
     pub lexical: Option<&'a mut LexicalConversion<'cache>>,

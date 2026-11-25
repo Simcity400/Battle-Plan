@@ -220,6 +220,72 @@ pub struct FuelAwardWindow {
 value_struct!(FuelAwardWindow { country_instance: u32, continuity_start_hour: Option<i32>, hours: Vec<FuelAwardHour>, reason: Vec<u8> });
 opaque_value!(FuelAwardWindow);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub enum FuelAwardDayHour {
+    #[default]
+    Host,
+    Stamped(i32),
+    Historical(i32),
+}
+
+impl FuelAwardDayHour {
+    pub fn at(self, read_hour: i32) -> i32 {
+        match self {
+            Self::Host => read_hour,
+            Self::Stamped(hour) | Self::Historical(hour) => hour,
+        }
+    }
+}
+
+impl Value for FuelAwardDayHour {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(match (replay_rows::rows::historical_stamp(), self) {
+            (Some(_), _) => size_of::<i32>(),
+            (None, Self::Host) => 1,
+            (None, Self::Stamped(_) | Self::Historical(_)) => 1 + size_of::<i32>(),
+        })
+    }
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        Ok(match self {
+            Self::Host => 1,
+            Self::Stamped(_) => 1 + size_of::<i32>(),
+            Self::Historical(_) => size_of::<i32>(),
+        })
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        match (replay_rows::rows::historical_stamp(), *self) {
+            (Some(hour), Self::Host) | (Some(_), Self::Stamped(hour) | Self::Historical(hour)) => {
+                output.extend_from_slice(&hour.to_le_bytes())
+            }
+            (None, Self::Host) => output.push(0),
+            (None, Self::Stamped(hour) | Self::Historical(hour)) => {
+                output.push(1);
+                output.extend_from_slice(&hour.to_le_bytes());
+            }
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        if input.format < replay_rows::rows::compatibility::RECORDING_SIZE_FORMAT {
+            return input.i32().map(Self::Historical);
+        }
+        match input.u8()? {
+            0 => Ok(Self::Host),
+            1 => input.i32().map(Self::Stamped),
+            _ => Err(invalid("invalid fuel award day hour tag")),
+        }
+    }
+}
+replay_rows::wire_value!(FuelAwardDayHour,);
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelAwardDayRecipient {
@@ -242,7 +308,7 @@ value_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, hos
 pub struct FuelAwardDay {
     pub country_instance: u32,
     pub continuity_start_hour: Option<i32>,
-    pub last_hour: i32,
+    pub last_hour: FuelAwardDayHour,
     pub gains_raw: [i64; 4],
     pub own_gain_raw: i64,
     pub own_gain_quantity_raw: i64,
@@ -253,10 +319,191 @@ pub struct FuelAwardDay {
     pub reason: Vec<u8>,
 }
 value_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Option<i32>,
-    last_hour: i32, gains_raw: [i64; 4], own_gain_raw: i64, own_gain_quantity_raw: i64,
+    last_hour: FuelAwardDayHour, gains_raw: [i64; 4], own_gain_raw: i64, own_gain_quantity_raw: i64,
     transfers_raw: [i64; 4], consumed_raw: i64, received_raw: [i64; 3],
     recipients: Vec<FuelAwardDayRecipient>, reason: Vec<u8> });
 opaque_value!(FuelAwardDay);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct FuelAwardRecipientRow {
+    pub country: u32,
+    pub kind: u8,
+    pub reference: u64,
+    pub occurrence: u16,
+    pub position: u32,
+    pub owner: u32,
+    pub host: u64,
+    pub name_present: bool,
+    pub name: Vec<u8>,
+    pub name_reason: Vec<u8>,
+    pub first_offset: u8,
+    pub last_offset: u8,
+    pub amount_raw: i64,
+}
+typed_codec!(FuelAwardRecipientRow, 115,
+ |row| (row.country as u128) << 83 | (row.kind as u128) << 80 | (row.reference as u128) << 16 | row.occurrence as u128,
+ |key| Self { country: (key >> 83) as u32, kind: ((key >> 80) & 7) as u8, reference: (key >> 16) as u64, occurrence: key as u16, ..Default::default() },
+ { 0 => (position): U32, 1 => (owner): U32, 2 => (host): U64, 3 => (name_present): Bool, 4 => (name): Bytes, 5 => (name_reason): Bytes, 6 => (first_offset): U8, 7 => (last_offset): U8, 8 => (amount_raw): I64 },
+ |row| {
+     if row.kind > 2
+         || (!row.name_present && !row.name.is_empty())
+         || row.first_offset > 23
+         || row.last_offset > 23
+         || row.first_offset < row.last_offset
+     {
+         return Err(invalid("fuel award recipient outside its domain"));
+     }
+     Ok(())
+ });
+
+impl FuelAwardDay {
+    pub fn splittable(&self, read_hour: i32) -> bool {
+        if u32::try_from(self.recipients.len().saturating_sub(1)).is_err() {
+            return false;
+        }
+        let end = self.last_hour.at(read_hour);
+        let mut seen: std::collections::BTreeMap<(u8, u64), u32> = std::collections::BTreeMap::new();
+        self.recipients.iter().all(|part| {
+            let Ok(kind) = u8::try_from(part.kind) else {
+                return false;
+            };
+            if kind > 2 || part.first_hour > part.last_hour {
+                return false;
+            }
+            let Some(first_offset) = end.checked_sub(part.first_hour) else {
+                return false;
+            };
+            let Some(last_offset) = end.checked_sub(part.last_hour) else {
+                return false;
+            };
+            if !(0..=23).contains(&first_offset) || !(0..=23).contains(&last_offset) {
+                return false;
+            }
+            let count = seen.entry((kind, part.reference)).or_insert(0);
+            *count += 1;
+            *count <= u32::from(u16::MAX) + 1
+        })
+    }
+
+    pub fn split(
+        mut self,
+        country: u32,
+        read_hour: i32,
+    ) -> io::Result<(Self, Vec<FuelAwardRecipientRow>)> {
+        let end = self.last_hour.at(read_hour);
+        let recipients = std::mem::take(&mut self.recipients);
+        let mut rows = Vec::new();
+        engine_allocation::reserve(&mut rows, recipients.len())?;
+        let mut seen: std::collections::BTreeMap<(u8, u64), u32> = std::collections::BTreeMap::new();
+        for (position, part) in recipients.into_iter().enumerate() {
+            let kind = u8::try_from(part.kind)
+                .ok()
+                .filter(|&kind| kind <= 2)
+                .ok_or_else(|| invalid("fuel award recipient kind outside its key"))?;
+            let first_offset = end
+                .checked_sub(part.first_hour)
+                .and_then(|value| u8::try_from(value).ok())
+                .filter(|&value| value <= 23)
+                .ok_or_else(|| invalid("fuel award recipient first hour outside its day"))?;
+            let last_offset = end
+                .checked_sub(part.last_hour)
+                .and_then(|value| u8::try_from(value).ok())
+                .filter(|&value| value <= first_offset)
+                .ok_or_else(|| invalid("fuel award recipient last hour outside its day"))?;
+            let next = seen.entry((kind, part.reference)).or_insert(0);
+            let occurrence = u16::try_from(*next)
+                .map_err(|_| invalid("fuel award recipient identity repeats beyond its key"))?;
+            *next += 1;
+            let (name_present, name) = match part.name {
+                Some(name) => (true, name),
+                None => (false, Vec::new()),
+            };
+            rows.push(FuelAwardRecipientRow {
+                country,
+                kind,
+                reference: part.reference,
+                occurrence,
+                position: u32::try_from(position)
+                    .map_err(|_| invalid("fuel award recipient list too long"))?,
+                owner: part.owner,
+                host: part.host,
+                name_present,
+                name,
+                name_reason: part.name_reason,
+                first_offset,
+                last_offset,
+                amount_raw: part.amount_raw,
+            });
+        }
+        rows.sort_unstable_by_key(RowCodec::key);
+        Ok((self, rows))
+    }
+
+    pub fn assemble(
+        &mut self,
+        recipients: &[FuelAwardRecipientRow],
+        read_hour: i32,
+    ) -> Result<(), &'static str> {
+        let end = self.last_hour.at(read_hour);
+        let mut ordered: Vec<&FuelAwardRecipientRow> = recipients.iter().collect();
+        ordered.sort_unstable_by_key(|row| row.position);
+        if ordered
+            .iter()
+            .enumerate()
+            .any(|(index, row)| row.position as usize != index)
+        {
+            return Err("fuel award recipient positions do not make one list");
+        }
+        self.recipients = ordered
+            .into_iter()
+            .map(|row| {
+                let first_hour = end
+                    .checked_sub(i32::from(row.first_offset))
+                    .ok_or("fuel award recipient first hour underflows")?;
+                let last_hour = end
+                    .checked_sub(i32::from(row.last_offset))
+                    .ok_or("fuel award recipient last hour underflows")?;
+                Ok(FuelAwardDayRecipient {
+                    kind: u32::from(row.kind),
+                    reference: row.reference,
+                    owner: row.owner,
+                    host: row.host,
+                    name: row.name_present.then(|| row.name.clone()),
+                    name_reason: row.name_reason.clone(),
+                    first_hour,
+                    last_hour,
+                    amount_raw: row.amount_raw,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+}
+
+pub fn assemble_award_recipients(
+    rows: &mut [CountryFuelRow],
+    recipients: Result<&[FuelAwardRecipientRow], &'static str>,
+    read_hour: i32,
+) {
+    for row in rows {
+        let Recorded::Value(day) = &mut row.award_day else {
+            continue;
+        };
+        if !day.recipients.is_empty() || !day.reason.is_empty() {
+            continue;
+        }
+        let assembled = recipients.and_then(|recipients| {
+            let start = recipients.partition_point(|part| part.country < row.country);
+            let end = recipients.partition_point(|part| part.country <= row.country);
+            day.assemble(&recipients[start..end], read_hour)
+        });
+        if let Err(reason) = assembled {
+            day.recipients.clear();
+            day.reason = reason.as_bytes().to_vec();
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]

@@ -970,6 +970,16 @@ impl DivisionStatusRow {
         Self::displayed_supply(self.supply_ratio, exact)
     }
 
+    pub fn displayed_supply_grace(&self, grace: Option<i32>) -> Option<i64> {
+        if let Recorded::Value(Some(exact)) = self.supply_grace_exact {
+            return Some(Self::displayed_grace(exact, grace));
+        }
+        match self.supply_grace_remaining {
+            Recorded::Value(remaining) => Some(remaining),
+            Recorded::NotRecorded => None,
+        }
+    }
+
     pub fn displayed_supply(ratio: Option<i64>, exact: Option<i64>) -> Option<i64> {
         ratio.or_else(|| exact.map(|exact| Self::SUPPLY_RATIO_STEP.round(exact)))
     }

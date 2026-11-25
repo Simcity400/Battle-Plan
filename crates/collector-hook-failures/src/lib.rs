@@ -214,7 +214,7 @@ impl Family {
             Self::Buildings => &[StateBuildings, ProvinceBuildings],
             Self::AdvisorPools => &[AvailableAdvisors, HiredAdvisors, AdvisorTokens],
             Self::PartyLeaders => &[PartyLeaders],
-            Self::Variables => &[ScriptVariables, FactionVariables, Projects, ProjectPrograms],
+            Self::Variables => &[ScriptVariables, ScriptVariableNames, ScriptVariableValues, FactionVariables, Projects, ProjectPrograms],
             Self::Parties => &[PoliticalParties, ActiveIdeas],
             Self::Wings => &[WingEquipment],
             Self::Roster => &[
@@ -327,7 +327,7 @@ impl Family {
             Self::AirBaseCarry => &[AirBases, AirBaseRegistrations],
             Self::Experience => &[CountryExperienceGains],
             Self::PlayerCommands => &[],
-            Self::Fuel => &[CountryFuel],
+            Self::Fuel => &[CountryFuel, FuelAwardRecipients],
             Self::OperationOutcomes => &[OperationCompletions],
             Self::Politics => &[
                 CountryPowerDaily,

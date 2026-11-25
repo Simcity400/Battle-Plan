@@ -5,8 +5,9 @@ use crate::{
 };
 use engine_allocation::{copy_vec, default_vec, owned_vec, reserve_map};
 use replay_data::{
-    BranchId, rows::FuelAwardDay, rows::FuelAwardDayRecipient, rows::FuelAwardHour,
-    rows::FuelAwardRecipient, rows::Recorded, rows::Retired, rows::TableId, rows::TableRows,
+    BranchId, rows::FuelAwardDay, rows::FuelAwardDayHour, rows::FuelAwardDayRecipient,
+    rows::FuelAwardHour, rows::FuelAwardRecipient, rows::FuelAwardRecipientRow, rows::Recorded,
+    rows::Retired, rows::RowCodec, rows::TableId, rows::TableRows,
 };
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::{
@@ -72,6 +73,9 @@ impl Captured {
     }
 }
 
+pub const TRUNCATED_RECIPIENTS: &str =
+    "fuel award recipients are not split from a truncated CountryFuel read, whose days stay whole";
+
 #[derive(Default)]
 pub struct Windows {
     branch: Option<BranchId>,
@@ -92,14 +96,28 @@ impl Windows {
         tables: &mut [TableInput],
     ) -> io::Result<()> {
         self.observe(branch, hour, captured)?;
-        let rows = match &mut tables[TableId::CountryFuel.index()] {
-            TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows))) => rows,
+        let (rows, complete_fuel) = match &mut tables[TableId::CountryFuel.index()] {
+            TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows))) => (rows, true),
             TableInput::Sampled(TableView::Truncated {
                 rows: TableRows::CountryFuel(rows),
                 ..
-            }) => rows,
-            _ => return Ok(()),
+            }) => (rows, false),
+            TableInput::Sampled(TableView::Unavailable { reason }) => {
+                tables[TableId::FuelAwardRecipients.index()] =
+                    TableInput::Sampled(TableView::Unavailable {
+                        reason: reason.clone(),
+                    });
+                return Ok(());
+            }
+            _ => {
+                tables[TableId::FuelAwardRecipients.index()] =
+                    TableInput::Sampled(TableView::Unavailable {
+                        reason: "fuel award recipients follow a CountryFuel read".into(),
+                    });
+                return Ok(());
+            }
         };
+        let mut recipients: Vec<FuelAwardRecipientRow> = Vec::new();
         for row in rows {
             let history = self.countries.get(&row.country);
             let hours = history.map(|(_, hours)| hours);
@@ -122,7 +140,7 @@ impl Windows {
             };
             let mut day = FuelAwardDay::default();
             if let (None, Some(hours)) = (reason, hours) {
-                match sum_day(hours)? {
+                match sum_day(hours, hour)? {
                     Some(summed) => day = summed,
                     None => {
                         DAY_SUM_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -133,9 +151,25 @@ impl Windows {
             day.country_instance = instance.unwrap_or_default();
             day.continuity_start_hour = history.map(|(start, _)| *start);
             day.reason = copy_vec(reason.unwrap_or("").as_bytes())?;
+            if complete_fuel && reason.is_none() && day.splittable(hour) {
+                let (header, mut owned) = day.split(row.country, hour)?;
+                engine_allocation::reserve(&mut recipients, owned.len())?;
+                recipients.append(&mut owned);
+                day = header;
+            }
             row.awards = Recorded::Value(Retired);
             row.award_day = Recorded::Value(day);
         }
+        tables[TableId::FuelAwardRecipients.index()] = if complete_fuel {
+            recipients.sort_unstable_by_key(RowCodec::key);
+            TableInput::Sampled(TableView::Complete(TableRows::FuelAwardRecipients(
+                recipients,
+            )))
+        } else {
+            TableInput::Sampled(TableView::Unavailable {
+                reason: TRUNCATED_RECIPIENTS.into(),
+            })
+        };
         Ok(())
     }
     fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) -> io::Result<()> {
@@ -356,7 +390,7 @@ pub fn day_sum_refusals() -> u64 {
 
 type Receipt<'a> = ((u32, u64, u32, u64, Option<&'a [u8]>, &'a [u8]), i32, i64);
 
-fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> {
+fn sum_day(hours: &VecDeque<FuelAwardHour>, hour: i32) -> io::Result<Option<FuelAwardDay>> {
     let mut gains = [0_i128; 4];
     let mut transfers = [0_i128; 4];
     let mut received = [0_i128; 3];
@@ -465,8 +499,13 @@ fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> 
     else {
         return Ok(None);
     };
+    let last = hours.back().map_or(0, |last| last.hour);
     Ok(Some(FuelAwardDay {
-        last_hour: hours.back().map_or(0, |last| last.hour),
+        last_hour: if last == hour {
+            FuelAwardDayHour::Host
+        } else {
+            FuelAwardDayHour::Stamped(last)
+        },
         gains_raw,
         own_gain_raw,
         own_gain_quantity_raw,

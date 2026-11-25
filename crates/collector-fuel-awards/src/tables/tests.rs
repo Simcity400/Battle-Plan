@@ -131,14 +131,16 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
             assert_eq!(reset.continuity_start_hour, Some(25));
         }
     }
-    let Recorded::Value(reset) = &rows(&tables)[0].award_day else {
+    let assembled = assembled(&tables, 48);
+    let Recorded::Value(reset) = &assembled[0].award_day else {
         panic!()
     };
-    let Recorded::Value(peer) = &rows(&tables)[1].award_day else {
+    let Recorded::Value(peer) = &assembled[1].award_day else {
         panic!()
     };
     assert!(reset.reason.is_empty());
-    assert_eq!(reset.last_hour, 48);
+    assert_eq!(reset.last_hour, FuelAwardDayHour::Host);
+    assert_eq!(reset.last_hour.at(48), 48);
     assert_eq!(
         (
             reset.recipients[0].first_hour,
@@ -151,6 +153,11 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
     assert!(peer.reason.is_empty());
     assert_eq!(peer.own_gain_raw, 24 * 3);
     assert_eq!(rows(&tables)[0].current_raw, 1);
+    assert!(
+        rows(&tables)
+            .iter()
+            .all(|row| matches!(&row.award_day, Recorded::Value(day) if day.recipients.is_empty()))
+    );
     assert!(
         rows(&tables)
             .iter()
@@ -306,6 +313,16 @@ fn rows(tables: &[TableInput]) -> &[CountryFuelRow] {
     };
     rows
 }
+fn assembled(tables: &[TableInput], hour: i32) -> Vec<CountryFuelRow> {
+    let mut fuel = rows(tables).to_vec();
+    let TableInput::Sampled(TableView::Complete(TableRows::FuelAwardRecipients(recipients))) =
+        &tables[TableId::FuelAwardRecipients.index()]
+    else {
+        panic!()
+    };
+    replay_data::rows::assemble_award_recipients(&mut fuel, Ok(recipients), hour);
+    fuel
+}
 #[test]
 fn writer_window_keeps_corrections_names_owner_and_local_refusals() {
     let mut windows = Windows::default();
@@ -323,8 +340,8 @@ fn writer_window_keeps_corrections_names_owner_and_local_refusals() {
         cursor = captured.drained.unwrap().unwrap().0.cursor;
         windows.assemble(1, hour, &captured, &mut tables).unwrap();
     }
-    let rows = rows(&tables);
-    for row in rows {
+    let rows = assembled(&tables, 24);
+    for row in &rows {
         let Recorded::Value(day) = &row.award_day else {
             panic!()
         };
@@ -334,7 +351,8 @@ fn writer_window_keeps_corrections_names_owner_and_local_refusals() {
             continue;
         }
         assert!(day.reason.is_empty());
-        assert_eq!(day.last_hour, 24);
+        assert_eq!(day.last_hour, FuelAwardDayHour::Host);
+        assert_eq!(day.last_hour.at(24), 24);
         assert_eq!(day.gains_raw, [48, -72, 96, 0]);
         assert_eq!(day.own_gain_raw, 72);
         assert_eq!(
@@ -419,10 +437,11 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
         assert!(!windows.identities.contains_key(&1));
         assert_eq!(windows.status_owners.get(&0x1000), Some(&3));
         assert_eq!(windows.countries[&3].1.len(), (hour - 24) as usize);
-        let Recorded::Value(first) = &rows(&tables)[0].award_day else {
+        let assembled = assembled(&tables, hour);
+        let Recorded::Value(first) = &assembled[0].award_day else {
             panic!()
         };
-        let Recorded::Value(second) = &rows(&tables)[1].award_day else {
+        let Recorded::Value(second) = &assembled[1].award_day else {
             panic!()
         };
         assert_eq!(first.continuity_start_hour, Some(25));
@@ -433,7 +452,8 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
             assert!(first.recipients.is_empty());
         } else {
             assert!(first.reason.is_empty());
-            assert_eq!(first.last_hour, 48);
+            assert_eq!(first.last_hour, FuelAwardDayHour::Host);
+            assert_eq!(first.last_hour.at(48), 48);
             assert_eq!(first.own_gain_raw, 72);
             assert_eq!(first.gains_raw, [48, -72, 96, 0]);
             assert_eq!(first.recipients.len(), 1);

@@ -230,7 +230,7 @@ mod variable_work;
 use variable_work::{AllScopes, Complete, Path};
 pub use variable_work::{VariableTotals, VariableWork};
 
-pub const N: usize = 26;
+pub const N: usize = 28;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -258,6 +258,8 @@ pub const TABLES: [TableId; N] = [
     TableId::IntelContributions,
     TableId::IntelSources,
     TableId::IntelNetworkAuxiliaries,
+    TableId::ScriptVariableNames,
+    TableId::ScriptVariableValues,
 ];
 
 const fn table_slot(table: TableId) -> usize {
@@ -315,10 +317,101 @@ impl SeedWork {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct VariableBaselines<'a> {
+    pub scopes: Option<(BaselineToken, &'a [rows::ScriptVariablesRow])>,
+    pub names: Option<(BaselineToken, &'a [rows::ScriptVariableNameRow])>,
+    pub values: Option<(BaselineToken, &'a [rows::ScriptVariableValueRow])>,
+}
+
+#[derive(Default)]
+struct VariableInterner {
+    by_name: std::collections::HashMap<Vec<u8>, u32>,
+    names: Vec<Vec<u8>>,
+    published: usize,
+}
+
+impl VariableInterner {
+    fn reset(&mut self) {
+        self.by_name.clear();
+        self.names.clear();
+        self.published = 0;
+    }
+
+    fn rollback(&mut self) {
+        while self.names.len() > self.published {
+            if let Some(name) = self.names.pop() {
+                self.by_name.remove(&name);
+            }
+        }
+    }
+
+    fn commit(&mut self) {
+        self.published = self.names.len();
+    }
+
+    fn sync(&mut self, previous: &[rows::ScriptVariableNameRow]) -> bool {
+        if previous.len() == self.published
+            && self.names.len() == self.published
+            && (previous.is_empty()
+                || (previous[0].id == 0
+                    && previous[0].name == self.names[0]
+                    && previous[previous.len() - 1].id as usize == previous.len() - 1
+                    && previous[previous.len() - 1].name == self.names[self.names.len() - 1]))
+        {
+            return true;
+        }
+        self.reset();
+        if reserve(&mut self.names, previous.len()).is_err()
+            || engine_allocation::reserve_map(&mut self.by_name, previous.len()).is_err()
+        {
+            return false;
+        }
+        for (index, row) in previous.iter().enumerate() {
+            if row.id as usize != index {
+                self.reset();
+                return false;
+            }
+            let Ok(name) = copy_vec(&row.name) else {
+                self.reset();
+                return false;
+            };
+            let Ok(key) = copy_vec(&row.name) else {
+                self.reset();
+                return false;
+            };
+            if self.by_name.insert(key, row.id).is_some() {
+                self.reset();
+                return false;
+            }
+            self.names.push(name);
+        }
+        self.published = self.names.len();
+        true
+    }
+
+    fn intern(&mut self, name: &[u8]) -> Option<u32> {
+        if let Some(&id) = self.by_name.get(name) {
+            return Some(id);
+        }
+        let id = u32::try_from(self.names.len()).ok()?;
+        reserve(&mut self.names, 1).ok()?;
+        engine_allocation::reserve_map(&mut self.by_name, 1).ok()?;
+        let stored = copy_vec(name).ok()?;
+        let key = copy_vec(name).ok()?;
+        self.names.push(stored);
+        self.by_name.insert(key, id);
+        Some(id)
+    }
+}
+
 #[derive(Default)]
 pub struct ScriptVariableComparison {
     scopes: Vec<u64>,
     entries: Vec<u64>,
+    next_values: Vec<(u32, i64)>,
+    interner: VariableInterner,
+    branch: Option<BranchId>,
     kept: Option<Kept>,
     work: Option<VariableWork>,
 }
@@ -335,14 +428,8 @@ struct Kept {
     generation: u64,
 }
 
-type Edits = Vec<(u128, Option<rows::ScriptVariablesRow>)>;
-
-#[cfg(feature = "conversion_check")]
-fn sorted_scopes(previous: &[rows::ScriptVariablesRow]) -> bool {
-    previous
-        .windows(2)
-        .all(|pair| (pair[0].scope_kind, pair[0].scope_id) < (pair[1].scope_kind, pair[1].scope_id))
-}
+type ScopeEdits = Vec<(u128, Option<rows::ScriptVariablesRow>)>;
+type ValueEdits = Vec<(u128, Option<rows::ScriptVariableValueRow>)>;
 
 fn baseline_index(
     previous: &[rows::ScriptVariablesRow],
@@ -356,11 +443,26 @@ fn baseline_index(
     previous.binary_search_by_key(&identity, key).ok()
 }
 
+fn value_range(
+    previous: &[rows::ScriptVariableValueRow],
+    identity: (u8, u32),
+) -> std::ops::Range<usize> {
+    let lo = (u128::from(identity.0) << 64) | (u128::from(identity.1) << 32);
+    let hi = lo | u128::from(u32::MAX);
+    let start = previous.partition_point(|row| row.key() < lo);
+    let end = start + previous[start..].partition_point(|row| row.key() <= hi);
+    start..end
+}
+
 fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn keyed_update(token: BaselineToken, mut edits: Edits) -> Option<TableInput> {
+fn keyed_update<R>(
+    token: BaselineToken,
+    mut edits: Vec<(u128, Option<R>)>,
+    wrap: fn(Vec<R>) -> TableRows,
+) -> Option<TableInput> {
     if edits.is_empty() {
         return Some(TableInput::ComparedEqual(token));
     }
@@ -378,7 +480,7 @@ fn keyed_update(token: BaselineToken, mut edits: Edits) -> Option<TableInput> {
     }
     Some(TableInput::SliceUpdate {
         token,
-        update: Arc::new(SliceUpdate::keyed(keys, TableRows::ScriptVariables(rows))),
+        update: Arc::new(SliceUpdate::keyed(keys, wrap(rows))),
     })
 }
 
@@ -2418,6 +2520,8 @@ impl Captured {
             self.source_contributions.outcome,
             self.source_values.outcome,
             self.network_auxiliary.outcome,
+            self.variables.outcome,
+            self.variables.outcome,
         ]
     }
 
@@ -2429,7 +2533,7 @@ impl Captured {
 
     pub fn table_inputs(
         &self,
-        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        baseline: VariableBaselines<'_>,
         scratch: &mut ScriptVariableComparison,
         reuse: Option<&mut IntelConversion<'_>>,
     ) -> [TableInput; N] {
@@ -2438,7 +2542,7 @@ impl Captured {
 
     pub fn table_inputs_projected(
         &self,
-        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        baseline: VariableBaselines<'_>,
         scratch: &mut ScriptVariableComparison,
         reuse: Option<&mut IntelConversion<'_>>,
         mut projection: Option<&mut Projection<'_>>,
@@ -2549,6 +2653,10 @@ impl Captured {
             Some(snapshot) => snapshot.input(),
             None => fallback(),
         };
+        let [var_scopes, var_names, var_values] = timed(TableId::ScriptVariables, || {
+            let stamp = projection.as_deref().map(Projection::current_stamp);
+            self.variables_inputs(outcomes[8], baseline, stamp, scratch)
+        });
         [
             TableInput::Sampled(self.capitulation_table(outcomes[0])),
             TableInput::Sampled(self.subjects_table(outcomes[1])),
@@ -2570,10 +2678,7 @@ impl Captured {
                 network_row,
             ),
             flags,
-            timed(TableId::ScriptVariables, || {
-                let stamp = projection.as_deref().map(Projection::current_stamp);
-                self.variables_input(outcomes[8], baseline, stamp, scratch)
-            }),
+            var_scopes,
             TableInput::Sampled(self.operations_table(outcomes[9])),
             scalar_table::<tables::OperationAssignments, _>(
                 projection.as_deref_mut(),
@@ -2659,6 +2764,8 @@ impl Captured {
                     |row| *row,
                 )
             }),
+            var_names,
+            var_values,
         ]
     }
 
@@ -2670,7 +2777,7 @@ impl Captured {
             |rows| TableView::Complete(rows.try_clone().expect("synthetic snapshot clone")),
             self.flags_table(outcomes[7]),
             self.country_intel_table(outcomes[15]),
-            |outcome| self.variables_table(outcome),
+            |outcome| self.complete_variable_views(outcome),
         )
     }
 
@@ -2699,9 +2806,10 @@ impl Captured {
         shared: impl Fn(Arc<TableRows>) -> V,
         flags: V,
         country_intel: V,
-        variables: impl FnOnce(Outcome) -> V,
+        variables: impl FnOnce(Outcome) -> [V; 3],
     ) -> [V; N] {
         let outcomes = self.outcomes();
+        let [var_scopes, var_names, var_values] = variables(outcomes[8]);
         [
             sample(self.capitulation_table(outcomes[0])),
             sample(self.subjects_table(outcomes[1])),
@@ -2743,7 +2851,7 @@ impl Captured {
                 },
             )),
             flags,
-            variables(outcomes[8]),
+            var_scopes,
             sample(self.operations_table(outcomes[9])),
             sample(table::<tables::OperationAssignments, _>(
                 outcomes[10],
@@ -2842,6 +2950,8 @@ impl Captured {
                     |row| *row,
                 )
             }),
+            var_names,
+            var_values,
         ]
     }
 }
@@ -3194,80 +3304,109 @@ impl Captured {
     fn variables_equal(
         &self,
         outcome: Outcome,
-        previous: &[rows::ScriptVariablesRow],
+        previous_scopes: &[rows::ScriptVariablesRow],
+        previous_names: &[rows::ScriptVariableNameRow],
+        previous_values: &[rows::ScriptVariableValueRow],
         scratch: &mut ScriptVariableComparison,
     ) -> bool {
         let Some(scopes) = self.variables.rows.get(..outcome.len()) else {
             return false;
         };
-        let mut edits = Edits::new();
-        matches!(outcome, Outcome::Rows { .. })
-            && self
-                .mapped_edits(
-                    scopes,
-                    None,
-                    previous,
-                    scratch,
-                    &mut VariableWork::default(),
-                    &mut edits,
-                )
-                .is_some()
-            && edits.is_empty()
+        if !matches!(outcome, Outcome::Rows { .. }) || !scratch.interner.sync(previous_names) {
+            return false;
+        }
+        let mut scope_edits = ScopeEdits::new();
+        let mut value_edits = ValueEdits::new();
+        let ok = self
+            .mapped_edits(
+                scopes,
+                None,
+                previous_scopes,
+                previous_values,
+                scratch,
+                &mut VariableWork::default(),
+                &mut scope_edits,
+                &mut value_edits,
+            )
+            .is_some();
+        let equal = ok
+            && scope_edits.is_empty()
+            && value_edits.is_empty()
+            && scratch.interner.names.len() == scratch.interner.published;
+        scratch.interner.rollback();
+        equal
     }
 
-    fn variables_input(
+    fn variables_inputs(
         &self,
         outcome: Outcome,
-        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        baselines: VariableBaselines<'_>,
         stamp: Option<(u64, BranchId, Hour)>,
         scratch: &mut ScriptVariableComparison,
-    ) -> TableInput {
+    ) -> [TableInput; 3] {
         #[cfg(feature = "conversion_check")]
-        let reference = self.reference_variables(outcome, baseline, scratch);
-        let input = self.changed_variables(outcome, baseline, stamp, scratch);
+        let reference = self.complete_variable_views(outcome).map(TableInput::Sampled);
+        let inputs = self.changed_variables(outcome, baselines, stamp, scratch);
         #[cfg(feature = "conversion_check")]
-        conversion_check::record(baseline, &reference, &input);
-        input
+        conversion_check::record(baselines, &reference, &inputs);
+        inputs
     }
 
     fn changed_variables(
         &self,
         outcome: Outcome,
-        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        baselines: VariableBaselines<'_>,
         stamp: Option<(u64, BranchId, Hour)>,
         scratch: &mut ScriptVariableComparison,
-    ) -> TableInput {
+    ) -> [TableInput; 3] {
         let started = std::time::Instant::now();
+        let branch = baselines
+            .scopes
+            .map(|(token, _)| token.destination().1)
+            .or(stamp.map(|(_, branch, _)| branch));
+        if let Some(branch) = branch
+            && scratch.branch != Some(branch)
+        {
+            scratch.interner.reset();
+            scratch.branch = Some(branch);
+        }
         let mut work = VariableWork::default();
-        let input = self.variable_edits(outcome, baseline, scratch, &mut work);
-        let holds_capture = matches!(
-            input,
-            TableInput::ComparedEqual(_)
-                | TableInput::SliceUpdate { .. }
-                | TableInput::SharedComplete(_)
-        );
-        let destination = baseline.map(|(token, _)| token.destination()).or(stamp);
+        let inputs = self.variable_edits(outcome, baselines, scratch, &mut work);
+        let holds_capture = inputs.iter().all(|input| {
+            matches!(
+                input,
+                TableInput::ComparedEqual(_)
+                    | TableInput::SliceUpdate { .. }
+                    | TableInput::SharedComplete(_)
+            )
+        });
+        let destination = baselines
+            .scopes
+            .map(|(token, _)| token.destination())
+            .or(stamp);
         scratch.kept = match (destination, self.variable_delta.generation) {
             (Some(at), Some(generation)) if holds_capture => Some(Kept { at, generation }),
             _ => None,
         };
         work.ns = elapsed_ns(started);
         scratch.work = Some(work);
-        input
+        inputs
     }
 
     fn variable_edits(
         &self,
         outcome: Outcome,
-        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        baselines: VariableBaselines<'_>,
         scratch: &mut ScriptVariableComparison,
         work: &mut VariableWork,
-    ) -> TableInput {
-        let Some((token, previous)) = baseline else {
-            return self.complete_variables(outcome, Complete::NoBaseline, work);
+    ) -> [TableInput; 3] {
+        let (Some((scopes_token, prev_scopes)), Some((names_token, prev_names)), Some((values_token, prev_values))) =
+            (baselines.scopes, baselines.names, baselines.values)
+        else {
+            return self.complete_variables(outcome, Complete::NoBaseline, scratch, work);
         };
         let Outcome::Rows { len } = outcome else {
-            return self.complete_variables(outcome, Complete::NotComplete, work);
+            return self.complete_variables(outcome, Complete::NotComplete, scratch, work);
         };
         let (entries, names) = (&self.variable_entries, &self.variable_names);
         let Some(scopes) = self.variables.rows.get(..len).filter(|_| {
@@ -3276,12 +3415,15 @@ impl Captured {
                 && entries.required >= entries.len
                 && names.required >= names.len
         }) else {
-            return self.complete_variables(outcome, Complete::Refused, work);
+            return self.complete_variables(outcome, Complete::Refused, scratch, work);
         };
+        if !scratch.interner.sync(prev_names) {
+            return self.complete_variables(outcome, Complete::Refused, scratch, work);
+        }
         work.scopes = len as u64;
         let delta = &self.variable_delta;
         let changed = match scratch.kept {
-            Some(kept) if kept.at == token.baseline() => {
+            Some(kept) if kept.at == scopes_token.baseline() => {
                 if delta.since == Some(kept.generation) {
                     Ok(&delta.changed[..])
                 } else {
@@ -3290,34 +3432,105 @@ impl Captured {
             }
             _ => Err(AllScopes::NoKeptHour),
         };
-        let mut edits = Edits::new();
+        let mut scope_edits = ScopeEdits::new();
+        let mut value_edits = ValueEdits::new();
         let decided = match changed {
-            Ok(changed) if delta.same_scopes && len == previous.len() => {
-                self.listed_edits(scopes, changed, previous, scratch, work, &mut edits)
-            }
+            Ok(changed) if delta.same_scopes && len == prev_scopes.len() => self.listed_edits(
+                scopes,
+                changed,
+                prev_scopes,
+                prev_values,
+                scratch,
+                work,
+                &mut scope_edits,
+                &mut value_edits,
+            ),
             Ok(changed) => {
                 work.reordered = true;
-                self.mapped_edits(scopes, Some(changed), previous, scratch, work, &mut edits)
+                self.mapped_edits(
+                    scopes,
+                    Some(changed),
+                    prev_scopes,
+                    prev_values,
+                    scratch,
+                    work,
+                    &mut scope_edits,
+                    &mut value_edits,
+                )
             }
             Err(reason) => {
                 work.path = Path::AllScopes(reason);
-                self.mapped_edits(scopes, None, previous, scratch, work, &mut edits)
+                self.mapped_edits(
+                    scopes,
+                    None,
+                    prev_scopes,
+                    prev_values,
+                    scratch,
+                    work,
+                    &mut scope_edits,
+                    &mut value_edits,
+                )
             }
         };
         let built = std::time::Instant::now();
-        let input = decided.and_then(|()| keyed_update(token, edits));
+        let built_inputs = decided.and_then(|()| {
+            let scopes_in = keyed_update(scopes_token, scope_edits, TableRows::ScriptVariables)?;
+            let values_in =
+                keyed_update(values_token, value_edits, TableRows::ScriptVariableValues)?;
+            let names_in = if scratch.interner.names.len() == scratch.interner.published {
+                TableInput::ComparedEqual(names_token)
+            } else {
+                let start = scratch.interner.published;
+                let added = scratch.interner.names.len() - start;
+                let mut keys = Vec::new();
+                let mut rows = Vec::new();
+                reserve_exact(&mut keys, added).ok()?;
+                reserve_exact(&mut rows, added).ok()?;
+                for (offset, name) in scratch.interner.names[start..].iter().enumerate() {
+                    let id = (start + offset) as u32;
+                    keys.push(u128::from(id));
+                    rows.push(rows::ScriptVariableNameRow {
+                        id,
+                        name: copy_vec(name).ok()?,
+                    });
+                }
+                TableInput::SliceUpdate {
+                    token: names_token,
+                    update: Arc::new(SliceUpdate::keyed(
+                        keys,
+                        TableRows::ScriptVariableNames(rows),
+                    )),
+                }
+            };
+            Some([scopes_in, names_in, values_in])
+        });
         work.build_ns = work.build_ns.saturating_add(elapsed_ns(built));
-        input.unwrap_or_else(|| self.complete_variables(outcome, Complete::Refused, work))
+        match built_inputs {
+            Some(inputs) => {
+                scratch.interner.commit();
+                inputs
+            }
+            None => {
+                scratch.interner.rollback();
+                self.complete_variables(outcome, Complete::Refused, scratch, work)
+            }
+        }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "listed variable scope diff shares scratch and edit accumulators"
+    )]
     fn listed_edits(
         &self,
         scopes: &[cvariables::ScopeRow],
         changed: &[u32],
         previous: &[rows::ScriptVariablesRow],
+        prev_values: &[rows::ScriptVariableValueRow],
         scratch: &mut ScriptVariableComparison,
         work: &mut VariableWork,
-        edits: &mut Edits,
+        scope_edits: &mut ScopeEdits,
+        value_edits: &mut ValueEdits,
     ) -> Option<()> {
         let mut next = 0;
         for &ordinal in changed {
@@ -3331,22 +3544,30 @@ impl Captured {
             self.scope_edit(
                 scope,
                 Some(&previous[index]),
-                &mut scratch.entries,
+                prev_values,
+                scratch,
                 work,
-                edits,
+                scope_edits,
+                value_edits,
             )?;
         }
         Some(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mapped variable scope diff shares scratch and edit accumulators"
+    )]
     fn mapped_edits(
         &self,
         scopes: &[cvariables::ScopeRow],
         changed: Option<&[u32]>,
         previous: &[rows::ScriptVariablesRow],
+        prev_values: &[rows::ScriptVariableValueRow],
         scratch: &mut ScriptVariableComparison,
         work: &mut VariableWork,
-        edits: &mut Edits,
+        scope_edits: &mut ScopeEdits,
+        value_edits: &mut ValueEdits,
     ) -> Option<()> {
         if !clear_seen(&mut scratch.scopes, previous.len()) {
             return None;
@@ -3365,7 +3586,15 @@ impl Captured {
             }
             let row = index.map(|index| &previous[index]);
             match (row, compared) {
-                (_, true) => self.scope_edit(scope, row, &mut scratch.entries, work, edits)?,
+                (_, true) => self.scope_edit(
+                    scope,
+                    row,
+                    prev_values,
+                    scratch,
+                    work,
+                    scope_edits,
+                    value_edits,
+                )?,
                 (Some(_), false) => {}
                 (None, false) => return None,
             }
@@ -3375,21 +3604,32 @@ impl Captured {
         }
         for (index, row) in previous.iter().enumerate() {
             if scratch.scopes[index / 64] & (1_u64 << (index % 64)) == 0 {
-                reserve(edits, 1).ok()?;
-                edits.push((row.key(), None));
+                reserve(scope_edits, 1).ok()?;
+                scope_edits.push((row.key(), None));
+                let range = value_range(prev_values, (row.scope_kind, row.scope_id));
+                reserve(value_edits, range.len()).ok()?;
+                for value in &prev_values[range] {
+                    value_edits.push((value.key(), None));
+                }
                 work.scopes_removed += 1;
             }
         }
         Some(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "per-scope variable diff borrows previous values, interner, scratch and edit accumulators"
+    )]
     fn scope_edit(
         &self,
         scope: &cvariables::ScopeRow,
         previous: Option<&rows::ScriptVariablesRow>,
-        seen: &mut Vec<u64>,
+        prev_values: &[rows::ScriptVariableValueRow],
+        scratch: &mut ScriptVariableComparison,
         work: &mut VariableWork,
-        edits: &mut Edits,
+        scope_edits: &mut ScopeEdits,
+        value_edits: &mut ValueEdits,
     ) -> Option<()> {
         let started = std::time::Instant::now();
         let (entries, names) = (&self.variable_entries, &self.variable_names);
@@ -3407,32 +3647,126 @@ impl Captured {
         work.scopes_compared += 1;
         work.entries_compared += current.len() as u64;
         work.bytes_compared += (size_of_val(current) + bytes) as u64;
-        let matched = previous
-            .filter(|previous| previous.entries.len() == scope.entries_len)
-            .and_then(|previous| self.scope_matches(scope, previous, seen));
-        let mut build_ns = 0;
-        if matched != Some(true) {
+        let identity = scope_identity(scope.scope);
+        let (scope_kind, scope_id) = identity;
+        let mut scope_changed = false;
+        match previous {
+            None => {
+                work.scopes_added += 1;
+                scope_changed = true;
+            }
+            Some(prev) => {
+                if !prev.entries.is_empty() {
+                    return None;
+                }
+                let seed = prev.seed.require("ScriptVariables.seed").ok()?;
+                if *seed != scope.seed {
+                    work.rows_changed += 1;
+                    scope_changed = true;
+                }
+            }
+        }
+        let mut build_ns = 0_u64;
+        if scope_changed {
             let built = std::time::Instant::now();
-            let row = self.variable_row(scope);
+            let row = rows::ScriptVariablesRow {
+                scope_kind,
+                scope_id,
+                entries: Vec::new(),
+                seed: rows::Recorded::Value(scope.seed),
+            };
+            reserve(scope_edits, 1).ok()?;
+            scope_edits.push((row.key(), Some(row)));
             work.rows_built += 1;
-            if row
-                .entries
-                .windows(2)
-                .any(|pair| pair[0].name == pair[1].name)
-            {
+            build_ns = build_ns.saturating_add(elapsed_ns(built));
+        }
+        let old = if previous.is_some() {
+            &prev_values[value_range(prev_values, identity)]
+        } else {
+            &[]
+        };
+        let values_equal = previous.is_some()
+            && current.len() == old.len()
+            && self.scope_values_match(current, old, &scratch.interner, &mut scratch.entries)?;
+        if !values_equal {
+            let built = std::time::Instant::now();
+            scratch.next_values.clear();
+            let extra = current.len().saturating_sub(scratch.next_values.capacity());
+            reserve(&mut scratch.next_values, extra).ok()?;
+            for entry in current {
+                let name = &names.first[entry.name_start..entry.name_start + entry.name_len];
+                let var_id = scratch.interner.intern(name)?;
+                scratch.next_values.push((var_id, entry.value_raw));
+            }
+            scratch.next_values.sort_unstable_by_key(|&(id, _)| id);
+            if scratch.next_values.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return None;
             }
-            if previous != Some(&row) {
-                match (previous, matched) {
-                    (None, _) => work.scopes_added += 1,
-                    (Some(_), None) => work.entry_sets_changed += 1,
-                    (Some(_), Some(_)) => {}
+            let before = value_edits.len();
+            let (mut i, mut j) = (0_usize, 0_usize);
+            while i < old.len() && j < scratch.next_values.len() {
+                let old_row = &old[i];
+                let (new_id, new_val) = scratch.next_values[j];
+                match old_row.var_id.cmp(&new_id) {
+                    std::cmp::Ordering::Equal => {
+                        if old_row.value_raw != new_val {
+                            let row = rows::ScriptVariableValueRow {
+                                scope_kind,
+                                scope_id,
+                                var_id: new_id,
+                                value_raw: new_val,
+                            };
+                            reserve(value_edits, 1).ok()?;
+                            value_edits.push((row.key(), Some(row)));
+                        }
+                        i += 1;
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Less => {
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((old_row.key(), None));
+                        i += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        let row = rows::ScriptVariableValueRow {
+                            scope_kind,
+                            scope_id,
+                            var_id: new_id,
+                            value_raw: new_val,
+                        };
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((row.key(), Some(row)));
+                        j += 1;
+                    }
                 }
-                work.rows_changed += u64::from(previous.is_some());
-                reserve(edits, 1).ok()?;
-                edits.push((row.key(), Some(row)));
             }
-            build_ns = elapsed_ns(built);
+            while i < old.len() {
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((old[i].key(), None));
+                i += 1;
+            }
+            while j < scratch.next_values.len() {
+                let (new_id, new_val) = scratch.next_values[j];
+                let row = rows::ScriptVariableValueRow {
+                    scope_kind,
+                    scope_id,
+                    var_id: new_id,
+                    value_raw: new_val,
+                };
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((row.key(), Some(row)));
+                j += 1;
+            }
+            if !scope_changed {
+                work.rows_built += 1;
+            }
+            if value_edits.len() > before && previous.is_some() {
+                work.entry_sets_changed += 1;
+                if !scope_changed {
+                    work.rows_changed += 1;
+                }
+            }
+            build_ns = build_ns.saturating_add(elapsed_ns(built));
         }
         work.build_ns = work.build_ns.saturating_add(build_ns);
         work.compare_ns = work
@@ -3441,129 +3775,37 @@ impl Captured {
         Some(())
     }
 
-    fn complete_variables(
+    fn scope_values_match(
         &self,
-        outcome: Outcome,
-        reason: Complete,
-        work: &mut VariableWork,
-    ) -> TableInput {
-        work.path = Path::Complete(reason);
-        let started = std::time::Instant::now();
-        let input = match self.variables_table(outcome) {
-            TableView::Complete(rows) => TableInput::SharedComplete(Arc::new(rows)),
-            view => TableInput::Sampled(view),
-        };
-        work.build_ns = work.build_ns.saturating_add(elapsed_ns(started));
-        input
-    }
-
-    #[cfg(feature = "conversion_check")]
-    fn reference_variables(
-        &self,
-        outcome: Outcome,
-        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
-        scratch: &mut ScriptVariableComparison,
-    ) -> TableInput {
-        let Some((token, previous)) = baseline else {
-            return TableInput::Sampled(self.variables_table(outcome));
-        };
-        let mut changed = Vec::new();
-        let matches = self.compare_variables(outcome, previous, scratch, |index, ordinal| {
-            if reserve(&mut changed, 1).is_err() {
-                return false;
-            }
-            changed.push((index, ordinal));
-            true
-        });
-        if !matches {
-            return TableInput::Sampled(self.variables_table(outcome));
-        }
-        if changed.is_empty() {
-            return TableInput::ComparedEqual(token);
-        }
-        changed.sort_unstable_by_key(|&(index, _)| index);
-        TableInput::ComparedChanges {
-            token,
-            indices: changed.iter().map(|&(index, _)| index).collect(),
-            rows: TableRows::ScriptVariables(
-                changed
-                    .iter()
-                    .map(|&(_, ordinal)| self.variable_row(&self.variables.rows[ordinal]))
-                    .collect(),
-            ),
-        }
-    }
-
-    #[cfg(feature = "conversion_check")]
-    fn compare_variables(
-        &self,
-        outcome: Outcome,
-        previous: &[rows::ScriptVariablesRow],
-        scratch: &mut ScriptVariableComparison,
-        mut changed: impl FnMut(usize, usize) -> bool,
-    ) -> bool {
-        let Outcome::Rows { len } = outcome else {
-            return false;
-        };
-        if len != previous.len()
-            || !valid_variables(
-                outcome,
-                &self.variables.rows,
-                &self.variable_entries,
-                &self.variable_names,
-            )
-            || !sorted_scopes(previous)
-            || !clear_seen(&mut scratch.scopes, len)
-        {
-            return false;
-        }
-        for (ordinal, scope) in self.variables.rows[..len].iter().enumerate() {
-            let Some(index) = baseline_index(previous, ordinal, scope_identity(scope.scope)) else {
-                return false;
-            };
-            if !first_seen(&mut scratch.scopes, index) {
-                return false;
-            }
-            match self.scope_matches(scope, &previous[index], &mut scratch.entries) {
-                Some(true) => {}
-                Some(false) if changed(index, ordinal) => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-
-    fn scope_matches(
-        &self,
-        scope: &cvariables::ScopeRow,
-        previous: &rows::ScriptVariablesRow,
+        current: &[cvariables::Row],
+        old: &[rows::ScriptVariableValueRow],
+        interner: &VariableInterner,
         seen: &mut Vec<u64>,
     ) -> Option<bool> {
-        let seed = previous.seed.require("ScriptVariables.seed").ok()?;
-        let mut equal = *seed == scope.seed;
-        let old = &previous.entries;
-        if scope.entries_len != old.len() {
-            return None;
-        }
-        let current =
-            &self.variable_entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
         let mut diverged = None;
         for (index, (entry, prev)) in current.iter().zip(old.iter()).enumerate() {
-            if index > 0 && old[index - 1].name >= prev.name {
+            if index > 0 && old[index - 1].var_id >= prev.var_id {
                 return None;
             }
             let name =
                 &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
-            if prev.name.as_slice() != name {
+            let Some(&var_id) = interner.by_name.get(name) else {
+                return Some(false);
+            };
+            if prev.var_id != var_id {
                 diverged = Some(index);
                 break;
             }
-            equal &= entry.value_raw == prev.value_raw;
+            if entry.value_raw != prev.value_raw {
+                return Some(false);
+            }
         }
         let Some(from) = diverged else {
-            return Some(equal);
+            return Some(true);
         };
-        if old[from..].windows(2).any(|pair| pair[0].name >= pair[1].name)
+        if old[from..]
+            .windows(2)
+            .any(|pair| pair[0].var_id >= pair[1].var_id)
             || !clear_seen(seen, old.len())
         {
             return None;
@@ -3576,15 +3818,203 @@ impl Captured {
         for entry in &current[from..] {
             let name =
                 &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
-            let index = old
-                .binary_search_by(|row| row.name.as_slice().cmp(name))
-                .ok()?;
+            let Some(&var_id) = interner.by_name.get(name) else {
+                return Some(false);
+            };
+            let Ok(index) = old.binary_search_by_key(&var_id, |row| row.var_id) else {
+                return Some(false);
+            };
             if !first_seen(seen, index) {
-                return None;
+                return Some(false);
             }
-            equal &= entry.value_raw == old[index].value_raw;
+            if entry.value_raw != old[index].value_raw {
+                return Some(false);
+            }
         }
-        Some(equal)
+        Some(true)
+    }
+
+    fn complete_variables(
+        &self,
+        outcome: Outcome,
+        reason: Complete,
+        scratch: &mut ScriptVariableComparison,
+        work: &mut VariableWork,
+    ) -> [TableInput; 3] {
+        work.path = Path::Complete(reason);
+        let started = std::time::Instant::now();
+        let views = self.complete_variable_views_with(outcome, &mut scratch.interner);
+        let inputs = views.map(|view| match view {
+            TableView::Complete(rows) => TableInput::SharedComplete(Arc::new(rows)),
+            view => TableInput::Sampled(view),
+        });
+        work.build_ns = work.build_ns.saturating_add(elapsed_ns(started));
+        inputs
+    }
+
+    fn complete_variable_views(&self, outcome: Outcome) -> [TableView; 3] {
+        let mut fresh = VariableInterner::default();
+        self.complete_variable_views_with(outcome, &mut fresh)
+    }
+
+    fn complete_variable_views_with(
+        &self,
+        outcome: Outcome,
+        interner: &mut VariableInterner,
+    ) -> [TableView; 3] {
+        let all_unavailable = |reason: &'static str| {
+            [
+                unavailable(reason),
+                unavailable(reason),
+                unavailable(reason),
+            ]
+        };
+        if let Outcome::Unavailable { reason } = outcome {
+            return all_unavailable(reason);
+        }
+        if !valid_variables(
+            outcome,
+            &self.variables.rows,
+            &self.variable_entries,
+            &self.variable_names,
+        ) {
+            return all_unavailable("script variable entry or name lies outside captured arena");
+        }
+        if matches!(outcome, Outcome::Truncated { .. }) {
+            let view = self.variables_table(outcome);
+            return match view {
+                TableView::Unavailable { reason } => [
+                    TableView::Unavailable {
+                        reason: reason.clone(),
+                    },
+                    TableView::Unavailable {
+                        reason: reason.clone(),
+                    },
+                    TableView::Unavailable { reason },
+                ],
+                truncated => [
+                    truncated,
+                    unavailable("script variable names are not split from a truncated ScriptVariables read"),
+                    unavailable("script variable values are not split from a truncated ScriptVariables read"),
+                ],
+            };
+        }
+        let Outcome::Rows { len } = outcome else {
+            unreachable!()
+        };
+        let mut order: Vec<usize> = Vec::new();
+        if reserve_exact(&mut order, len).is_err() {
+            return all_unavailable("script variable allocation failed");
+        }
+        order.extend(0..len);
+        order.sort_unstable_by_key(|&i| scope_identity(self.variables.rows[i].scope));
+        if order
+            .windows(2)
+            .any(|p| scope_identity(self.variables.rows[p[0]].scope) == scope_identity(self.variables.rows[p[1]].scope))
+        {
+            return all_unavailable("duplicate script variable scope");
+        }
+        let total_entries: usize = order
+            .iter()
+            .map(|&i| self.variables.rows[i].entries_len)
+            .sum();
+        let mut added: Vec<&[u8]> = Vec::new();
+        let mut seen_new: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        for &i in &order {
+            let scope = &self.variables.rows[i];
+            let entries =
+                &self.variable_entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
+            for entry in entries {
+                let name =
+                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
+                if !interner.by_name.contains_key(name) && !seen_new.contains(name) {
+                    if reserve(&mut added, 1).is_err()
+                        || engine_allocation::reserve_set(&mut seen_new, 1).is_err()
+                    {
+                        return all_unavailable("script variable allocation failed");
+                    }
+                    seen_new.insert(name);
+                    added.push(name);
+                }
+            }
+        }
+        added.sort_unstable();
+        if u32::try_from(interner.names.len().saturating_add(added.len())).is_err() {
+            return all_unavailable("script variable name count exceeds its wire width");
+        }
+        for &name in &added {
+            if interner.intern(name).is_none() {
+                interner.rollback();
+                return all_unavailable("script variable allocation failed");
+            }
+        }
+        let mut name_rows = Vec::new();
+        if reserve_exact(&mut name_rows, interner.names.len()).is_err() {
+            interner.rollback();
+            return all_unavailable("script variable allocation failed");
+        }
+        for (index, name) in interner.names.iter().enumerate() {
+            let Ok(copied) = copy_vec(name) else {
+                interner.rollback();
+                return all_unavailable("script variable allocation failed");
+            };
+            name_rows.push(rows::ScriptVariableNameRow {
+                id: index as u32,
+                name: copied,
+            });
+        }
+        let mut scope_rows = Vec::new();
+        let mut value_rows = Vec::new();
+        if reserve_exact(&mut scope_rows, len).is_err()
+            || reserve_exact(&mut value_rows, total_entries).is_err()
+        {
+            interner.rollback();
+            return all_unavailable("script variable allocation failed");
+        }
+        let mut scope_vals: Vec<(u32, i64)> = Vec::new();
+        for &i in &order {
+            let scope = &self.variables.rows[i];
+            let (scope_kind, scope_id) = scope_identity(scope.scope);
+            scope_rows.push(rows::ScriptVariablesRow {
+                scope_kind,
+                scope_id,
+                entries: Vec::new(),
+                seed: rows::Recorded::Value(scope.seed),
+            });
+            scope_vals.clear();
+            let extra = scope.entries_len.saturating_sub(scope_vals.capacity());
+            if reserve(&mut scope_vals, extra).is_err() {
+                interner.rollback();
+                return all_unavailable("script variable allocation failed");
+            }
+            let entries =
+                &self.variable_entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
+            for entry in entries {
+                let name =
+                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
+                let var_id = interner.by_name[name];
+                scope_vals.push((var_id, entry.value_raw));
+            }
+            scope_vals.sort_unstable_by_key(|&(id, _)| id);
+            if scope_vals.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                interner.rollback();
+                return all_unavailable("duplicate literal script variable key");
+            }
+            for &(var_id, value_raw) in &scope_vals {
+                value_rows.push(rows::ScriptVariableValueRow {
+                    scope_kind,
+                    scope_id,
+                    var_id,
+                    value_raw,
+                });
+            }
+        }
+        interner.commit();
+        [
+            TableView::Complete(TableRows::ScriptVariables(scope_rows)),
+            TableView::Complete(TableRows::ScriptVariableNames(name_rows)),
+            TableView::Complete(TableRows::ScriptVariableValues(value_rows)),
+        ]
     }
 
     pub fn observe_seeds(&self, work: &mut SeedWork) {
@@ -4118,7 +4548,7 @@ impl Captured {
             entries: std::mem::replace(&mut self.variable_entries, Arena::new(0)),
             names: std::mem::replace(&mut self.variable_names, Arena::new(0)),
             delta: std::mem::take(&mut self.variable_delta),
-            left_out: self.left_out[8],
+            left_out: self.left_out[8] && self.left_out[26] && self.left_out[27],
         }
     }
 
@@ -5768,8 +6198,11 @@ mod tests {
                     ));
                 });
             }
-            let inputs =
-                captured.table_inputs(None, &mut ScriptVariableComparison::default(), None);
+            let inputs = captured.table_inputs(
+                VariableBaselines::default(),
+                &mut ScriptVariableComparison::default(),
+                None,
+            );
             let mut tables = std::array::from_fn::<_, TABLE_COUNT, _>(|_| {
                 TableInput::Sampled(TableView::Unavailable {
                     reason: "outside intel regression".into(),
@@ -5882,7 +6315,11 @@ mod tests {
                 quiet
             );
         });
-        let inputs = captured.table_inputs(None, &mut ScriptVariableComparison::default(), None);
+        let inputs = captured.table_inputs(
+            VariableBaselines::default(),
+            &mut ScriptVariableComparison::default(),
+            None,
+        );
         let TableInput::SharedComplete(rows) = &inputs[24] else {
             panic!("lost unadmitted baseline")
         };
@@ -6207,7 +6644,7 @@ mod tests {
         branch: BranchId,
     ) -> [TableInput; N] {
         capture.table_inputs(
-            None,
+            VariableBaselines::default(),
             &mut ScriptVariableComparison::default(),
             Some(&mut IntelConversion::new(branch, 0, shadow)),
         )
@@ -6443,7 +6880,7 @@ mod tests {
     fn a_witnessed_flags_hour_republishes_without_comparing_and_any_other_hour_compares() {
         let inputs = |capture: &Captured, shadow: &mut IntelShadow, hour| {
             capture.table_inputs(
-                None,
+                VariableBaselines::default(),
                 &mut ScriptVariableComparison::default(),
                 Some(&mut IntelConversion::new(1, hour, shadow)),
             )
@@ -7486,7 +7923,12 @@ mod tests {
         );
     }
 
-    fn variable_comparison_fixture() -> (Captured, Vec<rows::ScriptVariablesRow>) {
+    fn variable_comparison_fixture() -> (
+        Captured,
+        Vec<rows::ScriptVariablesRow>,
+        Vec<rows::ScriptVariableNameRow>,
+        Vec<rows::ScriptVariableValueRow>,
+    ) {
         let (_, mut capture) = small();
         capture.variables.outcome = Outcome::Rows { len: 3 };
         capture.variables.rows[..3].copy_from_slice(&[
@@ -7536,19 +7978,27 @@ mod tests {
         capture.variable_names.first[..5].copy_from_slice(&[0xff, 0, b'a', b'A', 0]);
         capture.variable_names.len = 5;
         capture.variable_names.required = 5;
-        let converted = capture.variables_table(capture.outcomes()[8]);
-        let previous = complete::<tables::ScriptVariables>(&converted).to_vec();
-        (capture, previous)
+        let [scopes_v, names_v, values_v] = capture.complete_variable_views(capture.outcomes()[8]);
+        let scopes = complete::<tables::ScriptVariables>(&scopes_v).to_vec();
+        let names = complete::<tables::ScriptVariableNames>(&names_v).to_vec();
+        let values = complete::<tables::ScriptVariableValues>(&values_v).to_vec();
+        (capture, scopes, names, values)
     }
 
     fn variable_baseline(
-        previous: Vec<rows::ScriptVariablesRow>,
+        scopes: Vec<rows::ScriptVariablesRow>,
+        names: Vec<rows::ScriptVariableNameRow>,
+        values: Vec<rows::ScriptVariableValueRow>,
     ) -> replay_frame::frame::FrameEncoder {
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut tables: [TableInput; replay_data::rows::TABLE_COUNT] =
             std::array::from_fn(|_| unavailable("fixture table not acquired").into());
         tables[TableId::ScriptVariables.index()] =
-            TableInput::SharedComplete(Arc::new(rows::TableRows::ScriptVariables(previous)));
+            TableInput::SharedComplete(Arc::new(rows::TableRows::ScriptVariables(scopes)));
+        tables[TableId::ScriptVariableNames.index()] =
+            TableInput::SharedComplete(Arc::new(rows::TableRows::ScriptVariableNames(names)));
+        tables[TableId::ScriptVariableValues.index()] =
+            TableInput::SharedComplete(Arc::new(rows::TableRows::ScriptVariableValues(values)));
         encoder
             .encode_input(
                 replay_frame::frame::FrameInput {
@@ -7563,26 +8013,42 @@ mod tests {
         encoder
     }
 
+    fn variable_baselines(
+        encoder: &replay_frame::frame::FrameEncoder,
+        hour: i32,
+        force: bool,
+    ) -> VariableBaselines<'_> {
+        VariableBaselines {
+            scopes: encoder.comparison_baseline::<tables::ScriptVariables>(1, hour, force),
+            names: encoder.comparison_baseline::<tables::ScriptVariableNames>(1, hour, force),
+            values: encoder.comparison_baseline::<tables::ScriptVariableValues>(1, hour, force),
+        }
+    }
+
     #[test]
     fn variable_precomparison_handles_hash_order_empty_scopes_and_literal_bytes_without_row_leases()
     {
-        let (mut capture, previous) = variable_comparison_fixture();
-        let encoder = variable_baseline(previous.clone());
+        let (mut capture, prev_scopes, prev_names, prev_values) = variable_comparison_fixture();
+        let encoder = variable_baseline(prev_scopes.clone(), prev_names.clone(), prev_values.clone());
         let mut scratch = ScriptVariableComparison::default();
         let bytes = capture.allocated_bytes();
-        assert!(capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
+        assert!(capture.variables_equal(
+            capture.outcomes()[8],
+            &prev_scopes,
+            &prev_names,
+            &prev_values,
+            &mut scratch,
+        ));
         let capacities = (scratch.scopes.capacity(), scratch.entries.capacity());
         capture.variable_names.first[6..8].copy_from_slice(&[0xff, 0]);
         capture.variable_entries.first[0].name_start = 6;
         capture.variable_names.len = 8;
         capture.variable_names.required = 8;
         capture.variables.rows.swap(0, 2);
-        let views = capture.table_inputs(
-            encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
-            &mut scratch,
-            None,
-        );
+        let views = capture.table_inputs(variable_baselines(&encoder, 1, false), &mut scratch, None);
         assert!(matches!(views[8], TableInput::ComparedEqual(_)));
+        assert!(matches!(views[26], TableInput::ComparedEqual(_)));
+        assert!(matches!(views[27], TableInput::ComparedEqual(_)));
         assert_eq!(
             capacities,
             (scratch.scopes.capacity(), scratch.entries.capacity())
@@ -7591,15 +8057,21 @@ mod tests {
         capture.variables.outcome = Outcome::Rows { len: 0 };
         capture.variable_entries.len = 0;
         capture.variable_names.len = 0;
-        assert!(capture.variables_equal(capture.outcomes()[8], &[], &mut scratch));
-        assert!(!capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
+        assert!(capture.variables_equal(capture.outcomes()[8], &[], &[], &[], &mut scratch));
+        assert!(!capture.variables_equal(
+            capture.outcomes()[8],
+            &prev_scopes,
+            &prev_names,
+            &prev_values,
+            &mut scratch,
+        ));
     }
 
     #[test]
     fn variable_precomparison_preserves_changed_values_names_and_scope_identity() {
         for change in 0..5 {
-            let (mut capture, previous) = variable_comparison_fixture();
-            let encoder = variable_baseline(previous);
+            let (mut capture, prev_scopes, prev_names, prev_values) = variable_comparison_fixture();
+            let encoder = variable_baseline(prev_scopes, prev_names, prev_values);
             match change {
                 0 => capture.variable_entries.first[0].value_raw += 1,
                 1 => capture.variable_names.first[2] = b'A',
@@ -7608,40 +8080,81 @@ mod tests {
                 _ => capture.variables.rows[0].seed = Some(u32::MAX),
             }
             let views = capture.table_inputs(
-                encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
+                variable_baselines(&encoder, 1, false),
                 &mut ScriptVariableComparison::default(),
                 None,
             );
-            let TableInput::SliceUpdate { update, .. } = &views[8] else {
-                panic!("change {change}: {:?}", views[8]);
-            };
-            assert_eq!(
-                update.keys.len(),
-                if change == 2 { 2 } else { 1 },
-                "change {change}"
-            );
+            match change {
+                0 => {
+                    assert!(matches!(views[8], TableInput::ComparedEqual(_)));
+                    assert!(matches!(views[26], TableInput::ComparedEqual(_)));
+                    let TableInput::SliceUpdate { update, .. } = &views[27] else {
+                        panic!("change 0: {:?}", views[27]);
+                    };
+                    assert_eq!(update.keys.len(), 1);
+                }
+                1 | 3 => {
+                    assert!(matches!(views[8], TableInput::ComparedEqual(_)));
+                    let TableInput::SliceUpdate { update, .. } = &views[27] else {
+                        panic!("change {change}: {:?}", views[27]);
+                    };
+                    assert_eq!(update.keys.len(), 2);
+                }
+                2 => {
+                    let TableInput::SliceUpdate { update, .. } = &views[8] else {
+                        panic!("change 2: {:?}", views[8]);
+                    };
+                    assert_eq!(update.keys.len(), 2);
+                    let TableInput::SliceUpdate { update, .. } = &views[27] else {
+                        panic!("change 2 values: {:?}", views[27]);
+                    };
+                    assert_eq!(update.keys.len(), 2);
+                }
+                _ => {
+                    let TableInput::SliceUpdate { update, .. } = &views[8] else {
+                        panic!("change 4: {:?}", views[8]);
+                    };
+                    assert_eq!(update.keys.len(), 1);
+                    assert!(matches!(views[26], TableInput::ComparedEqual(_)));
+                    assert!(matches!(views[27], TableInput::ComparedEqual(_)));
+                }
+            }
         }
     }
 
     #[test]
     fn variable_precomparison_distinguishes_unrecorded_seed_from_captured_absence() {
-        let (mut capture, _) = variable_comparison_fixture();
+        let (mut capture, _, _, _) = variable_comparison_fixture();
         capture.variables.rows[0].seed = None;
-        let view = capture.variables_table(capture.outcomes()[8]);
-        let mut previous = complete::<tables::ScriptVariables>(&view).to_vec();
+        let [scopes_v, names_v, values_v] = capture.complete_variable_views(capture.outcomes()[8]);
+        let mut previous = complete::<tables::ScriptVariables>(&scopes_v).to_vec();
+        let prev_names = complete::<tables::ScriptVariableNames>(&names_v).to_vec();
+        let prev_values = complete::<tables::ScriptVariableValues>(&values_v).to_vec();
         let index = previous
             .iter()
             .position(|row| (row.scope_kind, row.scope_id) == (STATE_SCOPE, 4))
             .unwrap();
         assert_eq!(previous[index].seed, rows::Recorded::Value(None));
         let mut scratch = ScriptVariableComparison::default();
-        assert!(capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
+        assert!(capture.variables_equal(
+            capture.outcomes()[8],
+            &previous,
+            &prev_names,
+            &prev_values,
+            &mut scratch,
+        ));
         previous[index].seed = rows::Recorded::NotRecorded;
         assert_eq!(
             previous[index].seed.require("ScriptVariables.seed"),
             Err("ScriptVariables.seed not recorded".into())
         );
-        assert!(!capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
+        assert!(!capture.variables_equal(
+            capture.outcomes()[8],
+            &previous,
+            &prev_names,
+            &prev_values,
+            &mut scratch,
+        ));
     }
 
     #[test]
@@ -7669,8 +8182,10 @@ mod tests {
                 seed: Some(u32::MAX - index as u32),
             };
         }
-        let view = capture.variables_table(capture.outcomes()[8]);
-        let previous = complete::<tables::ScriptVariables>(&view);
+        let [scopes_v, names_v, values_v] = capture.complete_variable_views(capture.outcomes()[8]);
+        let previous = complete::<tables::ScriptVariables>(&scopes_v);
+        let prev_names = complete::<tables::ScriptVariableNames>(&names_v);
+        let prev_values = complete::<tables::ScriptVariableValues>(&values_v);
         assert_eq!(previous.len(), count);
         assert_eq!(previous[0].seed, rows::Recorded::Value(Some(u32::MAX)));
         assert_eq!(
@@ -7678,10 +8193,22 @@ mod tests {
             rows::Recorded::Value(Some(u32::MAX - COUNTRIES as u32))
         );
         let mut scratch = ScriptVariableComparison::default();
-        assert!(capture.variables_equal(capture.outcomes()[8], previous, &mut scratch));
+        assert!(capture.variables_equal(
+            capture.outcomes()[8],
+            previous,
+            prev_names,
+            prev_values,
+            &mut scratch,
+        ));
         capture.variables.rows[COUNTRIES].seed = Some(0);
-        assert!(!capture.variables_equal(capture.outcomes()[8], previous, &mut scratch));
-        let changed = capture.variables_table(capture.outcomes()[8]);
+        assert!(!capture.variables_equal(
+            capture.outcomes()[8],
+            previous,
+            prev_names,
+            prev_values,
+            &mut scratch,
+        ));
+        let [changed, _, _] = capture.complete_variable_views(capture.outcomes()[8]);
         assert_eq!(
             complete::<tables::ScriptVariables>(&changed)[COUNTRIES].seed,
             rows::Recorded::Value(Some(0))
@@ -7695,8 +8222,14 @@ mod tests {
             status["refusals"]["script variable random seed unreadable"],
             1
         );
-        assert!(!capture.variables_equal(capture.outcomes()[8], previous, &mut scratch));
-        let unknown = capture.variables_table(capture.outcomes()[8]);
+        assert!(!capture.variables_equal(
+            capture.outcomes()[8],
+            previous,
+            prev_names,
+            prev_values,
+            &mut scratch,
+        ));
+        let [unknown, _, _] = capture.complete_variable_views(capture.outcomes()[8]);
         assert_eq!(
             complete::<tables::ScriptVariables>(&unknown)[COUNTRIES].seed,
             rows::Recorded::Value(None)
@@ -7705,7 +8238,7 @@ mod tests {
 
     #[test]
     fn variable_precomparison_scope_hint_accepts_ordered_and_reordered_country_and_state_ids() {
-        let (mut capture, _) = variable_comparison_fixture();
+        let (mut capture, _, _, _) = variable_comparison_fixture();
         capture.variables.rows.extend_from_slice(&[
             cvariables::ScopeRow {
                 scope: cvariables::Scope::Country(2),
@@ -7726,9 +8259,11 @@ mod tests {
             .rows
             .sort_unstable_by_key(|row| scope_identity(row.scope));
         let ordered = capture.variables.rows.clone();
-        let converted = capture.variables_table(capture.outcomes()[8]);
-        let previous = complete::<tables::ScriptVariables>(&converted).to_vec();
-        let encoder = variable_baseline(previous.clone());
+        let [scopes_v, names_v, values_v] = capture.complete_variable_views(capture.outcomes()[8]);
+        let previous = complete::<tables::ScriptVariables>(&scopes_v).to_vec();
+        let prev_names = complete::<tables::ScriptVariableNames>(&names_v).to_vec();
+        let prev_values = complete::<tables::ScriptVariableValues>(&values_v).to_vec();
+        let encoder = variable_baseline(previous.clone(), prev_names, prev_values);
         let mut scratch = ScriptVariableComparison::default();
         for order in [
             [0, 1, 2, 3, 4],
@@ -7739,16 +8274,15 @@ mod tests {
             for (row, index) in capture.variables.rows.iter_mut().zip(order) {
                 *row = ordered[index];
             }
-            let views = capture.table_inputs(
-                encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
-                &mut scratch,
-                None,
-            );
+            let views =
+                capture.table_inputs(variable_baselines(&encoder, 1, false), &mut scratch, None);
             assert!(
-                matches!(views[8], TableInput::ComparedEqual(_)),
+                matches!(views[8], TableInput::ComparedEqual(_))
+                    && matches!(views[26], TableInput::ComparedEqual(_))
+                    && matches!(views[27], TableInput::ComparedEqual(_)),
                 "scope order {order:?}"
             );
-            let converted = capture.variables_table(capture.outcomes()[8]);
+            let [converted, _, _] = capture.complete_variable_views(capture.outcomes()[8]);
             assert_eq!(
                 complete::<tables::ScriptVariables>(&converted),
                 previous.as_slice(),
@@ -7760,20 +8294,28 @@ mod tests {
     #[test]
     fn variable_precomparison_rejects_duplicate_names_and_scopes_instead_of_hiding_missing_keys() {
         for duplicate_scope in [false, true] {
-            let (mut capture, previous) = variable_comparison_fixture();
-            let encoder = variable_baseline(previous);
+            let (mut capture, prev_scopes, prev_names, prev_values) = variable_comparison_fixture();
+            let encoder = variable_baseline(prev_scopes, prev_names, prev_values);
             if duplicate_scope {
                 capture.variables.rows[0] = capture.variables.rows[1];
             } else {
                 capture.variable_entries.first[1] = capture.variable_entries.first[0];
             }
             let views = capture.table_inputs(
-                encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
+                variable_baselines(&encoder, 1, false),
                 &mut ScriptVariableComparison::default(),
                 None,
             );
             assert!(matches!(
                 views[8],
+                TableInput::Sampled(TableView::Unavailable { .. })
+            ));
+            assert!(matches!(
+                views[26],
+                TableInput::Sampled(TableView::Unavailable { .. })
+            ));
+            assert!(matches!(
+                views[27],
                 TableInput::Sampled(TableView::Unavailable { .. })
             ));
         }
@@ -7782,8 +8324,8 @@ mod tests {
     #[test]
     fn variable_precomparison_arena_faults_retain_unavailable_verdicts() {
         for fault in 0..8 {
-            let (mut capture, previous) = variable_comparison_fixture();
-            let encoder = variable_baseline(previous);
+            let (mut capture, prev_scopes, prev_names, prev_values) = variable_comparison_fixture();
+            let encoder = variable_baseline(prev_scopes, prev_names, prev_values);
             match fault {
                 0 => capture.variables.rows[0].entries_start = usize::MAX,
                 1 => capture.variable_entries.len = capture.variable_entries.first.len() + 1,
@@ -7795,12 +8337,14 @@ mod tests {
                 _ => capture.variables.outcome = Outcome::Rows { len: 4 },
             }
             let views = capture.table_inputs(
-                encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
+                variable_baselines(&encoder, 1, false),
                 &mut ScriptVariableComparison::default(),
                 None,
             );
             assert!(
-                matches!(views[8], TableInput::Sampled(TableView::Unavailable { .. })),
+                matches!(views[8], TableInput::Sampled(TableView::Unavailable { .. }))
+                    && matches!(views[26], TableInput::Sampled(TableView::Unavailable { .. }))
+                    && matches!(views[27], TableInput::Sampled(TableView::Unavailable { .. })),
                 "fault {fault}"
             );
         }
@@ -7809,8 +8353,8 @@ mod tests {
     #[test]
     fn variable_precomparison_noncomplete_sources_never_reuse() {
         for fault in 0..2 {
-            let (mut capture, previous) = variable_comparison_fixture();
-            let encoder = variable_baseline(previous);
+            let (mut capture, prev_scopes, prev_names, prev_values) = variable_comparison_fixture();
+            let encoder = variable_baseline(prev_scopes, prev_names, prev_values);
             match fault {
                 0 => {
                     capture.variables.outcome = Outcome::Truncated {
@@ -7826,7 +8370,7 @@ mod tests {
                 _ => unreachable!(),
             }
             let views = capture.table_inputs(
-                encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
+                variable_baselines(&encoder, 1, false),
                 &mut ScriptVariableComparison::default(),
                 None,
             );
@@ -7834,6 +8378,14 @@ mod tests {
                 assert!(matches!(
                     views[8],
                     TableInput::Sampled(TableView::Truncated { .. })
+                ));
+                assert!(matches!(
+                    views[26],
+                    TableInput::Sampled(TableView::Unavailable { .. })
+                ));
+                assert!(matches!(
+                    views[27],
+                    TableInput::Sampled(TableView::Unavailable { .. })
                 ));
             } else {
                 assert!(matches!(

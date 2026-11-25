@@ -6,8 +6,8 @@ use dashboard_base::products::Product;
 use dashboard_query::{Query, identity::Holder};
 use engine_fuel::fuel_demand::daily_required;
 use replay_data::rows::{
-    CountryFuelRow, FuelDemandFleet, FuelDemandGroup, FuelDemandPartRow, FuelDemandRead, FuelDemandUnit, FuelDemandWing, Recorded,
-    TableId, assemble_demand_parts, tables,
+    CountryFuelRow, FuelAwardRecipientRow, FuelDemandFleet, FuelDemandGroup, FuelDemandPartRow, FuelDemandRead, FuelDemandUnit, FuelDemandWing, Recorded,
+    TableId, assemble_award_recipients, assemble_demand_parts, tables,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -46,6 +46,13 @@ pub(crate) struct Reads {
 }
 
 const PARTS_UNAVAILABLE: &str = "fuel demand parts are not recorded at this read";
+const RECIPIENTS_UNAVAILABLE: &str = "fuel award recipients are not recorded at this read";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Detail {
+    DemandParts,
+    AwardRecipients,
+}
 
 fn typed<T: replay_data::rows::TableSchema>(view: &replay_columnar::store::TableView<'_>, key: u128, slot: u32, format: u16) -> io::Result<Option<T::Row>>
 where
@@ -55,7 +62,7 @@ where
     Ok(rows.rows::<T>().and_then(|rows| rows.first().cloned()))
 }
 
-pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, parts: Option<()>, cancelled: &AtomicBool) -> io::Result<Reads> {
+pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, detail: Detail, cancelled: &AtomicBool) -> io::Result<Reads> {
     let recording = query.replay.recording();
     let key = u128::from(id);
     let mut out = Reads { reads: Vec::new(), warnings: Vec::new() };
@@ -67,15 +74,11 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
         }
         let mut hours: Vec<i32> = Vec::new();
         let stored = recording.run(run)?;
-        let written = [replay_data::rows::column::<CountryFuelRow>("award_day"), replay_data::rows::column::<CountryFuelRow>("demand")];
-        let cells = replay_lanes::lanes::history(recording, run, TableId::CountryFuel, &written, replay_lanes::lanes::Keys::These(&[key]), from, to)?;
-        for (_, steps) in &cells.keys {
-            for cells in steps.iter().filter_map(|step| step.cells.as_ref()) {
-                hours.extend(cells.iter().filter_map(|cell| match cell {
-                    replay_lanes::lanes::Cell::Written(hour) => Some(*hour),
-                    _ => None,
-                }));
-            }
+        for (start, end) in replay_lanes::lanes::reads(recording, run, TableId::CountryFuel, from, to)? {
+            hours.extend(start..=end);
+        }
+        if from <= to && stored.ordinal(from).is_some() && hours.first() != Some(&from) {
+            hours.insert(0, from);
         }
         hours.retain(|&hour| hour <= to && stored.ordinal(hour).is_some());
         hours.sort_unstable();
@@ -93,9 +96,20 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
             }
             Ok(())
         })?;
+        if rows.is_empty() {
+            continue;
+        }
+        let last_read = |start: i32| replay_lanes::lanes::reads(recording, run, TableId::CountryFuel, start, from).map(|reads| reads.last().map(|&(_, last)| last));
+        let read = match hours[0] == from {
+            true => match last_read(from.saturating_sub(super::DAY_HOURS).max(stored.first_hour))? {
+                Some(read) => Some(read),
+                None => last_read(stored.first_hour)?,
+            },
+            false => None,
+        };
         let mut held: BTreeMap<i32, Vec<FuelDemandPartRow>> = BTreeMap::new();
         let mut unavailable = BTreeSet::new();
-        if parts.is_some() {
+        if detail == Detail::DemandParts {
             let (low, high) = (key << 83, (key << 83) | ((1u128 << 83) - 1));
             let position = replay_data::rows::column::<FuelDemandPartRow>("position");
             let lives = replay_lanes::lanes::history(recording, run, TableId::FuelDemandParts, &[position], replay_lanes::lanes::Keys::Range(low, high), hours[0], to.min(last))?;
@@ -123,15 +137,59 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
                 }
                 Ok(())
             })?;
+        } else if detail == Detail::AwardRecipients && recording.predates(TableId::FuelAwardRecipients.index()).is_none() {
+            let (low, high) = (key << 83, (key << 83) | ((1u128 << 83) - 1));
+            let position = replay_data::rows::column::<FuelAwardRecipientRow>("position");
+            let lives = replay_lanes::lanes::history(recording, run, TableId::FuelAwardRecipients, &[position], replay_lanes::lanes::Keys::Range(low, high), hours[0], to.min(last))?;
+            let mut award_held: BTreeMap<i32, Vec<FuelAwardRecipientRow>> = BTreeMap::new();
+            let mut award_unavailable = BTreeSet::new();
+            let mut asks: Vec<(i32, u128)> = Vec::new();
+            for &hour in rows.keys() {
+                let complete = lives
+                    .statuses
+                    .iter()
+                    .find(|run| run.first <= hour && hour <= run.last)
+                    .is_some_and(|run| run.status == replay_columnar::manifest::Status::Complete);
+                if !complete {
+                    award_unavailable.insert(hour);
+                    continue;
+                }
+                for (part, steps) in &lives.keys {
+                    let at = steps.partition_point(|step| step.hour <= hour);
+                    if at > 0 && steps[at - 1].cells.is_some() {
+                        asks.push((hour, *part));
+                    }
+                }
+                award_held.insert(hour, Vec::new());
+            }
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            replay_lanes::lanes::at_each(recording, run, TableId::FuelAwardRecipients, None, &asks, &mut |hour, key, row| {
+                match row {
+                    Some((view, slot)) => {
+                        if let Some(part) = typed::<tables::FuelAwardRecipients>(&view, key, slot, recording.format())? {
+                            award_held.entry(hour).or_default().push(part);
+                        }
+                    }
+                    None => {
+                        award_unavailable.insert(hour);
+                    }
+                }
+                Ok(())
+            })?;
+            for (&written, row) in &mut rows {
+                let read_hour = if written == from {
+                    read.or_else(|| super::read_hour(row, None)).filter(|&hour| hour <= from).unwrap_or(written)
+                } else {
+                    written
+                };
+                let recipients = if award_unavailable.contains(&written) {
+                    Err(RECIPIENTS_UNAVAILABLE)
+                } else {
+                    Ok(award_held.get(&written).map_or(&[][..], Vec::as_slice))
+                };
+                assemble_award_recipients(std::slice::from_mut(row), recipients, read_hour);
+            }
         }
-        let last_read = |start: i32| replay_lanes::lanes::reads(recording, run, TableId::CountryFuel, start, from).map(|reads| reads.last().map(|&(_, last)| last));
-        let read = match hours[0] == from {
-            true => match last_read(from.saturating_sub(super::DAY_HOURS).max(stored.first_hour))? {
-                Some(read) => Some(read),
-                None => last_read(stored.first_hour)?,
-            },
-            false => None,
-        };
         let cut = query.timeline.at(from).is_some_and(|whole| whole.first < from);
         let walk = Walk { from, to, last, cut, read };
         stretch_reads(&walk, &hours, &mut rows, &mut held, &unavailable, &mut out.reads);
@@ -799,7 +857,7 @@ impl Product for CountryFuelDemandHistory {
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let id = holder_id(&query, &params.country, params.hour)?;
         let (first, last) = window_span(params.window)?;
-        let reads = country_reads(&query, id, first, last, Some(()), cancelled)?;
+        let reads = country_reads(&query, id, first, last, Detail::DemandParts, cancelled)?;
         let parts = demand_runs(&reads.reads, &keys, first, last).into_iter().zip(&params.keys).map(|(runs, key)| FuelDemandHistoryPart { key: key.clone(), runs }).collect();
         let reply = FuelDemandHistoryReply { tag: query.holders.name(&params.country, params.hour), country: id, window: params.window, first_hour: first, last_hour: last, parts, warnings: reads.warnings };
         dashboard_base::products::check_reply_budget(&reply)?;

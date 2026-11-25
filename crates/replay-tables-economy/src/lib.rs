@@ -69,6 +69,7 @@ replay_rows::row_ops! {
     DivisionEquipmentDeletions => DivisionEquipmentDeletionRow,
     RocketProductionOutput => RocketProductionOutputRow,
     FuelDemandParts => FuelDemandPartRow,
+    FuelAwardRecipients => FuelAwardRecipientRow,
     VariantChanges => VariantChangeRow,
     DesignCountryModifiers => DesignCountryModifierRow,
     DesignCountryTemplates => DesignCountryTemplatesRow,

@@ -51,6 +51,8 @@ pub mod ops {
         Autonomy => AutonomyRow,
         ScriptFlags => ScriptFlagRow,
         ScriptVariables => ScriptVariablesRow,
+        ScriptVariableNames => ScriptVariableNameRow,
+        ScriptVariableValues => ScriptVariableValueRow,
         PeaceConferences => PeaceConferenceRow,
         LexicalTokens => LexicalTokenRow,
         WorldTension => WorldTensionRow,

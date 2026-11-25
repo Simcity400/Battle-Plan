@@ -386,11 +386,12 @@ impl Ledger {
                             currency: event.currency,
                             operation: event.operation,
                             balance_before_raw: event.before,
-                            balance_after_raw: event.after,
+                            balance_after_raw: RetiredI64(0),
                             requested_delta_raw: event.requested,
                             cause: event.cause,
                             site: event.site,
                             identity,
+                            realized_delta_raw: Recorded::Value(event.after.wrapping_sub(event.before)),
                         });
                         if let Some(requested) = event.requested
                             && matches!(
@@ -419,11 +420,12 @@ impl Ledger {
                                     currency: event.currency,
                                     operation: PowerOperation::Clamp,
                                     balance_before_raw: event.after,
-                                    balance_after_raw: event.after,
+                                    balance_after_raw: RetiredI64(0),
                                     requested_delta_raw: Some(amount),
                                     cause: PowerCause::CapCorrection,
                                     site: event.site,
                                     identity: PowerIdentity::default(),
+                                    realized_delta_raw: Recorded::Value(0),
                                 });
                                 correction -= i128::from(amount);
                                 ordinal += 1;
@@ -1167,7 +1169,7 @@ mod tests {
         };
         assert_eq!(events.len(), 1);
         assert_eq!(
-            events[0].balance_after_raw - events[0].balance_before_raw,
+            events[0].balance_after() - events[0].balance_before_raw,
             -30
         );
         assert_eq!(events[0].operation, PowerOperation::Reset);

@@ -25,7 +25,7 @@ fn fuel(country: u32, award: Option<FuelAwardDay>) -> CountryFuelRow {
 fn award(hour: i32) -> FuelAwardDay {
     FuelAwardDay {
         continuity_start_hour: Some(0),
-        last_hour: hour,
+        last_hour: replay_data::rows::FuelAwardDayHour::Stamped(hour),
         gains_raw: [100, 200, 300, 100],
         own_gain_raw: 700,
         own_gain_quantity_raw: 900,

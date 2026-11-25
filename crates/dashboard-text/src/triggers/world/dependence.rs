@@ -126,6 +126,27 @@ fn store(store: Store, field: &str) -> Vec<TableRead> {
     }
 }
 
+fn variable_store(store: Store) -> Vec<TableRead> {
+    let mut reads = self::store(store, "entries");
+    if matches!(
+        store,
+        Store::Project { .. } | Store::IndustrialOrganisation(_)
+    ) {
+        return reads;
+    }
+    reads.push(TableRead::fields(TableId::ScriptVariableNames, &["name"]));
+    let values = TableRead::fields(TableId::ScriptVariableValues, &["value_raw"]);
+    let scoped = match store {
+        Store::Global => prefixed(values, 0, 32),
+        Store::Country(slot) => prefixed(values, 1, 64).of_country(slot, 32),
+        Store::State(id) => prefixed(values, (2_u128 << 32) | u128::from(id), 32),
+        Store::Character(id) => prefixed(values, (3_u128 << 32) | u128::from(id), 32),
+        Store::Project { .. } | Store::IndustrialOrganisation(_) => unreachable!(),
+    };
+    reads.push(scoped);
+    reads
+}
+
 fn party_leaders(slot: u32) -> Vec<TableRead> {
     vec![
         TableRead::fields(TableId::PoliticalParties, &["is_ruling"]).owned_by(slot, 32),
@@ -365,7 +386,7 @@ impl Query {
                 ]
                 .concat(),
             },
-            Query::Variable(scope, _) => store(*scope, "entries"),
+            Query::Variable(scope, _) => variable_store(*scope),
             Query::VariableSeed(scope) => store(*scope, "seed"),
             Query::StateOfValue(_) => vec![TableRead::keys(T::States)],
             &Query::Character(id) => vec![TableRead::all(T::Characters).row(id.into())],
