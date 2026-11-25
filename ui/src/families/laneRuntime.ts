@@ -12,7 +12,7 @@ import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
-import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
 import { SceneTiles, type TiledSources } from './sceneTiles.ts';
 import type { PagedRows, RowWindow } from './table/rowSource.ts';
 
@@ -174,7 +174,7 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   artKey: string;
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
-  kept: Map<string, { readonly text: string; readonly field: Field }>;
+  kept: Map<string, Field>;
   frameKey: readonly unknown[];
   frameRevision: number;
   mirrorGate: CadenceGate;
@@ -234,12 +234,39 @@ function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
+function sameFieldValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a === 'number' && typeof b === 'number') return Number.isNaN(a) && Number.isNaN(b);
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameFieldValue(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  let leftCount = 0;
+  for (const key in left) {
+    if (!Object.prototype.hasOwnProperty.call(left, key)) continue;
+    const lv = left[key];
+    if (lv === undefined) continue;
+    leftCount++;
+    if (!Object.prototype.hasOwnProperty.call(right, key) || !sameFieldValue(lv, right[key])) return false;
+  }
+  let rightCount = 0;
+  for (const key in right) {
+    if (!Object.prototype.hasOwnProperty.call(right, key) || right[key] === undefined) continue;
+    if (++rightCount > leftCount) return false;
+  }
+  return rightCount === leftCount;
+}
+
 function field(held: Held<LaneBinding, unknown, unknown>, slot: string, value: unknown, content: () => string): Field {
   const prev = held.kept.get(slot);
-  if (prev && prev.field.value === value) return prev.field;
-  const text = stringifyTooltipPayload(value);
-  const made = { value, content: prev && prev.text === text ? prev.field.content : content() };
-  held.kept.set(slot, { text, field: made });
+  if (prev && prev.value === value) return prev;
+  const made: Field = { value, content: prev && sameFieldValue(prev.value, value) ? prev.content : content() };
+  held.kept.set(slot, made);
   return made;
 }
 

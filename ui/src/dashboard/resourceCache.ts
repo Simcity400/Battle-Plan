@@ -2,6 +2,8 @@ export class ResourceCache<T> {
   private entries = new Map<string, { controller: AbortController; promise: Promise<T>; users: number; settled: boolean; bytes: number; value?: T }>();
   private pins = new Map<object, ReadonlySet<string>>();
   private pinned = new Map<string, number>();
+  private unpinnedCount = 0;
+  private unpinnedBytes = 0;
   private maxEntries: number;
   private maxBytes: number;
   private size: (value: T) => number;
@@ -25,6 +27,10 @@ export class ResourceCache<T> {
           return value;
         }
         created.bytes = this.size(value);
+        if (this.entries.get(key) === created && !this.pinned.has(key)) {
+          this.unpinnedCount++;
+          this.unpinnedBytes += created.bytes;
+        }
         this.trim();
         return value;
       }, error => {
@@ -73,7 +79,17 @@ export class ResourceCache<T> {
     this.unpin(owner);
     const held = new Set(keys);
     this.pins.set(owner, held);
-    for (const key of held) this.pinned.set(key, (this.pinned.get(key) ?? 0) + 1);
+    for (const key of held) {
+      const prev = this.pinned.get(key) ?? 0;
+      this.pinned.set(key, prev + 1);
+      if (prev === 0) {
+        const entry = this.entries.get(key);
+        if (entry?.settled) {
+          this.unpinnedCount--;
+          this.unpinnedBytes -= entry.bytes;
+        }
+      }
+    }
   }
 
   unpin(owner: object): void {
@@ -82,13 +98,25 @@ export class ResourceCache<T> {
     this.pins.delete(owner);
     for (const key of held) {
       const count = (this.pinned.get(key) ?? 1) - 1;
-      if (count > 0) this.pinned.set(key, count); else this.pinned.delete(key);
+      if (count > 0) this.pinned.set(key, count);
+      else {
+        this.pinned.delete(key);
+        const entry = this.entries.get(key);
+        if (entry?.settled) {
+          this.unpinnedCount++;
+          this.unpinnedBytes += entry.bytes;
+        }
+      }
     }
     this.trim();
   }
 
   deleteSource(sourceId: string): void {
     for (const [key, entry] of this.entries) if (JSON.parse(key)[0] === sourceId) {
+      if (entry.settled && !this.pinned.has(key)) {
+        this.unpinnedCount--;
+        this.unpinnedBytes -= entry.bytes;
+      }
       this.entries.delete(key); entry.controller.abort();
     }
     for (const [owner, held] of [...this.pins]) {
@@ -98,16 +126,24 @@ export class ResourceCache<T> {
   }
 
   deleteSettled(sourceId: string): void {
-    for (const [key, entry] of this.entries) if (entry.settled && JSON.parse(key)[0] === sourceId) this.entries.delete(key);
+    for (const [key, entry] of this.entries) if (entry.settled && JSON.parse(key)[0] === sourceId) {
+      if (!this.pinned.has(key)) {
+        this.unpinnedCount--;
+        this.unpinnedBytes -= entry.bytes;
+      }
+      this.entries.delete(key);
+    }
   }
 
   private trim(): void {
-    let bytes = 0;
-    let count = 0;
-    for (const [key, entry] of this.entries) if (entry.settled && !this.pinned.has(key)) { bytes += entry.bytes; count++; }
+    if (this.unpinnedCount <= this.maxEntries && this.unpinnedBytes <= this.maxBytes) return;
     for (const [key, entry] of this.entries) {
-      if (count <= this.maxEntries && bytes <= this.maxBytes) break;
-      if (entry.settled && !this.pinned.has(key)) { this.entries.delete(key); bytes -= entry.bytes; count--; }
+      if (this.unpinnedCount <= this.maxEntries && this.unpinnedBytes <= this.maxBytes) break;
+      if (entry.settled && !this.pinned.has(key)) {
+        this.entries.delete(key);
+        this.unpinnedBytes -= entry.bytes;
+        this.unpinnedCount--;
+      }
     }
   }
 }
