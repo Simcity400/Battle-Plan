@@ -1,4 +1,3 @@
-import type { MeasureParts } from '../../charts/race/measureParts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { forceAtSources } from '../../families/bars/forceAtRace.ts';
 import { countryRowPresentation, type CountryRowPresentation } from '../../families/bars/model.ts';
@@ -21,14 +20,6 @@ export function validateNuclearArsenal(value: unknown): NuclearArsenalReply {
 }
 
 export const typeName = (type: NukeType) => type.name ?? type.token ?? `Unnamed nuclear type ${type.ordinal}`;
-
-export function partName(reply: NuclearArsenalReply | undefined, part: string): string {
-  const type = reply?.types.find(held => String(held.ordinal) === part);
-  return type ? typeName(type) : `Unnamed nuclear type ${part}`;
-}
-
-export const nukeParts = (reply: NuclearArsenalReply | undefined): MeasureParts => ({ kind: 'keyed', label: 'Weapon types',
-  family: { kind: 'country-nukes', measure: 'amount' }, partBits: 32, decimals: 0, name: part => partName(reply, part) });
 
 export function nuclearArsenalSources(ctx: FamilyPlanContext, view: 'race' | 'mix'): SourcePlan {
   const owner = `nuclear-arsenal:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`;

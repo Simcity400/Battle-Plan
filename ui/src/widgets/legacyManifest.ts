@@ -22,7 +22,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'military-factory-spending', view: 'circle', label: 'Breakdown', load: () => import('./military-factory-spending') },
   { kind: 'naval-battles', load: () => import('./naval-battles') },
   { kind: 'naval-losses', view: 'lines', label: 'Lines', load: () => import('./naval-losses') },
-  { kind: 'nuclear-arsenal', view: 'lines', label: 'Lines', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
   { kind: 'occupation-trend', view: 'mix', label: 'Mix', load: () => import('./occupation-trend') },
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'production-spending', load: () => import('./production-spending') },
