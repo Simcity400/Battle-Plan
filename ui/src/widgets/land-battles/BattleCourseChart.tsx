@@ -94,7 +94,7 @@ export default function BattleCourseChart({ title, sides, start, until }: {
     return <figure className="lb-course">
       <figcaption>{title}</figcaption>
       <div className="lb-course-state">
-        <span className="lb-missing" data-tooltip="No read of this battle reached the shown hour."><i className="lb-hatch" aria-hidden="true" />{title} not recorded</span>
+        <span className="lb-missing" data-tooltip="Neither side has a recorded value for this figure through the shown hour."><i className="lb-hatch" aria-hidden="true" />{title} not recorded</span>
       </div>
     </figure>;
   }
