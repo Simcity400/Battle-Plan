@@ -105,8 +105,6 @@ export function raceLookTags(race: boolean, followed: readonly string[] | null, 
   return race ? followed ?? undefined : lineTags;
 }
 
-export const rowsOf = (entries: readonly CountryRaceEntry[]) => entries.map(entry => entry.tag).sort().join(',');
-
 const sameEntry = (a: CountryRaceEntry, b: CountryRaceEntry) => a.tag === b.tag && a.label === b.label && a.value === b.value && a.hatched === b.hatched
   && (a.parts?.length ?? 0) === (b.parts?.length ?? 0) && (a.parts ?? []).every((part, at) => part.id === b.parts![at]!.id && part.value === b.parts![at]!.value && part.hatched === b.parts![at]!.hatched);
 

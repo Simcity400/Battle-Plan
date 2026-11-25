@@ -14,6 +14,7 @@ import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
 import { OPTIONS as RAID_TALLY_OPTIONS } from '../raid-tally/definition.ts';
+import { OPTIONS as TERRITORY_OPTIONS } from '../territory/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
 
 const AIR_KILLS_LOSSES_LINES_OPTIONS = [
@@ -48,6 +49,10 @@ const NUCLEAR_ARSENAL_LINES_OPTIONS = [
 const OCCUPATION_RESERVE_BREAKDOWN_OPTIONS = OCCUPATION_RESERVE_OPTIONS.filter(field => ['show', 'holder', 'yMin', 'yMax'].includes(field.key));
 const RAID_TALLY_LINES_OPTIONS = [
   ...RAID_TALLY_OPTIONS.filter(field => ['view', 'metric', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
+  ...LINES_VIEW_OPTIONS,
+];
+const TERRITORY_LINES_OPTIONS = [
+  ...TERRITORY_OPTIONS.filter(field => ['view', 'measure', 'rule', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
   ...LINES_VIEW_OPTIONS,
 ];
 const WORLD_TENSION_VIEW_FIELD = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
@@ -412,6 +417,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../supply-health/supplyHealthProjection.ts'),
       mod => ({ projection: mod.supplyHealthProjection, declaration: mod.supplyHealthDeclaration }),
+    ),
+  },
+  {
+    kind: 'territory',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: TERRITORY_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'territory',
+      'lines',
+      () => import('../territory/territoryLinesProjection.ts'),
+      mod => ({ projection: mod.territoryLinesProjection, declaration: mod.territoryLinesDeclaration }),
     ),
   },
   {

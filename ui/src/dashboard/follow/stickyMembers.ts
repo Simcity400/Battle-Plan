@@ -1,5 +1,3 @@
-import { useRef } from 'react';
-
 export interface StickyMembers {
   readonly reset: string;
   readonly tags: readonly string[];
@@ -16,10 +14,4 @@ export function stickyMembers(held: StickyMembers | null, reset: string, now: re
     return { reset, tags: [...new Set(now)].sort() };
   }
   return { reset, tags: [...fresh].sort() };
-}
-
-export function useStickyMembers(reset: string, now: readonly string[], limit: number): readonly string[] {
-  const held = useRef<StickyMembers | null>(null);
-  held.current = stickyMembers(held.current, reset, now, limit);
-  return held.current.tags;
 }

@@ -1,6 +1,6 @@
 
 use replay_columnar::summary::{self, Cells, Computed, Facet, Shape, Source, aggregate};
-use replay_data::rows::{FuelDayRow, NukeRow, TableId, column};
+use replay_data::rows::{FuelDayRow, NukeRow, TableId, TerritoryTotalRow, column};
 use replay_derive::factories;
 use std::io;
 
@@ -155,6 +155,10 @@ impl Series {
             Some(parts) => parts.key(owner, part),
             None => owner,
         }
+    }
+
+    pub fn skips_row(&self, key: u128) -> bool {
+        self.table == TableId::TerritoryTotals && key == u128::from(TerritoryTotalRow::WORLD)
     }
 }
 

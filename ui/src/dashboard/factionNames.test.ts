@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
-import { factionChoiceLabel, factionNameAt, factionNameLabel, latestFactionSummaries } from './factionNames.ts';
+import { factionChoiceLabel, factionNameAt, latestFactionSummaries } from './factionNames.ts';
 
 const faction: FactionGroup = {
   id: '9001', name: 'Later pact', nameReason: null, recordedName: '', firstHour: 10, lastHour: 40,
@@ -13,13 +13,12 @@ const faction: FactionGroup = {
 };
 
 test('faction names follow the template read at an hour and never cross a gap', () => {
-  assert.equal(factionNameLabel(faction, 10), 'Opening pact');
-  assert.equal(factionNameLabel(faction, 19.9), 'Opening pact');
-  assert.equal(factionNameLabel(faction, 30), 'Later pact');
-  assert.equal(factionNameLabel(faction), 'Later pact');
+  assert.deepEqual(factionNameAt(faction, 10), { name: 'Opening pact', reason: null });
+  assert.deepEqual(factionNameAt(faction, 19.9), { name: 'Opening pact', reason: null });
+  assert.deepEqual(factionNameAt(faction, 30), { name: 'Later pact', reason: null });
+  assert.deepEqual(factionNameAt(faction), { name: 'Later pact', reason: null });
   for (const hour of [9, 20, 24, 41, NaN]) {
     assert.deepEqual(factionNameAt(faction, hour), { name: null, reason: 'Not recorded' });
-    assert.equal(factionNameLabel(faction, hour), 'Unnamed faction');
   }
 });
 

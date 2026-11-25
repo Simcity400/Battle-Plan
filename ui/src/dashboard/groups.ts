@@ -1,5 +1,4 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
-import { factionChoiceLabel } from './factionNames.ts';
 import { compareTags } from './tagOrder.ts';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 import { countryIdentityIndex } from './countryIdentity.ts';
@@ -51,19 +50,6 @@ export function countrySelectionFor(mode: string, max: number): CountrySelection
   const count = Math.min(DEFAULT_TOP, max);
   return mode === 'all' ? { kind: 'all' } : mode === 'factions' ? { kind: 'factions', count, membership: 'hour' }
     : mode === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } : { kind: 'selected' };
-}
-
-export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string, hour?: number,
-  overrides?: Readonly<Record<string, { name?: string }>>): string {
-  switch (group.type) {
-    case 'humans': return 'Human players';
-    case 'faction': {
-      const faction = reply?.factions.find(faction => faction.id === group.id);
-      return faction ? factionChoiceLabel(faction, hour, overrides?.[faction.id]?.name) : 'Unnamed faction';
-    }
-    case 'war': return `At war with ${countryName(group.tag)}`;
-    case 'top': return `Top ${group.count}`;
-  }
 }
 
 export function isMember(membership: readonly HourSpan[] | undefined, hour: number): boolean {
