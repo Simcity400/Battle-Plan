@@ -350,13 +350,22 @@ mod tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
-    use replay_data::rows::{CountryLinkRow, CountryRow, NavalLossTotalRow, Recorded, TableId, TableRows};
+    use replay_data::rows::{CountryLinkRow, CountryRow, SunkShipEntry, SunkShipsRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
 
     fn naval_source() -> Source {
         const FIRST: i32 = 1_000;
         const LAST: i32 = 1_040;
+        let sunk = |name: &[u8], sink_hour: i32| SunkShipEntry {
+            ship_name: name.to_vec(),
+            victim_country: 9001,
+            attacker_country: 9002,
+            sink_hour,
+            province: 5,
+            province_present: 1,
+            ..Default::default()
+        };
         let frames = (FIRST..=LAST)
             .map(|hour| {
                 let mut frame = source(1, hour, Some(1));
@@ -371,32 +380,20 @@ mod tests {
                     CountryLinkRow { id: 9001, canonical_slot: 7 },
                     CountryLinkRow { id: 9002, canonical_slot: 8 },
                 ]));
-                let known = hour >= 1_010;
-                let mut rows = vec![NavalLossTotalRow {
-                    slot: NavalLossTotalRow::RUN,
-                    country: 0,
-                    attribution: 0,
-                    kind: NavalLossTotalRow::SHIPS,
-                    total: Recorded::Value(0),
-                    unknown: Recorded::Value(0),
-                    counted_from: Recorded::Value(1_010),
-                    known: Recorded::Value(known),
-                    lost_from: Recorded::Value(None),
-                }];
-                if hour >= 1_020 {
-                    rows.push(NavalLossTotalRow {
-                        slot: 7,
-                        country: 9001,
-                        attribution: NavalLossTotalRow::LOST,
-                        kind: NavalLossTotalRow::SHIPS,
-                        total: Recorded::Value(if hour >= 1_030 { 5 } else { 2 }),
-                        unknown: Recorded::Value(0),
-                        counted_from: Recorded::Value(1_010),
-                        known: Recorded::Value(true),
-                        lost_from: Recorded::Value(None),
-                    });
+                if hour < 1_010 {
+                    *frame.tables[TableId::SunkShips.index()] = TableView::Unavailable { reason: "not read".into() };
+                } else {
+                    let mut entries = Vec::new();
+                    if hour >= 1_020 {
+                        entries.push(sunk(b"A", 1_020));
+                        entries.push(sunk(b"B", 1_020));
+                    }
+                    if hour >= 1_030 {
+                        entries.push(sunk(b"C", 1_030));
+                    }
+                    *frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }]));
+                    frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
                 }
-                *frame.tables[TableId::NavalLossTotals.index()] = TableView::Complete(TableRows::NavalLossTotals(rows));
                 frame
             })
             .collect();

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryExtent, summaryGeometry } from './chartSummary.ts';
+import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
 import { wireSummary } from './chartSummary.fixture.ts';
 import { dayLabel, drawBands, drawLine, spanLabel } from './draw.ts';
 import { pickLines } from './linePick.ts';

@@ -203,6 +203,7 @@ pub(super) fn month_bases(counts: &Counts, kinds: &[u8], hour: i32, period: Nava
     }
 }
 
+#[cfg(test)]
 pub(super) fn score(owner: u128, attribution: u8, kinds: &[u8], bases: &[Option<i32>], hour: i32, now: &HashMap<u128, i64>, before: &HashMap<i32, HashMap<u128, i64>>) -> i64 {
     kinds.iter().zip(bases).fold(0i64, |sum, (&kind, base)| {
         if base.is_some_and(|base| base >= hour) {
