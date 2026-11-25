@@ -1406,7 +1406,7 @@ export type EspionageLogTailParams = { branchId: string, hour: number | null, fr
 export type EspionageStatus = "preparing" | "running" | "completed" | "ended" | "outcomeNotRecorded" | "notRead";
 export type EspionageCountryRole = "owner" | "target" | "either";
 export type EspionageRunningOrder = "start" | "preparation";
-export type EspionageCountry = { tag: string | null, slot: number | null, rawId: number | null, missing: string | null, };
+export type EspionageCountry = { tag: string | null, slot: number | null, missing: string | null, };
 export type EspionageTypeChip = { token: string, firstHour: number, name: string | null, icon: string | null, iconMissing: string | null, };
 export type EspionageCompletion = { completionHour: number | null, bonus: boolean | null, bonusRefused: string | null, detected: boolean | null, detectedRefused: string | null, description: string | null, descriptionUnrecorded: string | null, };
 export type EspionageLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, status: EspionageStatus, owner: EspionageCountry, target: EspionageCountry, operationToken: string | null, operationName: string | null, operationMissing: string | null, icon: string | null, iconMissing: string | null, startHour: number | null, firstSeen: number | null, lastSeen: number | null, endedHour: number | null, durationDays: number | null, preparationRatio: number | null, phaseCount: number | null, currentPhase: number | null, assignedSlots: number | null, autoRepeat: boolean | null, autoCommence: boolean | null, outcomeMissing: string | null, completion: EspionageCompletion | null, };
@@ -1541,16 +1541,15 @@ export type RaidPreparationAt = {
  * (0 until a second read gives the rate), through `through` when that is already past.
  */
 since: number, hours: number, perHour: number, through: number | null, };
-export type RaidPhaseAt = { firstHour: number, firstExact: boolean, afterHour: number | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
 export type RaidLogRow = {
 /**
  * The raid episode's id: the row key and what a click hands to the detail.
  */
 key: string,
 /**
- * The episode's start: its first read, `exact` when the read before it proves it, else after `afterHour`.
+ * The episode's start: its first read.
  */
-hour: number, exact: boolean, afterHour: number | null, observed: number, ordinal: string, live: boolean, status: RaidStatus, phaseName: string | null, outcomeName: string | null, outcomeMissing: string | null, raider: RaidRaider,
+hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, status: RaidStatus, phaseName: string | null, outcomeMissing: string | null, raider: RaidRaider,
 /**
  * The victim as last read by the hour asked, named at that read.
  */
@@ -1558,11 +1557,11 @@ victim: RaidVictimAt,
 /**
  * The type's recorded spelling once read by the hour asked; null with `typeMissing` before.
  */
-raidType: string | null, raidTypeName: string | null, typeMissing: string | null, icon: string | null, iconMissing: string | null, place: RaidPlaceAt | null, placeMissing: string | null, preparation: RaidPreparationAt | null, phases: Array<RaidPhaseAt>, launchedHour: number | null, launchedExact: boolean,
+raidType: string | null, raidTypeName: string | null, typeMissing: string | null, icon: string | null, iconMissing: string | null, place: RaidPlaceAt | null, placeMissing: string | null, preparation: RaidPreparationAt | null, launchedHour: number | null,
 /**
  * The end read by the hour asked, naming the raider at that end.
  */
-end: RaidEndAt | null, disappearedHour: number | null, disappearedExact: boolean,
+end: RaidEndAt | null, disappearedHour: number | null,
 /**
  * The raid's last read, once the hour asked is after it with no end or disappearance read.
  */
@@ -2341,7 +2340,6 @@ export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "ob
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
 export type ConstructionStatus = "building" | "repairing" | "waiting" | "observed" | "unread" | "built" | "repaired" | "repairedAndBuilt" | "completed" | "removed" | "leftQueue";
-export type ConstructionWorkKind = "new" | "repair" | "repairThenNew" | "unknown";
 export type ConstructionWorkFilter = "all" | "new" | "repair";
 export type ConstructionOrder = "change" | "start";
 export type ConstructionOwner = { tag: string | null, slot: number | null, missing: string | null, };
@@ -2350,7 +2348,7 @@ export type ConstructionLevelsAt = { built: number, total: number, unknown: numb
 export type ConstructionEndAt = { kind: EndKind, hour: number | null, knownAt: number, unknown: UnknownEnd | null, };
 export type ConstructionOutputAt = { constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null, beforeObservation: boolean, };
 export type ConstructionTypeChip = { token: string, firstHour: number, name: string | null, icon: string | null, };
-export type ConstructionLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, kind: ProjectKind, source: ProjectSource, workKind: ConstructionWorkKind, repairing: boolean, status: ConstructionStatus, owner: ConstructionOwner, buildingToken: string | null, buildingName: string | null, buildingMissing: string | null, icon: string | null, place: ConstructionPlaceAt | null, placeMissing: string | null, levels: ConstructionLevelsAt | null, levelsMissing: string | null, factories: number | null, lastFactories: number | null, factoriesMissing: string | null, createdHour: number | null, firstRead: number, costRaw: string | null, baseLevel: number | null, targetLevel: number | null, routeProvinces: number | null, end: ConstructionEndAt | null, output: ConstructionOutputAt | null, };
+export type ConstructionLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, kind: ProjectKind, source: ProjectSource, status: ConstructionStatus, owner: ConstructionOwner, buildingToken: string | null, buildingName: string | null, buildingMissing: string | null, icon: string | null, place: ConstructionPlaceAt | null, placeMissing: string | null, levels: ConstructionLevelsAt | null, levelsMissing: string | null, factories: number | null, lastFactories: number | null, factoriesMissing: string | null, createdHour: number | null, firstRead: number, costRaw: string | null, baseLevel: number | null, targetLevel: number | null, routeProvinces: number | null, end: ConstructionEndAt | null, output: ConstructionOutputAt | null, };
 export type ConstructionLogTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, buildingTypes: Array<ConstructionTypeChip>, repairIcon: string | null, costScale: number, rows: Array<ConstructionLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
 export type ConstructionBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
 export type ConstructionBreakdownReply = {
