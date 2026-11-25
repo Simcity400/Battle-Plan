@@ -49,8 +49,9 @@ export function useArtResolutions(
     const id = artHandleKey(handle);
     return !resolutions.has(id) && failures.get(id)?.retryable !== false;
   });
-  const askedKey = asked.map(artHandleKey).join('\0');
-  const wantedIds = useMemo(() => new Set(asked.map(artHandleKey)), [askedKey]);
+  const askedIds = asked.map(artHandleKey);
+  const askedKey = JSON.stringify(askedIds);
+  const wantedIds = useMemo(() => new Set(askedIds), [askedKey]);
   const wantedRef = useRef(wantedIds);
   wantedRef.current = wantedIds;
 

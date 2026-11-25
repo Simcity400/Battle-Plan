@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
 import type { ProductRequest } from '../../dashboard/client';
+import { artHandleKey } from './types.ts';
 
 function widgetHooks() {
   const slots: any[] = [];
@@ -154,9 +155,9 @@ test('a widget keeps exactly the art its projection read: 513 handles keep the f
   let track = { source: { id: 's', revision: 'r' }, branch: { id: '1' } };
   let shown: any;
   const pass = () => { const hooks = use(0); shown = hooks.render(() => useArtHandleResolutions(runtime, track, true)); hooks.commit(); };
-  const keyOf = (handle: { leader: string; hour: number }) => JSON.stringify(['portrait', handle.leader, handle.hour]);
+  const keyOf = (handle: { kind: 'portrait'; leader: string; hour: number }) => artHandleKey(handle);
   pass();
-  const read = Array.from({ length: 513 }, (_, at) => ({ kind: 'portrait', leader: String(at), hour: 100 }));
+  const read = Array.from({ length: 513 }, (_, at) => ({ kind: 'portrait' as const, leader: String(at), hour: 100 }));
   shown.onArtDemands(read);
   for (let i = 0; i < 8; i++) { pass(); await tick(); }
   assert.equal(Object.keys(shown.resolutions).length, 513, 'every handle the projection read is kept');
@@ -186,4 +187,23 @@ test('a settled failure keeps its object, so another widget settling does not ch
   shown[1].onArtDemands([sprite('ok_b')]);
   for (let i = 0; i < 8; i++) { pass(0); pass(1); await tick(); }
   assert.strictEqual(shown[0].resolutions, record, 'an unrelated settlement leaves the record, so the lane is not rebound');
+}));
+
+test('useArtResolutions keeps NUL-delimited handle keys unambiguous across pending demand switches', () => withArtWidgets(1, async ({ useArtResolutions, use, requests, hold, release }) => {
+  const runtime = { client: {} };
+  const track = { source: { id: 's', revision: 'r' }, branch: { id: '1' } };
+  const second = { kind: 'sprite' as const, key: 'b', frame: 0 };
+  const pair = [{ kind: 'sprite' as const, key: 'a', frame: 0 }, second];
+  const merged = [{ kind: 'sprite' as const, key: `a\0${artHandleKey(second)}`, frame: 0 }];
+  hold(true);
+  const hooks = use(0);
+  hooks.render(() => useArtResolutions(runtime, track, pair, true));
+  hooks.commit();
+  await tick();
+  hooks.render(() => useArtResolutions(runtime, track, merged, true));
+  hooks.commit();
+  await tick();
+  release();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.ok(requests.some(keys => keys.includes(merged[0]!.key)), 'switching to a NUL-colliding sprite key while pending still fetches it');
 }));
