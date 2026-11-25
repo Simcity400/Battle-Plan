@@ -964,14 +964,14 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     let at_100 = (dec_exact.advance)(100, true, &cancel, None);
     assert_eq!(*at_100.value, (dec_exact.cold)(100, &cancel));
     assert_eq!(at_100.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 1);
-    let at_101 = (dec_exact.advance)(101, true, &cancel, None);
+    let at_101 = (dec_exact.advance)(101, false, &cancel, None);
     assert!(!at_101.fresh, "a quiet hour before the next change reads nothing");
     assert_eq!(*at_101.value, (dec_exact.cold)(101, &cancel));
-    let at_103 = (dec_exact.advance)(103, true, &cancel, None);
+    let at_103 = (dec_exact.advance)(103, false, &cancel, None);
     assert!(at_103.fresh, "the continuing edge at 103 is the next change");
     assert_eq!(*at_103.value, (dec_exact.cold)(103, &cancel));
     assert_eq!(at_103.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 2);
-    assert!(!(dec_exact.advance)(104, true, &cancel, None).fresh);
+    assert!(!(dec_exact.advance)(104, false, &cancel, None).fresh);
     let back_100 = (dec_exact.advance)(100, true, &cancel, None);
     assert_eq!(*back_100.value, (dec_exact.cold)(100, &cancel));
     assert_eq!(back_100.value.as_ref().as_ref().unwrap()["rows"][0]["occurrence"]["edges"].as_array().unwrap().len(), 1);
