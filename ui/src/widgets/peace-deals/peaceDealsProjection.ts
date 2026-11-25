@@ -45,7 +45,6 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
         date: logDateCell(row.hour),
         kind: { ...artKindCell(view, { kind: 'sprite', key: 'GFX_global_diplorequest_icons', frame: 20 }, 'square', 'Peace deal', 'Peace deal artwork unavailable'), artTile: 'raised' },
         country,
-        item: { value: notRecorded('War name not recorded') },
         terms: { value, missingFigure: 'Terms', quantities },
         action: blank,
       },
@@ -53,6 +52,12 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
         { label: d.derived ? 'Observed net outcomes' : 'Settlement terms', value }],
       tooltipNote: d.limitations.join(' '),
     };
+  }
+  if (d.kind === 'more') {
+    const name = d.hidden ? `Show all ${formatScalar(d.terms)} terms` : 'Show fewer terms';
+    const cell: TableCell = { value: knownValue(name), ...(d.hidden ? { inlineSubtext: `${formatScalar(d.hidden)} more` } : {}) };
+    return { ...common, key: `all:${row.parent}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms',
+      cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank } };
   }
   let cell: TableCell;
   if (d.kind === 'recipient') {
@@ -69,8 +74,8 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     cell = { value: knownValue(flags.map(f => f.label).join(', ')), flags };
   }
   return {
-    ...common, key: `child:${row.key}`, name: cell.value.kind === 'known' ? String(cell.value.value) : 'Not recorded', pageParent: row.parent ?? undefined, detailColumn: 'item',
-    cells: { date: blank, kind: blank, country: blank, item: cell, terms: blank, action: blank },
+    ...common, key: `child:${row.key}`, name: cell.value.kind === 'known' ? String(cell.value.value) : 'Not recorded', pageParent: row.parent ?? undefined, detailColumn: 'terms',
+    cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank },
   };
 }
 
@@ -102,7 +107,9 @@ export const peaceDealsDeclaration: TableWidgetDeclaration<Options> = {
     const win = ctx.widget.time.mode === 'range' ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const from = win ? ctx.gateSpan(Math.max(Math.floor(win.firstHour), ctx.branch.firstHour), ctx.branch.lastHour)?.firstHour ?? null : null;
     const expanded = contentSet(ctx.options.expanded);
-    const ask = { ...occurrenceSelection(ctx), ...(expanded.length ? { expanded, termsPerLine: Math.max(1, Math.min(64, Math.floor(((viewport.width ?? 320) - 90) / 94))) } : {}) };
+    const full = contentSet(ctx.options.full).filter(key => expanded.includes(key));
+    const termsPerLine = Math.max(1, Math.min(64, Math.floor(((viewport.width ?? 320) - 90) / 94)));
+    const ask = { ...occurrenceSelection(ctx), ...(expanded.length ? { expanded, ...(full.length ? { full } : {}), termsPerLine } : {}) };
     return {
       owner: JSON.stringify([ctx.track.source.id, ctx.branch.id, 'peace-deals', from, ask]),
       entries: [pagedTailEntry('main', ctx.track.source, ctx.branch.id, ctx.track.axisOffset,

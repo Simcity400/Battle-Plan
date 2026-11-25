@@ -7,15 +7,22 @@ import { FamilyWidget } from '../host/registry.tsx';
 function ExpandableLogView(props: FamilyViewProps) {
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]);
-  const [groups, setGroups] = useState({ scope, expanded: '' });
-  const expanded = groups.scope === scope ? groups.expanded : '';
-  const options = useMemo(() => ({ ...props.options, expanded }), [props.options, expanded]);
+  const [groups, setGroups] = useState({ scope, expanded: '', full: '' });
+  const current = groups.scope === scope ? groups : { scope, expanded: '', full: '' };
+  const options = useMemo(() => ({ ...props.options, expanded: current.expanded, full: current.full }), [props.options, current.expanded, current.full]);
   const toggle = useCallback(({ subject }: InstalledAction) => {
-    if (!subject.startsWith('group:')) return;
+    const all = subject.startsWith('all:group:');
+    if (!all && !subject.startsWith('group:')) return;
     setGroups(previous => {
-      const next = new Set(previous.scope === scope ? previous.expanded.split(' ').filter(Boolean) : []);
-      if (!next.delete(subject)) next.add(subject);
-      return { scope, expanded: [...next].join(' ') };
+      const kept = previous.scope === scope ? previous : { scope, expanded: '', full: '' };
+      const expanded = new Set(kept.expanded.split(' ').filter(Boolean));
+      const full = new Set(kept.full.split(' ').filter(Boolean));
+      const group = all ? subject.slice(4) : subject;
+      if (all) {
+        if (!full.delete(group)) full.add(group);
+      } else if (!expanded.delete(group)) expanded.add(group);
+      else full.delete(group);
+      return { scope, expanded: [...expanded].join(' '), full: [...full].join(' ') };
     });
   }, [scope]);
   return props.manifestDeclaration ? <FamilyWidget {...props}
