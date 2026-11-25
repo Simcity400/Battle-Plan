@@ -279,6 +279,10 @@ export function familyBinding<TOptions, TBinding, TSettings>(
   return { ...extras, ...base } as TBinding & FamilyBaseBinding<TOptions>;
 }
 
+export function sameRowWindow(a: FamilyRowWindow | null, b: FamilyRowWindow | null): boolean {
+  return a === b || (!!a && !!b && a.first === b.first && a.count === b.count && a.dataFirst === b.dataFirst && a.dataCount === b.dataCount);
+}
+
 export function requestedRowWindow<TSettings>(
   adapter: Pick<FamilyHostAdapter<any, any, any, TSettings>, 'rowWindow'>,
   plan: SourcePlan | null,
@@ -303,8 +307,32 @@ export function nextReportedRowWindow(
   planSig: string,
 ): ReportedRowWindow | null {
   if (!requested || installedHour === null) return null;
-  if (reported && reported.planSig === planSig && reported.window === requested && installedHour >= reported.hour) return null;
+  if (reported && reported.planSig === planSig && sameRowWindow(reported.window, requested) && installedHour >= reported.hour) return null;
   return { window: requested, hour: installedHour, planSig };
+}
+
+export interface InstalledRowWindowUpdate {
+  readonly requested: FamilyRowWindow | null;
+  readonly report: ReportedRowWindow | null;
+  readonly changed: boolean;
+}
+
+export function reconcileInstalledRowWindow<TSettings>(
+  reported: ReportedRowWindow | null,
+  held: FamilyRowWindow | null,
+  adapter: Pick<FamilyHostAdapter<any, any, any, TSettings>, 'rowWindow'>,
+  plan: SourcePlan | null,
+  viewport: FamilyViewportState,
+  settings: TSettings | undefined,
+  fields: Readonly<Record<string, unknown>>,
+  installedHour: number | null,
+  planSig: string,
+): InstalledRowWindowUpdate {
+  const asked = requestedRowWindow(adapter, plan, viewport, settings, fields);
+  const changed = !sameRowWindow(held, asked);
+  const requested = changed ? asked : held;
+  const report = nextReportedRowWindow(reported, requested, installedHour, planSig);
+  return { requested, report, changed };
 }
 
 export function parseFamilyHit(adapter: Pick<FamilyHostAdapter, 'parseHit'>, hitKey: string | null): ParsedFamilyHit | null {
