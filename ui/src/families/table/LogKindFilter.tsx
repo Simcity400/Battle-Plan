@@ -28,12 +28,12 @@ export interface LogKindFilterProps {
   readonly onSelectAll: () => void;
 }
 
-function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onToggle, onSelectAll, close }: LogKindFilterProps & { close: () => void }) {
-  const allSelected = items.length > 0 && items.every(item => item.checked);
-  const [query, setQuery] = useState('');
+interface Filters { query: string; country: string; kind: string }
 
-  const [country, setCountry] = useState('');
-  const [kind, setKind] = useState('');
+function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onToggle, onSelectAll, close, filters, setFilters }:
+  LogKindFilterProps & { close: () => void; filters: Filters; setFilters: (filters: Filters) => void }) {
+  const allSelected = items.length > 0 && items.every(item => item.checked);
+  const { query, country, kind } = filters;
   const countries = useMemo(() => [...new Set(items.flatMap(item => item.country ? [item.country] : []))].sort(), [items]);
   const kinds = useMemo(() => [...new Set(items.flatMap(item => item.detail ? [item.detail] : []))].sort(), [items]);
   const showSearch = single || items.length >= searchThreshold;
@@ -62,7 +62,7 @@ function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onTogg
           <input
             type="search"
             value={query}
-            onChange={event => setQuery(event.target.value)}
+            onChange={event => setFilters({ ...filters, query: event.target.value })}
             placeholder={single ? `Search ${noun}` : `Search ${items.length} ${noun}`}
             aria-label={`Search ${noun}`}
           />
@@ -70,10 +70,10 @@ function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onTogg
       ) : null}
       {single && <div className="tf-picker-facets">
         <label>{oneCountry && single?.countryFlag && <img alt="" src={single.countryFlag} />}
-        <select aria-label="Country" value={country} onChange={event => setCountry(event.target.value)}>
+        <select aria-label="Country" value={country} onChange={event => setFilters({ ...filters, country: event.target.value })}>
           <option value="">{oneCountry ? single?.countryLabel ?? countries[0] : 'All countries'}</option>{countries.length > 1 && countries.map(value => <option key={value}>{value}</option>)}
         </select></label>
-        <select aria-label="Kind" value={kind} onChange={event => setKind(event.target.value)}>
+        <select aria-label="Kind" value={kind} onChange={event => setFilters({ ...filters, kind: event.target.value })}>
           <option value="">All kinds</option>{kinds.map(value => <option key={value}>{value}</option>)}
         </select>
       </div>}
@@ -101,7 +101,7 @@ function FilterList({ items, single, noun, allLabel, searchThreshold = 8, onTogg
       </div>
       {(single ? single.pinned : !allSelected) ? (
         <div className="log-kind-filter-footer">
-          <button type="button" className="log-kind-filter-all" onClick={() => { onSelectAll(); setQuery(''); if (single) close(); }}>
+          <button type="button" className="log-kind-filter-all" onClick={() => { onSelectAll(); setFilters({ ...filters, query: '' }); if (single) close(); }}>
             {allLabel}
           </button>
         </div>
@@ -116,6 +116,7 @@ export default function LogKindFilter(props: LogKindFilterProps) {
   const menu = usePopover('end');
   const picker = useContext(PickerContext);
   const [hour, setHour] = useState<number | null>(null);
+  const [filters, setFilters] = useState<Filters>({ query: '', country: '', kind: '' });
   const selectedCount = items.filter(item => item.checked).length;
   const allSelected = items.length > 0 && selectedCount === items.length;
   const label = single?.label ?? (allSelected || items.length === 0
@@ -128,7 +129,7 @@ export default function LogKindFilter(props: LogKindFilterProps) {
 
   if (!slot || (items.length === 0 && !single)) return null;
 
-  const list = (choices: readonly LogKindFilterItem[]) => <FilterList {...props} items={choices} close={menu.close} />;
+  const list = (choices: readonly LogKindFilterItem[]) => <FilterList {...props} items={choices} filters={filters} setFilters={setFilters} close={menu.close} />;
   return createPortal(
     <>
       <button
