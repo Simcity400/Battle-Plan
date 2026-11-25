@@ -1,11 +1,11 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Icon } from '../../components/Icons';
 import { createPortal } from 'react-dom';
 import type { FamilyChromeProps } from '../host/FamilyHost.tsx';
 import { syncTableEdges } from './edges.ts';
 import type { TableChromeState } from './hostAdapter.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import LogKindFilter from './LogKindFilter.tsx';
+import SubjectSummary from './SubjectSummary.tsx';
 import type { TableColumnSpec, TableModel } from './model.ts';
 import { updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn, type TableHeaderIdentity } from './TableHeader.tsx';
@@ -178,22 +178,10 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
 
   return (
     <>
-      {meta.subjectSummary && <div className="tf-subject-summary" data-compact={viewportWidth < 440 || undefined}>
-        <span className="tf-subject-art">{meta.subjectSummary.icon ? <img src={meta.subjectSummary.icon} alt="" /> : <Icon name="helmet" />}</span>
-        <div className="tf-subject-name"><strong>{meta.subjectSummary.name}</strong>
-          <div>{meta.subjectSummary.flag && <img src={meta.subjectSummary.flag} alt={meta.subjectSummary.country} />}
-            <span className="tf-subject-detail">{meta.subjectSummary.country} &middot; {meta.subjectSummary.detail}</span>
-            {meta.subjectSummary.insignia && <img className="tf-level-icon" src={meta.subjectSummary.insignia} alt="" />}<span>{meta.subjectSummary.level}</span>
-          </div>
-        </div>
-        <dl>{meta.subjectSummary.metrics.map(metric => <div key={metric.label}><dt>{metric.label}</dt><dd>
-          {metric.icons?.length ? metric.icons.map((url, index) => <img key={index} src={url} alt="" />) : null}<span className={metric.icons?.length === 1 && metric.value === '1' ? 'sr-only' : undefined}>{metric.value}</span>
-        </dd></div>)}</dl>
-      </div>}
+      {meta.subjectSummary && chrome && <SubjectSummary summary={meta.subjectSummary} figures={chrome.figures} compact={viewportWidth < 440} />}
       {meta.kindFilter && setFilterOption ? <LogKindFilter
         slot={filterSlot}
         shownHour={shownHour}
-        compact={viewportWidth < 440}
         single={meta.kindFilter.single}
         allLabel={meta.kindFilter.allLabel}
         noun={meta.kindFilter.noun}

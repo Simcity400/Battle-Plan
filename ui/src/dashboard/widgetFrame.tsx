@@ -98,7 +98,6 @@ export function resolveDeclaredViewSwitch(
 export interface HeaderMeasuredWidths {
   fixed: number;
   titleFull: number;
-  titleMin?: number;
   hasSummary: boolean;
   pill: number;
   hasViewSwitch: boolean;
@@ -108,7 +107,10 @@ export interface HeaderMeasuredWidths {
   hasSubject: boolean;
   subjectFull: number;
   subjectCompact: number;
+  filterFull?: number;
+  filterCompact?: number;
   hasTime: boolean;
+  timeLive?: boolean;
   timeFull: number;
   timeCompact: number;
   headerGap?: number;
@@ -139,16 +141,17 @@ export function headerDropStage(available: number | null, measured: HeaderMeasur
   }
   const hGap = measured.headerGap ?? 8;
   const cGap = measured.controlsGap ?? 6;
-  const rightCount = (measured.hasSubject ? 1 : 0) + (measured.hasViewSwitch ? 1 : 0) + (measured.hasTime ? 1 : 0) + 1;
+  const filterFull = measured.filterFull ?? 0;
+  const filterCompact = filterFull > 0 ? Math.min(filterFull, measured.filterCompact || filterFull) : 0;
+  const rightCount = (measured.hasSubject ? 1 : 0) + (measured.hasViewSwitch ? 1 : 0) + (measured.hasTime ? 1 : 0) + (filterFull > 0 ? 1 : 0) + 1;
   const controlsGaps = Math.max(0, rightCount - 1) * cGap;
   const baseGaps = (measured.editing ? 2 : 1) * hGap + hGap + controlsGaps;
   const titleFull = Math.max(0, measured.titleFull);
-  const titleMin = Math.min(titleFull, measured.titleMin ?? 64);
   const pill = measured.hasSummary ? Math.max(0, measured.pill) : 0;
   const viewFull = measured.hasViewSwitch ? Math.max(0, menuOnly ? measured.viewMenu : measured.viewFull) : 0;
   const viewMenu = measured.hasViewSwitch ? Math.max(0, measured.viewMenu) : 0;
-  const subjectFull = measured.hasSubject ? Math.max(0, measured.subjectFull) : 0;
-  const subjectCompact = measured.hasSubject ? Math.max(0, measured.subjectCompact) : 0;
+  const subjectFull = (measured.hasSubject ? Math.max(0, measured.subjectFull) : 0) + filterFull;
+  const subjectCompact = (measured.hasSubject ? Math.max(0, measured.subjectCompact) : 0) + filterCompact;
   const timeFull = measured.hasTime ? Math.max(0, measured.timeFull) : 0;
 
   const base = measured.fixed + baseGaps;
@@ -164,9 +167,10 @@ export function headerDropStage(available: number | null, measured: HeaderMeasur
   if (measured.hasViewSwitch && !menuOnly && stage2 <= available) {
     return { stage: 2, dropPill: true, collapseView: true, compactSubject: false, compactTime: false };
   }
-  const stage3 = base + titleMin + viewMenu + subjectCompact + timeFull;
+  const liveCompact = !!measured.timeLive && measured.hasTime;
+  const stage3 = base + titleFull + viewMenu + subjectCompact + (liveCompact ? Math.max(0, measured.timeCompact) : timeFull);
   if (stage3 <= available) {
-    return { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: false };
+    return { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: liveCompact };
   }
   return { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime: true };
 }

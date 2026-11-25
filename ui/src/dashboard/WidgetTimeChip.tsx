@@ -98,7 +98,7 @@ export default function WidgetTimeChip({ widget, effective, reference, runtime, 
       onPointerEnter={event => refreshTooltip(event.currentTarget)} onFocus={event => refreshTooltip(event.currentTarget)}>
       {indicator}
       {!compact && <span className="dash-time-label">{summary.label}</span>}
-      {!compact && <Icon name="chevron-down" className="dash-time-chevron" />}
+      <Icon name="chevron-down" className="dash-time-chevron" />
     </button>
     <Popover menu={menu} id={id} className="widget-time-menu" aria-label={`${widget.title} time`}>
       {menu.open && <div className="widget-time-menu-body">
