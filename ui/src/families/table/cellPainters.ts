@@ -247,7 +247,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
     if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     const label = cell?.actionLabel ?? 'View';
-    drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme);
+    drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme, cell?.actionIcon);
     return;
   }
 
@@ -350,6 +350,26 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
     ctx.fillText(fit(signedText(formatted.text, signed), font, Math.max(0, right - left - 6)), right - 4, middle);
     ctx.restore();
+    return;
+  }
+
+  if (column.headerGroup?.kind === 'pair' && cell?.pair) {
+    if (column.key === rc.sortedColumn) {
+      ctx.save();
+      ctx.fillStyle = theme.text;
+      ctx.globalAlpha = 0.06;
+      ctx.fillRect(x, y + 1, column.width, rowHeight - 2);
+      ctx.restore();
+    }
+    const midpoint = (left + right) / 2;
+    const bar = cell.splitBar;
+    for (const [i, value] of cell.pair.entries()) {
+      drawFormattedValue(ctx, formatValueState(value, paintModel.format), {
+        left: i === 0 ? left : midpoint, right: i === 0 ? midpoint - CELL_INSET : right,
+        middle: bar ? middle - 3 : middle, endAligned: true,
+      }, theme, measure, fit);
+    }
+    if (bar) drawSplitBar(ctx, left, y + rowHeight - 6, right - left, 3, bar, theme);
     return;
   }
 

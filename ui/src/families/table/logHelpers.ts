@@ -154,6 +154,10 @@ export function logActionColumn(overrides?: Partial<TableColumnSpec>): TableColu
   };
 }
 
+export function logWatchCell(): TableCell {
+  return { value: knownValue('Watch'), actionLabel: 'Watch', actionIcon: 'play' };
+}
+
 export function logDateCell(hour: number | null, bounded?: DateBoundKind, missingReason = 'Date not recorded'): TableCell {
   if (hour === null) return { value: notRecorded(missingReason) };
   return {

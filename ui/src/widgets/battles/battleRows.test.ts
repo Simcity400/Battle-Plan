@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow, BATTLE_PARTIAL_REASON, battlePartial, battleValueRow, battleValueTitle, markPartial,
+import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow, BATTLE_PARTIAL_REASON, battlePartial, battleValueRow, battleValueTitle, markPartial,
   battlePlaceRequests, heldAtHour, namedBattles, rowsById } from './battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
-import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
+import type { BattleValue } from '../../generated/dashboard';
+import type { BattleLabels, BattleRow } from './battleRows';
 
 const labels: BattleLabels = { place: 'Location', date: 'Date', start: 'Start', end: 'End', winner: 'Winner',
   ongoing: 'Ongoing', unknownPlace: 'Location unknown', unknownStart: 'Start not recorded' };
@@ -55,8 +56,6 @@ test('battle rows retain bounds, missing starts, unknown results and explicit ze
   assert.equal(isBattleRow(battle), true);
   assert.match(battleDate(battle.start, labels.unknownStart), /^by /);
   assert.equal(battleWinner(battle), 'Result not recorded');
-  assert.deepEqual(battleMeasure(battle, 'Ships', 'Not read'), { label: 'Ships', value: 5, atLeast: false });
-  assert.deepEqual(battleMeasure(battle, 'Sunk', 'Not read'), { label: 'Sunk', value: null, unknown: 'Losses not read; Not read' });
   assert.equal(battleValueText({ label: 'Ships', value: 0 }), '0');
   const sunk = { label: 'Sunk', value: 3, atLeast: true };
   assert.deepEqual(battleValueRow('Sunk', sunk, '3 so far', { indent: true }),
@@ -120,9 +119,9 @@ test('5,000 countries in drawn rows keep independent fact requests', () => {
 test('caller formatters receive the dated row for peak-hour text', () => {
   const battle = row();
   const tooltip = battleTooltip(battle, labels, tag => ({ name: tag }), [{ label: 'Ships', title: 'Peak size',
-    value: row => battleMeasure(row, 'Ships', 'Not read'),
+    value: row => row.sides[0]!.counts[0]!,
     format: (value: BattleValue, row: BattleRow) => `${battleValueText(value)} at ${row.place.hour}` }]);
-  assert.equal(tooltip.rows[2].value, '5 at 29');
+  assert.equal(tooltip.rows[2].value, '3 at 29');
 });
 
 test('unknown side participants remain visibly distinct from no participants', () => {

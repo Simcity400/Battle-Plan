@@ -50,6 +50,18 @@ impl SortValue {
     }
 }
 
+fn ranked(a: (Option<&SortValue>, u32), b: (Option<&SortValue>, u32), direction: Direction) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let order = match (a.0, b.0) {
+        (Some(x), Some(y)) if direction == Direction::Descending => y.cmp_value(x),
+        (Some(x), Some(y)) => x.cmp_value(y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    };
+    order.then(a.1.cmp(&b.1))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SortKey {
     Static(Option<SortValue>),
@@ -83,14 +95,18 @@ impl SortKey {
         }
     }
 
-    pub fn next_change(&self, hour: i32) -> Option<i32> {
+    fn after(&self, hour: i32) -> &[(i32, Option<SortValue>)] {
         match self {
-            Self::Static(_) => None,
+            Self::Static(_) => &[],
             Self::Dated(steps) => {
                 let at = steps.partition_point(|&(from, _)| from <= hour);
-                steps.get(at).map(|&(from, _)| from)
+                &steps[at..]
             }
         }
+    }
+
+    pub fn next_change(&self, hour: i32) -> Option<i32> {
+        self.after(hour).first().map(|step| step.0)
     }
 }
 
@@ -500,9 +516,9 @@ impl<P> Index<P> {
         out
     }
 
-    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32) -> Option<i32> {
+    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32, state_changes: bool) -> Option<i32> {
         let after = |hours: &[i32]| hours.get(hours.partition_point(|&at| at <= hour)).copied();
-        let mut next = [after(&filtered.observed), after(&filtered.changes), after(&filtered.unattributed)].into_iter().flatten().min();
+        let mut next = [after(&filtered.observed), state_changes.then(|| after(&filtered.changes)).flatten(), after(&filtered.unattributed)].into_iter().flatten().min();
         let spans = self.gaps.iter().chain(&filtered.unknown).map(|gap| (gap.first_hour, gap.last_hour));
         for (first, last) in spans {
             let (first, last) = (first.max(from), last.min(gap_end));
@@ -539,7 +555,7 @@ impl<P> Index<P> {
         let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history_total = 0u64;
-        let mut next_sort_change: Option<i32> = None;
+        let mut changing_keys = Vec::new();
         let wanted_end = ask.offset.saturating_add(u64::from(ask.limit));
         let newest = ask.order == Order::Date(Direction::Descending);
         let mut placed: Vec<(usize, u64)> = Vec::new();
@@ -559,7 +575,7 @@ impl<P> Index<P> {
             if let Order::Key(column, _) = ask.order
                 && let Some(change) = entry.sort_keys[column].next_change(hour)
             {
-                next_sort_change = Some(next_sort_change.map_or(change, |held| held.min(change)));
+                changing_keys.push((at, change));
             }
             for (count, chip) in chips.iter_mut().zip(ask.chips) {
                 if chip.holds(entry.kind, state) {
@@ -609,17 +625,17 @@ impl<P> Index<P> {
             Order::Key(column, direction) => {
                 let key = |at: u32| self.entries[at as usize].sort_keys[column].at(hour);
                 let by_key = |a: &(u32, Option<u8>), b: &(u32, Option<u8>)| {
-                    let ordered = match (key(a.0), key(b.0)) {
-                        (Some(x), Some(y)) if direction == Direction::Descending => y.cmp_value(x),
-                        (Some(x), Some(y)) => x.cmp_value(y),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    };
-                    ordered.then(a.0.cmp(&b.0))
+                    ranked((key(a.0), a.0), (key(b.0), b.0), direction)
                 };
-                history.sort_by(by_key);
-                live_rows.sort_by(by_key);
+                let sort_prefix = |rows: &mut Vec<_>, through: u64| {
+                    if through < rows.len() as u64 {
+                        rows.select_nth_unstable_by(through as usize, by_key);
+                        rows.truncate(through as usize);
+                    }
+                    rows.sort_unstable_by(by_key);
+                };
+                sort_prefix(&mut history, wanted_end.saturating_sub(live_total));
+                sort_prefix(&mut live_rows, wanted_end);
                 placed.extend((0..gaps.len()).map(|at| (at, history_total)));
             }
         }
@@ -646,8 +662,55 @@ impl<P> Index<P> {
             ordinal += 1;
         }
         let unattributed = filtered.unattributed.partition_point(|&observed| observed <= hour) as u64;
-        let next_change = [self.next_change(&filtered, hour, from, gap_end), next_sort_change].into_iter().flatten().min();
+        let state_changes = ask.live_first || ask.states.is_some() || !ask.chips.is_empty();
+        let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes);
+        if !state_changes {
+            for shown in &rows {
+                let steps = &self.get(shown.at).states;
+                let after = steps.partition_point(|step| step.0 <= hour);
+                next_change = next_change.into_iter().chain(steps.get(after).map(|step| step.0)).min();
+            }
+        }
+        if let Order::Key(column, direction) = ask.order {
+            next_change = if state_changes {
+                next_change.into_iter().chain(changing_keys.iter().map(|change| change.1)).min()
+            } else {
+                self.next_rank_change(&rows, &changing_keys, hour, (column, direction), next_change)
+            };
+        }
         Ok(Answer { hour, total, live: live_total, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
+    }
+
+    fn next_rank_change(&self, rows: &[Shown], changing: &[(u32, i32)], hour: i32, order: (usize, Direction), mut next: Option<i32>) -> Option<i32> {
+        let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return next };
+        let (column, direction) = order;
+        let key = |at: u32| &self.get(at).sort_keys[column];
+        for row in rows {
+            next = next.into_iter().chain(key(row.at).next_change(hour)).min();
+        }
+        let top = (key(first.at).at(hour), first.at);
+        let bottom = (key(last.at).at(hour), last.at);
+        let mut crossings = std::collections::BTreeMap::<i32, i64>::new();
+        for &(at, change) in changing {
+            if next.is_some_and(|end| change >= end) { continue; }
+            let series = key(at);
+            let mut before = ranked((series.at(hour), at), top, direction).is_lt();
+            for (time, value) in series.after(hour) {
+                if next.is_some_and(|end| *time >= end) { break; }
+                let position = (value.as_ref(), at);
+                let now_before = ranked(position, top, direction).is_lt();
+                if (!now_before || first.ordinal == 0) && !ranked(position, bottom, direction).is_gt() {
+                    next = Some(*time);
+                    break;
+                }
+                if before != now_before {
+                    *crossings.entry(*time).or_default() += if now_before { 1 } else { -1 };
+                    before = now_before;
+                }
+            }
+        }
+        let shifted = crossings.into_iter().find_map(|(hour, count)| (count != 0).then_some(hour));
+        next.into_iter().chain(shifted).min()
     }
 
     pub fn bins(&self, holders: &Holders, ask: &Ask<'_>, first: i32, last: i32, bin_hours: i64) -> io::Result<(u64, Vec<(u32, u64)>)> {

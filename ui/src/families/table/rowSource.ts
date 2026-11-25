@@ -13,6 +13,7 @@ export type TailProduct =
   | 'market-ledger-tail'
   | 'raid-log-tail'
   | 'peace-deals-tail'
+  | 'land-battles-tail'
   | 'ships-sunk-tail'
   | 'division-log-tail'
   | 'division-service-record-tail'

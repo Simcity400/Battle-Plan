@@ -12,7 +12,7 @@ import { placeKey } from '../../dashboard/placeNamesData.ts';
 import { PARTIAL_LABEL } from '../../families/valueFormat.ts';
 import { valueStateText } from '../../components/valueStateText.ts';
 import type { BattleRow, BattleSide, BattleValue, BattleWarning, BattleWindow, PlaceNamesReply } from '../../generated/dashboard';
-export type { BattleRow, BattleSide, BattleValue, BattleWindow, BattleWarning } from '../../generated/dashboard';
+export type { BattleRow } from '../../generated/dashboard';
 
 export function heldAtHour<T>(read: (hour: number) => T): (hour: number) => T {
   let held: { hour: number; value: T } | null = null;
@@ -107,19 +107,6 @@ export const markPartial = (text: string, partial: boolean) => partial ? `${text
 export const battleValueTitle = (value: BattleValue, text: string) => battlePartial(value) ? valueStateText({ kind: 'partial', text, reason: BATTLE_PARTIAL_REASON }) : text;
 export const battleValueRow = (label: string, value: BattleValue, text: string, extra: Omit<TooltipRow, 'label' | 'value' | 'valueState'> = {}): TooltipRow =>
   battlePartial(value) ? { ...extra, label, valueState: { kind: 'partial', text, reason: BATTLE_PARTIAL_REASON } } : { ...extra, label, value: text };
-
-export function battleMeasure(row: BattleRow, label: string, unknown: string): BattleValue {
-  let value = 0;
-  let atLeast = false;
-  const missing = new Set<string>();
-  for (const side of row.sides) {
-    const part = [...side.counts, ...side.losses].find(part => part.label === label);
-    if (!part) missing.add(unknown);
-    else if (part.value === null) missing.add(part.unknown);
-    else { value += part.value; atLeast ||= part.atLeast === true; }
-  }
-  return missing.size ? { label, value: null, unknown: [...missing].join('; ') } : { label, value, atLeast };
-}
 
 export const battleLogOrder = (live: boolean) => <T extends BattleRow>(a: LogRow<T>, b: LogRow<T>) =>
   (live ? Number(b.item.end === null) - Number(a.item.end === null) : 0) || b.hour - a.hour || compareTags(a.item.id, b.item.id);

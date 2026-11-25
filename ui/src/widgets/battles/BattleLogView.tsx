@@ -70,10 +70,9 @@ export interface BattleDetails<Row, Window> {
 }
 export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply> {
   definition: WidgetMeta;
-  product: 'land-battles' | 'naval-battles';
-  manifestProduct: 'land-battles-manifest' | 'naval-battles-manifest';
-  rankingProduct: 'land-battles-ranking' | 'naval-battles-ranking';
-  landPlaceNames?: boolean;
+  product: 'naval-battles';
+  manifestProduct: 'naval-battles-manifest';
+  rankingProduct: 'naval-battles-ranking';
   validateManifest: (data: unknown) => ManifestReply;
   validateWindow: (data: unknown) => Window;
   validateRanking: (data: unknown) => Ranking;
@@ -216,7 +215,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(country => country.hour)).size));
   const country = useCallback((tag: string, at: number) => labelAt(at)(tag), [labelAt]);
   const content = useContentRevision(runtime.client);
-  const namesOwner = identity === null ? null : JSON.stringify([identity, content, adapter.landPlaceNames === true]);
+  const namesOwner = identity === null ? null : JSON.stringify([identity, content]);
   const leading = useMemo(() => {
     if (!ahead || hour === null) return NO_ROWS;
     const rows = states.map(row => row.item), shownAt = states.map(row => (row.revealedHour ?? row.hour) <= hour);
@@ -228,9 +227,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const recordedPlaces = useMemo(() => (windowPlaces ?? drawnPlaces).filter(place => gate.recorded(place.hour) !== null), [windowPlaces, drawnPlaces, gate.recorded]);
   const readPlaces = useCallback((places: readonly PlaceAt[], signal: AbortSignal) => loadProduct<PlaceNamesReply>(runtime.client, productRequest({ sourceId: track!.source.id,
     revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id,
-      places: places.flatMap(place => { const hour = gate.recorded(place.hour); return hour === null ? [] : [{ ...place, hour }]; }), states: [], land: adapter.landPlaceNames === true } }),
+      places: places.flatMap(place => { const hour = gate.recorded(place.hour); return hour === null ? [] : [{ ...place, hour }]; }), states: [] } }),
   signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
-  [runtime.client, track, adapter.landPlaceNames, gate.recorded]);
+  [runtime.client, track, gate.recorded]);
   const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, recordedPlaces, active, placeAtKey, readPlaces);
   const knownNames = placeReads.reads.values;
   const placeNamesHeld = useMemo(() => ({ places: [...knownNames.values()], states: [], warnings: [] }), [knownNames, placeReads.version]);

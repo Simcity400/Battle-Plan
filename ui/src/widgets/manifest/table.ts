@@ -488,6 +488,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'land-battles',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'land-battles',
+      DEFAULT_VIEW,
+      () => import('../land-battles/landBattlesProjection.ts'),
+      mod => ({ projection: mod.landBattlesProjection, declaration: mod.landBattlesDeclaration }),
+    ),
+  },
+  {
     kind: 'ships-sunk',
     view: DEFAULT_VIEW,
     family: 'table',

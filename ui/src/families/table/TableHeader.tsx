@@ -140,6 +140,13 @@ export function FamilyTableHeader({
         {arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
       </>;
     }
+    if (item.headerGroup?.kind === 'pair') {
+      const { icon, iconMissing } = item.headerGroup;
+      return <span className="tf-th-pair">
+        <span>{icon ? <img src={icon} alt="" /> : iconMissing ? <i className="tf-th-hatch" title={iconMissing} /> : null}{item.label} {arrow}</span>
+        <span>{item.headerGroup.labels.map(label => <span key={label}>{label}</span>)}</span>
+      </span>;
+    }
     if (item.headerGroup?.kind === 'shortOver') {
       return <span className="tf-th-short-over">
         <span className="tf-th-so-bar">
