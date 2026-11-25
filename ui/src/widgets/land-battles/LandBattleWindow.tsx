@@ -106,7 +106,7 @@ function BattleBody({ subject, hour, course, colours }: {
   const data = course.data;
   const end = row.result === 'ongoing' || !data ? hour : Math.max(data.reads.at(-1)?.hour ?? row.hour, data.runs.at(-1)?.lastHour ?? row.hour);
   const at = Math.min(hour, end);
-  const extent = useMemo<readonly [number, number]>(() => [row.hour, Math.max(row.hour, at)], [row.hour, at]);
+  const until = Math.max(row.hour, at);
   const manpower = useMemo(() => data ? courseManpower(data, at) : null, [data, at]);
   const divisions = useMemo(() => data ? courseDivisions(data, at) : null, [data, at]);
   const equipment = useMemo(() => data ? courseEquipment(data, at) : null, [data, at]);
@@ -149,8 +149,8 @@ function BattleBody({ subject, hour, course, colours }: {
     <div className="lb-body">
       <div className="lb-courses">
         {manpowerSides && divisionSides ? <>
-          <BattleCourseChart title="Casualties" sides={manpowerSides} extent={extent} />
-          <BattleCourseChart title="Divisions" sides={divisionSides} extent={extent} />
+          <BattleCourseChart title="Casualties" sides={manpowerSides} start={row.hour} until={until} />
+          <BattleCourseChart title="Divisions" sides={divisionSides} start={row.hour} until={until} />
         </> : <>
           <CoursePlaceholder title="Casualties" course={course} />
           <CoursePlaceholder title="Divisions" course={course} />
@@ -173,7 +173,7 @@ function BattleBody({ subject, hour, course, colours }: {
 function endingOf(course: LandCourse | undefined, result: BattleDetailSubject['row']['result']): { readonly hour: number | null; readonly missing: string | null } {
   if (result === 'ongoing' || !course) return { hour: null, missing: null };
   const end = course.end;
-  if (end === null) return { hour: null, missing: 'The recording has the result but not the hour the battle ended.' };
+  if (end === null) return { hour: null, missing: 'The recording does not give an ending hour.' };
   return 'unknown' in end ? { hour: null, missing: end.unknown } : { hour: end.hour, missing: null };
 }
 

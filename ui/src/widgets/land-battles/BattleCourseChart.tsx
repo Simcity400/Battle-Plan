@@ -19,17 +19,15 @@ export interface CourseSide {
   readonly runs: readonly Run[];
 }
 
-
-function courseChartModel(title: string, sides: readonly CourseSide[], extent: readonly [number, number]): TimeChartModel {
-  const [from, until] = extent;
-  const missing = sides.map(side => courseMissing(side.runs, from, until));
+function courseChartModel(title: string, sides: readonly CourseSide[], start: number, until: number): TimeChartModel {
+  const missing = sides.map(side => courseMissing(side.runs, start, until));
   const reason = `${title} not recorded`;
   return {
     kind: 'land-battle-course',
     measureTitle: title,
     mode: 'lines',
     hour: until,
-    extent,
+    extent: [Math.min(start, until - 1), until],
     yAxis: { format: 'number', min: 0, decimals: 0 },
     series: sides.map((side, index) => {
       const last = side.runs.at(-1);
@@ -49,13 +47,15 @@ function spoken(model: TimeChartModel): string {
   return `${model.measureTitle} over the battle: ${ends.join(', ')}.`;
 }
 
-export default function BattleCourseChart({ title, sides, extent }: {
+export default function BattleCourseChart({ title, sides, start, until }: {
   readonly title: string;
   readonly sides: readonly CourseSide[];
-  readonly extent: readonly [number, number];
+  readonly start: number;
+  readonly until: number;
 }) {
   const { theme } = useFamilyTheme();
-  const model = useMemo(() => courseChartModel(title, sides, extent), [title, sides, extent]);
+  const model = useMemo(() => courseChartModel(title, sides, start, until), [title, sides, start, until]);
+  const unread = sides.every(side => side.runs.length === 0);
   const canvas = useRef<HTMLCanvasElement>(null);
   const tooltipId = useId();
   const hover = useRef<{ layout: TimeChartLayout | null; inspect: string | null; paint: () => void }>({ layout: null, inspect: null, paint: () => {} });
@@ -90,6 +90,14 @@ export default function BattleCourseChart({ title, sides, extent }: {
     hover.current.paint();
   };
 
+  if (unread) {
+    return <figure className="lb-course">
+      <figcaption>{title}</figcaption>
+      <div className="lb-course-state">
+        <span className="lb-missing" data-tooltip="No read of this battle reached the shown hour."><i className="lb-hatch" aria-hidden="true" />{title} not recorded</span>
+      </div>
+    </figure>;
+  }
   return <figure className="lb-course">
     <figcaption>{title}</figcaption>
     <canvas ref={canvas} role="img" aria-label={spoken(model)} onPointerLeave={leave} onPointerMove={event => {
