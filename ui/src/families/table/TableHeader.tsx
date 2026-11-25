@@ -47,16 +47,16 @@ const GRIP_DOTS = <svg className="tf-th-grip" viewBox="0 0 8 12" width="7" heigh
 
 const visibleBoxes = new Map<string, string | null>();
 
-function visibleBox(image: HTMLImageElement): string | null {
-  const { naturalWidth: width, naturalHeight: height } = image;
+function visibleBox(image: ImageBitmap): string | null {
+  const { width, height } = image;
   const context = Object.assign(document.createElement('canvas'), { width, height }).getContext('2d', { willReadFrequently: true });
   if (!context || !width || !height) return null;
   context.drawImage(image, 0, 0);
-  const alpha = context.getImageData(0, 0, width, height).data;
+  const pixels = context.getImageData(0, 0, width, height).data;
   let top = height, left = width, bottom = -1, right = -1;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      if (alpha[(y * width + x) * 4 + 3]! < 8) continue;
+      if (pixels[(y * width + x) * 4 + 3]! < 8) continue;
       if (y < top) top = y;
       if (y > bottom) bottom = y;
       if (x < left) left = x;
@@ -70,16 +70,18 @@ function GroupIcon({ src }: { readonly src: string }) {
   const [box, setBox] = useState(() => visibleBoxes.get(src));
   useEffect(() => {
     if (visibleBoxes.has(src)) { setBox(visibleBoxes.get(src)); return; }
-    let live = true;
-    const image = new Image();
-    image.src = src;
-    image.decode().then(() => {
-      let found: string | null = null;
-      try { found = visibleBox(image); } catch { found = null; }
-      visibleBoxes.set(src, found);
-      if (live) setBox(found);
-    }, () => {});
-    return () => { live = false; };
+    const controller = new AbortController();
+    fetch(src, { signal: controller.signal })
+      .then(response => (response.ok ? response.blob() : Promise.reject(new Error(String(response.status)))))
+      .then(blob => createImageBitmap(blob))
+      .then(bitmap => {
+        const found = visibleBox(bitmap);
+        bitmap.close();
+        visibleBoxes.set(src, found);
+        if (!controller.signal.aborted) setBox(found);
+      })
+      .catch(() => {});
+    return () => controller.abort();
   }, [src]);
   return <img src={src} alt="" style={box ? { objectViewBox: box } as CSSProperties : undefined} />;
 }

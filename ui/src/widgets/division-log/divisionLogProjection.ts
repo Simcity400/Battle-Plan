@@ -20,7 +20,7 @@ interface Options {
   readonly selected: readonly string[];
 }
 
-const base = { columns: DIVISION_LOG_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false, rhythm: 'log' } as const;
+const base = { columns: DIVISION_LOG_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false } as const;
 const blank: TableCell = { value: notApplicable('No detail for this row'), blank: true };
 const statuses: Readonly<Record<string, string>> = {
   first_observed: 'First seen', division_destroyed: 'Destroyed', division_overrun: 'Overrun', division_deleted: 'Removed',

@@ -342,7 +342,6 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       hideHeader: true,
       unsorted: true,
       dateGrouped: true,
-      rhythm: 'log',
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),

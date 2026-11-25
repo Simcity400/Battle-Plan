@@ -17,7 +17,7 @@ interface Options {
   readonly chosen: string;
 }
 
-const base = { columns: SERVICE_COLUMNS, hideHeader: true, unsorted: true, dateGrouped: true, dayDividersOnly: true, rowTimeBoundaries: false, rhythm: 'log' } as const;
+const base = { columns: SERVICE_COLUMNS, hideHeader: true, unsorted: true, dateGrouped: true, dayDividersOnly: true, rowTimeBoundaries: false } as const;
 const blank: TableCell = { value: notApplicable('Does not apply to this entry'), blank: true };
 function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | null, boundary: IdentityBoundary): TableRow {
   const award = row.kind === 'award';

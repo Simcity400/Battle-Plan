@@ -19,7 +19,7 @@ interface Options {
   readonly selected: readonly string[];
 }
 
-const base = { columns: SHIPS_SUNK_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false, rhythm: 'log' } as const;
+const base = { columns: SHIPS_SUNK_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false } as const;
 
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
   const name = row.name ?? 'Ship name not recorded';

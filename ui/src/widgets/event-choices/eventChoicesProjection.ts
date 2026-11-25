@@ -243,7 +243,6 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       hideHeader: true,
       unsorted: true,
       dateGrouped: true,
-      rhythm: 'log',
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),
