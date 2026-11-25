@@ -329,7 +329,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       ));
     }
 
-    const note = options.fromHour !== null && options.measure === 'total'
+    const summaryText = options.fromHour !== null && options.measure === 'total'
       ? `${options.count === 'ic' ? `IC · ${options.equipmentLabel}` : options.equipmentLabel} · since ${formatDateOnly(options.fromHour)}`
       : captionFor(options.count, options.measure, options.equipmentLabel, headPanel.observationHour);
 
@@ -355,7 +355,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       yAxis,
       series: seriesList,
       empty,
-      note,
+      summaryText,
       warnings: headPanel.warnings.length > 0 ? headPanel.warnings : undefined,
       gaps,
       hoverDetail,

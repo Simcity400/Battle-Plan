@@ -1510,7 +1510,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(stack.bands[2]!.values[at(base)], 0, 'communism owns nothing yet');
     assert.equal(stack.bands[0]!.values[at(hour)], 0);
     assert.equal(stack.bands[3]!.values[at(hour)], 0, 'a party that exists only later does not blank the current stack');
-    assert.equal(model.note, 'Test Leader · Nazism · Test Party');
+    assert.equal(model.summaryText, 'Test Leader · Nazism · Test Party');
+    assert.equal(model.note, undefined);
     assert.deepEqual(model.markers?.map(marker => marker.hour), [base + 48], 'an election shows at its recorded date once read, never before');
     const hoverTip = deriveTimeChartTooltip(model, layoutTimeChart(model, 720, 260, FONT, measure), `plot:${hoverAt}`);
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}=${i.value}`), [

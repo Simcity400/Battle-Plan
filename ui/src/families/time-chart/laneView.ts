@@ -106,6 +106,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
           empty: model.empty?.message ?? null,
           emptyDetail: model.empty?.detail ?? null,
           emptyKind: model.empty?.kind ?? 'empty',
+          summaryText: model.summaryText ?? null,
           notes: model.note ? [model.note] : [],
           warnings: model.warnings ?? [],
         },
@@ -117,6 +118,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
         emptyDetail: null,
         emptyKind: 'empty',
         ...(model.subject ? { subject: model.subject } : {}),
+        summaryText: model.summaryText ?? null,
         notes: [...(model.note ? [model.note] : []), ...(base.logRefused ? [LOG_REFUSED] : [])],
         warnings: model.warnings ?? [],
         transform: {
