@@ -197,7 +197,7 @@ pub const FIELDS: crate::fields::Fields = {
     &[
         ("branchId", Undated), ("family", Undated), ("countries", Undated), ("lines", Undated), ("reads[].hour", Read), ("from", Start), ("to", End),
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
-        ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
+        ("hour", Read), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
         ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("family.country", Undated), ("family.fromHour", Start), ("family.regions[]", Undated), ("family.causes[]", Undated), ("rankBy", Undated), ("group", Undated),
     ]
@@ -228,7 +228,6 @@ struct Params {
     top: Option<u32>,
     least: Option<bool>,
     hour: Option<f64>,
-    width: Option<u32>,
     #[serde(default)]
     within: Vec<(Country, Vec<Span>)>,
     group: Option<ranked::GroupSelection>,
@@ -351,10 +350,6 @@ pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Val
             }
             let ask = ranked::Ask { hour: params.hour, top: params.top, least: params.least == Some(true), countries: &params.countries, group: params.group.as_ref().map(|group| (group, resolve)) };
             serde_json::to_value(ranked::rank(&line, &details, &params.branch_id, ask)?)?
-        }
-        "series-summary" => {
-            let n = ranked::top(&line, params.top)?.ok_or_else(|| invalid(format!("A chart of chosen {} lines is served as tiles", series.kind)))?;
-            serde_json::to_value(ranked::summary(&line, &params.branch_id, params.from, params.to, params.width, n)?)?
         }
         _ if params.group.is_some() => return Err(invalid(format!("{product} does not take a group: a group is read by {}", ranked::PRODUCT))),
         "series-next-change" => {

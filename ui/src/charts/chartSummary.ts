@@ -1,11 +1,9 @@
 import type { PlotFrame } from './frame.ts';
 import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
-import { dayLabel, drawLine, spanLabel, tracePath } from './draw.ts';
-import { ordinates } from './linePick.ts';
-import { curveSegments, extentOf, heldSegments, isOrderedSpans, runAt } from './series.ts';
+import { drawLine, tracePath } from './draw.ts';
+import { extentOf, runAt } from './series.ts';
 import type { PathCommand, Point, Run } from './series.ts';
-import type { ChartPick } from './TimeChart';
 import { addStackAmount, stackEdges } from './stack.ts';
 import type { CompactStackModel } from './stack';
 
@@ -38,76 +36,7 @@ export interface TiledSummary {
   valueAt(hour: number): number | null;
 }
 
-const decoded = new WeakMap<object, ChartSummary | null>();
-const safe = Number.isSafeInteger;
-const within = (at: number, span: number) => safe(at) && at >= 0 && at <= span;
-
-export function chartSummaryFrom(value: unknown): ChartSummary | null {
-  if (!value || typeof value !== 'object') return null;
-  let summary = decoded.get(value);
-  if (summary === undefined) decoded.set(value, summary = decodeSummary(value as WireSummary));
-  return summary;
-}
-
-export type Decoded<L extends { summary: unknown }> = Omit<L, 'summary'> & { summary: ChartSummary };
-
-export function chartSummaryLines<L extends { summary: ChartSummary }>(value: unknown, valid: (line: Record<string, unknown>) => boolean): L[] | null {
-  if (!Array.isArray(value)) return null;
-  const lines: L[] = [];
-  for (const line of value as unknown[]) {
-    const summary = line && typeof line === 'object' && valid(line as Record<string, unknown>) ? chartSummaryFrom((line as { summary: unknown }).summary) : null;
-    if (!summary) return null;
-    lines.push({ ...line as object, summary } as L);
-  }
-  return lines;
-}
-
-interface WireSummary extends Omit<ChartSummary, 'buckets'> {
-  buckets: { slots: number; skip: readonly number[]; hours: readonly number[]; values: readonly number[]; flags: readonly number[]; totals: readonly string[] };
-}
-
-function decodeSummary(summary: WireSummary): ChartSummary | null {
-  if (!Number.isFinite(summary.from) || !Number.isFinite(summary.to) || summary.from > summary.to || !safe(summary.width) || summary.width <= 0
-    || summary.runs !== undefined && !(isOrderedSpans(summary.runs) && summary.runs.length <= 2 * summary.width + 2
-      && summary.runs.every(run => Number.isFinite(run.value) && typeof run.breakBefore === 'boolean'))
-    || summary.approximate !== undefined && !(isOrderedSpans(summary.approximate)
-      && summary.approximate.every(span => safe(span.firstHour) && safe(span.lastHour)))) return null;
-  const columns = summary.buckets;
-  if (!columns || typeof columns !== 'object' || !safe(columns.slots) || columns.slots < 0 || columns.slots > 2 * summary.width + 2) return null;
-  const { slots, skip, hours, values, flags, totals } = columns;
-  const present = Array.isArray(skip) ? skip.length : -1;
-  if (present < 0 || !Array.isArray(hours) || hours.length !== 5 * present || !Array.isArray(values) || values.length !== 4 * present
-    || !Array.isArray(flags) || flags.length !== present || !Array.isArray(totals) || totals.length !== present) return null;
-  const buckets: (ChartBucket | null)[] = new Array<ChartBucket | null>(slots).fill(null);
-  let slot = 0, previous: number | null = null;
-  for (let index = 0; index < present; index++) {
-    const gap = skip[index], flag = flags[index], absoluteTotal = totals[index];
-    const firstHour = previous === null ? hours[5 * index] : previous + hours[5 * index];
-    const span = hours[5 * index + 1], lastValueAt = hours[5 * index + 2], minAt = hours[5 * index + 3], maxAt = hours[5 * index + 4];
-    const firstValue = values[4 * index], lastValue = values[4 * index + 1], minValue = values[4 * index + 2], maxValue = values[4 * index + 3];
-    slot += gap;
-    if (!safe(gap) || gap < 0 || slot >= slots || !safe(firstHour) || !safe(span) || span < 0 || !safe(firstHour + span)
-      || !within(lastValueAt, span) || !within(minAt, span) || !within(maxAt, span)
-      || !Number.isFinite(firstValue) || !Number.isFinite(lastValue) || !Number.isFinite(minValue) || !Number.isFinite(maxValue)
-      || !(flag === 0 || flag === 1 || flag === 2 || flag === 3) || typeof absoluteTotal !== 'string' || !/^\d+$/.test(absoluteTotal)) return null;
-    const bucket: ChartBucket & { absoluteTotal: string } = { firstHour, lastHour: firstHour + span, firstValue, lastValue, lastValueHour: firstHour + lastValueAt,
-      minHour: firstHour + minAt, minValue, maxHour: firstHour + maxAt, maxValue, firstBreak: (flag & 1) !== 0, hasBreak: (flag & 2) !== 0, absoluteTotal };
-    buckets[slot++] = bucket;
-    previous = bucket.lastHour;
-  }
-  return { ...summary, buckets };
-}
-
 export const exactRuns = (summary: ChartSummary): readonly Run[] | null => summary.runs ?? null;
-
-export const binAt = (summary: ChartSummary | null | undefined, hour: number): ChartBucket | null =>
-  summary?.buckets.find(bin => bin && bin.firstHour <= hour && hour <= bin.lastHour) ?? null;
-
-export function binsLabel(hour: number, bins: readonly (ChartBucket | null | undefined)[]): string {
-  let first = Infinity, last = -Infinity;
-  for (const bin of bins) if (bin) { first = Math.min(first, bin.firstHour); last = Math.max(last, bin.lastHour); }
-  return first < last ? spanLabel(first, last) : dayLabel(hour);
-}
 
 function approximateUnion(spans: ChartSummary['approximate']) {
   const union: NonNullable<ChartSummary['approximate']>[number][] = [];
@@ -332,37 +261,10 @@ function columnGeometryFromStream(frame: PlotFrame, stream: BucketStreamReader, 
   return { paths, dots, end: end && Number.isFinite(end.y) ? end : null };
 }
 
-function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean, before = Infinity): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
-  return columnGeometryFromStream(frame, bucketsStream(summary.buckets), held, summary.to, before);
-}
-
 function shapeEnd(frame: PlotFrame, shape: SummaryShape): Point | null {
   if (!shape.end) return null;
   const end = { x: frame.toX(shape.end[0]), y: frame.toY(shape.end[1]) };
   return Number.isFinite(end.y) ? end : null;
-}
-
-function shapeCommands(frame: PlotFrame, shape: SummaryShape, from: number, to: number): PathCommand[] {
-  const path: PathCommand[] = [];
-  for (let vertex = from; vertex < to; vertex++) {
-    path.push([vertex === from ? 'M' : 'L', frame.toX(shape.points[2 * vertex]), frame.toY(shape.points[2 * vertex + 1])]);
-  }
-  return path;
-}
-
-export function summaryGeometry(frame: PlotFrame, summary: ChartSummary, held = false, until: number | null = null):
-  { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
-  if (!summaryFits(frame, summary, until)) return { paths: [], dots: [], end: null };
-  const runs = exactRuns(summary);
-  if (runs) {
-    const segments = (held ? heldSegments : curveSegments)(runs, frame.x[0], summary.to, frame.toX, frame.toY);
-    return { paths: segments.map(segment => segment.path), dots: [], end: segments.at(-1)?.points.at(-1) ?? null };
-  }
-  const shape = summaryShape(summary, held), paths: PathCommand[][] = [], dots: Point[] = [];
-  if (!placeable(frame, shape)) return columnGeometry(frame, summary, held);
-  for (let line = 0; line + 1 < shape.starts.length; line++) paths.push(shapeCommands(frame, shape, shape.starts[line], shape.starts[line + 1]));
-  for (let at = 0; at < shape.dots.length; at += 2) dots.push({ x: frame.toX(shape.dots[at]), y: frame.toY(shape.dots[at + 1]) });
-  return { paths, dots, end: shapeEnd(frame, shape) };
 }
 
 export function drawApproximateSpans(ctx: Canvas2D, frame: PlotFrame,
@@ -457,7 +359,7 @@ function lineEnd(ctx: Canvas2D, tokens: ChartTokens, end: Point | null, options:
 }
 
 function strokeColumns(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
-  geometry: ReturnType<typeof columnGeometry>, color: string, options: SummaryLineOptions): Point | null {
+  geometry: ReturnType<typeof columnGeometryFromStream>, color: string, options: SummaryLineOptions): Point | null {
   const baseline = lineStyle(ctx, frame, tokens, color, options);
   for (const path of geometry.paths) {
     if (options.area) {
@@ -522,52 +424,6 @@ function lower(count: number, before: (index: number) => boolean): number {
   let low = 0, high = count;
   while (low < high) { const middle = (low + high) >> 1; if (before(middle)) low = middle + 1; else high = middle; }
   return low;
-}
-
-function shapeOrdinates(frame: PlotFrame, shape: SummaryShape, x: number, targetY: number): number[] {
-  const { points, starts } = shape, lines = starts.length - 1;
-  const at = (vertex: number) => frame.toX(points[2 * vertex]);
-  const ys: number[] = [];
-  for (let line = lower(lines, index => at(starts[index + 1] - 1) < x - 1e-6); line < lines; line++) {
-    const from = starts[line], to = starts[line + 1];
-    if (at(from) > x + 1e-6) break;
-    const first = Math.max(from, from + lower(to - from, index => at(from + index) < x - 1e-6) - 1);
-    const past = from + lower(to - from, index => at(from + index) <= x + 1e-6);
-    ys.push(...ordinates(shapeCommands(frame, shape, first, Math.min(to, past + 1)), x, targetY));
-  }
-  return ys;
-}
-
-export function pickSummaryLines(lines: readonly { key: string; summary: ChartSummary; held?: boolean }[], hour: number,
-  known: ReadonlySet<string>, context?: ChartPick): string[] {
-  if (!context?.frame || hour < Math.floor(context.frame.x[0]) || hour > Math.min(context.frame.x[1], context.until ?? Infinity)) return [];
-  const frame = context.frame, distances = new Map<string, number>();
-  const x = context.point?.x ?? frame.toX(Math.max(frame.x[0], hour));
-  const targetY = context.point?.y ?? frame.plotTop + frame.plotHeight / 2;
-  for (const line of lines) {
-    if (!known.has(line.key)) continue;
-    const runs = exactRuns(line.summary);
-    if (runs && !runAt(runs, hour)) continue;
-    const ys: number[] = [];
-    const shape = !runs && summaryFits(frame, line.summary, context.until) ? summaryShape(line.summary, line.held ?? false) : null;
-    if (shape && placeable(frame, shape)) {
-      const dots = shape.dots;
-      ys.push(...shapeOrdinates(frame, shape, x, targetY));
-      for (let at = 2 * lower(dots.length / 2, index => frame.toX(dots[2 * index]) < x - 1); at < dots.length && frame.toX(dots[at]) <= x + 1; at += 2)
-        ys.push(frame.toY(dots[at + 1]));
-    } else {
-      const geometry = summaryGeometry(frame, line.summary, line.held ?? false, context.until);
-      ys.push(...geometry.paths.flatMap(path => ordinates(path, x, targetY)));
-      for (const point of geometry.dots) if (Math.abs(point.x - x) <= 1) ys.push(point.y);
-    }
-    const visible = ys.filter(y => Number.isFinite(y) && y >= frame.plotTop && y <= frame.plotTop + frame.plotHeight);
-    if (!visible.length) continue;
-    distances.set(line.key, context.point ? visible.reduce((distance, y) => Math.min(distance, Math.abs(y - context.point!.y)), Infinity) : 0);
-  }
-  if (!context.point) return [...distances.keys()];
-  let nearest = Infinity;
-  for (const distance of distances.values()) nearest = Math.min(nearest, distance);
-  return [...distances].filter(([, distance]) => distance <= nearest + 2).map(([key]) => key);
 }
 
 export function summaryStack(parts: readonly ChartSummary[], total?: ChartSummary) {

@@ -1,6 +1,5 @@
 import { ellipsise } from './labels.ts';
-import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
-import type { GameDate } from '../dashboard/calendar.ts';
+import { formatDate, gameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
 import { layoutEndLabels } from './labels.ts';
@@ -233,13 +232,4 @@ export function placeEndLabels(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTok
 export function dayLabel(hour: number): string {
   const date = gameDate(Math.floor(hour));
   return date ? formatDate(date) : `Hour ${Math.floor(hour)}`;
-}
-
-export function spanLabel(first: number, last: number): string {
-  const [from, to] = [gameDate(Math.floor(first)), gameDate(Math.floor(last))];
-  if (!from || !to) return dayLabel(first) === dayLabel(last) ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;
-  if (from.year !== to.year) return `${formatDate(from)} – ${formatDate(to)}`;
-  const month = (date: GameDate) => monthNames[date.month - 1].slice(0, 3);
-  if (from.month !== to.month) return `${from.day} ${month(from)} – ${to.day} ${month(to)} ${to.year}`;
-  return from.day === to.day ? formatDate(from) : `${from.day}–${to.day} ${month(to)} ${to.year}`;
 }

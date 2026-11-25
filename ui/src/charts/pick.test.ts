@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { plotFrame } from './frame.ts';
-import { pickLines } from './linePick.ts';
+import { runAt } from './series.ts';
 import { ChartPicks } from './pick.ts';
 import type { ChartPick } from './pick';
+
+function pickLines(lines: readonly { key: string; runs: readonly { firstHour: number; lastHour: number; value: number }[] }[], hour: number, at: ChartPick): string[] {
+  const y = at.point?.y;
+  if (y === undefined || !at.frame) return lines.filter(line => runAt(line.runs, hour)).map(line => line.key);
+  const scored = lines.flatMap(line => {
+    const run = runAt(line.runs, hour);
+    return run ? [{ key: line.key, d: Math.abs(at.frame.toY(run.value) - y) }] : [];
+  });
+  const best = Math.min(...scored.map(item => item.d));
+  return [...new Set(scored.filter(item => item.d <= best + 2).map(item => item.key))].sort();
+}
 
 const frame = plotFrame(300, 200, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 100], [0, 100], false);
 const context = { frame, until: 50, point: { x: frame.toX(50), y: frame.toY(80) } };

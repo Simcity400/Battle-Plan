@@ -255,33 +255,3 @@ export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: read
   }
   return clipped;
 }
-
-export function extentOfAll(lists: readonly (readonly Run[])[], from: number, to: number): [number, number] | null {
-  const ranges = lists.map(runs => extentOf(runs, from, to)).filter((range): range is [number, number] => range != null);
-  return ranges.length ? [Math.min(...ranges.map(range => range[0])), Math.max(...ranges.map(range => range[1]))] : null;
-}
-
-export function lastSampleHour(runs: readonly Span[], at: number): number | null {
-  let low = 0;
-  let high = runs.length - 1;
-  let found: Span | null = null;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    if (runs[middle].firstHour <= at) { found = runs[middle]; low = middle + 1; } else high = middle - 1;
-  }
-  return found ? Math.min(found.lastHour, at) : null;
-}
-
-export function lineEndHour(runs: readonly Span[], from: number, at: number): number | null {
-  const last = lastSampleHour(runs, Math.floor(at));
-  return last != null && last >= Math.floor(from) ? last : null;
-}
-
-export function lineLabelHours(lines: readonly { tag: string; runs: readonly Span[] }[], from: number, to: number, until: number | null): Map<string, number> {
-  const hours = new Map<string, number>();
-  for (const line of lines) {
-    const hour = lineEndHour(line.runs, from, Math.min(to, until ?? to));
-    if (hour !== null) hours.set(line.tag, hour);
-  }
-  return hours;
-}

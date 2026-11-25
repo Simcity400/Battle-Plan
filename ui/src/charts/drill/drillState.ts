@@ -1,9 +1,7 @@
-import { createWidget } from '../../dashboard/model.ts';
-import type { WidgetSpec } from '../../dashboard/model';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { at, FOLLOW, regionFollows, SPEC, type GatedTime, type PinnedSpec, type Region, type RegionAction } from '../../dashboard/regionTime.ts';
+import { at, FOLLOW, regionFollows, SPEC, type Region, type RegionAction } from '../../dashboard/regionTime.ts';
 
 export interface Breakdown { id: string; label: string }
 export interface DrillHolder { tag: string; origin: number }
@@ -62,11 +60,4 @@ export const breakdownTitle = (title: string, label: string) => `${title}: ${lab
 
 export function breakdownVariants(title: string, fields: readonly OptionField[]): WidgetPreset[] {
   return choiceVariants(fields.find(field => field.key === 'show'), choice => breakdownTitle(title, choice.label));
-}
-
-export function pinnedBreakdown(source: WidgetSpec, breakdown: Breakdown, trackId: string, time: GatedTime): PinnedSpec {
-  const base = createWidget(source.kind, trackId);
-  return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
-    contentScale: source.contentScale, title: breakdownTitle(source.title, breakdown.label),
-    options: { ...source.options, show: breakdown.id } };
 }

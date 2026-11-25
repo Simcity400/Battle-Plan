@@ -716,29 +716,9 @@ struct SeriesParams {
     #[serde(default)]
     countries: Vec<Country>,
     from: Option<f64>,
-    to: Option<f64>,
-    width: Option<u32>,
     key: Option<NavigationKey>,
     first_hour: Option<f64>,
     last_hour: Option<f64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ArmyChartLine {
-    pub country: Country,
-    pub identities: Vec<ArmyIdentityRun>,
-    pub summary: dashboard_query::chart::ChartSummary,
-    pub membership: Option<Vec<ArmySpan>>,
-    pub missing: Vec<dashboard_query::series::MissingSpan>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ArmyChartReply {
-    pub series: Vec<ArmyChartLine>,
 }
 
 fn hour(value: Option<f64>, name: &str) -> io::Result<i32> {
@@ -752,35 +732,9 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
     let params: SeriesParams = dashboard_query::named::named(params).map_err(|error| invalid(format!("Invalid army series request: {error}")))?;
     let _ = &params.branch_id;
     let line = line(query, params.family.measure, params.family.count_for)?;
-    let (from, to) = match product {
-        "series-next-change" => (hour(params.first_hour, "firstHour")?, hour(params.last_hour, "lastHour")?),
-        _ => (hour(params.from, "from")?, hour(params.to, "to")?),
-    };
     match product {
-        "series-summary" => {
-            let width = params.width.filter(|width| (1..=8192).contains(width)).ok_or_else(|| invalid("Invalid width"))?;
-            let top = params.family.top.ok_or_else(|| invalid("An army chart of chosen countries is served as tiles"))?;
-            let (mut tags, mut charts, mut spans) = (Vec::new(), Vec::new(), Vec::new());
-            for ranked in line.ranked(from, to, width, top)? {
-                tags.push(Country::from(ranked.tag));
-                charts.push((ranked.summary, ranked.missing));
-                spans.push(ranked.membership.into_iter().map(|(first_hour, last_hour)| ArmySpan { first_hour, last_hour }).collect::<Vec<_>>());
-            }
-            let membership = Some(spans);
-            let mut out = Vec::with_capacity(tags.len());
-            for (at, (tag, (summary, missing))) in tags.into_iter().zip(charts).enumerate() {
-                let parts = line.parts(&tag, from, to);
-                out.push(ArmyChartLine {
-                    identities: parts.iter().map(|part| ArmyIdentityRun { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id }).collect(),
-                    membership: membership.as_ref().map(|members: &Vec<Vec<ArmySpan>>| members[at].clone()),
-                    country: tag,
-                    summary,
-                    missing,
-                });
-            }
-            Ok(serde_json::to_value(ArmyChartReply { series: out })?)
-        }
         "series-next-change" => {
+            let (from, to) = (hour(params.first_hour, "firstHour")?, hour(params.last_hour, "lastHour")?);
             let key = params.key.ok_or_else(|| invalid("The request names no key"))?;
             let origin = params.from.map(|from| from.floor() as i32);
             let declared = dashboard_declare::series("army-totals").and_then(|series| series.measure(measure_name(params.family.measure, params.family.count_for))).ok_or_else(|| invalid("Army measure is not declared"))?;
