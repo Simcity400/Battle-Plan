@@ -241,7 +241,7 @@ function buildEspionageRow(
     if (row.endedHour !== null) {
       out.push({
         label: row.status === 'completed' ? 'Completed' : 'Ended',
-        value: knownValue(row.exact ? formatDateTime(row.endedHour) : `by ${formatDateTime(row.endedHour)}`),
+        value: knownValue(formatDateTime(row.endedHour)),
       });
     }
     if (row.completion) {

@@ -73,12 +73,11 @@ export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipConte
       });
     }
   }
-  const notes = [payload.note].filter((text): text is string => Boolean(text && text.trim()));
   return {
     title,
     ...(subtitle ? { subtitle } : {}),
     rows,
-    ...(notes.length ? { note: notes.join(' ') } : {}),
+    ...(payload.note?.trim() ? { note: payload.note } : {}),
     ...(payload.description ? { description: payload.description } : {}),
     ...(payload.detail ? { detail: payload.detail } : {}),
     ...(payload.scrollable ? { scrollable: true } : {}),

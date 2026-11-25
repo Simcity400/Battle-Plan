@@ -296,7 +296,7 @@ test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SA
   assert.equal(formatScalar(1e21, 'clockSeconds'), '277777777777777777:46:40');
 });
 
-test('dates omit hours on screen, carry exact hours on hover, and format bounded and missing dates', () => {
+test('dates show the day on screen and the hour on hover, and identify missing dates', () => {
   const hour = engineHour({ year: 1941, month: 9, day: 14, hour: 8 })!;
   assert.equal(formatDateOnly(hour), '14 Sep 1941');
   assert.equal(formatDateOnly(hour).includes(':'), false);

@@ -90,12 +90,11 @@ function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options:
   const base = removed.recipient
     ? titled(readView, removed.recipient, removed.name ?? UNNAMED_GOAL, options, removed.seen)
     : { title: removed.name ? knownValue(removed.name) : notRecorded('The kind of war goal was not recorded') };
-  const date = formatDateOnly(removed.removed);
   return {
     kind: 'item',
     key: `removed:${removed.handle}:${removed.removed}`,
     ...base,
-    figure: { value: knownValue(removed.removedExact ? date : `By ${date}`), figure: 'Removed' },
+    figure: { value: knownValue(formatDateOnly(removed.removed)), figure: 'Removed' },
     state: { mark: 'ended', label: 'Removed' },
     muted: true,
     tooltip: {
@@ -103,7 +102,7 @@ function removedRow(readView: BoundedReadView, removed: WargoalRemoved, options:
       hour: readView.hour,
       items: [
         ...grantItems(removed.granted, removed.grantedMissing),
-        { label: removed.removedExact ? 'Removed' : 'Removed by', value: formatDateHover(removed.removed) },
+        { label: 'Removed', value: formatDateHover(removed.removed) },
         { label: 'Reason', missingReason: removed.reasonMissing },
       ],
     },

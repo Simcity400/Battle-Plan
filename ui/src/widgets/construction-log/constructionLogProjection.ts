@@ -268,15 +268,10 @@ function buildConstructionRow(
     } else if (!row.live && row.lastFactories !== null) {
       out.push({ label: 'Factories at last read', value: knownValue(formatScalar(row.lastFactories, 'integer')) });
     }
-    if (row.createdHour !== null) {
-      out.push({ label: 'Started', value: knownValue(formatDateTime(row.createdHour)) });
-    } else {
-      out.push({ label: 'First seen', value: knownValue(formatDateTime(row.firstRead)) });
-    }
+    out.push({ label: 'Started', value: knownValue(formatDateTime(row.createdHour ?? row.firstRead)) });
     if (row.end !== null) {
       const endLabel = row.end.kind === 'finished' ? 'Finished' : row.end.kind === 'removed' ? 'Removed' : 'Left the queue';
-      const dateStr = row.end.hour !== null ? formatDateTime(row.end.hour) : `by ${formatDateTime(row.end.knownAt)}`;
-      out.push({ label: endLabel, value: knownValue(dateStr) });
+      out.push({ label: endLabel, value: knownValue(formatDateTime(row.end.hour ?? row.end.knownAt)) });
     }
     if (row.costRaw !== null && costScale > 0) {
       const scale = Math.round(Math.log10(costScale));

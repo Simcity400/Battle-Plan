@@ -83,7 +83,7 @@ function aceTooltip(row: AceRow): TooltipExtraRow[] {
   ];
   const death = ace.death;
   if (death) {
-    rows.push({ label: 'Killed', value: death.byHour === null || death.lastAlive === null
+    rows.push({ label: 'Killed', value: death.byHour === null
       ? notRecorded('Date of death not recorded')
       : knownValue(formatDateOnly(death.byHour)) });
     if (death.killerAce) rows.push({ label: 'Killed by', value: textValue(death.killerName, 'Killer ace name not recorded') });
