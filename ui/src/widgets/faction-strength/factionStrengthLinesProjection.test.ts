@@ -6,6 +6,7 @@ import type { FamilyPlanContext, IdentityProvider } from '../../families/contrac
 import type { FactionTotalsAtReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import { resolveWidgetScopedOptions } from '../manifest.ts';
+import { withFactionTotalsStyles } from '../../families/time-chart/factionTotalsLines.ts';
 import { factionStrengthLinesDeclaration, factionStrengthLinesProjection } from './factionStrengthLinesProjection.ts';
 
 function fakeIdentity(names: Readonly<Record<string, { readonly name: string; readonly color: string }>>): IdentityProvider {
@@ -178,4 +179,61 @@ test('faction-strength lines hides future factions, keeps recorded zeros and mis
   assert.equal(model.hoverDetail?.hour, 280);
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'Members' && item.value?.includes('German Reich')));
   assert.throws(() => view.who('faction', '10', displayedHour(301)), FutureDataError);
+});
+
+test('faction-strength lines applies campaign faction renames and colours to lines, end labels, and hover details', () => {
+  const hoverReply: FactionTotalsAtReply = {
+    hour: 280,
+    kind: 'country-factories',
+    measure: 'free7',
+    rows: [
+      { id: '10', members: ['GER'], memberCountries: [7], total: 410, missing: null },
+      { id: '20', members: ['ENG'], memberCountries: [9], total: 350, missing: null },
+    ],
+    missing: null,
+    warnings: [],
+  };
+  const view = createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([
+      ['main', {
+        decimals: 0,
+        states: [
+          { country: '10', hour: 300, run: { valueRaw: '410' }, missing: null },
+          { country: '20', hour: 300, run: { valueRaw: '350' }, missing: null },
+        ],
+      }],
+    ]),
+    hovers: new Map([['hover', { hour: displayedHour(280), data: hoverReply }]]),
+    identity: fakeIdentity({
+      'faction:10': { name: 'Axis', color: '#6b7280' },
+      'faction:20': { name: 'Allies', color: '#e11d48' },
+      [`country:${countryKey(7)}`]: { name: 'German Reich', color: '#6b7280' },
+      [`country:${countryKey(9)}`]: { name: 'United Kingdom', color: '#e11d48' },
+    }),
+  });
+  const styled = withFactionTotalsStyles(
+    factionStrengthLinesDeclaration,
+    { '10': { name: 'Berlin Pact', colour: '#ff8800' } },
+    { '["name","Allies"]': { colour: '#22c55e' } },
+  );
+  const opts = styled.projectionOptions(
+    makeCtx({
+      options: { measure: 'factories', count: 'free', endLabels: true },
+      factions: [
+        { id: '10', tag: 'GER', firstHour: 100, lastHour: 600 },
+        { id: '20', tag: 'ENG', firstHour: 100, lastHour: 600 },
+      ],
+    }),
+    { extent: [100, 600], surface: '#111111' },
+  );
+  const model = factionStrengthLinesProjection.project(view, opts);
+  assert.deepEqual(model.series.map(s => [s.id, s.name, s.color, s.endLabel?.name, s.endLabel?.colorBar]), [
+    ['10', 'Berlin Pact', '#ff8800', 'Berlin Pact', '#ff8800'],
+    ['20', 'Allies', '#22c55e', 'Allies', '#22c55e'],
+  ]);
+  const axisHover = model.hoverDetail?.items.find(item => item.label === 'Berlin Pact');
+  const alliesHover = model.hoverDetail?.items.find(item => item.label === 'Allies');
+  assert.equal(axisHover?.swatch, '#ff8800');
+  assert.equal(alliesHover?.swatch, '#22c55e');
 });
