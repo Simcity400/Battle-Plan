@@ -151,14 +151,14 @@ export const factionLabel = (view: FactionView, hour?: number) => (hour == null 
 function memberWords(day: (hour: number) => string): RunWords {
   return {
     since: hour => `Joined ${day(hour)}`, before: hour => `Member before ${day(hour)}`,
-    ended: hour => `Left ${day(hour)}`, endedBy: hour => `Left by ${day(hour)}`, lastSeen: hour => `Last recorded ${day(hour)}`,
+    ended: hour => `Left ${day(hour)}`, endedBy: hour => `Left ${day(hour)}`, lastSeen: hour => `Last recorded ${day(hour)}`,
   };
 }
 
 export function factionWords(day: (hour: number) => string): RunWords {
   return {
     since: hour => `Founded ${day(hour)}`, before: hour => `Founded before ${day(hour)}`,
-    ended: hour => `Dissolved ${day(hour)}`, endedBy: hour => `Dissolved by ${day(hour)}`, lastSeen: hour => `Last recorded ${day(hour)}`,
+    ended: hour => `Dissolved ${day(hour)}`, endedBy: hour => `Dissolved ${day(hour)}`, lastSeen: hour => `Last recorded ${day(hour)}`,
   };
 }
 

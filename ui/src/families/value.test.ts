@@ -27,7 +27,6 @@ import { canonicalAuditData } from './audit.ts';
 import {
   GAME_WINDOW_MISSING_LABEL,
   auditValue,
-  formatBoundDate,
   formatCompactRational,
   formatCompactScalar,
   formatDateHover,
@@ -308,19 +307,14 @@ test('dates omit hours on screen, carry exact hours on hover, and format bounded
     full: '14 Sep 1941',
     hover: '14 Sep 1941 · 08:00',
   });
-  const bound = formatBoundDate(hour, 'by', 'First observed after recording started.');
-  assert.equal(bound.display, '14 Sep 1941');
-  assert.equal(bound.hover, 'By 14 Sep 1941 · 08:00');
-  assert.equal(bound.reason, 'First observed after recording started.');
-
   const missingDate = formatDateValue(notRecorded('Date was absent from the log.'));
   assert.equal(missingDate.kind, 'notRecorded');
   assert.equal(missingDate.label, 'Date not recorded');
 
-  const knownDate = formatDateValue(knownValue(hour), { bound: { kind: 'since', reason: 'Observed since gap end.' } });
+  const knownDate = formatDateValue(knownValue(hour));
   assert.equal(knownDate.kind, 'known');
   assert.equal(knownDate.text, '14 Sep 1941');
-  assert.equal(knownDate.hover, 'Since 14 Sep 1941 · 08:00');
+  assert.equal(knownDate.hover, '14 Sep 1941 · 08:00');
 });
 
 test('missing-value vocabulary, compact K/M formatting, and N / max preserve exact figures and missing caps', () => {

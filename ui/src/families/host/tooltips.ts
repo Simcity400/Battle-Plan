@@ -1,14 +1,8 @@
 import { fitTooltip, hideTooltip, showTooltip, tooltipText, type TooltipContent, type TooltipRow } from '../../charts/tooltip.ts';
-import { formatBoundDate, formatDateHover, type DateBoundKind } from '../valueFormat.ts';
+import { formatDateHover } from '../valueFormat.ts';
 
 export const HOVER_OPEN_MS = 150;
 export const HOVER_CLOSE_MS = 100;
-
-export interface TooltipDateBound {
-  readonly kind: DateBoundKind;
-  readonly hour: number;
-  readonly reason: string;
-}
 
 export interface TooltipListItem {
   readonly label: string;
@@ -28,7 +22,6 @@ export interface FamilyTooltipPayload {
   readonly fullText?: string;
   readonly hour?: number;
   readonly subtitle?: string;
-  readonly dateBound?: TooltipDateBound;
   readonly missingReason?: string;
   readonly exactValue?: string;
   readonly items?: readonly TooltipListItem[];
@@ -54,11 +47,7 @@ export interface FamilyActionPayload {
 
 export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipContent {
   const title = payload.fullText && payload.fullText.trim() ? payload.fullText : payload.title;
-  const bound = payload.dateBound
-    ? formatBoundDate(payload.dateBound.hour, payload.dateBound.kind, payload.dateBound.reason)
-    : null;
   const subtitle = payload.subtitle
-    ?? bound?.hover
     ?? (payload.hour !== undefined ? formatDateHover(payload.hour) : undefined);
   const rows: TooltipRow[] = [];
   if (payload.exactValue !== undefined) {
@@ -84,7 +73,7 @@ export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipConte
       });
     }
   }
-  const notes = [bound?.reason, payload.note].filter((text): text is string => Boolean(text && text.trim()));
+  const notes = [payload.note].filter((text): text is string => Boolean(text && text.trim()));
   return {
     title,
     ...(subtitle ? { subtitle } : {}),

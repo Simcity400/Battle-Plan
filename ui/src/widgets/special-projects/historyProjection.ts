@@ -113,7 +113,7 @@ function projectLane(readView: BoundedReadView, reply: SpecialProjectsReply, pro
   const words = STATE_WORDS[shown.state];
   const subtitle = shown.state === 'running' || shown.state === 'paused'
     ? `${words} · ${shown.progress}%`
-    : shown.state === 'completed' ? `${words} · by ${formatDateOnly(completedSince(project, shown))}` : words;
+    : shown.state === 'completed' ? `${words} · ${formatDateOnly(completedSince(project, shown))}` : words;
   return {
     key: `${reply.tag}:${project.id}`,
     kind: 'item',
@@ -212,7 +212,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
         ? [
             { label: 'State', value: STATE_WORDS[meta.state] },
             { label: 'Progress', value: `${meta.progress}%` },
-            { label: span.heldBefore ? 'Held before' : 'Since', value: `${span.startBy ? 'By ' : ''}${formatDateOnly(span.firstHour)}` },
+            { label: span.heldBefore ? 'Held before' : 'Since', value: formatDateOnly(span.firstHour) },
             { label: 'Read', value: formatDateOnly(meta.read) },
           ]
         : [{ label: 'State', value: inHourSpans(model.unobserved, at) ? 'Not recorded' : lane.subtitle ?? 'Not in progress' }],

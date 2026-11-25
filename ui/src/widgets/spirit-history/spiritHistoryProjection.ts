@@ -44,7 +44,7 @@ function describe(holding: IdeaHolding): string {
         : holding.start === 'firstObserved' ? `First observed ${formatDateOnly(holding.firstHour)}`
           : `Active since ${formatDateOnly(holding.firstHour)}`;
     case 'ended': return `Ended ${formatDateOnly(holding.lastHour + 1)}`;
-    case 'endedBy': return `Ended by ${formatDateOnly(holding.end.hour)}`;
+    case 'endedBy': return `Ended ${formatDateOnly(holding.end.hour)}`;
     case 'lastSeen': return `Last recorded ${formatDateOnly(holding.lastHour)}`;
   }
 }

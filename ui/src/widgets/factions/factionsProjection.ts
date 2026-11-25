@@ -185,7 +185,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
       subtitle: faction?.label ?? 'Faction member',
       hour: at,
       items: [
-        ...(span ? [{ label: span.heldBefore ? 'Member before' : 'Joined', value: `${span.startBy ? 'By ' : ''}${formatDateOnly(span.firstHour)}` }] : [{ label: 'Membership', value: inHourSpans(model.unobserved, at) ? 'Not recorded' : 'Not a member' }]),
+        ...(span ? [{ label: span.heldBefore ? 'Member before' : 'Joined', value: formatDateOnly(span.firstHour) }] : [{ label: 'Membership', value: inHourSpans(model.unobserved, at) ? 'Not recorded' : 'Not a member' }]),
         ...(span && leads ? [{ label: 'Role', value: 'Leader' }] : []),
       ],
     };

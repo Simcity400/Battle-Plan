@@ -25,7 +25,7 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, sides, colors },
     cells: {
-      date: logDateCell(row.hour, row.exact ? undefined : 'by'),
+      date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 }, 'square', 'Land battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
       place: { value: row.state === null ? notRecorded('Province state not recorded') : resolveName(view, 'state', String(row.state), { atHour: row.hour, boundary }).value },

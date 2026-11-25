@@ -25,7 +25,7 @@ import {
 } from '../value.ts';
 import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
-import { formatDateHover, formatValueState, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
+import { formatDateHover, formatValueState, spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
 import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
@@ -135,7 +135,6 @@ export interface TableCell {
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
   readonly loading?: boolean;
-  readonly boundedDate?: DateBoundKind;
   readonly splitBar?: readonly TableCellSplitSegment[];
   readonly secondaryValue?: Value;
   readonly pair?: readonly [Value, Value];
@@ -478,7 +477,6 @@ export function annotateLogBoundaries(
 
   const out = rows.slice();
   let prevDay: number | null = null;
-  let prevBound: DateBoundKind | undefined;
   let prevWasLive: boolean | null = null;
 
   for (let b = 0; b < blocks.length; b++) {
@@ -486,15 +484,13 @@ export function annotateLogBoundaries(
     const nextHead = blocks[b + 1]?.head;
     if (block.head.kind !== 'data') {
       prevDay = null;
-      prevBound = undefined;
       prevWasLive = null;
       continue;
     }
     const isLive = block.head.row.live === true;
     const rowHour = dateHourOf(block.head.row, dateKey);
     const day = dayKeyOf(rowHour);
-    const bound = dateKey ? block.head.row.cells[dateKey]?.boundedDate : undefined;
-    const showDate = !(suppressRepeatDates && prevWasLive === isLive && day !== null && day === prevDay && bound === prevBound);
+    const showDate = !(suppressRepeatDates && prevWasLive === isLive && day !== null && day === prevDay);
     if (!showDate) {
       out[block.start] = { ...block.head, showDate: false };
     }
@@ -512,7 +508,6 @@ export function annotateLogBoundaries(
       }
     }
     prevDay = day;
-    prevBound = bound;
     prevWasLive = isLive;
   }
   return out;
@@ -1199,13 +1194,6 @@ function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, 
   };
 }
 
-const BOUNDED_HOVER_PREFIX: Readonly<Record<DateBoundKind, string>> = {
-  by: 'By',
-  since: 'Since',
-  after: 'After',
-  before: 'Before',
-};
-
 export const ART_STATUS_ROW = 'art-status';
 
 function artStatuses(cell: TableCell, inTitle: boolean): { readonly label: string; readonly text: string }[] {
@@ -1263,8 +1251,7 @@ export function deriveRowTooltip(
     const resolved = resolveCellAtHour(cell);
     if (col.cellKind === 'date' && hasMeasuredValue(resolved.value) && typeof resolved.value.value === 'number') {
       const hoverDate = formatDateHover(resolved.value.value);
-      const text = cell.boundedDate ? `${BOUNDED_HOVER_PREFIX[cell.boundedDate]} ${hoverDate}` : hoverDate;
-      rows.push(tooltipRowFromValue(col.label || 'Date', knownValue(text)));
+      rows.push(tooltipRowFromValue(col.label || 'Date', knownValue(hoverDate)));
       continue;
     }
     if (col.headerGroup?.kind === 'pair' && cell.pair) {
@@ -1375,7 +1362,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'narrowText' | 'strong' | 'tooltipRows' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
+  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'narrowText' | 'strong' | 'tooltipRows' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;

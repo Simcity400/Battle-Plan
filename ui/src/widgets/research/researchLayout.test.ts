@@ -151,7 +151,7 @@ test('research lanes draw the product\'s answer at the hour: pieces split at unr
   const switched = researchProjection.tooltip!(model, { kind: 'span', laneKey: 'slot:0', spanId: betaAfter!.id, hour: day(85) }, view, opt)!;
   assert.equal(value(switched, 'Status')?.value, 'Switched');
   assert.equal(value(switched, 'Started')?.value, formatDateOnly(day(40)));
-  assert.equal(value(switched, 'Switched')?.value, `By ${formatDateOnly(day(90))}`, 'an end between two reads is an upper bound');
+  assert.equal(value(switched, 'Switched')?.value, formatDateOnly(day(90)), 'an end between two reads shows the later read');
 
   const delta = model.lanes[1]!.spans[0]!;
   assert.equal(delta.label, 'tech_delta', 'an unnamed technology shows its own recorded key');

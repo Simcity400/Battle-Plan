@@ -509,15 +509,6 @@ export interface DateColumnParts {
   readonly hover: string;
 }
 
-export type DateBoundKind = 'by' | 'since' | 'after' | 'before';
-
-const DATE_BOUND_PREFIX: Readonly<Record<DateBoundKind, string>> = {
-  by: 'By',
-  since: 'Since',
-  after: 'After',
-  before: 'Before',
-};
-
 export function formatDateOnly(hour: number): string {
   return formatDay(Math.floor(hour));
 }
@@ -541,28 +532,9 @@ export function formatDateParts(hour: number): DateColumnParts | null {
   };
 }
 
-export interface FormattedBoundDate {
-  readonly display: string;
-  readonly hover: string;
-  readonly exact: string;
-  readonly reason: string;
-}
-
-export function formatBoundDate(hour: number, kind: DateBoundKind, reason: string): FormattedBoundDate {
-  const whole = Math.floor(hour);
-  const display = formatDateOnly(whole);
-  const exact = formatDateHover(whole);
-  return {
-    display,
-    hover: `${DATE_BOUND_PREFIX[kind]} ${exact}`,
-    exact,
-    reason,
-  };
-}
-
 export function formatDateValue(
   hour: Value<number>,
-  options?: { readonly figure?: string; readonly gameWindow?: boolean; readonly bound?: { readonly kind: DateBoundKind; readonly reason: string } },
+  options?: { readonly figure?: string; readonly gameWindow?: boolean },
 ): FormattedValue & { readonly hover?: string; readonly parts?: DateColumnParts | null } {
   assertValue(hour, 'formatDateValue');
   if (hour.kind === 'notRecorded') {
@@ -574,8 +546,7 @@ export function formatDateValue(
   const whole = Math.floor(Number(hour.value));
   const display = formatDateOnly(whole);
   const parts = formatDateParts(whole);
-  const bound = options?.bound ? formatBoundDate(whole, options.bound.kind, options.bound.reason) : null;
-  const hover = bound ? bound.hover : formatDateHover(whole);
+  const hover = formatDateHover(whole);
   if (hour.kind === 'partial') {
     const spoken = `${display}, partial: ${hour.reason}`;
     return { kind: 'partial', text: display, exact: hover, reason: hour.reason, spoken, audit: spoken, hover, parts };

@@ -202,11 +202,6 @@ function buildRaidRow(
     : row.disappearedHour !== null
       ? row.disappearedHour
       : row.hour;
-  const shownExact = row.end !== null
-    ? row.end.exact
-    : row.disappearedHour !== null
-      ? row.disappearedExact
-      : row.exact;
 
   const raiderEntry = row.end !== null
     ? {
@@ -296,7 +291,7 @@ function buildRaidRow(
       live: row.live,
       muted: status.muted,
       cells: {
-        date: logDateCell(shownHour, shownExact ? undefined : 'by'),
+        date: logDateCell(shownHour),
         kind: kindCell,
         country: countryCell,
         item: itemCell,

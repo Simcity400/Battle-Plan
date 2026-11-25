@@ -118,7 +118,7 @@ function slotsAtHit(readView: BoundedReadView, at: number): SlotsAtHit {
 }
 
 function boundText(bound: ResearchBound): string {
-  return bound.kind === 'exact' || bound.kind === 'lastSeen' ? formatDateOnly(bound.hour) : `By ${formatDateOnly(bound.hour)}`;
+  return bound.kind === 'exact' || bound.kind === 'lastSeen' ? formatDateOnly(bound.hour) : formatDateOnly(bound.hour);
 }
 
 function nextChangeOf(reply: ResearchHistoryReply | undefined, slotsNow: ResearchSlotsReply | undefined, hour: number): number {

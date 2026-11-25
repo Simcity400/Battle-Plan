@@ -312,7 +312,7 @@ function buildConstructionRow(
     live: row.live,
     muted: status.muted,
     cells: {
-      date: logDateCell(row.hour, row.exact ? undefined : 'by'),
+      date: logDateCell(row.hour),
       kind: kindCell,
       country: countryCell,
       item: itemCell,
