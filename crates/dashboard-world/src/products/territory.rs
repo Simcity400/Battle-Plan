@@ -2,7 +2,6 @@
 use super::group_members::GroupsAt;
 use dashboard_base::products::{Country, LoadContext, validate_country};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour}, breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded}}};
-use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
 use dashboard_query::series::ranked::GroupSelection;
 use replay_data::rows::{Recorded, TableId, TerritoryRegionTotalRow, TerritoryTotalRow, tables};
@@ -77,6 +76,8 @@ fn branch(text: &str) -> Result<(), &'static str> {
 
 pub struct TerritoryShare;
 
+const REST_OF_WORLD: &str = "~rest";
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -84,67 +85,114 @@ pub struct TerritoryShareParams {
     pub branch_id: String,
     #[doc = " A declared territory measure."]
     pub measure: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct TerritoryShareEntry {
-    pub tag: String,
-    pub slot: u32,
+    #[doc = " When set, keep the top N named countries and roll the rest into Rest of the world."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryShareReply {
+    pub hour: i32,
     pub measure: String,
-    pub entries: Vec<TerritoryShareEntry>,
-    #[doc = " Some is held by slots no tag holds at the hour: in the rest of the world, named by no country."]
-    pub unnamed: bool,
-    #[doc = " Why the whole is not known, never a smaller sum."]
-    pub missing: Option<String>,
+    pub breakdown: Breakdown,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(TerritoryShareReply);
 
-pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, at: usize, live: &Cells) -> TerritoryShareReply {
-    let (mut entries, mut unnamed, mut world) = (Vec::new(), Vec::new(), None);
+fn share_country(slot: u32, tags: &HashMap<u32, (&str, u32)>) -> Node {
+    match tags.get(&slot) {
+        Some(&(tag, _)) => Node::new(format!("slot:{slot}"), tag, slot),
+        None => Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other(),
+    }
+}
+
+pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, at: usize, top: Option<u32>, hour: i32) -> TerritoryShareReply {
+    let mut world = None;
+    let mut named: Vec<(i64, u32, &str)> = Vec::new();
+    let mut unnamed: Vec<(i64, u32)> = Vec::new();
+    let mut unread: Vec<Leaf> = Vec::new();
+    let mut known_sum: i128 = 0;
     for row in rows {
         if row.slot == WORLD {
             world = Some(cell(row, at));
             continue;
         }
-        let Some(value) = cell(row, at) else { continue };
-        match tags.get(&row.slot) {
-            Some(&(tag, _)) if value != 0 => entries.push((value, TerritoryShareEntry { tag: tag.to_owned(), slot: row.slot })),
-            Some(_) => {}
-            None if value != 0 => unnamed.push(row.slot),
-            None => {}
+        match cell(row, at) {
+            Some(0) => {}
+            Some(value) => {
+                known_sum += i128::from(value);
+                match tags.get(&row.slot) {
+                    Some(&(tag, _)) => named.push((value, row.slot, tag)),
+                    None => unnamed.push((value, row.slot)),
+                }
+            }
+            None => unread.push(Leaf {
+                path: vec![share_country(row.slot, tags)],
+                amount: Amount::NotRecorded(format!("{} is not recorded for this country at this hour", MEASURES[at])),
+                count: None,
+                last: None,
+            }),
         }
     }
-    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.tag.cmp(&b.1.tag)));
-    let source = |slot: u32| Cell { table: TableId::TerritoryTotals, column: at, key: u128::from(slot) };
-    live.value("world", "total", source(WORLD), 1.0);
-    if !unnamed.is_empty() {
-        live.sum("world", "unnamed", &unnamed.iter().map(|&slot| source(slot)).collect::<Vec<_>>(), 1.0);
-    }
-    for (_, entry) in &entries {
-        live.value(&entry.slot.to_string(), "value", source(entry.slot), 1.0);
-    }
-    let missing = match world {
-        Some(Some(_)) => None,
-        Some(None) => Some(format!("The world's {} is not recorded at this hour", MEASURES[at])),
-        None => Some("The world's territory is not recorded at this hour".to_owned()),
+    let Some(world) = world else {
+        return TerritoryShareReply {
+            hour,
+            measure: MEASURES[at].to_owned(),
+            breakdown: not_recorded("The world's territory is not recorded at this hour".to_owned()),
+            warnings: Vec::new(),
+        };
     };
-    TerritoryShareReply {
-        measure: MEASURES[at].to_owned(),
-        entries: entries.into_iter().map(|(_, entry)| entry).collect(),
-        unnamed: !unnamed.is_empty(),
-        missing,
-        warnings: Vec::new(),
+    let Some(world) = world else {
+        return TerritoryShareReply {
+            hour,
+            measure: MEASURES[at].to_owned(),
+            breakdown: not_recorded(format!("The world's {} is not recorded at this hour", MEASURES[at])),
+            warnings: Vec::new(),
+        };
+    };
+    named.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    unnamed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut leaves = Vec::new();
+    let mut warnings = Vec::new();
+    let any_unread = !unread.is_empty();
+    if let Some(limit) = top {
+        let mut shown_sum: i128 = 0;
+        for &(value, slot, tag) in named.iter().take(limit as usize) {
+            shown_sum += i128::from(value);
+            leaves.push(Leaf { path: vec![Node::new(format!("slot:{slot}"), tag, slot)], amount: Amount::Known(Exact::whole(i128::from(value))), count: None, last: None });
+        }
+        let rest = if any_unread { known_sum - shown_sum } else { i128::from(world) - shown_sum };
+        if rest > 0 {
+            leaves.push(Leaf { path: vec![Node::new(REST_OF_WORLD, "Rest of the world", u32::MAX).other()], amount: Amount::Known(Exact::whole(rest)), count: None, last: None });
+        }
+        if !unnamed.is_empty() {
+            warnings.push("Some territory is held by countries no tag names at this hour; it counts in the rest of the world.".to_owned());
+        }
+    } else {
+        for (value, slot, tag) in named {
+            leaves.push(Leaf { path: vec![Node::new(format!("slot:{slot}"), tag, slot)], amount: Amount::Known(Exact::whole(i128::from(value))), count: None, last: None });
+        }
+        for (value, slot) in unnamed {
+            leaves.push(Leaf {
+                path: vec![Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other()],
+                amount: Amount::Known(Exact::whole(i128::from(value))),
+                count: None,
+                last: None,
+            });
+        }
+        if !any_unread {
+            let unheld = i128::from(world) - known_sum;
+            if unheld > 0 {
+                leaves.push(Leaf { path: vec![Node::new(NOT_HELD, "Held by no country", u32::MAX).other()], amount: Amount::Known(Exact::whole(unheld)), count: None, last: None });
+            }
+        }
     }
+    leaves.extend(unread);
+    TerritoryShareReply { hour, measure: MEASURES[at].to_owned(), breakdown: breakdown::breakdown(&leaves, &Unrecorded::default()), warnings }
 }
 
 impl AtHour for TerritoryShare {
@@ -152,20 +200,19 @@ impl AtHour for TerritoryShare {
     const TITLE: &'static str = "Territory share";
     const CONTENT_DEPENDENT: bool = false;
     type Params = TerritoryShareParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, top];
     type Reply = TerritoryShareReply;
     type Context = ();
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![TerritoryShareParams::decl(), TerritoryShareEntry::decl(), TerritoryShareReply::decl()]
+        vec![TerritoryShareParams::decl(), TerritoryShareReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
         MEASURES.contains(&params.measure.as_str()).then_some(()).ok_or("Unknown territory measure")
     }
-
 
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
@@ -183,16 +230,25 @@ impl AtHour for TerritoryShare {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, ()>) -> io::Result<Self::Reply> {
         let measure = MEASURES.iter().position(|name| *name == params.measure).ok_or_else(|| dashboard_core::invalid("Unknown territory measure"))?;
-        Ok(match frame.complete::<tables::TerritoryTotals>() {
-            Ok(rows) => share(rows, &slot_tags(at.holders, frame.hour), measure, at.live),
-            Err(error) => TerritoryShareReply {
+        if let Some((_, _, reason)) = at.holders.unknown.iter().find(|(first, last, _)| *first <= frame.hour && frame.hour <= *last) {
+            return Ok(TerritoryShareReply {
+                hour: frame.hour,
                 measure: params.measure.clone(),
-                entries: Vec::new(),
-                unnamed: false,
-                missing: Some(format!("Territory totals are not known at this hour: {error}")),
+                breakdown: not_recorded(format!("Country tags are not known at this hour: {reason}")),
+                warnings: Vec::new(),
+            });
+        }
+        let reply = match frame.complete::<tables::TerritoryTotals>() {
+            Ok(rows) => share(rows, &slot_tags(at.holders, frame.hour), measure, params.top, frame.hour),
+            Err(error) => TerritoryShareReply {
+                hour: frame.hour,
+                measure: params.measure.clone(),
+                breakdown: not_recorded(format!("Territory totals are not known at this hour: {error}")),
                 warnings: Vec::new(),
             },
-        })
+        };
+        dashboard_base::products::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 
@@ -450,24 +506,38 @@ mod tests {
 
     #[test]
     fn a_share_is_of_the_worlds_territory_and_unknown_where_the_world_is_not_recorded() {
+        use dashboard_base::products::breakdown::BreakdownState;
         let tags: HashMap<u32, (&str, u32)> = [(1, ("GER", 10)), (2, ("ITA", 20))].into();
         let rows = [total(1, Recorded::Value(5), 6), total(2, Recorded::Value(3), 1), total(3, Recorded::Value(2), 0), total(WORLD, Recorded::Value(12), 12)];
-        let cells = Cells::default();
-        let owned = share(&rows, &tags, 0, &cells);
-        let got: Vec<(&str, u32)> = owned.entries.iter().map(|entry| (entry.tag.as_str(), entry.slot)).collect();
-        assert_eq!(got, [("GER", 1), ("ITA", 2)], "the world row is never a country, and the greatest comes first");
-        assert_eq!((owned.unnamed, owned.missing.as_deref()), (true, None), "the whole is the world's, unowned land in it");
-        let json = cells.finish().json(&[]);
-        assert_eq!(json["rows"], serde_json::json!(["world", "1", "2"]), "the amounts are cells: the world's whole and part no tag names, each country's");
-        let kinds: Vec<&str> = json["kinds"].as_array().unwrap().iter().map(|kind| kind["id"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["total", "unnamed", "value"]);
-        let controlled = share(&rows, &tags, 1, &Cells::default());
-        assert_eq!(controlled.entries.len(), 2, "a country holding none has no slice");
-        assert!(!controlled.unnamed, "a slot no tag names holding none is not land in the rest");
-        let rows = [total(1, Recorded::Value(5), 6), total(WORLD, Recorded::NotRecorded, 7)];
-        let owned = share(&rows, &tags, 0, &Cells::default());
-        assert!(owned.missing.is_some(), "the world not recorded leaves the whole unknown, never a smaller sum");
-        assert!(share(&rows[..1], &tags, 1, &Cells::default()).missing.is_some(), "no world row, no whole");
+        let owned = share(&rows, &tags, 0, Some(1), 500);
+        assert_eq!(owned.hour, 500);
+        assert_eq!(owned.breakdown.total.state, BreakdownState::Known);
+        assert_eq!(owned.breakdown.total.amount, Some(BreakdownAmount { numerator: "12".into(), denominator: "1".into() }));
+        let got: Vec<(&str, &str, bool)> = owned.breakdown.parts.iter().map(|part| (part.key.as_str(), part.name.as_str(), part.other)).collect();
+        assert_eq!(got, [("slot:1", "GER", false), (REST_OF_WORLD, "Rest of the world", true)], "top N keeps named leaders by slot and folds the rest against the world total");
+        assert_eq!(owned.breakdown.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }));
+        assert_eq!(owned.breakdown.parts[1].amount, Some(BreakdownAmount { numerator: "7".into(), denominator: "1".into() }));
+        assert_eq!(owned.warnings.len(), 1, "unnamed territory folded into rest of the world is reported");
+
+        let all = share(&rows, &tags, 0, None, 500);
+        let all_keys: Vec<(&str, bool)> = all.breakdown.parts.iter().map(|part| (part.key.as_str(), part.other)).collect();
+        assert_eq!(all_keys, [("slot:1", false), ("slot:2", false), ("slot:3", true), (NOT_HELD, true)], "without top, unnamed slots and unheld land keep separate parts");
+        assert!(all.warnings.is_empty());
+
+        let controlled = share(&rows, &tags, 1, Some(10), 500);
+        assert_eq!(controlled.breakdown.parts.len(), 3, "two named countries plus unheld land in rest of world");
+        assert!(controlled.warnings.is_empty(), "a slot no tag names holding none is not land in the rest");
+
+        let unread_world = [total(1, Recorded::Value(5), 6), total(WORLD, Recorded::NotRecorded, 7)];
+        let missing_world = share(&unread_world, &tags, 0, Some(10), 500);
+        assert_eq!(missing_world.breakdown.total.state, BreakdownState::NotRecorded, "the world not recorded leaves the whole unknown, never a smaller sum");
+        assert_eq!(share(&unread_world[..1], &tags, 1, Some(10), 500).breakdown.total.state, BreakdownState::NotRecorded, "no world row, no whole");
+
+        let unread_country = [total(1, Recorded::Value(5), 6), total(2, Recorded::NotRecorded, 1), total(WORLD, Recorded::Value(12), 12)];
+        let partial = share(&unread_country, &tags, 0, Some(10), 500);
+        assert_eq!(partial.breakdown.total.state, BreakdownState::AtLeast, "an unread country row withholds shares and never invents rest of the world");
+        assert!(partial.breakdown.parts.iter().all(|part| part.share.is_none()));
+        assert_eq!(partial.breakdown.parts.last().map(|part| (part.key.as_str(), part.state)), Some(("slot:2", BreakdownState::NotRecorded)));
     }
 
     #[test]
