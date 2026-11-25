@@ -1,5 +1,5 @@
 import { VALUE_WEIGHT } from '../../charts/draw.ts';
-import { DATE_COLUMN_WIDTH, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
+import { DATE_COLUMN_WIDTH, FLAG_SLOT_WIDTH, STATUS_MARK_LEAD, STATUS_WORD_SIZE } from '../../draw/kit.ts';
 import {
   CELL_INSET,
   CHILD_ROW_HEIGHT,
@@ -32,6 +32,7 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly maxWidth?: number;
   readonly grow?: number;
   readonly narrow?: TableColumnSpec['narrow'];
+  readonly narrowWidth?: number;
   readonly textTone?: TableColumnSpec['textTone'];
   readonly inlineFlags?: readonly string[];
   readonly leadInset?: number;
@@ -104,6 +105,7 @@ export function buildColumnLayouts(
       maxWidth: spec.maxWidth,
       textTone: spec.textTone,
       narrow: own?.width == null ? spec.narrow : undefined,
+      narrowWidth: own?.width == null ? spec.narrowWidth : undefined,
       grow: own?.width != null ? 0 : spec.grow,
     });
   };
@@ -202,11 +204,11 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'status') {
-      const statusFont = fontString(theme, theme.fontSize.small, 400);
+      const statusFont = fontString(theme, STATUS_WORD_SIZE, 400);
       const statusSamples = column.widest?.length ? column.widest : ['Succeeded'];
       let widestStatus = 0;
       for (const sample of statusSamples) widestStatus = Math.max(widestStatus, measure(sample, statusFont));
-      const statusW = Math.max(column.minWidth ?? 88, widestStatus + 12 + CELL_INSET * 2, headerWidth);
+      const statusW = Math.max(column.minWidth ?? 88, widestStatus + STATUS_MARK_LEAD + CELL_INSET * 2, headerWidth);
       out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, statusW) : statusW);
       continue;
     }
@@ -295,7 +297,7 @@ export function layoutFamilyTable(
 ): FamilyTableLayout {
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
   let visible = columns.filter(col => col.shown);
-  if (visible.some(col => col.narrow) && rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) > available) {
+  if (visible.some(col => col.narrow || col.narrowWidth !== undefined) && rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) > available) {
     visible = visible.filter(col => col.narrow !== 'hide');
     const primary = visible.findIndex(col => col.narrow === 'primary');
     const inlineFlags: string[] = [];
@@ -303,8 +305,8 @@ export function layoutFamilyTable(
     visible = visible.map(col => {
       if (col.narrow === 'primary') return { ...col, inlineFlags };
       if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width };
-      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.minWidth ?? 40, grow: 0 };
-      return col;
+      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0 };
+      return col.narrowWidth === undefined ? col : { ...col, width: col.narrowWidth };
     });
   }
   const shown = withEdgeInsets(visible);
@@ -328,6 +330,7 @@ const GAP_ROW_HEIGHT = 30;
 const REFUSED_ROW_HEIGHT = 32;
 const LOADING_ROW_HEIGHT = 32;
 export const LIVE_END_GAP = 9;
+export const END_NOTE_HEIGHT = 44;
 
 export interface RowLayoutGeometry {
   readonly tops: readonly number[];

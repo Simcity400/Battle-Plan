@@ -25,7 +25,7 @@ import {
 import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
-import { formatDateParts, formatValueState } from '../valueFormat.ts';
+import { formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
 import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
@@ -39,6 +39,7 @@ import {
 } from './settings.ts';
 
 const CHILD_FLAG_GAP = 6;
+const KIND_TILE_ART = { width: 20, height: 16 } as const;
 function signedText(text: string, signed: number): string {
   if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
   if (signed < 0) return text.replace(/^-/, '−');
@@ -96,6 +97,7 @@ export interface CellDrawArgs {
   readonly fill: string;
   readonly rowHovered: boolean;
   readonly rowFocused: boolean;
+  readonly lastChild?: boolean;
 }
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
@@ -112,6 +114,7 @@ function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHei
   }
   if (shape === 'equipment') return { width: 30, height: 24 };
   if (shape === 'counter') return { width: 30, height: 18 };
+  if (shape === 'unit') return { width: 28, height: 24 };
   if (shape === 'wide') {
     const h = Math.min(24, Math.max(18, rowHeight - 12));
     const w = Math.round(h * (46 / 28));
@@ -137,13 +140,6 @@ function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
-
-const BOUNDED_DATE_WORDS: Readonly<Record<'by' | 'since' | 'after' | 'before', string>> = {
-  by: 'by',
-  since: 'since',
-  after: 'after',
-  before: 'before',
-};
 
 function drawInlineRuns(
   rc: CellRenderContext,
@@ -203,27 +199,63 @@ function drawInlineRuns(
   return cursor - x;
 }
 
-const glyphPaths = {
-  award: 'M4 1h8l-2 5H6Z M8 5l1.7 3.4 3.8.6-2.8 2.7.7 3.8L8 13.7l-3.4 1.8.7-3.8L2.5 9l3.8-.6Z',
-  battle: 'M1 13l4-1-3-6 5 4 1-8 2 8 5-5-2 7 2 1Z',
-  helmet: 'M2 12h12 M3 12a5 5 0 0 1 10 0 M8 7v5',
-  place: 'M8 14s4.5-4.6 4.5-8a4.5 4.5 0 1 0-9 0C3.5 9.4 8 14 8 14Z M9.5 6a1.5 1.5 0 1 1-3 0a1.5 1.5 0 1 1 3 0',
-  loss: 'M4 4l8 8 M12 4l-8 8',
-  transfer: 'M2 6h12l-3-3 M14 10H2l3 3',
+const GLYPHS = {
+  helmet: { path: 'M2.6 10.8c0-3.4 2.4-6 5.4-6s5.4 2.6 5.4 6zM1.8 10.8h12.4M8 4.8v6', size: 14 },
+  place: { path: 'M8 14s4.5-4.6 4.5-8a4.5 4.5 0 1 0-9 0C3.5 9.4 8 14 8 14Z M9.5 6a1.5 1.5 0 1 1-3 0a1.5 1.5 0 1 1 3 0', size: 12 },
+  loss: { path: 'M4 4l8 8 M12 4l-8 8', size: 13 },
+  transfer: { path: 'M2.5 5.5h11l-2.5-2.5 M13.5 10.5h-11l2.5 2.5', size: 13 },
 } as const;
+const GLYPH_GAP = 6;
 
-const glyphs = new Map<keyof typeof glyphPaths, Path2D>();
-function drawGlyph(rc: CellRenderContext, glyph: keyof typeof glyphPaths, x: number, mid: number): void {
+const glyphs = new Map<keyof typeof GLYPHS, Path2D>();
+function drawGlyph(rc: CellRenderContext, glyph: keyof typeof GLYPHS, x: number, mid: number, color: string): number {
+  const { path: d, size } = GLYPHS[glyph];
   let path = glyphs.get(glyph);
-  if (!path) { path = new Path2D(glyphPaths[glyph]); glyphs.set(glyph, path); }
+  if (!path) { path = new Path2D(d); glyphs.set(glyph, path); }
   const ctx = rc.ctx;
   ctx.save();
-  ctx.translate(Math.round(x), Math.round(mid - 8));
-  ctx.strokeStyle = rc.theme.muted;
-  ctx.lineWidth = 1.5;
+  ctx.translate(x, mid - size / 2);
+  ctx.scale(size / 16, size / 16);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  if (glyph === 'battle') { ctx.fillStyle = rc.theme.text; ctx.fill(path); } else ctx.stroke(path);
+  ctx.stroke(path);
+  ctx.restore();
+  return size;
+}
+
+function glyphColor(rc: CellRenderContext, glyph: keyof typeof GLYPHS): string {
+  const tokens = resolveKitTokens(rc.theme);
+  if (glyph === 'helmet') return tokens.tileInk;
+  return glyph === 'transfer' ? rc.theme.muted : tokens.quiet;
+}
+
+function drawKindTile(rc: CellRenderContext, tile: NonNullable<TableCell['artTile']>, centerX: number, middle: number): void {
+  const { ctx, theme } = rc;
+  const tokens = resolveKitTokens(theme);
+  const width = tile === 'flat' ? 30 : 26;
+  const height = tile === 'flat' ? 24 : 26;
+  const x = Math.round(centerX - width / 2);
+  const y = Math.round(middle - height / 2);
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, 6);
+  if (tile === 'flat') {
+    ctx.fillStyle = tokens.tileFlat;
+    ctx.fill();
+  } else {
+    const fill = ctx.createLinearGradient(x, y, x + width * 0.35, y + height);
+    fill.addColorStop(0, tokens.tileTop);
+    fill.addColorStop(1, tokens.tileBottom);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = tokens.tileEdge;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x + 0.5, y + 0.5, width - 1, height - 1, 5.5);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -253,13 +285,18 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (cell?.blank) {
     if (kind === 'kind' && item.row.pageParent) {
-      const branchX = x + column.width / 2;
+      const branchX = Math.round(x + column.width / 2 - 8) + 0.5;
       ctx.save();
-      ctx.strokeStyle = theme.line;
+      ctx.strokeStyle = tokens.treeLine;
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(branchX, y);
-      ctx.lineTo(branchX, middle);
-      ctx.lineTo(branchX + 7, middle);
+      ctx.lineTo(branchX, Math.round(middle) + 0.5);
+      ctx.lineTo(branchX + 7, Math.round(middle) + 0.5);
+      if (!args.lastChild) {
+        ctx.moveTo(branchX, y + rowHeight - 10);
+        ctx.lineTo(branchX, y + rowHeight);
+      }
       ctx.stroke();
       ctx.restore();
     }
@@ -279,29 +316,22 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
   }
 
-  if (kind === 'kind' && cell?.artTile) {
-    ctx.save();
-    ctx.fillStyle = theme.raised ?? theme.lineSoft;
-    ctx.beginPath();
-    ctx.roundRect(x + (column.width - 26) / 2, middle - 13, 26, 26, 5);
-    ctx.fill();
-    ctx.restore();
-  }
-  if (kind === 'kind' && cell?.glyph) {
-    drawGlyph(rc, cell.glyph, x + (column.width - 16) / 2, middle);
+  if (kind === 'kind') {
+    const centerX = x + (column.leadInset ?? 0) + (column.width - (column.leadInset ?? 0) - (column.trailInset ?? 0)) / 2;
+    if (cell?.artTile) drawKindTile(rc, cell.artTile, centerX, middle);
+    if (cell?.glyph) {
+      drawGlyph(rc, cell.glyph, Math.round(centerX - GLYPHS[cell.glyph].size / 2), middle, glyphColor(rc, cell.glyph));
+      return;
+    }
+    if (!cell || (!cell.art && !cell.iconSlot)) return;
+    const geom = cell.artTile ? KIND_TILE_ART : artGeometry(cell.artShape ?? 'square', density, rowHeight);
+    const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
+    drawArtSlot(ctx, Math.round(centerX - geom.width / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme,
+      { radius: 2, trim: cell.artShape === 'unit' });
     return;
   }
   if (cell?.glyph) {
-    drawGlyph(rc, cell.glyph, left, middle);
-    left += 20;
-  }
-
-  if (kind === 'kind') {
-    if (!cell || (!cell.art && !cell.iconSlot)) return;
-    const geom = artGeometry(cell.artShape ?? 'square', density, rowHeight);
-    const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
-    drawArtSlot(ctx, Math.round(x + (column.width - geom.width) / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 2 });
-    return;
+    left += drawGlyph(rc, cell.glyph, left, middle, glyphColor(rc, cell.glyph)) + GLYPH_GAP;
   }
 
   if (kind === 'twoWay') {
@@ -516,38 +546,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const hourVal = paintModel.value.kind === 'known' || paintModel.value.kind === 'zero' || paintModel.value.kind === 'partial'
       ? Number(paintModel.value.value)
       : null;
-    const width = Math.max(0, right - left);
-    if (cell?.boundedDate && hourVal !== null) {
-      const parts = formatDateParts(hourVal);
-      if (parts) {
-        const prefix = `${BOUNDED_DATE_WORDS[cell.boundedDate]} `;
-        const dayFont = fontOf(theme, rowHeight >= 32 ? 12.5 : 11.5, 500);
-        const yearFont = fontOf(theme, 10.5, 400);
-        const prefixW = measure(prefix, dayFont);
-        const dayY = rowHeight >= 32 ? middle - 6 : middle;
-        ctx.save();
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.font = dayFont;
-        if (prefixW < width - 8) {
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(prefix, left, dayY);
-          ctx.fillStyle = theme.text;
-          ctx.fillText(fit(parts.dayMonth, dayFont, Math.max(0, width - prefixW)), left + prefixW, dayY);
-        } else {
-          ctx.fillStyle = theme.text;
-          ctx.fillText(fit(`${prefix}${parts.dayMonth}`, dayFont, width), left, dayY);
-        }
-        if (rowHeight >= 32) {
-          ctx.font = yearFont;
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(fit(parts.year, yearFont, width), left, middle + 7);
-        }
-        ctx.restore();
-        return;
-      }
-    }
-    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width, align: column.numeric ? 'right' : 'left' });
+    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width: Math.max(0, right - left), align: column.numeric ? 'right' : 'left' });
     return;
   }
 
@@ -615,7 +614,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     });
     if (marks.length) {
       const gap = 6;
-      const reserved = marks.reduce((sum, mark) => sum + (mark.glyph ? 16 + gap : 0)
+      const reserved = marks.reduce((sum, mark) => sum + (mark.glyph ? GLYPHS[mark.glyph].size + gap : 0)
         + (mark.flags?.length ?? 0) * (FLAG_SLOT_WIDTH + gap) + (!mark.flags?.length && mark.value.kind === 'notRecorded' ? 16 + gap : 0), 0);
       const room = Math.max(0, right - left - reserved);
       const font = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
@@ -623,7 +622,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       let at = left + (missing ? drawMissingMark(ctx, left, middle, room, theme, { figure: cell?.missingFigure }).width
         : drawInlineRuns(rc, formatted.text, left, middle, room, font, theme.text)) + gap;
       for (const mark of marks) {
-        if (mark.glyph) { drawGlyph(rc, mark.glyph, at, middle); at += 16 + gap; }
+        if (mark.glyph) at += drawGlyph(rc, mark.glyph, at, middle, glyphColor(rc, mark.glyph)) + gap;
         for (const flag of mark.flags ?? []) {
           drawFlagSlot(ctx, at, Math.round(middle - FLAG_SLOT_HEIGHT / 2), slotOf(flag.art, flag.tag, rc), theme, { dimmed: flag.dimmed });
           at += FLAG_SLOT_WIDTH + gap;
@@ -798,7 +797,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
-  const textColor = item.row.muted || column.textTone === 'muted'
+  const textColor = item.row.muted || column.textTone === 'muted' || cell?.tone === 'muted'
     ? theme.muted
     : isChild || column.textTone === 'secondary'
       ? tokens.childText

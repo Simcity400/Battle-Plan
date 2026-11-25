@@ -15,6 +15,7 @@ import type { DivisionEvents, DivisionLogRow, DivisionLogTailReply } from '../..
 import { DIVISION_LOG_COLUMNS } from './definition.ts';
 
 interface Options {
+  readonly ranged: boolean;
   readonly events: DivisionEvents;
   readonly prefix: string;
   readonly selected: readonly string[];
@@ -39,7 +40,7 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
     const name = `${formatScalar(row.members)} divisions`;
     return {
       key: row.key, name, rowHour: row.hour, pageGroup: { members: row.members, open: row.open },
-      cells: { date, kind: { value: knownValue('Division group'), glyph: 'helmet', artTile: true }, item: { ...country, inlinePrefix: name },
+      cells: { date, kind: { value: knownValue('Division group'), glyph: 'helmet', artTile: 'flat' }, item: { ...country, inlinePrefix: name, tooltipLabel: 'Country' },
         country: blank, place: blank, outcome: blank, action: blank },
     };
   }
@@ -49,18 +50,18 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
     : { value: notRecorded('Location not recorded'), missingFigure: 'Place' };
   const name = e.name ?? 'Division name not recorded';
   const art = drawableIcon(e.icon);
-  const kind = artKindCell(view, urlArtHandle(art), 'square', e.templateName, e.iconMissing ?? 'Division template artwork not recorded');
+  const kind = artKindCell(view, urlArtHandle(art), 'unit', e.templateName, e.iconMissing ?? 'Division template artwork not recorded');
   const status = statuses[e.status] ?? 'Removal cause not recorded';
   const outcome: TableCell = e.kind === 0 ? blank
-    : e.kind === 2 ? { value: knownValue('transferred'), glyph: 'transfer' }
+    : e.kind === 2 ? { value: knownValue('Transferred'), glyph: 'transfer', tone: 'muted' }
     : e.killerTag !== null || e.matchedDeaths !== null
       ? { ...logCountryCell(view, [{ tag: e.killerTag, missingLabel: 'Killer not attributed' }], row.observed, boundary), glyph: 'loss' }
       : { value: statuses[e.status] ? knownValue(status) : notRecorded(status), glyph: 'loss', missingFigure: 'Cause' };
   const tooltipExtra = (): TooltipExtraRow[] => [
     { label: 'Event', value: statuses[e.status] ? knownValue(status) : notRecorded(status) },
-    { label: 'Country', value: country.value },
+    ...(child ? [{ label: 'Country', value: country.value }] : []),
     { label: 'Template', value: e.templateName ? knownValue(e.templateName) : notRecorded(e.templateMissing ?? 'Template not recorded') },
-    { label: e.kind === 0 || e.exact ? 'Place' : 'Last seen at', value: place.value },
+    ...(e.kind === 0 || e.exact ? [] : [{ label: 'Last seen at', value: place.value }]),
     { label: 'Observed', value: knownValue(formatDateTime(row.observed)) },
     ...(e.afterHour === null ? [] : [{ label: 'First seen after', value: knownValue(formatDateTime(e.afterHour)) }]),
     ...(e.matchedDeaths === null ? [] : [{ label: 'Killer', value: e.killerTag === null
@@ -71,7 +72,7 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
   return {
     key: row.key, name, rowHour: row.hour, meta: row.observed, ...(row.parent ? { pageParent: row.parent } : {}),
     cells: {
-      date: child ? blank : date, kind: child ? blank : { ...kind, artTile: true, ...(art ? {} : { glyph: 'helmet' as const }) },
+      date: child ? blank : date, kind: child ? blank : { ...kind, artTile: 'raised' },
       item: { value: e.name ? knownValue(e.name) : notRecorded(e.nameMissing ?? name), missingFigure: 'Division',
         ...(!child && e.templateName ? { inlineSubtext: e.templateName } : {}) },
       country: child ? blank : country, place, outcome, action: blank,
@@ -104,7 +105,7 @@ export const divisionLogProjection: TableProjection<Options> = registerFamilyPro
       return partial && count === 0 ? `No ${kind} divisions recorded` : `${formatScalar(count)} ${kind}`;
     }).join(' · ');
     return {
-      ...base, ...page, hour, nextChangeAt: boundary.next,
+      ...base, ...page, hour, nextChangeAt: boundary.next, ...(options.ranged || !page.slots.length ? {} : { endNote: 'Start of the recording' }),
       kindFilter: { key: 'templates', noun: 'templates', allLabel: 'All templates', items, selected: options.selected },
       warnings: head?.warnings, titleSummary,
       ...(titleSummary && source.missing.length ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
@@ -140,5 +141,5 @@ export const divisionLogDeclaration: TableWidgetDeclaration<Options> = {
     };
   },
   projection: divisionLogProjection,
-  projectionOptions: ctx => ({ events: eventsOf(ctx.options.events), prefix: prefixOf(ctx.track.source.metadata.campaignKey, ctx.branch.id), selected: contentSet(ctx.options.templates) }),
+  projectionOptions: ctx => ({ ranged: ctx.widget.time.mode === 'range', events: eventsOf(ctx.options.events), prefix: prefixOf(ctx.track.source.metadata.campaignKey, ctx.branch.id), selected: contentSet(ctx.options.templates) }),
 };

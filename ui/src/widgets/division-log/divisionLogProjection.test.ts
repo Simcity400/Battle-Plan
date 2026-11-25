@@ -27,7 +27,9 @@ test('expanded groups retain their paged children and resolve identities at the 
     resolve: (kind, key, atHour) => ({ kind, key, atHour, name: { status: 'ready', value: `${kind} ${key} at ${atHour}` },
       holder: { status: 'absent', reason: 'fixture' }, validInterval: [atHour, atHour], nextChangeAt: Infinity }),
   } });
-  const model = divisionLogProjection.project(view, { events: 'both', prefix: 'branch-', selected: [] });
+  const model = divisionLogProjection.project(view, { ranged: false, events: 'both', prefix: 'branch-', selected: [] });
+  assert.equal(model.endNote, 'Start of the recording');
+  assert.equal(divisionLogProjection.project(view, { ranged: true, events: 'both', prefix: 'branch-', selected: [] }).endNote, undefined);
   const flat = resolveTableRows(model, tableDefaults(DIVISION_LOG_COLUMNS, LOG_TABLE_BASE));
   assert.deepEqual(flat.flatMap(row => row.kind === 'data' ? [[row.key, row.level, row.parent, row.isOpen]] : []),
     [[group.key, 1, null, true], ['17', 2, group.key, false], ['18', 2, group.key, false]]);

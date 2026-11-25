@@ -105,6 +105,7 @@ export interface TableColumnSpec extends TableColumnDefaults {
   readonly maxWidth?: number;
   readonly grow?: number;
   readonly narrow?: 'hide' | 'flag' | 'primary' | 'total';
+  readonly narrowWidth?: number;
   readonly textTone?: 'secondary' | 'muted';
 }
 
@@ -123,8 +124,8 @@ export interface TableCell {
   readonly value: Value;
   readonly format?: ValueFormat;
   readonly subtext?: string;
-  readonly artTile?: boolean;
-  readonly glyph?: 'award' | 'battle' | 'helmet' | 'place' | 'loss' | 'transfer';
+  readonly artTile?: 'raised' | 'flat';
+  readonly glyph?: 'helmet' | 'place' | 'loss' | 'transfer';
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
   readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
@@ -139,7 +140,7 @@ export interface TableCell {
   readonly art?: ArtResult;
   readonly artKey?: string;
   readonly iconSlot?: boolean;
-  readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter';
+  readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter' | 'unit';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
   readonly blank?: boolean;
@@ -157,6 +158,31 @@ export interface TableCell {
   readonly bar?: TableCellBar | null;
   readonly maximum?: number;
   readonly sortValue?: Value;
+  readonly tooltipLabel?: string;
+}
+
+export interface TableSubjectPicture {
+  readonly name: string;
+  readonly url?: string;
+  readonly missing?: string;
+  readonly count?: number;
+}
+
+export interface TableSubjectFigure {
+  readonly label: string;
+  readonly value: Value;
+  readonly pictures?: readonly TableSubjectPicture[];
+}
+
+export interface TableSubjectSummary {
+  readonly name: Value<string>;
+  readonly icon?: string;
+  readonly flag?: string;
+  readonly country: Value<string>;
+  readonly detail: Value<string>;
+  readonly level: Value<string>;
+  readonly insignia?: string;
+  readonly figures: readonly TableSubjectFigure[];
 }
 
 export interface TableGroupSpec {
@@ -237,16 +263,8 @@ export interface TableModel {
   readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
   readonly dayDividersOnly?: boolean;
-  readonly subjectSummary?: {
-    readonly name: string;
-    readonly icon?: string;
-    readonly flag?: string;
-    readonly country: string;
-    readonly detail: string;
-    readonly level: string;
-    readonly insignia?: string;
-    readonly metrics: readonly { readonly label: string; readonly value: string; readonly icons?: readonly string[] }[];
-  };
+  readonly endNote?: string;
+  readonly subjectSummary?: TableSubjectSummary;
   readonly kindFilter?: {
     readonly single?: import('./LogKindFilter').LogKindFilterProps['single'];
     readonly key: string;
@@ -473,7 +491,6 @@ export function annotateLogBoundaries(
 
   const out = rows.slice();
   let prevDay: number | null = null;
-  let prevBound: DateBoundKind | undefined;
   let prevWasLive: boolean | null = null;
 
   for (let b = 0; b < blocks.length; b++) {
@@ -481,15 +498,13 @@ export function annotateLogBoundaries(
     const nextHead = blocks[b + 1]?.head;
     if (block.head.kind !== 'data') {
       prevDay = null;
-      prevBound = undefined;
       prevWasLive = null;
       continue;
     }
     const isLive = block.head.row.live === true;
     const rowHour = dateHourOf(block.head.row, dateKey);
     const day = dayKeyOf(rowHour);
-    const bound = dateKey ? block.head.row.cells[dateKey]?.boundedDate : undefined;
-    const showDate = !(suppressRepeatDates && prevWasLive === isLive && day !== null && day === prevDay && bound === prevBound);
+    const showDate = !(suppressRepeatDates && prevWasLive === isLive && day !== null && day === prevDay);
     if (!showDate) {
       out[block.start] = { ...block.head, showDate: false };
     }
@@ -507,7 +522,6 @@ export function annotateLogBoundaries(
       }
     }
     prevDay = day;
-    prevBound = bound;
     prevWasLive = isLive;
   }
   return out;
@@ -1240,8 +1254,9 @@ export function deriveRowTooltip(
     if (!col.label && col.cellKind !== 'date') continue;
     if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
-    if (!cell) continue;
+    if (!cell || cell.blank) continue;
     const resolved = resolveCellAtHour(cell);
+    if (col.cellKind === 'item' && hasMeasuredValue(resolved.value) && String(resolved.value.value) === title) continue;
     if (col.cellKind === 'date' && hasMeasuredValue(resolved.value) && typeof resolved.value.value === 'number') {
       const hoverDate = formatDateHover(resolved.value.value);
       const text = cell.boundedDate ? `${BOUNDED_HOVER_PREFIX[cell.boundedDate]} ${hoverDate}` : hoverDate;
@@ -1253,7 +1268,7 @@ export function deriveRowTooltip(
         rows.push(tooltipRowFromValue(col.label + ' (' + col.headerGroup.labels[i] + ')', value, cell.format ?? col.format));
       }
     } else {
-      rows.push(tooltipRowFromValue(col.label, resolved.value, cell.format ?? col.format));
+      rows.push(tooltipRowFromValue(cell.tooltipLabel ?? col.label, resolved.value, cell.format ?? col.format));
     }
   }
   for (let i = 0; i < allColumns.length; i++) {

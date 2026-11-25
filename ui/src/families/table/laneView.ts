@@ -4,7 +4,7 @@ import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
-import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import {
   computeColumnMaxima,
   deriveTableAudit,
@@ -201,7 +201,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
-  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight);
+  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight + (model.endNote ? END_NOTE_HEIGHT : 0));
   let maximaCols = '';
   for (const col of columns.columns) if (col.numeric) maximaCols += `${col.key}:${col.display}|`;
   const maxima = inc && prev && prev.maximaCols === maximaCols && model.changedKeys
@@ -442,6 +442,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         hasGroupHeaders: shape.hasGroups,
         dateGrouped: model.dateGrouped === true,
         dayDividersOnly: model.dayDividersOnly,
+        ...(model.endNote && shape.windowOffset + shape.flatRows.length >= shape.totalCount ? { endNote: model.endNote } : {}),
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
       }, picture).drew;

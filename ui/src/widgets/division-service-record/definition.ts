@@ -5,12 +5,12 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const SERVICE_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ minWidth: 60, maxWidth: 66 }),
-  logKindColumn({ minWidth: 34, maxWidth: 40 }),
-  logCountryColumn({ minWidth: 46, maxWidth: 76, grow: 1, narrow: 'flag' }),
-  logItemColumn({ label: 'Entry', minWidth: 42, grow: 6, narrow: 'primary' }),
-  logPlaceColumn({ minWidth: 96, maxWidth: 160, narrow: 'hide', grow: 2, textTone: 'muted' }),
-  logStatusColumn({ minWidth: 82, maxWidth: 116, grow: 1 }),
+  logDateColumn({ minWidth: 70, maxWidth: 70 }),
+  logKindColumn({ minWidth: 30, maxWidth: 30 }),
+  logCountryColumn({ minWidth: 68, maxWidth: 68, narrow: 'flag', narrowWidth: 40 }),
+  logItemColumn({ label: 'Entry', minWidth: 60, narrow: 'primary' }),
+  logPlaceColumn({ minWidth: 154, maxWidth: 154, narrow: 'hide', textTone: 'muted' }),
+  logStatusColumn({ minWidth: 124, maxWidth: 124, narrowWidth: 104 }),
 ];
 
 export const definition = {

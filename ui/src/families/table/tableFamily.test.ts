@@ -2335,13 +2335,13 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       ['data', 'c1', 2, true, false, true],
       ['data', 'h1', 1, true, false, false],
       ['data', 'h2', 1, false, false, false],
-      ['data', 'h3', 1, true, true, false],
+      ['data', 'h3', 1, false, true, false],
       ['gap', 'gap:1'],
       ['data', 'h4', 1, true, true, false],
       ['refused', 'ref:1'],
       ['loading', 'load:1'],
     ],
-    'same-day live rows suppress repeat date, live block band sits after its last open child, same-day exact repeats hide date while bounded dates stay visible, and gap/refused/loading slots preserve order',
+    'same-day live rows suppress repeat date, live block band sits after its last open child, same-day repeats hide the date whether exact or bounded, and gap/refused/loading slots preserve order',
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
