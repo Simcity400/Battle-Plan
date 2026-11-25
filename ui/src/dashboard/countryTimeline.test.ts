@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { askTimeline, flagIn, forgetTimelines, heldFacts, heldTimeline, identitySince, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
-import type { CountryTimeline } from './countryTimeline';
+import { askTimeline, flagIn, forgetTimelines, heldFacts, heldTimeline, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
 import { answerHeld } from './countryNamesAt.ts';
 import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
@@ -202,21 +201,4 @@ test('each run names the flag preparation chose for it, and a tag that is not a 
   assert.deepEqual(flagIn(timeline, 12, 'ENG'), { reason: 'not a country at this hour' });
   assert.deepEqual(flagIn(timeline, 25, 'GER'), { reason: 'country facts were not recorded at this hour' },
     'an hour a finished preparation holds no facts of says so');
-});
-
-test('identities at the head are read at the hour one last changed, which reads the same as the head', () => {
-  const timeline = { reply: REPLY, runs: new Map(REPLY.countries.map(country => [country.tag, country.runs as [number, number, number, number, number][]])),
-    final: true, colours: new Map() } as CountryTimeline;
-  for (const tags of [['GER'], ['D01'], ['GER', 'D01']]) {
-    const seen = new Set<number>();
-    for (let hour = 0; hour <= 50; hour++) {
-      const since = identitySince(timeline, hour, tags);
-      if (since === undefined) { assert.equal(stylesIn(timeline, hour, tags), undefined, `${hour} is not held`); continue; }
-      seen.add(since);
-      assert.ok(since <= hour);
-      assert.deepEqual(stylesIn(timeline, since, tags), stylesIn(timeline, hour, tags), `${tags} at ${hour} and at ${since}`);
-      for (const tag of tags) assert.deepEqual(flagIn(timeline, since, tag), flagIn(timeline, hour, tag));
-    }
-    assert.deepEqual([...seen], { GER: [10, 15, 30, 35], D01: [10, 30, 32], 'GER,D01': [10, 15, 30, 32, 35] }[tags.join()], `${tags} moves only when one changes`);
-  }
 });

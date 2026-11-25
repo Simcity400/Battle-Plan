@@ -1,5 +1,0 @@
-.country-comparisons { display: flex; height: 100%; min-height: 0; overflow-x: auto; }
-.country-comparison { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-.country-comparisons[data-multiple] > .country-comparison { flex: 1 0 320px; border-inline-end: 1px solid var(--line); }
-.country-comparison-name { display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-2) var(--space-3); font-size: var(--type-sm); }
-.country-comparison-name .country-comparison-flag { width: 24px; height: 16px; object-fit: contain; }

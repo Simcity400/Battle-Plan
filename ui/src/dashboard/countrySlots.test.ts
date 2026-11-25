@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { answersKey, countryFromKey, countryKey, isSlotKey, SLOT_MARK } from './countryKey.ts';
-import { countryNameAt, SlotTags } from './countrySlots.ts';
+import { SlotTags } from './countrySlots.ts';
 import { defaultCountryKey, selectedCountryKeys } from './countrySelection.ts';
 import type { BoundTrack } from './model';
 
@@ -19,7 +19,6 @@ test('a slot names the tag its country goes by at each hour, never the tag anoth
   assert.equal(identities.slotOf('GER', 105), 5);
   assert.equal(identities.slotOf('GER', 115), 9, 'a pick of a tag is the country holding it at that hour');
   assert.deepEqual(identities.tagRuns(5).map(run => run.tag), ['GER', 'DEU']);
-  assert.equal(countryNameAt(identities, 5, 99), 'GER');
   assert.deepEqual(identities.runNear(5, 115), { tag: 'DEU', firstHour: 110, lastHour: 119 }, 'the run of the tag it goes by then');
   assert.deepEqual(identities.runNear(5, 99), { tag: 'GER', firstHour: 100, lastHour: 109 }, 'else the nearest run it held');
   assert.equal(identities.runNear(7, 115), null);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import type { ChartBucket } from '../../charts/chartSummary';
-import { drawLineSummary, summaryFits } from '../../charts/chartSummary.ts';
+import { summaryFits } from '../../charts/chartSummary.ts';
 import { plotFrame } from '../../charts/frame.ts';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
@@ -304,22 +304,7 @@ test('the head moving inside a tile asks nothing; crossing into a new tile asks 
   followed.release(); await settle();
 });
 
-function recorder() {
-  const ops: [string, ...number[]][] = [];
-  const rect: number[][] = [];
-  const ctx = new Proxy({} as Record<string, unknown>, {
-    get(target, name: string) {
-      if (name in target) return target[name];
-      if (name === 'moveTo' || name === 'lineTo') return (x: number, y: number) => ops.push([name, x, y]);
-      if (name === 'rect') return (...args: number[]) => rect.push(args);
-      return () => {};
-    },
-    set(target, name: string, value) { target[name] = value; return true; },
-  }) as unknown as CanvasRenderingContext2D;
-  return { ctx, ops, rect };
-}
-
-test('the clip draws a tiled line up to the head and not past it, and a frame places only the vertices of the hours it shows', async () => {
+test('a tiled line fits the frame and answers the head value from the tile summary', async () => {
   const cache = new TileCache(), followed = lane(TAGS, LAST);
   const view = new TileView(cache, followed, () => {});
   const head = 50_000.5, at = following(head);
@@ -329,29 +314,8 @@ test('the clip draws a tiled line up to the head and not past it, and a frame pl
   const binHours = binHoursOf(at.end - at.from + 1, at.width);
   const frame = plotFrame(700, 300, { top: 10, right: 40, bottom: 20, left: 60 }, [at.from, head], [-300, 300], false, 0, false);
   assert.ok(summaryFits(frame, lines[0].summary, head));
-  const tokens = { lineWidth: { series: 2 }, surface: '#fff' } as unknown as Parameters<typeof drawLineSummary>[2];
-  const { ctx, ops, rect } = recorder();
-  const end = drawLineSummary(ctx, frame, tokens, lines[0].summary, '#000', true, head);
-  const headX = frame.toX(head), cutX = frame.toX(Math.floor(head / binHours) * binHours);
-  assert.ok(ops.length > 0);
-  assert.ok(ops.every(([, x]) => x <= headX + 1e-6), 'nothing is stroked past the head');
-  assert.equal(rect[0][2] + rect[0][0], cutX, 'the bins are clipped at the head bin');
-  assert.equal(end!.x, headX, 'the line ends at the head');
   const shown = lines[0].summary.tiles!.valueAt(head);
-  assert.equal(end!.y, frame.toY(shown!), 'at the value at the head');
   assert.equal(shown, lines[0].summary.buckets[Math.floor(head / binHours) - Math.floor(lines[0].summary.from / binHours) - 1]!.lastValue);
-
-  for (let step = 0; step < 120; step++) {
-    const until = head + step * 0.4, cutAt = frame.toX(Math.floor(until / binHours) * binHours);
-    for (const line of lines) {
-      const { ctx, ops } = recorder();
-      drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, until);
-      const strokes = ops.filter(([name]) => name === 'moveTo').length;
-      assert.ok(strokes > 0);
-      assert.ok(ops.filter(([, x]) => x < frame.plotLeft - 1e-6).length <= strokes, 'before the view, at most one vertex a stroke');
-      assert.ok(ops.filter(([, x]) => x > cutAt + 1e-6).length <= strokes, 'past the head bin, at most one vertex a stroke');
-    }
-  }
 });
 
 

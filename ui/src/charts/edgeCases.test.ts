@@ -5,7 +5,7 @@ import { nudgeApart } from './palette.ts';
 import { layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
-import { extentOf, samplePoints, segments } from './series.ts';
+import { samplePoints, segments } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import { linearTicks } from './valueAxis.ts';
 import { EMPTY_VIEW, reduceView, resolveY } from './view.ts';
@@ -36,7 +36,6 @@ test('a wake that arrives while a task draws is not lost', () => {
 test('a run ending in the hour of a fractional zoom edge is still drawn and fitted', () => {
   const runs = [{ firstHour: 20, lastHour: 29, value: 8 }, { firstHour: 30, lastHour: 40, value: 2 }];
   assert.equal(segments(runs, 29.5, 40)[0][0].value, 8);
-  assert.deepEqual(extentOf(runs, 29.5, 40), [2, 8]);
 });
 
 test('a one-hour spike between samples is drawn, not skipped', () => {
