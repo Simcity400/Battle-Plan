@@ -334,6 +334,10 @@ impl RunDirectory {
 
     pub fn write(&self, run: u32) -> io::Result<Vec<u8>> {
         self.validate(run)?;
+        self.encode()
+    }
+
+    fn encode(&self) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         put_varint(&mut out, self.branch);
         out.push(self.epoch);
@@ -395,6 +399,10 @@ impl RunDirectory {
 
     fn validate(&self, run: u32) -> io::Result<()> {
         let blocks = self.blocks();
+        let span = i64::from(blocks) * i64::from(UNIT_ORDINALS);
+        if self.first_hour == i32::MIN || span > i64::from(i32::MAX) || i64::from(self.first_hour) + span > i64::from(i32::MAX) {
+            return Err(invalid(format!("Run {run}'s hours pass the hour range")));
+        }
         if self.spans.len() as u64 != u64::from(blocks / SPAN_BLOCKS) {
             return Err(invalid(format!("Run {run}'s spans do not cover its blocks")));
         }
