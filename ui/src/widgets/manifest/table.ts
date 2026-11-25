@@ -488,6 +488,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'ships-sunk',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'ships-sunk',
+      DEFAULT_VIEW,
+      () => import('../ships-sunk/shipsSunkProjection.ts'),
+      mod => ({ projection: mod.shipsSunkProjection, declaration: mod.shipsSunkDeclaration }),
+    ),
+  },
+  {
     kind: 'division-log',
     view: DEFAULT_VIEW,
     family: 'table',

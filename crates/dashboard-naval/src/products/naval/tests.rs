@@ -3,12 +3,12 @@ use dashboard_query::identity::Holders;
 use super::{
     battles::{BattleCells, NavalBattleCountryFilter, battle_id, live_run, parse_id, result_history, sides_at, sides_at_truncated},
     losses::{Counts, NavalPeriod, month_bases, month_start, score},
-    sunk::{ShipSinkingCause, cause, known_at, pruned},
+    sunk::known_at,
 };
 use dashboard_world::products::groups::MembershipRun;
 use game_model::calendar::HOUR_EPOCH;
 use replay_lanes::lanes::Cell;
-use replay_data::rows::{NavalLossTotalRow as Row, NavalResultObservationRow as Observation, NavalResultRow, Recorded, SunkShipEntry};
+use replay_data::rows::{NavalLossTotalRow as Row, NavalResultObservationRow as Observation, NavalResultRow, Recorded};
 use std::collections::HashMap;
 
 #[test]
@@ -76,24 +76,6 @@ fn an_entry_is_known_at_the_first_read_at_or_after_its_sinking() {
     assert_eq!(known_at(&reads, 101), Some(124));
     assert_eq!(known_at(&reads, 160), Some(160));
     assert_eq!(known_at(&reads, 201), None);
-}
-
-#[test]
-fn a_window_keeps_the_sinkings_its_first_read_listed_that_the_game_pruned_before_its_end() {
-    let entry = |sink_hour, ship: &[u8]| SunkShipEntry { sink_hour, ship_name: ship.to_vec(), ..Default::default() };
-    let reads = [(5, 5), (100, 100), (124, 124), (148, 148)];
-    let earlier = [entry(3, b"Z"), entry(10, b"A"), entry(10, b"A"), entry(20, b"B"), entry(30, b"C"), entry(99, b"D")];
-    let later = [entry(10, b"A"), entry(30, b"C"), entry(99, b"D"), entry(130, b"E")];
-    let gone: Vec<&SunkShipEntry> = pruned(&earlier, &later, 100, &reads);
-    assert_eq!(gone, [&earlier[2], &earlier[3]], "each pruned entry once per copy missing; none still listed, none an earlier window's");
-}
-
-#[test]
-fn a_cause_record_comes_before_an_assist() {
-    let entry = |cause_record, assisted_kill| SunkShipEntry { cause_record, assisted_kill, ..Default::default() };
-    assert_eq!(cause(&entry(0, 0)), ShipSinkingCause::Hostile);
-    assert_eq!(cause(&entry(0, 1)), ShipSinkingCause::Assisted);
-    assert_eq!(cause(&entry(1, 1)), ShipSinkingCause::Cause);
 }
 
 #[test]
@@ -563,7 +545,7 @@ mod details {
     fn a_battle_restarted_in_place_keeps_each_battles_sinkings_with_every_hour_read() {
         use super::super::{
             sinking_details::ShipSinkingBattle,
-            sunk::{ShipsSunk, ShipsSunkParams},
+            sunk::tail::ShipsSunkTail,
         };
         use replay_data::rows::NavalCombatRow;
         let entry = |sink_hour: i32, ship: &[u8]| SunkShipEntry {
@@ -572,6 +554,7 @@ mod details {
             victim_country: 9001,
             attacker_country: 9001,
             sink_hour,
+            class_token: sink_hour as u32,
             battle: 20,
             ..SunkShipEntry::default()
         };
@@ -580,14 +563,37 @@ mod details {
                 let mut frame = source(1, hour, Some(1));
                 set::<tables::NavalCombats>(&mut frame, vec![NavalCombatRow { id: 20, province: if hour < 103 { 600 } else { 601 }, ..NavalCombatRow::default() }]);
                 set::<tables::NavalCombatParticipants>(&mut frame, Vec::new());
-                let entries = [(101, b"Before".as_slice()), (104, b"After".as_slice())].into_iter().filter(|&(sunk, _)| sunk <= hour).map(|(sunk, ship)| entry(sunk, ship)).collect();
-                set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries }]);
+                if hour == 102 {
+                    *frame.tables[replay_data::rows::TableId::SunkShips.index()] = TableView::Unavailable { reason: "unread".into() };
+                } else {
+                    let entries = match hour {
+                        101 => vec![entry(101, b"Before")],
+                        105.. => vec![entry(104, b"After")],
+                        _ => Vec::new(),
+                    };
+                    set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries }]);
+                }
                 frame
             })
             .collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "restarted".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-        let sunk = ShipsSunk::load(&source, &ShipsSunkParams { branch_id: "1".into(), window: 0 }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        let sunk = ShipsSunkTail::load(&source, &serde_json::from_value(serde_json::json!({"branchId":"1","limit":64})).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        let filtered = |hour| ShipsSunkTail::load(&source, &serde_json::from_value(serde_json::json!({
+            "branchId":"1", "hour":hour, "limit":64, "classes":[104]
+        })).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        let early = filtered(101);
+        assert!(early.rows.is_empty());
+        assert_eq!(early.classes.iter().map(|chip| chip.class.token).collect::<Vec<_>>(), [101]);
+        assert_eq!(early.next_change, Some(102));
+        let gap = filtered(104);
+        assert_eq!(gap.missing.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(102, 102)]);
+        assert_eq!(gap.next_change, Some(105));
+        assert!(gap.rows.is_empty());
+        let first_seen = filtered(105);
+        assert_eq!((first_seen.rows[0].hour, first_seen.rows[0].observed), (104, 105));
+        assert_eq!(first_seen.rows[0].battle_province, Some(601));
+        assert_eq!(first_seen.classes.len(), 2);
         let battle = |name: &str| sunk.rows.iter().find(|row| row.name.as_deref() == Some(name)).map(|row| row.battle.clone());
         let live = |first: i32| ShipSinkingBattle::Linked {
             id: format!("combat:20:{first}"),
@@ -605,7 +611,7 @@ mod details {
         use super::super::{
             battles::{NavalBattleDetailRequest, NavalBattleDetails, NavalBattleDetailsParams},
             sinking_details::{SINKING_BATTLE_NOT_RECORDED, SINKING_CAUSE_NOT_RECORDED, ShipSinkingAttribution, ShipSinkingBattle, resolve_attribution},
-            sunk::{ShipsSunk, ShipsSunkParams},
+            sunk::tail::ShipsSunkTail,
         };
         use replay_data::rows::{
             LexicalTokenRow, NavalCombatParticipantRow, NavalCombatRow, NavalResultRow, NavalResultSourceRow, SunkShipEntry, SunkShipsRow,
@@ -765,7 +771,16 @@ mod details {
         let ctx = LoadContext { content: None };
         let cancel = AtomicBool::new(false);
 
-        let b1 = ShipsSunk::load(&replay_source, &ShipsSunkParams { branch_id: "1".into(), window: 0 }, &ctx, &cancel).unwrap();
+        let page_at_103 = |offset: &str| ShipsSunkTail::load(&replay_source, &serde_json::from_value(serde_json::json!({
+            "branchId":"1", "hour":103, "to":103, "limit":64, "offset":offset
+        })).unwrap(), &ctx, &cancel).unwrap();
+        let before_result = page_at_103("0");
+        let merged = before_result.rows.iter().find(|row| row.name.as_deref() == Some("Ship Merged")).unwrap();
+        assert!(matches!(merged.battle, ShipSinkingBattle::NotRecorded { .. }));
+        assert_eq!(merged.battle_province, None);
+        assert_eq!(before_result.next_change, Some(104));
+        assert_eq!(page_at_103("64").next_change, None, "the result only changes pages showing the sinking");
+        let b1 = ShipsSunkTail::load(&replay_source, &serde_json::from_value(serde_json::json!({"branchId":"1","limit":64})).unwrap(), &ctx, &cancel).unwrap();
         let dups: Vec<_> = b1.rows.iter().filter(|row| row.name.as_deref() == Some("Ship A")).collect();
         assert_eq!(dups.len(), 2, "same-hour duplicate sinkings stay distinct");
         assert_eq!(
@@ -784,6 +799,7 @@ mod details {
         );
 
         let del = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Del")).unwrap();
+        assert_eq!(del.battle_province, Some(500), "a documented deletion retains the last combat location");
         assert_eq!(
             del.sinking_cause,
             ShipSinkingAttribution::AirWing { carrier_name: None, carrier_class_key: None, carrier_class_name: None, assisted: false }
@@ -861,7 +877,7 @@ mod details {
             "deletion hour is refused when NavalCombats is unavailable at gone + 1"
         );
 
-        let b2 = ShipsSunk::load(&replay_source, &ShipsSunkParams { branch_id: "2".into(), window: 0 }, &ctx, &cancel).unwrap();
+        let b2 = ShipsSunkTail::load(&replay_source, &serde_json::from_value(serde_json::json!({"branchId":"2","limit":64})).unwrap(), &ctx, &cancel).unwrap();
         assert_eq!(b2.rows.len(), 1);
         assert_eq!(
             b2.rows[0].battle,

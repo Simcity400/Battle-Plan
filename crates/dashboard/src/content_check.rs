@@ -424,7 +424,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         naval::battles::NavalBattlesManifest::KEY | naval::battles::NavalBattles::KEY | naval::battles::NavalBattlesRanking::KEY => {
             Ok("No content dependency: battles, sides and results are the recorded naval combat, result and battle tables; places are named by the place names product.".into())
         }
-        naval::sunk::ShipsSunk::KEY | naval::sunk::ShipsSunkManifest::KEY | naval::battles::NavalBattleDetails::KEY => {
+        naval::sunk::tail::ShipsSunkTail::KEY | naval::battles::NavalBattleDetails::KEY => {
             let catalogue = content.catalogue()?;
             content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers).map_err(|why| why.to_string())?;
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
