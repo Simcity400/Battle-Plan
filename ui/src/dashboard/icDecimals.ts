@@ -1,4 +1,3 @@
-import { formatAmount } from '../charts/valueAxis.ts';
 import type { OptionField, OptionValue } from './options';
 
 export const IC_DECIMALS_OPTION: OptionField = { key: 'icDecimals', section: 'options', label: 'IC decimals',
@@ -8,6 +7,3 @@ export function icDecimals(options: Readonly<Record<string, OptionValue>>, scale
   const chosen = options[IC_DECIMALS_OPTION.key];
   return typeof chosen === 'number' && Number.isInteger(chosen) ? Math.max(0, Math.min(scale, chosen)) : 0;
 }
-
-export const formatIc = (value: number, exact: bigint | null, scale: number, digits: number) =>
-  formatAmount(exact ?? BigInt(Math.round(value)), scale, digits);

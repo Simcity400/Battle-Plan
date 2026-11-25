@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { extentOf, sameStretch } from './series.ts';
+import { extentOf } from './series.ts';
 import type { Run } from './series';
 
 
@@ -18,14 +18,5 @@ test('range extrema retain inclusive edge comparisons and exceptional numeric va
       assert.deepEqual(extentOf(runs, from, to), low <= high ? [low, high] : null, `${from}..${to}`);
     }
   }
-});
-
-test('continuity retains fractional ending bounds across adjacent reads', () => {
-  const runs = [{ firstHour: 0, lastHour: 1 }, { firstHour: 2, lastHour: 3 }, { firstHour: 4, lastHour: 5 }];
-  assert.equal(sameStretch(runs, 0, 1.5), true);
-  assert.equal(sameStretch(runs, 0, 3.5), true);
-  assert.equal(sameStretch(runs, 1.5, 3), false);
-  assert.equal(sameStretch(runs, 0, 5.5), false);
-  assert.equal(sameStretch([{ firstHour: 0, lastHour: 1 }, { firstHour: 2, lastHour: 3, startsSegment: true }], 0, 1.5), false);
 });
 

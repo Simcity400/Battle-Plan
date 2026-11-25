@@ -1,34 +1,25 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { scopedOptionKey } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
-import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
 import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
 import { VIEWS } from '../dockyard-spending/definition.ts';
 
 export const EQUIPMENT = [{ value: 'air', label: 'Air' }, { value: 'land', label: 'Land' }] as const;
 
-const circle = (options: Readonly<Record<string, OptionValue>>) => options.view !== 'months';
+const ring = (options: Readonly<Record<string, OptionValue>>) => options.view === 'ring';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'equipment', section: 'options', label: 'Equipment', kind: 'choice', default: 'air', choices: EQUIPMENT },
-  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'circle', choices: VIEWS },
-  { ...levelOption('purposeLevel', 'Spent on', 'New and converted equipment'), visibleWhen: circle },
-  { ...levelOption('typeLevel', 'Equipment type'), visibleWhen: circle },
-  { ...levelOption('variantLevel', 'Design'), visibleWhen: circle },
+  { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'parts', choices: VIEWS },
+  { key: 'namesInRing', section: 'options', label: 'Names in ring', kind: 'toggle', default: true, visibleWhen: ring },
   IC_DECIMALS_OPTION,
-  ...SUNBURST_OPTIONS.map(field => ({ ...field, visibleWhen: circle })),
 ];
 
-const variants = EQUIPMENT.flatMap(equipment => VIEWS.map(view => ({ equipment, view })))
-  .filter(({ equipment, view }) => equipment.value !== 'air' || view.value !== 'circle')
-  .map(({ equipment, view }) => ({
-    key: `equipment=${equipment.value},view=${view.value}`,
-    initial: { title: `${equipment.label} factory spending${view.value === 'months' ? ' by month' : ''}`,
-      options: {
-        ...equipment.value === 'air' ? {} : { [view.value === 'months' ? scopedOptionKey('equipment', 'months') : 'equipment']: equipment.value },
-        ...view.value === 'circle' ? {} : { view: view.value },
-      } },
-  }));
+const variants = [
+  { key: 'equipment=land', initial: { title: 'Land factory spending', options: { [scopedOptionKey('equipment', 'parts')]: 'land' } } },
+  { key: 'equipment=air,view=months', initial: { title: 'Air factory spending by month', options: { view: 'months' } } },
+  { key: 'equipment=land,view=months', initial: { title: 'Land factory spending by month', options: { [scopedOptionKey('equipment', 'months')]: 'land', view: 'months' } } },
+];
 
 export const definition = {
   kind: 'military-factory-spending', version: 1, title: 'Military factory spending', icon: 'sunburst',

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IntervalIndex, intervalIndexOf } from './intervalIndex.ts';
-import { clipToSpans, extentOfAll, lastSampleHour, lineEndHour, runAt, sameStretch } from './series.ts';
+import { clipToSpans, extentOfAll, lastSampleHour, lineEndHour, runAt } from './series.ts';
 import type { Run, Span } from './series';
 
 const product = (firstHour: number, lastHour: number, startsSegment = true) => ({ firstHour, lastHour, startsSegment, valueRaw: String(firstHour) });
@@ -15,20 +15,6 @@ test('run lookup keeps inclusive ends, gaps, and fractional and negative hours',
   ];
   for (const [hour, index] of cases) assert.equal(runAt(runs, hour), index == null ? null : runs[index], `hour ${hour}`);
   assert.equal(runAt([], 0), null);
-});
-
-test('a value glides only within one unbroken stretch of runs', () => {
-  const runs = [product(100, 110), product(111, 120, false), product(121, 130), product(140, 150)];
-  assert.equal(sameStretch(runs, 105, 118), true);
-  assert.equal(sameStretch(runs, 118, 105), true);
-  assert.equal(sameStretch(runs, 105, 105), true);
-  assert.equal(sameStretch(runs, 118, 125), false);
-  assert.equal(sameStretch(runs, 125, 145), false);
-  assert.equal(sameStretch(runs, 135, 145), false);
-  assert.equal(sameStretch([], 1, 1), false);
-  const plotted: Run[] = [{ firstHour: 0, lastHour: 9, value: 1 }, { firstHour: 10, lastHour: 19, value: 2, breakBefore: true }, { firstHour: 20, lastHour: 29, value: 3 }];
-  assert.equal(sameStretch(plotted, 5, 15), false);
-  assert.equal(sameStretch(plotted, 15, 25), true);
 });
 
 test('runs are cut to spans, keeping a line break only where a run starts', () => {
