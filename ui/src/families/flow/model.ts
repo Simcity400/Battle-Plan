@@ -2,6 +2,7 @@ import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResult, BoundedReadView, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
+import type { FlowLayout } from './painter.ts';
 
 export type FlowMode = 'centred' | 'bipartite';
 export type FlowSide = 'left' | 'centre' | 'right';
@@ -84,11 +85,22 @@ export function flowRibbonMarked(ribbon: FlowRibbon): boolean {
   return ribbon.missing === true || ribbon.bands.some(band => band.numeric > 0);
 }
 
-export function deriveFlowNav(model: FlowModel): readonly FamilyNavTuple[] {
+export function deriveFlowNav(model: FlowModel, layout?: FlowLayout): readonly FamilyNavTuple[] {
   const nodes = flowNodes(model);
+  const nodeBox = new Map(layout?.nodes.map(box => [box.node.key, box]));
+  const ribbonBox = new Map(layout?.ribbons.map(box => [box.ribbon.key, box]));
+  const stop = (key: string, name: string, index: number, meta: unknown, place: readonly [number, number] | null): FamilyNavTuple =>
+    place ? [key, name, index, -1, '', meta, place[0], place[1]] : [key, name, index, -1, '', meta];
   return [
-    ...nodes.map((node, index): FamilyNavTuple => [`node:${node.key}`, node.spoken, index, -1, '', node.subject ?? null]),
-    ...model.ribbons.filter(flowRibbonMarked).map((ribbon, index): FamilyNavTuple => [`ribbon:${ribbon.key}`, `${ribbon.tooltip?.title ?? ribbon.key}: ${ribbon.audit}`, nodes.length + index, -1, '', null]),
+    ...nodes.map((node, index) => {
+      const box = nodeBox.get(node.key);
+      return stop(`node:${node.key}`, node.spoken, index, node.subject ?? null, box ? [box.slotTop, box.slotHeight] : null);
+    }),
+    ...model.ribbons.filter(flowRibbonMarked).map((ribbon, index) => {
+      const box = ribbonBox.get(ribbon.key);
+      const top = box ? Math.min(box.a0, box.b0) : 0;
+      return stop(`ribbon:${ribbon.key}`, `${ribbon.tooltip?.title ?? ribbon.key}: ${ribbon.audit}`, nodes.length + index, null, box ? [top, Math.max(box.a1, box.b1) - top] : null);
+    }),
   ];
 }
 

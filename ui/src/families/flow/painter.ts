@@ -80,9 +80,9 @@ function knownShare(ribbon: FlowRibbon, width: number): number {
 }
 
 function nodeHeight(node: FlowNode, scale: number, touching: ReadonlyMap<string, readonly FlowRibbon[]>): number {
-  if (node.numeric !== null) return heightOf(node.numeric, scale);
   const ribbons = touching.get(node.key) ?? [];
-  return Math.max(FLOW_MISSING_HEIGHT, ribbons.reduce((sum, ribbon) => sum + ribbonWidth(ribbon, scale), 0));
+  const widths = ribbons.reduce((sum, ribbon) => sum + ribbonWidth(ribbon, scale), 0);
+  return node.numeric !== null ? Math.max(heightOf(node.numeric, scale), widths) : Math.max(FLOW_MISSING_HEIGHT, widths);
 }
 
 function sideExtent(nodes: readonly FlowNode[], scale: number, touching: ReadonlyMap<string, readonly FlowRibbon[]>): number {

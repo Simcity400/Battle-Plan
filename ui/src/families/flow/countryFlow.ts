@@ -125,6 +125,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     ends.flatMap(end => (end.unknown ? [{ label: end.label, missingReason: end.unknown }] : []));
   const identityAudit = (...ends: readonly Pick<FlowNode, 'label' | 'unknown'>[]) =>
     ends.flatMap(end => (end.unknown ? [` · ${end.label}: ${end.unknown}`] : [])).join('');
+  const named = (end: Pick<FlowNode, 'label' | 'tag' | 'labelMissing'>) => `${end.label}${end.tag ? ` [${end.tag}]` : ''}${end.labelMissing ? ' (name missing)' : ''}`;
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
   const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
   const keyOf = (index: number | null, side: FlowSide) => `${side}:${index === null ? 'others' : endpoints[index]!.key}`;
@@ -166,7 +167,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       numeric: value(amount),
       figure: figure(amount),
       spoken: `${shown.label}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
-      audit: `${detail(link)}${identityAudit(shown)}`,
+      audit: `${named(shown)} · ${detail(link)}${identityAudit(shown)}`,
       ...(shown.subject ? { subject: shown.subject } : {}),
       tooltip: { title: shown.label, hour, items: items(link), ...(missingReason ? { missingReason } : {}) },
     };
@@ -212,7 +213,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       numeric: value(reply.largest),
       figure: '',
       spoken: `${subject.label}: ${centreAudit}`,
-      audit: centreAudit,
+      audit: `${named(subject)} · ${centreAudit}`,
       ...(subject.subject ? { subject: subject.subject } : {}),
     };
     const left = incoming.links.map(link => node(link.from, 'left', link, link.others ?? undefined));

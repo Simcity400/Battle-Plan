@@ -366,7 +366,7 @@ fn rank(by: BTreeMap<Key, Grouped>, parts: usize, shape: &FlowShape<'_>, missing
     let unproven = unproven.or_else(|| whole.total().is_none().then(|| whole.missing.clone().unwrap_or_else(|| shape.not_recorded.to_owned())));
     let shown = shape.limit.map_or(known.len(), |limit| if known.len() > limit + 1 { limit } else { known.len() });
     let keep = match (shape.top, &unproven) {
-        (Some(top), None) => top.min(shown),
+        (Some(top), None) => top.min(known.len()),
         _ => shown,
     };
     let unranked = shape.top.and(unproven);
@@ -706,6 +706,8 @@ mod tests {
         let reply = topped(&complete, 2);
         assert_eq!(rows(&reply, &reply.incoming, true), [(Some(Some(HOL)), Some("26".to_owned()), None), (Some(Some(TUR)), Some("12".to_owned()), None), (None, Some("9".to_owned()), Some(1))], "top 2 of 3 folds the third");
         assert_eq!(reply.incoming.unranked, None);
+        let wide = build(&complete, 1, &FlowShape { top: Some(3), ..shape(Some(USA), Some(1), false) });
+        assert_eq!(rows(&wide, &wide.incoming, true).len(), 3, "an explicit top of 3 names all three even where the viewport would fold after one");
         let unknown = [edge(HOL, USA, 0, Some(26)), edge(RAJ, USA, 0, None), edge(TUR, USA, 0, Some(12)), edge(IRN, USA, 0, Some(9))];
         let reply = topped(&unknown, 1);
         assert_eq!(

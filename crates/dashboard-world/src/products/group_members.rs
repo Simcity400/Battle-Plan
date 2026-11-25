@@ -197,11 +197,19 @@ pub struct GroupsAt {
     reply: Option<Arc<CountryGroupReply>>,
     first: i32,
     held: Arc<Mutex<Option<(GroupSelection, Members)>>>,
+    ever: Arc<Mutex<Option<EverSlots>>>,
+}
+
+struct EverSlots {
+    group: GroupSelection,
+    from: i32,
+    until: i32,
+    slots: HashSet<u32>,
 }
 
 impl GroupsAt {
     pub fn new(reply: Arc<CountryGroupReply>, first: i32) -> Self {
-        Self { reply: Some(reply), first, held: Arc::default() }
+        Self { reply: Some(reply), first, held: Arc::default(), ever: Arc::default() }
     }
 
     pub fn load(source: &Source, load: &LoadContext, branch_id: &str, group: Option<&GroupSelection>) -> io::Result<Self> {
@@ -247,12 +255,25 @@ impl GroupsAt {
         if group.membership == GroupMembership::Hour {
             return Ok(Ok(Some(members.tags.into_iter().filter_map(|tag| slot(&Country::Tag(tag))).collect())));
         }
+        let mut ever = self.ever.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(held) = ever.as_ref()
+            && held.group == *group
+            && held.from <= hour
+            && hour <= held.until
+        {
+            return Ok(Ok(Some(held.slots.clone())));
+        }
         let reply = self.reply.as_deref().ok_or_else(|| invalid("The group's memberships were not loaded"))?;
         let found = runs(reply, group)?.map_err(dashboard_core::refused)?;
         let mut slots = HashSet::new();
+        let mut until = members.until;
         for run in found.members.iter().filter(|run| run.first_hour <= hour) {
             let last = run.last_hour.min(hour);
-            for held in holders.within(&run.tag, run.first_hour, last) {
+            for held in holders.within(&run.tag, run.first_hour, run.last_hour) {
+                if held.first > last {
+                    until = until.min(held.first - 1);
+                    break;
+                }
                 match held.holder {
                     Holder::Found { slot, .. } => {
                         slots.insert(slot);
@@ -260,10 +281,16 @@ impl GroupsAt {
                     Holder::Unresolved => return Ok(Err(format!("Who held {} while it was a member is not known: {TAG_UNLINKED}", run.tag))),
                 }
             }
-            if let Some((.., reason)) = holders.unknown.iter().find(|(first, past, _)| *first <= last && run.first_hour <= *past) {
-                return Ok(Err(format!("Who held {} while it was a member is not known: {reason}", run.tag)));
+            for (first, past, reason) in &holders.unknown {
+                if *first <= last && run.first_hour <= *past {
+                    return Ok(Err(format!("Who held {} while it was a member is not known: {reason}", run.tag)));
+                }
+                if *first > last && *first <= run.last_hour {
+                    until = until.min(*first - 1);
+                }
             }
         }
+        *ever = Some(EverSlots { group: group.clone(), from: hour, until, slots: slots.clone() });
         Ok(Ok(Some(slots)))
     }
 
@@ -354,12 +381,15 @@ mod tests {
         let mut history = reply();
         history.factions[0].members = vec![run("GER", 0, 300), run("ITA", 600, 1000)];
         history.factions[0].incomplete.clear();
-        let groups = GroupsAt::new(Arc::new(history), 0);
+        let history = Arc::new(history);
+        let groups = GroupsAt::new(Arc::clone(&history), 0);
         let ever = faction(GroupMembership::Ever);
         assert_eq!(groups.chosen_slots(Some(&ever), &[], &holders, 500).unwrap(), Ok(Some([7].into_iter().collect())), "slot 8 took GER after GER's membership ended: it never was a member");
         assert_eq!(groups.chosen_slots(Some(&ever), &[], &holders, 700).unwrap(), Ok(Some([7, 9].into_iter().collect())));
         let unread = Holders::new([("GER".to_owned(), vec![held(7, 0, 100)]), ("ITA".to_owned(), vec![held(9, 0, 1000)])].into_iter().collect(), vec![(101, 200, "holders not read".to_owned())]);
-        assert!(groups.chosen_slots(Some(&ever), &[], &unread, 500).unwrap().unwrap_err().contains("holders not read"), "an unknown holder during membership is unknown membership, not no member");
+        assert_eq!(groups.chosen_slots(Some(&ever), &[], &holders, 550).unwrap(), Ok(Some([7].into_iter().collect())), "reused until ITA joins");
+        let fresh = GroupsAt::new(history, 0);
+        assert!(fresh.chosen_slots(Some(&ever), &[], &unread, 500).unwrap().unwrap_err().contains("holders not read"), "an unknown holder during membership is unknown membership, not no member");
     }
 
     #[test]
