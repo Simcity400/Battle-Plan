@@ -3,11 +3,8 @@ import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
-import { askUnits } from '../../families/readUnits.ts';
-import type { FamilyPlanContext } from '../../families/plan.ts';
-import type { FrozenGate } from '../../families/sources.ts';
 import { DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
-import { airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
+import { projectAirTimeline } from './airTimelineProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -54,7 +51,7 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
 }
 
 const view = (hour: number, data: AirTimelineReply) => createBoundedReadView({ hour, panels: new Map([['now', data]]) });
-const OPTIONS = { viewpointCountry: null, tiles: 0, surface: SURFACE };
+const OPTIONS = { viewpointCountry: null, historyStart: 0, tiles: 0, surface: SURFACE };
 
 test('the readout names the leading side by the product and paints it in its own colour', () => {
   const model = projectAirTimeline(view(50, reply(50)), OPTIONS);
@@ -106,6 +103,14 @@ test('a day the recording holds no hour of is the hatch, and the lane ends at th
   assert.equal(deriveLanesTooltip(model, 0, 30)!.missingReason, 'Not recorded on this day');
   assert.equal(runs.at(-1)!.lastHour, 50);
   assert.equal(model.lastHour, 50);
+  const history = reply(47);
+  const now = { ...reply(50), firstHour: 48, days: [50] };
+  const tiled = projectAirTimeline(createBoundedReadView({ hour: 50, panels: new Map([['now', now], ['tile:0', history]]) }), { ...OPTIONS, tiles: 1 });
+  assert.deepEqual(tiled.rows[0]!.runs.find(run => run.firstHour === 24)?.cell, { kind: 'missing', reason: 'Not recorded on this day' });
+  assert.equal(deriveLanesTooltip(tiled, 0, 30)!.missingReason, 'Not recorded on this day');
+  const earlier = { ...history, lastHour: 23 };
+  const arriving = projectAirTimeline(createBoundedReadView({ hour: 50, panels: new Map([['now', now], ['tile:0', earlier]]) }), { ...OPTIONS, tiles: 1 });
+  assert.equal(arriving.waiting, true);
 });
 
 test('a reply that reaches past the displayed hour draws nothing from it', () => {
@@ -120,39 +125,9 @@ test('a day with a side whose score is unknown is not recorded, never a full lea
   assert.deepEqual(model.rows[0]!.runs[0]!.cell, { kind: 'missing', reason: 'A side’s air score was not recorded' });
 });
 
-test('a hundred played hours ask each completed tile once, the current tile once a day and today alone each hour, and read the history once', () => {
-  const end = 24 * 3000;
-  const branch = { id: '1', firstHour: 0, lastHour: end };
-  const ctx = { track: { source: { id: 'src', revision: 'rev', metadata: {} }, axisOffset: 0 }, branch, options: {}, countryTag: 'GER' } as unknown as FamilyPlanContext;
-  const plan = airTimelineDeclaration.sources(ctx, { following: true, staticSpan: null });
-  const gate: FrozenGate = {
-    recorded: (hour: number | null | undefined) => (typeof hour === 'number' ? hour : null) as never,
-    span: (firstHour: number, lastHour: number) => (firstHour <= lastHour ? { firstHour, lastHour } : null) as never,
-  };
+test('each air history cell is laid out once over a hundred played hours', () => {
   const start = 24 * 1000 + 5;
-  const keys = new Map<string, string | null>();
-  let tileAsks = 0;
-  let nowAsks = 0;
-  let widest = 0;
-  for (let hour = start; hour < start + 100; hour++) {
-    const units = askUnits(plan.entries, { following: true, trackOffset: 0, content: 0, hour, playback: () => ({ branch, effectiveEndHour: end, gate }) });
-    for (const unit of units) {
-      if (unit.key !== null && unit.key !== keys.get(unit.name)) {
-        if (unit.name === 'now') {
-          nowAsks++;
-          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number; rankFrom?: unknown } }).params;
-          widest = Math.max(widest, asked.lastHour - asked.firstHour + 1);
-          assert.equal(asked.rankFrom, undefined, 'the automatic regions are ranked at the displayed hour, never over the branch');
-        } else tileAsks++;
-      }
-      keys.set(unit.name, unit.key);
-    }
-  }
   const completedTiles = Math.ceil(24 * 1000 / DAY_TILE_HOURS);
-  assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8) + 4, 'every complete tile and every complete eight-day piece of the current tile and every complete day of the current piece once (four midnights)');
-  assert.equal(nowAsks, 100);
-  assert.ok(widest <= 24, 'the hourly ask covers today only');
-
   const visits = { cells: 0 };
   const counted = <T>(items: T[]): T[] => new Proxy(items, {
     get(target, key, receiver) {
@@ -178,6 +153,10 @@ test('a hundred played hours ask each completed tile once, the current tile once
   const panels = new Map<string, unknown>(tiles.map((tile, k) => [`tile:${k}`, tile]));
   for (let hour = start; hour < start + 100; hour++) {
     const today = Math.floor(hour / 24) * 24;
+    const tileStart = tiles.length * DAY_TILE_HOURS;
+    const days = (today - tileStart) / 24;
+    panels.set(`tile:${tiles.length}`, { ...reply(today - 1), firstHour: tileStart, lastHour: today - 1,
+      days: Array.from({ length: days }, (_, i) => tileStart + (i + 1) * 24 - 1), rows: [], absent: [[days, null]] });
     panels.set('now', {
       ...reply(hour),
       firstHour: today,
@@ -230,7 +209,7 @@ test('a correction that moves a viewer colour change by a day redraws the tile a
   const project = (change: number) => {
     const now = { ...reply(100), firstHour: 96, lastHour: 100, days: [100], rows: [{ ...reply(100).rows[0]!, cells: [[1, view(8000)]] as AirTimelineReply['rows'][number]['cells'] }] };
     const readView = createBoundedReadView({ hour: 100, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]), identity: colourAt(change) as never });
-    return projectAirTimeline(readView, { viewpointCountry: 'GER', tiles: 1, surface: SURFACE }).rows[0]!.runs.map(run => run.firstHour);
+    return projectAirTimeline(readView, { viewpointCountry: 'GER', historyStart: 0, tiles: 1, surface: SURFACE }).rows[0]!.runs.map(run => run.firstHour);
   };
   assert.deepEqual(project(48), [0, 48, 96]);
   assert.deepEqual(project(72), [0, 72, 96], 'the old boundary is not kept');

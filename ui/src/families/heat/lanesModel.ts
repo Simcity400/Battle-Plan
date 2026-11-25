@@ -112,6 +112,7 @@ export interface HeatLaneGap {
 }
 
 export interface HeatLanesModel {
+  readonly waiting?: boolean;
   readonly hour: number;
   readonly firstHour: number;
   readonly lastHour: number;

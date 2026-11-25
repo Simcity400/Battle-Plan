@@ -1,5 +1,4 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { holdingLabel, holdingSince, ideaHistoryProof, ideaNameMissing, lookOf, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, holdingSince, ideaHistoryRead, ideaNameMissing, lookOf } from '../../dashboard/ideaHistoryReply.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
 import { cardMediaFromIcon, type CardItemRow, type CardModel, type CardProjection } from '../../families/card/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -92,17 +91,7 @@ export const nationalSpiritsDeclaration: CardWidgetDeclaration<NationalSpiritsOp
           source: ctx.track.source,
           branch: ctx.branch.id,
           offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [ctx.countryTag] },
-            product: 'idea-history',
-            followQuery: null,
-            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: (base, span) => ({ ...base, hour: span.lastHour }),
-            provenInterval: ideaHistoryProof,
-            dynamicKeys: ['hour'],
-            validate: validateIdeaHistoryReply,
-          },
+          read: ideaHistoryRead(ctx.branch.id, ctx.countryTag),
         }]
       : [],
   }),

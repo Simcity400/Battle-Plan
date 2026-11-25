@@ -114,13 +114,12 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   const [filterSlot, setFilterSlot] = useState<HTMLSpanElement | null>(null);
-  const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
   const [dynamicSwitch, setDynamicSwitch] = useState<DynamicViewSwitch | null>(null);
   const switchOwners = useRef(new Map<object, DynamicViewSwitch>());
   const [customSkeleton, setCustomSkeleton] = useState<WidgetSkeletonKind | (() => ReactNode) | null>(null);
   const skeletonOwners = useRef(new Map<object, WidgetSkeletonKind | (() => ReactNode)>());
-  const [announcement, setAnnouncement] = useState('');
+  const announcement = useRef<HTMLDivElement>(null);
   const lastAnnounced = useRef('');
   const [readingBadge, setReadingBadge] = useState<string | null>(null);
   const openCountriesRef = useRef<(() => void) | undefined>(undefined);
@@ -133,9 +132,11 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     let shown = false;
     const slot = (key: keyof typeof noted, set: (element: HTMLSpanElement | null) => void) => (element: HTMLSpanElement | null) => {
       noted[key] = element;
+      if (key === 'header') element?.toggleAttribute('data-body-state', stateOwners.current.size > 0);
       if (shown) set(element);
     };
     return { header: slot('header', setHeaderSlot), country: slot('country', setCountrySlot), filter: slot('filter', setFilterSlot),
+      bodyState(active: boolean) { noted.header?.toggleAttribute('data-body-state', active); },
       show() { shown = true; setHeaderSlot(noted.header); setCountrySlot(noted.country); setFilterSlot(noted.filter); } };
   });
 
@@ -283,20 +284,19 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
 
   const reportState = useCallback((owner: object, isState: boolean) => {
     if (isState) stateOwners.current.add(owner); else stateOwners.current.delete(owner);
-    const next = stateOwners.current.size > 0;
-    setHasBodyState(previous => previous === next ? previous : next);
-  }, []);
+    slots.bodyState(stateOwners.current.size > 0);
+  }, [slots]);
 
   const announce = useCallback((key: string, text: string) => {
     if (!text || lastAnnounced.current === key) return;
     lastAnnounced.current = key;
-    setAnnouncement(text);
+    if (announcement.current) announcement.current.textContent = text;
   }, []);
 
   const clearAnnouncement = useCallback((key: string) => {
     if (lastAnnounced.current !== key) return;
     lastAnnounced.current = '';
-    setAnnouncement(previous => previous === '' ? previous : '');
+    if (announcement.current) announcement.current.textContent = '';
   }, []);
 
   useEffect(() => {
@@ -367,7 +367,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       editing={editing}
       active={active === true}
       activeSwitch={activeSwitch}
-      hasBodyState={hasBodyState}
       readingBadge={widget.kind === 'map' ? readingBadge : null}
       summarySlotRef={slots.header}
       countrySlotRef={slots.country}
@@ -397,7 +396,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
         {widget.kind !== 'map' && readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}
       </div>
     </WidgetFrameContext.Provider>
-    <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
+    <div ref={announcement} className="sr-only" aria-live="polite" aria-atomic="true" />
   </article>;
 }
 

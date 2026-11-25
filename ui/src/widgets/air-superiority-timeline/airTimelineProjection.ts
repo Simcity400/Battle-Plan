@@ -3,7 +3,7 @@ import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
+import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import {
   spanIndexAt,
@@ -28,6 +28,7 @@ export const AIR_TOP_DEFAULT = 7;
 
 export interface AirTimelineProjectionOptions {
   readonly viewpointCountry: string | null;
+  readonly historyStart: number;
   readonly tiles: number;
   readonly surface: string;
 }
@@ -289,11 +290,8 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   if (refused) return emptyModel(hour, { refused });
   const now = readView.panel<AirTimelineReply>('now');
   if (!now || !options.surface || now.lastHour > hour) return emptyModel(hour, {});
-  const tiles: AirTimelineReply[] = [];
-  for (const name of dayHistoryNames(options.tiles)) {
-    const tile = readView.panel<AirTimelineReply>(name);
-    if (tile && tile.lastHour < now.firstHour) tiles.push(tile);
-  }
+  const tiles = closedDayTiles<AirTimelineReply>(readView, options.tiles, options.historyStart, now.firstHour);
+  if (!tiles) return emptyModel(hour, { waiting: true });
   const through = now.lastHour;
   const surface = options.surface;
   const noViewer = readableOn(CHART_MEASURE_COLOURS.bopRight, surface);
@@ -365,16 +363,14 @@ function airEntries(ctx: FamilyPlanContext, params: Record<string, unknown>): So
   const { top, pinnedRegions: _pinned, ...unranked } = params;
   return dayTileEntries(ctx, {
     product: 'air-superiority-timeline',
+    span: (base, first, last) => ({ ...base, firstHour: first, lastHour: last }),
     now: {
       params,
       coverage: { mode: 'population', form: 'top', limit: Number(top) },
-      span: (base, first, last) => ({ ...base, firstHour: first, lastHour: last }),
-      validThrough: () => null,
     },
     tile: {
       params: { ...unranked, every: true },
       coverage: { mode: 'population', form: 'all' },
-      span: (base, first, last) => ({ ...base, firstHour: first, lastHour: last }),
     },
   });
 }
@@ -402,7 +398,7 @@ export const airTimelineDeclaration: HeatLanesWidgetDeclaration<AirTimelineProje
   projection: airTimelineProjection,
   projectionOptions: (ctx, extra) => {
     const viewpoint = airTimelineMode(ctx).viewpoint;
-    return { viewpointCountry: viewpoint.startsWith('country:') ? viewpoint.slice(8) : null, tiles: dayTileCount(ctx.branch), surface: extra.surface };
+    return { viewpointCountry: viewpoint.startsWith('country:') ? viewpoint.slice(8) : null, historyStart: ctx.staticSpan?.[0] ?? ctx.branch.firstHour, tiles: dayTileCount(ctx.branch), surface: extra.surface };
   },
   jumpToDate: true,
 };

@@ -170,9 +170,6 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly active: boolean;
   readonly hoverHour?: number | null;
   readonly setOption?: (key: string, value: OptionValue) => void;
-  readonly viewport?: { readonly width?: number; readonly height?: number };
-  readonly viewportRef?: { readonly current: HTMLElement | null };
-  readonly viewportDeadbandPx?: number;
 }
 
 export interface UseFamilyPlanResult<TAux, TExtra> {
@@ -232,40 +229,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     active,
     hoverHour = null,
     setOption,
-    viewport,
-    viewportRef,
-    viewportDeadbandPx = 2,
   } = input;
 
-  const [measuredViewport, setMeasuredViewport] = useState<{ readonly width?: number; readonly height?: number }>({});
-  const measureViewport = useCallback((width: number, height?: number) => {
-    setMeasuredViewport(prev => {
-      const nextWidth = stabilizeCanvasDimension(width, prev.width, viewportDeadbandPx);
-      const nextHeight = height === undefined
-        ? prev.height
-        : stabilizeCanvasDimension(height, prev.height, viewportDeadbandPx);
-      if (nextWidth === prev.width && nextHeight === prev.height) return prev;
-      return {
-        ...(nextWidth !== undefined ? { width: nextWidth } : {}),
-        ...(nextHeight !== undefined ? { height: nextHeight } : {}),
-      };
-    });
-  }, [viewportDeadbandPx]);
-
-  useEffect(() => {
-    const node = viewportRef?.current;
-    if (!node || typeof ResizeObserver !== 'function') return;
-    measureViewport(node.clientWidth, node.clientHeight);
-    const ro = new ResizeObserver(entries => {
-      const rect = entries[0]?.contentRect;
-      measureViewport(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight);
-    });
-    ro.observe(node);
-    return () => { ro.disconnect(); };
-  }, [viewportRef, measureViewport]);
-
-  const stableWidth = stabilizeCanvasDimension(viewport?.width, measuredViewport.width, viewportDeadbandPx);
-  const stableHeight = stabilizeCanvasDimension(viewport?.height, measuredViewport.height, viewportDeadbandPx);
+  const measuredViewport = useRef<{ width?: number; height?: number }>({});
+  const [viewportRevision, setViewportRevision] = useState(0);
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
@@ -547,14 +514,24 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     && (!auxEnabled || auxResult.data !== undefined)
     && (!isMulti || (!countriesState.reason && (!needsGroups || !!groups.data) && (!needsSlots || !!slots)));
 
-  const planned = useMemo(() => {
+  const planAtSize = useCallback((size: { width?: number; height?: number }) => {
     if (!baseCtx) return null;
     return planFamilySources(baseCtx, window, inputsReady, buildSources, {
       following,
-      ...(stableWidth !== undefined ? { width: stableWidth } : {}),
-      ...(stableHeight !== undefined ? { height: stableHeight } : {}),
+      ...size,
     });
-  }, [baseCtx, window, inputsReady, buildSources, following, stableWidth, stableHeight]);
+  }, [baseCtx, window, inputsReady, buildSources, following]);
+  const planned = useMemo(() => planAtSize(measuredViewport.current), [planAtSize, viewportRevision]);
+  const measureViewport = useCallback((width: number, height?: number) => {
+    const prev = measuredViewport.current;
+    const next = {
+      width: stabilizeCanvasDimension(width, prev.width),
+      height: stabilizeCanvasDimension(height, prev.height),
+    };
+    if (next.width === prev.width && next.height === prev.height) return;
+    measuredViewport.current = next;
+    if (planAtSize(next)?.sig !== planned?.sig) setViewportRevision(revision => revision + 1);
+  }, [planAtSize, planned?.sig]);
 
   const ctx = planned?.ctx ?? null;
   const rawPlan = planned?.plan ?? null;

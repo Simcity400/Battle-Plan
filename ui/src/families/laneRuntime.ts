@@ -80,7 +80,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readNow(): BoundedReadView;
 }
 
-export type LaneStatus = 'picture' | 'scene' | { readonly refused: string };
+export type LaneStatus = 'picture' | 'scene' | 'waiting' | { readonly refused: string };
 
 type Undated<T> = T extends unknown ? Omit<T, 'hour'> & { readonly hour?: number } : never;
 
@@ -580,6 +580,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const nextChangeAt = Number.isFinite(keep.drawUntil) ? { nextChangeAt: keep.drawUntil } : {};
 
       const status = family.status(model);
+      if (status === 'waiting') return WAITING;
       if (typeof status === 'object') {
         keep.flusher.cancel();
         keep.drawn = null;

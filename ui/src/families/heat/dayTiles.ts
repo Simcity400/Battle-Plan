@@ -1,89 +1,68 @@
-import type { BranchToHourSourceRead, FamilyPlanContext, SourceCoverage, SourceEntry } from '../plan.ts';
+import type { BoundedReadView, FamilyPlanContext, PointSourceRead, SourceCoverage, SourceEntry } from '../plan.ts';
 
 export const DAY_TILE_HOURS = 64 * 24;
-const DAY_PIECE_HOURS = 8 * 24;
-const PIECES = DAY_TILE_HOURS / DAY_PIECE_HOURS;
-const DAYS = DAY_PIECE_HOURS / 24;
 
-export function dayStartOf(hour: number): number {
+function dayStartOf(hour: number): number {
   return Math.floor(hour / 24) * 24;
 }
 
-function startOf(hour: number, size: number): number {
-  return Math.floor(hour / size) * size;
-}
-
 export function dayTileCount(branch: { readonly firstHour: number; readonly lastHour: number }): number {
-  return Math.max(1, Math.ceil((branch.lastHour - dayStartOf(branch.firstHour) + 1) / DAY_TILE_HOURS));
+  return Math.ceil((dayStartOf(branch.lastHour) - dayStartOf(branch.firstHour)) / DAY_TILE_HOURS);
 }
 
 export function dayHistoryNames(tiles: number): readonly string[] {
-  return [...Array.from({ length: tiles }, (_, k) => `tile:${k}`), ...Array.from({ length: PIECES - 1 }, (_, j) => `piece:${j}`), ...Array.from({ length: DAYS - 1 }, (_, i) => `day:${i}`)];
+  return Array.from({ length: tiles }, (_, k) => `tile:${k}`);
+}
+
+export function closedDayTiles<T extends { firstHour: number; lastHour: number }>(
+  view: BoundedReadView, count: number, first: number, today: number,
+): T[] | null {
+  const tiles: T[] = [];
+  let next = first;
+  for (const name of dayHistoryNames(count)) {
+    const tile = view.panel<T>(name);
+    if (!tile || tile.lastHour < first || tile.firstHour >= today) continue;
+    if (tile.firstHour > next || tile.lastHour >= today) return null;
+    tiles.push(tile);
+    next = tile.lastHour + 1;
+  }
+  return next >= today ? tiles : null;
 }
 
 type Params = Readonly<Record<string, unknown>>;
 
-export interface DayTilesSpec {
-  readonly product: BranchToHourSourceRead['product'];
-  readonly now: {
-    readonly params: Params;
-    readonly coverage: SourceCoverage;
-    readonly span: (base: Params, first: number, last: number, spanFirst: number) => Params;
-    readonly validThrough: (data: unknown) => number | null;
-  };
-  readonly tile: {
-    readonly params: Params;
-    readonly coverage: SourceCoverage;
-    readonly span: (base: Params, first: number, last: number) => Params;
-  };
+interface DaySource {
+  readonly params: Params;
+  readonly coverage: SourceCoverage;
 }
 
-export function dayTileEntries(ctx: Pick<FamilyPlanContext, 'track' | 'branch'>, spec: DayTilesSpec): SourceEntry[] {
-  const origin = dayStartOf(ctx.branch.firstHour);
-  const entry = (name: string, read: Omit<BranchToHourSourceRead, 'shape' | 'product' | 'followQuery'>): SourceEntry => ({
-    name,
-    source: ctx.track.source,
-    branch: ctx.branch.id,
-    offset: ctx.track.axisOffset,
-    read: { shape: 'branch-to-hour' as const, product: spec.product, followQuery: null, ...read },
-  });
-  const history = (name: string, bounds: (today: number) => readonly [number, number] | null, proven: (first: number) => number) => entry(name, {
-    coverage: spec.tile.coverage,
-    params: spec.tile.params,
-    buildSpanParams: (base, span) => {
-      const asked = bounds(dayStartOf(span.lastHour));
-      if (!asked) return null;
-      const first = Math.max(asked[0], span.firstHour);
-      return first <= asked[1] ? spec.tile.span(base, first, asked[1]) : null;
-    },
-    provenInterval: (data, _requested, at) => {
-      const reply = data as { readonly firstHour: number } | undefined;
-      return reply ? [at, proven(reply.firstHour)] : null;
+interface DayTilesSpec {
+  readonly product: PointSourceRead['product'];
+  readonly span: (base: Params, first: number, last: number) => Params;
+  readonly now: DaySource;
+  readonly tile: DaySource;
+}
+
+export function dayTileEntries(ctx: FamilyPlanContext, spec: DayTilesSpec): SourceEntry[] {
+  const { branch } = ctx;
+  const spanFirst = ctx.staticSpan?.[0] ?? branch.firstHour;
+  const origin = dayStartOf(branch.firstHour);
+  const entry = (name: string, source: DaySource, follow: Params, buildExactParams: PointSourceRead['buildExactParams']): SourceEntry => ({
+    name, source: ctx.track.source, branch: branch.id, offset: ctx.track.axisOffset,
+    read: {
+      shape: 'point', channel: 'panel', product: spec.product, coverage: source.coverage, params: source.params,
+      followQuery: { panel: spec.product, ...follow }, buildExactParams,
     },
   });
-  const now = entry('now', {
-    coverage: spec.now.coverage,
-    params: spec.now.params,
-    buildSpanParams: (base, span) => spec.now.span(base, Math.max(span.firstHour, dayStartOf(span.lastHour)), span.lastHour, span.firstHour),
-    provenInterval: (data, _requested, at) => {
-      const through = spec.now.validThrough(data);
-      return through === null || through < at ? null : [at, through];
-    },
+  const now = entry('now', spec.now, spec.now.params, (base, hour) => spec.span(base, Math.max(spanFirst, dayStartOf(hour)), hour));
+  const tiles = dayHistoryNames(dayTileCount(branch)).map((name, k) => {
+    const first = Math.max(branch.firstHour, origin + k * DAY_TILE_HOURS);
+    const last = Math.min(branch.lastHour, origin + (k + 1) * DAY_TILE_HOURS - 1);
+    return entry(name, spec.tile, spec.span(spec.tile.params, first, last), (base, hour) => {
+      const from = Math.max(first, spanFirst);
+      const to = Math.min(last, dayStartOf(hour) - 1);
+      return from <= to ? spec.span(base, from, to) : null;
+    });
   });
-  const tiles = Array.from({ length: dayTileCount(ctx.branch) }, (_, k) => {
-    const first = origin + k * DAY_TILE_HOURS;
-    const last = first + DAY_TILE_HOURS - 1;
-    return history(`tile:${k}`, today => (last < origin + startOf(today - origin, DAY_TILE_HOURS) ? [first, last] : null), () => Infinity);
-  });
-  const pieces = Array.from({ length: PIECES - 1 }, (_, j) => history(`piece:${j}`, today => {
-    const tile = origin + startOf(today - origin, DAY_TILE_HOURS);
-    const first = tile + j * DAY_PIECE_HOURS;
-    const last = first + DAY_PIECE_HOURS - 1;
-    return last < origin + startOf(today - origin, DAY_PIECE_HOURS) ? [first, last] : null;
-  }, first => origin + startOf(first - origin, DAY_TILE_HOURS) + DAY_TILE_HOURS - 1));
-  const days = Array.from({ length: DAYS - 1 }, (_, i) => history(`day:${i}`, today => {
-    const first = origin + startOf(today - origin, DAY_PIECE_HOURS) + i * 24;
-    return first < today ? [first, first + 23] : null;
-  }, first => origin + startOf(first - origin, DAY_PIECE_HOURS) + DAY_PIECE_HOURS - 1));
-  return [now, ...tiles, ...pieces, ...days];
+  return [now, ...tiles];
 }

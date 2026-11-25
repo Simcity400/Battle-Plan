@@ -402,6 +402,7 @@ export type SpendCurrency = PowerSpendMarkersParams['currency'];
 export function spendMarkerEntry(ctx: FamilyPlanContext, currency: SpendCurrency): SourceEntry | null {
   const tags = ctx.countries.tags;
   if (tags.length !== 1 || ctx.options.spendTicks === false) return null;
+  const params = { branchId: ctx.branch.id, country: countryFromKey(tags[0]!), currency };
   return {
     name: 'spending',
     source: ctx.track.source,
@@ -412,12 +413,8 @@ export function spendMarkerEntry(ctx: FamilyPlanContext, currency: SpendCurrency
       channel: 'panel',
       coverage: { mode: 'keyed', keys: tags },
       product: 'power-spend-markers',
-      followQuery: null,
-      params: { branchId: ctx.branch.id, country: countryFromKey(tags[0]!), currency },
-      provenInterval: (data, hour) => {
-        const next = (data as PowerSpendMarkersReply | null)?.nextChange;
-        return [hour, next == null ? Infinity : next - 1] as const;
-      },
+      followQuery: { panel: 'power-spend-markers', ...params },
+      params,
     },
   };
 }

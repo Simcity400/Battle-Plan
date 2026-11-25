@@ -1,6 +1,5 @@
 import { colour } from '../../charts/palette.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, ideaNameMissing, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryRead, ideaNameMissing, lookOf, unobservedThrough } from '../../dashboard/ideaHistoryReply.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { artworkArt } from '../../families/art/provider.ts';
 import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
@@ -104,17 +103,7 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
           source: ctx.track.source,
           branch: ctx.branch.id,
           offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [ctx.countryTag] },
-            product: 'idea-history',
-            followQuery: null,
-            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
-            provenInterval: ideaHistoryProof,
-            dynamicKeys: ['hour'],
-            validate: validateIdeaHistoryReply,
-          },
+          read: ideaHistoryRead(ctx.branch.id, ctx.countryTag),
         }]
       : [],
   }),
