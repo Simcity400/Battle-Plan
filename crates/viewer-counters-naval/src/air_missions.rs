@@ -495,13 +495,13 @@ impl Prepared {
         };
         self.supply_unrecorded = rows
             .iter()
-            .any(|row| matches!(row.supply, replay_data::rows::Recorded::NotRecorded));
+            .any(|row| matches!(row.supply_summary(), replay_data::rows::Recorded::NotRecorded));
         self.supply_complete = rows
             .iter()
             .any(|row| {
                 row.country == viewer
                     && row.region == u32::MAX
-                    && matches!(row.supply, replay_data::rows::Recorded::Value(Some(_)))
+                    && matches!(row.supply_summary(), replay_data::rows::Recorded::Value(Some(_)))
             });
         if !self.supply_complete {
             return;
@@ -510,7 +510,7 @@ impl Prepared {
             .iter()
             .filter(|row| row.country == viewer && row.region != u32::MAX)
         {
-            let replay_data::rows::Recorded::Value(Some(supply)) = row.supply else {
+            let replay_data::rows::Recorded::Value(Some(supply)) = row.supply_summary() else {
                 continue;
             };
             self.supply.insert(row.region, supply);

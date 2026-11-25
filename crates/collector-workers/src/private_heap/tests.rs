@@ -563,6 +563,36 @@ fn a_freed_large_body_past_the_bound_is_decommitted_off_the_hold_path_and_kept_o
 }
 
 #[test]
+fn freeing_a_small_large_block_past_the_bound_evicts_larger_warm_blocks_first() {
+    let heap = Heap::new();
+    let heap = &heap.0;
+    let big = Layout::from_size_align(1024 * 1024, 16).unwrap();
+    let small = Layout::from_size_align(48 * 1024, 16).unwrap();
+    let big_ptr = unsafe { heap.alloc(big) };
+    let small_ptr = unsafe { heap.alloc(small) };
+    assert!(!big_ptr.is_null() && !small_ptr.is_null());
+    unsafe { heap.dealloc(big_ptr, big) };
+    let big_addr = big_ptr as usize;
+    let small_addr = small_ptr as usize;
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            off_hold_path();
+            heap.pages.kept.store(KEPT_BYTES, Ordering::Relaxed);
+            unsafe { heap.dealloc(small_addr as *mut u8, small) };
+            let big_body = (big_addr / GRANULARITY * GRANULARITY + PAGE) as *const u8;
+            let small_body = (small_addr / GRANULARITY * GRANULARITY + PAGE) as *const u8;
+            assert_eq!(region(big_body).State, MEM_RESERVE);
+            assert_eq!(region(small_body).State, MEM_COMMIT);
+            let before = heap.other().pages.calls;
+            let reused = unsafe { heap.alloc(small) };
+            assert_eq!(reused as usize, small_addr);
+            assert_eq!(heap.other().pages.calls, before);
+            unsafe { heap.dealloc(reused, small) };
+        });
+    });
+}
+
+#[test]
 fn an_exiting_thread_returns_its_batches_and_partial_blocks_to_the_depot() {
     let heap = Heap::new();
     let whole = Layout::from_size_align(SMALL_LIMIT, 16).unwrap();

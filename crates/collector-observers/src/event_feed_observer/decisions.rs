@@ -75,14 +75,321 @@ fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'
     }
     Ok(u64::from_le_bytes(country_bytes) as usize)
 }
+struct StatusWorld<'a, M: Memory> {
+    world: native::provenance::World<'a, M>,
+    country: usize,
+    owner: native::CountryIdentity,
+    hour: i32,
+    rebuild: Option<(i32, i32)>,
+}
+
+fn prefetch_status_world<'a, M: Memory>(
+    memory: &'a M,
+    base: usize,
+    status: usize,
+    need_rebuild: bool,
+) -> Result<StatusWorld<'a, M>, &'static str> {
+    if let (
+        Some(singleton_addr),
+        Some(status_vtable_expected),
+        Some(country_vtable_expected),
+        Some(country_addr),
+    ) = (
+        engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA),
+        engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA),
+        engine_sites::at(base, engine_native::ccountry::VTABLE_RVA),
+        status.checked_add(engine_decisions::cdecision_status::COUNTRY),
+    ) {
+        let override_addr = if need_rebuild {
+            engine_sites::at(base, engine_decisions::decision_runtime::ADMISSION_OVERRIDE_RVA)
+        } else {
+            Some(0)
+        };
+        if let Some(override_addr) = override_addr {
+            let mut state_bytes = [0_u8; 8];
+            let mut status_vtable = [0_u8; 8];
+            let mut country_bytes = [0_u8; 8];
+            let mut override_byte = [0_u8; 1];
+            let copied_ok = if need_rebuild {
+                memory.copy_scattered(
+                    [singleton_addr, status, country_addr, override_addr],
+                    &mut [
+                        &mut state_bytes[..],
+                        &mut status_vtable[..],
+                        &mut country_bytes[..],
+                        &mut override_byte[..],
+                    ],
+                ) == 4
+            } else {
+                memory.copy_scattered(
+                    [singleton_addr, status, country_addr],
+                    &mut [
+                        &mut state_bytes[..],
+                        &mut status_vtable[..],
+                        &mut country_bytes[..],
+                    ],
+                ) == 3
+            };
+            if copied_ok {
+                let state = usize::try_from(u64::from_le_bytes(state_bytes))
+                    .map_err(|_| "event feed pointer overflow")?;
+                if state == 0 {
+                    return Err("event feed game state is null");
+                }
+                if u64::from_le_bytes(status_vtable) != status_vtable_expected as u64 {
+                    return Err("decision writer owner status differs");
+                }
+                let country_ptr = u64::from_le_bytes(country_bytes) as usize;
+                if country_ptr == 0 {
+                    return Err("event feed object identity mismatch");
+                }
+                if let (
+                    Some(hour_addr),
+                    Some(countries_addr),
+                    Some(links_addr),
+                    Some(id_addr),
+                    Some(target_addr),
+                    Some(seed_addr),
+                ) = (
+                    state.checked_add(engine_native::cgame_state::CURRENT_HOUR),
+                    state.checked_add(engine_native::cgame_state::COUNTRIES),
+                    state.checked_add(engine_native::cgame_state::COUNTRY_LINKS),
+                    country_ptr.checked_add(engine_native::ccountry::ID),
+                    country_ptr.checked_add(engine_native::ccountry::SURRENDER_TARGET),
+                    if need_rebuild {
+                        state.checked_add(engine_native::cgame_state::CAMPAIGN_SEED)
+                    } else {
+                        Some(0)
+                    },
+                ) {
+                    let mut hour_bytes = [0_u8; 4];
+                    let mut countries_bytes = [0_u8; 16];
+                    let mut links_bytes = [0_u8; 16];
+                    let mut country_vtable = [0_u8; 8];
+                    let mut id_bytes = [0_u8; 4];
+                    let mut target_bytes = [0_u8; 4];
+                    let mut seed_bytes = [0_u8; 4];
+                    let copied2_ok = if need_rebuild {
+                        memory.copy_scattered(
+                            [
+                                hour_addr,
+                                countries_addr,
+                                links_addr,
+                                country_ptr,
+                                id_addr,
+                                target_addr,
+                                seed_addr,
+                            ],
+                            &mut [
+                                &mut hour_bytes[..],
+                                &mut countries_bytes[..],
+                                &mut links_bytes[..],
+                                &mut country_vtable[..],
+                                &mut id_bytes[..],
+                                &mut target_bytes[..],
+                                &mut seed_bytes[..],
+                            ],
+                        ) == 7
+                    } else {
+                        memory.copy_scattered(
+                            [
+                                hour_addr,
+                                countries_addr,
+                                links_addr,
+                                country_ptr,
+                                id_addr,
+                                target_addr,
+                            ],
+                            &mut [
+                                &mut hour_bytes[..],
+                                &mut countries_bytes[..],
+                                &mut links_bytes[..],
+                                &mut country_vtable[..],
+                                &mut id_bytes[..],
+                                &mut target_bytes[..],
+                            ],
+                        ) == 6
+                    };
+                    if copied2_ok {
+                        if u64::from_le_bytes(country_vtable) != country_vtable_expected as u64 {
+                            return Err("event feed object identity mismatch");
+                        }
+                        if let (Some(countries_arr), Some(links_arr)) = (
+                            engine_native_memory::cpdx_array::Array::from_header(
+                                countries_bytes,
+                                8,
+                            ),
+                            engine_native_memory::cpdx_array::Array::from_header(links_bytes, 4),
+                        ) {
+                            let world = native::provenance::World::from_prefetched(
+                                memory,
+                                base,
+                                state,
+                                Some([countries_arr, links_arr]),
+                            )?;
+                            let reference = u32::from_le_bytes(id_bytes);
+                            let instance = u32::from_le_bytes(target_bytes);
+                            let (_, owner) = world.verify_country_identity(
+                                country_ptr,
+                                reference,
+                                instance,
+                            )?;
+                            let hour = i32::from_le_bytes(hour_bytes);
+                            let rebuild = need_rebuild.then(|| {
+                                (
+                                    i32::from_le_bytes(seed_bytes),
+                                    i32::from(override_byte[0] != 0),
+                                )
+                            });
+                            return Ok(StatusWorld {
+                                world,
+                                country: country_ptr,
+                                owner,
+                                hour,
+                                rebuild,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let world = native::provenance::World::new(memory, base)?;
+    let country_ptr = country(memory, base, status)?;
+    let owner = world.country_object(country_ptr)?;
+    let rebuild = if need_rebuild {
+        let days = engine_native_memory::read::<i32>(
+            memory,
+            world.state_pointer() + engine_native::cgame_state::CAMPAIGN_SEED,
+        )
+        .ok_or("decision rebuild campaign seed unreadable")?;
+        let lifecycle = i32::from(
+            engine_sites::at(base, engine_decisions::decision_runtime::ADMISSION_OVERRIDE_RVA)
+                .and_then(|at| engine_native_memory::read::<u8>(memory, at))
+                .ok_or("decision rebuild admission override unreadable")?
+                != 0,
+        );
+        Some((days, lifecycle))
+    } else {
+        None
+    };
+    let hour = world.hour()?;
+    Ok(StatusWorld {
+        world,
+        country: country_ptr,
+        owner,
+        hour,
+        rebuild,
+    })
+}
+
+fn prefetch_country_world<'a, M: Memory>(
+    memory: &'a M,
+    base: usize,
+    country_ptr: usize,
+) -> Result<StatusWorld<'a, M>, &'static str> {
+    if country_ptr == 0 {
+        return Err("event feed object identity mismatch");
+    }
+    if let (
+        Some(singleton_addr),
+        Some(country_vtable_expected),
+        Some(id_addr),
+        Some(target_addr),
+    ) = (
+        engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA),
+        engine_sites::at(base, engine_native::ccountry::VTABLE_RVA),
+        country_ptr.checked_add(engine_native::ccountry::ID),
+        country_ptr.checked_add(engine_native::ccountry::SURRENDER_TARGET),
+    ) {
+        let mut state_bytes = [0_u8; 8];
+        let mut country_vtable = [0_u8; 8];
+        let mut id_bytes = [0_u8; 4];
+        let mut target_bytes = [0_u8; 4];
+        if memory.copy_scattered(
+            [singleton_addr, country_ptr, id_addr, target_addr],
+            &mut [
+                &mut state_bytes[..],
+                &mut country_vtable[..],
+                &mut id_bytes[..],
+                &mut target_bytes[..],
+            ],
+        ) == 4
+        {
+            let state = usize::try_from(u64::from_le_bytes(state_bytes))
+                .map_err(|_| "event feed pointer overflow")?;
+            if state == 0 {
+                return Err("event feed game state is null");
+            }
+            if u64::from_le_bytes(country_vtable) != country_vtable_expected as u64 {
+                return Err("event feed object identity mismatch");
+            }
+            if let (Some(hour_addr), Some(countries_addr), Some(links_addr)) = (
+                state.checked_add(engine_native::cgame_state::CURRENT_HOUR),
+                state.checked_add(engine_native::cgame_state::COUNTRIES),
+                state.checked_add(engine_native::cgame_state::COUNTRY_LINKS),
+            ) {
+                let mut hour_bytes = [0_u8; 4];
+                let mut countries_bytes = [0_u8; 16];
+                let mut links_bytes = [0_u8; 16];
+                if memory.copy_scattered(
+                    [hour_addr, countries_addr, links_addr],
+                    &mut [
+                        &mut hour_bytes[..],
+                        &mut countries_bytes[..],
+                        &mut links_bytes[..],
+                    ],
+                ) == 3
+                    && let (Some(countries_arr), Some(links_arr)) = (
+                        engine_native_memory::cpdx_array::Array::from_header(countries_bytes, 8),
+                        engine_native_memory::cpdx_array::Array::from_header(links_bytes, 4),
+                    )
+                {
+                    let world = native::provenance::World::from_prefetched(
+                        memory,
+                        base,
+                        state,
+                        Some([countries_arr, links_arr]),
+                    )?;
+                    let reference = u32::from_le_bytes(id_bytes);
+                    let instance = u32::from_le_bytes(target_bytes);
+                    let (_, owner) =
+                        world.verify_country_identity(country_ptr, reference, instance)?;
+                    let hour = i32::from_le_bytes(hour_bytes);
+                    return Ok(StatusWorld {
+                        world,
+                        country: country_ptr,
+                        owner,
+                        hour,
+                        rebuild: None,
+                    });
+                }
+            }
+        }
+    }
+    let world = native::provenance::World::new(memory, base)?;
+    let owner = world.country_object(country_ptr)?;
+    let hour = world.hour()?;
+    Ok(StatusWorld {
+        world,
+        country: country_ptr,
+        owner,
+        hour,
+        rebuild: None,
+    })
+}
+
 pub fn instance(status: usize, pointer: usize, container: u8, operation: Operation, flags: u8) {
-    access(false, |store, world, memory, base, generation| {
-        store.decision_selected(
-            world,
+    access_raw(false, |store, memory, base, generation| {
+        let sw = prefetch_status_world(memory, base, status, false)?;
+        store.decision_selected_source_resolved(
+            &sw.world,
             memory,
             base,
             generation,
-            country(memory, base, status)?,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
             pointer,
             DecisionChange {
                 operation,
@@ -93,7 +400,9 @@ pub fn instance(status: usize, pointer: usize, container: u8, operation: Operati
             },
             false,
             (None, None),
-        )
+            None,
+        )?;
+        Ok(true)
     });
 }
 pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
@@ -101,17 +410,20 @@ pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(false);
         };
-        let world = native::provenance::World::new(memory, base)?;
-        store.decision_selected(
-            &world,
+        let sw = prefetch_country_world(memory, base, slot.owner)?;
+        store.decision_selected_source_resolved(
+            &sw.world,
             memory,
             base,
             generation,
-            slot.owner,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
             pointer,
             DecisionChange::new(Operation::Update, slot.container),
             false,
             (state, days),
+            None,
         )?;
         Ok(true)
     });
@@ -121,25 +433,42 @@ pub fn cut(pointer: usize) {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(false);
         };
-        let world = native::provenance::World::new(memory, base)?;
-        store.decision_selected(
-            &world,
+        let sw = prefetch_country_world(memory, base, slot.owner)?;
+        store.decision_selected_source_resolved(
+            &sw.world,
             memory,
             base,
             generation,
-            slot.owner,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
             pointer,
             DecisionChange::new(Operation::PassCut, slot.container),
             false,
             (None, None),
+            None,
         )?;
         Ok(true)
     });
 }
 pub fn retire(pointer: usize, swap: bool, visited: bool) {
     access_raw(false, |store, memory, base, generation| {
-        if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
-        {
+        if let Some(slot) = store.decisions.find(pointer) {
+            let sw = prefetch_country_world(memory, base, slot.owner)?;
+            store.decision_retire_resolved(
+                &sw.world,
+                memory,
+                base,
+                generation,
+                sw.owner,
+                sw.hour,
+                pointer,
+                swap,
+                visited,
+            )?;
+            return Ok(true);
+        }
+        if store.decisions.uncertified(pointer).is_none() {
             return Ok(false);
         }
         let world = native::provenance::World::new(memory, base)?;
@@ -147,17 +476,59 @@ pub fn retire(pointer: usize, swap: bool, visited: bool) {
         Ok(true)
     });
 }
+pub fn finalize_candidates(status: usize) {
+    access_raw(false, |store, memory, base, generation| {
+        let sw = prefetch_status_world(memory, base, status, true)?;
+        store.decision_marker_resolved(
+            memory,
+            base,
+            generation,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
+            sw.rebuild,
+            DecisionChange {
+                operation: Operation::Rebuild,
+                container: 3,
+                ordinal: 0,
+                flags: 0,
+                political_power: None,
+            },
+        )?;
+        store.decision_marker_resolved(
+            memory,
+            base,
+            generation,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
+            None,
+            DecisionChange {
+                operation: Operation::Candidate,
+                container: 0,
+                ordinal: 0,
+                flags: replay_data::event_feed_rows::decisions::ALL
+                    | replay_data::event_feed_rows::decisions::CLEAR_ALL_CANDIDATES,
+                political_power: None,
+            },
+        )?;
+        Ok(true)
+    });
+}
 pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, flags: u8) {
     if operation == Operation::Rebuild && container != 3 {
         return;
     }
-    access(false, |store, world, memory, base, generation| {
-        store.decision_marker(
-            world,
+    access_raw(false, |store, memory, base, generation| {
+        let sw = prefetch_status_world(memory, base, status, operation == Operation::Rebuild)?;
+        store.decision_marker_resolved(
             memory,
             base,
             generation,
-            country(memory, base, status)?,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
+            sw.rebuild,
             DecisionChange {
                 operation,
                 container,
@@ -165,26 +536,30 @@ pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, 
                 flags,
                 political_power: None,
             },
-        )
+        )?;
+        Ok(true)
     });
 }
 pub fn random(status: usize, definition: usize, target: u32) {
-    access(false, |store, world, memory, base, generation| {
-        store.decision_random(
-            world,
+    access_raw(false, |store, memory, base, generation| {
+        let sw = prefetch_status_world(memory, base, status, false)?;
+        store.decision_random_resolved(
             memory,
             base,
             generation,
-            country(memory, base, status)?,
+            sw.owner,
+            || Ok(sw.hour),
             definition,
             target,
             None,
-        )
+        )?;
+        Ok(true)
     });
 }
 
 pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap: bool) {
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
+        let sw = prefetch_status_world(memory, base, status, false)?;
         let mut flags = if swap {
             replay_data::event_feed_rows::decisions::SWAP
         } else {
@@ -207,12 +582,13 @@ pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap:
             replay_data::event_feed_rows::EventFeedScriptChange::Decision(change),
             Some(0),
         );
-        value.actor = world.country_object(country(memory, base, status)?)?;
+        value.actor = sw.owner;
         value.token = engine_native_memory::msvc_string::Descriptor::read(
             memory,
             definition + engine_decisions::cdecision::TOKEN,
         )?;
-        store.script_known(memory, base, generation, world.hour()?, value)
+        store.script_known(memory, base, generation, sw.hour, value)?;
+        Ok(true)
     });
 }
 pub fn candidates(
@@ -223,34 +599,71 @@ pub fn candidates(
     if items.is_empty() {
         return;
     }
-    access(true, |store, world, memory, base, generation| {
-        let country_ptr = country(memory, base, status)?;
-        let owner = world.country_object(country_ptr)?;
-        let hour = world.hour()?;
-        for &(definition, target, root) in items {
-            let token = engine_native_memory::msvc_string::Descriptor::read(
-                memory,
-                definition + engine_decisions::cdecision::TOKEN,
-            )?;
-            store.decision_key_resolved(
-                world,
-                memory,
-                base,
-                generation,
-                owner,
-                hour,
-                DecisionChange {
-                    operation: Operation::Candidate,
-                    container: kind,
-                    flags: 0,
-                    ordinal: target,
-                    political_power: None,
-                },
-                token,
-                Some(root),
-            )?;
+    access_raw(true, |store, memory, base, generation| {
+        const HEADER_BATCH: usize = 32;
+        const STRIDE: usize = engine_native_memory::msvc_string::STRIDE;
+        const TOKEN_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+            [engine_native_memory::memory::RecordField {
+                source_offset: engine_decisions::cdecision::TOKEN,
+                destination_offset: 0,
+                len: STRIDE,
+            }];
+        const TOKEN_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+            engine_native_memory::memory::RecordLayout::new(&TOKEN_FIELDS, STRIDE)
+                .expect("valid token layout");
+        let sw = prefetch_status_world(memory, base, status, false)?;
+        let mut pointers = [0_usize; HEADER_BATCH];
+        let mut raw_headers = [0_u8; HEADER_BATCH * STRIDE];
+        for chunk in items.chunks(HEADER_BATCH) {
+            let copied = if chunk.len() > 1 {
+                for (slot, &(definition, _, _)) in pointers[..chunk.len()].iter_mut().zip(chunk) {
+                    *slot = definition;
+                }
+                memory.copy_records(
+                    engine_native_memory::memory::RecordSources::Pointers(&pointers[..chunk.len()]),
+                    &TOKEN_LAYOUT,
+                    &mut raw_headers[..chunk.len() * STRIDE],
+                )
+            } else {
+                0
+            };
+            for (index, &(definition, target, root)) in chunk.iter().enumerate() {
+                let token = if index < copied {
+                    let header: [u8; STRIDE] = raw_headers
+                        [index * STRIDE..(index + 1) * STRIDE]
+                        .try_into()
+                        .unwrap();
+                    engine_native_memory::msvc_string::Descriptor::from_header(
+                        memory,
+                        definition + engine_decisions::cdecision::TOKEN,
+                        header,
+                    )?
+                } else {
+                    engine_native_memory::msvc_string::Descriptor::read(
+                        memory,
+                        definition + engine_decisions::cdecision::TOKEN,
+                    )?
+                };
+                store.decision_key_resolved(
+                    &sw.world,
+                    memory,
+                    base,
+                    generation,
+                    sw.owner,
+                    sw.hour,
+                    DecisionChange {
+                        operation: Operation::Candidate,
+                        container: kind,
+                        flags: 0,
+                        ordinal: target,
+                        political_power: None,
+                    },
+                    token,
+                    Some(root),
+                )?;
+            }
         }
-        Ok(())
+        Ok(true)
     });
 }
 pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: u32) {
@@ -297,7 +710,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(false);
         };
-        let world = native::provenance::World::new(memory, base)?;
+        let sw = prefetch_country_world(memory, base, slot.owner)?;
         let flags = if ignored == Some(true) {
             replay_data::event_feed_rows::decisions::IGNORED
         } else {
@@ -307,12 +720,14 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
         } else {
             0
         };
-        store.decision_selected(
-            &world,
+        store.decision_selected_source_resolved(
+            &sw.world,
             memory,
             base,
             generation,
-            slot.owner,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
             pointer,
             DecisionChange {
                 operation: if ignored.is_some() {
@@ -327,6 +742,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
             },
             false,
             (None, None),
+            None,
         )?;
         Ok(true)
     });
@@ -334,13 +750,16 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
 
 pub fn activated(status: usize, pointer: usize, container: u8, state: i32, days: i32) -> bool {
     let mut recorded = false;
-    access(false, |store, world, memory, base, generation| {
-        store.decision_selected_source(
-            world,
+    access_raw(false, |store, memory, base, generation| {
+        let sw = prefetch_status_world(memory, base, status, false)?;
+        store.decision_selected_source_resolved(
+            &sw.world,
             memory,
             base,
             generation,
-            country(memory, base, status)?,
+            sw.country,
+            sw.owner,
+            || Ok(sw.hour),
             pointer,
             DecisionChange::new(Operation::Store, container),
             false,
@@ -348,7 +767,7 @@ pub fn activated(status: usize, pointer: usize, container: u8, state: i32, days:
             Some(replay_data::event_feed_rows::EventFeedSource::DecisionActivated),
         )?;
         recorded = true;
-        Ok(())
+        Ok(true)
     });
     recorded
 }
@@ -361,16 +780,22 @@ pub fn write_result(
 ) -> bool {
     let mut recorded = false;
     access_raw(false, |store, memory, base, generation| {
-        if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
-        {
+        let Some(slot) = store
+            .decisions
+            .find(pointer)
+            .or_else(|| store.decisions.uncertified(pointer))
+        else {
             return Ok(false);
-        }
-        let world = native::provenance::World::new(memory, base)?;
-        recorded = store.decision_result(
-            &world,
+        };
+        let sw = prefetch_country_world(memory, base, slot.owner)?;
+        recorded = store.decision_result_resolved(
+            &sw.world,
             memory,
             base,
             generation,
+            sw.country,
+            sw.owner,
+            sw.hour,
             pointer,
             (state, days),
             source,

@@ -12,6 +12,7 @@ pub(super) struct Interests {
     dirty_authors: std::collections::HashSet<u64>,
     pub(super) organisations: HashMap<u64, usize>,
     pub(super) organisation_pointers: HashMap<usize, u64>,
+    any_dirty: bool,
 }
 impl Interests {
     pub fn prepare(&mut self, entries: usize) -> Result<(), &'static str> {
@@ -72,6 +73,7 @@ impl Interests {
     pub(super) fn changed(&mut self, key: Key) -> Option<u32> {
         let (owner, dirty) = self.entries.get_mut(&key)?;
         *dirty = true;
+        self.any_dirty = true;
         Some(*owner)
     }
     pub(super) fn author_changed(&mut self, handle: u64) {
@@ -86,6 +88,10 @@ impl Interests {
             return;
         }
         self.dirty_authors.insert(handle);
+        self.any_dirty = true;
+    }
+    pub(super) fn is_clean(&self) -> bool {
+        !self.any_dirty && self.dirty_authors.is_empty()
     }
 }
 
@@ -350,28 +356,39 @@ fn suspended() -> std::sync::MutexGuard<'static, Option<HashMap<u64, Binding>>> 
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-pub(super) fn suspend(variant: u64) -> Result<(), &'static str> {
+pub(super) fn suspend_all(watches: &[Watch]) -> Result<(), &'static str> {
+    if watches.is_empty() {
+        return Ok(());
+    }
     let mut held = bindings();
     let mut suspended = suspended();
     let suspended = suspended.get_or_insert_with(HashMap::new);
-    engine_allocation::reserve_map(suspended, 1)
+    engine_allocation::reserve_map(suspended, watches.len())
         .map_err(|_| "design source binding allocation failed")?;
-    if let Some(binding) = held.remove(&variant) {
-        suspended.insert(variant, binding);
+    for watch in watches {
+        if let Some(binding) = held.remove(&watch.id) {
+            suspended.insert(watch.id, binding);
+        }
     }
     Ok(())
 }
-pub(super) fn resume(variant: u64) -> Result<(), &'static str> {
-    let mut held = bindings();
-    let Some(binding) = suspended()
-        .as_mut()
-        .and_then(|suspended| suspended.remove(&variant))
-    else {
+pub(super) fn resume_all(ids: impl Iterator<Item = u64>) -> Result<(), &'static str> {
+    let mut suspended = suspended();
+    let Some(suspended) = suspended.as_mut() else {
         return Ok(());
     };
-    engine_allocation::reserve_map(&mut held, 1)
-        .map_err(|_| "design source binding allocation failed")?;
-    held.insert(variant, binding);
+    if suspended.is_empty() {
+        return Ok(());
+    }
+    let mut held = bindings();
+    for variant in ids {
+        let Some(binding) = suspended.remove(&variant) else {
+            continue;
+        };
+        engine_allocation::reserve_map(&mut held, 1)
+            .map_err(|_| "design source binding allocation failed")?;
+        held.insert(variant, binding);
+    }
     Ok(())
 }
 pub(super) fn drop_suspended() {

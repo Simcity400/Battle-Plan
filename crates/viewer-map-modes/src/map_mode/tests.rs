@@ -36,6 +36,10 @@ fn frame_with_empty_country_variables() -> DecodedFrame {
         .collect();
     frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(stores)).into();
+    frame.tables[TableId::ScriptVariableNames.index()] =
+        TableView::Complete(TableRows::ScriptVariableNames(Vec::new())).into();
+    frame.tables[TableId::ScriptVariableValues.index()] =
+        TableView::Complete(TableRows::ScriptVariableValues(Vec::new())).into();
     frame
 }
 

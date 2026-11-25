@@ -650,7 +650,7 @@ sample_struct!(FuelAwardRecipient { kind: u32, reference: u64, owner: u32, host:
 sample_struct!(FuelAwardHour { hour: i32, gains_raw: [i64;4], own_gain_raw: i64, transfers_raw: [i64;4], consumed_raw: i64, received_raw: [i64;3], recipients: Vec<FuelAwardRecipient>, history_index: i32, remaining_hours: i32, pending_raw: [i64;3], current_raw: i64 });
 sample_struct!(FuelAwardWindow { country_instance: u32, continuity_start_hour: Option<i32>, hours: Vec<FuelAwardHour>, reason: Vec<u8> });
 sample_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, host: u64, name: Option<Vec<u8>>, name_reason: Vec<u8>, first_hour: i32, last_hour: i32, amount_raw: i64 });
-sample_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Option<i32>, last_hour: i32, gains_raw: [i64;4], own_gain_raw: i64, own_gain_quantity_raw: i64, transfers_raw: [i64;4], consumed_raw: i64, received_raw: [i64;3], recipients: Vec<FuelAwardDayRecipient>, reason: Vec<u8> });
+sample_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Option<i32>, last_hour: FuelAwardDayHour, gains_raw: [i64;4], own_gain_raw: i64, own_gain_quantity_raw: i64, transfers_raw: [i64;4], consumed_raw: i64, received_raw: [i64;3], recipients: Vec<FuelAwardDayRecipient>, reason: Vec<u8> });
 sample_struct!(CachedModifier {
     definition: u32,
     value: i64
@@ -1098,6 +1098,15 @@ impl Sample for FuelDemandHour {
         }
     }
 }
+impl Sample for FuelAwardDayHour {
+    fn sample(tick: usize) -> Self {
+        if tick.is_multiple_of(2) {
+            Self::Host
+        } else {
+            Self::Stamped(i32::sample(tick))
+        }
+    }
+}
 impl Sample for FuelDemandPart {
     fn sample(tick: usize) -> Self {
         part_of_kind((tick % usize::from(FuelDemandPart::KINDS)) as u8, tick)
@@ -1239,6 +1248,34 @@ impl Fixture for FuelDemandPartRow {
         (u32::MAX as u128) << 83
             | ((FuelDemandPart::KINDS - 1) as u128) << 80
             | (u32::MAX as u128) << 16
+            | u16::MAX as u128
+    }
+}
+impl Fixture for FuelAwardRecipientRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let name_present = tick.is_multiple_of(2);
+        let first_offset = ((tick % 24) as u8).max(1);
+        let last_offset = (tick % usize::from(first_offset)) as u8;
+        Self {
+            country: (key >> 83) as u32,
+            kind: (((key >> 80) & 7) as u8).min(2),
+            reference: (key >> 16) as u64,
+            occurrence: key as u16,
+            position: u32::sample(tick),
+            owner: u32::sample(tick + 1),
+            host: u64::sample(tick + 2),
+            name_present,
+            name: if name_present { Vec::<u8>::sample(tick + 3) } else { Vec::new() },
+            name_reason: Vec::<u8>::sample(tick + 4),
+            first_offset,
+            last_offset,
+            amount_raw: i64::sample(tick + 5),
+        }
+    }
+    fn largest_key() -> u128 {
+        (u32::MAX as u128) << 83
+            | (2_u128 << 80)
+            | (u64::MAX as u128) << 16
             | u16::MAX as u128
     }
 }
@@ -1566,6 +1603,8 @@ impl Fixture for GlobalSavedEventTargetRow {
     }
 }
 fixture!(ScriptVariablesRow, |key| {scope_kind: (key >> 32) as u8, scope_id: key as u32}, {entries: Vec<ScriptVariableEntry>, seed: Recorded<Option<u32>>});
+fixture!(ScriptVariableNameRow, |key| {id: key as u32}, {name: Vec<u8>});
+fixture!(ScriptVariableValueRow, |key| {scope_kind: (key >> 64) as u8, scope_id: (key >> 32) as u32, var_id: key as u32}, {value_raw: i64});
 sample_struct!(OperationRequirement {
     amount: i64,
     days: i32,
@@ -2976,7 +3015,7 @@ sample_struct!(AirSupplySummary {
     supplied: i64,
     deficit: i64
 });
-fixture!(AirGroundCrewRow, |key| {country: (key >> 32) as u32, region: key as u32}, {enabled: Option<u32>, supply: Recorded<Option<AirSupplySummary>>});
+fixture!(AirGroundCrewRow, |key| {country: (key >> 32) as u32, region: key as u32}, {enabled: Option<u32>, supply: Recorded<Option<AirSupplySummary>>, supply_severity: Recorded<Option<i32>>, supply_needed: Recorded<Option<i64>>, supply_supplied: Recorded<Option<i64>>, supply_deficit_extra: Recorded<Option<i64>>});
 fixture!(AirTransferInputRow, |key| {wing: key as u64}, {base: u64, ordinal: Option<u32>, progress_raw: Option<i64>, distance_raw: Option<i64>});
 fixture!(AirCountryRelationRow, |key| {country: (key >> 34) as u32, kind: ((key >> 32) & 3) as u8, ordinal: key as u32}, {other: u32});
 fixture!(AirReferenceWitnessRow, |key| {handle: key as u64}, {base_kind: Option<i32>, state: Option<u32>, province: Option<u32>, host: Option<u64>, host_owner: Option<u32>, host_without_task_force: bool});
@@ -4346,6 +4385,18 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
         TableId::LandCombatSides => TableRows::LandCombatSides(rows::<LandCombatSideRow>(tick)),
         TableId::LandCombatEdges => {
             TableRows::LandCombatEdges(rows::<LandCombatEdgesRow>(tick))
+        }
+        TableId::FuelAwardRecipients => {
+            TableRows::FuelAwardRecipients(rows::<FuelAwardRecipientRow>(tick))
+        }
+        TableId::ScriptVariableNames => {
+            TableRows::ScriptVariableNames(rows::<ScriptVariableNameRow>(tick))
+        }
+        TableId::ScriptVariableValues => {
+            TableRows::ScriptVariableValues(rows::<ScriptVariableValueRow>(tick))
+        }
+        TableId::LandCombatResultObservers => {
+            TableRows::LandCombatResultObservers(rows::<CombatLogObserverRow>(tick))
         }
         TableId::CombatEngagementRefreshes => {
             TableRows::CombatEngagementRefreshes(rows::<CombatEngagementRefreshRow>(tick))
@@ -6556,6 +6607,10 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);
     check_table::<CombatEngagementRefreshRow>(TableId::CombatEngagementRefreshes);
     check_table::<LandCombatEdgesRow>(TableId::LandCombatEdges);
+    check_table::<FuelAwardRecipientRow>(TableId::FuelAwardRecipients);
+    check_table::<ScriptVariableNameRow>(TableId::ScriptVariableNames);
+    check_table::<ScriptVariableValueRow>(TableId::ScriptVariableValues);
+    check_table::<CombatLogObserverRow>(TableId::LandCombatResultObservers);
     check_table::<ThreatSourceRow>(TableId::ThreatSources);
     check_table::<ThreatCountryAggregateRow>(TableId::ThreatCountryAggregates);
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);

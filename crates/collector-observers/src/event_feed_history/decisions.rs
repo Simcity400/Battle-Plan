@@ -470,6 +470,7 @@ impl Store {
         self.charge_storage();
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn decision_marker<M: Memory>(
         &mut self,
         world: &World<'_, M>,
@@ -477,7 +478,7 @@ impl Store {
         base: usize,
         generation: u64,
         country: usize,
-        mut change: DecisionChange,
+        change: DecisionChange,
     ) -> Result<(), &'static str> {
         if change.operation == Operation::Rebuild && change.container != 3 {
             return Ok(());
@@ -485,6 +486,49 @@ impl Store {
         self.observation(generation)?;
 
         let identity = world.country_object(country)?;
+        let rebuild = if change.operation == Operation::Rebuild {
+            let days = engine_native_memory::read::<i32>(
+                memory,
+                world.state_pointer() + engine_native::cgame_state::CAMPAIGN_SEED,
+            )
+            .ok_or("decision rebuild campaign seed unreadable")?;
+            let lifecycle = i32::from(
+                engine_sites::at(base, native::ADMISSION_OVERRIDE_RVA)
+                    .and_then(|at| engine_native_memory::read::<u8>(memory, at))
+                    .ok_or("decision rebuild admission override unreadable")?
+                    != 0,
+            );
+            Some((days, lifecycle))
+        } else {
+            None
+        };
+        self.decision_marker_resolved(
+            memory,
+            base,
+            generation,
+            country,
+            identity,
+            || world.hour(),
+            rebuild,
+            change,
+        )
+    }
+    pub(crate) fn decision_marker_resolved<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        country: usize,
+        identity: CountryIdentity,
+        hour: impl FnOnce() -> Result<i32, &'static str>,
+        rebuild: Option<(i32, i32)>,
+        mut change: DecisionChange,
+    ) -> Result<(), &'static str> {
+        if change.operation == Operation::Rebuild && change.container != 3 {
+            return Ok(());
+        }
+        self.observation(generation)?;
+
         self.decisions.owner(country, identity)?;
         if change.operation == Operation::Invalidate && !self.decisions.mark(country, identity)? {
             return Ok(());
@@ -495,22 +539,11 @@ impl Store {
                 .power(country, POWER_EPOCH.load(Ordering::Acquire));
         }
         let mut value = fact(memory, identity, change, None);
-        if change.operation == Operation::Rebuild {
-            value.script.days = Some(
-                engine_native_memory::read::<i32>(
-                    memory,
-                    world.state_pointer() + engine_native::cgame_state::CAMPAIGN_SEED,
-                )
-                .ok_or("decision rebuild campaign seed unreadable")?,
-            );
-            value.script.lifecycle = Some(i32::from(
-                engine_sites::at(base, native::ADMISSION_OVERRIDE_RVA)
-                    .and_then(|at| engine_native_memory::read::<u8>(memory, at))
-                    .ok_or("decision rebuild admission override unreadable")?
-                    != 0,
-            ));
+        if let Some((days, lifecycle)) = rebuild {
+            value.script.days = Some(days);
+            value.script.lifecycle = Some(lifecycle);
         }
-        self.script_known(memory, base, generation, world.hour()?, value)
+        self.script_known(memory, base, generation, hour()?, value)
     }
     pub(crate) fn decision_selected<M: Memory>(
         &mut self,
@@ -536,7 +569,7 @@ impl Store {
         generation: u64,
         country: usize,
         pointer: usize,
-        mut change: DecisionChange,
+        change: DecisionChange,
         baseline: bool,
         results: (Option<i32>, Option<i32>),
         source: Option<EventFeedSource>,
@@ -544,6 +577,38 @@ impl Store {
         self.observation(generation)?;
 
         let owner = world.country_object(country)?;
+        self.decision_selected_source_resolved(
+            world,
+            memory,
+            base,
+            generation,
+            country,
+            owner,
+            || world.hour(),
+            pointer,
+            change,
+            baseline,
+            results,
+            source,
+        )
+    }
+    pub(crate) fn decision_selected_source_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        country: usize,
+        owner: CountryIdentity,
+        hour: impl FnOnce() -> Result<i32, &'static str>,
+        pointer: usize,
+        mut change: DecisionChange,
+        baseline: bool,
+        results: (Option<i32>, Option<i32>),
+        source: Option<EventFeedSource>,
+    ) -> Result<(), &'static str> {
+        self.observation(generation)?;
+
         let supplied_update = change.operation == Operation::Update;
         let old = self.decisions.find(pointer);
         let row = native::record(memory, base, pointer, change.container)?;
@@ -600,7 +665,7 @@ impl Store {
             supplied_update,
             source,
         )?;
-        self.script_known(memory, base, generation, world.hour()?, value)
+        self.script_known(memory, base, generation, hour()?, value)
     }
     pub(crate) fn decision_result<M: Memory>(
         &mut self,
@@ -631,9 +696,48 @@ impl Store {
         let Some(slot) = self.decisions.uncertified(pointer) else {
             return Ok(false);
         };
-        self.observation(generation)?;
         let owner = world.country_object(slot.owner)?;
         let hour = world.hour()?;
+        self.decision_result_resolved(
+            world, memory, base, generation, slot.owner, owner, hour, pointer, results, source,
+            reason,
+        )
+    }
+    pub(crate) fn decision_result_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        country: usize,
+        owner: CountryIdentity,
+        hour: i32,
+        pointer: usize,
+        results: (Option<i32>, Option<i32>),
+        source: EventFeedSource,
+        reason: &'static str,
+    ) -> Result<bool, &'static str> {
+        if let Some(slot) = self.decisions.find(pointer) {
+            self.decision_selected_source_resolved(
+                world,
+                memory,
+                base,
+                generation,
+                country,
+                owner,
+                || Ok(hour),
+                pointer,
+                DecisionChange::new(Operation::Update, slot.container),
+                false,
+                results,
+                Some(source),
+            )?;
+            return Ok(true);
+        }
+        let Some(slot) = self.decisions.uncertified(pointer) else {
+            return Ok(false);
+        };
+        self.observation(generation)?;
         let row = native::record(memory, base, pointer, slot.container)?;
         let value = record_fact(
             world,
@@ -742,6 +846,57 @@ impl Store {
             super::recovery_needed();
         }
     }
+    pub(crate) fn decision_retire_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        owner: CountryIdentity,
+        hour: i32,
+        pointer: usize,
+        swap: bool,
+        visited: bool,
+    ) -> Result<(), &'static str> {
+        let Some(slot) = self.decisions.find(pointer) else {
+            if self.decisions.uncertified(pointer).is_some() {
+                self.decisions.remove(pointer);
+            }
+            return Ok(());
+        };
+        if visited {
+            let cut = DecisionChange::new(Operation::PassCut, slot.container);
+            self.decision_selected_source_resolved(
+                world,
+                memory,
+                base,
+                generation,
+                slot.owner,
+                owner,
+                || Ok(hour),
+                pointer,
+                cut,
+                false,
+                (None, None),
+                None,
+            )?;
+        }
+        let mut change = DecisionChange::new(Operation::Erase, slot.container);
+        if visited {
+            change.flags |= replay_data::event_feed_rows::decisions::ITERATION;
+        }
+        if swap {
+            change.flags |= replay_data::event_feed_rows::decisions::SWAP;
+        }
+        self.decisions.remove(pointer);
+        self.script_known(
+            memory,
+            base,
+            generation,
+            hour,
+            fact(memory, owner, change, Some(slot.id)),
+        )
+    }
     pub(crate) fn decision_retire<M: Memory>(
         &mut self,
         world: &World<'_, M>,
@@ -800,6 +955,29 @@ impl Store {
         target: u32,
         count: Option<i32>,
     ) -> Result<(), &'static str> {
+        let owner = world.country_object(country)?;
+        self.decision_random_resolved(
+            memory,
+            base,
+            generation,
+            owner,
+            || world.hour(),
+            definition,
+            target,
+            count,
+        )
+    }
+    pub(crate) fn decision_random_resolved<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        owner: CountryIdentity,
+        hour: impl FnOnce() -> Result<i32, &'static str>,
+        definition: usize,
+        target: u32,
+        count: Option<i32>,
+    ) -> Result<(), &'static str> {
         let mut change = DecisionChange::new(
             if count.is_some() {
                 Operation::RandomSet
@@ -809,7 +987,7 @@ impl Store {
             0,
         );
         change.ordinal = target;
-        let mut value = fact(memory, world.country_object(country)?, change, None);
+        let mut value = fact(memory, owner, change, None);
         value.token = engine_native_memory::msvc_string::Descriptor::read(
             memory,
             definition
@@ -817,7 +995,7 @@ impl Store {
                 .ok_or("decision random token overflow")?,
         )?;
         value.script.days = count;
-        self.script_known(memory, base, generation, world.hour()?, value)
+        self.script_known(memory, base, generation, hour()?, value)
     }
     pub(crate) fn decision_baseline(
         &mut self,

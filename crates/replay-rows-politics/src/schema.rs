@@ -633,6 +633,29 @@ typed_codec!(ScriptVariablesRow, 40, |row| (row.scope_kind as u128) << 32 | row.
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct ScriptVariableNameRow {
+    pub id: u32,
+    pub name: Vec<u8>,
+}
+typed_codec!(ScriptVariableNameRow, 32, |row| row.id as u128,
+ |key| Self { id: key as u32, ..Default::default() },
+ { 0 => (name): Bytes }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct ScriptVariableValueRow {
+    pub scope_kind: u8,
+    pub scope_id: u32,
+    pub var_id: u32,
+    pub value_raw: i64,
+}
+typed_codec!(ScriptVariableValueRow, 72,
+ |row| (row.scope_kind as u128) << 64 | (row.scope_id as u128) << 32 | row.var_id as u128,
+ |key| Self { scope_kind: (key >> 64) as u8, scope_id: (key >> 32) as u32, var_id: key as u32, ..Default::default() },
+ { 0 => (value_raw): I64 }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GlobalSavedEventTargetRow {
     pub ordinal: u32,
     pub name: Vec<u8>,

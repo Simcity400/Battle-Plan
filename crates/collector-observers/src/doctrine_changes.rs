@@ -1,8 +1,8 @@
-use crate::{hook::Hook, watch_registry::WatchRegistry};
+use crate::{hook::Hook, hook_timing::CallCounters, watch_registry::WatchRegistry};
 pub use engine_mutations::doctrine_mutations::Domain;
 use engine_mutations::doctrine_mutations::{DOMAINS, SITES};
 use engine_native_memory::Memory;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod pending;
 mod refresh;
@@ -82,7 +82,7 @@ unsafe extern "system-unwind" fn gain_store(registers: &crate::hook::Registers, 
 }
 static WATCHES: [WatchRegistry; DOMAINS] = [const { WatchRegistry::new() }; DOMAINS];
 static ORIGINAL: [AtomicUsize; SITES.len()] = [const { AtomicUsize::new(0) }; SITES.len()];
-static CALLS: [AtomicU64; SITES.len()] = [const { AtomicU64::new(0) }; SITES.len()];
+static CALLS: CallCounters<{ SITES.len() }> = CallCounters::new();
 
 pub fn active() -> usize {
     pending::active() + WATCHES.iter().map(WatchRegistry::active).sum::<usize>()
@@ -164,7 +164,7 @@ macro_rules! callback {
     ($name:ident, $site:expr $(, $extra:ident)*) => {
         unsafe extern "system" fn $name(first: usize, second: usize, third: usize, fourth: usize $(, $extra: usize)*) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::DoctrineChanges);
-            CALLS[$site].fetch_add(1, Ordering::Relaxed);
+            CALLS.increment($site);
             let _notification = WATCHES[SITES[$site].domain as usize].notify(first);
             let original: unsafe extern "system" fn(usize, usize, usize, usize $(, callback!(@type $extra))*) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
@@ -196,7 +196,7 @@ unsafe extern "system" fn consume_cost(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::DoctrineChanges);
-    CALLS[10].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(10);
     let _notification = WATCHES[SITES[10].domain as usize].notify(first);
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[10].load(Ordering::Acquire)) };

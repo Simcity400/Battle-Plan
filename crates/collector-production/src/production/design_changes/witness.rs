@@ -17,31 +17,106 @@ impl Witness {
         self.spans.len() * std::mem::size_of::<(usize, u32, bool)>() + self.bytes.len()
     }
     pub(super) fn unchanged(&self, memory: &impl Memory, scratch: &mut Vec<u8>) -> bool {
-        if scratch.len() < self.longest {
-            let short = self.longest - scratch.len();
-            if engine_allocation::advisory(|| engine_allocation::reserve(scratch, short)).is_err() {
-                return false;
-            }
-            scratch.resize(self.longest, 0);
-        }
-        let mut at = 0;
-        for &(address, len, ok) in &self.spans {
-            let (len, read) = (len as usize, &mut scratch[..len as usize]);
-            if memory.copy(address, read) != ok {
-                return false;
-            }
-            if ok {
-                if self.bytes.get(at..at + len) != Some(&*read) {
+        const BATCH: usize = 16;
+        let ensure_scratch = |scratch: &mut Vec<u8>, needed: usize| -> bool {
+            if scratch.len() < needed {
+                let short = needed - scratch.len();
+                if engine_allocation::advisory(|| engine_allocation::reserve(scratch, short))
+                    .is_err()
+                {
                     return false;
                 }
-                at += len;
+                scratch.resize(needed, 0);
             }
+            true
+        };
+        if !ensure_scratch(scratch, self.longest) {
+            return false;
+        }
+        let mut index = 0;
+        let mut at = 0;
+        while index < self.spans.len() {
+            let (address, len, ok) = self.spans[index];
+            if !ok || address == 0 {
+                let len = len as usize;
+                let read = &mut scratch[..len];
+                if memory.copy(address, read) != ok {
+                    return false;
+                }
+                if ok {
+                    if self.bytes.get(at..at + len) != Some(&*read) {
+                        return false;
+                    }
+                    at += len;
+                }
+                index += 1;
+                continue;
+            }
+            let mut count = 0;
+            let mut total = 0_usize;
+            while count < BATCH && index + count < self.spans.len() {
+                let (span_addr, span_len, span_ok) = self.spans[index + count];
+                if !span_ok || span_addr == 0 {
+                    break;
+                }
+                let Some(next) = total.checked_add(span_len as usize) else {
+                    return false;
+                };
+                total = next;
+                count += 1;
+            }
+            let Some(expected) = self.bytes.get(at..at + total) else {
+                return false;
+            };
+            if count == 1 {
+                let len = len as usize;
+                let read = &mut scratch[..len];
+                if !memory.copy(address, read) || read != expected {
+                    return false;
+                }
+            } else {
+                if !ensure_scratch(scratch, total) {
+                    return false;
+                }
+                let spans = &self.spans[index..index + count];
+                let out = &mut scratch[..total];
+                let copied = match count {
+                    2..=4 => copy_scattered_batch::<4>(memory, spans, out),
+                    5..=8 => copy_scattered_batch::<8>(memory, spans, out),
+                    _ => copy_scattered_batch::<BATCH>(memory, spans, out),
+                };
+                if !copied || &*out != expected {
+                    return false;
+                }
+            }
+            at += total;
+            index += count;
         }
         at == self.bytes.len()
     }
     pub(super) fn size(&self) -> (usize, usize) {
         (self.spans.len(), self.bytes.len())
     }
+}
+
+fn copy_scattered_batch<const N: usize>(
+    memory: &impl Memory,
+    spans: &[(usize, u32, bool)],
+    out: &mut [u8],
+) -> bool {
+    let mut addresses = [0_usize; N];
+    let mut rest = out;
+    let mut destinations: [&mut [u8]; N] = std::array::from_fn(|lane| {
+        if let Some(&(span_addr, span_len, _)) = spans.get(lane) {
+            addresses[lane] = span_addr;
+            let (head, tail) = std::mem::take(&mut rest).split_at_mut(span_len as usize);
+            rest = tail;
+            head
+        } else {
+            &mut []
+        }
+    });
+    memory.copy_scattered_prefetched(addresses, &mut destinations) == N
 }
 
 static WITNESSES: Mutex<Option<HashMap<usize, Witness>>> = Mutex::new(None);
@@ -198,6 +273,75 @@ impl<'a, M> Recording<'a, M> {
             stamp: 0,
         })
     }
+    fn record_span(
+        spans: &mut Vec<(usize, u32, bool)>,
+        bytes: &mut Vec<u8>,
+        address: usize,
+        data: &[u8],
+        ok: bool,
+    ) -> bool {
+        let Ok(len) = u32::try_from(data.len()) else {
+            return false;
+        };
+        let coalesces = spans.last().is_some_and(|last| {
+            last.2 == ok
+                && last.0.checked_add(last.1 as usize) == Some(address)
+                && (last.1 as usize).saturating_add(data.len()) <= MAX_COALESCED_SPAN
+        });
+        if !coalesces && spans.len() == spans.capacity() {
+            let more = spans.capacity().max(64);
+            if engine_allocation::reserve(spans, more).is_err() {
+                return false;
+            }
+        }
+        if ok {
+            if bytes.capacity() - bytes.len() < data.len() {
+                let more = bytes.capacity().max(data.len()).max(1024);
+                if engine_allocation::reserve(bytes, more).is_err() {
+                    return false;
+                }
+            }
+            bytes.extend_from_slice(data);
+        }
+        if coalesces {
+            spans.last_mut().unwrap().1 += len;
+        } else {
+            spans.push((address, len, ok));
+        }
+        true
+    }
+
+    fn record_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &[&mut [u8]; N],
+        completed: usize,
+    ) {
+        if self.refused.get() {
+            return;
+        }
+        let (mut spans, mut bytes) = (self.spans.borrow_mut(), self.bytes.borrow_mut());
+        for (index, (&address, destination)) in addresses.iter().zip(destinations.iter()).enumerate()
+        {
+            if index == completed {
+                if !destination.is_empty()
+                    && address != 0
+                    && address.checked_add(destination.len()).is_some()
+                    && !Self::record_span(&mut spans, &mut bytes, address, destination, false)
+                {
+                    self.refused.set(true);
+                }
+                break;
+            }
+            if destination.is_empty() {
+                continue;
+            }
+            if !Self::record_span(&mut spans, &mut bytes, address, destination, true) {
+                self.refused.set(true);
+                break;
+            }
+        }
+    }
 }
 impl<M: Memory> Memory for Recording<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -206,38 +350,101 @@ impl<M: Memory> Memory for Recording<'_, M> {
             return ok;
         }
         let (mut spans, mut bytes) = (self.spans.borrow_mut(), self.bytes.borrow_mut());
-        let held = u32::try_from(output.len()).ok().and_then(|len| {
-            let merged = spans.last_mut().filter(|last| {
-                last.2 == ok
-                    && last.0.checked_add(last.1 as usize) == Some(address)
-                    && (last.1 as usize).saturating_add(output.len()) <= MAX_COALESCED_SPAN
-            });
-            if merged.is_none() && spans.len() == spans.capacity() {
-                let more = spans.capacity().max(64);
-                engine_allocation::reserve(&mut spans, more).ok()?;
-            }
-            if ok {
-                if bytes.capacity() - bytes.len() < output.len() {
-                    let more = bytes.capacity().max(output.len()).max(1024);
-                    engine_allocation::reserve(&mut bytes, more).ok()?;
-                }
-                bytes.extend_from_slice(output);
-            }
-            if let Some(last) = spans.last_mut().filter(|last| {
-                last.2 == ok
-                    && last.0.checked_add(last.1 as usize) == Some(address)
-                    && (last.1 as usize).saturating_add(output.len()) <= MAX_COALESCED_SPAN
-            }) {
-                last.1 += len;
-            } else {
-                spans.push((address, len, ok));
-            }
-            Some(())
-        });
-        if held.is_none() {
+        if !Self::record_span(&mut spans, &mut bytes, address, output, ok) {
             self.refused.set(true);
         }
         ok
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        let completed = self.source.copy_scattered(addresses, destinations);
+        self.record_scattered(addresses, destinations, completed);
+        completed
+    }
+
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        let completed = self
+            .source
+            .copy_scattered_prefetched(addresses, destinations);
+        self.record_scattered(addresses, destinations, completed);
+        completed
+    }
+
+    fn copy_records(
+        &self,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let Some(total) = layout.count(sources, destination.len()) else {
+            return 0;
+        };
+        let completed = self.source.copy_records(sources, layout, destination);
+        if self.refused.get() || total == 0 || layout.fields().is_empty() {
+            return completed;
+        }
+        let (mut spans, mut bytes) = (self.spans.borrow_mut(), self.bytes.borrow_mut());
+        let fields = layout.fields();
+        let stride = layout.stride();
+        let mut index = 0_usize;
+        'rows: for row in 0..sources.len() {
+            let pointer = sources.pointer(row);
+            let row_base = row * stride;
+            for field in fields {
+                if index == completed {
+                    if field.len != 0 {
+                        let address = pointer
+                            .filter(|&pointer| pointer != 0)
+                            .and_then(|pointer| pointer.checked_add(field.source_offset))
+                            .filter(|&address| address.checked_add(field.len).is_some());
+                        let start = row_base + field.destination_offset;
+                        if let Some(address) = address
+                            && !Self::record_span(
+                                &mut spans,
+                                &mut bytes,
+                                address,
+                                &destination[start..start + field.len],
+                                false,
+                            )
+                        {
+                            self.refused.set(true);
+                        }
+                    }
+                    break 'rows;
+                }
+                if field.len != 0 {
+                    let Some(address) = pointer
+                        .filter(|&pointer| pointer != 0)
+                        .and_then(|pointer| pointer.checked_add(field.source_offset))
+                        .filter(|&address| address.checked_add(field.len).is_some())
+                    else {
+                        self.refused.set(true);
+                        break 'rows;
+                    };
+                    let start = row_base + field.destination_offset;
+                    if !Self::record_span(
+                        &mut spans,
+                        &mut bytes,
+                        address,
+                        &destination[start..start + field.len],
+                        true,
+                    ) {
+                        self.refused.set(true);
+                        break 'rows;
+                    }
+                }
+                index += 1;
+            }
+        }
+        completed
     }
 }
 
@@ -293,5 +500,141 @@ mod tests {
         recording.refused.set(true);
         walk(&recording);
         assert!(recording.witness(7, (0, false)).is_none());
+    }
+    #[test]
+    fn multi_span_witness_batches_reads_through_surviving_guard() {
+        struct Counted {
+            world: World,
+            scattered: Cell<usize>,
+        }
+        impl Memory for Counted {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.world.copy(address, output)
+            }
+            fn copy_scattered_prefetched<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.scattered.set(self.scattered.get() + 1);
+                self.world.copy_scattered(addresses, destinations)
+            }
+        }
+        let counted = Counted {
+            world: World(std::cell::RefCell::new((0u8..64).collect())),
+            scattered: Cell::new(0),
+        };
+        let recording = Recording::new(&counted, (0, 0));
+        let mut buf = [0u8; 4];
+        for offset in [4, 12, 24, 40] {
+            assert!(recording.copy(offset, &mut buf));
+        }
+        assert!(!recording.copy(1_000, &mut buf[..2]));
+        let held = recording.witness(9, (1, false)).unwrap();
+        let guard = super::repair::Surviving {
+            source: &counted,
+            removed: &[],
+            receiver: 4,
+            consumed: Cell::new(false),
+        };
+        let mut scratch = Vec::new();
+        assert!(held.unchanged(&guard, &mut scratch));
+        assert_eq!(counted.scattered.get(), 1);
+        counted.world.0.borrow_mut()[25] ^= 0xff;
+        assert!(!held.unchanged(&guard, &mut scratch));
+        counted.world.0.borrow_mut()[25] ^= 0xff;
+        let removed_guard = super::repair::Surviving {
+            source: &counted,
+            removed: &[24],
+            receiver: 4,
+            consumed: Cell::new(false),
+        };
+        assert!(!held.unchanged(&removed_guard, &mut scratch));
+        assert!(removed_guard.consumed.get());
+    }
+    #[test]
+    fn recording_batches_scattered_and_record_reads_with_exact_witness_verification() {
+        use engine_native_memory::memory::{RecordField, RecordLayout, RecordSources};
+        struct BatchCounted {
+            world: World,
+            scattered: Cell<usize>,
+            records: Cell<usize>,
+        }
+        impl Memory for BatchCounted {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.world.copy(address, output)
+            }
+            fn copy_scattered<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.scattered.set(self.scattered.get() + 1);
+                self.world.copy_scattered(addresses, destinations)
+            }
+            fn copy_scattered_prefetched<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.scattered.set(self.scattered.get() + 1);
+                self.world.copy_scattered_prefetched(addresses, destinations)
+            }
+            fn copy_records(
+                &self,
+                sources: RecordSources<'_>,
+                layout: &RecordLayout<'_>,
+                destination: &mut [u8],
+            ) -> usize {
+                self.records.set(self.records.get() + 1);
+                self.world.copy_records(sources, layout, destination)
+            }
+        }
+        const FIELDS: [RecordField; 2] = [
+            RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 4,
+            },
+            RecordField {
+                source_offset: 8,
+                destination_offset: 4,
+                len: 4,
+            },
+        ];
+        const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 8).unwrap();
+        let counted = BatchCounted {
+            world: World(std::cell::RefCell::new((0u8..96).collect())),
+            scattered: Cell::new(0),
+            records: Cell::new(0),
+        };
+        let recording = Recording::new(&counted, (0, 0));
+        let mut a = [0u8; 4];
+        let mut b = [0u8; 4];
+        let mut c = [0u8; 4];
+        assert_eq!(
+            recording.copy_scattered([4, 20, 1_000], &mut [&mut a, &mut b, &mut c]),
+            2
+        );
+        let mut rec_buf = [0u8; 24];
+        assert_eq!(
+            recording.copy_records(
+                RecordSources::Pointers(&[32, 48, 2_000]),
+                &LAYOUT,
+                &mut rec_buf,
+            ),
+            4
+        );
+        assert_eq!(counted.scattered.get(), 1);
+        assert_eq!(counted.records.get(), 1);
+        let held = recording.witness(11, (2, true)).unwrap();
+        let mut scratch = Vec::new();
+        assert!(held.unchanged(&counted.world, &mut scratch));
+        counted.world.0.borrow_mut()[57] ^= 1;
+        assert!(!held.unchanged(&counted.world, &mut scratch));
+        counted.world.0.borrow_mut()[57] ^= 1;
+        assert!(held.unchanged(&counted.world, &mut scratch));
+        counted.world.0.borrow_mut().resize(1_010, 0);
+        assert!(!held.unchanged(&counted.world, &mut scratch));
     }
 }

@@ -823,14 +823,13 @@ fn supply(
             if maximum < 1 {
                 return Ok(0);
             }
-            let remaining = *status
-                .supply_grace_remaining
-                .require("DivisionStatus.supply_grace_remaining")
-                .map_err(|_| historical())?;
+            let grace = context.supply_grace.as_ref().map_err(Clone::clone)?;
+            let remaining = status
+                .displayed_supply_grace(Some(*grace))
+                .ok_or_else(historical)?;
             let ratio = status
                 .displayed_supply_ratio()
                 .ok_or("the division's supply ratio is not recorded")?;
-            let grace = context.supply_grace.as_ref().map_err(Clone::clone)?;
             Ok(counter_status::effective_supply(
                 ratio, maximum, remaining, *grace,
             ))

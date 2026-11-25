@@ -276,10 +276,13 @@ pub(crate) fn consumption_of(row: &FuelDemandTotalRow) -> FuelConsumptionAt {
 }
 
 pub(crate) fn read_hour(fuel: &CountryFuelRow, sampled_at: Option<i32>) -> Option<i32> {
-    use replay_data::rows::FuelDemandHour;
+    use replay_data::rows::{FuelAwardDayHour, FuelDemandHour};
     sampled_at
         .or(match &fuel.award_day {
-            Recorded::Value(day) if day.reason.is_empty() => Some(day.last_hour),
+            Recorded::Value(day) if day.reason.is_empty() => match day.last_hour {
+                FuelAwardDayHour::Stamped(hour) | FuelAwardDayHour::Historical(hour) => Some(hour),
+                FuelAwardDayHour::Host => None,
+            },
             _ => None,
         })
         .or(match &fuel.demand {

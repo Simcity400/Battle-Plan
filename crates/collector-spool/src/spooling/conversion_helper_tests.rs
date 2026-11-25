@@ -162,7 +162,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
                 clock.borrowed(),
                 1,
                 &mut SpoolConversion {
-                    variables_baseline: None,
+                    variables_baseline: Default::default(),
                     variables_scratch: &mut ScriptVariableComparison::default(),
                     characters: None,
                     lexical: None,

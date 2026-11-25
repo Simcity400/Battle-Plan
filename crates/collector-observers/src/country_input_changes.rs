@@ -3,6 +3,7 @@ pub mod weather_carry;
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
+    hook_timing::CallCounters,
     watch_registry::WatchRegistry,
 };
 use engine_mutations::{
@@ -255,8 +256,8 @@ pub struct Domain {
     accumulator: WatchRegistry,
     names: WatchRegistry,
     sets: [DirtySet; SETS],
-    calls: [AtomicU64; SITES],
-    forwarded: [AtomicU64; Forward::ALL.len()],
+    calls: CallCounters<SITES>,
+    forwarded: CallCounters<{ Forward::ALL.len() }>,
     unnamed: AtomicU64,
     resynced: AtomicU64,
     rebased: AtomicU64,
@@ -362,8 +363,8 @@ impl Domain {
             accumulator: WatchRegistry::retaining(),
             names: WatchRegistry::new().with_synchronous(),
             sets: [const { DirtySet::new() }; SETS],
-            calls: [const { AtomicU64::new(0) }; SITES],
-            forwarded: [const { AtomicU64::new(0) }; Forward::ALL.len()],
+            calls: CallCounters::new(),
+            forwarded: CallCounters::new(),
             unnamed: AtomicU64::new(0),
             resynced: AtomicU64::new(0),
             rebased: AtomicU64::new(0),
@@ -456,7 +457,7 @@ impl Domain {
     }
 
     pub fn notify(&self, site: usize, first: usize, second: usize) -> Marks<'_> {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         let mut marks = self.mark(MUTATIONS[site].2, MUTATIONS[site].1, first, second);
         marks._accumulator = (site == 0).then(|| self.accumulator.notify(first));
         marks._names = (site == sites::REBUILD_LOCALIZED_NAME).then(|| self.names.notify(0));
@@ -510,7 +511,7 @@ impl Domain {
         changed: &AtomicU64,
         original: impl FnOnce() -> usize,
     ) -> usize {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         let receiver = MUTATIONS[site].1;
         let tables = MUTATIONS[site].2;
         let before = state(first);
@@ -535,7 +536,7 @@ impl Domain {
     }
 
     pub fn forward(&self, site: Forward, first: usize, second: usize) -> Marks<'_> {
-        self.forwarded[site as usize].fetch_add(1, Ordering::Relaxed);
+        self.forwarded.increment(site as usize);
         if site == Forward::ResetCountry {
             self.network_writes.fetch_add(1, Ordering::SeqCst);
         }
@@ -560,7 +561,7 @@ impl Domain {
 
     fn intel_network_resets(&self) -> Option<u64> {
         self.intel_network_writes()
-            .map(|_| self.forwarded[Forward::ResetCountry as usize].load(Ordering::Acquire))
+            .map(|_| self.forwarded.total(Forward::ResetCountry as usize))
     }
 
     fn weather_writes(&self) -> Option<u64> {
@@ -580,7 +581,7 @@ impl Domain {
     }
 
     fn weather_write(&self, site: usize, original: impl FnOnce() -> usize) -> usize {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         self.weather_writes.fetch_add(1, Ordering::SeqCst);
         let result = original();
         self.weather_writes.fetch_add(1, Ordering::SeqCst);
@@ -588,7 +589,7 @@ impl Domain {
     }
 
     fn grow_intel_network(&self, original: impl FnOnce() -> usize) -> usize {
-        self.calls[GROW_INTEL_NETWORK].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(GROW_INTEL_NETWORK);
         self.network_writes.fetch_add(1, Ordering::SeqCst);
         let result = original();
         self.network_writes.fetch_add(1, Ordering::SeqCst);

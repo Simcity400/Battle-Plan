@@ -676,6 +676,30 @@ pub fn inputs_growing(
     result
 }
 
+pub fn template_group_growing(
+    memory: &impl Memory,
+    base: usize,
+    template: u64,
+    groups: &mut GroupKeys,
+    bytes: &mut Vec<u8>,
+    len: &mut usize,
+    required: &mut usize,
+) -> Result<Option<Option<Span>>, &'static str> {
+    let mut names = Names {
+        bytes: engine_native_memory::walk::Buffer::Growing(bytes),
+        len: *len,
+        required: *required,
+    };
+    let span = template_group(memory, base, template, groups, &mut names)?;
+    *len = names.len;
+    *required = names.required;
+    Ok(match span {
+        UNFIT => None,
+        NULL_GROUP => Some(None),
+        span => Some(Some(span)),
+    })
+}
+
 pub fn held_cached_name(
     text: &[u8],
     bytes: &mut Vec<u8>,

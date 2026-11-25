@@ -851,7 +851,7 @@ fn append_buffer(
     name: Option<native::StoredName>,
     memory: &impl Memory,
 ) -> bool {
-    let index = log.cursor.fetch_add(1, Ordering::SeqCst);
+    let index = log.cursor.fetch_add(1, Ordering::AcqRel);
     buffer.cursor.fetch_max(index + 1, Ordering::Relaxed);
     let pending = index
         .wrapping_sub(
@@ -1041,7 +1041,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     #[cfg(feature = "callback_profile")]
     let _tag = TagTimer::new(tag);
     let call = LOG.enter();
-    if !LOG.enabled.load(Ordering::SeqCst) {
+    if !LOG.enabled.load(Ordering::Acquire) {
         return;
     }
     let memory = unsafe { LiveMemory::new() };
@@ -1086,7 +1086,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 REGISTRY.with(|registry| *registry.borrow_mut() = native::Registry::default());
                 let old = PENDING.replace(Some(Pending {
                     root: ROOT.fetch_add(1, Ordering::Relaxed),
-                    epoch: LOG.epoch.load(Ordering::SeqCst),
+                    epoch: LOG.epoch.load(Ordering::Acquire),
                     started,
                     located,
                     stamp: stamp(),
@@ -1117,7 +1117,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         COUNTERS[1].fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if pending.epoch != LOG.epoch.load(Ordering::SeqCst) {
+    if pending.epoch != LOG.epoch.load(Ordering::Acquire) {
         pending.refused = true;
         pending.cause.get_or_insert(0);
     }
@@ -1166,7 +1166,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         }
     };
     pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
-    let recipient = if kind == 1 {
+    let recipient_and_name = if kind == 1 {
         if let Some(located) = located.as_ref() {
             REGISTRY.with(|registry| {
                 native::air_held_with(
@@ -1189,22 +1189,21 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 None,
             )
         }
+        .map(|(recipient, taken)| (recipient, None, taken))
     } else if located.is_some() {
         REGISTRY.with(|registry| {
-            native::unit_with(&memory, base, pointer, kind, &mut registry.borrow_mut())
+            native::unit_with_name(&memory, base, pointer, kind, Some(&mut registry.borrow_mut()))
         })
+        .map(|(recipient, name, taken)| (recipient, Some(name), taken))
     } else {
-        native::unit(&memory, base, pointer, kind).map(|recipient| (recipient, false))
-    }
-    .map(|(recipient, taken)| {
-        if taken {
-            HELD.increment(if kind == 1 { 1 } else { 2 });
-        }
-        recipient
-    });
-    match recipient {
-        Ok(recipient) => {
-            let name = (kind != 1).then(|| native::stored_name(&memory, pointer, kind));
+        native::unit_with_name(&memory, base, pointer, kind, None)
+            .map(|(recipient, name, taken)| (recipient, Some(name), taken))
+    };
+    match recipient_and_name {
+        Ok((recipient, name, taken)) => {
+            if taken {
+                HELD.increment(if kind == 1 { 1 } else { 2 });
+            }
             let (name, name_reason) = match name {
                 Some(Ok(n)) => (Some(n), None),
                 Some(Err(reason)) => (None, Some(reason)),

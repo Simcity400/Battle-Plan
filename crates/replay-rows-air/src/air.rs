@@ -20,10 +20,80 @@ pub struct AirGroundCrewRow {
     pub country: u32,
     pub region: u32,
     pub enabled: Option<u32>,
+    pub supply_severity: Recorded<Option<i32>>,
+    pub supply_needed: Recorded<Option<i64>>,
+    pub supply_supplied: Recorded<Option<i64>>,
+    pub supply_deficit_extra: Recorded<Option<i64>>,
+}
+impl AirGroundCrewRow {
+    pub const fn without_supply(country: u32, region: u32, enabled: Option<u32>) -> Self {
+        Self {
+            supply: Recorded::Value(None),
+            country,
+            region,
+            enabled,
+            supply_severity: Recorded::Value(None),
+            supply_needed: Recorded::Value(None),
+            supply_supplied: Recorded::Value(None),
+            supply_deficit_extra: Recorded::Value(None),
+        }
+    }
+
+    pub fn set_supply(&mut self, summary: Option<AirSupplySummary>) {
+        self.supply = Recorded::Value(None);
+        match summary {
+            Some(summary) => {
+                self.supply_severity = Recorded::Value(Some(summary.severity));
+                self.supply_needed = Recorded::Value(Some(summary.needed));
+                self.supply_supplied = Recorded::Value(Some(summary.supplied));
+                self.supply_deficit_extra = Recorded::Value(Some(summary.deficit_extra()));
+            }
+            None => {
+                self.supply_severity = Recorded::Value(None);
+                self.supply_needed = Recorded::Value(None);
+                self.supply_supplied = Recorded::Value(None);
+                self.supply_deficit_extra = Recorded::Value(None);
+            }
+        }
+    }
+
+    pub fn supply_summary(&self) -> Recorded<Option<AirSupplySummary>> {
+        match (
+            self.supply_severity,
+            self.supply_needed,
+            self.supply_supplied,
+            self.supply_deficit_extra,
+        ) {
+            (
+                Recorded::Value(Some(severity)),
+                Recorded::Value(Some(needed)),
+                Recorded::Value(Some(supplied)),
+                Recorded::Value(Some(deficit_extra)),
+            ) => Recorded::Value(Some(AirSupplySummary::from_parts(
+                severity,
+                needed,
+                supplied,
+                deficit_extra,
+            ))),
+            (
+                Recorded::Value(None),
+                Recorded::Value(None),
+                Recorded::Value(None),
+                Recorded::Value(None),
+            ) => Recorded::Value(None),
+            (
+                Recorded::NotRecorded,
+                Recorded::NotRecorded,
+                Recorded::NotRecorded,
+                Recorded::NotRecorded,
+            ) => self.supply,
+            _ => Recorded::NotRecorded,
+        }
+    }
 }
 typed_codec!(AirGroundCrewRow, 64, |row| (row.country as u128) << 32 | row.region as u128,
  |key| Self { country: (key >> 32) as u32, region: key as u32, ..Self::default() },
- { 0 => (enabled): OptionalU32, 1 => (supply): Opaque }, |_row| Ok(()));
+ { 0 => (enabled): OptionalU32, 1 => (supply): Opaque, 2 => (supply_severity): OptionalI32, 3 => (supply_needed): OptionalI64, 4 => (supply_supplied): OptionalI64, 5 => (supply_deficit_extra): OptionalI64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -32,6 +102,21 @@ pub struct AirSupplySummary {
     pub needed: i64,
     pub supplied: i64,
     pub deficit: i64,
+}
+impl AirSupplySummary {
+    pub const fn deficit_extra(self) -> i64 {
+        self.deficit
+            .wrapping_sub(self.needed.wrapping_sub(self.supplied))
+    }
+
+    pub const fn from_parts(severity: i32, needed: i64, supplied: i64, deficit_extra: i64) -> Self {
+        Self {
+            severity,
+            needed,
+            supplied,
+            deficit: needed.wrapping_sub(supplied).wrapping_add(deficit_extra),
+        }
+    }
 }
 value_struct!(AirSupplySummary {
     severity: i32,
@@ -697,3 +782,72 @@ value_struct!(AirWingRaidReference {
     resolves: bool
 });
 impl OpaqueValue for AirWingRaidReference {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn air_ground_crew_supply_columns_roundtrip_and_preserve_legacy_opaque_fallback() {
+        for summary in [
+            AirSupplySummary { severity: 2, needed: 100_000, supplied: 100_000, deficit: 0 },
+            AirSupplySummary { severity: 1, needed: 100_000, supplied: 60_000, deficit: 40_000 },
+            AirSupplySummary { severity: 1, needed: 100_000, supplied: 120_000, deficit: 15_000 },
+            AirSupplySummary { severity: 0, needed: i64::MAX, supplied: i64::MIN, deficit: 42 },
+            AirSupplySummary { severity: 0, needed: i64::MIN, supplied: i64::MAX, deficit: i64::MIN },
+        ] {
+            let mut row = AirGroundCrewRow::without_supply(1, 2, Some(1));
+            row.set_supply(Some(summary));
+            assert_eq!(row.supply, Recorded::Value(None));
+            assert_eq!(row.supply_summary(), Recorded::Value(Some(summary)));
+        }
+        let empty = AirGroundCrewRow::without_supply(1, 2, Some(1));
+        assert_eq!(empty.supply_summary(), Recorded::Value(None));
+
+        let legacy_summary = AirSupplySummary { severity: 1, needed: 50, supplied: 20, deficit: 30 };
+        let legacy = AirGroundCrewRow {
+            country: 1,
+            region: 2,
+            enabled: Some(0),
+            supply: Recorded::Value(Some(legacy_summary)),
+            supply_severity: Recorded::NotRecorded,
+            supply_needed: Recorded::NotRecorded,
+            supply_supplied: Recorded::NotRecorded,
+            supply_deficit_extra: Recorded::NotRecorded,
+        };
+        assert_eq!(legacy.supply_summary(), Recorded::Value(Some(legacy_summary)));
+        let mut legacy_wire = Vec::new();
+        let skipped = legacy.encode_recorded_fields(&mut legacy_wire).unwrap();
+        assert_eq!(skipped, 0b111100);
+        let mut decoder = Decoder::new(&legacy_wire);
+        decoder.recorded_fields = 2;
+        let decoded = AirGroundCrewRow::decode_fields(legacy.key(), &mut decoder).unwrap();
+        decoder.finish().unwrap();
+        assert_eq!(decoded, legacy);
+        assert_eq!(decoded.supply_summary(), Recorded::Value(Some(legacy_summary)));
+
+        let unrecorded = AirGroundCrewRow {
+            country: 1,
+            region: 2,
+            enabled: None,
+            supply: Recorded::NotRecorded,
+            supply_severity: Recorded::NotRecorded,
+            supply_needed: Recorded::NotRecorded,
+            supply_supplied: Recorded::NotRecorded,
+            supply_deficit_extra: Recorded::NotRecorded,
+        };
+        assert_eq!(unrecorded.supply_summary(), Recorded::NotRecorded);
+
+        let partial = AirGroundCrewRow {
+            country: 1,
+            region: 2,
+            enabled: None,
+            supply: Recorded::NotRecorded,
+            supply_severity: Recorded::Value(Some(1)),
+            supply_needed: Recorded::NotRecorded,
+            supply_supplied: Recorded::NotRecorded,
+            supply_deficit_extra: Recorded::NotRecorded,
+        };
+        assert_eq!(partial.supply_summary(), Recorded::NotRecorded);
+    }
+}

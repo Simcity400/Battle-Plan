@@ -378,7 +378,7 @@ fn ground_crews(
     let rows = complete::<tables::AirGroundCrews>(frame)?;
     for row in rows {
         if (!demanded.contains(&(row.country, row.region))
-            && !matches!(row.supply, Recorded::Value(Some(_))))
+            && !matches!(row.supply_summary(), Recorded::Value(Some(_))))
             || row.enabled.is_some_and(|enabled| enabled > 1)
         {
             return Err(invalid(
@@ -1943,12 +1943,7 @@ mod tests {
         {
             *frame.tables[TableId::AirGroundCrews.index()] =
                 TableView::Complete(TableRows::AirGroundCrews(vec![
-                    replay_data::rows::AirGroundCrewRow {
-                        supply: Recorded::Value(None),
-                        country: 7,
-                        region: 9,
-                        enabled,
-                    },
+                    replay_data::rows::AirGroundCrewRow::without_supply(7, 9, enabled),
                 ]));
             let context = super::super::country_context(&frame).unwrap();
             let mut report = Report::default();
@@ -1970,6 +1965,29 @@ mod tests {
         let mut report = Report::default();
         ground_crews(&frame, &saved, &context, &mut report).unwrap();
         assert!(report.differences.is_empty());
+
+        let mut supply_only = replay_data::rows::AirGroundCrewRow::without_supply(7, 42, None);
+        supply_only.set_supply(Some(replay_data::rows::AirSupplySummary {
+            severity: 1,
+            needed: 100,
+            supplied: 60,
+            deficit: 40,
+        }));
+        *frame.tables[TableId::AirGroundCrews.index()] =
+            TableView::Complete(TableRows::AirGroundCrews(vec![supply_only]));
+        let context = super::super::country_context(&frame).unwrap();
+        let mut report = Report::default();
+        ground_crews(&frame, &saved, &context, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(!report.failed_comparisons.contains_key("AirGroundCrews"));
+
+        *frame.tables[TableId::AirGroundCrews.index()] =
+            TableView::Complete(TableRows::AirGroundCrews(vec![
+                replay_data::rows::AirGroundCrewRow::without_supply(7, 42, None),
+            ]));
+        let context = super::super::country_context(&frame).unwrap();
+        let mut report = Report::default();
+        assert!(ground_crews(&frame, &saved, &context, &mut report).is_err());
     }
 
     #[test]

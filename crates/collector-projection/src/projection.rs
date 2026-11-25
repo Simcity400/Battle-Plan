@@ -49,6 +49,14 @@ struct Ordering {
     republished: u64,
     held_converted: u64,
     ledger: Option<Box<dyn std::any::Any + Send>>,
+    ledger_stamp: Option<(u64, BranchId, Hour)>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct SlicedSkip {
+    pub research_bonuses_carried: bool,
+    pub research_modifiers_carried: bool,
+    pub technologies_carried: bool,
 }
 
 pub struct ProjectionScratch {
@@ -76,7 +84,9 @@ impl ProjectionScratch {
     }
 
     pub fn forget(&self, table: TableId) {
-        self.table(table).held = None;
+        let mut order = self.table(table);
+        order.held = None;
+        order.ledger_stamp = None;
     }
 
 }
@@ -88,6 +98,7 @@ pub struct Projection<'a> {
     hour: Hour,
     force: bool,
     scratch: &'a ProjectionScratch,
+    sliced_skip: SlicedSkip,
 }
 
 impl<'a> Projection<'a> {
@@ -163,7 +174,17 @@ impl<'a> Projection<'a> {
             hour,
             force,
             scratch,
+            sliced_skip: SlicedSkip::default(),
         }
+    }
+
+    pub fn with_sliced_skip(mut self, sliced_skip: SlicedSkip) -> Self {
+        self.sliced_skip = sliced_skip;
+        self
+    }
+
+    pub fn sliced_skip(&self) -> SlicedSkip {
+        self.sliced_skip
     }
 
     pub fn republish<S: TableSchema>(&self, witness: Option<Witness>) -> Option<TableInput> {
@@ -184,6 +205,9 @@ impl<'a> Projection<'a> {
             return None;
         }
         held.hour = self.hour;
+        if order.ledger_stamp == Some((self.encoder.identity(), self.branch, committed_hour)) {
+            order.ledger_stamp = Some((self.encoder.identity(), self.branch, self.hour));
+        }
         order.republished = order.republished.saturating_add(1);
         Some(TableInput::ComparedEqual(token))
     }
@@ -211,6 +235,7 @@ impl<'a> Projection<'a> {
             return None;
         }
         held.hour = self.hour;
+        order.ledger_stamp = None;
         order.republished = order.republished.saturating_add(1);
         Some(TableInput::UniformOptionalI32 {
             token,
@@ -732,7 +757,6 @@ impl Record<'_> {
 }
 
 struct Ledger<C> {
-    stamp: Option<(u64, BranchId, Hour)>,
     keys: Vec<u128>,
     fixed: Vec<Option<C>>,
     ends: Vec<usize>,
@@ -742,7 +766,6 @@ struct Ledger<C> {
 impl<C> Default for Ledger<C> {
     fn default() -> Self {
         Self {
-            stamp: None,
             keys: Vec::new(),
             fixed: Vec::new(),
             ends: Vec::new(),
@@ -753,7 +776,6 @@ impl<C> Default for Ledger<C> {
 
 impl<C> Ledger<C> {
     fn clear(&mut self) {
-        self.stamp = None;
         self.keys.clear();
         self.fixed.clear();
         self.ends.clear();
@@ -772,6 +794,8 @@ struct Ledgers<C> {
     seen: Vec<bool>,
     edits: Vec<(u128, Option<usize>)>,
     index: std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
+    row_bytes: Vec<u8>,
+    fixed_patches: Vec<(usize, Option<C>)>,
 }
 
 impl<C> Default for Ledgers<C> {
@@ -782,6 +806,8 @@ impl<C> Default for Ledgers<C> {
             seen: Vec::new(),
             edits: Vec::new(),
             index: std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default()),
+            row_bytes: Vec::new(),
+            fixed_patches: Vec::new(),
         }
     }
 }
@@ -795,12 +821,16 @@ impl Projection<'_> {
         record: impl Fn(usize, &T, &mut Record<'_>) -> Option<C>,
         convert: impl Fn(&T) -> S::Row,
     ) -> TableInput {
-        let held: Option<Box<Ledgers<C>>> = self
-            .scratch
-            .table(S::ID)
-            .ledger
-            .take()
-            .and_then(|ledger| ledger.downcast().ok());
+        let (held, held_stamp): (Option<Box<Ledgers<C>>>, Option<(u64, BranchId, Hour)>) = {
+            let mut order = self.scratch.table(S::ID);
+            (
+                order
+                    .ledger
+                    .take()
+                    .and_then(|ledger| ledger.downcast().ok()),
+                order.ledger_stamp.take(),
+            )
+        };
         let encoder = self.encoder;
         let shared = encoder.slice_meta(S::ID, self.branch, self.hour, self.force);
         let complete = matches!(outcome, Outcome::Rows { .. })
@@ -831,7 +861,7 @@ impl Projection<'_> {
         let aligned_eligible = matches!(
             shared,
             Some((token, previous_len))
-                if ledgers.held.stamp == Some(token.baseline())
+                if held_stamp == Some(token.baseline())
                     && previous_len.is_none_or(|len| len == ledgers.held.keys.len())
         );
         let Ledgers {
@@ -840,28 +870,107 @@ impl Projection<'_> {
             seen,
             edits,
             index,
+            row_bytes,
+            fixed_patches,
         } = &mut *ledgers;
-        next.clear();
-        let bytes_need = held.bytes.len();
-        let reserved = engine_allocation::reserve(&mut next.keys, source.len())
-            .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
-            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
-            .and_then(|_| {
-                if next.bytes.capacity() < bytes_need {
-                    engine_allocation::reserve(&mut next.bytes, bytes_need)
-                } else {
-                    Ok(())
-                }
-            });
-        if reserved.is_err() {
-            return unavailable("collector allocation failed").into();
+        let mut building_next = !aligned_eligible;
+        let mut max_row_bytes = 0_usize;
+        if building_next {
+            next.clear();
+            let bytes_need = held.bytes.len();
+            let reserved = engine_allocation::reserve(&mut next.keys, source.len())
+                .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
+                .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
+                .and_then(|_| {
+                    if next.bytes.capacity() < bytes_need {
+                        engine_allocation::reserve(&mut next.bytes, bytes_need)
+                    } else {
+                        Ok(())
+                    }
+                });
+            if reserved.is_err() {
+                return unavailable("collector allocation failed").into();
+            }
         }
         let mut aligned = aligned_eligible;
         let mut first_unaligned = 0;
         if aligned {
             edits.clear();
+            fixed_patches.clear();
         }
         for (at, row) in source.iter().enumerate() {
+            if !building_next {
+                row_bytes.clear();
+                let mut writer = Record {
+                    bytes: &mut *row_bytes,
+                    failed: false,
+                };
+                let fixed = record(at, row, &mut writer);
+                if writer.failed {
+                    return unavailable("collector allocation failed").into();
+                }
+                let row_key = key(row);
+                if held.keys.get(at) == Some(&row_key) {
+                    if fixed.is_some()
+                        && fixed == held.fixed[at]
+                        && row_bytes.as_slice() == held.span(at)
+                    {
+                        continue;
+                    }
+                    if edits.len() == edits.capacity()
+                        && engine_allocation::reserve(edits, 1).is_err()
+                    {
+                        return unavailable("collector allocation failed").into();
+                    }
+                    edits.push((row_key, Some(at)));
+                    if row_bytes.as_slice() == held.span(at) {
+                        if fixed_patches.len() == fixed_patches.capacity()
+                            && engine_allocation::reserve(fixed_patches, 1).is_err()
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        fixed_patches.push((at, fixed));
+                        continue;
+                    }
+                } else {
+                    aligned = false;
+                    first_unaligned = at;
+                }
+                {
+                    let prefix_bytes = at.checked_sub(1).map_or(0, |before| held.ends[before]);
+                    let bytes_need = held.bytes.len().max(prefix_bytes + row_bytes.len());
+                    next.clear();
+                    let reserved = engine_allocation::reserve(&mut next.keys, source.len())
+                        .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
+                        .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
+                        .and_then(|_| {
+                            if next.bytes.capacity() < bytes_need {
+                                engine_allocation::reserve(&mut next.bytes, bytes_need)
+                            } else {
+                                Ok(())
+                            }
+                        });
+                    if reserved.is_err() {
+                        return unavailable("collector allocation failed").into();
+                    }
+                    next.keys.extend_from_slice(&held.keys[..at]);
+                    next.fixed.extend_from_slice(&held.fixed[..at]);
+                    for &(patch_at, patch_fixed) in fixed_patches.iter() {
+                        next.fixed[patch_at] = patch_fixed;
+                    }
+                    fixed_patches.clear();
+                    next.ends.extend_from_slice(&held.ends[..at]);
+                    next.bytes.extend_from_slice(&held.bytes[..prefix_bytes]);
+                    next.bytes.extend_from_slice(row_bytes);
+                    let end = next.bytes.len();
+                    next.keys.push(row_key);
+                    next.fixed.push(fixed);
+                    next.ends.push(end);
+                    max_row_bytes = max_row_bytes.max(row_bytes.len());
+                    building_next = true;
+                }
+                continue;
+            }
             let start = next.bytes.len();
             let mut writer = Record {
                 bytes: &mut next.bytes,
@@ -872,6 +981,7 @@ impl Projection<'_> {
                 return unavailable("collector allocation failed").into();
             }
             let end = next.bytes.len();
+            max_row_bytes = max_row_bytes.max(end - start);
             let row_key = key(row);
             if aligned {
                 if held.keys.get(at) == Some(&row_key) {
@@ -895,9 +1005,15 @@ impl Projection<'_> {
             next.fixed.push(fixed);
             next.ends.push(end);
         }
+        if building_next && row_bytes.capacity() < max_row_bytes {
+            row_bytes.clear();
+            let _ = engine_allocation::advisory(|| {
+                engine_allocation::reserve(row_bytes, max_row_bytes)
+            });
+        }
         let input = match shared {
             Some((token, previous_len))
-                if held.stamp == Some(token.baseline())
+                if held_stamp == Some(token.baseline())
                     && previous_len.is_none_or(|len| len == held.keys.len()) =>
             {
                 let result = if aligned {
@@ -952,22 +1068,43 @@ impl Projection<'_> {
                 seen,
                 edits,
                 index,
+                row_bytes,
+                fixed_patches,
             } = &mut *ledgers;
-            std::mem::swap(held, next);
-            held.stamp = Some((encoder.identity(), self.branch, self.hour));
-            if next.keys.capacity() * size_of::<u128>()
-                + next.fixed.capacity() * size_of::<Option<C>>()
-                + next.ends.capacity() * size_of::<usize>()
-                + next.bytes.capacity()
-                > 4 * 1024 * 1024
-            {
-                *next = Ledger::default();
+            if building_next {
+                std::mem::swap(held, next);
+                if next.keys.capacity() * size_of::<u128>()
+                    + next.fixed.capacity() * size_of::<Option<C>>()
+                    + next.ends.capacity() * size_of::<usize>()
+                    + next.bytes.capacity()
+                    > 4 * 1024 * 1024
+                {
+                    *next = Ledger::default();
+                }
+            } else {
+                for &(patch_at, patch_fixed) in fixed_patches.iter() {
+                    held.fixed[patch_at] = patch_fixed;
+                }
+                fixed_patches.clear();
+                if source.len() < held.keys.len() {
+                    let keep_bytes = source.len().checked_sub(1).map_or(0, |last| held.ends[last]);
+                    held.keys.truncate(source.len());
+                    held.fixed.truncate(source.len());
+                    held.ends.truncate(source.len());
+                    held.bytes.truncate(keep_bytes);
+                }
             }
             if seen.capacity() > 16_384 {
                 *seen = Vec::new();
             }
             if edits.capacity() > 8_192 {
                 *edits = Vec::new();
+            }
+            if fixed_patches.capacity() > 8_192 {
+                *fixed_patches = Vec::new();
+            }
+            if row_bytes.capacity() > 256 * 1024 {
+                *row_bytes = Vec::new();
             }
             if index.capacity() > 16_384 {
                 *index = std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default());
@@ -988,6 +1125,7 @@ impl Projection<'_> {
                 _ => {}
             }
             order.ledger = Some(ledgers);
+            order.ledger_stamp = Some((encoder.identity(), self.branch, self.hour));
         }
         input
     }
@@ -1607,5 +1745,102 @@ mod tests {
         let (current, projected) = capture(&held_encoder, 2, 16, moved);
         assert!(projected && matches!(current, TableInput::ComparedEqual(_)));
         assert_eq!(scratch.republish_counts(TableId::States), [7, 9]);
+    }
+
+    #[test]
+    fn held_ledger_table_stays_sparse_under_meta_baseline_after_quiet_hours() {
+        use replay_data::rows::StateResistanceRow;
+        use replay_frame::frame::BaselineRetention;
+        let mut encoder = FrameEncoder::new();
+        let scratch = ProjectionScratch::default();
+        let mut rows = vec![
+            (
+                1_u64,
+                StateResistanceRow {
+                    state: 1,
+                    level: 10,
+                    ..Default::default()
+                },
+            ),
+            (
+                2_u64,
+                StateResistanceRow {
+                    state: 2,
+                    level: 20,
+                    ..Default::default()
+                },
+            ),
+        ];
+        let conversions = Cell::new(0);
+        let encode = |encoder: &mut FrameEncoder, hour: Hour, table: TableInput| {
+            let mut frame = FrameInput {
+                branch: 1,
+                hour,
+                tables: std::array::from_fn(|_| unavailable("fixture table").into()),
+                metrics: Metrics::default(),
+            };
+            frame.tables[TableId::StateResistance.index()] = table;
+            let prepared = encoder
+                .prepare_contained_keeping(
+                    frame,
+                    false,
+                    &mut std::array::from_fn(|_| None),
+                    |_| false,
+                    |_, error| Err(error),
+                )
+                .unwrap();
+            encoder
+                .commit_retiring_mode(prepared, |table| {
+                    if table == TableId::StateResistance {
+                        BaselineRetention::Meta
+                    } else {
+                        BaselineRetention::Drop
+                    }
+                })
+                .unwrap();
+        };
+        let capture = |encoder: &FrameEncoder, hour: Hour, witness: Witness, rows: &[(u64, StateResistanceRow)]| {
+            held_input::<tables::StateResistance>(
+                Some(&mut Projection::new(encoder, 1, hour, false, &scratch)),
+                Some(witness),
+                |projection| {
+                    ledger_table::<tables::StateResistance, _, u64>(
+                        projection,
+                        Outcome::Rows { len: rows.len() },
+                        rows,
+                        |(_, row)| u128::from(row.state),
+                        |_, (serial, _), _| Some(*serial),
+                        |(_, row)| {
+                            conversions.set(conversions.get() + 1);
+                            row.clone()
+                        },
+                    )
+                },
+            )
+        };
+        let first = capture(&encoder, 0, Witness::generation(1), &rows);
+        assert!(matches!(first, TableInput::SharedComplete(_)));
+        assert_eq!(conversions.get(), 2);
+        encode(&mut encoder, 0, first);
+
+        let quiet = capture(&encoder, 1, Witness::generation(1), &rows);
+        assert!(matches!(quiet, TableInput::ComparedEqual(_)));
+        assert_eq!(conversions.get(), 2);
+        encode(&mut encoder, 1, quiet);
+
+        rows[1].0 = 3;
+        rows[1].1.level = 35;
+        let updated = capture(&encoder, 2, Witness::generation(2), &rows);
+        let TableInput::SliceUpdate { update, .. } = &updated else {
+            panic!("ledger_table must stay sparse after a republished quiet hour");
+        };
+        assert_eq!(update.keys, vec![2]);
+        assert_eq!(update.rows.len(), 1);
+        assert_eq!(conversions.get(), 3);
+        encode(&mut encoder, 2, updated);
+
+        let next_quiet = capture(&encoder, 3, Witness::generation(2), &rows);
+        assert!(matches!(next_quiet, TableInput::ComparedEqual(_)));
+        assert_eq!(conversions.get(), 3);
     }
 }

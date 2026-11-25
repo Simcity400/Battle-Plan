@@ -70,6 +70,21 @@ pub(super) fn change(handle: u64, live: bool) -> Result<(), &'static str> {
     }
     Ok(())
 }
+pub(super) fn change_all(teams: &[(u64, bool)]) -> Result<(), &'static str> {
+    if teams.is_empty() {
+        return Ok(());
+    }
+    let mut cache = cache();
+    for &(handle, live) in teams {
+        if handle != 0 && cache.entries.get(&handle) != Some(&live) {
+            engine_allocation::reserve_map(&mut cache.entries, 1)
+                .map_err(|_| "design liveness allocation failed")?;
+            cache.entries.insert(handle, live);
+            cache.dirty = true;
+        }
+    }
+    Ok(())
+}
 pub(super) fn sample(
     row: &native::DefinitionRow<Arc<rows::VariantDesignState>>,
 ) -> Result<(), &'static str> {

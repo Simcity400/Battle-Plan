@@ -213,6 +213,51 @@ impl<'a, M: Memory> World<'a, M> {
         })
     }
 
+    pub fn from_prefetched(
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        arrays: Option<[engine_native_memory::cpdx_array::Array; 2]>,
+    ) -> Result<Self, &'static str> {
+        if state == 0 {
+            return Err("event feed game state is null");
+        }
+        let countries = std::cell::OnceCell::new();
+        if let Some(arrays) = arrays {
+            let _ = countries.set(ccountry::Reader::from_arrays(memory, base, state, arrays)?);
+        }
+        Ok(Self {
+            memory,
+            base,
+            state,
+            countries,
+        })
+    }
+
+    pub fn verify_country_identity(
+        &self,
+        country: usize,
+        reference: u32,
+        instance: u32,
+    ) -> Result<(engine_native_memory::country_identity::Country, CountryIdentity), &'static str> {
+        let countries = self.countries()?;
+        if let Some(resolved) = countries.verify_canonical_pointer(country, reference) {
+            return Ok((
+                resolved,
+                CountryIdentity {
+                    reference,
+                    id: resolved.id,
+                    instance,
+                },
+            ));
+        }
+        let (resolved, identity) = identity(self.memory, self.base, countries, reference)?;
+        if resolved.pointer != country {
+            return Err("event feed country is not its canonical object");
+        }
+        Ok((resolved, identity))
+    }
+
     fn countries(&self) -> Result<&ccountry::Reader<'a, M>, &'static str> {
         if let Some(countries) = self.countries.get() {
             return Ok(countries);

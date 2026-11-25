@@ -251,7 +251,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::LAND_COMBAT_EDGES_FORMAT
+            crate::rows::compatibility::RECORDING_SIZE_AUDIT_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -260,6 +260,16 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::RECORDING_SIZE_AUDIT_FORMAT {
+                expected.push(TableId::LandCombatResultObservers);
+            }
+            if version < crate::rows::compatibility::RECORDING_SIZE_FORMAT {
+                expected.extend([
+                    TableId::FuelAwardRecipients,
+                    TableId::ScriptVariableNames,
+                    TableId::ScriptVariableValues,
+                ]);
+            }
             if version < crate::rows::compatibility::LAND_COMBAT_EDGES_FORMAT {
                 expected.push(TableId::LandCombatEdges);
             }

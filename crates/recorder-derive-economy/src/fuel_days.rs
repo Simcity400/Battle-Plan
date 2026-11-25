@@ -113,7 +113,7 @@ fn awards(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, &[u8]> {
     if !day.continuity_start_hour.is_some_and(|start| start <= hour - LAG) {
         return Err(b"Applied fuel observation continuity boundary missing or later than this window");
     }
-    if day.last_hour != hour {
+    if day.last_hour.at(hour) != hour {
         return Err(b"Applied fuel window does not match this supplying read");
     }
     Ok(day)

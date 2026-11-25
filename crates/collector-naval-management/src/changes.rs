@@ -15,14 +15,14 @@ mod sites;
 use sites::{METHODS, Register, SITES};
 static ORIGINALS: [AtomicUsize; METHODS.len()] = [const { AtomicUsize::new(0) }; METHODS.len()];
 
-static FORCES: WatchRegistry = WatchRegistry::marking();
-static BASES: WatchRegistry = WatchRegistry::marking();
+static FORCES: WatchRegistry = WatchRegistry::marks_only();
+static BASES: WatchRegistry = WatchRegistry::marks_only();
 static FORCES_REFUSED: AtomicBool = AtomicBool::new(false);
 static BASES_REFUSED: AtomicBool = AtomicBool::new(false);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static AUTHENTICATION_REFUSALS: [AtomicU64; SITES.len() + METHODS.len()] =
     [const { AtomicU64::new(0) }; SITES.len() + METHODS.len()];
-static CALLS: AtomicU64 = AtomicU64::new(0);
+static CALLS: hook_timing::CallCounters<1> = hook_timing::CallCounters::new();
 static PUBLICATION_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 static READ_REFUSALS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
@@ -157,7 +157,7 @@ pub unsafe fn presize(memory: &impl Memory, base: usize) {
 
 fn admit(registry: &WatchRegistry, refused: &AtomicBool, pointer: usize) -> bool {
     let available =
-        registry.sequence(pointer).is_some() && registry.sequence(pointer | 1).is_some();
+        registry.register(pointer).is_some() && registry.register(pointer | 1).is_some();
     if !available {
         REFUSED.fetch_add(1, Ordering::Relaxed);
         refused.store(true, Ordering::Relaxed);
@@ -224,9 +224,9 @@ unsafe extern "system-unwind" fn changed(registers: &Registers, tag: usize) {
             return;
         }
     }
-    CALLS.fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(0);
     let registry = if site.base { &BASES } else { &FORCES };
-    drop(registry.notify(receiver | usize::from(site.retire)));
+    registry.touch(receiver | usize::from(site.retire));
 }
 
 unsafe extern "system-unwind" fn method<const INDEX: usize>(
@@ -244,7 +244,7 @@ unsafe extern "system-unwind" fn method<const INDEX: usize>(
     let notification = receiver
         .filter(|_| observes)
         .map(|pointer| registry.notify(pointer | usize::from(site.retire)));
-    CALLS.fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(0);
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINALS[INDEX].load(Ordering::Acquire)) };
     let value = timing.original(|| unsafe { original(first, second, third, fourth) });

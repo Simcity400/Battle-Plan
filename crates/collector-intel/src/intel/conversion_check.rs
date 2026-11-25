@@ -1,6 +1,13 @@
-
-use replay_data::{Hour, rows::ScriptVariablesRow, rows::tables};
-use replay_frame::frame::{BaselineToken, TableInput, TableView};
+use super::VariableBaselines;
+use replay_data::{
+    Hour,
+    rows::{
+        Recorded, RowCodec, ScriptVariableNameRow, ScriptVariableValueRow, ScriptVariablesRow,
+        TableSchema, tables,
+    },
+};
+use replay_frame::frame::{TableInput, TableView};
+use std::collections::BTreeMap;
 
 const NAMED: usize = 8;
 
@@ -25,6 +32,9 @@ impl Default for Check {
     }
 }
 
+type LogicalScope<'a> = (Recorded<Option<u32>>, BTreeMap<&'a [u8], i64>);
+type LogicalState<'a> = BTreeMap<(u8, u32), LogicalScope<'a>>;
+
 impl Check {
     pub const fn new() -> Self {
         Self {
@@ -37,17 +47,19 @@ impl Check {
 
     pub fn record(
         &mut self,
-        baseline: Option<(BaselineToken, &[ScriptVariablesRow])>,
-        reference: &TableInput,
-        input: &TableInput,
+        baselines: VariableBaselines<'_>,
+        reference: &[TableInput; 3],
+        inputs: &[TableInput; 3],
     ) {
         self.hours += 1;
-        let hour = baseline.map(|(token, _)| token.destination().2);
-        let previous = baseline.map(|(_, rows)| rows);
+        let hour = baselines.scopes.map(|(token, _)| token.destination().2);
         let before = self.differences;
-        match (Held::of(reference, previous), Held::of(input, previous)) {
-            (Some(expected), Some(actual)) => self.compare(hour, expected, actual),
-            (None, None) if reference == input => {}
+        match (
+            reconstruct(baselines, reference),
+            reconstruct(baselines, inputs),
+        ) {
+            (Some(expected), Some(actual)) => self.compare(hour, &expected, &actual),
+            (None, None) if reference == inputs => {}
             _ => self.differ(hour, None, "outcome"),
         }
         if self.differences != before {
@@ -55,20 +67,27 @@ impl Check {
         }
     }
 
-    fn compare(&mut self, hour: Option<Hour>, mut expected: Held<'_>, mut actual: Held<'_>) {
+    fn compare(
+        &mut self,
+        hour: Option<Hour>,
+        expected: &LogicalState<'_>,
+        actual: &LogicalState<'_>,
+    ) {
+        let mut expected_iter = expected.iter();
+        let mut actual_iter = actual.iter();
         loop {
-            match (expected.next(), actual.next()) {
+            match (expected_iter.next(), actual_iter.next()) {
                 (None, None) => return,
-                (Some(expected), Some(actual)) if key(expected) == key(actual) => {
-                    if expected.entries != actual.entries {
-                        self.differ(hour, Some(key(expected)), "entries");
+                (Some((ek, (eseed, eentries))), Some((ak, (aseed, aentries)))) if ek == ak => {
+                    if eentries != aentries {
+                        self.differ(hour, Some(*ek), "entries");
                     }
-                    if expected.seed != actual.seed {
-                        self.differ(hour, Some(key(expected)), "seed");
+                    if eseed != aseed {
+                        self.differ(hour, Some(*ek), "seed");
                     }
                 }
                 (expected, actual) => {
-                    self.differ(hour, expected.or(actual).map(key), "scope");
+                    self.differ(hour, expected.or(actual).map(|(k, _)| *k), "scope");
                     return;
                 }
             }
@@ -87,22 +106,51 @@ impl Check {
     }
 }
 
-fn key(row: &ScriptVariablesRow) -> (u8, u32) {
-    (row.scope_kind, row.scope_id)
+fn reconstruct<'a>(
+    baselines: VariableBaselines<'a>,
+    inputs: &'a [TableInput; 3],
+) -> Option<LogicalState<'a>> {
+    let scopes = Held::<tables::ScriptVariables>::of(
+        &inputs[0],
+        baselines.scopes.map(|(_, rows)| rows),
+    )?;
+    let names = Held::<tables::ScriptVariableNames>::of(
+        &inputs[1],
+        baselines.names.map(|(_, rows)| rows),
+    )?;
+    let values = Held::<tables::ScriptVariableValues>::of(
+        &inputs[2],
+        baselines.values.map(|(_, rows)| rows),
+    )?;
+    let name_map: BTreeMap<u32, &'a [u8]> = names.map(|row| (row.id, row.name.as_slice())).collect();
+    let mut state: LogicalState<'a> = BTreeMap::new();
+    for scope in scopes {
+        let mut entries = BTreeMap::new();
+        for entry in &scope.entries {
+            entries.insert(entry.name.as_slice(), entry.value_raw);
+        }
+        state.insert((scope.scope_kind, scope.scope_id), (scope.seed, entries));
+    }
+    for value in values {
+        let &name = name_map.get(&value.var_id)?;
+        let (_, entries) = state.get_mut(&(value.scope_kind, value.scope_id))?;
+        entries.insert(name, value.value_raw);
+    }
+    Some(state)
 }
 
-struct Held<'a> {
-    rows: &'a [ScriptVariablesRow],
+struct Held<'a, T: TableSchema> {
+    rows: &'a [T::Row],
     next: usize,
     indices: &'a [usize],
-    replacements: &'a [ScriptVariablesRow],
+    replacements: &'a [T::Row],
     keys: &'a [u128],
-    fresh: &'a [ScriptVariablesRow],
+    fresh: &'a [T::Row],
     next_fresh: usize,
 }
 
-impl<'a> Held<'a> {
-    fn of(input: &'a TableInput, previous: Option<&'a [ScriptVariablesRow]>) -> Option<Self> {
+impl<'a, T: TableSchema> Held<'a, T> {
+    fn of(input: &'a TableInput, previous: Option<&'a [T::Row]>) -> Option<Self> {
         let rows = |rows| Self {
             rows,
             next: 0,
@@ -119,7 +167,7 @@ impl<'a> Held<'a> {
                 rows: replacements,
                 ..
             } => {
-                let replacements = replacements.rows::<tables::ScriptVariables>()?;
+                let replacements = replacements.rows::<T>()?;
                 (replacements.len() == indices.len()).then_some(Self {
                     indices,
                     replacements,
@@ -131,23 +179,22 @@ impl<'a> Held<'a> {
             {
                 Some(Self {
                     keys: &update.keys,
-                    fresh: update.rows().rows::<tables::ScriptVariables>()?,
+                    fresh: update.rows().rows::<T>()?,
                     ..rows(previous?)
                 })
             }
-            TableInput::Sampled(TableView::Complete(complete)) => {
-                Some(rows(complete.rows::<tables::ScriptVariables>()?))
-            }
-            TableInput::SharedComplete(complete) => {
-                Some(rows(complete.rows::<tables::ScriptVariables>()?))
-            }
+            TableInput::Sampled(TableView::Complete(complete)) => Some(rows(complete.rows::<T>()?)),
+            TableInput::SharedComplete(complete) => Some(rows(complete.rows::<T>()?)),
             _ => None,
         }
     }
 }
 
-impl<'a> Iterator for Held<'a> {
-    type Item = &'a ScriptVariablesRow;
+impl<'a, T: TableSchema> Iterator for Held<'a, T>
+where
+    T::Row: RowCodec,
+{
+    type Item = &'a T::Row;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -178,14 +225,14 @@ static CHECK: std::sync::Mutex<Check> = std::sync::Mutex::new(Check::new());
 
 #[cfg(feature = "conversion_check")]
 pub fn record(
-    baseline: Option<(BaselineToken, &[ScriptVariablesRow])>,
-    reference: &TableInput,
-    input: &TableInput,
+    baselines: VariableBaselines<'_>,
+    reference: &[TableInput; 3],
+    inputs: &[TableInput; 3],
 ) {
     CHECK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .record(baseline, reference, input);
+        .record(baselines, reference, inputs);
 }
 
 #[cfg(feature = "conversion_check")]

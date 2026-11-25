@@ -319,7 +319,8 @@ pub fn daily_unchanged(
         memory::{RecordField, RecordLayout, RecordSources},
         read, read_slice,
     };
-    const BATCH: usize = 32;
+    const BATCH: usize = 64;
+    const PENDING: usize = 64;
     const LINK_CACHE: usize = 512;
     const BASE_FIELDS: [RecordField; 2] = [
         RecordField {
@@ -335,6 +336,13 @@ pub fn daily_unchanged(
     ];
     const BASE_LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&BASE_FIELDS, 24).expect("valid air base layout");
+    const PAIR_FIELDS: [RecordField; 1] = [RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 16,
+    }];
+    const PAIR_LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&PAIR_FIELDS, 16).expect("valid pair layout");
     const PTR_FIELDS: [RecordField; 1] = [RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -350,10 +358,34 @@ pub fn daily_unchanged(
     const CAP_LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&CAP_FIELDS, 8).expect("valid capacity layout");
 
-    let game = read::<u64>(
-        memory,
-        engine_sites::at(module, engine_native::cgame_state::SINGLETON_RVA)?,
-    )? as usize;
+    let singleton_addr = engine_sites::at(module, engine_native::cgame_state::SINGLETON_RVA)?;
+    let country_addr = air.checked_add(engine_native_air::cstrategic_air::COUNTRY)?;
+    let bases_addr = air.checked_add(DAILY_BASES)?;
+    let mut game_bytes = [0_u8; 8];
+    let mut own_bytes = [0_u8; 4];
+    let mut air_bases = [0_u8; 16];
+    let mut vectors_bytes = [0_u8; 8];
+    if memory.copy_scattered(
+        [singleton_addr, country_addr, bases_addr, pairs],
+        &mut [
+            &mut game_bytes[..],
+            &mut own_bytes[..],
+            &mut air_bases[..],
+            &mut vectors_bytes[..],
+        ],
+    ) < 4
+    {
+        return None;
+    }
+    let count = i32::from_le_bytes(air_bases[12..16].try_into().unwrap()).max(0) as usize;
+    if count == 0 {
+        return Some(0);
+    }
+    let game = u64::from_le_bytes(game_bytes) as usize;
+    let own = u32::from_le_bytes(own_bytes);
+    let bases = u64::from_le_bytes(air_bases[..8].try_into().unwrap()) as usize;
+    let vectors = u64::from_le_bytes(vectors_bytes) as usize;
+
     let links = Array::read(
         memory,
         game.checked_add(engine_native::cgame_state::COUNTRY_LINKS)?,
@@ -374,35 +406,144 @@ pub fn daily_unchanged(
             read::<u32>(memory, links.element(raw, 4)?)
         }
     };
-    let own = read::<u32>(memory, air.checked_add(engine_native_air::cstrategic_air::COUNTRY)?)?;
     let own_slot = resolve_slot(own);
-    let air_bases = read::<[u8; 16]>(memory, air.checked_add(DAILY_BASES)?)?;
-    let bases = u64::from_le_bytes(air_bases[..8].try_into().unwrap()) as usize;
-    let count = i32::from_le_bytes(air_bases[12..16].try_into().unwrap()).max(0) as usize;
-    let vectors = read::<u64>(memory, pairs)? as usize;
+
     let mut base_raw = [0_u8; BATCH * 8];
     let mut base_ptrs = [0_usize; BATCH];
     let mut vec_raw = [0_u8; BATCH * CAPACITY_PAIR_VECTOR_STRIDE];
     let mut base_records = [0_u8; BATCH * 24];
-    let mut pair_bytes = [0_u8; BATCH * 16];
-    let mut elem_ptrs = [0_usize; BATCH + 1];
-    let mut container_bytes = [0_u8; (BATCH + 1) * 8];
-    let mut container_ptrs = [0_usize; BATCH + 1];
-    let mut cap_bytes = [0_u8; (BATCH + 1) * 8];
-    let mut expected = [0_i64; BATCH];
+
+    let mut pair_ptrs = [0_usize; PENDING];
+    let mut pair_containers = [Array { data: 0, count: 0 }; PENDING];
+    let mut pair_bytes = [0_u8; PENDING * 16];
+    let mut pair_len = 0_usize;
+
+    let mut elem_ptrs = [0_usize; PENDING];
+    let mut expected = [0_i64; PENDING];
+    let mut is_own = [false; PENDING];
+    let mut container_bytes = [0_u8; PENDING * 8];
+    let mut container_ptrs = [0_usize; PENDING];
+    let mut cap_bytes = [0_u8; PENDING * 8];
+    let mut check_len = 0_usize;
+
+    let flush_checks = |check_len: &mut usize,
+                        elem_ptrs: &[usize; PENDING],
+                        expected: &[i64; PENDING],
+                        is_own: &[bool; PENDING],
+                        container_bytes: &mut [u8; PENDING * 8],
+                        container_ptrs: &mut [usize; PENDING],
+                        cap_bytes: &mut [u8; PENDING * 8]|
+     -> bool {
+        let total = *check_len;
+        if total == 0 {
+            return true;
+        }
+        *check_len = 0;
+        if memory.copy_records(
+            RecordSources::Pointers(&elem_ptrs[..total]),
+            &PTR_LAYOUT,
+            &mut container_bytes[..total * 8],
+        ) < total
+        {
+            return false;
+        }
+        for (j, chunk) in container_bytes[..total * 8].chunks_exact(8).enumerate() {
+            let ptr = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+            if ptr == 0 {
+                return false;
+            }
+            container_ptrs[j] = ptr;
+        }
+        if memory.copy_records(
+            RecordSources::Pointers(&container_ptrs[..total]),
+            &CAP_LAYOUT,
+            &mut cap_bytes[..total * 8],
+        ) < total
+        {
+            return false;
+        }
+        for j in 0..total {
+            let actual = i64::from_le_bytes(cap_bytes[j * 8..(j + 1) * 8].try_into().unwrap());
+            if is_own[j] {
+                if actual < 1 {
+                    return false;
+                }
+            } else if actual != expected[j] {
+                return false;
+            }
+        }
+        true
+    };
+
+    let flush_pairs = |pair_len: &mut usize,
+                       pair_ptrs: &[usize; PENDING],
+                       pair_containers: &[Array; PENDING],
+                       pair_bytes: &mut [u8; PENDING * 16],
+                       check_len: &mut usize,
+                       elem_ptrs: &mut [usize; PENDING],
+                       expected: &mut [i64; PENDING],
+                       is_own: &mut [bool; PENDING],
+                       container_bytes: &mut [u8; PENDING * 8],
+                       container_ptrs: &mut [usize; PENDING],
+                       cap_bytes: &mut [u8; PENDING * 8]|
+     -> bool {
+        let total = *pair_len;
+        if total == 0 {
+            return true;
+        }
+        *pair_len = 0;
+        if memory.copy_records(
+            RecordSources::Pointers(&pair_ptrs[..total]),
+            &PAIR_LAYOUT,
+            &mut pair_bytes[..total * 16],
+        ) < total
+        {
+            return false;
+        }
+        for (j, chunk) in pair_bytes[..total * 16].chunks_exact(16).enumerate() {
+            let raw = u32::from_le_bytes(chunk[..4].try_into().unwrap());
+            let want = i64::from_le_bytes(chunk[CAPACITY_PAIR_VALUE..].try_into().unwrap());
+            let Some(slot) = resolve_slot(raw) else {
+                return false;
+            };
+            let Some(elem) = pair_containers[j].element(slot, 8) else {
+                return false;
+            };
+            elem_ptrs[*check_len] = elem;
+            expected[*check_len] = want;
+            is_own[*check_len] = false;
+            *check_len += 1;
+            if *check_len == PENDING
+                && !flush_checks(
+                    check_len,
+                    elem_ptrs,
+                    expected,
+                    is_own,
+                    container_bytes,
+                    container_ptrs,
+                    cap_bytes,
+                )
+            {
+                return false;
+            }
+        }
+        true
+    };
+
     let mut stores = 0_u64;
     let mut base_first = 0;
     while base_first < count {
         let batch = (count - base_first).min(BATCH);
-        if !read_slice(
-            memory,
-            bases.checked_add(base_first.checked_mul(8)?)?,
-            &mut base_raw[..batch * 8],
-        ) || !read_slice(
-            memory,
-            vectors.checked_add(base_first.checked_mul(CAPACITY_PAIR_VECTOR_STRIDE)?)?,
-            &mut vec_raw[..batch * CAPACITY_PAIR_VECTOR_STRIDE],
-        ) {
+        let base_addr = bases.checked_add(base_first.checked_mul(8)?)?;
+        let vec_addr = vectors.checked_add(base_first.checked_mul(CAPACITY_PAIR_VECTOR_STRIDE)?)?;
+        if memory.copy_scattered(
+            [base_addr, vec_addr],
+            &mut [
+                &mut base_raw[..batch * 8],
+                &mut vec_raw[..batch * CAPACITY_PAIR_VECTOR_STRIDE],
+            ],
+        ) < 2
+        {
             return None;
         }
         for (dst, chunk) in base_ptrs[..batch]
@@ -423,7 +564,8 @@ pub fn daily_unchanged(
             let rec = &base_records[i * 24..(i + 1) * 24];
             let containers = Array::from_header(rec[..16].try_into().unwrap(), 8)?;
             let state = u64::from_le_bytes(rec[16..24].try_into().unwrap());
-            let vec_rec = &vec_raw[i * CAPACITY_PAIR_VECTOR_STRIDE..(i + 1) * CAPACITY_PAIR_VECTOR_STRIDE];
+            let vec_rec =
+                &vec_raw[i * CAPACITY_PAIR_VECTOR_STRIDE..(i + 1) * CAPACITY_PAIR_VECTOR_STRIDE];
             let data = u64::from_le_bytes(vec_rec[..8].try_into().unwrap()) as usize;
             let entries = usize::try_from(i32::from_le_bytes(
                 vec_rec[CAPACITY_PAIR_COUNT..CAPACITY_PAIR_COUNT + 4]
@@ -431,85 +573,73 @@ pub fn daily_unchanged(
                     .unwrap(),
             ))
             .ok()?;
-            let mut entry_first = 0;
-            while entry_first < entries {
-                let n = (entries - entry_first).min(BATCH);
-                if !read_slice(
-                    memory,
-                    data.checked_add(entry_first.checked_mul(16)?)?,
-                    &mut pair_bytes[..n * 16],
-                ) {
-                    return None;
-                }
-                for (j, chunk) in pair_bytes[..n * 16].chunks_exact(16).enumerate() {
-                    let raw = u32::from_le_bytes(chunk[..4].try_into().unwrap());
-                    expected[j] =
-                        i64::from_le_bytes(chunk[CAPACITY_PAIR_VALUE..].try_into().unwrap());
-                    let slot = resolve_slot(raw)?;
-                    elem_ptrs[j] = containers.element(slot, 8)?;
-                }
-                let check_own = state != 0 && entry_first + n == entries;
-                let total = if check_own {
-                    elem_ptrs[n] = containers.element(own_slot?, 8)?;
-                    n + 1
-                } else {
-                    n
-                };
-                if memory.copy_records(
-                    RecordSources::Pointers(&elem_ptrs[..total]),
-                    &PTR_LAYOUT,
-                    &mut container_bytes[..total * 8],
-                ) < total
+            for entry in 0..entries {
+                pair_ptrs[pair_len] = data.checked_add(entry.checked_mul(16)?)?;
+                pair_containers[pair_len] = containers;
+                pair_len += 1;
+                if pair_len == PENDING
+                    && !flush_pairs(
+                        &mut pair_len,
+                        &pair_ptrs,
+                        &pair_containers,
+                        &mut pair_bytes,
+                        &mut check_len,
+                        &mut elem_ptrs,
+                        &mut expected,
+                        &mut is_own,
+                        &mut container_bytes,
+                        &mut container_ptrs,
+                        &mut cap_bytes,
+                    )
                 {
                     return None;
                 }
-                for (j, chunk) in container_bytes[..total * 8].chunks_exact(8).enumerate() {
-                    let ptr = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
-                    if ptr == 0 {
-                        return None;
-                    }
-                    container_ptrs[j] = ptr;
-                }
-                if memory.copy_records(
-                    RecordSources::Pointers(&container_ptrs[..total]),
-                    &CAP_LAYOUT,
-                    &mut cap_bytes[..total * 8],
-                ) < total
-                {
-                    return None;
-                }
-                for j in 0..n {
-                    let actual =
-                        i64::from_le_bytes(cap_bytes[j * 8..(j + 1) * 8].try_into().unwrap());
-                    if actual != expected[j] {
-                        return None;
-                    }
-                }
-                if check_own {
-                    let actual =
-                        i64::from_le_bytes(cap_bytes[n * 8..(n + 1) * 8].try_into().unwrap());
-                    if actual < 1 {
-                        return None;
-                    }
-                }
-                stores += n as u64;
-                entry_first += n;
             }
-            if entries == 0 && state != 0 {
-                let container = read::<u64>(memory, containers.element(own_slot?, 8)?)? as usize;
-                if container == 0 {
-                    return None;
-                }
-                let actual = read::<i64>(
-                    memory,
-                    container.checked_add(engine_native_air::ccountry_air_container::CAPACITY_RAW)?,
-                )?;
-                if actual < 1 {
+            stores += entries as u64;
+            if state != 0 {
+                elem_ptrs[check_len] = containers.element(own_slot?, 8)?;
+                expected[check_len] = 0;
+                is_own[check_len] = true;
+                check_len += 1;
+                if check_len == PENDING
+                    && !flush_checks(
+                        &mut check_len,
+                        &elem_ptrs,
+                        &expected,
+                        &is_own,
+                        &mut container_bytes,
+                        &mut container_ptrs,
+                        &mut cap_bytes,
+                    )
+                {
                     return None;
                 }
             }
         }
         base_first += batch;
+    }
+    if !flush_pairs(
+        &mut pair_len,
+        &pair_ptrs,
+        &pair_containers,
+        &mut pair_bytes,
+        &mut check_len,
+        &mut elem_ptrs,
+        &mut expected,
+        &mut is_own,
+        &mut container_bytes,
+        &mut container_ptrs,
+        &mut cap_bytes,
+    ) || !flush_checks(
+        &mut check_len,
+        &elem_ptrs,
+        &expected,
+        &is_own,
+        &mut container_bytes,
+        &mut container_ptrs,
+        &mut cap_bytes,
+    ) {
+        return None;
     }
     Some(stores)
 }
@@ -596,14 +726,31 @@ pub fn pool_capacity(
     base: usize,
     tag: usize,
 ) -> Option<i64> {
-    let raw = engine_native_memory::read::<u32>(memory, tag)?;
+    let containers_addr = base.checked_add(engine_native_air::cair_base::COUNTRY_CONTAINERS)?;
+    let singleton_addr = engine_sites::at(module, engine_native::cgame_state::SINGLETON_RVA)?;
+    let mut raw_bytes = [0_u8; 4];
+    let mut containers_bytes = [0_u8; 16];
+    let mut game_bytes = [0_u8; 8];
+    let copied = memory.copy_scattered(
+        [tag, containers_addr, singleton_addr],
+        &mut [
+            &mut raw_bytes[..],
+            &mut containers_bytes[..],
+            &mut game_bytes[..],
+        ],
+    );
+    if copied < 2 {
+        return None;
+    }
+    let raw = u32::from_le_bytes(raw_bytes);
+    let containers = engine_native_memory::cpdx_array::Array::from_header(containers_bytes, 8)?;
     let slot = if raw == 0 {
         0
     } else {
-        let game = engine_native_memory::read::<u64>(
-            memory,
-            engine_sites::at(module, engine_native::cgame_state::SINGLETON_RVA)?,
-        )?;
+        if copied < 3 {
+            return None;
+        }
+        let game = u64::from_le_bytes(game_bytes);
         let links = engine_native_memory::cpdx_array::Array::read(
             memory,
             usize::try_from(game)
@@ -613,11 +760,6 @@ pub fn pool_capacity(
         )?;
         engine_native_memory::read::<u32>(memory, links.element(raw, 4)?)?
     };
-    let containers = engine_native_memory::cpdx_array::Array::read(
-        memory,
-        base.checked_add(engine_native_air::cair_base::COUNTRY_CONTAINERS)?,
-        8,
-    )?;
     let container = engine_native_memory::read::<u64>(memory, containers.element(slot, 8)?)?;
     if container == 0 {
         return None;
@@ -738,6 +880,16 @@ mod tests {
         let mut torn = Daily::new();
         torn.word(Daily::VECTORS + 0x18, 0x7000_0000);
         assert_eq!(torn.unchanged(), None);
+
+        let mut empty = Daily::new();
+        empty.array(Daily::AIR + 0x10, Daily::BASES, 0);
+        assert_eq!(empty.unchanged(), Some(0));
+
+        let mut empty_entries_with_state = Daily::new();
+        empty_entries_with_state.array(Daily::VECTORS + 0x18, Daily::entries(1), 0);
+        assert_eq!(empty_entries_with_state.unchanged(), Some(2));
+        empty_entries_with_state.capacity(1, 1, 0);
+        assert_eq!(empty_entries_with_state.unchanged(), None);
     }
 
     #[test]

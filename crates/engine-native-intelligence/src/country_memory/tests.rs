@@ -227,7 +227,7 @@ fn roster_headers_and_proved_links_remove_guards_without_reading_ordinary_fields
         .iter()
         .map(|(_, len)| len)
         .sum();
-    assert_eq!(direct_guards, 36);
+    assert_eq!(direct_guards, 35);
     assert_eq!(direct_bytes, 252);
     let mut cache = Cache::with_capacity(64);
     cache.prepare(&source, 0, 0x1000);

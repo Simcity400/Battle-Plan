@@ -5,8 +5,10 @@ use std::{
 };
 
 use content_reader_save::{GameDate, characters as saved_characters, intel as saved};
-use replay_data::{rows::CountryRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::{
+    rows::{CountryRow, TableId, tables},
+};
+use replay_frame::frame::{DecodedFrame, TableView};
 
 use super::{Report, TokenNames, complete, country_tag, invalid, required_country_tag};
 
@@ -2625,9 +2627,43 @@ fn compare_variables(
         return Err(invalid("variable scope discriminants are not distinct"));
     }
     let no_variables = saved::Variables::default();
+    let normalized = match &*frame.tables[TableId::ScriptVariableValues.index()] {
+        TableView::NotRecorded { .. } => None,
+        _ => {
+            let names: BTreeMap<u32, &[u8]> = complete::<tables::ScriptVariableNames>(frame)?
+                .iter()
+                .map(|row| (row.id, row.name.as_slice()))
+                .collect();
+            let mut by_scope: BTreeMap<(u8, u32), Vec<(&[u8], i64)>> = BTreeMap::new();
+            for row in complete::<tables::ScriptVariableValues>(frame)? {
+                let Some(&name) = names.get(&row.var_id) else {
+                    return Err(invalid(format!(
+                        "script variable value references unknown variable name id {}",
+                        row.var_id
+                    )));
+                };
+                by_scope
+                    .entry((row.scope_kind, row.scope_id))
+                    .or_default()
+                    .push((name, row.value_raw));
+            }
+            Some(by_scope)
+        }
+    };
     let mut character_rows = 0_usize;
     let mut recorded = BTreeMap::new();
+    let mut seen_scopes = BTreeSet::new();
     for actual in complete::<tables::ScriptVariables>(frame)? {
+        seen_scopes.insert((actual.scope_kind, actual.scope_id));
+        if !actual.entries.is_empty()
+            && normalized
+                .as_ref()
+                .is_some_and(|by_scope| !by_scope.is_empty())
+        {
+            return Err(invalid(
+                "ScriptVariables carries both inline entries and normalized ScriptVariableValues",
+            ));
+        }
         let scope = if actual.scope_kind == scopes.global {
             if actual.scope_id != 0 {
                 return Err(invalid("global variable scope has a nonzero id"));
@@ -2660,6 +2696,15 @@ fn compare_variables(
         };
         if recorded.insert(scope, actual).is_some() {
             return Err(invalid("duplicate resolved variable scope"));
+        }
+    }
+    if let Some(by_scope) = &normalized {
+        for &(scope_kind, scope_id) in by_scope.keys() {
+            if !seen_scopes.contains(&(scope_kind, scope_id)) {
+                return Err(invalid(format!(
+                    "script variable value references absent scope {scope_kind}:{scope_id}"
+                )));
+            }
         }
     }
     let mut expected_scopes =
@@ -2726,8 +2771,20 @@ fn compare_variables(
         }
         let mut values = BTreeMap::<&[u8], Vec<i64>>::new();
         let mut unresolved_literal = false;
-        for (index, entry) in actual.entries.iter().enumerate() {
-            if entry.name.contains(&0) {
+        let inline_entries = actual
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_slice(), entry.value_raw));
+        let split_entries = normalized
+            .as_ref()
+            .filter(|_| actual.entries.is_empty())
+            .and_then(|by_scope| by_scope.get(&(actual.scope_kind, actual.scope_id)))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .copied();
+        for (index, (name, value_raw)) in inline_entries.chain(split_entries).enumerate() {
+            if name.contains(&0) {
                 unresolved_literal = true;
                 report.limitation(
                     "variable-name formatter receives a C-string pointer, but its concrete stream behavior for interior NUL is unproved; this full native key and value remain unverified",
@@ -2735,7 +2792,6 @@ fn compare_variables(
                 );
                 continue;
             }
-            let name = entry.name.as_slice();
             if name == b"random" {
                 report.limitation(
                     "a native variable key emits the reserved random metadata name; its identity and value cannot be distinguished from metadata in the save",
@@ -2743,7 +2799,7 @@ fn compare_variables(
                 );
                 continue;
             }
-            values.entry(name).or_default().push(entry.value_raw);
+            values.entry(name).or_default().push(value_raw);
         }
         let mut expected_values = BTreeMap::<&[u8], Vec<&content_reader_save::Decimal>>::new();
         for entry in &expected.entries {

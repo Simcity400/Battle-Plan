@@ -267,10 +267,7 @@ pub(crate) struct HelperConversion<'a, 'cache> {
     pub projection: Option<&'a mut collector_projection::projection::Projection<'cache>>,
     pub characters: Option<&'a mut characters::CharacterConversion<'cache>>,
     pub intel: Option<&'a mut intel::IntelConversion<'cache>>,
-    pub variables_baseline: Option<(
-        replay_frame::frame::BaselineToken,
-        &'a [replay_data::rows::ScriptVariablesRow],
-    )>,
+    pub variables_baseline: intel::VariableBaselines<'a>,
     pub variables_scratch: &'a mut intel::ScriptVariableComparison,
 }
 
@@ -278,10 +275,7 @@ pub(crate) struct HelperConversion<'a, 'cache> {
 pub struct LentCaches<'a, 'cache> {
     pub characters: Option<&'a mut characters::CharacterConversion<'cache>>,
     pub intel: Option<&'a mut intel::IntelConversion<'cache>>,
-    pub variables_baseline: Option<(
-        replay_frame::frame::BaselineToken,
-        &'a [replay_data::rows::ScriptVariablesRow],
-    )>,
+    pub variables_baseline: intel::VariableBaselines<'a>,
     pub variables_scratch: Option<&'a mut intel::ScriptVariableComparison>,
 }
 
@@ -1247,7 +1241,7 @@ impl Captured {
                         projection: projection.as_deref_mut(),
                         characters: None,
                         intel: None,
-                        variables_baseline: None,
+                        variables_baseline: intel::VariableBaselines::default(),
                         variables_scratch: &mut spare,
                     };
                     let mut pack = 0;
@@ -2289,6 +2283,14 @@ impl Captured {
             .map(|family| self.family_selection(family))
     }
 
+    pub fn research_carried_owners(&self) -> Option<&[u32]> {
+        self.governance.research_carried_owners()
+    }
+
+    pub fn technology_carried_owners(&self) -> Option<&[u32]> {
+        self.governance.technology_carried_owners()
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the governance request takes ownership of its fingerprints and each store separately"
@@ -2326,6 +2328,7 @@ impl Captured {
             },
             captured: std::mem::replace(&mut self.governance, governance::Captured::vacant()),
             buildings: self.construction.take_buildings(),
+            buildings_lent: false,
         }
     }
 
@@ -3020,11 +3023,11 @@ impl Captured {
         let part = captured.take_variables();
         (
             crate::acquisition_jobs::IntelResidualRequest {
-                workers: Default::default(),
                 countries: engine_allocation::SharedBox::clone(countries),
                 context,
                 captured,
                 flags,
+                aux_lent: false,
             },
             crate::acquisition_jobs::ScriptVariablesRequest {
                 countries: engine_allocation::SharedBox::clone(countries),

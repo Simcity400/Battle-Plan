@@ -5,6 +5,7 @@ pub struct VariantPart {
     first: usize,
     sources: Vec<cequipment_variant::RegistryRow>,
     carried: Vec<Option<Arc<rows::VariantDesignState>>>,
+    certified_quiet: Option<cequipment_variant::QuietToken>,
     leaves: Variants,
     fresh: bool,
     details: bool,
@@ -42,11 +43,17 @@ impl VariantPart {
         capture_source(&mut self.leaves.modules, Ok(source), |source, rows| {
             equipment_module_container::walk(memory, base, source, rows)
         });
-        let mut carry = DesignCarry {
-            held: &mut self.leaves.organisation_holds,
-            fresh: self.fresh,
+        let definitions_rows = match self.leaves.definitions.outcome {
+            Outcome::Rows { len } if len == source.len() => &self.leaves.definitions.rows[..len],
+            _ => &[],
         };
-        let mut witness = design_changes::StatLaneWitness;
+        let mut carry = DesignCarry::new(
+            &mut self.leaves.organisation_holds,
+            definitions_rows,
+            self.certified_quiet,
+            self.fresh,
+        );
+        let mut witness = design_changes::StatLaneWitness::default();
         capture_source(&mut self.leaves.stats, Ok(source), |source, rows| {
             cequipment_variant::walk_stats_carried(
                 memory,
@@ -57,6 +64,7 @@ impl VariantPart {
                 &mut witness,
             )
         });
+        drop(carry);
         if let Outcome::Rows { len } = self.leaves.stats.outcome {
             self.leaves.organisation_holds.truncate(len);
         }
@@ -151,27 +159,41 @@ impl Variants {
         lanes: usize,
         acquire: &mut impl FnMut(Vec<VariantPart>) -> Result<Vec<VariantPart>, &'static str>,
     ) -> Result<[u64; N], &'static str> {
+        self.all_carried = false;
         let sources = complete_source(variants.rows, variants.outcome)?;
-        let mut carried_all = engine_allocation::vec(sources.len())
-            .map_err(|_| "variant partition allocation failed")?;
-        let held = (!full).then(design_changes::held::certified).flatten();
-        let census = (full && recovery_carry)
-            .then(design_changes::held::census)
-            .flatten();
-        for source in sources {
-            carried_all.push(
-                held.as_ref()
-                    .and_then(|held| held.get(source))
-                    .or_else(|| census.as_ref().and_then(|census| census.get(source))),
-            );
-        }
-        let census = census.map(design_changes::held::Census::release);
-        drop(held);
-        let mut carried_all = carried_all.into_iter();
         let details = replay_data::cadence::should_walk(TableId::VariantModules, hour, full);
         if details {
             collector_observers::world_input_changes::prepare_design_mios(sources.len(), full);
         }
+        let mut carried_all = engine_allocation::vec(sources.len())
+            .map_err(|_| "variant partition allocation failed")?;
+        let certified_quiet = (!full && details)
+            .then(|| design_changes::stat_timing_quiet().ok())
+            .flatten();
+        let held = (!full).then(design_changes::held::certified).flatten();
+        let census = (full && recovery_carry)
+            .then(design_changes::held::census)
+            .flatten();
+        let mut all_carried = !full
+            && held
+                .as_ref()
+                .is_some_and(|held| held.len() == sources.len());
+        for source in sources {
+            let entry = held
+                .as_ref()
+                .and_then(|held| held.get(source))
+                .or_else(|| census.as_ref().and_then(|census| census.get(source)));
+            if entry.is_none() {
+                all_carried = false;
+            }
+            carried_all.push(entry);
+        }
+        let census = census.map(design_changes::held::Census::release);
+        drop(held);
+        if all_carried && !super::unique_source_ids(&mut self.unique_ids, sources) {
+            all_carried = false;
+        }
+        let mut carried_all = carried_all.into_iter();
         let mut old_stats = std::mem::take(&mut self.stats.rows).into_iter();
         let mut old_holds = std::mem::take(&mut self.organisation_holds).into_iter();
         let mut parts = engine_allocation::vec(lanes.min(sources.len().div_ceil(64)))
@@ -196,6 +218,7 @@ impl Variants {
                 sources: engine_allocation::copy_vec(&sources[range])
                     .map_err(|_| "variant partition allocation failed")?,
                 carried,
+                certified_quiet,
                 leaves,
                 fresh: full || !self.organisations_complete,
                 details,
@@ -208,6 +231,7 @@ impl Variants {
         add_phase_ticks(&mut ticks, &parts);
         let retry = census.as_ref().is_some_and(|census| !census.is_current());
         if retry {
+            all_carried = false;
             for part in &mut parts {
                 part.carried.fill(None);
                 part.definitions_only = true;
@@ -216,6 +240,7 @@ impl Variants {
             parts = acquire(parts)?;
             add_phase_ticks(&mut ticks, &parts);
         }
+        self.all_carried = all_carried;
         parts.sort_unstable_by_key(|part| part.first);
         let mut expected: usize = 0;
         for part in &parts {

@@ -23,10 +23,16 @@ pub fn wing(
     quiet: impl Fn() -> Option<(u64, u64)>,
 ) -> Option<[i32; 2]> {
     certified(quiet, || {
-        Some([
-            read::<i32>(memory, wing.checked_add(cair_wing::ACQUIRED_MANPOWER)?)?,
-            read::<i32>(memory, wing.checked_add(cair_wing::EXILE_COUNTRY)?)?,
-        ])
+        let mut manpower = [0_u8; 4];
+        let mut exile = [0_u8; 4];
+        let copied = memory.copy_scattered(
+            [
+                wing.checked_add(cair_wing::ACQUIRED_MANPOWER)?,
+                wing.checked_add(cair_wing::EXILE_COUNTRY)?,
+            ],
+            &mut [&mut manpower, &mut exile],
+        );
+        (copied == 2).then(|| [i32::from_le_bytes(manpower), i32::from_le_bytes(exile)])
     })
 }
 

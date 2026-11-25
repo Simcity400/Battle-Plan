@@ -34,11 +34,12 @@ use crate::{
     value::{EncodeValue, Value},
 };
 
-pub const LOGS: [TableId; 16] = [
+pub const LOGS: [TableId; 17] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
     TableId::PeaceSettlements,
     TableId::LandCombatResults,
+    TableId::LandCombatResultObservers,
     TableId::DestroyedDivisions,
     TableId::NavalResultSources,
     TableId::AirLossEvents,
@@ -992,6 +993,10 @@ PowerSpendDays = 518 => PowerSpendDay(PowerSpendDayRow),
 recorded {
 CombatEngagementRefreshes = 519 => CombatEngagementRefresh(CombatEngagementRefreshRow),
 LandCombatEdges = 520 => LandCombatEdge(LandCombatEdgesRow),
+FuelAwardRecipients = 521 => FuelAwardRecipient(FuelAwardRecipientRow),
+ScriptVariableNames = 522 => ScriptVariableName(ScriptVariableNameRow),
+ScriptVariableValues = 523 => ScriptVariableValue(ScriptVariableValueRow),
+LandCombatResultObservers = 524 => LandCombatResultObserver(CombatLogObserverRow),
 }
 }
 const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [
@@ -1745,11 +1750,12 @@ pub fn sample_politics_table(table: TableId, tick: usize) -> Option<TableRows> {
                     PowerOperation::Grant
                 },
                 balance_before_raw: raw.wrapping_add(1),
-                balance_after_raw: raw,
+                balance_after_raw: RetiredI64(0),
                 requested_delta_raw: maybe.map(|_| raw),
                 cause,
                 site,
                 identity,
+                realized_delta_raw: Recorded::Value(raw.wrapping_sub(raw.wrapping_add(1))),
             },
             tick,
             |row, key| {

@@ -67,11 +67,12 @@ pub struct CountryPowerChangeRow {
     pub currency: PowerCurrency,
     pub operation: PowerOperation,
     pub balance_before_raw: i64,
-    pub balance_after_raw: i64,
+    pub balance_after_raw: RetiredI64,
     pub requested_delta_raw: Option<i64>,
     pub cause: PowerCause,
     pub site: PowerSite,
     pub identity: PowerIdentity,
+    pub realized_delta_raw: Recorded<i64>,
 }
 impl CountryPowerDailyRow {
     fn valid_rates(&self) -> bool {
@@ -93,8 +94,15 @@ impl CountryPowerDailyRow {
     }
 }
 impl CountryPowerChangeRow {
+    pub fn balance_after(&self) -> i64 {
+        match self.realized_delta_raw {
+            Recorded::Value(delta) => self.balance_before_raw.wrapping_add(delta),
+            Recorded::NotRecorded => self.balance_after_raw.0,
+        }
+    }
+
     pub fn realized_delta_raw(&self) -> i128 {
-        i128::from(self.balance_after_raw) - i128::from(self.balance_before_raw)
+        i128::from(self.balance_after()) - i128::from(self.balance_before_raw)
     }
 }
 
@@ -156,7 +164,7 @@ typed_codec!(CountryPowerDailyRow, 32, |row| row.country as u128, |key| Self { c
  { 0 => (epoch): U64, 1 => (day_hour): I32, 2 => (pp_gross_gain_raw): OptionalI64, 3 => (pp_cost_raw): OptionalI64, 4 => (pp_net_gain_raw): OptionalI64, 5 => (pp_realized_delta_raw): OptionalI64, 6 => (pp_sequence): OptionalU64, 7 => (cp_gain_raw): OptionalI64, 8 => (cp_realized_delta_raw): OptionalI64, 9 => (cp_sequence): OptionalU64 , 10 => (instance): U32 }, |row| if row.day_hour.rem_euclid(24) != 0 || !row.valid_rates() { Err(invalid("invalid daily power origin or sum")) } else { Ok(()) });
 
 typed_codec!(CountryPowerChangeRow, 96, |row| (row.country as u128) << 64 | row.sequence as u128, |key| Self { country: (key >> 64) as u32, sequence: key as u64, ..Self::default() },
- { 0 => (epoch): U64, 1 => (hour): I32, 2 => (currency): U8, 3 => (operation): U8, 4 => (balance_before_raw): I64, 5 => (balance_after_raw): I64, 6 => (requested_delta_raw): OptionalI64, 7 => (cause): U16, 8 => (site): U16, 9 => (identity): Opaque , 10 => (instance): U32 }, |row| row.identity.check());
+ { 0 => (epoch): U64, 1 => (hour): I32, 2 => (currency): U8, 3 => (operation): U8, 4 => (balance_before_raw): I64, 5 => (balance_after_raw): I64, 6 => (requested_delta_raw): OptionalI64, 7 => (cause): U16, 8 => (site): U16, 9 => (identity): Opaque , 10 => (instance): U32, 11 => (realized_delta_raw): I64 }, |row| row.identity.check());
 
 typed_codec!(CountryPowerDailyCostRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Self::default() },
  { 0 => (epoch): U64, 1 => (day_hour): I32, 2 => (pp_sequence): U64, 3 => (component): U8, 4 => (cost_raw): I64, 5 => (cause): U16, 6 => (site): U16, 7 => (identity): Opaque , 8 => (instance): U32 }, |row| if row.day_hour.rem_euclid(24) != 0 { Err(invalid("daily cost must retain midnight origin")) } else { row.identity.check() });

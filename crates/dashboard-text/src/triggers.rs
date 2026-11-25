@@ -115,6 +115,8 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::ResourceDefinitions,
     replay_data::rows::TableId::ScriptFlags,
     replay_data::rows::TableId::ScriptVariables,
+    replay_data::rows::TableId::ScriptVariableNames,
+    replay_data::rows::TableId::ScriptVariableValues,
     replay_data::rows::TableId::SimulationFeatures,
     replay_data::rows::TableId::StateBaseResources,
     replay_data::rows::TableId::StateBuildings,

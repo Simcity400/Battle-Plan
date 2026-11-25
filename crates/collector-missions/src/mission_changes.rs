@@ -15,19 +15,19 @@ static COUNTRIES: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Watches {
     registry: WatchRegistry,
-    calls: [AtomicU64; SITES],
+    calls: collector_timing::hook_timing::CallCounters<SITES>,
 }
 
 impl Watches {
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::new(),
-            calls: [const { AtomicU64::new(0) }; SITES],
+            calls: collector_timing::hook_timing::CallCounters::new(),
         }
     }
 
     pub fn notify(&self, air: usize, site: usize) -> Notification<'_> {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         self.registry.notify(air)
     }
 
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(Changes::sequence(&watches, 0x1000), Some(first));
         assert_ne!(Changes::sequence(&watches, 0x2000), Some(second));
         assert_ne!(Changes::quiet(&watches), Some(quiet));
-        assert_eq!(watches.calls[1].load(Ordering::Relaxed), 1);
+        assert_eq!(watches.calls.total(1), 1);
         let running = watches.notify(0x1000, 0);
         assert!(Changes::sequence(&watches, 0x1000).is_none());
         assert!(Changes::quiet(&watches).is_none());

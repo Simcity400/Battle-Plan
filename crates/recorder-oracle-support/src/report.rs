@@ -398,7 +398,12 @@ impl Report {
                 format!("{name}: {count} rows not recorded"),
             );
         }
-        for table in [TableId::LexicalTokens, TableId::ScriptVariables] {
+        for table in [
+            TableId::LexicalTokens,
+            TableId::ScriptVariables,
+            TableId::ScriptVariableNames,
+            TableId::ScriptVariableValues,
+        ] {
             if let TableView::Unavailable { reason } = &*frame.tables[table.index()] {
                 self.limitation(
                     "explicitly unavailable source remains unverified and makes the overall comparison incomplete; the recorded reason identifies the missing proof or failed read",

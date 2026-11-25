@@ -38,15 +38,16 @@ const RECORD_BYTES: usize = 64;
 const COLD_OFFSET: usize = 256;
 const COLD_STRIDE: usize = 16;
 const SUBPAGE_START: usize = 512;
-const WARM_PAGE_BLOCKS: usize = 8;
-const WARM_SUBPAGE_PAGES: usize = 4;
+const WARM_PAGE_BLOCKS: usize = 24;
+const WARM_SUBPAGE_PAGES: usize = 16;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
 const _: () = assert!(RECORD_BYTES <= COLD_OFFSET);
 const _: () = assert!(SUBPAGE_START % HEAP_ALIGNMENT == 0);
 const _: () = assert!(COLD_OFFSET + ((GRANULARITY - PAGE) / PAGE) * COLD_STRIDE <= SUBPAGE_START);
 const _: () = assert!(SUBPAGE_START + 2048 <= PAGE);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 8 * 1024 * 1024;
+const KEPT_BYTES: usize = 28 * 1024 * 1024;
+const SMALL_LARGE_LISTS: usize = 5;
 const TRIM_SLACK: usize = 256 * 1024;
 const _: () = assert!(slab_bytes(CLASSES - 1) == GRANULARITY);
 
@@ -1118,18 +1119,64 @@ impl PrivateHeap {
         }
         let previous = self.pages.kept.fetch_add(reclaimable, Ordering::Relaxed);
         if side() == OTHER && previous + reclaimable > KEPT_BYTES {
-            let base = record.cast::<u8>();
-            if self.page_call(|| unsafe {
-                VirtualFree(base.add(PAGE).cast(), reclaimable, MEM_DECOMMIT)
-            }) != 0
+            if list_index < SMALL_LARGE_LISTS {
+                self.evict_larger_warm(SMALL_LARGE_LISTS);
+            }
+            if list_index >= SMALL_LARGE_LISTS
+                || self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES
             {
-                unsafe { (*record).committed.store(PAGE, Ordering::Relaxed) };
-                self.pages.kept.fetch_sub(reclaimable, Ordering::Relaxed);
-                self.pages.cold[list_index].push(record.cast());
-                return;
+                let base = record.cast::<u8>();
+                if self.page_call(|| unsafe {
+                    VirtualFree(base.add(PAGE).cast(), reclaimable, MEM_DECOMMIT)
+                }) != 0
+                {
+                    unsafe { (*record).committed.store(PAGE, Ordering::Relaxed) };
+                    self.pages.kept.fetch_sub(reclaimable, Ordering::Relaxed);
+                    self.pages.cold[list_index].push(record.cast());
+                    return;
+                }
             }
         }
         self.pages.free[list_index].push(record.cast());
+    }
+
+    fn evict_larger_warm(&self, min_list: usize) {
+        for list in (min_list..RESERVATIONS).rev() {
+            while self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES {
+                let base = self.pages.free[list].pop();
+                if base.is_null() {
+                    break;
+                }
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+                )]
+                let record = base.cast::<Record>();
+                // SAFETY: `base` was exclusively popped from `pages.free[list]`.
+                let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
+                if committed <= PAGE {
+                    self.pages.cold[list].push(base);
+                    continue;
+                }
+                if self.page_call(|| unsafe {
+                    VirtualFree(base.add(PAGE).cast(), committed - PAGE, MEM_DECOMMIT)
+                }) != 0
+                {
+                    // SAFETY: page 0 stays committed and we exclusively own `base`.
+                    unsafe { (*record).committed.store(PAGE, Ordering::Relaxed) };
+                    self.pages
+                        .kept
+                        .fetch_sub(committed - PAGE, Ordering::Relaxed);
+                    self.pages.cold[list].push(base);
+                } else {
+                    self.pages.free[list].push(base);
+                    return;
+                }
+            }
+            if self.pages.kept.load(Ordering::Relaxed) <= KEPT_BYTES {
+                return;
+            }
+        }
     }
 
     /// # Safety

@@ -1316,3 +1316,240 @@ fn market_route_states_are_separate_from_ports_and_authenticate_against_the_stat
         Err("market route state vtable mismatch")
     );
 }
+
+#[test]
+fn batched_supply_transfers_and_regional_route_dedup_match_scalar_behavior() {
+    let mut f = world();
+    let count = 70_u32;
+    let table_data = 0x10_0000;
+    f.array(0x51000 + SUPPLY_TRANSFERS, table_data, count);
+    for index in 0..count as usize {
+        let entry = table_data + index * SUPPLY_TRANSFER_STRIDE;
+        let client_addr = 0x12_0000 + index * 0x200;
+        f.put(entry, &[0; SUPPLY_TRANSFER_STRIDE]);
+        f.u64(entry + SUPPLY_TRANSFER_CLIENT, client_addr as u64);
+        client(
+            &mut f,
+            client_addr,
+            SUPPLY_VTABLE_RVA.0,
+            200 + index as u32,
+            [100_000, 100_000],
+        );
+        route(&mut f, client_addr + SUPPLY_ROUTE, 0, [0, 0], &[]);
+    }
+    let (outcomes, rows) = walk(&f);
+    assert_eq!(outcomes.clients, Outcome::Rows { len: count as usize + 2 });
+    let supply_rows: Vec<_> = rows
+        .clients
+        .iter()
+        .filter(|row| row.category == SUPPLY_TRANSFER)
+        .collect();
+    assert_eq!(supply_rows.len(), count as usize);
+    for (index, row) in supply_rows.iter().enumerate() {
+        assert_eq!(row.owner_ordinal, Some(index as u32));
+        assert_eq!(row.handle, 200 + index as u32);
+    }
+    f.u64(0x12_0000 + 66 * 0x200, ROUTE_VTABLE_RVA.0 as u64);
+    let (bad_outcomes, _) = walk(&f);
+    assert_eq!(
+        bad_outcomes.clients,
+        Outcome::Unavailable {
+            reason: "convoy client of an unexpected type"
+        }
+    );
+    let f = world();
+    let (_, rows) = walk(&f);
+    let dup_origins = [rows.origins[0], rows.origins[0]];
+    let memory = PathMemory {
+        source: &f,
+        denied: Some(0x20000 + ORIGIN_ROUTE),
+        guards: Default::default(),
+        faults: Default::default(),
+    };
+    let mut out = Vec::new();
+    let outcome = walk_regional(
+        &memory,
+        0,
+        GAME_STATE,
+        &dup_origins,
+        &[],
+        &mut Vec::new(),
+        Buffer::Growing(&mut out),
+    );
+    assert!(matches!(outcome, Outcome::Unavailable { .. }));
+    assert_eq!(memory.faults.get(), 1);
+}
+
+#[test]
+fn empty_convoy_lists_defer_vtable_resolution_and_batch_faults_never_retry() {
+    let mut f = world();
+    f.array(0x60000 + MARKET_OWNED_CONTRACTS, 0, 0);
+    f.array(0x7000 + ccountry_resources::IMPORT_ROUTES, 0, 0);
+    f.array(0x7000 + LEND_LEASE_GIVEN, 0, 0);
+    f.array(0x51000 + SUPPLY_TRANSFERS, 0, 0);
+    f.array(GAME_STATE + cgame_state::STRATEGIC_REGIONS, 0, 0);
+    let countries = ccountry::Reader::new(&f, 0, GAME_STATE).unwrap();
+    let country = countries.at(2).unwrap().unwrap();
+    let walk_overflow = Walk {
+        memory: &f,
+        base: usize::MAX,
+        game_state: GAME_STATE,
+        countries: &countries,
+        threshold: 0,
+        local_resources: Default::default(),
+        links: Ok(None),
+    };
+    let mut table = Table::default();
+    let mut clients = Vec::new();
+    assert_eq!(
+        walk_overflow.market(&mut table, &mut Buffer::Growing(&mut clients)),
+        Ok(())
+    );
+    assert_eq!(
+        walk_overflow.country_clients(
+            country,
+            0x7000,
+            0x50800,
+            &mut table,
+            &mut Buffer::Growing(&mut clients),
+        ),
+        Ok(())
+    );
+    let mut weights = Vec::new();
+    assert_eq!(
+        walk_region_weights(
+            &f,
+            usize::MAX,
+            GAME_STATE,
+            Buffer::Growing(&mut weights),
+        ),
+        Outcome::Rows { len: 0 }
+    );
+
+    struct OneShot<'a> {
+        inner: &'a Fixture,
+        fail: usize,
+        hits: std::cell::Cell<usize>,
+    }
+    impl Memory for OneShot<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address <= self.fail && self.fail < address.saturating_add(output.len()) {
+                let seen = self.hits.get();
+                self.hits.set(seen + 1);
+                if seen == 0 {
+                    return false;
+                }
+            }
+            self.inner.copy(address, output)
+        }
+    }
+    let mut f = world();
+    f.array(0x6000 + LEND_LEASE_GIVEN, 0x71000, 1);
+    f.u64(0x71000, 0x72000);
+    client(&mut f, 0x72000, LEND_LEASE_VTABLE_RVA.0, 99, [100_000, 100_000]);
+    f.u32(0x72000 + LEND_LEASE_RECEIVER, 2);
+    f.u64(0x72000 + LEND_LEASE_ROUTE, 0x40000);
+    f.array(0x7000 + LEND_LEASE_RECEIVED, 0x71100, 1);
+    f.u64(0x71100, 0x72000);
+
+    let ll_fault = OneShot {
+        inner: &f,
+        fail: 0x72000 + CLIENT_HANDLE_ID,
+        hits: std::cell::Cell::new(0),
+    };
+    let (outcomes, _) = walk(&ll_fault);
+    assert_eq!(
+        outcomes.clients,
+        Outcome::Unavailable {
+            reason: "convoy client handle unreadable"
+        }
+    );
+    assert_eq!(ll_fault.hits.get(), 1);
+
+    let f = world();
+    let supply_fault = OneShot {
+        inner: &f,
+        fail: 0x52000 + CLIENT_HANDLE_ID,
+        hits: std::cell::Cell::new(0),
+    };
+    let (outcomes, _) = walk(&supply_fault);
+    assert_eq!(
+        outcomes.clients,
+        Outcome::Unavailable {
+            reason: "convoy client handle unreadable"
+        }
+    );
+    assert_eq!(supply_fault.hits.get(), 1);
+
+    let mkt_fault = OneShot {
+        inner: &f,
+        fail: 0x61000 + CONTRACT_CLIENT + CLIENT_CONVOYS,
+        hits: std::cell::Cell::new(0),
+    };
+    let (outcomes, _) = walk(&mkt_fault);
+    assert_eq!(
+        outcomes.clients,
+        Outcome::Unavailable {
+            reason: "convoy client convoys unreadable"
+        }
+    );
+    assert_eq!(mkt_fault.hits.get(), 1);
+
+    let mut rights_bad = world();
+    rights_bad.bytes.retain(|&address, _| {
+        !(0x20000 + ORIGIN_RIGHTS..0x20000 + ORIGIN_RIGHTS + 16).contains(&address)
+    });
+    let (outcomes, _) = walk(&rights_bad);
+    assert_eq!(outcomes.origins, Outcome::Rows { len: 1 });
+    assert_eq!(
+        outcomes.rights,
+        Outcome::Unavailable {
+            reason: "origin rights unreadable"
+        }
+    );
+
+    let mut country_mod = world();
+    let bucket_table = 0x38000;
+    country_mod.put(0x30000 + cstate::COUNTRY_MODIFIERS, &[0; 17]);
+    country_mod.u64(0x30000 + cstate::COUNTRY_MODIFIERS, bucket_table as u64);
+    country_mod.u32(0x30000 + cstate::COUNTRY_MODIFIERS + 12, 0);
+    country_mod.put(0x30000 + cstate::COUNTRY_MODIFIERS + 16, &[1]);
+    country_mod.put(bucket_table, &[0; cstate::COUNTRY_MODIFIER_STRIDE]);
+    country_mod.put(bucket_table + 4, &[1]);
+    country_mod.u32(bucket_table + 8, 1);
+    country_mod.array(bucket_table + 0x20, 0, 0);
+    country_mod.bytes.retain(|&address, _| {
+        !(0x30000 + cstate::BASE_MODIFIERS..0x30000 + cstate::BASE_MODIFIERS + 16)
+            .contains(&address)
+    });
+    let (outcomes, rows) = walk(&country_mod);
+    assert_eq!(outcomes.origins, Outcome::Rows { len: 1 });
+    assert_eq!(rows.origins[0].local_resources_factor, 0);
+
+    let mut two_origins = world();
+    two_origins.array(0x6000 + ccountry_resources::RESOURCE_ORIGINS, 0x20800, 2);
+    two_origins.u64(0x20800, 0x20000);
+    two_origins.u64(0x20808, 0x20000);
+    two_origins.bytes.retain(|&address, _| {
+        !(0x20000 + ORIGIN_EFFICIENCY..0x20008 + ORIGIN_EFFICIENCY).contains(&address)
+    });
+    let ptr_fault = OneShot {
+        inner: &two_origins,
+        fail: 0x20808,
+        hits: std::cell::Cell::new(0),
+    };
+    let (outcomes, _) = walk(&ptr_fault);
+    assert_eq!(
+        outcomes.origins,
+        Outcome::Unavailable {
+            reason: "origin efficiency unreadable"
+        }
+    );
+    assert_eq!(
+        outcomes.rights,
+        Outcome::Unavailable {
+            reason: "origin unreadable"
+        }
+    );
+    assert_eq!(ptr_fault.hits.get(), 1);
+}

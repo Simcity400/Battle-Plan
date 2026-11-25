@@ -135,8 +135,15 @@ fn wing(store: &mut Store, slot: u32, id: u64, owner: u32, region: u32, planes: 
     write(store, TableId::AirMissionInputs, slot, "interception_alert_gate", Cell::OptionalU32(Some(1)));
 }
 
-fn summary(severity: i32) -> Option<AirSupplySummary> {
-    Some(AirSupplySummary { severity, needed: 10, supplied: 5, deficit: 5 })
+fn summary(severity: i32) -> AirSupplySummary {
+    AirSupplySummary { severity, needed: 10, supplied: 5, deficit: 5 }
+}
+
+fn write_supply(store: &mut Store, slot: u32, summary: AirSupplySummary) {
+    write(store, TableId::AirGroundCrews, slot, "supply_severity", Cell::OptionalI32(Some(summary.severity)));
+    write(store, TableId::AirGroundCrews, slot, "supply_needed", Cell::OptionalI64(Some(summary.needed)));
+    write(store, TableId::AirGroundCrews, slot, "supply_supplied", Cell::OptionalI64(Some(summary.supplied)));
+    write(store, TableId::AirGroundCrews, slot, "supply_deficit_extra", Cell::OptionalI64(Some(summary.deficit_extra())));
 }
 
 fn records(dates: &[i32]) -> Vec<u8> {
@@ -167,10 +174,10 @@ fn world(store: &mut Store) {
     wing(store, 1, 901, 10, 3, 20, INTERCEPT | 1 << 2, 1);
     wing(store, 2, 902, 11, 3, 7, 1, 0);
     insert(store, TableId::AirGroundCrews, 0, u128::from(u32::MAX));
-    write(store, TableId::AirGroundCrews, 0, "supply", Cell::Opaque(&opaque(summary(2))));
+    write_supply(store, 0, summary(2));
     insert(store, TableId::AirGroundCrews, 1, 3);
     write(store, TableId::AirGroundCrews, 1, "enabled", Cell::OptionalU32(Some(0)));
-    write(store, TableId::AirGroundCrews, 1, "supply", Cell::Opaque(&opaque(summary(1))));
+    write_supply(store, 1, summary(1));
 }
 
 fn quick() -> Settings {
@@ -543,4 +550,21 @@ fn a_question_out_on_the_daily_pass_worker_is_not_carried_and_the_hour_its_count
     passes.release();
     within(&mut side, 247, "the question answered, current, nothing carried", |side| layer(side).waiting.is_empty() && layer(side).carried().entities == 0 && Layer::published(layer(side)) == Published::Current);
     settled_equals_composed(&mut side);
+}
+
+#[test]
+fn scalar_air_supply_updates_reconstruct_mixed_surplus_deficit_on_step() {
+    let mixed = AirSupplySummary { severity: 0, needed: 100, supplied: 120, deficit: 15 };
+    let units = record(BLOCK, |_, _| Status::Complete, |at, store| match at {
+        0 => world(store),
+        200 => write_supply(store, 1, mixed),
+        _ => {}
+    });
+    let mut side = side_for(units);
+    reach(&mut side, 150);
+    settled_equals_composed(&mut side);
+    assert_eq!(layer(&side).values()[&3].supply, Some(summary(1)));
+    reach(&mut side, 204);
+    settled_equals_composed(&mut side);
+    assert_eq!(layer(&side).values()[&3].supply, Some(mixed));
 }

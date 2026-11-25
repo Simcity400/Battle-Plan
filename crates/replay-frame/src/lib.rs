@@ -3,6 +3,7 @@ pub mod branches;
 pub mod cpu;
 pub mod envelope;
 pub mod frame;
+mod fuel_awards;
 mod fuel_demand;
 pub mod rows;
 pub mod timeline;

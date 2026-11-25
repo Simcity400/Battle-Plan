@@ -17,7 +17,7 @@ use engine_native::ctask_force::mission_layout::{
 use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    memory::{RecordField, RecordLayout, RecordSources, read_slice},
+    memory::{RecordField, RecordLayout, RecordSources},
     read,
 };
 use engine_native::{
@@ -239,7 +239,7 @@ fn i32_at(bytes: &[u8], at: usize) -> i32 {
 
 const MISSION: usize = ctask_force::NAVAL_MISSION;
 
-const TASK_FIELDS: [RecordField; 12] = {
+const TASK_FIELDS: [RecordField; 13] = {
     const fn field(source_offset: usize, destination_offset: usize, len: usize) -> RecordField {
         RecordField {
             source_offset,
@@ -260,10 +260,11 @@ const TASK_FIELDS: [RecordField; 12] = {
         field(REPLENISHMENT, 96, 8),
         field(UNDERWAY, 104, 1),
         field(cunit::EXPEDITIONARY_OWNER, 108, 4),
+        field(LOCAL_MODIFIERS, 128, 16),
     ]
 };
 const TASK_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&TASK_FIELDS, 128).expect("task force operand layout");
+    RecordLayout::new(&TASK_FIELDS, 144).expect("task force operand layout");
 
 #[cfg(test)]
 pub fn read_task_force(
@@ -333,7 +334,7 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     original_selectors: &mut OriginalSelectors,
 ) -> Result<Operands, &'static str> {
     let task = visit.task;
-    let mut bytes = [0; 128];
+    let mut bytes = [0; 144];
     let copied = memory.copy_records(RecordSources::Pointers(&[task]), &TASK_LAYOUT, &mut bytes);
     *original_header = Some(if copied == 0 {
         Err("transport original mission header unreadable")
@@ -361,7 +362,8 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     } else {
         None
     };
-    if copied != TASK_FIELDS.len() {
+    let local_modifiers_copied = copied == TASK_FIELDS.len();
+    if copied < TASK_FIELDS.len() - 1 {
         return Err("task force operands unreadable");
     }
     if u64_at(&bytes, 112) != vtable(base, cnaval_mission::VTABLE_RVA)?
@@ -401,27 +403,34 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     let location = u64_at(&bytes, 16) as usize;
     row.location = location;
     if location != 0 {
-        identity(
-            memory,
-            base,
-            location,
-            cprovince::VTABLE_RVA,
-            "task-force location is not a province",
-        )?;
-        let region: u64 = field(
-            memory,
-            location,
-            cprovince::STRATEGIC_REGION,
-            "task-force location unreadable",
-        )?;
+        let mut province_vtable = [0; 8];
+        let mut region_bytes = [0; 8];
+        let copied = memory.copy_scattered(
+            [location, at(location, cprovince::STRATEGIC_REGION)?],
+            &mut [&mut province_vtable, &mut region_bytes],
+        );
+        if copied == 0
+            || u64::from_le_bytes(province_vtable) != vtable(base, cprovince::VTABLE_RVA)?
+        {
+            return Err("task-force location is not a province");
+        }
+        if copied < 2 {
+            return Err("task-force location unreadable");
+        }
+        let region = u64::from_le_bytes(region_bytes);
         row.region = engine_native_parts::cstrategic_region::id(memory, base, region as usize)?
             .ok_or("task-force location has no strategic region")?;
-        accumulator::lookup_many_at(
-            memory,
-            at(task, LOCAL_MODIFIERS)?,
-            &TASK_FORCE_KEYS,
-            &mut row.local,
-        )?;
+        if !local_modifiers_copied {
+            return Err("modifier accumulator header unreadable or invalid");
+        }
+        let local_array = Array::from_header(
+            bytes[128..144].try_into().expect("local modifier header"),
+            engine_native_parts::modifier_entry::STRIDE,
+        )
+        .ok_or("modifier accumulator header unreadable or invalid")?;
+        if local_array.count != 0 {
+            accumulator::lookup_many_in(memory, local_array, &TASK_FORCE_KEYS, &mut row.local)?;
+        }
     }
     let attached = Array::from_header(bytes[40..56].try_into().expect("header"), 8)
         .ok_or("task-force headquarters invalid")?;
@@ -613,28 +622,36 @@ pub fn headquarters_sources(
     let Some(character) = resolve(character)? else {
         return Ok(None);
     };
-    identity(
-        memory,
-        base,
-        character,
-        ccharacter::VTABLE_RVA,
-        "headquarters character identity mismatch",
-    )?;
-    let cached: u64 = field(
-        memory,
-        character,
-        CHARACTER_UNIT_LEADER,
-        "character unit leader unreadable",
-    )?;
+    let mut character_vtable = [0; 8];
+    let mut cached_bytes = [0; 8];
+    let mut reference_bytes = [0; 8];
+    let copied = memory.copy_scattered(
+        [
+            character,
+            at(character, CHARACTER_UNIT_LEADER)?,
+            at(character, CHARACTER_UNIT_LEADER_REFERENCE)?,
+        ],
+        &mut [
+            &mut character_vtable,
+            &mut cached_bytes,
+            &mut reference_bytes,
+        ],
+    );
+    if copied == 0 || u64::from_le_bytes(character_vtable) != vtable(base, ccharacter::VTABLE_RVA)?
+    {
+        return Err("headquarters character identity mismatch");
+    }
+    if copied < 2 {
+        return Err("character unit leader unreadable");
+    }
+    let cached = u64::from_le_bytes(cached_bytes);
     let leader = if cached != 0 {
         Some(cached as usize)
     } else {
-        let reference: u64 = field(
-            memory,
-            character,
-            CHARACTER_UNIT_LEADER_REFERENCE,
-            "character unit leader unreadable",
-        )?;
+        if copied < 3 {
+            return Err("character unit leader unreadable");
+        }
+        let reference = u64::from_le_bytes(reference_bytes);
         if reference == 0 {
             None
         } else {
@@ -644,18 +661,31 @@ pub fn headquarters_sources(
     let Some(leader) = leader else {
         return Ok(None);
     };
-    if field::<i32>(
-        memory,
-        leader,
-        UNIT_LEADER_KIND,
-        "unit leader kind unreadable",
-    )? != 2
-    {
+    let mut kind_bytes = [0; 4];
+    let mut source_bytes = [[0; 8]; 4];
+    let [s0, s1, s2, s3] = &mut source_bytes;
+    let copied = memory.copy_scattered(
+        [
+            at(leader, UNIT_LEADER_KIND)?,
+            at(leader, UNIT_LEADER_SOURCES[0])?,
+            at(leader, UNIT_LEADER_SOURCES[1])?,
+            at(leader, UNIT_LEADER_SOURCES[2])?,
+            at(leader, UNIT_LEADER_SOURCES[3])?,
+        ],
+        &mut [&mut kind_bytes, s0, s1, s2, s3],
+    );
+    if copied == 0 {
+        return Err("unit leader kind unreadable");
+    }
+    if i32::from_le_bytes(kind_bytes) != 2 {
         return Ok(None);
     }
+    if copied < 5 {
+        return Err("unit leader source unreadable");
+    }
     let mut sources = [0; 4];
-    for (offset, source) in UNIT_LEADER_SOURCES.into_iter().zip(&mut sources) {
-        let pointer: u64 = field(memory, leader, offset, "unit leader source unreadable")?;
+    for (raw, source) in source_bytes.into_iter().zip(&mut sources) {
+        let pointer = u64::from_le_bytes(raw);
         if pointer == 0 {
             return Err("unit leader modifier source null");
         }
@@ -692,6 +722,14 @@ pub struct PresenceMap {
     end: u32,
 }
 
+const PRESENCE_ENTRY_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: PRESENCE_STRIDE,
+}];
+const PRESENCE_ENTRY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&PRESENCE_ENTRY_FIELDS, PRESENCE_STRIDE).expect("presence entry layout");
+
 impl PresenceMap {
     pub fn read(memory: &impl Memory, navy: usize) -> Result<Self, &'static str> {
         let mut entries = [0; 8];
@@ -721,27 +759,109 @@ impl PresenceMap {
         Ok(Self { entries, mask, end })
     }
 
+    #[inline]
+    fn home(&self, slot: u32) -> u32 {
+        let hashed = (slot >> 16 ^ slot).wrapping_mul(PRESENCE_HASH);
+        let hashed = (hashed >> 16 ^ hashed).wrapping_mul(PRESENCE_HASH);
+        (hashed >> 16 ^ hashed) & self.mask
+    }
+
+    #[inline]
+    fn entry_address(&self, index: u32) -> Result<usize, &'static str> {
+        (index as usize)
+            .checked_mul(PRESENCE_STRIDE)
+            .and_then(|offset| self.entries.checked_add(offset))
+            .ok_or("presence entry address overflow")
+    }
+
     fn entry(
         &self,
         memory: &impl Memory,
         index: u32,
     ) -> Result<[u8; PRESENCE_STRIDE], &'static str> {
-        let address = (index as usize)
-            .checked_mul(PRESENCE_STRIDE)
-            .and_then(|offset| self.entries.checked_add(offset))
-            .ok_or("presence entry address overflow")?;
+        let address = self.entry_address(index)?;
         read(memory, address).ok_or("presence entry unreadable")
     }
 
-    pub fn presence(
+    fn count_presence(bytes: &[u8], read_count: usize, steps: usize) -> Presence {
+        let mut single = Presence::default();
+        for chunk in bytes.chunks_exact(4) {
+            let value = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            if value >= 0 {
+                single.total += 1;
+                single.positive += i32::from(value > 0);
+            }
+        }
+        if read_count == steps {
+            return single;
+        }
+        let full = (steps / read_count) as i32;
+        let rem = steps % read_count;
+        let mut presence = Presence {
+            positive: single.positive * full,
+            total: single.total * full,
+        };
+        for chunk in bytes[..rem * 4].chunks_exact(4) {
+            let value = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            if value >= 0 {
+                presence.total += 1;
+                presence.positive += i32::from(value > 0);
+            }
+        }
+        presence
+    }
+
+    fn count_ring(
+        &self,
+        memory: &impl Memory,
+        entry: &[u8; PRESENCE_STRIDE],
+    ) -> Result<Presence, &'static str> {
+        let data = u64_at(entry, 0x10) as usize;
+        let capacity = i32_at(entry, 0x18);
+        let head = i32_at(entry, 0x1c);
+        let tail = i32_at(entry, 0x20);
+        if head == tail {
+            return Ok(Presence::default());
+        }
+        if capacity <= 0 || !(0..capacity).contains(&head) {
+            return Err("presence ring index invalid");
+        }
+        let steps = if (0..capacity).contains(&tail) {
+            (tail - head).rem_euclid(capacity) as usize
+        } else {
+            PRESENCE_WINDOW
+        }
+        .min(PRESENCE_WINDOW);
+        let read_count = steps.min(capacity as usize);
+        let first = read_count.min((capacity - head) as usize);
+        let second = read_count - first;
+        let first_addr = (head as usize)
+            .checked_mul(4)
+            .and_then(|bytes| data.checked_add(bytes))
+            .ok_or("presence ring address overflow")?;
+        if second == 0 {
+            let mut uninit = [std::mem::MaybeUninit::<u8>::uninit(); PRESENCE_WINDOW * 4];
+            let bytes = memory
+                .copy_uninit(first_addr, &mut uninit[..read_count * 4])
+                .ok_or("presence ring unreadable")?;
+            Ok(Self::count_presence(bytes, read_count, steps))
+        } else {
+            let mut buf = [0_u8; PRESENCE_WINDOW * 4];
+            let (part0, part1) = buf[..read_count * 4].split_at_mut(first * 4);
+            if memory.copy_scattered([first_addr, data], &mut [part0, part1]) != 2 {
+                return Err("presence ring unreadable");
+            }
+            Ok(Self::count_presence(&buf[..read_count * 4], read_count, steps))
+        }
+    }
+
+    fn resolve_from_home(
         &self,
         memory: &impl Memory,
         slot: u32,
+        mut index: u32,
+        mut entry: [u8; PRESENCE_STRIDE],
     ) -> Result<Option<Presence>, &'static str> {
-        let hashed = (slot >> 16 ^ slot).wrapping_mul(PRESENCE_HASH);
-        let hashed = (hashed >> 16 ^ hashed).wrapping_mul(PRESENCE_HASH);
-        let mut index = (hashed >> 16 ^ hashed) & self.mask;
-        let mut entry = self.entry(memory, index)?;
         let mut found = false;
         if entry[4] != 0 {
             let mut distance: u8 = 1;
@@ -763,53 +883,71 @@ impl PresenceMap {
         if !found || index == self.end {
             return Ok(None);
         }
-        let data = u64_at(&entry, 0x10) as usize;
-        let capacity = i32_at(&entry, 0x18);
-        let head = i32_at(&entry, 0x1c);
-        let tail = i32_at(&entry, 0x20);
-        if head == tail {
-            return Ok(Some(Presence::default()));
-        }
-        if capacity <= 0 || !(0..capacity).contains(&head) {
-            return Err("presence ring index invalid");
-        }
-        let steps = if (0..capacity).contains(&tail) {
-            (tail - head).rem_euclid(capacity) as usize
-        } else {
-            PRESENCE_WINDOW
-        }
-        .min(PRESENCE_WINDOW);
-        let mut values = [0; PRESENCE_WINDOW * 4];
-        let read = steps.min(capacity as usize);
-        let first = read.min((capacity - head) as usize);
-        for (start, count, offset) in [(head as usize, first, 0), (0, read - first, first)] {
-            if count == 0 {
-                continue;
+        self.count_ring(memory, &entry).map(Some)
+    }
+
+    pub fn presence(
+        &self,
+        memory: &impl Memory,
+        slot: u32,
+    ) -> Result<Option<Presence>, &'static str> {
+        let index = self.home(slot);
+        let entry = self.entry(memory, index)?;
+        self.resolve_from_home(memory, slot, index, entry)
+    }
+
+    pub fn presences_batch(
+        &self,
+        memory: &impl Memory,
+        slots: &[u32],
+        out: &mut [Option<Presence>],
+    ) -> Result<(), &'static str> {
+        const BATCH: usize = 32;
+        let mut homes = [0_u32; BATCH];
+        let mut addrs = [0_usize; BATCH];
+        let mut raw = [0_u8; BATCH * PRESENCE_STRIDE];
+        let mut first = 0_usize;
+        while first < slots.len() {
+            let count = (slots.len() - first).min(BATCH);
+            let mut batch_ok = true;
+            for i in 0..count {
+                let index = self.home(slots[first + i]);
+                homes[i] = index;
+                match self.entry_address(index) {
+                    Ok(addr) => addrs[i] = addr,
+                    Err(_) => {
+                        batch_ok = false;
+                        break;
+                    }
+                }
             }
-            let address = start
-                .checked_mul(4)
-                .and_then(|bytes| data.checked_add(bytes))
-                .ok_or("presence ring address overflow")?;
-            if !read_slice(
-                memory,
-                address,
-                &mut values[offset * 4..(offset + count) * 4],
-            ) {
-                return Err("presence ring unreadable");
+            let batch_complete = if batch_ok {
+                Some(memory.copy_records(
+                    RecordSources::Pointers(&addrs[..count]),
+                    &PRESENCE_ENTRY_LAYOUT,
+                    &mut raw[..count * PRESENCE_STRIDE],
+                ))
+            } else {
+                None
+            };
+            for i in 0..count {
+                out[first + i] = if let Some(complete) = batch_complete {
+                    if i < complete {
+                        let entry: [u8; PRESENCE_STRIDE] = raw
+                            [i * PRESENCE_STRIDE..(i + 1) * PRESENCE_STRIDE]
+                            .try_into()
+                            .expect("presence entry width");
+                        self.resolve_from_home(memory, slots[first + i], homes[i], entry)?
+                    } else {
+                        return Err("presence entry unreadable");
+                    }
+                } else {
+                    self.presence(memory, slots[first + i])?
+                };
             }
+            first += count;
         }
-        for at in read * 4..steps * 4 {
-            values[at] = values[at - read * 4];
-        }
-        let mut presence = Presence::default();
-        for value in values[..steps * 4].chunks_exact(4) {
-            let value = i32::from_le_bytes(value.try_into().expect("four bytes"));
-            if value >= 0 {
-                presence.total += 1;
-                presence.positive += i32::from(value > 0);
-            }
-        }
-        Ok(Some(presence))
+        Ok(())
     }
 }
 

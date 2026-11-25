@@ -13,7 +13,7 @@ pub const REFRESH_DOMAINS: [Domain; 9] = [
     Domain::Costs,
 ];
 static MARKS: [WatchRegistry; REFRESH_DOMAINS.len()] =
-    [const { WatchRegistry::marking() }; REFRESH_DOMAINS.len()];
+    [const { WatchRegistry::marks_only() }; REFRESH_DOMAINS.len()];
 static LOST: AtomicBool = AtomicBool::new(false);
 static UNKNOWN: AtomicU64 = AtomicU64::new(0);
 

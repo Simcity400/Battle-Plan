@@ -49,10 +49,7 @@ fn a_site_marks_its_country_in_the_tables_it_reaches() {
     drop(domain.notify(site("add_air_statistic"), first, 1));
     assert_eq!(take(&domain, Table::Stability), (stability, vec![5]));
     assert_eq!(take(&domain, Table::Stability), (stability, vec![]));
-    assert_eq!(
-        domain.calls[site("add_air_statistic")].load(Ordering::Relaxed),
-        2
-    );
+    assert_eq!(domain.calls.total(site("add_air_statistic")), 2);
 }
 
 #[test]
@@ -161,7 +158,7 @@ fn slot_sync_marks_only_a_changed_roster() {
     domain.sync(address, &|_: usize| roster.get(), || 0);
     assert_eq!(take(&domain, Table::Research), (epoch, vec![3]));
     assert_eq!(domain.resynced.load(Ordering::Relaxed), 1);
-    assert_eq!(domain.calls[SYNC_RESEARCH_SLOTS].load(Ordering::Relaxed), 3);
+    assert_eq!(domain.calls.total(SYNC_RESEARCH_SLOTS), 3);
     drop((own, status));
 }
 
@@ -188,7 +185,7 @@ fn a_leader_removal_marks_its_owner_only_when_a_roster_changed() {
     domain.remove_leader(address, &|_: usize| counts.get(), || 0);
     assert_eq!(take(&domain, Table::Counters), (epoch, vec![4]));
     assert_eq!(domain.removed_leaders.load(Ordering::Relaxed), 1);
-    assert_eq!(domain.calls[REMOVE_UNIT_LEADER].load(Ordering::Relaxed), 3);
+    assert_eq!(domain.calls.total(REMOVE_UNIT_LEADER), 3);
     drop((own, characters));
 }
 
@@ -231,10 +228,7 @@ fn faction_sharing_base_marks_the_faction_only_when_it_changed() {
     assert_eq!(take(&domain, Table::Research), (epoch, vec![3, 5]));
     assert_eq!(take(&domain, Table::Stability).1, Vec::<usize>::new());
     assert_eq!(domain.rebased.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        domain.calls[FACTION_SHARING_BASE].load(Ordering::Relaxed),
-        3
-    );
+    assert_eq!(domain.calls.total(FACTION_SHARING_BASE), 3);
     drop((first, second, faction, members, group));
 }
 
@@ -271,10 +265,7 @@ fn a_forwarded_writer_marks_its_country() {
     drop(domain.forward(Forward::DiplomacyReset, country.as_ptr() as usize, 0));
     assert_ne!(take(&domain, Table::Stability).0, stability);
     assert_eq!(take(&domain, Table::Research).0, research);
-    assert_eq!(
-        domain.forwarded[Forward::ResetCountry as usize].load(Ordering::Relaxed),
-        1
-    );
+    assert_eq!(domain.forwarded.total(Forward::ResetCountry as usize), 1);
 }
 
 #[test]
@@ -449,10 +440,7 @@ fn counter_forwards_reach_the_counter_set() {
     drop(domain.forward(Forward::CountryCharacters, 0, 0));
     assert_ne!(take(&domain, Table::Counters).0, moved);
     assert_eq!(take(&domain, Table::Stability), (stability, vec![]));
-    assert_eq!(
-        domain.forwarded[Forward::Cores as usize].load(Ordering::Relaxed),
-        2
-    );
+    assert_eq!(domain.forwarded.total(Forward::Cores as usize), 2);
     drop((owner, diplomacy, status, state, tag));
 }
 
@@ -505,7 +493,7 @@ fn weather_writers_move_the_weather_count_on_entry_and_return() {
         });
         assert_eq!(during as u64, before + 1);
         assert_eq!(domain.weather_writes.load(Ordering::SeqCst), before + 2);
-        assert_eq!(domain.calls[site].load(Ordering::Relaxed), 1);
+        assert_eq!(domain.calls.total(site), 1);
     }
     assert_eq!(take(&domain, Table::Research), (research, vec![]));
     assert_eq!(
@@ -560,10 +548,7 @@ fn only_an_effects_progress_marks_its_country() {
     assert_eq!(take(&domain, Table::Technologies), (epoch, vec![]));
     domain.research_progress(first, 2, || 0);
     assert_eq!(take(&domain, Table::Technologies), (epoch, vec![7]));
-    assert_eq!(
-        domain.calls[sites::RESEARCH_PROGRESS].load(Ordering::Relaxed),
-        1
-    );
+    assert_eq!(domain.calls.total(sites::RESEARCH_PROGRESS), 1);
     drop((owner, status, technology));
 }
 

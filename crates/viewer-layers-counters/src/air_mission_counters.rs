@@ -66,9 +66,40 @@ struct Columns {
     foreign: List,
     enabled: Num<u32>,
     supply: List,
+    supply_severity: Num<i32>,
+    supply_needed: Num<i64>,
+    supply_supplied: Num<i64>,
+    supply_deficit_extra: Num<i64>,
     link_slot: Num<u32>,
     country_slot: Num<u32>,
     command_power: Num<i64>,
+}
+
+fn supply_of(crews: &Mirror, columns: Columns, slot: u32) -> Recorded<Option<AirSupplySummary>> {
+    match (
+        crews.number(columns.supply_severity, slot),
+        crews.number(columns.supply_needed, slot),
+        crews.number(columns.supply_supplied, slot),
+        crews.number(columns.supply_deficit_extra, slot),
+    ) {
+        (
+            Cell::Value(severity),
+            Cell::Value(needed),
+            Cell::Value(supplied),
+            Cell::Value(deficit_extra),
+        ) => Recorded::Value(Some(AirSupplySummary::from_parts(
+            severity,
+            needed,
+            supplied,
+            deficit_extra,
+        ))),
+        (Cell::Missing, Cell::Missing, Cell::Missing, Cell::Missing) => Recorded::Value(None),
+        (Cell::Unrecorded, Cell::Unrecorded, Cell::Unrecorded, Cell::Unrecorded) => {
+            opaque::<Option<AirSupplySummary>>(crews, columns.supply, slot)
+                .unwrap_or(Recorded::NotRecorded)
+        }
+        _ => Recorded::NotRecorded,
+    }
 }
 
 const TABLES: [TableId; 7] = [TableId::AirRegionalMissions, TableId::AirWings, TableId::AirMissionInputs, TableId::AirRegionCombat, TableId::AirGroundCrews, TableId::CountryLinks, TableId::Countries];
@@ -501,8 +532,8 @@ impl AirMissionCounters {
         if std::mem::take(&mut self.supply_dirty) {
             let (complete, unrecorded) = match complete(mirrors, TableId::AirGroundCrews) {
                 Some(crews) => {
-                    let unrecorded = crews.rows().any(|slot| matches!(opaque::<Option<AirSupplySummary>>(crews, columns.supply, slot), Ok(Recorded::NotRecorded)));
-                    let complete = crews.slot(u128::from(ours) << 32 | u128::from(u32::MAX)).is_some_and(|slot| matches!(opaque::<Option<AirSupplySummary>>(crews, columns.supply, slot), Ok(Recorded::Value(Some(_)))));
+                    let unrecorded = crews.rows().any(|slot| matches!(supply_of(crews, columns, slot), Recorded::NotRecorded));
+                    let complete = crews.slot(u128::from(ours) << 32 | u128::from(u32::MAX)).is_some_and(|slot| matches!(supply_of(crews, columns, slot), Recorded::Value(Some(_))));
                     (complete, unrecorded)
                 }
                 None => (false, false),
@@ -595,7 +626,7 @@ impl AirMissionCounters {
         let mut supply = None;
         if self.supply_complete
             && let Some((crews, slot)) = crew_row
-            && let Ok(Recorded::Value(Some(summary))) = opaque::<Option<AirSupplySummary>>(crews, columns.supply, slot)
+            && let Recorded::Value(Some(summary)) = supply_of(crews, columns, slot)
         {
             supply = Some(summary);
             supplied(&mut counts, &summary);
@@ -822,7 +853,17 @@ impl AirMissionCounters {
             }
             TableId::AirGroundCrews => {
                 let ours = self.ours();
-                let supply_written = changes.columns().iter().any(|written| written.column() == columns.supply.column && !written.is_empty());
+                let supply_columns = [
+                    columns.supply.column,
+                    columns.supply_severity.column,
+                    columns.supply_needed.column,
+                    columns.supply_supplied.column,
+                    columns.supply_deficit_extra.column,
+                ];
+                let supply_written = changes
+                    .columns()
+                    .iter()
+                    .any(|written| supply_columns.contains(&written.column()) && !written.is_empty());
                 if supply_written || !changes.deleted().is_empty() || !changes.inserted().is_empty() {
                     self.supply_dirty = true;
                 }
@@ -895,6 +936,10 @@ impl Layer for AirMissionCounters {
             foreign: inputs.list(T::AirRegionCombat, "foreign")?,
             enabled: inputs.number(T::AirGroundCrews, "enabled")?,
             supply: inputs.list(T::AirGroundCrews, "supply")?,
+            supply_severity: inputs.number(T::AirGroundCrews, "supply_severity")?,
+            supply_needed: inputs.number(T::AirGroundCrews, "supply_needed")?,
+            supply_supplied: inputs.number(T::AirGroundCrews, "supply_supplied")?,
+            supply_deficit_extra: inputs.number(T::AirGroundCrews, "supply_deficit_extra")?,
             link_slot: inputs.number(T::CountryLinks, "canonical_slot")?,
             country_slot: inputs.number(T::Countries, "canonical_slot")?,
             command_power: inputs.number(T::Countries, "command_power_raw")?,

@@ -101,6 +101,7 @@ pub static COSTS: &[Cost] = &[
     cost(TableId::NuclearStrikes, Keys::Fixed(1), SOMETIMES),
     cost(TableId::LeaderCommands, Keys::PerCountry(1), SOMETIMES),
     cost(TableId::LandCombatResults, Keys::Fixed(1), EVERY_BUCKET),
+    cost(TableId::LandCombatResultObservers, Keys::Fixed(1), EVERY_BUCKET),
     cost(TableId::CombatLogBattleModifiers, Keys::PerCountry(2), SOMETIMES),
     cost(TableId::TagHolders, Keys::PerCountry(1), 2),
     cost(TableId::GroupSpans, Keys::PerCountry(2), 2),

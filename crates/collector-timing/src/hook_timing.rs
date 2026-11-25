@@ -624,11 +624,20 @@ impl<const SITES: usize> CallCounters<SITES> {
     }
     #[inline(always)]
     pub fn increment(&self, site: usize) {
-        self.increment_at(current_slot(), site);
+        self.add(site, 1);
     }
     #[inline(always)]
+    pub fn add(&self, site: usize, amount: u64) {
+        self.add_at(current_slot(), site, amount);
+    }
+    #[inline(always)]
+    fn add_at(&self, slot: usize, site: usize, amount: u64) {
+        bump(&self.slots[slot].0[site], slot == SHARED_SLOT, amount);
+    }
+    #[cfg(test)]
+    #[inline(always)]
     fn increment_at(&self, slot: usize, site: usize) {
-        bump(&self.slots[slot].0[site], slot == SHARED_SLOT, 1);
+        self.add_at(slot, site, 1);
     }
     pub fn total(&self, site: usize) -> u64 {
         let claimed = TABLE.claimed.load(Ordering::Relaxed).min(OWNED_SLOTS);

@@ -1367,6 +1367,11 @@ pub static LOGS: &[Log] = &[
         facets: &[LogFacet { name: "battle", from: FacetFrom::Key(40), holds: Holds::Value }],
     },
     Log { name: "land-combat-results", table: TableId::LandCombatResults, facets: &[] },
+    Log {
+        name: "land-combat-result-observers",
+        table: TableId::LandCombatResultObservers,
+        facets: &[],
+    },
     Log { name: "nuclear-strikes", table: TableId::NuclearStrikes, facets: &[] },
     Log {
         name: "leader-commands",

@@ -89,7 +89,7 @@ pub static RETIRED_TABLES: [TableId; 19] = [
     TableId::TransportRiskShips,
 ];
 
-pub static RETIRED_FIELDS: [RetiredField; 50] = [
+pub static RETIRED_FIELDS: [RetiredField; 51] = [
     retired(TableId::Provinces, 8, "selected_areas"),
     retired(TableId::DivisionLandInputs, 1, "received_supply"),
     retired(TableId::DivisionLandInputs, 2, "maximum_grace"),
@@ -161,6 +161,12 @@ pub static RETIRED_FIELDS: [RetiredField; 50] = [
         index: 6,
         name: "auto_accept_purchase",
         retired: MARKET_AUTOMATION_FORMAT,
+    },
+    RetiredField {
+        table: TableId::CountryPowerChanges,
+        index: 5,
+        name: "balance_after_raw",
+        retired: RECORDING_SIZE_FORMAT,
     },
 ];
 
@@ -3652,7 +3658,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: PARITY,
         }
     }
-    const PARITY_FIELDS: [(TableId, &[AppendedField]); 6] = [
+    const PARITY_FIELDS: [(TableId, &[AppendedField]); 5] = [
         (TableId::Players, &[parity(4, "ordinal")]),
         (
             TableId::OperativeMissions,
@@ -3666,7 +3672,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         (TableId::AgencyOperationBuffers, &[parity(4, "offers")]),
         (TableId::RaidIntelInputs, &[parity(4, "defense_tree")]),
         (TableId::StrategicOperatives, &[parity(5, "mission_rosters")]),
-        (TableId::AirGroundCrews, &[parity(1, "supply")]),
     ];
     let mut index = 0;
     while index < PARITY_FIELDS.len() {
@@ -3835,6 +3840,87 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         appended += 1;
     }
+    history[TableId::CountryPowerChanges.index()] = LastChange {
+        introduced: WIDGET_CAPTURE_FORMAT,
+        layout_since: WIDGET_CAPTURE_FORMAT,
+        ..appended_at(
+            TableId::CountryPowerChanges,
+            RECORDING_SIZE_FORMAT,
+            "recording size normalization",
+            &[AppendedField {
+                index: 11,
+                name: "realized_delta_raw",
+                introduced: RECORDING_SIZE_FORMAT,
+            }],
+        )
+    };
+    history[TableId::FuelAwardRecipients.index()] = LastChange {
+        introduced: RECORDING_SIZE_FORMAT,
+        ..table(
+            TableId::FuelAwardRecipients,
+            RECORDING_SIZE_FORMAT,
+            "recording size normalization",
+        )
+    };
+    history[TableId::ScriptVariableNames.index()] = LastChange {
+        introduced: RECORDING_SIZE_FORMAT,
+        ..table(
+            TableId::ScriptVariableNames,
+            RECORDING_SIZE_FORMAT,
+            "recording size normalization",
+        )
+    };
+    history[TableId::ScriptVariableValues.index()] = LastChange {
+        introduced: RECORDING_SIZE_FORMAT,
+        ..table(
+            TableId::ScriptVariableValues,
+            RECORDING_SIZE_FORMAT,
+            "recording size normalization",
+        )
+    };
+    history[TableId::AirGroundCrews.index()] = LastChange {
+        introduced: AIR_MAP_FORMAT,
+        ..appended_at(
+            TableId::AirGroundCrews,
+            RECORDING_SIZE_AUDIT_FORMAT,
+            "nonpolitical map mode operands, recording size audit",
+            &[
+                AppendedField {
+                    index: 1,
+                    name: "supply",
+                    introduced: MAP_MODE_PARITY_FORMAT,
+                },
+                AppendedField {
+                    index: 2,
+                    name: "supply_severity",
+                    introduced: RECORDING_SIZE_AUDIT_FORMAT,
+                },
+                AppendedField {
+                    index: 3,
+                    name: "supply_needed",
+                    introduced: RECORDING_SIZE_AUDIT_FORMAT,
+                },
+                AppendedField {
+                    index: 4,
+                    name: "supply_supplied",
+                    introduced: RECORDING_SIZE_AUDIT_FORMAT,
+                },
+                AppendedField {
+                    index: 5,
+                    name: "supply_deficit_extra",
+                    introduced: RECORDING_SIZE_AUDIT_FORMAT,
+                },
+            ],
+        )
+    };
+    history[TableId::LandCombatResultObservers.index()] = LastChange {
+        introduced: RECORDING_SIZE_AUDIT_FORMAT,
+        ..table(
+            TableId::LandCombatResultObservers,
+            RECORDING_SIZE_AUDIT_FORMAT,
+            "recording size audit",
+        )
+    };
     history
 };
 
@@ -4182,6 +4268,9 @@ mod tests {
             if format < EVENT_WINDOWS_FORMAT {
                 fewer.extend([(TableId::EventFeedHistory, 10), (TableId::FeedEvents, 42)]);
             }
+            if format < RECORDING_SIZE_FORMAT {
+                fewer.push((TableId::CountryPowerChanges, 11));
+            }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
             }
@@ -4217,13 +4306,18 @@ mod tests {
         assert!(states.gap(TableId::States, AIR_HISTORY_SLOTS_FORMAT).is_none());
         assert_eq!(states.fields(TableId::States, AIR_HISTORY_SLOTS_FORMAT), 13);
         assert_eq!(states.fields(TableId::States, MAP_MODE_PARITY_FORMAT), 14);
+        let crews = TableId::AirGroundCrews.last_change();
+        assert!(crews.gap(TableId::AirGroundCrews, AIR_HISTORY_SLOTS_FORMAT).is_none());
+        assert_eq!(crews.fields(TableId::AirGroundCrews, AIR_HISTORY_SLOTS_FORMAT), 1);
+        assert_eq!(crews.fields(TableId::AirGroundCrews, MAP_MODE_PARITY_FORMAT), 2);
+        assert_eq!(crews.fields(TableId::AirGroundCrews, RECORDING_SIZE_FORMAT), 2);
+        assert_eq!(crews.fields(TableId::AirGroundCrews, RECORDING_SIZE_AUDIT_FORMAT), 6);
         for (table, fields) in [
             (TableId::Players, 4),
             (TableId::OperativeMissions, 18),
             (TableId::AgencyOperationBuffers, 4),
             (TableId::RaidIntelInputs, 4),
             (TableId::StrategicOperatives, 5),
-            (TableId::AirGroundCrews, 1),
         ] {
             let history = table.last_change();
             assert_eq!(history.format, MAP_MODE_PARITY_FORMAT, "{table:?}");
@@ -4766,7 +4860,37 @@ mod tests {
         assert_eq!(RAID_COMPLETION_FIELDS_FORMAT, 147);
         assert_eq!(EVENT_WINDOWS_FORMAT, 148);
         assert_eq!(LAND_COMBAT_EDGES_FORMAT, 149);
-        assert_eq!(FORMAT_VERSION, LAND_COMBAT_EDGES_FORMAT);
+        assert_eq!(RECORDING_SIZE_FORMAT, 150);
+        assert_eq!(RECORDING_SIZE_AUDIT_FORMAT, 151);
+        assert_eq!(FORMAT_VERSION, RECORDING_SIZE_AUDIT_FORMAT);
+        let observers = TableId::LandCombatResultObservers.last_change();
+        assert_eq!(observers.introduced, RECORDING_SIZE_AUDIT_FORMAT);
+        assert!(observers.table_gap(TableId::LandCombatResultObservers, RECORDING_SIZE_FORMAT).is_some());
+        assert!(observers.table_gap(TableId::LandCombatResultObservers, RECORDING_SIZE_AUDIT_FORMAT).is_none());
+        let crews = TableId::AirGroundCrews.last_change();
+        assert_eq!(crews.introduced, AIR_MAP_FORMAT);
+        assert_eq!(crews.format, RECORDING_SIZE_AUDIT_FORMAT);
+        assert_eq!(crews.kind, ChangeKind::AppendedOnly);
+        assert!(crews.gap(TableId::AirGroundCrews, RECORDING_SIZE_FORMAT).is_none());
+        assert_eq!(crews.fields(TableId::AirGroundCrews, RECORDING_SIZE_FORMAT), 2);
+        assert_eq!(crews.fields(TableId::AirGroundCrews, RECORDING_SIZE_AUDIT_FORMAT), 6);
+        for table in [
+            TableId::FuelAwardRecipients,
+            TableId::ScriptVariableNames,
+            TableId::ScriptVariableValues,
+        ] {
+            let change = table.last_change();
+            assert_eq!(change.introduced, RECORDING_SIZE_FORMAT, "{table:?}");
+            assert!(change.table_gap(table, LAND_COMBAT_EDGES_FORMAT).is_some(), "{table:?}");
+            assert!(change.table_gap(table, RECORDING_SIZE_FORMAT).is_none(), "{table:?}");
+        }
+        let power = TableId::CountryPowerChanges.last_change();
+        assert_eq!(power.introduced, WIDGET_CAPTURE_FORMAT);
+        assert_eq!(power.format, RECORDING_SIZE_FORMAT);
+        assert_eq!(power.kind, ChangeKind::AppendedOnly);
+        assert!(power.gap(TableId::CountryPowerChanges, LAND_COMBAT_EDGES_FORMAT).is_none());
+        assert_eq!(power.fields(TableId::CountryPowerChanges, LAND_COMBAT_EDGES_FORMAT), 11);
+        assert_eq!(power.fields(TableId::CountryPowerChanges, RECORDING_SIZE_FORMAT), 12);
         let edges = TableId::LandCombatEdges.last_change();
         assert_eq!(edges.introduced, LAND_COMBAT_EDGES_FORMAT);
         assert!(edges.table_gap(TableId::LandCombatEdges, EVENT_WINDOWS_FORMAT).is_some());

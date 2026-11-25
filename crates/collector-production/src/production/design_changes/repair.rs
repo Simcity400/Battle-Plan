@@ -1,7 +1,7 @@
 use super::*;
 use collector_certificates::watch_registry::WatchRegistry;
 
-static MARKS: WatchRegistry = WatchRegistry::marking();
+static MARKS: WatchRegistry = WatchRegistry::marks_only();
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REPAIRING: AtomicBool = AtomicBool::new(false);
 static ADDED: AtomicBool = AtomicBool::new(false);
@@ -35,7 +35,7 @@ pub(super) fn mark(pointer: usize) {
         unknown_receiver!();
         return;
     }
-    drop(MARKS.notify(pointer));
+    MARKS.touch(pointer);
     PENDING.store(true, Ordering::Release);
 }
 pub(super) struct Repairs {
@@ -144,9 +144,10 @@ pub(super) struct Surviving<'a, M> {
     pub receiver: usize,
     pub consumed: std::cell::Cell<bool>,
 }
-impl<M: Memory> Memory for Surviving<'_, M> {
-    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        if !output.is_empty()
+impl<M: Memory> Surviving<'_, M> {
+    #[inline]
+    fn overlaps_removed(&self, address: usize, len: usize) -> bool {
+        len != 0
             && self.removed.iter().any(|&pointer| {
                 pointer != self.receiver
                     && (address
@@ -154,13 +155,105 @@ impl<M: Memory> Memory for Surviving<'_, M> {
                         .is_some_and(|offset| offset < ROOT_BYTES)
                         || pointer
                             .checked_sub(address)
-                            .is_some_and(|offset| offset < output.len()))
+                            .is_some_and(|offset| offset < len))
             })
+    }
+
+    #[inline]
+    fn scattered<const N: usize, const PREFETCH: bool>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        if self.removed.is_empty()
+            || !addresses
+                .iter()
+                .zip(destinations.iter())
+                .any(|(&address, destination)| self.overlaps_removed(address, destination.len()))
         {
+            return if PREFETCH {
+                self.source
+                    .copy_scattered_prefetched(addresses, destinations)
+            } else {
+                self.source.copy_scattered(addresses, destinations)
+            };
+        }
+        for (completed, (address, destination)) in addresses
+            .into_iter()
+            .zip(destinations.iter_mut())
+            .enumerate()
+        {
+            if destination.is_empty() {
+                continue;
+            }
+            if address == 0
+                || address.checked_add(destination.len()).is_none()
+                || !self.copy(address, destination)
+            {
+                return completed;
+            }
+        }
+        N
+    }
+}
+impl<M: Memory> Memory for Surviving<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if self.overlaps_removed(address, output.len()) {
             self.consumed.set(true);
             return false;
         }
         self.source.copy(address, output)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.scattered::<N, false>(addresses, destinations)
+    }
+
+    fn copy_scattered_prefetched<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.scattered::<N, true>(addresses, destinations)
+    }
+
+    fn copy_records(
+        &self,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        if self.removed.is_empty() {
+            return self.source.copy_records(sources, layout, destination);
+        }
+        let Some(count) = layout.count(sources, destination.len()) else {
+            return 0;
+        };
+        let mut completed = 0;
+        for row in 0..sources.len() {
+            for field in layout.fields() {
+                if field.len != 0 {
+                    let Some(address) = sources
+                        .pointer(row)
+                        .filter(|&pointer| pointer != 0)
+                        .and_then(|pointer| pointer.checked_add(field.source_offset))
+                        .filter(|&address| address.checked_add(field.len).is_some())
+                    else {
+                        return completed;
+                    };
+                    let start = row * layout.stride() + field.destination_offset;
+                    if !self.copy(address, &mut destination[start..start + field.len]) {
+                        return completed;
+                    }
+                }
+                completed += 1;
+            }
+        }
+        count
     }
 }
 pub(super) fn snapshot(
@@ -196,30 +289,35 @@ pub(super) fn snapshot(
     }
     result
 }
-pub(super) fn complete(
-    watch: &Watch,
-    snapshot: &rows::VariantSnapshot,
-) -> Result<(), &'static str> {
+pub(super) fn flags(snapshot: &rows::VariantSnapshot) -> Result<[u8; 3], &'static str> {
     let state = snapshot
         .definition
         .design
         .require("VariantChanges.design")
         .map_err(|_| "variant repair lacks design state")?;
+    Ok([
+        state.can_upgrade_type,
+        state.can_upgrade_variant,
+        state.can_upgrade_modules,
+    ])
+}
+pub(super) fn complete_all(updates: &[(usize, u64, [u8; 3])]) -> Result<(), &'static str> {
+    if updates.is_empty() {
+        return Ok(());
+    }
     let mut store = STORE
         .get()
         .unwrap()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let current = store
-        .watched
-        .get_mut(&watch.pointer)
-        .filter(|current| current.id == watch.id)
-        .ok_or("variant repair binding changed during acquisition")?;
-    current.flags = [
-        state.can_upgrade_type,
-        state.can_upgrade_variant,
-        state.can_upgrade_modules,
-    ];
+    for &(pointer, id, flags) in updates {
+        let current = store
+            .watched
+            .get_mut(&pointer)
+            .filter(|current| current.id == id)
+            .ok_or("variant repair binding changed during acquisition")?;
+        current.flags = flags;
+    }
     Ok(())
 }
 /// # Safety

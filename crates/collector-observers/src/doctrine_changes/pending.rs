@@ -8,17 +8,90 @@ struct Slot {
     pointer: usize,
     value: AtomicU64,
 }
+#[derive(Default)]
+struct Table {
+    slots: Vec<Slot>,
+}
+impl Table {
+    fn from_pointers(
+        count: usize,
+        pointers: impl Iterator<Item = usize>,
+    ) -> Result<Self, &'static str> {
+        let mut keys = engine_allocation::vec(count)
+            .map_err(|_| "doctrine scalar receiver allocation failed")?;
+        for pointer in pointers {
+            if pointer == 0 {
+                return Err("doctrine scalar receiver pointer is null");
+            }
+            engine_allocation::reserve(&mut keys, 1)
+                .map_err(|_| "doctrine scalar receiver allocation failed")?;
+            keys.push(pointer);
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        if keys.is_empty() {
+            return Ok(Self { slots: Vec::new() });
+        }
+        let len = keys
+            .len()
+            .checked_mul(2)
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or("doctrine scalar receiver allocation failed")?;
+        let mut slots = engine_allocation::vec(len)
+            .map_err(|_| "doctrine scalar receiver allocation failed")?;
+        slots.resize_with(len, || Slot {
+            pointer: 0,
+            value: AtomicU64::new(0),
+        });
+        let mask = len - 1;
+        for pointer in keys {
+            let first = collector_primitives::table_hash::slot(pointer as u64, len);
+            let mut probe = 0;
+            while slots[(first + probe) & mask].pointer != 0 {
+                probe += 1;
+            }
+            slots[(first + probe) & mask].pointer = pointer;
+        }
+        Ok(Self { slots })
+    }
+    #[inline]
+    fn get(&self, pointer: usize) -> Option<&Slot> {
+        if pointer == 0 || self.slots.is_empty() {
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let first = collector_primitives::table_hash::slot(pointer as u64, self.slots.len());
+        for probe in 0..self.slots.len() {
+            let slot = &self.slots[(first + probe) & mask];
+            if slot.pointer == pointer {
+                return Some(slot);
+            }
+            if slot.pointer == 0 {
+                return None;
+            }
+        }
+        None
+    }
+    fn pointers(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slots
+            .iter()
+            .filter_map(|slot| (slot.pointer != 0).then_some(slot.pointer))
+    }
+    fn count(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.pointer != 0).count()
+    }
+}
 struct Pending {
     watches: WatchRegistry,
-    slots: RwLock<Vec<Slot>>,
+    slots: RwLock<Table>,
     lost: AtomicBool,
     missed: AtomicU64,
 }
 impl Pending {
     const fn new() -> Self {
         Self {
-            watches: WatchRegistry::marking(),
-            slots: RwLock::new(Vec::new()),
+            watches: WatchRegistry::marks_only(),
+            slots: RwLock::new(Table { slots: Vec::new() }),
             lost: AtomicBool::new(false),
             missed: AtomicU64::new(0),
         }
@@ -32,27 +105,17 @@ impl Pending {
         count: usize,
         pointers: impl Iterator<Item = usize>,
     ) -> Result<(), &'static str> {
-        let mut prepared = engine_allocation::vec(count)
-            .map_err(|_| "doctrine scalar receiver allocation failed")?;
-        for pointer in pointers {
-            engine_allocation::reserve(&mut prepared, 1)
-                .map_err(|_| "doctrine scalar receiver allocation failed")?;
-            prepared.push(Slot {
-                pointer,
-                value: AtomicU64::new(0),
-            });
-        }
-        prepared.sort_unstable_by_key(|slot| slot.pointer);
+        let prepared = Table::from_pointers(count, pointers)?;
         let mut slots = self
             .slots
             .write()
             .map_err(|_| "doctrine scalar receivers poisoned")?;
         self.watches.collect();
-        self.watches.offer(prepared.len());
+        self.watches.offer(prepared.count());
         self.watches.boundary(true);
-        for slot in &prepared {
+        for pointer in prepared.pointers() {
             self.watches
-                .register(slot.pointer)
+                .register(pointer)
                 .ok_or("doctrine scalar receiver registration unavailable")?;
         }
         self.watches
@@ -71,13 +134,13 @@ impl Pending {
             self.lose();
             return;
         };
-        let Ok(index) = slots.binary_search_by_key(&pointer, |slot| slot.pointer) else {
+        let Some(slot) = slots.get(pointer) else {
             self.lose();
             return;
         };
         if let Some(value) = value {
-            slots[index].value.store(value as u64, Ordering::Relaxed);
-        } else if slots[index]
+            slot.value.store(value as u64, Ordering::Relaxed);
+        } else if slot
             .value
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_add(1)
@@ -94,10 +157,10 @@ impl Pending {
             .map_err(|_| "doctrine scalar receivers poisoned")?;
         self.watches
             .take(|pointer| {
-                let index = slots
-                    .binary_search_by_key(&pointer, |slot| slot.pointer)
+                let slot = slots
+                    .get(pointer)
                     .expect("prepared doctrine scalar receiver");
-                visit(pointer, slots[index].value.swap(0, Ordering::Relaxed));
+                visit(pointer, slot.value.swap(0, Ordering::Relaxed));
             })
             .ok_or("doctrine scalar marks overlapped a writer")?;
         Ok(())
@@ -107,10 +170,10 @@ impl Pending {
             .slots
             .read()
             .map_err(|_| "doctrine scalar receivers poisoned")?;
-        let index = slots
-            .binary_search_by_key(&pointer, |slot| slot.pointer)
-            .map_err(|_| "doctrine scalar receiver unavailable")?;
-        Ok(slots[index].value.swap(0, Ordering::Relaxed))
+        let slot = slots
+            .get(pointer)
+            .ok_or("doctrine scalar receiver unavailable")?;
+        Ok(slot.value.swap(0, Ordering::Relaxed))
     }
     fn take_lost(&self) -> bool {
         self.lost.swap(false, Ordering::AcqRel)
@@ -168,7 +231,7 @@ pub(super) unsafe fn release() {
         *pending
             .slots
             .write()
-            .unwrap_or_else(|error| error.into_inner()) = Vec::new();
+            .unwrap_or_else(|error| error.into_inner()) = Table::default();
     }
 }
 

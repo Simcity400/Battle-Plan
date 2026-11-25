@@ -161,9 +161,45 @@ fn task_force_row_keeps_every_efficiency_operand() {
     put_u32(&mut docked, TASK + LOCAL_MODIFIERS + 8, u32::MAX);
     let row = read_row(&docked, &mut vec![0; 2]).unwrap();
     assert_eq!((row.region, row.local), (0, [Value::default(); 9]));
-    let mut stray = bytes;
+    let mut stray = bytes.clone();
     put_u64(&mut stray, PROVINCE, 1_u64);
     assert!(read_row(&stray, &mut vec![0; 2]).is_err());
+
+    struct HealingHeader<'a> {
+        good: &'a [u8],
+        bad_header: [u8; 16],
+        reads: std::cell::Cell<usize>,
+    }
+    impl Memory for HealingHeader<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let header = TASK + LOCAL_MODIFIERS;
+            if address == header && destination.len() == 16 {
+                let seen = self.reads.get();
+                self.reads.set(seen + 1);
+                if seen == 0 {
+                    destination.copy_from_slice(&self.bad_header);
+                    return true;
+                }
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.good,
+            }
+            .copy(address, destination)
+        }
+    }
+    let mut bad_header = [0_u8; 16];
+    bad_header[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    let healing = HealingHeader {
+        good: &bytes,
+        bad_header,
+        reads: std::cell::Cell::new(0),
+    };
+    assert_eq!(
+        read_task_force(&healing, 0, visit(ESCORT), &mut vec![0; 2]),
+        Err("modifier accumulator header unreadable or invalid")
+    );
+    assert_eq!(healing.reads.get(), 1);
 }
 
 #[test]
@@ -529,6 +565,26 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
             .unwrap()
             .presence(&memory, absent),
         Ok(None)
+    );
+    let map = PresenceMap::read(&memory, NAVY).unwrap();
+    let mut batched = [None; 3];
+    assert_eq!(
+        map.presences_batch(&memory, &[first, second, absent], &mut batched),
+        Ok(())
+    );
+    assert_eq!(
+        batched,
+        [
+            Some(Presence {
+                positive: 1,
+                total: 2,
+            }),
+            Some(Presence {
+                positive: 2,
+                total: 3,
+            }),
+            None,
+        ]
     );
     let mut long = presence_map(&[(slot, first, 1, RING, 1_000, 0, 999)]);
     for index in 0..999 {

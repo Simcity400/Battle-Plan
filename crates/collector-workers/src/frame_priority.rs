@@ -3,7 +3,7 @@ use std::{
     os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
         OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -12,9 +12,9 @@ use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW,
     GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetWaitableTimer,
-    THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
-    THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION, THREAD_SET_LIMITED_INFORMATION,
-    TIMER_ALL_ACCESS, WaitForMultipleObjects,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_LOWEST,
+    THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION,
+    THREAD_SET_LIMITED_INFORMATION, TIMER_ALL_ACCESS, WaitForMultipleObjects,
 };
 
 #[derive(Clone, Copy)]
@@ -65,8 +65,9 @@ fn level(free: usize) -> u32 {
 fn priority(level: u32) -> i32 {
     match level {
         TICK | TICK_DECODE => THREAD_PRIORITY_LOWEST,
-        TICK_PRESSED | 1 => THREAD_PRIORITY_NORMAL,
-        2 => THREAD_PRIORITY_HIGHEST,
+        1 => THREAD_PRIORITY_BELOW_NORMAL,
+        TICK_PRESSED => THREAD_PRIORITY_NORMAL,
+        2 => THREAD_PRIORITY_ABOVE_NORMAL,
         _ => THREAD_PRIORITY_LOWEST,
     }
 }
@@ -129,17 +130,47 @@ impl Budget {
 struct Target {
     handle: OwnedHandle,
     applied: AtomicU32,
+    applied_priority: AtomicI32,
     confined: AtomicBool,
     selected: AtomicU32,
+    applied_sets_ptr: AtomicUsize,
+    applied_sets_len: AtomicUsize,
 }
 impl Target {
     fn new(handle: OwnedHandle) -> Self {
         Self {
             handle,
             applied: AtomicU32::new(0),
+            applied_priority: AtomicI32::new(i32::MIN),
             confined: AtomicBool::new(false),
             selected: AtomicU32::new(0),
+            applied_sets_ptr: AtomicUsize::new(0),
+            applied_sets_len: AtomicUsize::new(0),
         }
+    }
+
+    fn same_sets(&self, sets: &'static [u32]) -> bool {
+        let ptr = self.applied_sets_ptr.load(Ordering::Relaxed);
+        let len = self.applied_sets_len.load(Ordering::Relaxed);
+        if ptr == 0 || len != sets.len() {
+            return false;
+        }
+        if ptr == sets.as_ptr() as usize {
+            return true;
+        }
+        // SAFETY: `applied_sets_ptr` and `applied_sets_len` only ever record `&'static [u32]` slices from `cpu_sets`.
+        unsafe { std::slice::from_raw_parts(ptr as *const u32, len) == sets }
+    }
+
+    fn record_sets(&self, sets: &'static [u32]) {
+        self.applied_sets_ptr
+            .store(sets.as_ptr() as usize, Ordering::Relaxed);
+        self.applied_sets_len.store(sets.len(), Ordering::Relaxed);
+    }
+
+    fn clear_sets(&self) {
+        self.applied_sets_ptr.store(0, Ordering::Relaxed);
+        self.applied_sets_len.store(0, Ordering::Relaxed);
     }
 }
 
@@ -243,7 +274,7 @@ impl Pipeline {
         self.refresh();
     }
     fn desired_away(&self, value: u32) -> u32 {
-        if self.stopping.load(Ordering::Acquire) || value == 2 {
+        if self.stopping.load(Ordering::Acquire) {
             return 0;
         }
         let word = self.applying.load(Ordering::SeqCst);
@@ -255,7 +286,7 @@ impl Pipeline {
         if word == 0 || word == NO_PROCESSOR {
             return 0;
         }
-        let narrow = value == 0 || value == TICK || value == TICK_DECODE;
+        let narrow = value == 0 || value == 1 || value == TICK || value == TICK_DECODE;
         (word << 1) | u32::from(narrow)
     }
     pub fn callback(&self) -> Callback<'_> {
@@ -406,8 +437,19 @@ impl Drop for Callback<'_> {
 }
 fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     let handle = target.handle.as_raw_handle();
-    // SAFETY: the reconciler alone writes these retained collector-owned handles.
-    let mut applied = unsafe { SetThreadPriority(handle, priority(value)) != 0 };
+    let wanted_priority = priority(value);
+    let mut applied = if target.applied_priority.load(Ordering::Relaxed) == wanted_priority {
+        true
+    } else {
+        // SAFETY: the reconciler alone writes these retained collector-owned handles.
+        let ok = unsafe { SetThreadPriority(handle, wanted_priority) != 0 };
+        if ok {
+            target
+                .applied_priority
+                .store(wanted_priority, Ordering::Relaxed);
+        }
+        ok
+    };
     let away = pipeline.desired_away(value);
     if away != target.selected.load(Ordering::SeqCst) {
         let processor = away >> 1;
@@ -421,19 +463,25 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
                 }
             })
             .flatten();
-        if sets.is_some() {
-            // SAFETY: The reconciler owns these retained collector worker handles and applies session policy.
-            let selected = unsafe { select(target.handle.as_handle(), sets) };
-            if selected {
-                target.confined.store(true, Ordering::SeqCst);
+        if let Some(sets) = sets {
+            if target.confined.load(Ordering::SeqCst) && target.same_sets(sets) {
                 target.selected.store(away, Ordering::SeqCst);
+            } else {
+                // SAFETY: The reconciler owns these retained collector worker handles and applies session policy.
+                let selected = unsafe { select(target.handle.as_handle(), Some(sets)) };
+                if selected {
+                    target.confined.store(true, Ordering::SeqCst);
+                    target.record_sets(sets);
+                    target.selected.store(away, Ordering::SeqCst);
+                }
+                applied &= selected;
             }
-            applied &= selected;
         } else if target.confined.load(Ordering::SeqCst) {
             // SAFETY: The reconciler owns these retained collector worker handles and clears session affinity.
             let cleared = unsafe { select(target.handle.as_handle(), None) };
             if cleared {
                 target.confined.store(false, Ordering::SeqCst);
+                target.clear_sets();
                 target.selected.store(0, Ordering::SeqCst);
             }
             applied &= cleared;

@@ -2981,5 +2981,55 @@ mod carry_cost_bench {
         }
     }
 
+    #[test]
+    fn revalidating_empty_modifier_ship_after_populated_ship_leaves_does_not_panic() {
+        let mut world = World::new(1);
+        let watches = Watches::enabled(4 * world.census.len());
+        let table = fleet::LOW + world.memory.low.len();
+        world.memory.low.resize(world.memory.low.len() + 0x20000, 0);
+        let ship0 = fleet::ship(0);
+        let entry = ship0 + 0xb00;
+        let at = ship0 + 0x750 - fleet::LOW;
+        world.memory.low[at..at + 8].copy_from_slice(&(entry as u64).to_le_bytes());
+        world.memory.low[at + 8..at + 12].copy_from_slice(&1_u32.to_le_bytes());
+        world.memory.low[at + 12..at + 16].copy_from_slice(&1_u32.to_le_bytes());
+        let at = entry - fleet::LOW;
+        world.memory.low[at..at + 4]
+            .copy_from_slice(&engine_executable::modifier_keys::NAVY_ORG.to_le_bytes());
+        world.memory.low[at + 8..at + 16].copy_from_slice(&100_000_i64.to_le_bytes());
+        let memory = MetadataMemory {
+            inner: &world.memory,
+            table,
+            fault: None,
+        };
+        let seed_range = |capture: &mut Captured, range: std::ops::Range<usize>| {
+            capture.begin_sources();
+            for index in range.clone() {
+                capture.visit_source(fleet::ship(index), &world.census[index]);
+            }
+            capture.finish_sources(Outcome::Rows { len: range.len() });
+        };
+        let mut held = capture(world.census.len());
+        seed_range(&mut held, 0..2);
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(held.outcomes(), [Outcome::Rows { len: 2 }]);
+        assert!(!held.store.accumulators.is_empty());
+
+        seed_range(&mut held, 1..2);
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(held.outcomes(), [Outcome::Rows { len: 1 }]);
+        assert!(held.store.accumulators.is_empty());
+        assert!(held.store.accumulator((0x1000, 1, 0)).is_empty());
+
+        drop(watches.notify(fleet::ship(1), 0));
+        seed_range(&mut held, 1..2);
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(held.outcomes(), [Outcome::Rows { len: 1 }]);
+        let mut direct = capture(world.census.len());
+        seed_range(&mut direct, 1..2);
+        direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(held.rows.rows[..1], direct.rows.rows[..1]);
+    }
+
 }
 

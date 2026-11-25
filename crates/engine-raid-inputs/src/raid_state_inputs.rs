@@ -1626,6 +1626,41 @@ fn walk_inner(
         }
     }
 
+    let mut resource_key_slots = [[0_usize; 3]; 16];
+    let mut resource_key_slots_vec = Vec::new();
+    let use_stack_slots = resources <= resource_key_slots.len();
+    if use_stack_slots {
+        for (slot, triple) in resource_key_slots[..resources]
+            .iter_mut()
+            .zip(resource_keys)
+        {
+            *slot = [
+                keys.binary_search(&triple[0]).expect("collected key"),
+                keys.binary_search(&triple[1]).expect("collected key"),
+                keys.binary_search(&triple[2]).expect("collected key"),
+            ];
+        }
+    } else {
+        grow(&mut resource_key_slots_vec, resources)?;
+        for (slot, triple) in resource_key_slots_vec[..resources]
+            .iter_mut()
+            .zip(resource_keys)
+        {
+            *slot = [
+                keys.binary_search(&triple[0]).expect("collected key"),
+                keys.binary_search(&triple[1]).expect("collected key"),
+                keys.binary_search(&triple[2]).expect("collected key"),
+            ];
+        }
+    }
+    let resource_key_slots = if use_stack_slots {
+        &resource_key_slots[..resources]
+    } else {
+        &resource_key_slots_vec[..resources]
+    };
+    let global_factor_slot = keys.binary_search(&GLOBAL_FACTOR_KEY).expect("collected key");
+    let infrastructure_slot = keys.binary_search(&INFRASTRUCTURE_KEY).expect("collected key");
+    let recruitment_slots = RECRUITMENT_KEYS.map(|key| keys.binary_search(&key).expect("collected key"));
     let pool_len = (resources + 1) * cstrategic_resource_pool::VALUE_STRIDE;
     let pool_fields = [field(0, 0, pool_len)];
     let pool_layout =
@@ -1722,21 +1757,24 @@ fn walk_inner(
         let mut probes = 0;
         for (row, &member) in members.iter().enumerate() {
             let state = &states[member];
-            if !(state.origin && state.level.is_some()) {
+            if state.controller as i32 <= 0
+                || !(*recruitment_enabled || (state.origin && state.level.is_some()))
+            {
                 continue;
             }
-            buckets[probes] = first_bucket(state, &countries)?;
-            probed[row] = probes;
-            probes += 1;
+            if let Ok(bucket) = first_bucket(state) {
+                buckets[probes] = bucket;
+                probed[row] = probes;
+                probes += 1;
+            }
         }
         let mut distances = [0_u8; BATCH * 8];
-        records(
-            memory,
-            &buckets[..probes],
-            &BUCKET_LAYOUT,
-            &mut distances,
-            "state movement input unreadable",
-        )?;
+        let probed_ok = probes == 0
+            || memory.copy_records(
+                RecordSources::Pointers(&buckets[..probes]),
+                &BUCKET_LAYOUT,
+                &mut distances[..probes * 8],
+            ) == probes;
         let mut pool_at = 0;
         let mut accumulator_at = 0;
         let mut container_at = 0;
@@ -1752,10 +1790,10 @@ fn walk_inner(
             container_at += container_len;
             let values = &mut values[..keys.len()];
             scan_accumulator(entries, keys, values)?;
-            let value = |key: u32| -> Result<i64, &'static str> {
-                let found = values[keys.binary_search(&key).expect("collected key")];
+            let value_at = |key_slot: usize| -> Result<i64, &'static str> {
+                let found = values[key_slot];
                 if found.present {
-                    effective_memo(memory, base, key, found.raw, memo)
+                    effective_memo(memory, base, keys[key_slot], found.raw, memo)
                 } else {
                     Ok(0)
                 }
@@ -1763,7 +1801,9 @@ fn walk_inner(
             let first_row = totals.lens[1];
             grow(resource_rows, first_row + resources)?;
             let mut rows = 0;
-            for (slot, (descriptor, triple)) in descriptors.iter().zip(resource_keys).enumerate() {
+            for (slot, (descriptor, key_slots)) in
+                descriptors.iter().zip(resource_key_slots).enumerate()
+            {
                 let at = (slot + 1) * cstrategic_resource_pool::VALUE_STRIDE;
                 let row = ResourceRow {
                     state: state.id,
@@ -1772,9 +1812,9 @@ fn walk_inner(
                         pool[at..at + 12].try_into().unwrap(),
                         descriptor.token,
                     )?,
-                    additive: value(triple[0])?,
-                    factor: value(triple[1])?,
-                    cost: value(triple[2])?,
+                    additive: value_at(key_slots[0])?,
+                    factor: value_at(key_slots[1])?,
+                    cost: value_at(key_slots[2])?,
                 };
                 if row.pool != 0 || row.additive != 0 || row.factor != 0 || row.cost != 0 {
                     if let Some(slot) = resource_rows.get_mut(first_row + rows) {
@@ -1793,7 +1833,7 @@ fn walk_inner(
             let accumulator = address(state.pointer, cstate::BASE_MODIFIERS)?;
             let selected = if state.controller as i32 <= 0
                 || !(*recruitment_enabled || state.origin && state.level.is_some())
-                || (state.origin && state.level.is_some() && distances[probed[row] * 8] == 0)
+                || (probed_ok && probed[row] != usize::MAX && distances[probed[row] * 8] == 0)
             {
                 Ok(accumulator)
             } else {
@@ -1804,14 +1844,20 @@ fn walk_inner(
                     state.fields[STATE_HASH..STATE_HASH + 17]
                         .try_into()
                         .unwrap(),
-                    |raw| canonical(&countries, raw),
+                    |raw| {
+                        if raw == state.controller {
+                            Ok(state.slot)
+                        } else {
+                            canonical(&countries, raw)
+                        }
+                    },
                 )
             };
             let mut infrastructure_modifier = 0;
             if state.origin && state.level.is_some() {
                 let selected = selected?;
                 infrastructure_modifier = if selected == accumulator {
-                    value(INFRASTRUCTURE_KEY)?
+                    value_at(infrastructure_slot)?
                 } else {
                     modifier_accumulator::lookup_effective_at(
                         memory,
@@ -1829,8 +1875,8 @@ fn walk_inner(
                 let selected = selected?;
                 let mut result = [0_i64; 4];
                 if selected == accumulator {
-                    for (out, key) in result.iter_mut().zip(RECRUITMENT_KEYS) {
-                        *out = value(key)?;
+                    for (out, key_slot) in result.iter_mut().zip(recruitment_slots) {
+                        *out = value_at(key_slot)?;
                     }
                 } else {
                     let mut values = [Value::default(); 4];
@@ -1898,7 +1944,7 @@ fn walk_inner(
             inputs[totals.lens[0]] = InputRow {
                 state: state.id,
                 gate: state.fields[STATE_GATE],
-                global_factor: value(GLOBAL_FACTOR_KEY)?,
+                global_factor: value_at(global_factor_slot)?,
                 origin: u8::from(state.origin),
                 infrastructure_level: state.level.filter(|_| state.origin),
                 infrastructure_modifier,
@@ -1921,18 +1967,19 @@ fn non_null(bytes: &[u8], addresses: &mut [usize]) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn first_bucket<M: Memory>(
-    state: &Scratch,
-    countries: &ccountry::Reader<'_, M>,
-) -> Result<usize, &'static str> {
+fn first_bucket(state: &Scratch) -> Result<usize, &'static str> {
     let header = &state.fields[STATE_HASH..STATE_HASH + 17];
     let data = u64_at(header, 0) as usize;
     let mask = u32_at(header, 12);
-    mask.checked_add(1)
+    let buckets = mask
+        .checked_add(1)
         .filter(|count| count.is_power_of_two() && *count <= i32::MAX as u32)
         .ok_or("state movement hash mask invalid")?;
-    let index = canonical(countries, state.controller)? & mask;
-    if data == 0 {
+    let sentinel = buckets
+        .checked_add(u32::from(header[16]))
+        .ok_or("state movement hash extent invalid")?;
+    let index = state.slot & mask;
+    if data == 0 || index >= sentinel {
         return Err("state movement hash probe outside allocation");
     }
     data.checked_add(index as usize * cstate::COUNTRY_MODIFIER_STRIDE)

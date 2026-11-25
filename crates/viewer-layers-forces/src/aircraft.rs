@@ -60,6 +60,8 @@ pub const TABLES: &[TableId] = &[
     TableId::CountryAppearance,
     TableId::LexicalTokens,
     TableId::ScriptVariables,
+    TableId::ScriptVariableNames,
+    TableId::ScriptVariableValues,
     TableId::Characters,
     TableId::CountryCounterInputs,
     TableId::GlobalSavedEventTargets,

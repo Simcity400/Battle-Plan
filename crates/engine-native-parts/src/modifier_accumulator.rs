@@ -414,6 +414,20 @@ pub fn lookup_many_at(
     lookup_many_at_keeping(memory, address, sorted_keys, output, &mut |_| {})
 }
 
+pub fn lookup_many_in(
+    memory: &impl Memory,
+    array: Array,
+    sorted_keys: &[u32],
+    output: &mut [Value],
+) -> Result<(), &'static str> {
+    validate_keys(sorted_keys, output.len())?;
+    output.fill(Value::default());
+    if sorted_keys.is_empty() {
+        return Ok(());
+    }
+    scan_many_keeping(memory, array, sorted_keys, output, &mut |_| {})
+}
+
 pub fn lookup_many_at_keeping(
     memory: &impl Memory,
     address: usize,
@@ -430,6 +444,16 @@ pub fn lookup_many_at_keeping(
         .ok_or("modifier accumulator header unreadable or invalid")?;
     let array = Array::from_header(header, modifier_entry::STRIDE)
         .ok_or("modifier accumulator header unreadable or invalid")?;
+    scan_many_keeping(memory, array, sorted_keys, output, keep)
+}
+
+fn scan_many_keeping(
+    memory: &impl Memory,
+    array: Array,
+    sorted_keys: &[u32],
+    output: &mut [Value],
+    keep: &mut impl FnMut(&[u8]),
+) -> Result<(), &'static str> {
     let mut previous_key = 0;
     let mut wanted = 0;
     let mut bytes = [0; SNAPSHOT_BATCH * modifier_entry::STRIDE];

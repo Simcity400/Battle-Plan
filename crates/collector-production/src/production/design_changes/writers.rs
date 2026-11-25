@@ -253,7 +253,7 @@ impl Flight {
         let mut conflicted = false;
         let mut dependency = false;
         for (pointer, footprint) in pointers.into_iter().flatten() {
-            let Some(mut claim) = state.claims.remove(&pointer) else {
+            let Some(claim) = state.claims.get_mut(&pointer) else {
                 conflicted = true;
                 dependency = true;
                 unobserved!();
@@ -270,8 +270,8 @@ impl Flight {
             claim.identities -= usize::from(footprint == Footprint::Identity);
             claim.ancestry -= usize::from(footprint == Footprint::Ancestry);
             claim.lifetime -= usize::from(footprint == Footprint::Lifetime);
-            if claim.count != 0 {
-                state.claims.insert(pointer, claim);
+            if claim.count == 0 {
+                state.claims.remove(&pointer);
             }
             state.ancestry -= usize::from(footprint == Footprint::Ancestry);
             state.lifetime -= usize::from(footprint == Footprint::Lifetime);

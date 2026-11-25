@@ -29,6 +29,8 @@ pub const TABLES: &[TableId] = &[
     TableId::FactionMembers,
     TableId::LexicalTokens,
     TableId::ScriptVariables,
+    TableId::ScriptVariableNames,
+    TableId::ScriptVariableValues,
     TableId::SimulationFeatures,
     TableId::Provinces,
     TableId::States,

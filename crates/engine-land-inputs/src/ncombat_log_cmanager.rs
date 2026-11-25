@@ -111,7 +111,7 @@ struct Vtables {
     variant: usize,
 }
 
-const SMALL_MEMO_SLOTS: usize = 256;
+const SMALL_MEMO_SLOTS: usize = 1024;
 
 struct SmallVariantMemo {
     pointers: [usize; SMALL_MEMO_SLOTS],
@@ -194,8 +194,109 @@ impl Memo<'_> {
     }
 }
 
+enum RowSink<'a> {
+    Buffer(Buffer<'a, Row>),
+    Spillable {
+        inline: &'a mut [Row],
+        overflow: &'a mut Vec<Row>,
+        spilled: bool,
+        overflow_failed: bool,
+    },
+}
+
+impl RowSink<'_> {
+    fn capacity(&self) -> usize {
+        match self {
+            Self::Buffer(buffer) => buffer.len(),
+            Self::Spillable {
+                inline,
+                overflow,
+                spilled,
+                ..
+            } => {
+                if *spilled {
+                    overflow.len()
+                } else {
+                    inline.len()
+                }
+            }
+        }
+    }
+
+    fn ensure(&mut self, len: usize, required: usize) -> Result<bool, &'static str> {
+        match self {
+            Self::Buffer(buffer) => buffer.ensure(required),
+            Self::Spillable {
+                inline,
+                overflow,
+                spilled,
+                overflow_failed,
+            } => {
+                if !*spilled {
+                    if required <= inline.len() {
+                        return Ok(true);
+                    }
+                    if *overflow_failed {
+                        return Ok(false);
+                    }
+                    let target = inline.len().saturating_mul(2).max(required);
+                    if crate::allocation::advisory(|| {
+                        crate::allocation::resize_default(overflow, target)
+                    })
+                    .is_err()
+                    {
+                        *overflow_failed = true;
+                        return Ok(false);
+                    }
+                    overflow[..len].copy_from_slice(&inline[..len]);
+                    *spilled = true;
+                    return Ok(true);
+                }
+                if required <= overflow.len() {
+                    return Ok(true);
+                }
+                if *overflow_failed {
+                    return Ok(false);
+                }
+                let target = overflow.len().saturating_mul(2).max(required);
+                if crate::allocation::advisory(|| {
+                    crate::allocation::resize_default(overflow, target)
+                })
+                .is_err()
+                {
+                    *overflow_failed = true;
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    fn slice_mut(&mut self) -> &mut [Row] {
+        match self {
+            Self::Buffer(buffer) => buffer,
+            Self::Spillable {
+                inline,
+                overflow,
+                spilled,
+                ..
+            } => {
+                if *spilled {
+                    overflow.as_mut_slice()
+                } else {
+                    inline
+                }
+            }
+        }
+    }
+
+    fn is_spilled(&self) -> bool {
+        matches!(self, Self::Spillable { spilled: true, .. })
+    }
+}
+
 struct Output<'a> {
-    rows: Buffer<'a, Row>,
+    rows: RowSink<'a>,
     len: usize,
     unread_rows: u32,
     memo: Memo<'a>,
@@ -399,7 +500,7 @@ fn walk_prepared_buffer<T>(
         memo.clear();
     }
     let mut output = Output {
-        rows,
+        rows: RowSink::Buffer(rows),
         len: 0,
         unread_rows: 0,
         memo: match memo {
@@ -725,8 +826,10 @@ fn read_pool(
         .len
         .checked_add(items.count as usize)
         .ok_or("combat log row demand overflow")?;
-    output.rows.ensure(required)?;
-    if output.unread_rows != 0 || items.count as usize > output.rows.len() - output.len {
+    if output.unread_rows == 0 {
+        output.rows.ensure(output.len, required)?;
+    }
+    if output.unread_rows != 0 || items.count as usize > output.rows.capacity() - output.len {
         output.unread_rows = output
             .unread_rows
             .checked_add(items.count)
@@ -786,7 +889,7 @@ fn read_pool(
             output.memo.insert(unknown[miss], id);
         }
         for (index, entry) in bytes.chunks_exact(equipment_entry::STRIDE).enumerate() {
-            output.rows[output.len] = Row {
+            output.rows.slice_mut()[output.len] = Row {
                 country: key.country,
                 group: key.group,
                 kind: key.kind,
@@ -799,7 +902,7 @@ fn read_pool(
         }
         first += count as u32;
     }
-    let written = &mut output.rows[start..output.len];
+    let written = &mut output.rows.slice_mut()[start..output.len];
     written.sort_unstable_by_key(|row| row.variant);
     if written
         .windows(2)
@@ -853,6 +956,37 @@ pub fn deleted_logs(
     manager: usize,
     rows: &mut [Row],
 ) -> Result<(u32, Outcome), &'static str> {
+    let (country, outcome, _) = deleted_logs_into(memory, base, manager, RowSink::Buffer(Buffer::Exact(rows)))?;
+    Ok((country, outcome))
+}
+
+pub fn deleted_logs_with_overflow(
+    memory: &impl Memory,
+    base: usize,
+    manager: usize,
+    inline: &mut [Row],
+    overflow: &mut Vec<Row>,
+) -> Result<(u32, Outcome, bool), &'static str> {
+    overflow.clear();
+    deleted_logs_into(
+        memory,
+        base,
+        manager,
+        RowSink::Spillable {
+            inline,
+            overflow,
+            spilled: false,
+            overflow_failed: false,
+        },
+    )
+}
+
+fn deleted_logs_into(
+    memory: &impl Memory,
+    base: usize,
+    manager: usize,
+    rows: RowSink<'_>,
+) -> Result<(u32, Outcome, bool), &'static str> {
     let relocate =
         |key: Rva| engine_sites::at(base, key).ok_or("combat log module address overflow");
     let vtables = Vtables {
@@ -874,7 +1008,7 @@ pub fn deleted_logs(
     let country = u32_at(&header, COUNTRY);
     let mut small_memo = SmallVariantMemo::default();
     let mut output = Output {
-        rows: Buffer::Exact(rows),
+        rows,
         len: 0,
         unread_rows: 0,
         memo: Memo::Stack(&mut small_memo),
@@ -982,7 +1116,7 @@ pub fn deleted_logs(
             unread_rows: output.unread_rows,
         }
     };
-    Ok((country, outcome))
+    Ok((country, outcome, output.rows.is_spilled()))
 }
 
 pub fn viewing_country(memory: &impl Memory, game_state: usize) -> Option<i32> {

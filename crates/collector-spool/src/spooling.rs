@@ -428,6 +428,8 @@ fn baseline_retention(
                 | TableId::VariantUpgrades
                 | TableId::WeatherProvinces
                 | TableId::ScriptVariables
+                | TableId::ScriptVariableNames
+                | TableId::ScriptVariableValues
                 | TableId::Provinces
                 | TableId::States
         )
@@ -438,6 +440,7 @@ fn baseline_retention(
         table,
         TableId::EventFeedHistory
             | TableId::LandCombatResults
+            | TableId::LandCombatResultObservers
             | TableId::NavalResults
             | TableId::AirLossEvents
             | TableId::BuildingBombingDamage
@@ -481,16 +484,18 @@ pub(crate) fn keep_every_table() {
     KEEP_EVERY_TABLE.with(|keep| keep.set(true));
 }
 
-const REPUBLISHING: [(&str, TableId); 9] = [
+const REPUBLISHING: [(&str, TableId); 11] = [
     ("division_templates", TableId::DivisionTemplates),
     ("division_templates", TableId::DivisionTemplateIcons),
     ("division_templates", TableId::CountryTemplateState),
     ("character_portraits", TableId::CharacterPortraits),
+    ("character_inputs", TableId::CharacterRoleTraits),
     ("hired_advisors", TableId::HiredAdvisors),
     ("hired_advisors", TableId::CountryCharacters),
     ("hired_advisors", TableId::AdvisorTokens),
     ("hired_advisors", TableId::CountryRetiredCharacters),
     ("ship_models", TableId::ShipModels),
+    ("states", TableId::StateResistance),
 ];
 
 fn character_cache(
@@ -780,6 +785,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         source: &mut FrameInput,
         selection: impl Fn(TableId) -> Option<&'a collector_certificates::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
+        carried_owner: impl Fn(TableId, u32) -> bool,
     ) -> io::Result<(bool, u32)> {
         self.settle_failed_slices();
         if self.sliced_branch != Some(source.branch) {
@@ -848,10 +854,11 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                             .untracked_slice_token(table, source.branch, hour, force),
                     ) {
                         let fresh_owners = replay_data::sliced::try_owners(&fresh)?;
-                        match replay_data::sliced::SliceUpdate::for_owners(
+                        match replay_data::sliced::SliceUpdate::for_owners_and_carried(
                             previous_owners,
                             fresh,
                             captured,
+                            |owner| carried_owner(table, owner),
                             live,
                         ) {
                             Ok((update, next_owners)) => {
@@ -1100,7 +1107,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         selection: impl Fn(TableId) -> Option<&'a collector_certificates::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
     ) -> (bool, u32) {
-        self.try_merge_sliced_inputs(source, selection, walked)
+        self.try_merge_sliced_inputs(source, selection, walked, |_, _| false)
             .unwrap()
     }
 
@@ -1672,7 +1679,9 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
             .encoder
             .commit_retiring_mode(prepared, |table| baseline_retention(table, live_columnar))?;
         self.adopt_slices(released);
-        self.retired.push(retired);
+        if !retired.is_empty() {
+            self.retired.push(retired);
+        }
         Ok(())
     }
 
@@ -2731,20 +2740,57 @@ impl<S: Schedule> Processor<S> {
                 (qpc, clock.hour, clock.play_session_started_at),
             );
         }
-        let variables_baseline = campaign
-            .encoder
-            .slice_baseline(
-                TableId::ScriptVariables,
-                branch,
-                clock.hour,
-                !campaign.spool.is_open(),
-            )
-            .and_then(|(token, rows)| Some((token, rows.rows::<tables::ScriptVariables>()?)));
+        let force = !campaign.spool.is_open();
+        let variables_baseline = collector_intel::intel::VariableBaselines {
+            scopes: campaign
+                .encoder
+                .slice_baseline(TableId::ScriptVariables, branch, clock.hour, force)
+                .and_then(|(token, rows)| Some((token, rows.rows::<tables::ScriptVariables>()?))),
+            names: campaign
+                .encoder
+                .slice_baseline(TableId::ScriptVariableNames, branch, clock.hour, force)
+                .and_then(|(token, rows)| {
+                    Some((token, rows.rows::<tables::ScriptVariableNames>()?))
+                }),
+            values: campaign
+                .encoder
+                .slice_baseline(TableId::ScriptVariableValues, branch, clock.hour, force)
+                .and_then(|(token, rows)| {
+                    Some((token, rows.rows::<tables::ScriptVariableValues>()?))
+                }),
+        };
         if captured.force_full {
             for (_, table) in REPUBLISHING {
                 campaign.projection_scratch.forget(table);
             }
         }
+        let sliced_skip = {
+            let can_skip_carried = |table: TableId| {
+                campaign.owner_sliced(table)
+                    && campaign.sliced_branch == Some(branch)
+                    && campaign.sliced_cache.get(&table).is_none()
+                    && campaign.sliced_owners[table.index()].is_some()
+                    && campaign.columnar.has_complete(table, branch, clock.hour)
+                    && captured
+                        .extended
+                        .slice_selection(table)
+                        .is_some_and(|selection| !selection.force_full)
+                    && campaign
+                        .encoder
+                        .untracked_slice_token(table, branch, clock.hour, force)
+                        .is_some()
+            };
+            let has_research_carried = captured.extended.research_carried_owners().is_some();
+            let has_technology_carried = captured.extended.technology_carried_owners().is_some();
+            collector_projection::projection::SlicedSkip {
+                research_bonuses_carried: has_research_carried
+                    && can_skip_carried(TableId::ResearchAppliedBonuses),
+                research_modifiers_carried: has_research_carried
+                    && can_skip_carried(TableId::ResearchModifiers),
+                technologies_carried: has_technology_carried
+                    && can_skip_carried(TableId::ResearchTechnologies),
+            }
+        };
         let mut characters = CharacterConversion::new(
             branch,
             &mut campaign.character_shadow,
@@ -2759,9 +2805,10 @@ impl<S: Schedule> Processor<S> {
             &campaign.encoder,
             branch,
             clock.hour,
-            !campaign.spool.is_open(),
+            force,
             &campaign.projection_scratch,
-        );
+        )
+        .with_sliced_skip(sliced_skip);
         span.finish();
         let (mut source, mut costs) = decoded_with_costs(
             captured,
@@ -2795,6 +2842,30 @@ impl<S: Schedule> Processor<S> {
                     outcomes[table.index()],
                     Outcome::Rows { .. } | Outcome::Truncated { .. }
                 )
+            },
+            |table, owner| match table {
+                TableId::ResearchAppliedBonuses => {
+                    sliced_skip.research_bonuses_carried
+                        && captured
+                            .extended
+                            .research_carried_owners()
+                            .is_some_and(|owners| owners.binary_search(&owner).is_ok())
+                }
+                TableId::ResearchModifiers => {
+                    sliced_skip.research_modifiers_carried
+                        && captured
+                            .extended
+                            .research_carried_owners()
+                            .is_some_and(|owners| owners.binary_search(&owner).is_ok())
+                }
+                TableId::ResearchTechnologies => {
+                    sliced_skip.technologies_carried
+                        && captured
+                            .extended
+                            .technology_carried_owners()
+                            .is_some_and(|owners| owners.binary_search(&owner).is_ok())
+                }
+                _ => false,
             },
         )?;
         campaign.assemble_line_output(&mut source, captured);
@@ -4239,7 +4310,7 @@ fn decoded(
             clock.borrowed(),
             branch,
             &mut SpoolConversion {
-                variables_baseline: None,
+                variables_baseline: Default::default(),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -4635,7 +4706,7 @@ fn convert_with_helper(
     });
     let mut spare_scratch = ScriptVariableComparison::default();
     let mut conversion = SpoolConversion {
-        variables_baseline: None,
+        variables_baseline: Default::default(),
         variables_scratch: &mut spare_scratch,
         characters: None,
         lexical: lexical.as_deref_mut(),
@@ -4996,9 +5067,11 @@ mod tests {
         encoder
             .encode(staggered_frame(1, 10, false), false)
             .unwrap();
-        let baseline = encoder
-            .comparison_baseline::<tables::ScriptVariables>(1, 11, false)
-            .unwrap();
+        let baseline = collector_intel::intel::VariableBaselines {
+            scopes: encoder.comparison_baseline::<tables::ScriptVariables>(1, 11, false),
+            names: encoder.comparison_baseline::<tables::ScriptVariableNames>(1, 11, false),
+            values: encoder.comparison_baseline::<tables::ScriptVariableValues>(1, 11, false),
+        };
         let mut capture = captured(11);
         capture.clock = None;
         let (input, _) = decoded_with_costs(
@@ -5006,7 +5079,7 @@ mod tests {
             clock(11).borrowed(),
             1,
             &mut SpoolConversion {
-                variables_baseline: Some(baseline),
+                variables_baseline: baseline,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -9235,7 +9308,7 @@ mod tests {
             clock(1).borrowed(),
             branch,
             &mut SpoolConversion {
-                variables_baseline: None,
+                variables_baseline: Default::default(),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: Some(&mut reuse),
@@ -9286,7 +9359,7 @@ mod tests {
     ) -> FrameInput {
         let native = collector_intel::intel::intel_shadow_fixture(value);
         let inputs = native.table_inputs(
-            None,
+            Default::default(),
             &mut ScriptVariableComparison::default(),
             Some(&mut IntelConversion::new(
                 branch,
@@ -9414,7 +9487,7 @@ mod tests {
             clock(0).borrowed(),
             1,
             &mut SpoolConversion {
-                variables_baseline: None,
+                variables_baseline: Default::default(),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -9477,7 +9550,7 @@ mod tests {
                             clock(1).borrowed(),
                             branch,
                             &mut SpoolConversion {
-                                variables_baseline: None,
+                                variables_baseline: Default::default(),
                                 variables_scratch: &mut ScriptVariableComparison::default(),
                                 characters: Some(&mut reuse),
                                 lexical: None,
@@ -10383,6 +10456,212 @@ mod tests {
         campaign
             .write(hour9, 1009, Some(1), 0, &mut WorkSample::default())
             .unwrap();
+        campaign.columnar.finish();
+    }
+
+    #[test]
+    fn sparse_carried_research_updates_preserve_columnar_rows_and_slice_reads() {
+        use collector_certificates::slicing::SliceSelection;
+        use replay_data::rows::{ResearchAppliedBonusRow, ResearchTechnologyRow, RowCodec};
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TempDir(std::env::temp_dir().join(format!(
+            "battleplan-sparse-research-{}",
+            std::process::id()
+        )));
+        let _ = fs::remove_dir_all(&dir.0);
+        fs::create_dir_all(&dir.0).unwrap();
+        let journal_thread = crate::columnar::JournalThread::start().unwrap();
+        let (mut campaign, _) = campaign();
+        campaign.columnar =
+            crate::columnar::Columnar::open(&dir.0, "sparse-research", &session(), &journal_thread);
+
+        let tech = |country, database_index, progress_raw| ResearchTechnologyRow {
+            country,
+            database_index,
+            progress_raw,
+            ..Default::default()
+        };
+        let bonus = |country, index, speed_bonus_raw| ResearchAppliedBonusRow {
+            country,
+            index,
+            speed_bonus_raw,
+            ..Default::default()
+        };
+        let frame_for = |branch, hour, technologies: TableInput, bonuses: TableInput| {
+            let mut frame: FrameInput = staggered_frame(branch, hour, false).into();
+            frame.tables[TableId::ResearchTechnologies.index()] = technologies;
+            frame.tables[TableId::ResearchAppliedBonuses.index()] = bonuses;
+            frame
+        };
+
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut hour0 = frame_for(
+            branch,
+            0,
+            TableView::Complete(TableRows::ResearchTechnologies(vec![
+                tech(1, 10, 100),
+                tech(1, 20, 200),
+                tech(2, 10, 300),
+                tech(2, 30, 400),
+                tech(3, 10, 500),
+            ]))
+            .into(),
+            TableView::Complete(TableRows::ResearchAppliedBonuses(vec![
+                bonus(1, 0, 50),
+                bonus(2, 0, 75),
+                bonus(3, 0, 80),
+            ]))
+            .into(),
+        );
+        let full = SliceSelection::for_test(0, true, &[1, 2, 3]).with_census(&[1, 2, 3]);
+        let (retry, unpub) = campaign
+            .try_merge_sliced_inputs(
+                &mut hour0,
+                |table| {
+                    matches!(
+                        table,
+                        TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
+                    )
+                    .then_some(&full)
+                },
+                |_| true,
+                |_, _| false,
+            )
+            .unwrap();
+        assert!(!retry && unpub == 0);
+        campaign
+            .write(hour0, 1000, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 1, Some(1)).unwrap();
+        let changed = tech(1, 20, 250);
+        let mut hour1 = frame_for(
+            branch,
+            1,
+            TableView::Complete(TableRows::ResearchTechnologies(vec![
+                changed.clone(),
+                tech(2, 10, 350),
+                tech(2, 40, 450),
+            ]))
+            .into(),
+            TableView::Complete(TableRows::ResearchAppliedBonuses(vec![bonus(2, 0, 90)])).into(),
+        );
+        let mixed_selection = SliceSelection::for_test(1, false, &[1, 2]).with_census(&[1, 2]);
+        let (retry, unpub) = campaign
+            .try_merge_sliced_inputs(
+                &mut hour1,
+                |table| {
+                    matches!(
+                        table,
+                        TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
+                    )
+                    .then_some(&mixed_selection)
+                },
+                |_| true,
+                |table, owner| {
+                    matches!(
+                        table,
+                        TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
+                    ) && owner == 1
+                },
+            )
+            .unwrap();
+        assert!(!retry && unpub == 0);
+        assert!(matches!(
+            &hour1.tables[TableId::ResearchTechnologies.index()],
+            TableInput::SliceUpdate { update, .. }
+                if update.owners == vec![2, 3] && update.keys == vec![changed.key()]
+        ));
+        assert_eq!(
+            campaign.sliced_reads.0[TableId::ResearchTechnologies.index()],
+            vec![(1, 1), (2, 1)]
+        );
+        assert_eq!(
+            campaign.sliced_reads.0[TableId::ResearchAppliedBonuses.index()],
+            vec![(1, 1), (2, 1)]
+        );
+        campaign
+            .write(hour1, 1001, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        assert_eq!(
+            campaign
+                .columnar
+                .materialize_complete(TableId::ResearchTechnologies, branch)
+                .unwrap()
+                .unwrap(),
+            TableRows::ResearchTechnologies(vec![
+                tech(1, 10, 100),
+                changed,
+                tech(2, 10, 350),
+                tech(2, 40, 450),
+            ])
+        );
+        assert_eq!(
+            campaign
+                .columnar
+                .materialize_complete(TableId::ResearchAppliedBonuses, branch)
+                .unwrap()
+                .unwrap(),
+            TableRows::ResearchAppliedBonuses(vec![bonus(1, 0, 50), bonus(2, 0, 90)])
+        );
+
+        let branch = campaign.observe(None, 2, Some(1)).unwrap();
+        let next_changed = tech(1, 20, 275);
+        let mut hour2 = frame_for(
+            branch,
+            2,
+            TableView::Complete(TableRows::ResearchTechnologies(vec![next_changed.clone()])).into(),
+            TableView::Complete(TableRows::ResearchAppliedBonuses(Vec::new())).into(),
+        );
+        let all_carried = SliceSelection::for_test(2, false, &[1, 2]).with_census(&[1, 2]);
+        let (retry, unpub) = campaign
+            .try_merge_sliced_inputs(
+                &mut hour2,
+                |table| {
+                    matches!(
+                        table,
+                        TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
+                    )
+                    .then_some(&all_carried)
+                },
+                |_| true,
+                |table, owner| {
+                    matches!(
+                        table,
+                        TableId::ResearchTechnologies | TableId::ResearchAppliedBonuses
+                    ) && (owner == 1 || owner == 2)
+                },
+            )
+            .unwrap();
+        assert!(!retry && unpub == 0);
+        assert!(matches!(
+            &hour2.tables[TableId::ResearchTechnologies.index()],
+            TableInput::SliceUpdate { update, .. }
+                if update.owners.is_empty() && update.keys == vec![next_changed.key()]
+        ));
+        campaign
+            .write(hour2, 1002, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        assert_eq!(
+            campaign
+                .columnar
+                .materialize_complete(TableId::ResearchTechnologies, branch)
+                .unwrap()
+                .unwrap(),
+            TableRows::ResearchTechnologies(vec![
+                tech(1, 10, 100),
+                next_changed,
+                tech(2, 10, 350),
+                tech(2, 40, 450),
+            ])
+        );
         campaign.columnar.finish();
     }
 }

@@ -209,6 +209,8 @@ pub struct Variants {
     definition_bytes: Arena<u8>,
     organisation_holds: Vec<DesignHeld>,
     organisations_complete: bool,
+    all_carried: bool,
+    unique_ids: Vec<u64>,
     organisation_bytes: usize,
     dictionary: bonus_snapshots::Snapshot,
     context: design_context::Snapshot,
@@ -236,6 +238,8 @@ impl Variants {
             definition_bytes: Arena::new(capacities.definition_bytes),
             organisation_holds: Vec::new(),
             organisations_complete: false,
+            all_carried: false,
+            unique_ids: Vec::new(),
             organisation_bytes: 0,
             daily_released: false,
             last_capacity: *capacities,
@@ -258,6 +262,8 @@ impl Variants {
             definition_bytes: Arena::new(0),
             organisation_holds: Vec::new(),
             organisations_complete: false,
+            all_carried: false,
+            unique_ids: Vec::new(),
             organisation_bytes: 0,
             daily_released: false,
             last_capacity: Capacities::default(),
@@ -296,6 +302,7 @@ impl Variants {
             + self.upgrades.allocated_bytes()
             + self.definition_bytes.allocated_bytes()
             + self.organisation_holds.capacity() * std::mem::size_of::<DesignHeld>()
+            + self.unique_ids.capacity() * std::mem::size_of::<u64>()
             + self.organisation_bytes
             + self.nested_bytes
     }
@@ -315,7 +322,9 @@ impl Variants {
         self.upgrades.release();
         self.definition_bytes.release();
         self.organisation_holds = Vec::new();
+        self.unique_ids = Vec::new();
         self.organisations_complete = false;
+        self.all_carried = false;
         self.organisation_bytes = 0;
         self.nested_bytes = 0;
         self.dictionary = None;
@@ -566,11 +575,17 @@ impl Variants {
             let prepared = qpc();
             mark(VariantPhase::Context, seeded, prepared);
             if design_changes::enabled() {
-                design_changes::prepare_partitioned(&registry[..len], self, &mut setup);
+                design_changes::prepare_partitioned_certified(
+                    &registry[..len],
+                    self,
+                    !full && self.all_carried,
+                    &mut setup,
+                );
                 self.baseline_admitted = full && design_changes::baseline_admitted();
                 self.liveness = design_changes::liveness::observation()
                     .unwrap_or_else(|_| design_changes::liveness::Observation::refused());
             }
+            prune_stat_cache(&registry[..len]);
             mark(VariantPhase::Setup, prepared, qpc());
         } else if full {
             design_changes::refuse_census();
@@ -603,13 +618,28 @@ impl Variants {
         let mut ticks = [0; N];
         let mut reads = read_accounting::table(TABLES[3]);
         let begin = qpc();
+        self.all_carried = false;
         let source = complete_source(variants.rows, variants.outcome);
+        let details = replay_data::cadence::should_walk(TableId::VariantModules, hour, force_full);
+        if details {
+            collector_observers::world_input_changes::prepare_design_mios(
+                source.map_or(0, <[_]>::len),
+                force_full,
+            );
+        }
+        let certified_quiet = (!force_full && details)
+            .then(|| design_changes::stat_timing_quiet().ok())
+            .flatten();
         let held = (!force_full)
             .then(design_changes::held::certified)
             .flatten();
         let census = (force_full && recovery_carry)
             .then(design_changes::held::census)
             .flatten();
+        let mut all_carried = !force_full
+            && held
+                .as_ref()
+                .is_some_and(|held| source.is_ok_and(|rows| held.len() == rows.len()));
         capture_text(
             &mut self.definitions,
             &mut self.definition_bytes,
@@ -627,6 +657,7 @@ impl Variants {
                             .and_then(|held| held.get(source))
                             .or_else(|| census.as_ref().and_then(|held| held.get(source)))
                         else {
+                            all_carried = false;
                             return Ok(None);
                         };
                         Ok(Some(state))
@@ -638,6 +669,7 @@ impl Variants {
         let retry = census.as_ref().is_some_and(|census| !census.is_current());
         drop(held);
         if retry {
+            all_carried = false;
             capture_text(
                 &mut self.definitions,
                 &mut self.definition_bytes,
@@ -655,8 +687,10 @@ impl Variants {
                 },
             );
         }
+        self.all_carried = all_carried
+            && source.is_ok_and(|rows| unique_source_ids(&mut self.unique_ids, rows));
         ticks[3] = elapsed(begin);
-        if !replay_data::cadence::should_walk(TableId::VariantModules, hour, force_full) {
+        if !details {
             let skipped = Outcome::Unavailable {
                 reason: replay_data::cadence::SKIPPED_REASON,
             };
@@ -670,15 +704,19 @@ impl Variants {
         capture_source(&mut self.modules, source, |source, rows| {
             equipment_module_container::walk(memory, base, source, rows)
         });
-        collector_observers::world_input_changes::prepare_design_mios(
-            source.map_or(0, <[_]>::len),
-            force_full,
-        );
-        let mut organisation_carry = DesignCarry {
-            held: &mut self.organisation_holds,
-            fresh: force_full || !self.organisations_complete,
+        let definitions_rows = match self.definitions.outcome {
+            Outcome::Rows { len } if len == source.map_or(0, <[_]>::len) => {
+                &self.definitions.rows[..len]
+            }
+            _ => &[],
         };
-        let mut stat_witness = design_changes::StatLaneWitness;
+        let mut organisation_carry = DesignCarry::new(
+            &mut self.organisation_holds,
+            definitions_rows,
+            certified_quiet,
+            force_full || !self.organisations_complete,
+        );
+        let mut stat_witness = design_changes::StatLaneWitness::default();
         capture_source(&mut self.stats, source, |source, rows| {
             cequipment_variant::walk_stats_carried(
                 memory,
@@ -689,6 +727,7 @@ impl Variants {
                 &mut stat_witness,
             )
         });
+        drop(organisation_carry);
         if let Outcome::Rows { len } = self.stats.outcome {
             self.organisation_holds.truncate(len);
         }
@@ -722,6 +761,71 @@ pub enum VariantPhase {
     Setup,
 }
 
+struct CachedStats {
+    pointer: usize,
+    design: std::sync::Arc<rows::VariantDesignState>,
+    mio_token: (u64, u64),
+    fingerprint: cequipment_variant::VariantStatFingerprint,
+    raw: [i64; cequipment_variant::STAT_LANE_COUNT],
+    readable: [bool; cequipment_variant::STAT_LANE_COUNT],
+    values: [Option<i64>; cequipment_variant::STAT_LANE_COUNT],
+    refusals: [Option<&'static str>; cequipment_variant::STAT_LANE_COUNT],
+}
+
+static STAT_CACHE: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<u64, CachedStats>>,
+> = std::sync::OnceLock::new();
+
+fn stat_cache() -> &'static std::sync::RwLock<std::collections::HashMap<u64, CachedStats>> {
+    STAT_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+pub(super) fn unique_source_ids(
+    scratch: &mut Vec<u64>,
+    sources: &[cequipment_variant::RegistryRow],
+) -> bool {
+    scratch.clear();
+    if engine_allocation::reserve(scratch, sources.len()).is_err() {
+        return false;
+    }
+    scratch.extend(sources.iter().map(|row| row.id));
+    scratch.sort_unstable();
+    !scratch.windows(2).any(|pair| pair[0] == pair[1])
+}
+
+pub(super) fn release_stat_cache() {
+    if let Some(cache) = STAT_CACHE.get() {
+        *cache
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::collections::HashMap::new();
+    }
+}
+
+fn prune_stat_cache(registry: &[cequipment_variant::RegistryRow]) {
+    let Some(cache) = STAT_CACHE.get() else {
+        return;
+    };
+    let limit = registry.len().saturating_mul(2).max(1024);
+    let over = cache
+        .read()
+        .map(|guard| guard.len() > limit)
+        .unwrap_or(false);
+    if !over {
+        return;
+    }
+    let mut live = std::collections::HashSet::new();
+    if engine_allocation::advisory(|| engine_allocation::reserve_set(&mut live, registry.len()))
+        .is_err()
+    {
+        return;
+    }
+    live.extend(registry.iter().map(|row| row.id));
+    if let Ok(mut guard) = cache.write() {
+        guard.retain(|id, _| live.contains(id));
+    }
+}
+
 #[derive(Default)]
 struct DesignHeld {
     reference: u64,
@@ -732,7 +836,56 @@ struct DesignHeld {
 }
 struct DesignCarry<'a> {
     held: &'a mut Vec<DesignHeld>,
+    definitions: &'a [cequipment_variant::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>],
+    certified_quiet: Option<cequipment_variant::QuietToken>,
     fresh: bool,
+    carried_count: u64,
+    read_count: u64,
+    stat_read: Option<std::sync::RwLockReadGuard<'static, std::collections::HashMap<u64, CachedStats>>>,
+    pending_stats: Vec<(u64, CachedStats)>,
+}
+impl<'a> DesignCarry<'a> {
+    fn new(
+        held: &'a mut Vec<DesignHeld>,
+        definitions: &'a [cequipment_variant::DefinitionRow<
+            std::sync::Arc<rows::VariantDesignState>,
+        >],
+        certified_quiet: Option<cequipment_variant::QuietToken>,
+        fresh: bool,
+    ) -> Self {
+        let stat_read = certified_quiet.and_then(|_| stat_cache().read().ok());
+        Self {
+            held,
+            definitions,
+            certified_quiet,
+            fresh,
+            carried_count: 0,
+            read_count: 0,
+            stat_read,
+            pending_stats: Vec::new(),
+        }
+    }
+}
+impl Drop for DesignCarry<'_> {
+    fn drop(&mut self) {
+        self.stat_read = None;
+        if !self.pending_stats.is_empty()
+            && let Ok(mut cache) = stat_cache().write()
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve_map(&mut cache, self.pending_stats.len())
+            })
+            .is_ok()
+        {
+            for (id, entry) in self.pending_stats.drain(..) {
+                cache.insert(id, entry);
+            }
+        }
+        collector_observers::world_input_changes::record_daily_counts(
+            collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
+            self.carried_count,
+            self.read_count,
+        );
+    }
 }
 impl cequipment_variant::OrganisationCarry for DesignCarry<'_> {
     fn fresh(
@@ -757,16 +910,92 @@ impl cequipment_variant::OrganisationCarry for DesignCarry<'_> {
     }
     fn read(&mut self, index: usize, source: &cequipment_variant::RegistryRow) {
         let held = &mut self.held[index];
-        collector_observers::world_input_changes::record_daily(
-            collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
-            !held.did_read,
-            held.did_read,
-        );
-        held.reference = source.id;
-        held.pointer = source.pointer();
-        held.token = held.observed.filter(|token| {
+        if held.did_read {
+            self.read_count += 1;
+        } else {
+            self.carried_count += 1;
+        }
+        let next_token = held.observed.filter(|token| {
             Some(*token) == collector_observers::world_input_changes::design_mio(source.pointer())
         });
+        held.reference = source.id;
+        held.pointer = source.pointer();
+        held.token = next_token;
+    }
+    fn stats_carried(
+        &mut self,
+        source_index: usize,
+        source: &cequipment_variant::RegistryRow,
+        before: cequipment_variant::QuietToken,
+        fingerprint: cequipment_variant::VariantStatFingerprint,
+        raw: &[i64; cequipment_variant::STAT_LANE_COUNT],
+        readable: &[bool; cequipment_variant::STAT_LANE_COUNT],
+    ) -> Option<cequipment_variant::CachedStatCheck> {
+        if self.certified_quiet != Some(before) {
+            return None;
+        }
+        let cached = self.stat_read.as_ref()?.get(&source.id)?;
+        if cached.pointer != source.pointer()
+            || cached.fingerprint != fingerprint
+            || cached.raw != *raw
+            || cached.readable != *readable
+        {
+            return None;
+        }
+        let def = self.definitions.get(source_index)?;
+        if def.identity.id != source.id || !std::sync::Arc::ptr_eq(&cached.design, &def.design) {
+            return None;
+        }
+        let token = collector_observers::world_input_changes::design_mio(source.pointer())?;
+        if token != cached.mio_token {
+            return None;
+        }
+        Some((cached.values, cached.refusals))
+    }
+    fn remember_stats(
+        &mut self,
+        index: usize,
+        source: &cequipment_variant::RegistryRow,
+        fingerprint: cequipment_variant::VariantStatFingerprint,
+        raw: &[i64; cequipment_variant::STAT_LANE_COUNT],
+        readable: &[bool; cequipment_variant::STAT_LANE_COUNT],
+        values: [Option<i64>; cequipment_variant::STAT_LANE_COUNT],
+        refusals: [Option<&'static str>; cequipment_variant::STAT_LANE_COUNT],
+    ) {
+        let Some(held) = self.held.get(index) else {
+            return;
+        };
+        let Some(mio_token) = held.token else {
+            return;
+        };
+        if held.reference != source.id || held.pointer != source.pointer() {
+            return;
+        }
+        let Some(def) = self
+            .definitions
+            .get(index)
+            .filter(|row| row.identity.id == source.id)
+        else {
+            return;
+        };
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.pending_stats, 1))
+            .is_err()
+        {
+            return;
+        }
+        self.pending_stats.push((
+            source.id,
+            CachedStats {
+                pointer: source.pointer(),
+                design: std::sync::Arc::clone(&def.design),
+                mio_token,
+                fingerprint,
+                raw: *raw,
+                readable: *readable,
+                values,
+                refusals,
+            },
+        ));
     }
 }
 

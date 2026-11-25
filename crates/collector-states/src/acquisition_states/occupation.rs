@@ -512,7 +512,16 @@ impl Occupation {
         collector_projection::projection::held_input::<rows::tables::StateResistance>(
             projection,
             witness,
-            |_| self.table().into(),
+            |projection| {
+                collector_projection::projection::ledger_table::<rows::tables::StateResistance, _, u64>(
+                    projection,
+                    self.outcome(),
+                    &self.rows,
+                    |row| u128::from(row.row.state),
+                    |_, row, _| Some(row.serial),
+                    |row| row.output(),
+                )
+            },
         )
     }
     pub fn outcome(&self) -> Outcome {
@@ -528,6 +537,7 @@ struct Source {
     data: Arc<Cached>,
 }
 struct CapturedRow {
+    serial: u64,
     row: rows::StateResistanceRow,
     sources: Vec<Source>,
     _charge: Charge,
@@ -539,6 +549,7 @@ impl CapturedRow {
             + row.heap_bytes()
             + sources.capacity() * size_of::<Source>();
         Self {
+            serial: collector_projection::projection::generation(),
             row,
             sources,
             _charge: Charge::new(bytes, payload),

@@ -252,8 +252,13 @@ pub struct Captured {
     effect_events: Arena<u32>,
     research_loaned: bool,
     research_selection: SliceSelection,
+    research_carried_owners: Vec<u32>,
+    research_carried_complete: bool,
     technology_selection: SliceSelection,
     technology_changed: crate::slicing::Changed,
+    technology_assigned: Vec<ctechnology::Row>,
+    technology_carried_owners: Vec<u32>,
+    technology_carried_complete: bool,
     focus_selection: SliceSelection,
     focus_changed: crate::slicing::Changed,
     daily_released: bool,
@@ -272,6 +277,8 @@ pub struct ResearchPart {
     modifiers: CaptureRows<engine_research::research_modifiers::Row>,
     selection: SliceSelection,
     changed: crate::slicing::Changed,
+    carried_owners: Vec<u32>,
+    carried_complete: bool,
 }
 
 pub const RESEARCH: [usize; 3] = [18, 19, 20];
@@ -305,6 +312,8 @@ impl ResearchPart {
         use crate::country_input_changes::{self as changes_family, Table};
         self.selection.reset(context.hour, context.force_full);
         self.changed.reset();
+        self.carried_owners.clear();
+        self.carried_complete = true;
         let enabled = RESEARCH.map(|index| {
             replay_data::cadence::should_walk(TABLES[index], context.hour, context.force_full)
         });
@@ -411,6 +420,17 @@ impl ResearchPart {
                             drift::Carried::Rows(lens) => {
                                 for (outcome, len) in outcomes.iter_mut().zip(lens) {
                                     append(outcome, Outcome::Rows { len });
+                                }
+                                if self.carried_complete {
+                                    if engine_allocation::advisory(|| {
+                                        reserve(&mut self.carried_owners, 1)
+                                    })
+                                    .is_ok()
+                                    {
+                                        self.carried_owners.push(country.id);
+                                    } else {
+                                        self.carried_complete = false;
+                                    }
                                 }
                                 carried += 1;
                                 continue;
@@ -524,6 +544,11 @@ impl ResearchPart {
         self.inputs.outcome = outcomes[0];
         self.bonuses.outcome = outcomes[1];
         self.modifiers.outcome = outcomes[2];
+        if self.carried_complete {
+            self.carried_owners.sort_unstable();
+        } else {
+            self.carried_owners.clear();
+        }
         ticks
     }
 
@@ -546,6 +571,8 @@ impl ResearchPart {
         self.bonuses.outcome = bonuses;
         self.modifiers.outcome = modifiers;
         self.selection.reset(context.hour, context.force_full);
+        self.carried_owners.clear();
+        self.carried_complete = false;
     }
 }
 
@@ -568,6 +595,8 @@ impl Captured {
             modifiers: std::mem::replace(&mut self.research_modifiers, CaptureRows::new(0)),
             selection: std::mem::replace(&mut self.research_selection, SliceSelection::new()),
             changed: crate::slicing::Changed::default(),
+            carried_owners: std::mem::take(&mut self.research_carried_owners),
+            carried_complete: std::mem::take(&mut self.research_carried_complete),
         }
     }
 
@@ -579,6 +608,18 @@ impl Captured {
         self.research_bonuses = part.bonuses;
         self.research_modifiers = part.modifiers;
         self.research_selection = part.selection;
+        self.research_carried_owners = part.carried_owners;
+        self.research_carried_complete = part.carried_complete;
+    }
+
+    pub fn research_carried_owners(&self) -> Option<&[u32]> {
+        self.research_carried_complete
+            .then_some(self.research_carried_owners.as_slice())
+    }
+
+    pub fn technology_carried_owners(&self) -> Option<&[u32]> {
+        self.technology_carried_complete
+            .then_some(self.technology_carried_owners.as_slice())
     }
 
     pub fn reset_slice_selections(&mut self, hour: i32, force_full: bool) {
@@ -693,8 +734,13 @@ impl Captured {
             research_loaned: false,
             left_out: [false; N],
             research_selection: SliceSelection::new(),
+            research_carried_owners: Vec::new(),
+            research_carried_complete: false,
             technology_selection: SliceSelection::new(),
             technology_changed: crate::slicing::Changed::default(),
+            technology_assigned: Vec::new(),
+            technology_carried_owners: Vec::new(),
+            technology_carried_complete: false,
             focus_selection: SliceSelection::new(),
             focus_changed: crate::slicing::Changed::default(),
             daily_released: false,
@@ -918,6 +964,11 @@ impl Captured {
         self.research_bonuses.reset();
         self.research_modifiers.reset();
         self.research_inputs.reset();
+        self.research_carried_owners.clear();
+        self.research_carried_complete = false;
+        self.technology_assigned.clear();
+        self.technology_carried_owners.clear();
+        self.technology_carried_complete = false;
         self.party_leaders.reset();
         self.focus_text.reset();
         self.definition_text.reset();
@@ -986,6 +1037,9 @@ impl Captured {
             + self.idea_countries.allocated_bytes()
             + self.decision_countries.allocated_bytes()
             + self.dictionary.capacity() * size_of::<ctechnology_template::Entry>()
+            + self.research_carried_owners.capacity() * size_of::<u32>()
+            + self.technology_assigned.capacity() * size_of::<ctechnology::Row>()
+            + self.technology_carried_owners.capacity() * size_of::<u32>()
     }
     fn nested_allocated_bytes(&self) -> usize {
         self.breakdowns
@@ -1356,6 +1410,8 @@ impl Captured {
             dictionary: &mut self.dictionary,
             technology_selection: &mut self.technology_selection,
             technology_changed: &mut self.technology_changed,
+            technology_assigned: &mut self.technology_assigned,
+            technology_carried_owners: &mut self.technology_carried_owners,
             focus_selection: &mut self.focus_selection,
             focus_changed: &mut self.focus_changed,
         }
@@ -1515,6 +1571,7 @@ impl Captured {
         self.decision_countries.len = first.lens[11];
         self.decision_countries.required = first.required[11];
         self.dictionary_required = first.dictionary_required;
+        self.technology_carried_complete = first.technology_carried_complete;
         self.acquisition_phases = first.phases;
         let mut ticks = first.ticks;
         let started = qpc();
@@ -1748,6 +1805,8 @@ struct Buffers<'a> {
     dictionary: &'a mut Vec<ctechnology_template::Entry>,
     technology_selection: &'a mut SliceSelection,
     technology_changed: &'a mut crate::slicing::Changed,
+    technology_assigned: &'a mut Vec<ctechnology::Row>,
+    technology_carried_owners: &'a mut Vec<u32>,
     focus_selection: &'a mut SliceSelection,
     focus_changed: &'a mut crate::slicing::Changed,
 }
@@ -1758,6 +1817,7 @@ struct Observation {
     lens: [usize; 12],
     required: [usize; 12],
     dictionary_required: usize,
+    technology_carried_complete: bool,
 }
 impl Observation {
     fn new() -> Self {
@@ -1768,6 +1828,7 @@ impl Observation {
             lens: [0; 12],
             required: [0; 12],
             dictionary_required: 0,
+            technology_carried_complete: false,
         }
     }
     fn arena(&mut self, index: usize, len: usize, required: usize) {
@@ -1933,6 +1994,9 @@ fn acquire_partitioned(
     );
     let mut technology_reads = 0_u64;
     let mut technology_carried = 0_u64;
+    let mut assigned_ok = true;
+    b.technology_assigned.clear();
+    b.technology_carried_owners.clear();
     if enabled[2] {
         crate::slicing::select_changed(
             &mut *b.technology_selection,
@@ -1980,7 +2044,10 @@ fn acquire_partitioned(
         }
         _ => false,
     };
-    let preparation = if enabled[2] && b.technology_selection.force_full && dispatch.is_some() {
+    let preparation = if enabled[2]
+        && (b.technology_selection.force_full || !b.technology_changed.certified)
+        && dispatch.is_some()
+    {
         let started = qpc();
         let prepared = countries
             .as_ref()
@@ -2127,15 +2194,18 @@ fn acquire_partitioned(
                         let held = if !b.technology_selection.force_full
                             && b.technology_changed.carries(country.id)
                         {
-                            technology_fingerprints.drift.carry_technologies(
-                                memory,
-                                base,
-                                country.id,
-                                country.pointer,
-                                &mut *b.technologies,
-                                &mut *b.technology_pointers,
-                                first,
-                            )
+                            technology_fingerprints
+                                .drift
+                                .carry_technologies_with_assigned(
+                                    memory,
+                                    base,
+                                    country.id,
+                                    country.pointer,
+                                    &mut *b.technologies,
+                                    &mut *b.technology_pointers,
+                                    first,
+                                    Some((&mut *b.technology_assigned, &mut assigned_ok)),
+                                )
                         } else {
                             drift::Carried::Miss
                         };
@@ -2145,6 +2215,17 @@ fn acquire_partitioned(
                         let result = match held {
                             drift::Carried::Rows(len) => {
                                 technology_carried += 1;
+                                if assigned_ok {
+                                    if engine_allocation::advisory(|| {
+                                        reserve(b.technology_carried_owners, 1)
+                                    })
+                                    .is_ok()
+                                    {
+                                        b.technology_carried_owners.push(country.id);
+                                    } else {
+                                        assigned_ok = false;
+                                    }
+                                }
                                 Outcome::Rows { len }
                             }
                             drift::Carried::Failed(reason) => {
@@ -2548,6 +2629,18 @@ fn acquire_partitioned(
             b.technology_selection
                 .finish_census(technology_fingerprints);
         }
+        o.technology_carried_complete = census
+            && !b.technology_selection.force_full
+            && assigned_ok
+            && matches!(o.outcomes[2], Outcome::Rows { .. });
+        if o.technology_carried_complete {
+            b.technology_carried_owners.sort_unstable();
+            b.technology_assigned
+                .sort_unstable_by_key(|row| (row.country, row.database_index as u32));
+        } else {
+            b.technology_carried_owners.clear();
+            b.technology_assigned.clear();
+        }
         crate::country_input_changes::record_carried(Table::Technologies, technology_carried);
         crate::country_input_changes::record(
             Table::Technologies,
@@ -2734,6 +2827,36 @@ fn country_view<S: TableSchema, R>(
     )
 }
 
+fn technology_row(r: &ctechnology::Row) -> rows::ResearchTechnologyRow {
+    rows::ResearchTechnologyRow {
+        country: r.country,
+        database_index: r.database_index,
+        applied_bonus_count: r.applied_bonus_count,
+        technology_handle: r.technology_handle,
+        classifier: r.classifier,
+        level: r.level,
+        researched: r.researched,
+        progress_raw: r.progress_raw,
+        ahead_reduction_years_raw: r.ahead_reduction_years_raw,
+    }
+}
+
+fn view_filtered<S: TableSchema, R>(
+    captured: &CaptureRows<R>,
+    keep: impl Fn(&R) -> bool,
+    convert: impl Fn(&R) -> S::Row,
+) -> TableView {
+    let Some(source) = captured.rows.get(..captured.outcome.len()) else {
+        return crate::table_conversion::unavailable("governance row count exceeds capacity");
+    };
+    let count = source.iter().filter(|row| keep(row)).count();
+    crate::table_conversion::table_iter::<S, _>(
+        Outcome::Rows { len: count },
+        source.iter().filter(|row| keep(row)),
+        convert,
+    )
+}
+
 fn project_rows<S: TableSchema, R>(
     projection: Option<&mut collector_projection::projection::Projection<'_>>,
     captured: &CaptureRows<R>,
@@ -2909,6 +3032,10 @@ impl Captured {
         if projection.is_none() {
             return self.tables().map(TableInput::Sampled);
         }
+        let skip = projection
+            .as_deref()
+            .map(collector_projection::projection::Projection::sliced_skip)
+            .unwrap_or_default();
         let focus = &self.focus_text.first[..self.focus_text.len];
         let parties = &self.party_text.first[..self.party_text.len];
         let ideas = &self.idea_text.first[..self.idea_text.len];
@@ -2957,7 +3084,7 @@ impl Captured {
                     token: copy_span(focus, r.token.start, r.token.len),
                 },
             )),
-            TableInput::Sampled(self.technologies_table()),
+            self.technologies_input(skip.technologies_carried),
             collector_projection::projection::scalar_table::<tables::ResearchSlots, _>(
                 projection.as_deref_mut(),
                 self.slots.outcome,
@@ -3282,38 +3409,86 @@ impl Captured {
                     bonus_count: r.bonus_count,
                 },
             )),
-            TableInput::Sampled(view::<tables::ResearchAppliedBonuses, _>(
-                &self.research_bonuses,
-                |_| true,
-                |r| rows::ResearchAppliedBonusRow {
-                    country: r.country,
-                    index: r.index,
-                    ordinal: r.ordinal,
-                    technology_handle: r.technology_handle,
-                    id: r.value.id,
-                    resolved: r.resolved,
-                    name: owned_vec(copy_vec(r.value.name.as_bytes())),
-                    ahead_reduction_raw: r.value.ahead_reduction_raw,
-                    speed_bonus_raw: r.value.speed_bonus_raw,
-                    cost_reduction_raw: r.cost_reduction_raw,
+            TableInput::Sampled(
+                if skip.research_bonuses_carried
+                    && self.research_carried_complete
+                    && matches!(self.research_bonuses.outcome, Outcome::Rows { .. })
+                {
+                    view_filtered::<tables::ResearchAppliedBonuses, _>(
+                        &self.research_bonuses,
+                        |r| self.research_carried_owners.binary_search(&r.country).is_err(),
+                        |r| rows::ResearchAppliedBonusRow {
+                            country: r.country,
+                            index: r.index,
+                            ordinal: r.ordinal,
+                            technology_handle: r.technology_handle,
+                            id: r.value.id,
+                            resolved: r.resolved,
+                            name: owned_vec(copy_vec(r.value.name.as_bytes())),
+                            ahead_reduction_raw: r.value.ahead_reduction_raw,
+                            speed_bonus_raw: r.value.speed_bonus_raw,
+                            cost_reduction_raw: r.cost_reduction_raw,
+                        },
+                    )
+                } else {
+                    view::<tables::ResearchAppliedBonuses, _>(
+                        &self.research_bonuses,
+                        |_| true,
+                        |r| rows::ResearchAppliedBonusRow {
+                            country: r.country,
+                            index: r.index,
+                            ordinal: r.ordinal,
+                            technology_handle: r.technology_handle,
+                            id: r.value.id,
+                            resolved: r.resolved,
+                            name: owned_vec(copy_vec(r.value.name.as_bytes())),
+                            ahead_reduction_raw: r.value.ahead_reduction_raw,
+                            speed_bonus_raw: r.value.speed_bonus_raw,
+                            cost_reduction_raw: r.cost_reduction_raw,
+                        },
+                    )
                 },
-            )),
-            TableInput::Sampled(view::<tables::ResearchModifiers, _>(
-                &self.research_modifiers,
-                |_| true,
-                |r| rows::ResearchModifierRow {
-                    country: r.country,
-                    index: r.index,
-                    ordinal: r.ordinal,
-                    technology_handle: r.technology_handle,
-                    kind: research_modifier_kind(r.kind),
-                    raw: r.raw,
-                    auxiliary: r.auxiliary,
-                    count: r.count,
-                    source_id: r.source_id,
-                    name: owned_vec(copy_vec(r.name.as_bytes())),
+            ),
+            TableInput::Sampled(
+                if skip.research_modifiers_carried
+                    && self.research_carried_complete
+                    && matches!(self.research_modifiers.outcome, Outcome::Rows { .. })
+                {
+                    view_filtered::<tables::ResearchModifiers, _>(
+                        &self.research_modifiers,
+                        |r| self.research_carried_owners.binary_search(&r.country).is_err(),
+                        |r| rows::ResearchModifierRow {
+                            country: r.country,
+                            index: r.index,
+                            ordinal: r.ordinal,
+                            technology_handle: r.technology_handle,
+                            kind: research_modifier_kind(r.kind),
+                            raw: r.raw,
+                            auxiliary: r.auxiliary,
+                            count: r.count,
+                            source_id: r.source_id,
+                            name: owned_vec(copy_vec(r.name.as_bytes())),
+                        },
+                    )
+                } else {
+                    view::<tables::ResearchModifiers, _>(
+                        &self.research_modifiers,
+                        |_| true,
+                        |r| rows::ResearchModifierRow {
+                            country: r.country,
+                            index: r.index,
+                            ordinal: r.ordinal,
+                            technology_handle: r.technology_handle,
+                            kind: research_modifier_kind(r.kind),
+                            raw: r.raw,
+                            auxiliary: r.auxiliary,
+                            count: r.count,
+                            source_id: r.source_id,
+                            name: owned_vec(copy_vec(r.name.as_bytes())),
+                        },
+                    )
                 },
-            )),
+            ),
             collector_projection::projection::scalar_table::<tables::PartyLeaders, _>(
                 projection,
                 self.party_leaders.outcome,
@@ -3388,21 +3563,69 @@ impl Captured {
         }
     }
 
+    fn technologies_input(&self, skip_carried: bool) -> TableInput {
+        if !skip_carried
+            || !self.technology_carried_complete
+            || !matches!(self.technologies.outcome, Outcome::Rows { .. })
+        {
+            return TableInput::Sampled(self.technologies_table());
+        }
+        let Some(source) = self.technologies.rows.get(..self.technologies.outcome.len()) else {
+            return TableInput::Sampled(crate::table_conversion::unavailable(
+                "governance row count exceeds capacity",
+            ));
+        };
+        let carried = &self.technology_carried_owners;
+        let assigned = &self.technology_assigned;
+        let mut count = assigned.len();
+        let mut last: Option<(u32, bool)> = None;
+        for row in source {
+            let is_carried = match last {
+                Some((country, flag)) if country == row.country => flag,
+                _ => {
+                    let flag = carried.binary_search(&row.country).is_ok();
+                    last = Some((row.country, flag));
+                    flag
+                }
+            };
+            if !is_carried {
+                count += 1;
+            }
+        }
+        let mut rows = Vec::new();
+        if engine_allocation::reserve_exact(&mut rows, count).is_err() {
+            return TableInput::Sampled(crate::table_conversion::unavailable(
+                "research technologies allocation failed",
+            ));
+        }
+        last = None;
+        for row in source {
+            let is_carried = match last {
+                Some((country, flag)) if country == row.country => flag,
+                _ => {
+                    let flag = carried.binary_search(&row.country).is_ok();
+                    last = Some((row.country, flag));
+                    flag
+                }
+            };
+            if !is_carried {
+                rows.push(technology_row(row));
+            }
+        }
+        for row in assigned {
+            rows.push(technology_row(row));
+        }
+        rows.sort_unstable_by_key(RowCodec::key);
+        TableInput::Sampled(TableView::Complete(
+            replay_data::rows::TableRows::ResearchTechnologies(rows),
+        ))
+    }
+
     fn technologies_table(&self) -> TableView {
         view::<tables::ResearchTechnologies, _>(
             &self.technologies,
             |_| true,
-            |r| rows::ResearchTechnologyRow {
-                country: r.country,
-                database_index: r.database_index,
-                applied_bonus_count: r.applied_bonus_count,
-                technology_handle: r.technology_handle,
-                classifier: r.classifier,
-                level: r.level,
-                researched: r.researched,
-                progress_raw: r.progress_raw,
-                ahead_reduction_years_raw: r.ahead_reduction_years_raw,
-            },
+            technology_row,
         )
     }
 

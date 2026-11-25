@@ -50,12 +50,8 @@ pub(super) fn capture(
         }
         *output
             .get_mut(len)
-            .ok_or("Ground Crews output storage incomplete")? = rows::AirGroundCrewRow {
-            supply: rows::Recorded::Value(None),
-            country: key.slot,
-            region: key.id,
-            enabled,
-        };
+            .ok_or("Ground Crews output storage incomplete")? =
+            rows::AirGroundCrewRow::without_supply(key.slot, key.id, enabled);
         len += 1;
     }
     Ok(Outcome::Rows { len })
@@ -82,14 +78,7 @@ mod tests {
         });
         let registered = [1, 2, 3, 4].map(|wing| cair_regional_mission::Row { wing, ordinal: 0 });
         let mut demand = vec![Demand::default(); 4];
-        let mut output = vec![const {
-            rows::AirGroundCrewRow {
-                supply: rows::Recorded::Value(None),
-                country: 0,
-                region: 0,
-                enabled: None,
-            }
-        }; 4];
+        let mut output = vec![const { rows::AirGroundCrewRow::without_supply(0, 0, None) }; 4];
         let mut calls = Vec::new();
         let outcome = capture(
             &wings,

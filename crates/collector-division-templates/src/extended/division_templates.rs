@@ -2,7 +2,7 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
 };
-use collector_projection::projection::{Projection, Witness, held_input, project_table};
+use collector_projection::projection::{Projection, Witness, held_input, ledger_table, project_table};
 use collector_projection::table_conversion::{table, unavailable};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_native_memory::{Memory, walk::Outcome};
@@ -181,7 +181,9 @@ pub fn home_allocated_bytes(home: &Home) -> usize {
 struct Payload {
     key: (u64, usize, u32),
     layout: Option<std::sync::Arc<TemplateLayout>>,
+    layout_serial: u64,
     settings: Option<std::sync::Arc<TemplateSettings>>,
+    settings_serial: u64,
 }
 
 pub struct Captured {
@@ -896,11 +898,13 @@ impl Captured {
         let payloads = engine_allocation::reserve(&mut self.payloads, rows.len()).is_ok();
         if payloads {
             for row in rows {
-                let (layout, settings) = self.held.value_refs(row);
+                let (layout, layout_serial, settings, settings_serial) = self.held.value_refs(row);
                 self.payloads.push(Payload {
                     key: (row.template, row.pointer, row.owner),
                     layout: layout.cloned(),
+                    layout_serial,
                     settings: settings.cloned(),
+                    settings_serial,
                 });
             }
             self.payloads.sort_unstable_by_key(|payload| payload.key);
@@ -1038,6 +1042,17 @@ impl Captured {
             .map_or((None, None), |at| {
                 let payload = &self.payloads[at];
                 (payload.layout.as_ref(), payload.settings.as_ref())
+            })
+    }
+
+    fn payload_serials(&self, row: &native::IconRow) -> (u64, u64) {
+        self.payloads
+            .binary_search_by_key(&(row.template, row.pointer, row.owner), |payload| {
+                payload.key
+            })
+            .map_or((0, 0), |at| {
+                let payload = &self.payloads[at];
+                (payload.layout_serial, payload.settings_serial)
             })
     }
     fn capture_speed_keys(
@@ -1339,63 +1354,83 @@ impl Captured {
                 })
                 .flatten()
         };
-        let same_entries = |range: native::Span, previous: &[TemplateSubunit]| {
-            let current = span(counts, range).unwrap();
-            current.len() == previous.len()
-                && current.iter().zip(previous).all(|(a, b)| {
-                    a.token == b.token && u8::from(a.local) == b.local && a.count == b.count
-                })
-        };
-        project_table::<tables::DivisionTemplateIcons, _>(
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        struct IconFixed {
+            priority_unit: u32,
+            custom_icon: i32,
+            custom_icon_nato: u8,
+            representative: u32,
+            representative_local: u8,
+            country: i32,
+            foreign_country: i32,
+            model_category: Option<u64>,
+            model_unreadable: u8,
+            formation_division_count: Option<i32>,
+            manpower_exile: bool,
+            base_width: Option<i64>,
+            name_state: u8,
+            layout_serial: u64,
+            settings_serial: u64,
+        }
+        let record_entries =
+            |range: native::Span, record: &mut collector_projection::projection::Record<'_>| {
+                let slice = span(counts, range).unwrap();
+                record.word(slice.len() as i64);
+                for unit in slice {
+                    record.word(
+                        i64::from(unit.token) | (i64::from(u8::from(unit.local)) << 32),
+                    );
+                    record.word(i64::from(unit.count));
+                }
+            };
+        ledger_table::<tables::DivisionTemplateIcons, _, IconFixed>(
             projection,
             outcome,
             &self.icon_rows.rows,
             |r| u128::from(r.template),
-            |r, previous| {
-                r.priority_unit == previous.priority_unit
-                    && span(bytes, r.priority_unit_name).unwrap() == previous.priority_unit_name
-                    && r.custom_icon == previous.custom_icon
-                    && r.custom_icon_nato == previous.custom_icon_nato
-                    && r.representative.token == previous.representative
-                    && u8::from(r.representative.local) == previous.representative_local
-                    && same_entries(r.counts, &previous.subunits)
-                    && r.country == previous.country
-                    && r.foreign_country == previous.foreign_country
-                    && r.model_category == previous.model_category
-                    && span(bytes, r.model_entity).unwrap() == previous.model_entity
-                    && span(variants, r.excluded_variants).unwrap() == previous.excluded_variants
-                    && u8::from(r.model_failure.is_some()) == previous.model_unreadable
-                    && Recorded::Value(r.formation_division_count)
-                        == previous.formation_division_count
-                    && same_name_inputs(
-                        r,
-                        names,
-                        dictionary,
-                        self.sample_hour,
-                        &previous.display_name,
-                    )
-                    && match &previous.grids {
-                        Recorded::Value(grids) => {
-                            same_entries(r.grids[0], &grids.regiments)
-                                && same_entries(r.grids[1], &grids.support)
-                                && same_entries(r.grids[2], &grids.regimental_support)
-                        }
-                        Recorded::NotRecorded => false,
+            |_, r, record| {
+                record.bytes(Some(span(bytes, r.priority_unit_name).unwrap()));
+                record.bytes(Some(span(bytes, r.model_entity).unwrap()));
+                let excluded = span(variants, r.excluded_variants).unwrap();
+                record.word(excluded.len() as i64);
+                for &variant in excluded {
+                    record.word(variant as i64);
+                }
+                record_entries(r.counts, record);
+                for grid in r.grids {
+                    record_entries(grid, record);
+                }
+                let name_state = match name_value(r, names, dictionary, self.sample_hour) {
+                    None => 0,
+                    Some(NameValue::Same) => 1,
+                    Some(NameValue::Changed {
+                        literal,
+                        fallback_key,
+                    }) => {
+                        record.bytes(Some(literal));
+                        record.bytes(fallback_key);
+                        2
                     }
-                    && Recorded::Value(r.manpower_exile) == previous.manpower_exile
-                    && Recorded::Value(base_width(r)) == previous.base_width
-                    && match (&previous.layout, &previous.settings) {
-                        (Recorded::Value(layout), Recorded::Value(settings)) => {
-                            self.payload(r) == (layout.as_ref(), settings.as_ref())
-                        }
-                        _ => false,
-                    }
-                    && match &previous.speed_keys {
-                        Recorded::Value(keys) => {
-                            self.speed_key_slice(r.template) == keys.as_deref()
-                        }
-                        Recorded::NotRecorded => false,
-                    }
+                };
+                record.ids(self.speed_key_slice(r.template));
+                let (layout_serial, settings_serial) = self.payload_serials(r);
+                Some(IconFixed {
+                    priority_unit: r.priority_unit,
+                    custom_icon: r.custom_icon,
+                    custom_icon_nato: r.custom_icon_nato,
+                    representative: r.representative.token,
+                    representative_local: u8::from(r.representative.local),
+                    country: r.country,
+                    foreign_country: r.foreign_country,
+                    model_category: r.model_category,
+                    model_unreadable: u8::from(r.model_failure.is_some()),
+                    formation_division_count: r.formation_division_count,
+                    manpower_exile: r.manpower_exile,
+                    base_width: base_width(r),
+                    name_state,
+                    layout_serial,
+                    settings_serial,
+                })
             },
             |r| {
                 let [regiments, support, regimental_support] = r.grids;
@@ -1472,37 +1507,6 @@ fn name_inputs(
             },
         }),
     )
-}
-
-fn same_name_inputs(
-    row: &native::IconRow,
-    bytes: &[u8],
-    dictionary: Option<&[DivisionTemplateRow]>,
-    hour: Option<i32>,
-    previous: &Recorded<Option<TemplateDisplayName>>,
-) -> bool {
-    match (name_value(row, bytes, dictionary, hour), previous) {
-        (None, Recorded::Value(None)) => true,
-        (Some(value), Recorded::Value(Some(previous)))
-            if previous.sample_hour == replay_data::rows::PacketHour::Host =>
-        {
-            match (value, &previous.value) {
-                (NameValue::Same, TemplateNameValue::SameAsDivisionTemplates) => true,
-                (
-                    NameValue::Changed {
-                        literal,
-                        fallback_key,
-                    },
-                    TemplateNameValue::Changed {
-                        literal: old_literal,
-                        fallback_key: old_key,
-                    },
-                ) => literal == old_literal && fallback_key == old_key.as_deref(),
-                _ => false,
-            }
-        }
-        _ => false,
-    }
 }
 
 fn name_value<'a>(

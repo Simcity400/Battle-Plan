@@ -354,7 +354,8 @@ fn a_decision_charge_is_proven_only_for_one_execution_of_a_country_whose_power_w
         hour: 1,
         currency,
         balance_before_raw: 100_000,
-        balance_after_raw: 100_000 + delta,
+        balance_after_raw: replay_data::rows::RetiredI64(0),
+        realized_delta_raw: replay_data::rows::Recorded::Value(delta),
         cause: PowerCause::Decision,
         identity: PowerIdentity { action: PowerAction::Execute, item_key: b"dec_a".to_vec(), ..PowerIdentity::default() },
         ..CountryPowerChangeRow::default()

@@ -134,6 +134,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::CountryFuel
         | TableId::CountryFuelConsumers
         | TableId::FuelDemandParts
+        | TableId::FuelAwardRecipients
         | TableId::CountryExperience
         | TableId::HubMotorization
         | TableId::DisruptedSupply
@@ -178,6 +179,8 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::PowerBalanceModifierBreakdowns => Cadence::Hourly,
         TableId::ScriptFlags
         | TableId::ScriptVariables
+        | TableId::ScriptVariableNames
+        | TableId::ScriptVariableValues
         | TableId::ActiveIdeas
         | TableId::TimedIdeas => {
             Cadence::Hourly

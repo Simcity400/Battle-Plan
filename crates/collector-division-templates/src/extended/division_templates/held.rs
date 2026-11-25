@@ -19,7 +19,9 @@ struct Entry {
     valid: bool,
     reordered: bool,
     layout: Option<Arc<TemplateLayout>>,
+    layout_serial: u64,
     settings: Option<Arc<TemplateSettings>>,
+    settings_serial: u64,
     raw_settings: Option<native::Settings>,
 }
 
@@ -664,6 +666,7 @@ impl Store {
                         ..**settings
                     });
                     entry.settings = Some(renumbered);
+                    entry.settings_serial = collector_projection::projection::generation();
                     if let Some(raw) = &mut entry.raw_settings {
                         raw.roster_ordinal = entry.ordinal;
                     }
@@ -720,6 +723,11 @@ impl Store {
                         regimental_support: grid(2)?,
                     }))
                 })();
+                entry.layout_serial = if entry.layout.is_some() {
+                    collector_projection::projection::generation()
+                } else {
+                    0
+                };
             }
             let r = &row.settings;
             let settings_equal = entry.raw_settings == Some(row.settings)
@@ -778,6 +786,7 @@ impl Store {
                         })
                     },
                 }));
+                entry.settings_serial = collector_projection::projection::generation();
             }
             entry.raw_settings = Some(row.settings);
             entry.acquired = true;
@@ -799,10 +808,19 @@ impl Store {
         })
     }
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "the held layout, settings and their serials are looked up together"
+    )]
     pub(super) fn value_refs(
         &self,
         row: &native::IconRow,
-    ) -> (Option<&Arc<TemplateLayout>>, Option<&Arc<TemplateSettings>>) {
+    ) -> (
+        Option<&Arc<TemplateLayout>>,
+        u64,
+        Option<&Arc<TemplateSettings>>,
+        u64,
+    ) {
         let entry = self
             .lookup(row.template)
             .map(|at| &self.entries[at])
@@ -810,8 +828,17 @@ impl Store {
                 entry.valid && entry.pointer == row.pointer && entry.owner == row.owner
             });
         match entry.and_then(|entry| entry.settings.as_ref().map(|settings| (entry, settings))) {
-            Some((entry, settings)) => (entry.layout.as_ref(), Some(settings)),
-            None => (None, None),
+            Some((entry, settings)) => (
+                entry.layout.as_ref(),
+                if entry.layout.is_some() {
+                    entry.layout_serial
+                } else {
+                    0
+                },
+                Some(settings),
+                entry.settings_serial,
+            ),
+            None => (None, 0, None, 0),
         }
     }
 
@@ -827,7 +854,7 @@ impl Store {
         Recorded<Option<Arc<TemplateLayout>>>,
         Recorded<Option<Arc<TemplateSettings>>>,
     ) {
-        let (layout, settings) = self.value_refs(row);
+        let (layout, _, settings, _) = self.value_refs(row);
         (
             Recorded::Value(layout.cloned()),
             Recorded::Value(settings.cloned()),

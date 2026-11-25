@@ -66,7 +66,7 @@ static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 std::thread_local! {
     static DEPTH: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
 }
-static VARIABLES_WATCH: WatchRegistry = WatchRegistry::marking();
+static VARIABLES_WATCH: WatchRegistry = WatchRegistry::marks_only();
 static VARIABLES_FORWARDED: AtomicBool = AtomicBool::new(false);
 static VARIABLES_UNOBSERVED: AtomicBool = AtomicBool::new(false);
 pub fn variable_write(at: usize) -> Notification<'static> {
@@ -95,8 +95,8 @@ static LEDGER: EventLedger<MarketEventRow> = EventLedger::new();
 fn country_receiver(owner: u32) -> usize {
     (owner as usize + 1) << 3
 }
-static RESET_WATCH: WatchRegistry = WatchRegistry::marking();
-static WATCHES: [WatchRegistry; 3] = [const { WatchRegistry::marking() }; 3];
+static RESET_WATCH: WatchRegistry = WatchRegistry::marks_only();
+static WATCHES: [WatchRegistry; 3] = [const { WatchRegistry::marks_only() }; 3];
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; native::SITES.len()] =
     [const { AtomicUsize::new(0) }; native::SITES.len()];

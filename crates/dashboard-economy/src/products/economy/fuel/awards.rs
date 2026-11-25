@@ -20,7 +20,7 @@ pub(crate) fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay
     if !day.continuity_start_hour.is_some_and(|start| hour.checked_sub(DAY_HOURS - 1).is_some_and(|first| start <= first)) {
         return Err("The applied fuel window lacks 24 consecutive updates of this country identity".into());
     }
-    if day.last_hour != hour {
+    if day.last_hour.at(hour) != hour {
         return Err("The applied fuel window does not end at this read".into());
     }
     Ok(day)
@@ -35,15 +35,21 @@ pub(crate) fn read_at(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result
     use dashboard_base::products::at_hour::{Keys, Read};
     let id = super::demand::holder_id(query, tag, hour)?;
     let key = u128::from(id);
-    let frame = dashboard_base::products::at_hour::frame(
-        query,
-        hour,
-        &[Read { table: TableId::CountryFuel, keys: Keys::These(vec![key]) }],
-        "Fuel",
-    )?;
+    let split = query.replay.recording().predates(TableId::FuelAwardRecipients.index()).is_none();
+    let mut reads = vec![Read { table: TableId::CountryFuel, keys: Keys::These(vec![key]) }];
+    if split {
+        reads.push(Read { table: TableId::FuelAwardRecipients, keys: Keys::Range(key << 83, (key << 83) | ((1u128 << 83) - 1)) });
+    }
+    let frame = dashboard_base::products::at_hour::frame(query, hour, &reads, "Fuel")?;
     let rows = frame.complete::<replay_data::rows::tables::CountryFuel>().map_err(|error| dashboard_core::refused(format!("Fuel is not recorded at this hour: {error}")))?;
-    let row = rows.iter().find(|row| row.country == id).cloned().ok_or_else(|| dashboard_core::refused("No fuel status is recorded for this country at this hour"))?;
+    let mut row = rows.iter().find(|row| row.country == id).cloned().ok_or_else(|| dashboard_core::refused("No fuel status is recorded for this country at this hour"))?;
     let hour = super::read_hour(&row, frame.tables[TableId::CountryFuel.index()].sampled_at());
+    if split && let Some(read_hour) = hour {
+        let recipients = frame
+            .complete::<replay_data::rows::tables::FuelAwardRecipients>()
+            .map_err(|_| "fuel award recipients are not recorded at this read");
+        replay_data::rows::assemble_award_recipients(std::slice::from_mut(&mut row), recipients, read_hour);
+    }
     Ok((id, hour, row))
 }
 
@@ -259,7 +265,7 @@ impl Product for CountryFuelAwardHistory {
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let id = super::demand::holder_id(&query, &params.country, params.hour)?;
         let (first, last) = super::demand::window_span(params.window)?;
-        let reads = super::demand::country_reads(&query, id, first, last, None, cancelled)?;
+        let reads = super::demand::country_reads(&query, id, first, last, super::demand::Detail::AwardRecipients, cancelled)?;
         let runs = award_runs(&reads.reads, &params.recipient_key, first, last);
         Ok(FuelAwardHistoryReply {
             tag: query.holders.name(&params.country, params.hour),

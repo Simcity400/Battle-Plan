@@ -290,7 +290,7 @@ pub(super) fn stat_timing_quiet() -> Result<native::QuietToken, &'static str> {
     if !enabled() {
         return Err("variant stat writer hooks disabled");
     }
-    if active() != 0 {
+    if DESIGN_GATE.is_retained() {
         return Err("variant stat writer active");
     }
     let Some((world_epoch, world_revision)) =
@@ -305,8 +305,10 @@ pub(super) fn stat_timing_quiet() -> Result<native::QuietToken, &'static str> {
         );
     };
     let epoch = EPOCH.load(Ordering::SeqCst);
-    let revision = DESIGN_GATE.revision();
-    if active() != 0 {
+    let Some(revision) = DESIGN_GATE.quiet_epoch() else {
+        return Err("variant stat writer active");
+    };
+    if DESIGN_GATE.is_retained() {
         return Err("variant stat writer active");
     }
     if !enabled() {
@@ -375,21 +377,37 @@ pub fn stat_witness_status() -> impl serde::Serialize {
     }
 }
 
-pub(super) struct StatLaneWitness;
+#[derive(Default)]
+pub(super) struct StatLaneWitness {
+    counts: [u64; native::STAT_LANE_COUNT],
+    last: Option<(&'static str, &'static str)>,
+}
+
+impl Drop for StatLaneWitness {
+    fn drop(&mut self) {
+        for (counter, count) in STAT_WITHHELD_BY_LANE.iter().zip(self.counts) {
+            if count != 0 {
+                counter.fetch_add(count, Ordering::Relaxed);
+            }
+        }
+        if let Some(last) = self.last {
+            *LAST_STAT_WITHHELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(last);
+        }
+    }
+}
 
 impl native::StatWitness for StatLaneWitness {
     fn quiet(&self) -> Result<native::QuietToken, &'static str> {
         stat_timing_quiet()
     }
     fn record_withheld(&mut self, lane: usize, reason: &'static str) {
-        if let Some(counter) = STAT_WITHHELD_BY_LANE.get(lane) {
-            counter.fetch_add(1, Ordering::Relaxed);
+        if let Some(counter) = self.counts.get_mut(lane) {
+            *counter = counter.saturating_add(1);
         }
         if let Some(stat_lane) = native::STAT_LANES.get(lane) {
-            *LAST_STAT_WITHHELD
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((stat_lane.name, reason));
+            self.last = Some((stat_lane.name, reason));
         }
     }
 }
@@ -529,14 +547,25 @@ fn array(
 
 #[cfg(test)]
 pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
-    prepare_with(registry, variants, presize);
+    prepare_with(registry, variants, false, presize);
 }
+#[cfg(test)]
 pub(super) fn prepare_partitioned(
     registry: &[native::RegistryRow],
     variants: &Variants,
     acquire: &mut impl FnMut(Vec<storage::SetupPart>) -> Result<Vec<storage::SetupPart>, &'static str>,
 ) {
-    prepare_with(registry, variants, || {
+    prepare_with(registry, variants, false, || {
+        storage::presize_partitioned(acquire)
+    });
+}
+pub(super) fn prepare_partitioned_certified(
+    registry: &[native::RegistryRow],
+    variants: &Variants,
+    certified_unchanged: bool,
+    acquire: &mut impl FnMut(Vec<storage::SetupPart>) -> Result<Vec<storage::SetupPart>, &'static str>,
+) {
+    prepare_with(registry, variants, certified_unchanged, || {
         storage::presize_partitioned(acquire)
     });
 }
@@ -592,7 +621,12 @@ pub(super) fn cold_storage(registry: &[native::RegistryRow]) -> Option<ColdStora
     cold.then(|| ColdStorage(cold_demand(registry)))
 }
 
-fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: impl FnOnce()) {
+fn prepare_with(
+    registry: &[native::RegistryRow],
+    variants: &Variants,
+    certified_unchanged: bool,
+    sizing: impl FnOnce(),
+) {
     let demand = cold_demand(registry);
     let store = cold_store();
     demand.record();
@@ -602,6 +636,21 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
         let store = store
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if certified_unchanged
+            && !needs_baseline()
+            && !MISSED.load(Ordering::Acquire)
+            && !repair::pending()
+            && store.epoch == epoch
+            && SEED_EPOCH.load(Ordering::Acquire) == epoch
+            && DESIGN_GATE.revision() == revision
+            && CENSUS_BASELINE.load(Ordering::Acquire) == CENSUS_REVISION.load(Ordering::Acquire)
+            && active() == 0
+            && store.batch.events.is_empty()
+            && store.interests.is_clean()
+            && store.watched.len() == registry.len()
+        {
+            return;
+        }
         if !RECOVER.load(Ordering::Acquire)
             && store.epoch == epoch
             && !store.batch.events.is_empty()
@@ -691,6 +740,7 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
             sources::release();
             liveness::release();
             held::release();
+            super::release_stat_cache();
             witness::release();
         }
         repair::prepare(&watched)?;
@@ -1768,20 +1818,17 @@ fn drain_speculating(
             collector_observers::world_input_changes::prepare_design_mios(walked, true);
         }
         drain_profile_mut().stages_ns[0] = elapsed_ns(stage);
-        for watch in &repairs.watches {
-            sources::suspend(watch.id)?;
-        }
+        sources::suspend_all(&repairs.watches)?;
         let begin = std::time::Instant::now();
         decode_events(&batch, base, output)?;
         drain_profile_mut().events_ns = elapsed_ns(begin);
-        for watch in &repairs.watches {
-            if matches!(
+        sources::resume_all(repairs.watches.iter().filter_map(|watch| {
+            matches!(
                 reads.get(&watch.pointer),
                 Some(snapshots::speculative::Read::Unchanged(_))
-            ) {
-                sources::resume(watch.id)?;
-            }
-        }
+            )
+            .then_some(watch.id)
+        }))?;
         liveness::refresh_context(memory, base, &batch.events)?;
         let stage = std::time::Instant::now();
         engine_allocation::reserve(output, repairs.watches.len())
@@ -1791,12 +1838,18 @@ fn drain_speculating(
             .map_err(|_| "variant repair allocation failed")?;
         let mut kept =
             engine_allocation::advisory(|| engine_allocation::vec(repairs.watches.len())).ok();
+        let mut teams = engine_allocation::vec(repairs.watches.len().saturating_sub(walked))
+            .map_err(|_| "variant repair allocation failed")?;
+        let mut flag_updates = engine_allocation::vec(walked)
+            .map_err(|_| "variant repair allocation failed")?;
         let (mut unchanged, mut lane_walks) = (0, 0);
         for watch in &repairs.watches {
             use snapshots::speculative::Read;
             let (walk, recorded) = match reads.remove(&watch.pointer) {
                 Some(Read::Unchanged(witness)) => {
-                    liveness::change(witness.team.0, witness.team.1)?;
+                    if witness.team.0 != 0 {
+                        teams.push(witness.team);
+                    }
                     if let Some(kept) = kept.as_mut() {
                         kept.push((watch.pointer, witness));
                     }
@@ -1828,7 +1881,7 @@ fn drain_speculating(
             if decoded.value.definition.id != watch.id {
                 return Err("variant repair identity changed without observed replacement");
             }
-            repair::complete(watch, &decoded.value)?;
+            flag_updates.push((watch.pointer, watch.id, repair::flags(&decoded.value)?));
             if let Some(mut recorded) = recorded {
                 let state = decoded
                     .value
@@ -1859,6 +1912,8 @@ fn drain_speculating(
                 std::sync::Arc::new(decoded),
             )?;
         }
+        liveness::change_all(&teams)?;
+        repair::complete_all(&flag_updates)?;
         {
             let mut profile = drain_profile_mut();
             profile.unchanged = unchanged;
@@ -2586,6 +2641,7 @@ impl Drop for Hooks {
         sources::release();
         liveness::release();
         held::release();
+        super::release_stat_cache();
         witness::release();
         super::design_context::invalidate();
     }
@@ -2819,7 +2875,7 @@ fn walk_snapshot(
         engine_equipment::equipment_module_container::walk(memory, base, source, rows)
     });
     super::capture_source(&mut walk.stats, Ok(&source[..]), |source, rows| {
-        let mut witness = StatLaneWitness;
+        let mut witness = StatLaneWitness::default();
         native::walk_stats_carried(memory, base, source, rows, &mut (), &mut witness)
     });
     super::capture_source(&mut walk.upgrades, Ok(&source[..]), |source, rows| {

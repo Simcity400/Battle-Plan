@@ -173,11 +173,16 @@ fn observe(manager: usize) {
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let mut inline = [Row::default(); 256];
-    let outcome = match native::deleted_logs(&memory, base, manager, &mut inline) {
-        Ok((_, Outcome::Rows { len: 0 })) => return,
-        Ok((_, outcome @ (Outcome::Rows { .. } | Outcome::Truncated { .. }))) => outcome,
-        Ok((_, Outcome::Unavailable { .. })) | Err(_) => return failed_read(),
-    };
+    let mut overflow = Vec::new();
+    let (outcome, spilled) =
+        match native::deleted_logs_with_overflow(&memory, base, manager, &mut inline, &mut overflow)
+        {
+            Ok((_, Outcome::Rows { len: 0 }, _)) => return,
+            Ok((_, outcome @ (Outcome::Rows { .. } | Outcome::Truncated { .. }), spilled)) => {
+                (outcome, spilled)
+            }
+            Ok((_, Outcome::Unavailable { .. }, _)) | Err(_) => return failed_read(),
+        };
     let Some(signal) = engine_sites::at(
         base,
         engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
@@ -186,6 +191,10 @@ fn observe(manager: usize) {
         return failed_read();
     };
     match outcome {
+        Outcome::Rows { len } if spilled => {
+            overflow.truncate(len);
+            record_owned(signal, overflow);
+        }
         Outcome::Rows { len } => {
             let captured = &inline[..len];
             record(signal, len, |rows| {
@@ -202,6 +211,7 @@ fn observe(manager: usize) {
             });
         }
         Outcome::Truncated { len, unread_rows } => {
+            drop(overflow);
             let demand = len.saturating_add(unread_rows as usize);
             record(signal, demand, |rows| {
                 native::deleted_logs(&memory, base, manager, rows).map(|(_, outcome)| outcome)
@@ -209,6 +219,48 @@ fn observe(manager: usize) {
         }
         Outcome::Unavailable { .. } => unreachable!(),
     }
+}
+
+fn record_owned(signal: i64, rows: Vec<Row>) {
+    COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+    let demand = rows.len();
+    let log = if HANDOFF.load(Ordering::SeqCst) {
+        None
+    } else {
+        unsafe { LOG.load(Ordering::SeqCst).as_ref() }
+    };
+    let first = CURSOR.fetch_add(demand, Ordering::SeqCst);
+    let end = first.saturating_add(demand);
+    let Some(log) = log.filter(|log| end <= log.len()) else {
+        spilled(end);
+        if let Some(log) = log {
+            for index in first..end.min(log.len()) {
+                // SAFETY: this writer alone reserved `first..end`.
+                unsafe { log.mark(index, None) };
+            }
+        }
+        let kept = demand as u64;
+        if SPILL
+            .push(Spilled {
+                first,
+                signal,
+                rows,
+            })
+            .is_err()
+        {
+            STORAGE_LOST.store(true, Ordering::SeqCst);
+            return;
+        }
+        COUNTERS[2].fetch_add(kept, Ordering::Relaxed);
+        return;
+    };
+    // SAFETY: this writer alone reserved `first..end`, within the log.
+    unsafe { log.rows_mut(first..end) }.copy_from_slice(&rows);
+    for index in first..end {
+        // SAFETY: this writer alone reserved `first..end`.
+        unsafe { log.mark(index, Some(signal)) };
+    }
+    COUNTERS[2].fetch_add(demand as u64, Ordering::Relaxed);
 }
 
 fn record(

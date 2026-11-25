@@ -1755,16 +1755,29 @@ impl<'a, M: Memory> Reader<'a, M> {
         let [countries, links] = if let Some(roster) = authenticated {
             roster.arrays()
         } else {
-            [
-                game_state
-                    .checked_add(cgame_state::COUNTRIES)
-                    .and_then(|p| Array::read(memory, p, 8))
-                    .ok_or("country array unreadable or invalid")?,
-                game_state
-                    .checked_add(cgame_state::COUNTRY_LINKS)
-                    .and_then(|p| Array::read(memory, p, 4))
-                    .ok_or("country links unreadable or invalid")?,
-            ]
+            let countries_addr = game_state
+                .checked_add(cgame_state::COUNTRIES)
+                .ok_or("country array unreadable or invalid")?;
+            let links_addr = game_state
+                .checked_add(cgame_state::COUNTRY_LINKS)
+                .ok_or("country links unreadable or invalid")?;
+            let mut countries_bytes = [0_u8; 16];
+            let mut links_bytes = [0_u8; 16];
+            let copied = memory.copy_scattered(
+                [countries_addr, links_addr],
+                &mut [&mut countries_bytes[..], &mut links_bytes[..]],
+            );
+            if copied < 1 {
+                return Err("country array unreadable or invalid");
+            }
+            let countries = Array::from_header(countries_bytes, 8)
+                .ok_or("country array unreadable or invalid")?;
+            if copied < 2 {
+                return Err("country links unreadable or invalid");
+            }
+            let links = Array::from_header(links_bytes, 4)
+                .ok_or("country links unreadable or invalid")?;
+            [countries, links]
         };
         Self::from_arrays(memory, base, game_state, [countries, links])
     }
@@ -1851,6 +1864,36 @@ impl<'a, M: Memory> Reader<'a, M> {
                 canonical_slot: 0,
                 id: 0,
             });
+        }
+        if self.authenticated.is_none()
+            && let (Some(link_addr), Some(ptr_addr)) =
+                (self.links.element(id, 4), self.countries.element(id, 8))
+        {
+            let mut link_bytes = [0_u8; 4];
+            let mut ptr_bytes = [0_u8; 8];
+            if self.memory.copy_scattered(
+                [link_addr, ptr_addr],
+                &mut [&mut link_bytes[..], &mut ptr_bytes[..]],
+            ) == 2
+            {
+                let slot = u32::from_le_bytes(link_bytes);
+                if slot == id {
+                    return (usize::try_from(u64::from_le_bytes(ptr_bytes)).ok()? == pointer)
+                        .then_some(Country {
+                            pointer,
+                            canonical_slot: slot,
+                            id,
+                        });
+                }
+                if slot == 0 || slot >= self.countries.count {
+                    return None;
+                }
+                return (self.pointer_at(slot).ok()? == pointer).then_some(Country {
+                    pointer,
+                    canonical_slot: slot,
+                    id,
+                });
+            }
         }
         let canonical_slot = self.canonical(id).ok()?;
         (self.pointer_at(canonical_slot).ok()? == pointer).then_some(Country {

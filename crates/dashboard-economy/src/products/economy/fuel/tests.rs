@@ -3,7 +3,7 @@ use super::{
     awards::{award_day, award_runs, recipient_key},
     demand::{Key, ReadRow, Walk, demand_runs, stretch_reads},
 };
-use replay_data::rows::{CountryFuelRow, FuelAwardDay, FuelAwardDayRecipient, FuelDayRow, FuelDemandHour, FuelDemandPartRow, FuelDemandRead, FuelDemandUnit, Recorded};
+use replay_data::rows::{CountryFuelRow, FuelAwardDay, FuelAwardDayHour, FuelAwardDayRecipient, FuelDayRow, FuelDemandHour, FuelDemandPartRow, FuelDemandRead, FuelDemandUnit, Recorded};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn day(applied: bool) -> FuelDayRow {
@@ -72,7 +72,7 @@ trait WithHour {
 impl WithHour for CountryFuelRow {
     fn with_hour(mut self, hour: i32) -> Self {
         if let Recorded::Value(day) = &mut self.award_day {
-            day.last_hour = hour;
+            day.last_hour = FuelAwardDayHour::Stamped(hour);
         }
         self
     }

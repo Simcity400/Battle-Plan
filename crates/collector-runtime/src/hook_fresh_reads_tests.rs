@@ -612,7 +612,11 @@ fn missing_land_observer_keeps_actual_incomplete_coverage_and_refuses_events() {
         };
         assert!(!rows[0].complete);
         assert_eq!(rows[0].to_hour, hour);
-        for table in [TableId::LandCombatResults, TableId::DestroyedDivisions] {
+        for table in [
+            TableId::LandCombatResults,
+            TableId::LandCombatResultObservers,
+            TableId::DestroyedDivisions,
+        ] {
             assert!(matches!(
                 &frame.tables[table.index()],
                 TableInput::Sampled(TableView::Unavailable { .. })
@@ -625,12 +629,11 @@ fresh_fallback!(
     mission_install_failure_keeps_current_owner_and_unknown_ground_crew_flag,
     collector_missions::mission_changes::Hooks,
     |value| {
-        TableRows::AirGroundCrews(vec![AirGroundCrewRow {
-            supply: Recorded::Value(None),
-            country: value as u32,
-            region: 7,
-            enabled: None,
-        }])
+        TableRows::AirGroundCrews(vec![AirGroundCrewRow::without_supply(
+            value as u32,
+            7,
+            None,
+        )])
     }
 );
 

@@ -646,15 +646,26 @@ pub fn compare_division_status(
                 ),
                 Err(reason) => format!("0.01 (fixed5, toward zero): {reason}"),
             };
+            let displayed = row.displayed_supply_grace(supply_grace.clone().ok());
             report.scalar_displayed_by(
                 &label,
                 "supply_grace_remaining",
-                Some(*value),
+                displayed,
                 saved.presentation.army_current_supply_ratio.as_ref(),
                 "DivisionStatus.supply_grace_remaining",
                 &precision,
                 |raw| DivisionStatusRow::displayed_grace(raw, supply_grace.clone().ok()),
             );
+            if matches!(row.supply_grace_exact, Recorded::Value(Some(_)))
+                && *value != 0
+                && Some(*value) != displayed
+            {
+                report.difference(
+                    format!("{label}.supply_grace_remaining"),
+                    *value,
+                    format!("0 or {displayed:?}"),
+                );
+            }
         }
         if let Some(days) = report.recorded(
             &row.out_of_supply_days,
