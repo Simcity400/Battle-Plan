@@ -767,7 +767,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
       }
       const result = input.art.resolve(handle);
       if (result.status === 'pending' || (result.status === 'ready' && !result.bitmap)) {
-        input.onArtDemand?.(handle);
+        input.onArtDemand?.(handle, result);
       }
       return result;
     },

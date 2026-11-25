@@ -33,20 +33,24 @@ export function defaultArtFrame(width = 0, height = 0, frameIndex = 0, frameCoun
   };
 }
 
+export function flagArtKey(size: string, choiceKey: string): string {
+  return `flag\u0000${size}\u0000${choiceKey}`;
+}
+
 export function artHandleKey(handle: ArtHandle): string {
   switch (handle.kind) {
     case 'flag':
-      return JSON.stringify(['flag', handle.choice, handle.size]);
+      return flagArtKey(handle.size, handle.choice);
     case 'sprite':
-      return JSON.stringify(['sprite', handle.key, handle.frame ?? 0, handle.recorded ?? null, handle.text === true]);
+      return `sprite\u0000${handle.frame ?? 0}\u0000${handle.text === true ? 1 : 0}\u0000${handle.recorded !== undefined ? `1\u0000${handle.recorded.length}:${handle.recorded}` : '0'}\u0000${handle.key}`;
     case 'portrait':
-      return JSON.stringify(['portrait', handle.leader, handle.hour]);
+      return `portrait\u0000${handle.hour}\u0000${handle.leader}`;
     case 'technology':
-      return JSON.stringify(['technology', handle.token, handle.databaseIndex]);
+      return `technology\u0000${handle.databaseIndex}\u0000${handle.token}`;
     case 'path':
-      return JSON.stringify(['path', handle.path, handle.frame ?? 0, handle.frames ?? 1]);
+      return `path\u0000${handle.frame ?? 0}\u0000${handle.frames ?? 1}\u0000${handle.path}`;
     case 'url':
-      return JSON.stringify(['url', handle.url, handle.frame ?? 0]);
+      return `url\u0000${handle.frame ?? 0}\u0000${handle.url}`;
   }
 }
 

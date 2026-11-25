@@ -3114,3 +3114,57 @@ test('table partial and withheld notices live in the header summary marker, neve
   assert.equal(occPartial.titleSummaryPartial, 'Some occupied states are missing.');
   assert.equal('notes' in occPartial, false);
 });
+
+test('buildDeclarativeRow resolves country identity and flag art once per row across numeric columns and rowName', () => {
+  type ScoreRow = { readonly tag: string; readonly army: number; readonly navy: number; readonly air: number; readonly industry: number; readonly total: number };
+  const proj = declareTableProjection<{ readonly rows: readonly ScoreRow[] }, ScoreRow, Record<string, never>>({
+    kind: 'test-declarative-identity-reuse',
+    validate: raw => raw as { readonly rows: readonly ScoreRow[] },
+    columns: () => [
+      { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, countryField: 'tag' },
+      { key: 'army', label: 'Army', as: 'faint', offered: ['faint'], priority: 1, numeric: true, tone: 'country', country: 'tag', field: 'army' },
+      { key: 'navy', label: 'Navy', as: 'faint', offered: ['faint'], priority: 2, numeric: true, tone: 'country', country: 'tag', field: 'navy' },
+      { key: 'air', label: 'Air', as: 'faint', offered: ['faint'], priority: 3, numeric: true, tone: 'country', country: 'tag', field: 'air' },
+      { key: 'industry', label: 'Industry', as: 'faint', offered: ['faint'], priority: 4, numeric: true, tone: 'country', country: 'tag', field: 'industry' },
+      { key: 'total', label: 'Total', as: 'faint', offered: ['faint'], priority: 5, numeric: true, tone: 'country', country: 'tag', field: 'total' },
+    ],
+    rows: reply => ({ rows: reply.rows }),
+    rowKey: r => r.tag,
+    rowName: (r, hour, _o, who) => who(r.tag, hour).name,
+  });
+  let whoCalls = 0;
+  let artCalls = 0;
+  const view = createBoundedReadView({
+    hour: 100,
+    panels: new Map([['main', { rows: [{ tag: 'GER', army: 10, navy: 20, air: 30, industry: 40, total: 100 }] }]]),
+    identity: {
+      resolve(kind, key, atHour) {
+        whoCalls++;
+        return {
+          kind,
+          key,
+          atHour,
+          holder: { status: 'ready', value: key },
+          tag: { status: 'ready', value: key },
+          name: { status: 'ready', value: 'Germany' },
+          colour: { status: 'ready', value: '#4a4a4a' },
+          flagChoice: { status: 'ready', value: '["GER",null,null]' },
+          validInterval: [0, 500],
+          nextChangeAt: 501,
+        };
+      },
+    },
+    art: {
+      resolve() {
+        artCalls++;
+        return { status: 'pending' };
+      },
+    },
+  });
+  const model = proj.project(view, {});
+  assert.equal(model.rows.length, 1);
+  assert.equal(model.rows[0]!.name, 'Germany');
+  assert.equal(model.rows[0]!.cells.total!.countryColor, '#4a4a4a');
+  assert.equal(whoCalls, 1, 'identity is resolved once per row at the same hour');
+  assert.equal(artCalls, 1, 'flag art is resolved only for the country column, never numeric columns or rowName');
+});

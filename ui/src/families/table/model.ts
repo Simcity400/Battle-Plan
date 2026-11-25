@@ -29,7 +29,7 @@ import { formatDateHover, formatValueState, spokenValue, valueStateProps, type D
 import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
-import { newIdentityBoundary, resolveIdentity, type IdentityBoundary, type ResolvedIdentity } from './identityCell.ts';
+import { newIdentityBoundary, resolveCountryColor, resolveIdentity, type IdentityBoundary, type ResolvedIdentity } from './identityCell.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export type TableCellKind =
@@ -1623,6 +1623,48 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
   const key = spec.rowKey(row);
   const cells: Record<string, TableCell> = {};
   const rowNa = spec.naWhen?.(row, options) ?? null;
+  let cachedTag: string | undefined;
+  let cachedHour = NaN;
+  let cachedWho: ResolvedIdentity | undefined;
+  let cachedExtra: Map<string, ResolvedIdentity> | undefined;
+  let colorTag: string | undefined;
+  let colorHour = NaN;
+  let colorVal: string | undefined;
+  let colorExtra: Map<string, string | undefined> | undefined;
+  const lookupRowWho = (tag: string, atHour: number): ResolvedIdentity => {
+    if (cachedWho !== undefined && cachedTag === tag && cachedHour === atHour) return cachedWho;
+    const mapKey = cachedWho !== undefined ? `${tag}\u0000${atHour}` : '';
+    const existing = cachedExtra?.get(mapKey);
+    if (existing !== undefined) return existing;
+    const resolved = resolveIdentity(readView, 'country', tag, { atHour, boundary });
+    if (cachedWho === undefined) {
+      cachedTag = tag;
+      cachedHour = atHour;
+      cachedWho = resolved;
+    } else {
+      (cachedExtra ??= new Map()).set(mapKey, resolved);
+    }
+    return resolved;
+  };
+  const lookupRowColor = (tag: string, atHour: number): string | undefined => {
+    if (cachedWho !== undefined && cachedTag === tag && cachedHour === atHour) return cachedWho.color;
+    if (cachedExtra !== undefined) {
+      const held = cachedExtra.get(`${tag}\u0000${atHour}`);
+      if (held !== undefined) return held.color;
+    }
+    if (colorTag === tag && colorHour === atHour) return colorVal;
+    const mapKey = colorTag !== undefined ? `${tag}\u0000${atHour}` : '';
+    if (colorExtra?.has(mapKey)) return colorExtra.get(mapKey);
+    const resolved = resolveCountryColor(readView, tag, { atHour, boundary });
+    if (colorTag === undefined) {
+      colorTag = tag;
+      colorHour = atHour;
+      colorVal = resolved;
+    } else {
+      (colorExtra ??= new Map()).set(mapKey, resolved);
+    }
+    return resolved;
+  };
   for (let ci = 0; ci < colSpecs.length; ci++) {
     const col = colSpecs[ci]!;
     const colNa = col.naWhen ? col.naWhen(row, options) : (ci > 0 ? rowNa : null);
@@ -1652,7 +1694,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
           cellValue = notRecorded('Unknown country');
           countryArt = unavailableArt('The country is not recorded');
         } else {
-          const who = resolveIdentity(readView, 'country', tag, { atHour: cellLookHour ?? hour, boundary });
+          const who = lookupRowWho(tag, cellLookHour ?? hour);
           cellValue = who.value;
           countryLoading = who.loading;
           countryArt = who.art;
@@ -1680,7 +1722,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         countryTag = typeof resolvedCountry === 'string' && resolvedCountry ? resolvedCountry : undefined;
       }
       if (countryColor === undefined && countryTag && (col.numeric || col.tone === 'country')) {
-        countryColor = resolveIdentity(readView, 'country', countryTag, { atHour: cellLookHour ?? (col.lookHour ? col.lookHour(row, hour, options) : hour), boundary }).color;
+        countryColor = lookupRowColor(countryTag, cellLookHour ?? (col.lookHour ? col.lookHour(row, hour, options) : hour));
       }
       bar = col.bar ? col.bar(row, live, options) : undefined;
       if (col.sortValue) {
@@ -1721,7 +1763,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     };
   }
   const childItems = spec.children?.(row);
-  const who: TableWho = (tag, atHour) => resolveIdentity(readView, 'country', tag, { atHour, boundary });
+  const who: TableWho = (tag, atHour) => lookupRowWho(tag, atHour);
   return {
     key,
     name: spec.rowName(row, hour, options, who),

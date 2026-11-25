@@ -92,7 +92,13 @@ function readScene(
           onIdentityDemand: (kind: EntityKind, key: string, atHour: number) => {
             demands.identity.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
           },
-          onArtDemand: (handle: ArtHandle) => laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks),
+          onArtDemand: (handle: ArtHandle, result?: ArtResult) => {
+            if (result?.status === 'ready' && result.url) {
+              demands.urls.add(result.url);
+              return;
+            }
+            laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks);
+          },
         }
       : {}),
     ...(sources.staticShifts ? { panelShifts: sources.staticShifts } : {}),
@@ -182,7 +188,10 @@ export function projectScene<TModel>(
             ...(innerArt.demandOwner ? { demandOwner: innerArt.demandOwner } : {}),
             resolve: handle => {
               const result = innerArt.resolve(handle);
-              if (recording) artReads.push([handle, result, artUrlForHandle(handle, readers.index, readers.artResolutions)]);
+              if (recording) {
+                const url = result.status === 'ready' ? result.url : artUrlForHandle(handle, readers.index, readers.artResolutions);
+                artReads.push([handle, result, url]);
+              }
               return result;
             },
           } satisfies ArtProvider,
@@ -213,7 +222,9 @@ export function projectScene<TModel>(
           if (!sameIdentity(was, next.identity!.resolve(kind, key, atHour))) return false;
         }
         for (const [handle, was, url] of artReads) {
-          if (!sameArt(was, next.art!.resolve(handle)) || url !== artUrlForHandle(handle, next.index, next.artResolutions)) return false;
+          const resolved = next.art!.resolve(handle);
+          const nextUrl = resolved.status === 'ready' ? resolved.url : artUrlForHandle(handle, next.index, next.artResolutions);
+          if (!sameArt(was, resolved) || url !== nextUrl) return false;
         }
         return true;
       },

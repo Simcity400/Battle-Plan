@@ -23,22 +23,31 @@ import {
   type ArtResult,
 } from './types.ts';
 
+const flagEntryArtCache = new WeakMap<DrawnFlagEntry, ArtResolution>();
+
 export function flagEntryToArt(entry: DrawnFlagEntry | undefined): ArtResolution {
   if (!entry) return PENDING_ART;
+  const cached = flagEntryArtCache.get(entry);
+  if (cached !== undefined) return cached;
+  let result: ArtResolution;
   if (entry.failed) {
     const failure = classifyFailure(entry.failed);
-    return failure?.kind === 'refused' ? refusedArt(failure.reason, 'flag-read') : failedArt(entry.failed.message, true);
-  }
-  if (entry.resolution) return entry.resolution;
-  if (entry.image?.resolution) return productArt(entry.image.resolution);
-  if (entry.url) {
-    return readyArt(entry.url, {
+    result = failure?.kind === 'refused' ? refusedArt(failure.reason, 'flag-read') : failedArt(entry.failed.message, true);
+  } else if (entry.resolution) {
+    result = entry.resolution;
+  } else if (entry.image?.resolution) {
+    result = productArt(entry.image.resolution);
+  } else if (entry.url) {
+    result = readyArt(entry.url, {
       assetId: entry.image?.key ?? entry.url,
       file: entry.image?.asset ?? '',
       frame: entry.image ? defaultArtFrame(entry.image.width, entry.image.height) : defaultArtFrame(),
     });
+  } else {
+    result = failedArt('The flag entry carries neither art nor a resolution', false);
   }
-  return failedArt('The flag entry carries neither art nor a resolution', false);
+  flagEntryArtCache.set(entry, result);
+  return result;
 }
 
 export function spriteImageToArt(image: SpriteImage): ArtResolution {

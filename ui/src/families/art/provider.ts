@@ -136,13 +136,10 @@ export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null,
     return resolved?.status === 'ready' ? resolved.url : null;
   }
   if (handle.kind === 'flag' && index) {
-    const choice = parseFlagChoiceKey(handle.choice);
-    if (choice) {
-      const drawn = index.getDrawnFlag(handle.size, choice);
-      const res = drawn?.image?.resolution;
-      if (res) return res.status === 'ready' ? res.url : null;
-      if (drawn?.url) return drawn.url;
-    }
+    const drawn = index.getDrawnFlagByKey(handle.size, handle.choice);
+    const res = drawn?.image?.resolution;
+    if (res) return res.status === 'ready' ? res.url : null;
+    if (drawn?.url) return drawn.url;
   }
   return null;
 }
@@ -162,9 +159,9 @@ export function laneArtDemand(
 }
 
 function undrawnFlag(handle: ArtHandle, index: IdentityIndex | null | undefined): boolean {
-  if (handle.kind !== 'flag') return false;
-  const choice = parseFlagChoiceKey(handle.choice);
-  return choice !== null && index?.getDrawnFlag(handle.size, choice) === undefined;
+  if (handle.kind !== 'flag' || !index) return false;
+  if (index.getDrawnFlagByKey(handle.size, handle.choice) !== undefined) return false;
+  return parseFlagChoiceKey(handle.choice) !== null;
 }
 
 export function requestDemandedFlags(
@@ -215,23 +212,14 @@ export function createLaneArtProvider(
   cache: LaneArtCache,
   options: LaneArtProviderOptions = {},
 ): ArtProvider {
-  const lookupFlag = (choiceKey: string, size: ArtFlagSize): DrawnFlagEntry | undefined => {
-    if (!options.index) return undefined;
-    const choice = parseFlagChoiceKey(choiceKey);
-    return choice ? options.index.getDrawnFlag(size, choice) : undefined;
-  };
+  const lookupFlag = (choiceKey: string, size: ArtFlagSize): DrawnFlagEntry | undefined =>
+    options.index?.getDrawnFlagByKey(size, choiceKey);
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      return withoutBitmap(cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions)));
+      return cache.resolveAddress(resolutionFromHandle(handle, lookupFlag, options.resolutions));
     },
   };
-}
-
-function withoutBitmap<TBitmap>(result: ArtResult<TBitmap>): ArtResult<never> {
-  if (result.status !== 'ready') return result;
-  const { bitmap: _decoded, ...address } = result;
-  return address;
 }
 
 export interface DomArtProviderOptions {
@@ -247,6 +235,8 @@ export function createDomArtProvider(
 ): ArtProvider {
   const lookupFlag = (choiceKey: string, size: ArtFlagSize): DrawnFlagEntry | undefined => {
     if (!options.broker || !options.scope) return undefined;
+    const held = options.broker.indexOf(options.scope).getDrawnFlagByKey(size, choiceKey);
+    if (held) return held;
     const choice = parseFlagChoiceKey(choiceKey);
     if (!choice) return undefined;
     const entry = options.broker.flagFor(options.scope, size, choice);
@@ -258,7 +248,7 @@ export function createDomArtProvider(
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      return withoutBitmap(cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions)));
+      return cache.resolveAddress(resolutionFromHandle(handle, lookupFlag, options.resolutions));
     },
   };
 }

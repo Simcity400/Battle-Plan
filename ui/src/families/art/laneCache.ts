@@ -119,6 +119,31 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     }
   }
 
+  resolveAddress(resolution: ArtResolution): ArtResult<never> {
+    switch (resolution.status) {
+      case 'noArtExpected':
+      case 'pending':
+      case 'confirmedMissing':
+      case 'unavailable':
+      case 'refused':
+        return resolution;
+      case 'failed':
+        return { ...resolution, retry: () => this.retry() };
+      case 'ready': {
+        const failReason = this.failed.get(resolution.url);
+        if (failReason !== undefined) {
+          return {
+            status: 'failed',
+            reason: failReason,
+            retryable: true,
+            retry: () => this.retry(resolution.url),
+          };
+        }
+        return resolution;
+      }
+    }
+  }
+
   stateOfUrl(url: string): 'ready' | 'pending' | 'failed' | 'unrequested' {
     if (this.bitmaps.has(url)) return 'ready';
     if (this.pending.has(url)) return 'pending';

@@ -121,6 +121,32 @@ export class DomArtCache<TImage extends DomArtImage = HTMLImageElement> {
     }
   }
 
+  resolveAddress(resolution: ArtResolution): ArtResult<never> {
+    switch (resolution.status) {
+      case 'noArtExpected':
+      case 'pending':
+      case 'confirmedMissing':
+      case 'unavailable':
+      case 'refused':
+        return resolution;
+      case 'failed':
+        return { ...resolution, retry: () => this.retry() };
+      case 'ready': {
+        const entry = this.failed.has(resolution.url) ? null : this.ensure(resolution.url);
+        const failReason = this.failed.get(resolution.url);
+        if (failReason !== undefined) {
+          return {
+            status: 'failed',
+            reason: failReason,
+            retryable: true,
+            retry: () => this.retry(resolution.url),
+          };
+        }
+        return entry?.status === 'ready' ? resolution : { status: 'pending' };
+      }
+    }
+  }
+
   readUrl(url: string, onSettle?: () => void): { readonly image: TImage | null; readonly pending: boolean; readonly failed: boolean } {
     const entry = this.failed.has(url) ? null : this.ensure(url);
     if (this.failed.has(url)) return { image: null, pending: false, failed: true };

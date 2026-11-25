@@ -279,9 +279,15 @@ export function identityScopeKey(scope: IdentityScope): string {
   return JSON.stringify([scope.sourceId, scope.revision, scope.branchId, scope.content, scope.language ?? '']);
 }
 
+const flagChoiceKeyCache = new WeakMap<CountryFlagChoice, string>();
+
 export function flagChoiceKey(choice: CountryFlagChoice): string {
+  let cached = flagChoiceKeyCache.get(choice);
+  if (cached !== undefined) return cached;
   const searched = choice.searched?.some(Boolean) ? choice.searched.map(atlas => atlas === true) : null;
-  return JSON.stringify(searched ? [choice.keys, choice.reasons, searched] : [choice.keys, choice.reasons]);
+  cached = JSON.stringify(searched ? [choice.keys, choice.reasons, searched] : [choice.keys, choice.reasons]);
+  flagChoiceKeyCache.set(choice, cached);
+  return cached;
 }
 
 export function parseFlagChoiceKey(raw: string): CountryFlagChoice | null {

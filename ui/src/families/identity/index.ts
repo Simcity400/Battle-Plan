@@ -12,7 +12,7 @@ import type {
   RecordingGap,
 } from '../../generated/dashboard';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import { artHandleKey } from '../art/types.ts';
+import { flagArtKey } from '../art/types.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { mergeTagExistenceRuns, resolveSlotHolderRuns, type HolderRun } from '../holders.ts';
 import {
@@ -78,7 +78,7 @@ const FACTIONS_NOT_RECORDED = 'Factions were not recorded at this hour';
 const FACTION_ABSENT = 'Faction does not exist at this hour';
 
 export function drawnFlagKey(size: CountryFlagSize, choice: CountryFlagChoice): string {
-  return artHandleKey({ kind: 'flag', choice: flagChoiceKey(choice), size });
+  return flagArtKey(size, flagChoiceKey(choice));
 }
 
 function sentFailure(failure: Failure): SnapshotFailure {
@@ -544,6 +544,10 @@ export class IdentityIndex {
 
   getDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): DrawnFlagEntry | undefined {
     return this.drawnFlags.get(drawnFlagKey(size, choice));
+  }
+
+  getDrawnFlagByKey(size: CountryFlagSize, choiceKey: string): DrawnFlagEntry | undefined {
+    return this.drawnFlags.get(flagArtKey(size, choiceKey));
   }
 
   forgetDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): void {
