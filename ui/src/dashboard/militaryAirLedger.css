@@ -1,6 +1,0 @@
-.military-air-ledger { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: var(--space-2); }
-.military-air-ledger > .butterfly-chart, .military-air-ledger > .country-race, .military-air-ledger > .drill-host { flex: 1; min-height: 0; }
-.military-air-ledger > .chart-line-key { flex-shrink: 0; }
-.military-air-ledger > .sunburst-host { flex: 1; min-height: 0; }
-.bombing-drill > .time-chart, .air-loss-drill > .time-chart { flex: 1; min-height: 0; }
-.air-loss-drill > .widget-state { flex: none; padding: var(--space-2); }

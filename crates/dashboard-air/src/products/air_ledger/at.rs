@@ -106,7 +106,7 @@ fn run_at(spans: &[HourSpan], hour: i32) -> Option<&HourSpan> {
     spans.get(at).filter(|span| span.first_hour <= hour)
 }
 
-fn asks(country: &Country, tag: &str, identity: &str) -> bool {
+pub(super) fn asks(country: &Country, tag: &str, identity: &str) -> bool {
     match country {
         Country::Tag(wanted) => wanted == tag,
         Country::Slot(slot) => identity.split(':').next() == Some(slot.to_string().as_str()),
@@ -318,7 +318,7 @@ struct Windows(VecDeque<(WindowKey, Arc<MilitaryAirReply>)>);
 
 const KEPT_WINDOWS: usize = 8;
 
-fn window(source: &Source, params: &MilitaryAirAtParams, branch: u64, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<MilitaryAirReply>> {
+pub(super) fn window(source: &Source, params: &MilitaryAirAtParams, branch: u64, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<MilitaryAirReply>> {
     let index = u32::try_from(params.hour.div_euclid(dashboard_world::products::windows::HOURS)).map_err(|_| dashboard_core::invalid("Hour is before the first window"))?;
     let key: WindowKey = (branch, params.family, params.regions.clone(), params.causes.clone(), params.from_hour, index);
     let state = source.state::<Windows>();
@@ -366,7 +366,14 @@ impl Product for MilitaryAirAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![MilitaryAirAtParams::decl(), MilitaryAirCauseTotal::decl(), MilitaryAirAtRow::decl(), MilitaryAirAtReply::decl()]
+        vec![
+            MilitaryAirAtParams::decl(),
+            MilitaryAirCauseTotal::decl(),
+            MilitaryAirAtRow::decl(),
+            MilitaryAirAtReply::decl(),
+            super::tiles::AirLossSide::decl(),
+            super::tiles::AirLossesTileFamily::decl(),
+        ]
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {

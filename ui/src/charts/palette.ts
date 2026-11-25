@@ -372,48 +372,4 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
   return result;
 }
 
-export interface LineStyle { color: string; primary: readonly number[]; secondary: readonly number[] }
-
-export function lineDashes(round: number): { primary: readonly number[]; secondary: readonly number[] } {
-  return round === 0 ? { primary: [], secondary: [6, 4] } : { primary: [2 * round, 3], secondary: [10 + 2 * round, 3, 2, 3] };
-}
-
-export const SECONDARY_DASH = lineDashes(0).secondary;
-
-export function lineStyle(surface: string, ordinal: number, options?: ColourOptions): LineStyle {
-  const slot = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
-  return {
-    color: colour(surface, slot, options),
-    ...lineDashes(Math.floor(slot / CATEGORY_LIMIT)),
-  };
-}
-
-export function lineColours<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, string> {
-  const result = new Map<K, string>();
-  const taken = new Set<number>();
-  const size = Math.max(1, palette.length);
-  for (const line of [...lines].sort((a, b) => a.preferred - b.preferred)) {
-    const preferred = Math.max(0, line.preferred) % size;
-    const free = !taken.has(preferred) ? preferred : palette.findIndex((_, candidate) => !taken.has(candidate));
-    const index = free < 0 ? preferred : free;
-    taken.add(index);
-    result.set(line.key, palette[index]!);
-  }
-  return result;
-}
-
-export function lineStyles<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[], surface?: string): Map<K, LineStyle> {
-  if (surface !== undefined) {
-    const styles = new Map<K, LineStyle>();
-    for (const line of lines) styles.set(line.key, lineStyle(surface, line.preferred, { base: palette }));
-    return styles;
-  }
-  const sorted = [...lines].sort((a, b) => a.preferred - b.preferred);
-  const size = Math.max(1, palette.length);
-  const styles = new Map<K, LineStyle>();
-  for (let start = 0; start < sorted.length; start += size) {
-    const dashes = lineDashes(start / size);
-    for (const [key, color] of lineColours(sorted.slice(start, start + size), palette)) styles.set(key, { color, ...dashes });
-  }
-  return styles;
-}
+export const SECONDARY_DASH: readonly number[] = [6, 4];
