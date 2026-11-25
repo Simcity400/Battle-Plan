@@ -14,7 +14,7 @@ import { identityName, resolveIdentity, type IdentityBoundary } from './identity
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   return url ? { kind: 'url', url } : null;
 }
-import type { TableCell, TableCellFlag, TableColumnSpec, TableModelSlot, TableRow } from './model.ts';
+import type { TableCell, TableCellFlag, TableColumnSpec, TableModelSlot, TableRow, TooltipExtraRow } from './model.ts';
 import {
   buildNavigableSlots,
   DEFAULT_TAIL_PAGE_SIZE,
@@ -197,16 +197,18 @@ export function logStatusCell(label: string, statusKind: StatusMarkKind, tone?: 
 
 export function logCountryCell(
   readView: BoundedReadView,
-  entries: readonly { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string; readonly atHour?: number }[],
+  entries: readonly { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string; readonly atHour?: number; readonly role?: string }[],
   atHour: number,
   boundary?: IdentityBoundary,
 ): TableCell {
   const flags: TableCellFlag[] = [];
   const names: string[] = [];
+  const roles: TooltipExtraRow[] = [];
   for (const entry of entries) {
     if (entry.tag === null) {
       flags.push({ tag: '?', art: unavailableArt(entry.missingLabel ?? 'Country not recorded'), ...(entry.dimmed ? { dimmed: true } : {}) });
       names.push(entry.missingLabel ?? 'Country not recorded');
+      if (entry.role) roles.push({ label: entry.role, value: notRecorded(entry.missingLabel ?? 'Country not recorded') });
     } else {
       const hour = entry.atHour ?? atHour;
       const who = resolveIdentity(readView, 'country', entry.tag, { atHour: hour, boundary });
@@ -217,10 +219,11 @@ export function logCountryCell(
         ...(entry.dimmed ? { dimmed: true } : {}),
       });
       names.push(who.name || identityName(readView, 'country', entry.tag, hour));
+      if (entry.role) roles.push({ label: entry.role, value: knownValue(names[names.length - 1]!) });
     }
   }
   const value: Value = names.length ? knownValue(names.join(' · ')) : notApplicable('No country');
-  return { value, flags };
+  return roles.length ? { value, flags, tooltipRows: roles } : { value, flags };
 }
 
 export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {

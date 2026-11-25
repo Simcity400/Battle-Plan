@@ -651,6 +651,11 @@ test('layout hides lowest-priority columns into tooltip or keeps all columns in 
   const narrowing = buildColumnLayouts(specs.map(spec => spec.key === 'owner' ? { ...spec, narrow: 'hide' as const } : spec), settings, { state: 140, resistance: 130, owner: 140 });
   assert.equal(layoutFamilyTable(narrowing, 500).columns.some(c => c.narrowed), false, 'a table that fits keeps every cell\'s full text');
   assert.deepEqual(layoutFamilyTable(narrowing, 370).columns.map(c => [c.key, c.narrowed]), [['state', true], ['resistance', true]], 'a narrowed table lets cells draw their narrow text');
+  const primary = buildColumnLayouts(specs.map(spec => spec.key === 'owner' ? { ...spec, narrow: 'hide' as const }
+    : spec.key === 'state' ? { ...spec, narrow: 'primary' as const, minWidth: 60 } : spec), settings, { state: 140, resistance: 130, owner: 140 });
+  const squeezed = layoutFamilyTable(primary, 220);
+  assert.equal(squeezed.scrollable, false, 'the primary column gives way to its declared minimum before the table scrolls');
+  assert.deepEqual(squeezed.columns.map(c => [c.key, c.width]), [['state', 71], ['resistance', 149]]);
 
   const bigModel = {
     columns: specs.slice(0, 2),

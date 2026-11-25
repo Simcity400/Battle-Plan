@@ -20,19 +20,25 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const title = name.kind === 'known' ? name.value : 'Battle name not recorded';
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
-  const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown' ? { value: notRecorded('Battle result not recorded') }
+  const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown'
+    ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('Winner not recorded') }] }
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
+  const shipsSunk = logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined);
+  const ships = logPairCell(row.ships, 'Ships');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: row.hour,
-    tooltipExtra: () => sides.map((side, i) => ({ label: i === 0 ? 'Attackers' : 'Defenders',
-      value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') })),
+    tooltipExtra: () => sides.flatMap((side, i) => [
+      { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
+        value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },
+      { label: 'Ships', value: ships.pair![i]!, indent: true },
+      { label: 'Ships sunk', value: shipsSunk.pair![i]!, indent: true },
+    ]),
     tooltipScrollId: JSON.stringify([options.scope, row.detailId, row.detailHour ?? (options.following ? row.readHour : view.hour)]),
     cells: {
       date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
-      shipsSunk: logPairCell(row.shipsSunk, 'Ships sunk', colors, row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined),
-      ships: logPairCell(row.ships, 'Ships'), status,
+      shipsSunk: { ...shipsSunk, tooltipRows: [] }, ships: { ...ships, tooltipRows: [] }, status,
     },
   };
 }
@@ -45,10 +51,10 @@ interface Options {
 
 const sprites: Readonly<Record<string, string>> = {
   shipsSunk: 'GFX_naval_combat_icon',
-  ships: 'GFX_naval_region_window_ship_icon',
+  ships: 'GFX_ships_icon',
 };
 
-const base = { columns: NAVAL_BATTLES_COLUMNS, dayDividersOnly: true, rowTimeBoundaries: false } as const;
+const base = { columns: NAVAL_BATTLES_COLUMNS, rowTimeBoundaries: false, rhythm: 'log' } as const;
 export const navalBattlesProjection: TableProjection<Options> = registerFamilyProjection({
   kind: 'naval-battles', family: 'table',
   project(view, options): TableModel {
@@ -65,7 +71,7 @@ export const navalBattlesProjection: TableProjection<Options> = registerFamilyPr
       const icon = art.status === 'ready' ? { icon: art.url } : { iconMissing: artHoverText(art) ?? undefined };
       return { ...column, headerGroup: { ...column.headerGroup, ...icon } };
     });
-    return { ...base, columns, ...page, dateGrouped: options.byDate, dayDividersOnly: options.byDate, hour, nextChangeAt: boundary.next,
+    return { ...base, columns, ...page, dateGrouped: options.byDate, hour, nextChangeAt: boundary.next,
       warnings: (source.rawHead as NavalBattlesTailReply | undefined)?.warnings,
       ...(page.slots.length ? {} : { empty: 'No recorded battles match these settings.' }) };
   },

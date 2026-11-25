@@ -412,7 +412,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     for (const [i, value] of cell.pair.entries()) {
       const slot = { left: i === 0 ? left : midpoint + COL_GAP / 2, right: i === 0 ? midpoint - COL_GAP / 2 : right };
       const shown = formatValueState(value, paintModel.format);
-      if (shown.kind === 'known' || shown.kind === 'zero') {
+      if (shown.kind === 'known' || shown.kind === 'zero' || (shown.kind === 'partial' && column.partialReason)) {
         ctx.save();
         ctx.font = font;
         ctx.textAlign = 'right';
@@ -770,7 +770,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const font = fontOf(theme, 13, 500);
-    const hasSplit = Boolean(cell?.splitBar && cell.splitBar.length > 0);
+    const hasSplit = Boolean(cell?.splitBar && cell.splitBar.length > 0) && !(column.narrowed && column.narrow === 'total');
     const textMid = hasSplit ? middle - 3 : middle;
     const avail = Math.max(0, right - left);
     const figureColor = cell?.shortage
@@ -834,10 +834,13 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
-  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, cell?.strong ? 600 : column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
+  const strong = cell?.strong === true && narrowText === undefined;
+  const toned = column.textTone !== undefined && !strong && rc.rhythm === 'log';
+  const textSize = strong ? 13 : toned ? 12.5 : density === 'compact' ? 13 : 13.5;
+  const textFont = fontOf(theme, textSize, strong ? 500 : column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
   const textColor = item.row.muted || cell?.tone === 'muted'
     ? theme.muted
-    : cell?.strong
+    : strong
       ? theme.text
       : column.textTone === 'muted'
         ? theme.muted

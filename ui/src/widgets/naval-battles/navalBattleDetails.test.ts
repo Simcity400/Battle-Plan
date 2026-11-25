@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDetails.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { ART_STATUS_ROW, deriveRowTooltip } from '../../families/table/model.ts';
 import { navalBattlesProjection } from './navalBattlesProjection.ts';
-import type { NavalBattleDetail, NavalBattlesTailReply } from '../../generated/dashboard';
+import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
   fleets: [{ names: ['Recorded fleet'], unknown: null }, { names: [], unknown: 'Fleet name not recorded' }],
@@ -45,15 +46,26 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
   assert.ok(rows.some(row => row.label === 'Ship 4999'));
 });
 
-test('the followed naval table shows the supplying read, partial sinkings and unrecorded sides', () => {
-  const head: NavalBattlesTailReply = { branchId: '1', total: '1', offset: '0', missing: [], warnings: [], nextChange: null, rows: [{
-    key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
-    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], ships: [3, 0], result: 'ongoing',
-  }] };
+test('the followed naval table shows the supplying read, partial sinkings, unrecorded sides and an ended battle without its winner', () => {
+  const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], ships: [3, 0], result: 'ongoing' };
+  const head: NavalBattlesTailReply = { branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
+    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]) });
-  const project = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true }).rows[0]!;
+  const model = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true });
+  const project = (following: boolean) => model(following).rows[0]!;
   const row = project(true);
+  assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
+  const ended = model(true).rows[1]!.cells.status!;
+  assert.deepEqual([ended.value, ended.statusKind], [{ kind: 'known', value: 'Ended' }, 'finished']);
+  assert.deepEqual(ended.tooltipRows!.map(line => [line.label, line.value.kind]), [['Result', 'known'], ['Winner', 'notRecorded']]);
+  const endedRow = model(true).rows[1]!;
+  const found = { kind: 'data', key: endedRow.key, name: endedRow.name, row: endedRow, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const lines = deriveRowTooltip(found, model(true).columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
+  assert.deepEqual(lines.map(line => [line.label, line.rawValue?.kind]), [['Date', 'known'], ['Battle', 'notRecorded'], ['Result', 'known'], ['Winner', 'notRecorded'],
+    ['Attackers', 'notRecorded'], ['Ships', 'known'], ['Ships sunk', 'partial'], ['Defenders', 'notRecorded'], ['Ships', 'zero'], ['Ships sunk', 'notRecorded']],
+    'the tooltip groups the figures under each side instead of repeating the pair columns');
   assert.deepEqual(row.cells.shipsSunk!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
   assert.equal(row.cells.shipsSunk!.value.kind, 'notRecorded');
   assert.equal(row.cells.ships!.value.kind, 'known');

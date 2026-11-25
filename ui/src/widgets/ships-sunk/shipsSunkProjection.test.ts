@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
-import { deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
+import { ART_STATUS_ROW, deriveRowTooltip, type TableRow } from '../../families/table/model.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import type { ShipsSunkTailReply, SinkingRow } from '../../generated/dashboard';
 import { SHIPS_SUNK_COLUMNS } from './definition.ts';
@@ -43,14 +43,17 @@ const linked = { kind: 'linked', id: 'combat:20:5', liveId: 'combat:20:5', resul
 function tooltip(row: TableRow) {
   const found = { kind: 'data', key: row.key, name: row.name, row, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
   const lines = deriveRowTooltip(found, SHIPS_SUNK_COLUMNS).rows;
-  return { labels: lines.map(line => line.label), value: (label: string) => lines.find(line => line.label === label)?.rawValue };
+  return { labels: lines.filter(line => line.lookupKey !== ART_STATUS_ROW).map(line => line.label), value: (label: string) => lines.find(line => line.label === label)?.rawValue };
 }
 
 test('ship rows name the class and keep the victim dimmed, with the missing mark for an unrecorded cause', () => {
-  const model = project([sinking('0', {})]);
+  const model = project([sinking('0', {}), sinking('1', { attacker: null, sinkingCause: { kind: 'cause', text: 'Naval mine', assisted: false } })]);
+  const mined = tooltip(model.rows[1]!);
+  assert.deepEqual(model.rows[1]!.cells.country?.flags?.map(flag => flag.tag), ['BBB'], 'a named cause without a killer draws only the victim');
+  assert.deepEqual([mined.labels.slice(1, 3), mined.value('Killer')?.kind], [['Killer', 'Victim'], 'notRecorded'], 'and its tooltip still says the killer is not recorded');
   const row = model.rows[0]!;
   assert.equal(model.empty, undefined);
-  assert.equal(model.titleSummary, '1 sunk');
+  assert.equal(model.titleSummary, '2 sunk');
   assert.equal(model.kindFilter?.allLabel, 'All classes');
   assert.equal(row.meta, 10);
   assert.equal(row.cells.item?.inlineSubtext, 'Corvette');
@@ -75,8 +78,9 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.deepEqual(knownTip.value('Battle'), { kind: 'known', value: 'Battle of Mod Strait' });
   assert.deepEqual(knownTip.value('Sunk by'), { kind: 'known', value: 'Mod Raider' });
   assert.deepEqual(knownTip.value('Killer class'), { kind: 'known', value: 'mod_raider_hull' });
-  assert.equal(knownTip.labels.includes('Cause'), false, 'the battle and its killer replace the Cause line');
-  assert.equal(knownTip.labels.filter(label => label === 'Sea zone').length, 1);
+  assert.deepEqual(knownTip.labels, ['Date', 'Killer', 'Victim', 'Class', 'Sea zone', 'Battle', 'Sunk by', 'Killer class', 'First recorded'],
+    'one line per fact in reading order: no joined country line, no repeated name, and the battle and its killer replace the Cause line');
+  assert.deepEqual(knownTip.value('Victim'), { kind: 'known', value: 'BBB' });
   assert.equal(unknown!.cells.cause?.inlineSubtext, undefined);
   assert.deepEqual(tooltip(unknown!).value('Sunk by'), { kind: 'notRecorded', reason: 'Killer not recorded' });
   assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'known', value: 'Battle' }, 'a battle whose name is not recorded still shows its killer');

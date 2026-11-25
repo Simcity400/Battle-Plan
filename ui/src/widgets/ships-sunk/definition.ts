@@ -5,16 +5,16 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const SHIPS_SUNK_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn(),
-  logKindColumn({ label: 'Class', minWidth: 36 }),
-  logCountryColumn({ label: 'Killer and victim', minWidth: 60, grow: 0 }),
-  logItemColumn({ label: 'Ship', minWidth: 48, narrow: 'primary', grow: 3.7 }),
-  logPlaceColumn({ label: 'Sea zone', minWidth: 110, narrow: 'hide', textTone: 'muted', grow: 0.8 }),
-  logPlaceColumn({ key: 'cause', label: 'Cause', minWidth: 78, maxWidth: 82, textTone: 'secondary', grow: 5.5 }),
+  logDateColumn({ minWidth: 70, maxWidth: 70 }),
+  logKindColumn({ label: 'Class', minWidth: 52, maxWidth: 52 }),
+  logCountryColumn({ label: 'Killer and victim', minWidth: 68, grow: 0 }),
+  logItemColumn({ label: 'Ship', minWidth: 48, narrow: 'primary', grow: 2.4 }),
+  logPlaceColumn({ label: 'Sea zone', minWidth: 210, maxWidth: 210, grow: 0, narrow: 'hide', textTone: 'muted' }),
+  logPlaceColumn({ key: 'cause', label: 'Cause', minWidth: 270, maxWidth: 270, narrowWidth: 92, grow: 1, textTone: 'secondary' }),
 ];
 
 export const definition = {
-  kind: 'ships-sunk', version: 2, title: 'Ships sunk', icon: 'anchor', category: 'Navy',
+  kind: 'ships-sunk', version: 2, title: 'Ships sunk', icon: 'ship', category: 'Navy',
   description: 'Ships sunk, with their owners, credited countries, classes and sea zones.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'all' },
