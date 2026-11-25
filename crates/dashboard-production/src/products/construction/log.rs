@@ -1,34 +1,16 @@
-
-use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, ProjectKind, RunLines, SpendingGap, col, gap_of, hour, id32, missing, number};
-use dashboard_base::{Source, products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
-use dashboard_base::products::{BranchParams, battles::BattleWindow};
-use dashboard_query::series::MissingSpan;
-use replay_lanes::lanes::{Cell, Keys, Step};
+use super::{ProjectKind, RunLines, SpendingGap, col, gap_of, hour, id32, number};
+use dashboard_base::{Source, queries::country_ids::RunLinks};
+use dashboard_query::identity::Holders;
 use replay_data::{
     codec::Decoder,
     rows::{ConstructionProjectRow as P, ConstructionRise, TableId},
     value::Value,
 };
+use replay_lanes::lanes::{Cell, Keys, Step};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    io,
-    sync::atomic::AtomicBool,
-};
+use std::{collections::HashMap, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
-
-pub struct ConstructionLogManifest;
-pub struct ConstructionLog;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConstructionLogParams {
-    pub branch_id: String,
-    #[doc = " Index into [`ConstructionLogManifestReply::windows`]."]
-    pub window: usize,
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -50,36 +32,27 @@ pub enum UnknownEnd {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectEnd {
+pub(crate) struct ProjectEnd {
     pub kind: EndKind,
-    #[doc = " The native outcome hour, when observed; otherwise only `known_at` bounds it."]
     pub hour: Option<i32>,
-    #[doc = " The read that showed the line gone, or that settled its ending."]
     pub known_at: i32,
     pub unknown: Option<UnknownEnd>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct LevelsBuilt {
-    #[doc = " The hour the building rose; null when only the read shows it."]
+pub(crate) struct LevelsBuilt {
     pub hour: Option<i32>,
-    #[doc = " The read that established it."]
     pub known_at: i32,
     pub count: u32,
-    #[doc = " Levels repaired (or repair work), not new levels."]
     pub repair: bool,
-    #[doc = " The count reached before the window: known by `known_at`, its own reads in earlier windows."]
     pub carried: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectRun {
+pub(crate) struct ProjectRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub factories: i32,
@@ -88,24 +61,21 @@ pub struct ProjectRun {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ConstructionOutputRun {
+pub(crate) struct ConstructionOutputRun {
     pub from: i32,
     pub to: i32,
-    #[doc = " Fixed5 factory output since observation began; null when not known (`reason`)."]
     pub construction_raw: Option<String>,
     pub repair_raw: Option<String>,
     pub reason: Option<SpendingGap>,
-    #[doc = " Output before observation began is not recorded."]
     pub before_observation: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct OutputOrigin {
+pub(crate) struct OutputOrigin {
     pub tag: String,
+    pub country_slot: Option<u32>,
     pub building: Option<u32>,
     pub state: Option<u32>,
     pub to_state: Option<u32>,
@@ -122,21 +92,17 @@ pub enum ProjectSource {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ConstructionProject {
-    #[doc = " The line's native handle, as a decimal string."]
+pub(crate) struct ConstructionProject {
     pub id: String,
     pub kind: ProjectKind,
     pub source: ProjectSource,
     pub census_read: Option<i32>,
     pub output_origin: Option<OutputOrigin>,
     pub queue_ordinal: Option<u32>,
-    #[doc = " The queue owner's tag at the line's first read."]
     pub tag: String,
-    #[doc = " The building type's lexer id ([`ConstructionType::id`])."]
+    pub country_slot: Option<u32>,
     pub building: Option<u32>,
-    #[doc = " It had levels to repair at the first read the window shows of it."]
     pub repair: Option<bool>,
     pub state: Option<u32>,
     pub to_state: Option<u32>,
@@ -144,114 +110,20 @@ pub struct ConstructionProject {
     pub route_provinces: Option<u32>,
     pub base_level: Option<i32>,
     pub target_level: Option<i32>,
-    #[doc = " Fixed5 cost per level (railway: the whole route)."]
     pub cost_raw: Option<String>,
     pub created_hour: Option<i32>,
     pub first_read: i32,
-    #[doc = " Work before its first read was not recorded; its counts are lower bounds."]
     pub earlier_unknown: bool,
     pub runs: Vec<ProjectRun>,
-    #[doc = " New levels built and levels repaired (`repair`)."]
     pub built: Vec<LevelsBuilt>,
-    #[doc = " Hour spans where a non-output-alone step had an unrecorded built counter."]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub built_unread: Option<Vec<(i32, i32)>>,
-    #[doc = " Hour spans where a non-output-alone step had an unrecorded repaired counter."]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub repaired_unread: Option<Vec<(i32, i32)>>,
-    #[doc = " Levels that cannot be told built or dropped."]
     pub unaccounted: Vec<LevelsBuilt>,
-    #[doc = " New levels it may have both built and had added."]
     pub possible: Vec<LevelsBuilt>,
-    #[doc = " Levels added while under way (more queued, or new damage)."]
     pub added: Vec<LevelsBuilt>,
-    #[doc = " Null while it is in the queue at the window's last hour."]
     pub end: Option<ProjectEnd>,
-    #[doc = " The first output read counting a repair advance."]
     pub first_repair_tick: Option<i32>,
     pub outputs: Vec<ConstructionOutputRun>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ConstructionLogManifestReply {
-    #[doc = " Units per factory output point of `cost_raw`."]
-    pub cost_scale: u32,
-    #[doc = " The branch's blocks: the log's windows, in hour order."]
-    pub windows: Vec<BattleWindow>,
-    #[doc = " Either construction queue was read in the branch."]
-    pub recorded: bool,
-    pub types: Vec<ConstructionType>,
-    #[doc = " The construction queue's repair marker."]
-    pub repair_icon: Option<String>,
-    #[doc = " Hours of the branch the recording does not hold."]
-    pub missing: Vec<MissingSpan>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ConstructionLogReply {
-    pub window: usize,
-    pub interval: BattleWindow,
-    #[doc = " Every line whose row was shown in the window, by first read, then handle."]
-    pub projects: Vec<ConstructionProject>,
-    #[doc = " The names of the states its lines name."]
-    pub states: Vec<ConstructionStateName>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(ConstructionLogManifestReply, ConstructionLogReply);
-
-fn branch(id: &str) -> io::Result<u64> {
-    id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))
-}
-
-impl Product for ConstructionLogManifest {
-    const KEY: &'static str = "construction-log-manifest";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = BranchParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
-    type Reply = ConstructionLogManifestReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![BranchParams::decl(), BattleWindow::decl(), ConstructionType::decl(), ConstructionLogManifestReply::decl()]
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let windows = super::windows(&query)?;
-        let mut tokens = BTreeMap::new();
-        for stretch in &query.timeline.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let lines = crate::products::construction::cached_construction(source, stretch.run)?;
-            let ids: BTreeSet<u32> = lines.within(stretch.first, stretch.last).filter_map(|line| line.building).collect();
-            super::spellings(&query, stretch.run, stretch.last, &ids, &mut tokens)?;
-        }
-        let mut warnings = Vec::new();
-        let named = Content::load(source, context).name(source, &tokens, &BTreeSet::new(), &mut warnings);
-        let reply = ConstructionLogManifestReply {
-            cost_scale: COST_SCALE,
-            windows,
-            recorded: super::recorded(&query)?,
-            types: named.types,
-            repair_icon: named.repair_icon,
-            missing: missing(&query, query.timeline.first, query.timeline.last),
-            warnings,
-        };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
 }
 
 fn join_runs<T>(
@@ -303,10 +175,10 @@ fn join_unread(a: Option<Vec<(i32, i32)>>, b: Option<Vec<(i32, i32)>>) -> Option
     (!merged.is_empty()).then_some(merged)
 }
 
-fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionProject {
+pub(crate) fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionProject {
     let output_origin = a.output_origin.or_else(|| {
         if a.source == ProjectSource::OutputAlone && b.source == ProjectSource::Census {
-            Some(OutputOrigin { tag: a.tag, building: a.building, state: a.state, to_state: a.to_state, province: a.province })
+            Some(OutputOrigin { tag: a.tag, country_slot: a.country_slot, building: a.building, state: a.state, to_state: a.to_state, province: a.province })
         } else {
             b.output_origin
         }
@@ -331,6 +203,7 @@ fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionP
         kind: if b.kind == ProjectKind::Unknown { a.kind } else { b.kind },
         source: if b.source == ProjectSource::Unknown { a.source } else { b.source },
         output_origin,
+        country_slot: b.country_slot.or(a.country_slot),
         repair: a.repair.or(b.repair),
         built_unread: join_unread(a.built_unread, b.built_unread),
         repaired_unread: join_unread(a.repaired_unread, b.repaired_unread),
@@ -345,78 +218,15 @@ fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionP
     }
 }
 
-impl Product for ConstructionLog {
-    const KEY: &'static str = "construction-log";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = ConstructionLogParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, window];
-    type Reply = ConstructionLogReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            ConstructionLogParams::decl(),
-            ConstructionStateName::decl(),
-            ProjectKind::decl(),
-            ProjectSource::decl(),
-            SpendingGap::decl(),
-            EndKind::decl(),
-            UnknownEnd::decl(),
-            ProjectEnd::decl(),
-            LevelsBuilt::decl(),
-            ProjectRun::decl(),
-            ConstructionOutputRun::decl(),
-            OutputOrigin::decl(),
-            ConstructionProject::decl(),
-            ConstructionLogReply::decl(),
-        ]
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let windows = super::windows(&query)?;
-        let interval = windows.get(params.window).cloned().ok_or_else(|| dashboard_core::invalid("No such construction log window"))?;
-        let names = Names::new(&query.holders);
-        let mut warnings = Vec::new();
-        let mut by_id: HashMap<String, ConstructionProject> = HashMap::new();
-        for stretch in query.timeline.within(interval.first_hour, interval.last_hour) {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let lines = crate::products::construction::cached_construction(source, stretch.run)?;
-            let links = dashboard_base::queries::links(source, stretch.run)?;
-            for project in window(source, stretch.run, stretch.first, stretch.last, &lines, &names, &links, &mut warnings)? {
-                match by_id.remove(&project.id) {
-                    Some(before) => {
-                        let merged = join_project(before, project);
-                        by_id.insert(merged.id.clone(), merged);
-                    }
-                    None => {
-                        by_id.insert(project.id.clone(), project);
-                    }
-                }
-            }
-        }
-        let mut projects: Vec<ConstructionProject> = by_id.into_values().collect();
-        projects.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
-        let mut seen_warnings = BTreeSet::new();
-        warnings.retain(|warning| seen_warnings.insert(warning.clone()));
-        let states: BTreeSet<u32> = projects
-            .iter()
-            .flat_map(|project| [project.state, project.to_state, project.output_origin.as_ref().and_then(|origin| origin.state), project.output_origin.as_ref().and_then(|origin| origin.to_state)])
-            .flatten()
-            .collect();
-        let states = if states.is_empty() { Vec::new() } else { Content::load(source, context).name(source, &BTreeMap::new(), &states, &mut warnings).states };
-        let reply = ConstructionLogReply { window: params.window, interval, projects, states, warnings };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-
-fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names: &Names, links: &RunLinks, warnings: &mut Vec<String>) -> io::Result<Vec<ConstructionProject>> {
+pub(crate) fn window_projects(
+    source: &Source,
+    run: u32,
+    from: i32,
+    to: i32,
+    lines: &RunLines,
+    holders: &Holders,
+    links: &RunLinks,
+) -> io::Result<Vec<ConstructionProject>> {
     let recording = source.replay_ref().recording();
     let mut keys: Vec<u128> = lines.within(from, to).map(|line| u128::from(line.id)).collect();
     if keys.is_empty() {
@@ -452,18 +262,16 @@ fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names
             })
         })?;
     }
-    let mut unnamed = 0usize;
     let mut out = Vec::new();
     for (key, steps) in &history.keys {
-        let tag = |country: u32, at: i32| names.tag_at(links, country, at).map(str::to_owned);
-        match assemble(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &tag) {
-            Assembled::Project(project) => out.push(*project),
-            Assembled::Unnamed => unnamed += 1,
-            Assembled::Hidden => {}
+        let resolve = |country: u32, at: i32| {
+            let slot = links.slot_at(country, at);
+            let tag = slot.and_then(|s| holders.slot_tag(s, at)).map(str::to_owned);
+            (slot, tag)
+        };
+        if let Some(project) = assemble_inner(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &resolve, false) {
+            out.push(*project);
         }
-    }
-    if unnamed > 0 {
-        warnings.push(format!("{unnamed} construction line{} in this window name no owner the recording resolves; they are left out.", if unnamed == 1 { "" } else { "s" }));
     }
     out.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
     Ok(out)
@@ -548,6 +356,7 @@ fn without_spans(spans: Vec<(i32, i32)>, excluded: &[(i32, i32)]) -> Vec<(i32, i
     out
 }
 
+#[cfg(test)]
 pub(crate) enum Assembled {
     Project(Box<ConstructionProject>),
     Unnamed,
@@ -617,19 +426,26 @@ fn merged(mut a: Vec<LevelsBuilt>, b: Vec<LevelsBuilt>) -> Vec<LevelsBuilt> {
     a
 }
 
-pub(crate) fn assemble<'r>(
+fn assemble_inner<'r>(
     id: u64,
     steps: &[Step],
     to: i32,
     truncated: &[(i32, i32)],
     rises: &dyn Fn(i32) -> Option<&'r Rises>,
-    tag: &dyn Fn(u32, i32) -> Option<String>,
-) -> Assembled {
+    resolve_owner: &dyn Fn(u32, i32) -> (Option<u32>, Option<String>),
+    require_tag: bool,
+) -> Option<Box<ConstructionProject>> {
     let shown = shown(steps, to);
-    let (Some(&(_, _, first)), Some(&(last_at, _, last))) = (shown.first(), shown.last()) else { return Assembled::Hidden };
+    let (Some(&(_, _, first)), Some(&(last_at, _, last))) = (shown.first(), shown.last()) else { return None };
     let first_read = hour(last, col::FIRST_READ).unwrap_or(shown[0].0);
-    let Some(country) = id32(last, col::COUNTRY) else { return Assembled::Unnamed };
-    let Some(owner) = tag(country, first_read) else { return Assembled::Unnamed };
+    let (country_slot, owner_tag) = match id32(last, col::COUNTRY) {
+        Some(country) => resolve_owner(country, first_read),
+        None => (None, None),
+    };
+    if require_tag && owner_tag.is_none() {
+        return None;
+    }
+    let owner = owner_tag.unwrap_or_default();
     let output_alone = |cells: &[Cell]| match number(cells, col::OUTPUT_ALONE) {
         Some(0) => Some(false),
         Some(1) => Some(true),
@@ -640,12 +456,16 @@ pub(crate) fn assemble<'r>(
         Some(true) => ProjectSource::OutputAlone,
         None => ProjectSource::Unknown,
     };
-    let output_origin = (output_alone(first) == Some(true) && source == ProjectSource::Census).then(|| OutputOrigin {
-        tag: id32(first, col::COUNTRY).and_then(|country| tag(country, first_read)).unwrap_or_else(|| owner.clone()),
-        building: id32(first, col::BUILDING_TYPE),
-        state: id32(first, col::TARGET_STATE),
-        to_state: id32(first, col::TO_STATE),
-        province: id32(first, col::PROVINCE),
+    let output_origin = (output_alone(first) == Some(true) && source == ProjectSource::Census).then(|| {
+        let (origin_slot, origin_tag) = id32(first, col::COUNTRY).map_or((country_slot, None), |country| resolve_owner(country, first_read));
+        OutputOrigin {
+            tag: origin_tag.unwrap_or_else(|| owner.clone()),
+            country_slot: origin_slot.or(country_slot),
+            building: id32(first, col::BUILDING_TYPE),
+            state: id32(first, col::TARGET_STATE),
+            to_state: id32(first, col::TO_STATE),
+            province: id32(first, col::PROVINCE),
+        }
     });
     let kind = shown
         .iter()
@@ -728,7 +548,7 @@ pub(crate) fn assemble<'r>(
         let spans = without_spans(spans, truncated);
         (!spans.is_empty()).then_some(spans)
     };
-    Assembled::Project(Box::new(ConstructionProject {
+    Some(Box::new(ConstructionProject {
         id: id.to_string(),
         kind,
         source,
@@ -736,6 +556,7 @@ pub(crate) fn assemble<'r>(
         output_origin,
         queue_ordinal: id32(last, col::QUEUE_ORDINAL),
         tag: owner,
+        country_slot,
         building: id32(last, col::BUILDING_TYPE),
         repair: census_first.and_then(|cells| number(cells, col::REPAIR_LEVELS).map(|levels| levels > 0)),
         state: id32(last, col::TARGET_STATE),
@@ -759,4 +580,23 @@ pub(crate) fn assemble<'r>(
         first_repair_tick: hour(last, col::FIRST_REPAIR_TICK),
         outputs,
     }))
+}
+
+#[cfg(test)]
+pub(crate) fn assemble<'r>(
+    id: u64,
+    steps: &[Step],
+    to: i32,
+    truncated: &[(i32, i32)],
+    rises: &dyn Fn(i32) -> Option<&'r Rises>,
+    tag: &dyn Fn(u32, i32) -> Option<String>,
+) -> Assembled {
+    if shown(steps, to).is_empty() {
+        return Assembled::Hidden;
+    }
+    let resolve = |country: u32, at: i32| (Some(country), tag(country, at));
+    match assemble_inner(id, steps, to, truncated, rises, &resolve, true) {
+        Some(project) => Assembled::Project(project),
+        None => Assembled::Unnamed,
+    }
 }

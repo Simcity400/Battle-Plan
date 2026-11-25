@@ -454,6 +454,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.raidLogProjection, declaration: mod.raidLogDeclaration }),
     ),
   },
+  {
+    kind: 'construction-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'construction-log',
+      DEFAULT_VIEW,
+      () => import('../construction-log/constructionLogProjection.ts'),
+      mod => ({ projection: mod.constructionLogProjection, declaration: mod.constructionLogDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {

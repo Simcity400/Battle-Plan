@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { LiveTexts } from './live.ts';
 
 export { liveTexts } from './live.ts';
-export type { LiveTexts, TextClock } from './live.ts';
+export type { LiveTexts } from './live.ts';
 
 export default function LiveText({ live, at }: { live: LiveTexts; at: string }) {
   const element = useRef<HTMLSpanElement>(null);

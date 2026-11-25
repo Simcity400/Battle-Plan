@@ -64,9 +64,3 @@ export function logStatesBy<T>(hours: readonly number[], rowsAt: (hour: number) 
   });
   return states.rows(order);
 }
-
-export function changesAfter(next: (hour: number) => number, hour: number, limit: number, count: number): number[] {
-  const hours: number[] = [];
-  for (let at = next(hour); at < limit && hours.length < count; at = next(at)) hours.push(at);
-  return hours;
-}

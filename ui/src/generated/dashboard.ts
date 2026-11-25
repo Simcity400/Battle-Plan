@@ -2539,152 +2539,24 @@ segments: Array<ReserveSegment>,
  * Every source the segments by `hour` name, by raw id, with tags through `hour`.
  */
 sources: Array<ReserveSource>, warnings: Array<string>, };
-export type BranchParams = { branchId: string, };
-export type BattleWindow = { firstHour: number, lastHour: number, };
-export type ConstructionType = { id: number,
-/**
- * Its script name; null when the recorded dictionary lacks it.
- */
-token: string | null, name: string | null,
-/**
- * The construction queue's picture of it.
- */
-icon: string | null, };
-export type ConstructionLogManifestReply = {
-/**
- * Units per factory output point of `cost_raw`.
- */
-costScale: number,
-/**
- * The branch's blocks: the log's windows, in hour order.
- */
-windows: Array<BattleWindow>,
-/**
- * Either construction queue was read in the branch.
- */
-recorded: boolean, types: Array<ConstructionType>,
-/**
- * The construction queue's repair marker.
- */
-repairIcon: string | null,
-/**
- * Hours of the branch the recording does not hold.
- */
-missing: Array<MissingSpan>, warnings: Array<string>, };
-export type ConstructionLogParams = { branchId: string,
-/**
- * Index into [`ConstructionLogManifestReply::windows`].
- */
-window: number, };
-export type ConstructionStateName = { id: number, name: string | null, };
+export type ConstructionLogTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, search?: string, sort?: OccurrenceSort, offset?: string, limit: number, buildingTypes?: Array<string>, projects?: ConstructionWorkFilter, inQueue?: boolean, order?: ConstructionOrder, };
 export type ProjectKind = "building" | "railway" | "unknown";
 export type ProjectSource = "census" | "outputAlone" | "unknown";
 export type SpendingGap = "notRecorded" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
 export type EndKind = "finished" | "removed" | "unknown";
 export type UnknownEnd = "notRecorded" | "sharedTarget" | "nothingLeft" | "completionNotRecorded";
-export type ProjectEnd = { kind: EndKind,
-/**
- * The native outcome hour, when observed; otherwise only `known_at` bounds it.
- */
-hour: number | null,
-/**
- * The read that showed the line gone, or that settled its ending.
- */
-knownAt: number, unknown: UnknownEnd | null, };
-export type LevelsBuilt = {
-/**
- * The hour the building rose; null when only the read shows it.
- */
-hour: number | null,
-/**
- * The read that established it.
- */
-knownAt: number, count: number,
-/**
- * Levels repaired (or repair work), not new levels.
- */
-repair: boolean,
-/**
- * The count reached before the window: known by `known_at`, its own reads in earlier windows.
- */
-carried: boolean, };
-export type ProjectRun = { firstHour: number, lastHour: number, factories: number, remaining: number, repairLevels: number, };
-export type ConstructionOutputRun = { from: number, to: number,
-/**
- * Fixed5 factory output since observation began; null when not known (`reason`).
- */
-constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null,
-/**
- * Output before observation began is not recorded.
- */
-beforeObservation: boolean, };
-export type OutputOrigin = { tag: string, building: number | null, state: number | null, toState: number | null, province: number | null, };
-export type ConstructionProject = {
-/**
- * The line's native handle, as a decimal string.
- */
-id: string, kind: ProjectKind, source: ProjectSource, censusRead: number | null, outputOrigin: OutputOrigin | null, queueOrdinal: number | null,
-/**
- * The queue owner's tag at the line's first read.
- */
-tag: string,
-/**
- * The building type's lexer id ([`ConstructionType::id`]).
- */
-building: number | null,
-/**
- * It had levels to repair at the first read the window shows of it.
- */
-repair: boolean | null, state: number | null, toState: number | null, province: number | null, routeProvinces: number | null, baseLevel: number | null, targetLevel: number | null,
-/**
- * Fixed5 cost per level (railway: the whole route).
- */
-costRaw: string | null, createdHour: number | null, firstRead: number,
-/**
- * Work before its first read was not recorded; its counts are lower bounds.
- */
-earlierUnknown: boolean, runs: Array<ProjectRun>,
-/**
- * New levels built and levels repaired (`repair`).
- */
-built: Array<LevelsBuilt>,
-/**
- * Hour spans where a non-output-alone step had an unrecorded built counter.
- */
-builtUnread?: Array<[number, number]>,
-/**
- * Hour spans where a non-output-alone step had an unrecorded repaired counter.
- */
-repairedUnread?: Array<[number, number]>,
-/**
- * Levels that cannot be told built or dropped.
- */
-unaccounted: Array<LevelsBuilt>,
-/**
- * New levels it may have both built and had added.
- */
-possible: Array<LevelsBuilt>,
-/**
- * Levels added while under way (more queued, or new damage).
- */
-added: Array<LevelsBuilt>,
-/**
- * Null while it is in the queue at the window's last hour.
- */
-end: ProjectEnd | null,
-/**
- * The first output read counting a repair advance.
- */
-firstRepairTick: number | null, outputs: Array<ConstructionOutputRun>, };
-export type ConstructionLogReply = { window: number, interval: BattleWindow,
-/**
- * Every line whose row was shown in the window, by first read, then handle.
- */
-projects: Array<ConstructionProject>,
-/**
- * The names of the states its lines name.
- */
-states: Array<ConstructionStateName>, warnings: Array<string>, };
+export type ConstructionStatus = "building" | "repairing" | "waiting" | "observed" | "unread" | "built" | "repaired" | "repairedAndBuilt" | "completed" | "removed" | "leftQueue";
+export type ConstructionWorkKind = "new" | "repair" | "repairThenNew" | "unknown";
+export type ConstructionWorkFilter = "all" | "new" | "repair";
+export type ConstructionOrder = "change" | "start";
+export type ConstructionOwner = { tag: string | null, slot: number | null, missing: string | null, };
+export type ConstructionPlaceAt = { kind: ProjectKind, state: number | null, toState: number | null, province: number | null, atHour: number, };
+export type ConstructionLevelsAt = { built: number, total: number, unknown: number, possible: number, added: number, earlierUnknown: boolean, countersUnread: boolean, };
+export type ConstructionEndAt = { kind: EndKind, hour: number | null, knownAt: number, unknown: UnknownEnd | null, };
+export type ConstructionOutputAt = { constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null, beforeObservation: boolean, };
+export type ConstructionTypeChip = { token: string, firstHour: number, name: string | null, icon: string | null, };
+export type ConstructionLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, kind: ProjectKind, source: ProjectSource, workKind: ConstructionWorkKind, repairing: boolean, status: ConstructionStatus, owner: ConstructionOwner, buildingToken: string | null, buildingName: string | null, buildingMissing: string | null, icon: string | null, place: ConstructionPlaceAt | null, placeMissing: string | null, levels: ConstructionLevelsAt | null, levelsMissing: string | null, factories: number | null, lastFactories: number | null, factoriesMissing: string | null, createdHour: number | null, firstRead: number, costRaw: string | null, baseLevel: number | null, targetLevel: number | null, routeProvinces: number | null, end: ConstructionEndAt | null, output: ConstructionOutputAt | null, };
+export type ConstructionLogTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, buildingTypes: Array<ConstructionTypeChip>, repairIcon: string | null, costScale: number, rows: Array<ConstructionLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
 export type ConstructionBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
 export type ConstructionBreakdownReply = {
 /**
@@ -2720,6 +2592,7 @@ export type LandBattlesManifestReply = {
  * The replay's blocks, cut to the hours the timeline holds.
  */
 windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
+export type BattleWindow = { firstHour: number, lastHour: number, };
 export type BattleWarning = { hour: number, reason: string, count: number, };
 export type BattleBound = "exact" | "by";
 export type BattleMoment = { hour: number, bound: BattleBound, };
@@ -6807,9 +6680,9 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "bombing-damage-breakdown", "politics-state-history", "factory-groups", "country-groups-at", "subjects-at", "diplomatic-pacts", "espionage-types", "raid-log", "raid-log-tail", "raid-tally", "raid-tally-at", "resource-balance-months", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "research-history", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-types", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced-types", "equipment-produced-at", "equipment-produced-race", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "factory-mix", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "faction-pools", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "bombing-damage-breakdown", "politics-state-history", "factory-groups", "country-groups-at", "subjects-at", "diplomatic-pacts", "espionage-types", "raid-log", "raid-log-tail", "raid-tally", "raid-tally-at", "resource-balance-months", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-tail", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "research-history", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-types", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced-types", "equipment-produced-at", "equipment-produced-race", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "factory-mix", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "faction-pools", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "raid-log-tail", "raid-tally", "raid-tally-at", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "equipment-produced-race", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-totals-at", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "factory-mix", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "faction-pools", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
+export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "raid-log-tail", "raid-tally", "raid-tally-at", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "construction-log-tail", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "equipment-produced-race", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-totals-at", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "factory-mix", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "faction-pools", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
 export const REPLAY_PRODUCTS = ["event-feed-tail", "event-choices-tail", "decisions-tail"] as const;
 export type HourRole = "read" | "start" | "end" | "bucket";
@@ -6836,8 +6709,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "civil-wars": { "hour": "read" },
   "combat-log-history": { "hour": "read", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
   "construction-breakdown": { "hour": "end" },
-  "construction-log": {},
-  "construction-log-manifest": {},
+  "construction-log-tail": { "hour": "read", "from": "start", "to": "end" },
   "content-entity-stats": { "hour": "read" },
   "convoy-health": { "from": "start", "to": "end", "listFrom": "start" },
   "country-faction-goals": { "hour": "read" },
@@ -7024,8 +6896,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "civil-wars": { "branchId": "leaf", "hour": "leaf" },
   "combat-log-history": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "hour": "leaf" },
   "construction-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "construction-log": { "branchId": "leaf", "window": "leaf" },
-  "construction-log-manifest": { "branchId": "leaf" },
+  "construction-log-tail": { "branchId": "leaf", "buildingTypes": "node", "buildingTypes[]": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "inQueue": "leaf", "limit": "leaf", "offset": "leaf", "order": "leaf", "projects": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
   "content-entity-stats": { "branchId": "leaf", "hour": "leaf", "kind": "leaf", "token": "leaf" },
   "convoy-health": { "branchId": "leaf", "country": "any", "every": "leaf", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "listFrom": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
   "country-faction-goals": { "branchId": "leaf", "country": "any", "goals": "leaf", "hour": "leaf" },
@@ -7212,8 +7083,7 @@ export type RequestParams<E, B> = {
   "civil-wars": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "combat-log-history": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
   "construction-breakdown": { readonly [key: string]: unknown; readonly "hour"?: B | null };
-  "construction-log": {};
-  "construction-log-manifest": {};
+  "construction-log-tail": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "to"?: B | null };
   "content-entity-stats": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "convoy-health": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "listFrom"?: B | null; readonly "to"?: B | null };
   "country-faction-goals": { readonly [key: string]: unknown; readonly "hour"?: E | null };
