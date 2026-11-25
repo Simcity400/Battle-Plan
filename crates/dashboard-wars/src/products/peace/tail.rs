@@ -249,18 +249,24 @@ struct Line {
 
 const TERM_LINES: usize = 8;
 
-fn shown_terms(recipients: &[usize], per_line: usize) -> usize {
+fn shown_terms(recipients: &[Vec<usize>], per_line: usize) -> usize {
     let (mut lines, mut shown) = (0, 0);
-    for &terms in recipients {
-        if lines >= TERM_LINES {
+    for widths in recipients {
+        if lines == TERM_LINES {
             break;
         }
         lines += 1;
-        let taken = terms.min((TERM_LINES - lines) * per_line);
-        shown += taken;
-        lines += taken.div_ceil(per_line);
-        if taken < terms {
-            break;
+        let mut used = per_line;
+        for &width in widths {
+            if used + width > per_line {
+                if lines == TERM_LINES {
+                    return shown;
+                }
+                lines += 1;
+                used = 0;
+            }
+            used += width;
+            shown += 1;
         }
     }
     shown
@@ -272,7 +278,7 @@ fn group(line: &Line) -> &str {
 
 struct Tail {
     index: Index<Line>,
-    treaties: HashMap<String, Vec<usize>>,
+    treaties: HashMap<String, Vec<Vec<usize>>>,
     warnings: Vec<PeaceWarning>,
 }
 
@@ -379,9 +385,14 @@ impl Tail {
                 (tag.as_ref().and_then(|tag| winner_order.get(tag)).copied().unwrap_or(usize::MAX), std::cmp::Reverse(terms.len()))
             });
             let mut ordinal = 0;
-            treaties.insert(group.clone(), recipients.iter().map(|(_, terms)| terms.len()).collect());
-            for (tag, mut terms) in recipients {
+            for (_, terms) in &mut recipients {
                 terms.sort_by_key(|term| term.kind);
+            }
+            treaties.insert(
+                group.clone(),
+                recipients.iter().map(|(_, terms)| terms.iter().map(|term| if term.kind == PeaceTermKind::State { 1 } else { 2 }).collect()).collect(),
+            );
+            for (tag, terms) in recipients {
                 push(Some(group.clone()), PeaceLine::Recipient { tag, terms: counts(terms.iter().map(|t| t.kind)) }, 0, ordinal);
                 for (position, term) in terms.into_iter().enumerate() {
                     push(Some(group.clone()), PeaceLine::Terms { items: vec![term] }, position, ordinal);
@@ -441,7 +452,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &PeaceDealsTailParams, 
         .filter_map(|group| {
             let recipients = prepared.tail.treaties.get(group)?;
             let shown = shown_terms(recipients, per_line);
-            (shown < recipients.iter().sum()).then_some((group.as_str(), shown))
+            (shown < recipients.iter().map(Vec::len).sum()).then_some((group.as_str(), shown))
         })
         .collect();
     let full = |line: &Line| prepared.full.contains(group(line));

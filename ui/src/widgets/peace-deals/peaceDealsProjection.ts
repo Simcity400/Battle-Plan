@@ -56,7 +56,7 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
   if (d.kind === 'more') {
     const name = d.hidden ? `Show all ${formatScalar(d.terms)} terms` : 'Show fewer terms';
     const cell: TableCell = { value: knownValue(name), ...(d.hidden ? { inlineSubtext: `${formatScalar(d.hidden)} more` } : {}) };
-    return { ...common, key: `all:${row.parent}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms',
+    return { ...common, key: `all:${row.parent}`, name, muted: true, pageParent: row.parent ?? undefined, detailColumn: 'terms',
       cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank } };
   }
   let cell: TableCell;
