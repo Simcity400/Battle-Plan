@@ -2238,26 +2238,8 @@ export type StabilityMarkersReply = { hour: number, nextChange: number | null, m
 export type StabilityMarker = { id: string, hour: number, kind: StabilityMarkerKind, title: string, verb: StabilityMarkerVerb | null, other: string | null, faction: string | null, sprite: string | null, alert: boolean, };
 export type StabilityMarkerKind = "focus" | "idea" | "party" | "war" | "faction";
 export type StabilityMarkerVerb = "began" | "capitulated" | "founded" | "joined" | "left";
-export type CasualtyBreakdownParams = { branchId: string, country: CountryRef, window: number | null, };
-export type CasualtyBreakdownRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean, groupingHour: number, groupingHourly: boolean, enemyHour: number, enemyHourly: boolean,
-/**
- * What the country took in this lifetime.
- */
-value: string,
-/**
- * The war the lifetime belongs to; null with `reason` when not known.
- */
-warId: string | null, reason: string | null, incomplete: boolean, };
-export type CasualtyBreakdownSeries = { id: string, countryIdentity: string, enemyTag: string, enemyIdentity: string, runs: Array<CasualtyBreakdownRun>, };
-export type CasualtyBreakdownCountryRun = { firstHour: number, lastHour: number, identity: string, incomplete: boolean, };
-export type CasualtyWarName = { text: string, known: boolean, reason: string | null, key: string | null, };
-export type CasualtyWarNameRun = { firstHour: number, lastHour: number, name: CasualtyWarName, };
-export type CasualtyBreakdownWar = { id: string, firstHour: number, lastHour: number, startedBy: boolean, endedBy: boolean, names: Array<CasualtyWarNameRun>, };
-export type CasualtyBreakdownReply = { branchId: string, tag: string, available: boolean, windows: Array<HourSpan>, window: number | null, observed: Array<HourSpan>,
-/**
- * The identities holding the tag within the observed hours.
- */
-countries: Array<CasualtyBreakdownCountryRun>, series: Array<CasualtyBreakdownSeries>, wars: Array<CasualtyBreakdownWar>, hasGap: boolean, warnings: Array<string>, };
+export type CasualtyBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
+export type CasualtyBreakdownReply = { from: number, hour: number, through: number, breakdown: Breakdown, warnings: Array<string>, };
 export type PeaceDealsParams = { branchId: string, };
 export type PeaceDealsReply = { branchId: string, derived: boolean,
 /**
@@ -7113,7 +7095,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "army-size": {},
   "autonomy-levels": { "hour": "read" },
   "campaign-clock": { "firstHour": "start", "lastHour": "end" },
-  "casualty-breakdown": {},
+  "casualty-breakdown": { "hour": "end" },
   "casualty-matrix": { "hour": "read" },
   "civil-wars": {},
   "combat-log-history": { "hour": "read", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
@@ -7307,7 +7289,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
   "autonomy-levels": { "branchId": "leaf", "hour": "leaf" },
   "campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
-  "casualty-breakdown": { "branchId": "leaf", "country": "any", "window": "leaf" },
+  "casualty-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "casualty-matrix": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "subject": "any", "top": "leaf" },
   "civil-wars": { "branchId": "leaf" },
   "combat-log-history": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "hour": "leaf" },
@@ -7501,7 +7483,7 @@ export type RequestParams<E, B> = {
   "army-size": {};
   "autonomy-levels": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "casualty-breakdown": {};
+  "casualty-breakdown": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "casualty-matrix": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "civil-wars": {};
   "combat-log-history": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };

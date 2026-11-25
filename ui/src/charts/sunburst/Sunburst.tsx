@@ -28,7 +28,7 @@ import '../charts.css';
 import './sunburst.css';
 import { textWidth } from '../textWidth.ts';
 
-export type { SunburstItem, SunburstText } from './layout';
+export type { SunburstText } from './layout';
 
 export interface SunburstProps {
   label: string;

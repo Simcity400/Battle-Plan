@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
+import { casualtiesBreakdown, casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
@@ -497,4 +498,69 @@ test('R3-S1/R3-S7: recorded corrections and partial totals lay out and hover wit
   const partialTip = buildBreakdownTooltip(partialRead, partialLevel, 'b', THEME)!;
   assert.equal(partialTip.items?.some(item => item.label === 'Share') ?? false, false);
   assert.ok(JSON.stringify(partialTip).includes('Some costs were not recorded'), 'partial part keeps its reason on hover');
+});
+
+test('casualties breakdown resolves slot-keyed enemies at their live or ended hour, leaves unnamed slots neutral, and proves quiet stretches', () => {
+  const asked: { key: string; atHour: number }[] = [];
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      asked.push({ key, atHour });
+      const tag = key === countryKey(1) ? 'SOV' : key === countryKey(2) ? 'POL' : key;
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready', value: key },
+        tag: { status: 'ready', value: tag },
+        name: { status: 'ready', value: `${tag}@${atHour}` },
+        colour: { status: 'ready', value: '#e5534b' },
+        flagChoice: { status: 'absent', reason: 'Flag not recorded' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const reply: CasualtyBreakdownReply = {
+    from: START,
+    hour: START + 100,
+    through: START + 200,
+    warnings: [],
+    breakdown: {
+      unrecordedHours: 0,
+      total: { amount: exact('80'), state: 'known', reason: null },
+      parts: [
+        wire('war:1', 0, '80', {
+          name: 'Second World War',
+          share: 1,
+          parentShare: 1,
+          children: [
+            wire('slot:1', 1, '45', { name: 'SOV', share: 45 / 80, parentShare: 45 / 80, last: null }),
+            wire('slot:2', 2, '25', { name: 'POL', share: 25 / 80, parentShare: 25 / 80, last: START + 40 }),
+            wire('slot:4', 4, '10', { name: 'Country not named at this hour', other: true, share: 10 / 80, parentShare: 10 / 80, last: null }),
+          ],
+        }),
+      ],
+    },
+  };
+  const readView = createBoundedReadView({ hour: START + 100, panels: new Map([['main', reply]]), identity, validInterval: [START + 100, START + 200] });
+  const projected = casualtiesBreakdownProjection.project(readView, {});
+  assert.equal(projected.periodLabel, 'Lost since 1 Jan 1936');
+  assert.equal(projected.total.unit, 'casualties');
+  assert.equal(projected.total.verb, 'Lost');
+  const enemies = projected.parts[0]!.children!;
+  assert.deepEqual(enemies.map(part => part.name), [`SOV@${START + 100}`, `POL@${START + 40}`, 'Country not named at this hour']);
+  assert.equal(enemies[0]!.flag, 'SOV');
+  assert.equal(enemies[1]!.flag, 'POL');
+  assert.equal(enemies[2]!.flag, undefined, 'unnamed enemy stays neutral without a flag');
+  assert.deepEqual(asked.map(item => `${item.key}@${item.atHour}`), [`${countryKey(1)}@${START + 100}`, `${countryKey(1)}@${START + 100}`, `${countryKey(2)}@${START + 40}`, `${countryKey(2)}@${START + 40}`]);
+
+  const ctx = {
+    countryTag: 'GER',
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  } as unknown as Parameters<typeof casualtiesBreakdown.sources>[0];
+  const entry = casualtiesBreakdown.sources(ctx, { width: 800, height: 300 } as Parameters<typeof casualtiesBreakdown.sources>[1]).entries[0]!;
+  const proof = resolvePlaybackProvenInterval(entry.read, reply, { anchorHour: START + 100, span: null }, START + 10_000);
+  assert.deepEqual(proof, [START + 100, START + 200]);
+  let asks = 1;
+  for (let hour = START + 101; hour <= START + 200; hour++) if (hour > proof[1]) asks++;
+  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
 });
