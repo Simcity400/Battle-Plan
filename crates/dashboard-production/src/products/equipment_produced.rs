@@ -1,15 +1,15 @@
 
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::{LoadContext, Product};
-use dashboard_world::products::{group_members::GroupsAt, identities::CountryIdentityRun};
-use super::production_spending::{self as spending, Content, Domain, Read, Span, StockVariantName, runs::{Piece, pieces}};
+use dashboard_world::products::group_members::GroupsAt;
+use super::production_spending::{self as spending, Content, Domain, Read, Span};
 use dashboard_base::Source;
 use dashboard_query::{
     Query, cost,
     identity::Holder,
-    series::{ranked::GroupSelection, totals::{Clock, Gap, TotalRun}},
+    series::{ranked::GroupSelection, totals::Gap},
 };
-use replay_lanes::lanes::{self, Cell, Keys, Step};
+use replay_lanes::lanes::{self, Keys};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{ProducedValueRow, ProductionCoverageRow, ProductionTypeTotalRow, TableId};
 use serde::{Deserialize, Serialize};
@@ -22,15 +22,12 @@ use std::{
 use ts_rs::TS;
 
 mod measure;
-#[cfg(test)]
-mod reference;
+pub mod tiles;
 mod value;
 
-use value::{Amount, Choice, Counted, Coverage, DesignRow, RocketRow, Totals};
+use value::{Amount, Choice, Coverage, DesignRow, RocketRow};
 
-pub struct EquipmentProduced;
 pub struct EquipmentProducedTypes;
-pub struct EquipmentProducedCountry;
 pub struct EquipmentProducedAt;
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -74,62 +71,7 @@ pub enum ProducedUnknown {
     OutOfRange,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ProducedGap {
-    pub run: u32,
-    pub reason: ProducedUnknown,
-}
-
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ProducedSeries {
-    pub first_hours: Vec<i32>,
-    pub last_hours: Vec<i32>,
-    #[doc = " Raw values (fixed5 for IC); null is not known, never a partial sum."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number | null>"))]
-    pub values: Vec<Option<i64>>,
-    #[doc = " Why each run without a value is not known."]
-    pub unknown: Vec<ProducedGap>,
-    #[doc = " Runs starting another holder's or stretch's totals: nothing is measured across them."]
-    pub breaks: Vec<u32>,
-}
-
 const MAX_EXACT: i128 = (1 << 53) - 1;
-
-impl ProducedSeries {
-    fn append(&mut self, pieces: &[Piece<Amount>], breaks: bool) {
-        for (index, &(first, last, amount)) in pieces.iter().enumerate() {
-            let (value, reason) = match amount {
-                Amount::Known(value) if value.abs() <= MAX_EXACT => (Some(value as i64), None),
-                Amount::Known(_) => (None, Some(ProducedUnknown::OutOfRange)),
-                Amount::Unknown(reason) => (None, Some(reason)),
-            };
-            let starts = index == 0 && breaks;
-            let open = self.first_hours.len();
-            let joined = !starts
-                && open > 0
-                && self.last_hours[open - 1].checked_add(1) == Some(first)
-                && self.values[open - 1] == value
-                && self.unknown.last().filter(|gap| gap.run as usize == open - 1).map(|gap| gap.reason) == reason;
-            if joined {
-                self.last_hours[open - 1] = last;
-                continue;
-            }
-            self.first_hours.push(first);
-            self.last_hours.push(last);
-            self.values.push(value);
-            if let Some(reason) = reason {
-                self.unknown.push(ProducedGap { run: open as u32, reason });
-            }
-            if starts {
-                self.breaks.push(open as u32);
-            }
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -141,70 +83,6 @@ pub struct ProducedType {
 }
 
 pub const UNRECORDED_TYPE: &str = ":unrecorded";
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EquipmentProducedParams {
-    pub branch_id: String,
-    #[doc = " Chosen countries; none with a top N."]
-    #[serde(default)]
-    pub countries: Vec<Country>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub top: Option<u32>,
-    #[doc = " The hour a top N is ranked at: the view's last hour, or the cursor."]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub rank_hour: Option<i32>,
-    pub count: ProducedCount,
-    pub measure: ProducedMeasure,
-    #[doc = " Type keys counted together; none counts every type."]
-    #[serde(default)]
-    pub types: Vec<String>,
-    #[doc = " Count what ship refit lines deliver."]
-    pub refits: bool,
-    #[doc = " The window of hours asked ([`super::windows`])."]
-    pub window: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ProducedLine {
-    #[doc = " The country asked, or a ranked country's tag."]
-    pub country: Country,
-    #[doc = " The tag it goes by at the window's last hour."]
-    pub tag: String,
-    pub identities: Vec<CountryIdentityRun>,
-    pub series: ProducedSeries,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct EquipmentProducedReply {
-    pub branch_id: String,
-    pub count: ProducedCount,
-    pub measure: ProducedMeasure,
-    #[doc = " Fixed-point decimals of every value: 0 for units, 5 for IC."]
-    pub decimals: u8,
-    pub types: Vec<String>,
-    #[doc = " For a top N, the hour it was ranked at; its lines are then in rank order, greatest first,"]
-    #[doc = " only countries that delivered something."]
-    pub rank_hour: Option<i32>,
-    pub window: u32,
-    #[doc = " The hours the window holds of the timeline; first past last where it holds none."]
-    pub first_hour: i32,
-    pub last_hour: i32,
-    pub lines: Vec<ProducedLine>,
-    #[doc = " Hours production lines' output was read in the window, ascending, whichever lines are shown: a value is"]
-    #[doc = " as of the latest read."]
-    pub reads: Vec<i32>,
-    #[doc = " The hour each observation counting over the window began, the first maybe before it."]
-    pub observations: Vec<i32>,
-    pub warnings: Vec<String>,
-}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -225,52 +103,6 @@ pub struct ProducedTypesReply {
     #[doc = " The type with the most units delivered, every country together, at each run's end: the"]
     #[doc = " widget's type until one is chosen. Null when nothing was."]
     pub most_delivered: Option<String>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProducedCountryParams {
-    pub branch_id: String,
-    pub country: Country,
-    pub count: ProducedCount,
-    pub measure: ProducedMeasure,
-    pub refits: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ProducedModel {
-    pub variant: String,
-    pub rocket: bool,
-    pub type_key: String,
-    pub type_name: Option<String>,
-    pub domain: Option<Domain>,
-    #[doc = " False when the design's type was not recorded: it could be of any type."]
-    pub type_recorded: bool,
-    pub names: Vec<StockVariantName>,
-    pub series: ProducedSeries,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ProducedCountryReply {
-    pub branch_id: String,
-    pub tag: String,
-    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
-    pub asked: dashboard_base::products::Country,
-    pub count: ProducedCount,
-    pub measure: ProducedMeasure,
-    pub decimals: u8,
-    pub identities: Vec<CountryIdentityRun>,
-    pub models: Vec<ProducedModel>,
-    #[doc = " Every design together, lines and Rocket output: exact however it splits."]
-    pub total: ProducedSeries,
-    pub reads: Vec<i32>,
-    pub observations: Vec<i32>,
     pub warnings: Vec<String>,
 }
 
@@ -332,14 +164,7 @@ pub struct ProducedAtReply {
     pub warnings: Vec<String>,
 }
 
-dashboard_base::reply_warnings!(EquipmentProducedReply, ProducedTypesReply, ProducedCountryReply, ProducedAtReply);
-
-fn identities(query: &Query<'_>, tag: &Country) -> Vec<CountryIdentityRun> {
-    query.holders.runs(tag).iter().filter_map(|run| match run.holder {
-        Holder::Found { slot, id } => Some(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
-        Holder::Unresolved => None,
-    }).collect()
-}
+dashboard_base::reply_warnings!(ProducedTypesReply, ProducedAtReply);
 
 const COUNTRY_COLUMNS: [&str; 6] = ["units", "units_inexact", "spent", "units_without_refits", "units_without_refits_inexact", "spent_without_refits"];
 const COVERAGE_COLUMNS: [&str; 4] = ["observation_since", "units_unknown_from", "spending_unknown_from", "spending_reason"];
@@ -358,18 +183,6 @@ fn rocket_designs(id: u32) -> (u128, u128) {
     (u128::from(id) << 64 | 1, u128::from(id) << 64 | u128::from(u64::MAX))
 }
 
-fn totals(number: impl Fn(usize) -> Option<i64>) -> Totals {
-    let (units, units_without_refits) = (number(0), number(3));
-    Totals {
-        units: units.unwrap_or(0),
-        units_inexact: number(1).unwrap_or(1) + i64::from(units.is_none()),
-        spent: number(2),
-        units_without_refits: units_without_refits.unwrap_or(0),
-        units_without_refits_inexact: number(4).unwrap_or(1) + i64::from(units_without_refits.is_none()),
-        spent_without_refits: number(5),
-    }
-}
-
 fn coverage(number: impl Fn(usize) -> Option<i64>) -> Coverage {
     let hour = |at| number(at).and_then(|hour| i32::try_from(hour).ok());
     Coverage { observation: hour(0), units_unknown_from: hour(1), spending_unknown_from: hour(2), reason: number(3).map_or(0, |code| code as u8) }
@@ -378,26 +191,6 @@ fn coverage(number: impl Fn(usize) -> Option<i64>) -> Coverage {
 fn rocket_row(number: impl Fn(usize) -> Option<i64>) -> RocketRow {
     let units = number(0);
     RocketRow { units: units.unwrap_or(0), units_exact: units.is_some() && number(1) == Some(1), spent: number(2).unwrap_or(0) }
-}
-
-fn sweep<'r>(tracks: &[&'r [Step]], first: i32, last: i32, mut each: impl FnMut(i32, &[Option<&'r [Cell]>])) {
-    let mut next = vec![0usize; tracks.len()];
-    let mut cells: Vec<Option<&'r [Cell]>> = vec![None; tracks.len()];
-    let mut hour = first;
-    loop {
-        for (at, steps) in tracks.iter().enumerate() {
-            while let Some(step) = steps.get(next[at]).filter(|step| step.hour <= hour) {
-                cells[at] = step.cells.as_deref();
-                next[at] += 1;
-            }
-        }
-        each(hour, &cells);
-        let upcoming = tracks.iter().enumerate().filter_map(|(at, steps)| steps.get(next[at]).map(|step| step.hour)).min();
-        match upcoming {
-            Some(after) if after <= last => hour = after.max(hour + 1),
-            _ => break,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -433,22 +226,6 @@ fn runs(query: &Query<'_>) -> BTreeMap<u32, (i32, i32)> {
         held.1 = held.1.max(stretch.last);
     }
     out
-}
-
-#[cfg(test)]
-fn spellings(query: &Query<'_>, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
-    if tokens.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &[replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(tokens) }]))?;
-    let rows = frame.complete::<replay_data::rows::tables::LexicalTokens>().unwrap_or(&[]);
-    Ok(rows
-        .iter()
-        .filter_map(|row| {
-            let text = std::str::from_utf8(content_reader_parser::parser::c_string(&row.literal)).ok().filter(|text| !text.is_empty())?;
-            Some((row.token, text.to_owned()))
-        })
-        .collect())
 }
 
 fn branch_types(source: &Source, query: &Query<'_>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<BTreeMap<u32, BTreeMap<u32, Typed>>> {
@@ -488,36 +265,6 @@ fn ordered(types: &BTreeMap<u32, BTreeMap<u32, Typed>>) -> Vec<Typed> {
     let mut out: Vec<Typed> = by_key.into_values().collect();
     out.sort_by(|a, b| (a.order.is_none(), a.order, &a.kind.key).cmp(&(b.order.is_none(), b.order, &b.kind.key)));
     out
-}
-
-fn number<'c>(read: &'c Read, cells: Option<&'c [Cell]>) -> impl Fn(usize) -> Option<i64> + 'c {
-    move |column| cells.and_then(|cells| read.number(cells, column))
-}
-
-#[derive(Default)]
-struct Dated {
-    reads: BTreeSet<i32>,
-    observations: BTreeSet<i32>,
-    stretches: HashMap<(u32, i32, i32), Vec<i32>>,
-}
-
-impl Dated {
-    fn reads(&mut self, query: &Query<'_>, span: &Span) -> io::Result<Vec<i32>> {
-        let Some(stretch) = query.timeline.at(span.first).copied() else {
-            return Ok(Vec::new());
-        };
-        let key = (stretch.run, stretch.first, stretch.last);
-        if let std::collections::hash_map::Entry::Vacant(slot) = self.stretches.entry(key) {
-            slot.insert(reads_in(query, stretch.run, stretch.first, stretch.last)?);
-        }
-        let reads: Vec<i32> = self.stretches[&key].iter().copied().filter(|&read| span.first <= read && read <= span.last).collect();
-        self.reads.extend(&reads);
-        Ok(reads)
-    }
-
-    fn observed(&mut self, totals: &[Piece<measure::Counted>]) {
-        self.observations.extend(totals.iter().filter_map(|piece| (piece.2).1.0));
-    }
 }
 
 fn reads_in(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<i32>> {
@@ -592,18 +339,6 @@ fn amount_of_total(value: Result<i64, Gap>) -> Amount {
     }
 }
 
-fn series_of(runs: &[TotalRun]) -> ProducedSeries {
-    let mut series = ProducedSeries::default();
-    let mut at = 0;
-    while at < runs.len() {
-        let end = runs[at + 1..].iter().position(|run| run.opens).map_or(runs.len(), |offset| at + 1 + offset);
-        let pieces: Vec<Piece<Amount>> = runs[at..end].iter().map(|run| (run.first, run.last, amount_of_total(run.value))).collect();
-        series.append(&pieces, runs[at].opens);
-        at = end;
-    }
-    series
-}
-
 fn asked_parts(types: &BTreeMap<u32, BTreeMap<u32, Typed>>, asked: &[String]) -> BTreeMap<u32, Vec<u128>> {
     types
         .iter()
@@ -615,60 +350,6 @@ fn asked_parts(types: &BTreeMap<u32, BTreeMap<u32, Typed>>, asked: &[String]) ->
             (run, parts)
         })
         .collect()
-}
-
-fn reply(source: &Source, query: &Query<'_>, params: &EquipmentProducedParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<EquipmentProducedReply> {
-    window_reply(source, query, params, dashboard_world::products::windows::within(query, params.window)?, context, cancelled)
-}
-
-fn window_reply(source: &Source, query: &Query<'_>, params: &EquipmentProducedParams, (first, last): (i32, i32), context: &LoadContext, cancelled: &AtomicBool) -> io::Result<EquipmentProducedReply> {
-    let mut warnings = Vec::new();
-    let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
-    let measure = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
-    let line = dashboard_query::series::Line::new(query, series, measure)?;
-    let back = back_of(params.measure);
-    let back: Option<&dyn Fn(i32) -> Option<i32>> = back.as_ref().map(|back| back as &dyn Fn(i32) -> Option<i32>);
-    let mut met: BTreeSet<u32> = query.timeline.within(first, last).map(|stretch| stretch.run).collect();
-    if let (Some(_), Some(hour)) = (params.top, params.rank_hour) {
-        met.extend(query.timeline.at(hour).map(|stretch| stretch.run));
-    }
-    let mut notes = BTreeSet::new();
-    let types: BTreeMap<u32, BTreeMap<u32, Typed>> = match params.types.is_empty() {
-        true => met.iter().map(|&run| (run, BTreeMap::new())).collect(),
-        false => {
-            let content = Content::read(source, context, &mut warnings);
-            run_types(source, query, &content, &met, &mut notes)?
-        }
-    };
-    let parts = asked_parts(&types, &params.types);
-    let parts_of = |run: u32| parts.get(&run).cloned().unwrap_or_default();
-    dashboard_text::metadata::check_cancel(cancelled)?;
-    let tags = match (params.top, params.rank_hour) {
-        (Some(n), Some(hour)) => line.totals_ranked(hour, n as usize, &parts_of, back, &|value| value > 0)?.into_iter().map(Country::from).collect(),
-        _ => params.countries.clone(),
-    };
-    let shown = first <= last;
-    let runs = if shown { line.totals(&tags, &parts_of, back, first, last)? } else { vec![Vec::new(); tags.len()] };
-    let lines: Vec<ProducedLine> = tags.into_iter().zip(runs).map(|(country, runs)| ProducedLine { identities: identities(query, &country), tag: query.holders.name(&country, last), country, series: series_of(&runs) }).collect();
-    let clock = if shown { line.clock(first, last)? } else { Clock::default() };
-    warnings.extend(notes);
-    let reply = EquipmentProducedReply {
-        branch_id: params.branch_id.clone(),
-        count: params.count,
-        measure: params.measure,
-        decimals: decimals(params.count),
-        types: params.types.clone(),
-        rank_hour: params.top.and(params.rank_hour),
-        window: params.window,
-        first_hour: first,
-        last_hour: last,
-        lines,
-        reads: clock.reads,
-        observations: clock.since,
-        warnings,
-    };
-    dashboard_base::products::check_reply_budget(&reply)?;
-    Ok(reply)
 }
 
 fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams, context: &LoadContext) -> io::Result<ProducedTypesReply> {
@@ -709,55 +390,7 @@ fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams,
     })
 }
 
-struct DesignRows {
-    span: Span,
-    country: Read,
-    coverage: Read,
-    designs: Read,
-    world: Read,
-    rocket: Read,
-}
-
-impl DesignRows {
-    fn read(query: &Query<'_>, span: Span) -> io::Result<Self> {
-        let id = u128::from(span.id);
-        let (low, high) = rocket_designs(span.id);
-        Ok(Self {
-            country: Read::of(query, &span, TableId::ProductionCountryTotals, &COUNTRY_COLUMNS, Keys::These(&[id]))?,
-            coverage: Read::of(query, &span, TableId::ProductionCoverage, &COVERAGE_COLUMNS, Keys::These(&coverage_keys(span.id)))?,
-            designs: Read::of(query, &span, TableId::ProductionTotals, &DESIGN_COLUMNS, Keys::Range(id << 72, id << 72 | ((1u128 << 72) - 1)))?,
-            world: Read::of(query, &span, TableId::RocketProductionOutput, &["spent_raw"], Keys::These(&[0]))?,
-            rocket: Read::of(query, &span, TableId::RocketProductionOutput, &ROCKET_COLUMNS, Keys::Range(low, high))?,
-            span,
-        })
-    }
-
-    fn named(&self) -> BTreeMap<u64, u32> {
-        let mut out = BTreeMap::new();
-        for (key, steps) in &self.designs.history.keys {
-            let token = steps.iter().rev().filter_map(|step| step.cells.as_deref()).filter_map(|cells| self.designs.number(cells, 4)).find(|&token| token > 0);
-            let held = out.entry((key >> 8) as u64).or_insert(0);
-            if let Some(token) = token {
-                *held = token as u32;
-            }
-        }
-        for variant in self.rocket_variants() {
-            out.entry(variant).or_insert(0);
-        }
-        out
-    }
-
-    fn rocket_variants(&self) -> Vec<u64> {
-        self.rocket.history.keys.iter().map(|(key, _)| *key as u64).collect()
-    }
-}
-
 type DesignKey = (bool, u64);
-
-struct DesignValues {
-    designs: BTreeMap<DesignKey, Vec<Piece<measure::Counted>>>,
-    total: Vec<Piece<measure::Counted>>,
-}
 
 fn design_row(purpose: u8, read: impl Fn(usize) -> Option<i64>) -> DesignRow {
     let units = read(0);
@@ -770,142 +403,12 @@ fn design_row(purpose: u8, read: impl Fn(usize) -> Option<i64>) -> DesignRow {
     }
 }
 
-fn design_values(rows: &DesignRows, designs: &BTreeSet<DesignKey>, choice: Choice) -> DesignValues {
-    let span = &rows.span;
-    let id = u128::from(span.id);
-    let mut tracks = vec![rows.country.steps(id)];
-    tracks.extend(coverage_keys(span.id).map(|key| rows.coverage.steps(key)));
-    tracks.push(rows.world.steps(0));
-    let mut purpose_of: Vec<u8> = vec![0; tracks.len()];
-    let mut owned: Vec<(DesignKey, std::ops::Range<usize>)> = Vec::with_capacity(designs.len());
-    for &(rocket, variant) in designs {
-        let start = tracks.len();
-        if rocket {
-            tracks.push(rows.rocket.steps(id << 64 | u128::from(variant)));
-            purpose_of.push(0);
-        } else {
-            let low = id << 72 | u128::from(variant) << 8;
-            let from = rows.designs.history.keys.partition_point(|(key, _)| *key < low);
-            for (key, steps) in rows.designs.history.keys[from..].iter().take_while(|(key, _)| *key <= low | 0xff) {
-                tracks.push(steps.as_slice());
-                purpose_of.push(*key as u8);
-            }
-        }
-        owned.push(((rocket, variant), start..tracks.len()));
-    }
-    let mut steps_of: BTreeMap<DesignKey, Vec<(i32, measure::Counted)>> = BTreeMap::new();
-    let mut steps_total: Vec<(i32, measure::Counted)> = Vec::new();
-    let mut held_rocket: Vec<(Counted, Option<RocketRow>)> = Vec::new();
-    let mut purpose_rows: Vec<DesignRow> = Vec::new();
-    sweep(&tracks, span.first, span.last, |hour, cells| {
-        let country = cells[0].map(|at| totals(number(&rows.country, Some(at))));
-        let [own, lines, rocket_run] = [1, 2, 3].map(|at| cells[at].map(|held| coverage(number(&rows.coverage, Some(held)))));
-        let world = cells[4].is_some();
-        let observation = (lines.and_then(|row| row.observation), rocket_run.and_then(|row| row.observation));
-        let push = |steps: &mut Vec<(i32, measure::Counted)>, amount: Amount| {
-            if steps.last().is_none_or(|last| last.1 != (amount, observation)) {
-                steps.push((hour, (amount, observation)));
-            }
-        };
-        held_rocket.clear();
-        for (key, range) in &owned {
-            let amount = if key.0 {
-                let row = cells[range.start].map(|held| rocket_row(number(&rows.rocket, Some(held))));
-                held_rocket.push((Counted::Yes, row));
-                value::rocket_design(world, [own, rocket_run], row, hour, choice.count)
-            } else {
-                purpose_rows.clear();
-                for at in range.clone() {
-                    if let Some(held) = cells[at] {
-                        purpose_rows.push(design_row(purpose_of[at], number(&rows.designs, Some(held))));
-                    }
-                }
-                value::design(country.is_some(), lines, &purpose_rows, hour, choice)
-            };
-            push(steps_of.entry(*key).or_default(), amount);
-        }
-        let cells = value::Cells { country, lines, rocket_run, rocket_own: own, types: None, rocket_world: world, rocket: &held_rocket };
-        push(&mut steps_total, value::value(&cells, hour, choice));
-    });
-    let absent = (Amount::Unknown(ProducedUnknown::NotRecorded), (None, None));
-    DesignValues {
-        designs: steps_of.into_iter().map(|(key, steps)| (key, pieces(steps, span.first, span.last, absent))).collect(),
-        total: pieces(steps_total, span.first, span.last, absent),
-    }
-}
-
 fn unnamed(key: DesignKey) -> spending::Design {
     spending::Design { type_key: format!("{}variant/{}", spending::UNRESOLVED_MARK, key.1), name: None, domain: None, names: Vec::new() }
 }
 
 fn type_recorded(design: &spending::Design) -> bool {
     !design.type_key.starts_with(&format!("{}variant/", spending::UNRESOLVED_MARK))
-}
-
-fn country_reply(source: &Source, query: &Query<'_>, params: &ProducedCountryParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ProducedCountryReply> {
-    let mut read = Vec::new();
-    for span in spending::spans(query, &params.country) {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        read.push(DesignRows::read(query, span)?);
-    }
-    let mut designs: BTreeSet<DesignKey> = BTreeSet::new();
-    for rows in &read {
-        designs.extend(rows.designs.history.keys.iter().map(|(key, _)| (false, (key >> 8) as u64)));
-        designs.extend(rows.rocket_variants().into_iter().map(|variant| (true, variant)));
-    }
-    let mut warnings = Vec::new();
-    let content = Content::read(source, context, &mut warnings);
-    let mut notes = BTreeSet::new();
-    let mut dated = Dated::default();
-    let mut models: BTreeMap<DesignKey, ProducedModel> = BTreeMap::new();
-    let mut total = ProducedSeries::default();
-    let choice = Choice { count: params.count, refits: params.refits };
-    for rows in &read {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let span = &rows.span;
-        let values = design_values(rows, &designs, choice);
-        let reads = dated.reads(query, span)?;
-        dated.observed(&values.total);
-        total.append(&measure::measured(&values.total, &reads, params.measure), span.breaks);
-        let found = spending::designs(query, span, &rows.named(), &content, &mut notes)?;
-        for key in &designs {
-            let model = models.entry(*key).or_insert_with(|| {
-                let design = unnamed(*key);
-                ProducedModel { variant: key.1.to_string(), rocket: key.0, type_key: design.type_key, type_name: None, domain: None, type_recorded: false, names: Vec::new(), series: ProducedSeries::default() }
-            });
-            if let Some(design) = found.get(&key.1) {
-                model.type_recorded = type_recorded(design);
-                model.type_key.clone_from(&design.type_key);
-                model.type_name.clone_from(&design.name);
-                model.domain = design.domain;
-                for name in &design.names {
-                    if model.names.last().is_none_or(|last| (&last.name, last.known) != (&name.name, name.known)) {
-                        model.names.push(name.clone());
-                    }
-                }
-            }
-            if let Some(pieces) = values.designs.get(key) {
-                model.series.append(&measure::measured(pieces, &reads, params.measure), span.breaks);
-            }
-        }
-    }
-    warnings.extend(notes);
-    let reply = ProducedCountryReply {
-        branch_id: params.branch_id.clone(),
-        tag: query.holders.nearest_name(&params.country, query.timeline.last),
-        asked: params.country.clone(),
-        count: params.count,
-        measure: params.measure,
-        decimals: decimals(params.count),
-        identities: identities(query, &params.country),
-        models: models.into_values().collect(),
-        total,
-        reads: dated.reads.into_iter().collect(),
-        observations: dated.observations.into_iter().collect(),
-        warnings,
-    };
-    dashboard_base::products::check_reply_budget(&reply)?;
-    Ok(reply)
 }
 
 struct DesignsAt {
@@ -1070,49 +573,6 @@ fn branch(text: &str) -> io::Result<u64> {
     text.parse().map_err(|_| invalid("Invalid branch"))
 }
 
-impl Product for EquipmentProduced {
-    const KEY: &'static str = "equipment-produced";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = EquipmentProducedParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, rankHour: Read, count, measure, types, refits, window, "countries[]"];
-    type Reply = EquipmentProducedReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        for country in &params.countries {
-            validate_country(country)?;
-        }
-        match (params.countries.is_empty(), params.top, params.rank_hour) {
-            (true, Some(top), Some(_)) if top > 0 => Ok(()),
-            (true, Some(_), _) => Err("A top N names a size above zero and the hour it is ranked at"),
-            (false, None, _) => Ok(()),
-            (false, Some(_), _) => Err("Chosen countries or a top N, not both"),
-            (true, None, _) => Err("The request names no country and no top N"),
-        }
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            EquipmentProducedParams::decl(),
-            EquipmentProducedReply::decl(),
-            ProducedCount::decl(),
-            ProducedMeasure::decl(),
-            ProducedUnknown::decl(),
-            ProducedGap::decl(),
-            ProducedSeries::decl(),
-            ProducedLine::decl(),
-            CountryIdentityRun::decl(),
-        ]
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        reply(source, &query, params, context, cancelled)
-    }
-}
-
 impl Product for EquipmentProducedTypes {
     const KEY: &'static str = "equipment-produced-types";
     const CONTENT_DEPENDENT: bool = true;
@@ -1133,30 +593,6 @@ impl Product for EquipmentProducedTypes {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         types_reply(source, &query, params, context)
-    }
-}
-
-impl Product for EquipmentProducedCountry {
-    const KEY: &'static str = "equipment-produced-country";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = ProducedCountryParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, count, measure, refits];
-    type Reply = ProducedCountryReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_country(&params.country)
-    }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![ProducedCountryParams::decl(), ProducedCountryReply::decl(), ProducedModel::decl(), StockVariantName::decl()]
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        country_reply(source, &query, params, context, cancelled)
     }
 }
 
@@ -1206,6 +642,9 @@ pub struct EquipmentProducedRaceParams {
     #[serde(default)]
     pub types: Vec<String>,
     pub refits: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub from_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1269,8 +708,15 @@ fn race_reply(
     let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
     let measure = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
     let line = dashboard_query::series::Line::new(query, series, measure)?;
-    let back = back_of(params.measure);
-    let back: Option<&dyn Fn(i32) -> Option<i32>> = back.as_ref().map(|back| back as &dyn Fn(i32) -> Option<i32>);
+    let baseline = tiles::range_baseline(&line, query, params.measure, params.from_hour)?;
+    let fixed_back = back_of(params.measure);
+    let range_fn = |base: i32| move |read: i32| (read >= base).then_some(base);
+    let range_closure = baseline.map(range_fn);
+    let back: Option<&dyn Fn(i32) -> Option<i32>> = match (&range_closure, &fixed_back) {
+        (Some(func), _) => Some(func as &dyn Fn(i32) -> Option<i32>),
+        (None, Some(func)) => Some(func as &dyn Fn(i32) -> Option<i32>),
+        (None, None) => None,
+    };
     let mut met = BTreeSet::new();
     met.insert(stretch.run);
     let mut notes = BTreeSet::new();
@@ -1397,7 +843,7 @@ impl Product for EquipmentProducedRace {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = EquipmentProducedRaceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, count, measure, types, refits, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, count, measure, types, refits, fromHour: Start, "countries[]"];
     type Reply = EquipmentProducedRaceReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1417,7 +863,14 @@ impl Product for EquipmentProducedRace {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![EquipmentProducedRaceParams::decl(), EquipmentProducedRaceRow::decl(), EquipmentProducedRaceReply::decl()]
+        vec![
+            ProducedCount::decl(),
+            ProducedMeasure::decl(),
+            ProducedUnknown::decl(),
+            EquipmentProducedRaceParams::decl(),
+            EquipmentProducedRaceRow::decl(),
+            EquipmentProducedRaceReply::decl(),
+        ]
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -1428,7 +881,7 @@ impl Product for EquipmentProducedRace {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
@@ -1436,42 +889,7 @@ mod tests {
     use replay_frame::frame::TableView;
     use std::sync::Arc;
 
-    #[test]
-    fn a_series_joins_equal_neighbours_and_names_its_gaps_and_breaks() {
-        let mut series = ProducedSeries::default();
-        series.append(&[(0, 4, Amount::Known(3)), (5, 9, Amount::Unknown(ProducedUnknown::LostOutput)), (10, 12, Amount::Known(1 << 60))], false);
-        series.append(&[(13, 20, Amount::Known(1 << 60)), (21, 22, Amount::Known(4))], false);
-        series.append(&[(23, 30, Amount::Known(4))], true);
-        assert_eq!(series.first_hours, vec![0, 5, 10, 21, 23]);
-        assert_eq!(series.last_hours, vec![4, 9, 20, 22, 30]);
-        assert_eq!(series.values, vec![Some(3), None, None, Some(4), Some(4)]);
-        assert_eq!(series.unknown, vec![
-            ProducedGap { run: 1, reason: ProducedUnknown::LostOutput },
-            ProducedGap { run: 2, reason: ProducedUnknown::OutOfRange },
-        ]);
-        assert_eq!(series.breaks, vec![4]);
-    }
-
-    #[test]
-    fn a_part_that_is_not_the_tags_first_starts_afresh_and_its_runs_join_otherwise() {
-        let run = |first: i32, last: i32, value: Result<i64, Gap>, opens: bool| TotalRun { first, last, value, opens };
-        let series = series_of(&[
-            run(0, 9, Ok(2), false),
-            run(10, 19, Ok(2), false),
-            run(20, 29, Err(Gap::Cell { part: 7, reason: ProducedValueRow::TYPE_NOT_RECORDED }), false),
-            run(40, 49, Ok(2), true),
-            run(50, 59, Err(Gap::Restarted), false),
-        ]);
-        assert_eq!(series.first_hours, vec![0, 20, 40, 50]);
-        assert_eq!(series.values, vec![Some(2), None, Some(2), None]);
-        assert_eq!(series.unknown, vec![
-            ProducedGap { run: 1, reason: ProducedUnknown::TypeNotRecorded },
-            ProducedGap { run: 3, reason: ProducedUnknown::ObservationRestarted },
-        ]);
-        assert_eq!(series.breaks, vec![2]);
-    }
-
-    fn two_producers(name: &str, first: i32, last: i32) -> Source {
+    pub(super) fn two_producers(name: &str, first: i32, last: i32) -> Source {
         let frames = (first..=last)
             .map(|hour| {
                 let mut frame = source(1, hour, Some(1));
@@ -1498,129 +916,5 @@ mod tests {
             .collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         Source::from_replay(dashboard_base::SourceKey { source_id: name.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
-    }
-
-    fn params(tags: &[&str], top: Option<u32>, rank_hour: Option<i32>, count: ProducedCount, measure: ProducedMeasure, types: &[&str], window: u32) -> EquipmentProducedParams {
-        EquipmentProducedParams {
-            branch_id: "1".into(),
-            countries: tags.iter().map(|tag| Country::from(*tag)).collect(),
-            top,
-            rank_hour,
-            count,
-            measure,
-            types: types.iter().map(|key| (*key).to_owned()).collect(),
-            refits: false,
-            window,
-        }
-    }
-
-    fn join(series: &mut ProducedSeries, next: &ProducedSeries) {
-        for run in 0..next.first_hours.len() {
-            let amount = match next.values[run] {
-                Some(value) => Amount::Known(i128::from(value)),
-                None => Amount::Unknown(next.unknown.iter().find(|gap| gap.run as usize == run).map_or(ProducedUnknown::NotRecorded, |gap| gap.reason)),
-            };
-            series.append(&[(next.first_hours[run], next.last_hours[run], amount)], next.breaks.contains(&(run as u32)));
-        }
-    }
-
-    #[test]
-    fn a_top_n_with_nothing_ranked_at_the_first_hour_still_names_the_hours_production_was_read() {
-        const FIRST: i32 = 1_000;
-        const LAST: i32 = 1_100;
-        let frames = (FIRST..=LAST)
-            .map(|hour| {
-                let mut frame = source(1, hour, Some(1));
-                let output = ProductionLineOutputRow { line: 1, ordinal: 0, country: 9001, variant: 100, mio: 0, units: i64::from((hour - FIRST) / 24), since_hour: FIRST, observed_since_creation: true, ended: false, exact: true, spent_raw: Recorded::Value(None), purpose: Recorded::Value(1), ..Default::default() };
-                *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(vec![output]));
-                frame
-            })
-            .collect();
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "produced".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-        let query = dashboard_base::queries::query(&source, 1).unwrap();
-        let asked = params(&[], Some(10), Some(FIRST), ProducedCount::Units, ProducedMeasure::Day, &[], (FIRST / dashboard_world::products::windows::HOURS) as u32);
-        let reply = reply(&source, &query, &asked, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
-        assert!(reply.lines.is_empty(), "no day of production has passed at the first hour: nothing ranks");
-        assert_eq!((reply.first_hour, reply.last_hour), (FIRST, LAST), "the window is cut to the timeline");
-        assert_eq!(reply.reads, (FIRST..=LAST).step_by(24).collect::<Vec<_>>(), "production was read: the widget says a day is not known yet, never that production is not in the recording");
-    }
-
-    #[test]
-    fn countries_asked_together_have_the_lines_each_has_alone() {
-        const FIRST: i32 = 1_000;
-        let source = two_producers("produced-together", FIRST, 1_300);
-        let query = dashboard_base::queries::query(&source, 1).unwrap();
-        let ask = |tags: &[&str], measure: ProducedMeasure| reply(&source, &query, &params(tags, None, None, ProducedCount::Units, measure, &[], 0), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
-        for measure in [ProducedMeasure::Total, ProducedMeasure::Day] {
-            let together = ask(&["GER", "ITA"], measure);
-            let (germany, italy) = (ask(&["GER"], measure), ask(&["ITA"], measure));
-            assert_eq!(together.lines.iter().map(|line| line.tag.as_str()).collect::<Vec<_>>(), ["GER", "ITA"]);
-            assert_eq!(together.lines[0].series, germany.lines[0].series, "{measure:?}: Germany's line is its own, whoever is asked with it");
-            assert_eq!(together.lines[1].series, italy.lines[0].series, "{measure:?}: and Italy's");
-            assert_ne!(together.lines[0].series, together.lines[1].series, "{measure:?}: the two lines differ, so neither is the other's");
-            assert!(together.lines[1].series.values.iter().any(|value| value.is_some_and(|value| value > 0)), "{measure:?}: Italy's deliveries are counted");
-            for line in &together.lines {
-                assert!(line.series.unknown.iter().all(|gap| gap.reason != ProducedUnknown::RocketTableUnavailable), "{measure:?}: {}: the Rocket read is known, never a gap", line.tag);
-            }
-            assert_eq!(together.reads, germany.reads);
-            assert_eq!(together.observations, vec![FIRST]);
-        }
-    }
-
-    #[test]
-    fn windows_joined_equal_the_whole_branch_reply() {
-        const FIRST: i32 = 1_000;
-        const LAST: i32 = 2_400;
-        let source = two_producers("produced-windows", FIRST, LAST);
-        let query = dashboard_base::queries::query(&source, 1).unwrap();
-        let (context, running) = (LoadContext { content: None }, AtomicBool::new(false));
-        let measures = [ProducedMeasure::Total, ProducedMeasure::Day, ProducedMeasure::Week, ProducedMeasure::Month];
-        for measure in measures {
-            for count in [ProducedCount::Units, ProducedCount::Ic] {
-                for (tags, top) in [(&["GER", "ITA"][..], None), (&[][..], Some(5))] {
-                    for types in [&[][..], &[UNRECORDED_TYPE][..]] {
-                        let asked = params(tags, top, top.map(|_| LAST), count, measure, types, 0);
-                        let whole = reference::whole(&source, &query, &asked, &context, &running).unwrap();
-                        let named = whole.lines.iter().map(|line| line.tag.clone()).collect::<Vec<_>>();
-                        let mut joined = vec![ProducedSeries::default(); whole.lines.len()];
-                        let (mut reads, mut observations) = (BTreeSet::new(), BTreeSet::new());
-                        let mut hour = query.timeline.first;
-                        while hour <= query.timeline.last {
-                            let last = (hour + 69).min(query.timeline.last);
-                            let part = window_reply(&source, &query, &asked, (hour, last), &context, &running).unwrap();
-                            assert_eq!(part.lines.iter().map(|line| line.tag.clone()).collect::<Vec<_>>(), named, "{measure:?} {count:?} {types:?}: each window names the whole reply's lines");
-                            for (series, line) in joined.iter_mut().zip(&part.lines) {
-                                join(series, &line.series);
-                            }
-                            reads.extend(part.reads);
-                            observations.extend(part.observations);
-                            hour = last + 1;
-                        }
-                        for (line, series) in whole.lines.iter().zip(&joined) {
-                            assert_eq!(series, &line.series, "{measure:?} {count:?} {types:?} {}: the windows joined are the whole reply's line", line.tag);
-                        }
-                        assert_eq!(reads.into_iter().collect::<Vec<_>>(), whole.reads, "{measure:?} {count:?} {types:?}: the reads");
-                        if !whole.lines.is_empty() {
-                            assert_eq!(observations.into_iter().collect::<Vec<_>>(), whole.observations, "{measure:?} {count:?} {types:?}: the observations");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_sweep_visits_each_change_once_with_every_tracks_cells() {
-        let step = |hour: i32, value: Option<i64>| Step { hour, cells: value.map(|value| vec![Cell::Number(value)].into_boxed_slice()) };
-        let (one, two) = (vec![step(0, Some(1)), step(10, Some(2))], vec![step(5, Some(7)), step(10, None), step(30, Some(1))]);
-        let tracks: [&[Step]; 3] = [&one, &two, &[]];
-        let mut seen = Vec::new();
-        let number = |cells: Option<&[Cell]>| match cells.and_then(|cells| cells.first()) {
-            Some(Cell::Number(value)) => Some(*value),
-            _ => None,
-        };
-        sweep(&tracks, 0, 20, |hour, cells| seen.push((hour, cells.iter().map(|cells| number(*cells)).collect::<Vec<_>>())));
-        assert_eq!(seen, vec![(0, vec![Some(1), None, None]), (5, vec![Some(1), Some(7), None]), (10, vec![Some(2), None, None])]);
     }
 }

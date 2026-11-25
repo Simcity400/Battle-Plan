@@ -1,12 +1,8 @@
-import { clipToSpans, runAt } from '../series.ts';
-import type { Run, Span } from '../series';
+import { runAt } from '../series.ts';
+import type { Run } from '../series';
 import type { TooltipContent, TooltipRow } from '../tooltip';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-
-export function shownRuns(runs: readonly Run[], membership: readonly Span[] | null, range: Span): Run[] {
-  return clipToSpans(membership ? clipToSpans(runs, membership) : runs, [range]);
-}
 
 export type LabelAt = (hour: number) => CountryLabel;
 
