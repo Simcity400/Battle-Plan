@@ -8,9 +8,14 @@ export interface LogKindFilterItem {
   readonly label: string;
   readonly group?: string;
   readonly checked: boolean;
+  readonly country?: string;
+  readonly detail?: string;
+  readonly icon?: string;
+  readonly note?: string;
 }
 
 export interface LogKindFilterProps {
+  readonly single?: { readonly label: string; readonly icon?: string; readonly pinned: boolean; readonly countryTag?: string; readonly countryLabel?: string; readonly countryFlag?: string };
   readonly slot: HTMLElement | null | undefined;
   readonly allLabel: string;
   readonly noun: string;
@@ -24,6 +29,7 @@ export interface LogKindFilterProps {
 export default function LogKindFilter({
   slot,
   allLabel,
+  single,
   noun,
   items,
   compact = false,
@@ -35,24 +41,30 @@ export default function LogKindFilter({
   const menu = usePopover('end');
   const [query, setQuery] = useState('');
 
+  const [country, setCountry] = useState('');
+  const [kind, setKind] = useState('');
+  const countries = useMemo(() => [...new Set(items.flatMap(item => item.country ? [item.country] : []))].sort(), [items]);
+  const kinds = useMemo(() => [...new Set(items.flatMap(item => item.detail ? [item.detail] : []))].sort(), [items]);
   const selectedCount = items.filter(item => item.checked).length;
   const allSelected = items.length > 0 && selectedCount === items.length;
-  const label = allSelected || items.length === 0
+  const label = single?.label ?? (allSelected || items.length === 0
     ? allLabel
     : selectedCount === 0
       ? `No ${noun}`
       : selectedCount === 1
         ? items.find(item => item.checked)!.label
-        : `${selectedCount} of ${items.length} ${noun}`;
+        : `${selectedCount} of ${items.length} ${noun}`);
 
-  const showSearch = items.length >= searchThreshold;
+  const showSearch = single || items.length >= searchThreshold;
   const filtered = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
+    if (single) return items.filter(item => (!country || item.country === country) && (!kind || item.detail === kind)
+      && (!trimmed || item.label.toLowerCase().includes(trimmed)));
     if (!trimmed) return items;
     return items.filter(item => item.label.toLowerCase().includes(trimmed) || (item.group?.toLowerCase().includes(trimmed) ?? false));
-  }, [items, query]);
+  }, [items, query, country, kind, single]);
 
-  if (!slot || items.length === 0) return null;
+  if (!slot || (items.length === 0 && !single)) return null;
 
   const grouped = new Map<string, LogKindFilterItem[]>();
   for (const item of filtered) {
@@ -62,6 +74,7 @@ export default function LogKindFilter({
     list.push(item);
   }
 
+  const oneCountry = countries.length === 1 && single?.countryTag === countries[0];
   return createPortal(
     <>
       <button
@@ -74,47 +87,59 @@ export default function LogKindFilter({
         aria-label={`Filter ${noun}: ${label}`}
         data-tooltip={`Filter ${noun}`}
       >
-        <Icon name="filter" className="dash-widget-filter-icon" />
+        {single?.icon ? <img className="tf-picker-icon" src={single.icon} alt="" /> : <Icon name={single ? "helmet" : "filter"} className="dash-widget-filter-icon" />}
         {!compact && <span>{label}</span>}
         {!compact && <Icon name="chevron-down" className="dash-view-menu-chevron" />}
       </button>
-      <Popover menu={menu} id={id} role="menu" className="log-kind-filter-menu" aria-label={`Filter ${noun}`}>
+      <Popover menu={menu} id={id} role="menu" className={single ? 'log-kind-filter-menu tf-subject-picker' : 'log-kind-filter-menu'} aria-label={`Filter ${noun}`}>
         {menu.open ? (
           <>
             {showSearch ? (
               <div className="log-kind-filter-search">
+                {single && <Icon name="search" />}
                 <input
                   type="search"
                   value={query}
                   onChange={event => setQuery(event.target.value)}
-                  placeholder={`Search ${items.length} ${noun}`}
+                  placeholder={single ? `Search ${noun}` : `Search ${items.length} ${noun}`}
                   aria-label={`Search ${noun}`}
                 />
               </div>
             ) : null}
+            {single && <div className="tf-picker-facets">
+              <label>{oneCountry && single?.countryFlag && <img alt="" src={single.countryFlag} />}
+              <select aria-label="Country" value={country} onChange={event => setCountry(event.target.value)}>
+                <option value="">{oneCountry ? single?.countryLabel ?? countries[0] : 'All countries'}</option>{countries.length > 1 && countries.map(value => <option key={value}>{value}</option>)}
+              </select></label>
+              <select aria-label="Kind" value={kind} onChange={event => setKind(event.target.value)}>
+                <option value="">All kinds</option>{kinds.map(value => <option key={value}>{value}</option>)}
+              </select>
+            </div>}
             <div className="log-kind-filter-list themed-scrollbar">
               {[...grouped.entries()].map(([group, list]) => (
                 <div key={group}>
                   {group ? <div className="log-kind-filter-group">{group}</div> : null}
-                  {list.map(item => (
+                  <div className={single ? "tf-picker-options themed-scrollbar" : undefined}>{list.map(item => (
                     <button
                       key={item.value}
                       type="button"
-                      role="menuitemcheckbox"
+                      role={single ? 'menuitemradio' : 'menuitemcheckbox'}
                       className="menu-item"
                       aria-checked={item.checked}
-                      onClick={() => onToggle(item.value, !item.checked)}
+                      onClick={() => { onToggle(item.value, !item.checked); if (single) menu.close(); }}
                     >
+                      {single && (item.icon ? <img className="tf-picker-icon" alt="" src={item.icon} /> : <Icon name="helmet" />)}
                       <span className="menu-item-label">{item.label}</span>
+                      {item.detail && <small>{item.detail}</small>}{item.note && <small>{item.note}</small>}
                       {item.checked ? <Icon name="check" /> : null}
                     </button>
-                  ))}
+                  ))}</div>
                 </div>
               ))}
             </div>
-            {!allSelected ? (
+            {(single ? single.pinned : !allSelected) ? (
               <div className="log-kind-filter-footer">
-                <button type="button" className="log-kind-filter-all" onClick={() => { onSelectAll(); setQuery(''); }}>
+                <button type="button" className="log-kind-filter-all" onClick={() => { onSelectAll(); setQuery(''); if (single) menu.close(); }}>
                   {allLabel}
                 </button>
               </div>

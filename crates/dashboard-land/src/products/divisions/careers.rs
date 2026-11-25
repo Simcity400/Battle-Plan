@@ -1,9 +1,9 @@
 
-use dashboard_base::products::Country;
+pub mod service_record;
 use super::{Content, Countries, Refusals, attributed, find, token_key};
-use dashboard_base::{Source, catalogue, products::{LoadContext, at_hour::{At, AtHour, Keys, Read}}};
+use dashboard_base::{Source, catalogue, products::{LoadContext, at_hour::{At, AtHour}}};
 use crate::products::army::ArmyAttribution;
-use dashboard_query::{coverage::{Witness, witnessed}, identity::Holder};
+use dashboard_query::coverage::witnessed;
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
@@ -27,18 +27,6 @@ const TABLES: [TableId; 9] = [
     TableId::DivisionTemplateIcons,
     TableId::LexicalTokens,
 ];
-
-pub struct DivisionCareers;
-pub struct DivisionRecord;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DivisionCareersParams {
-    pub branch_id: String,
-    #[doc = " The countries whose divisions rank; none ranks every country's."]
-    pub countries: Option<Vec<Country>>,
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -97,20 +85,6 @@ pub struct CareerRow {
     pub name_missing: Option<String>,
     pub facts: CareerFacts,
 }
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct DivisionCareersReply {
-    pub divisions: Vec<CareerRow>,
-    pub medals: Vec<CareerMedal>,
-    pub templates: Vec<CareerTemplate>,
-    #[doc = " Why divisions are unknown at this hour, when they are."]
-    pub missing: Option<String>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(DivisionCareersReply);
 
 pub struct DecoratedDivisions;
 
@@ -179,106 +153,8 @@ pub struct DecoratedDivisionsReply {
 
 dashboard_base::reply_warnings!(DecoratedDivisionsReply);
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DivisionRecordParams {
-    pub branch_id: String,
-    #[doc = " The division's full native handle."]
-    pub division: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct RecordEntry {
-    pub award: bool,
-    pub ordinal: u32,
-    #[doc = " The entry's game date."]
-    pub hour: i32,
-    pub description: Option<String>,
-    pub description_missing: Option<String>,
-    pub provinces: Vec<u32>,
-    #[doc = " The awarded medal, by index into the reply's medals."]
-    pub medal: Option<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct DivisionRecordReply {
-    pub division: String,
-    #[doc = " The division is not in service at this hour."]
-    pub absent: bool,
-    pub tag: Option<String>,
-    pub template: Option<CareerTemplate>,
-    pub name: Option<String>,
-    pub name_missing: Option<String>,
-    pub facts: Option<CareerFacts>,
-    pub medals: Vec<CareerMedal>,
-    pub entries: Vec<RecordEntry>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(DivisionRecordReply);
-
 fn branch(id: &str) -> Result<(), &'static str> {
     id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
-}
-
-impl AtHour for DivisionCareers {
-    const KEY: &'static str = "division-careers";
-    const TITLE: &'static str = "Division careers";
-    const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
-    type Params = DivisionCareersParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
-    type Reply = DivisionCareersReply;
-    type Context = Content;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            DivisionCareersParams::decl(),
-            DivisionCareersReply::decl(),
-            CareerRow::decl(),
-            CareerFacts::decl(),
-            CareerAward::decl(),
-            CareerMedal::decl(),
-            CareerTemplate::decl(),
-        ]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        for tag in params.countries.iter().flatten() {
-            dashboard_base::products::validate_country(tag)?;
-        }
-        branch(&params.branch_id)
-    }
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        TABLES.to_vec()
-    }
-
-    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(Content::load(source, load))
-    }
-
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let slots = params.countries.as_ref().map(|tags| {
-            tags.iter()
-                .filter_map(|tag| match at.holders.at(tag, at.hour).map(|run| run.holder) {
-                    Some(Holder::Found { slot, .. }) => Some(slot),
-                    _ => None,
-                })
-                .collect::<Vec<u32>>()
-        });
-        let mut refusals = Refusals::default();
-        let mut reply = careers(frame, slots.as_deref(), at, &mut refusals)?;
-        reply.warnings = refusals.lines();
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
 }
 
 impl AtHour for DecoratedDivisions {
@@ -301,7 +177,7 @@ impl AtHour for DecoratedDivisions {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![DecoratedDivisionsParams::decl(), DecoratedDivisionsReply::decl(), DecoratedRank::decl(), CountryHours::decl()]
+        vec![DecoratedDivisionsParams::decl(), DecoratedDivisionsReply::decl(), DecoratedRank::decl(), CountryHours::decl(), CareerRow::decl(), CareerFacts::decl(), CareerAward::decl(), CareerMedal::decl(), CareerTemplate::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -353,76 +229,6 @@ impl AtHour for DecoratedDivisions {
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
-}
-
-impl AtHour for DivisionRecord {
-    const KEY: &'static str = "division-record";
-    const TITLE: &'static str = "Division record";
-    const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
-    type Params = DivisionRecordParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, division];
-    type Reply = DivisionRecordReply;
-    type Context = Content;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![DivisionRecordParams::decl(), DivisionRecordReply::decl(), RecordEntry::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.division.parse::<u64>().map_err(|_| "Invalid division")?;
-        branch(&params.branch_id)
-    }
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables = TABLES.to_vec();
-        tables.extend([TableId::Provinces, TableId::States]);
-        tables.extend_from_slice(dashboard_text::scripted_text::TABLES);
-        tables.sort_unstable();
-        tables.dedup();
-        tables
-    }
-
-    fn reads(params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
-        if step != 0 {
-            let template = witnessed::<tables::Divisions>(held, u128::from(division(params))).row().map(|row| row.template);
-            return match (step, template) {
-                (1, Some(template)) => vec![Read::these(TableId::DivisionTemplateIcons, [u128::from(template)])],
-                _ => Vec::new(),
-            };
-        }
-        let id = division(params);
-        let history = u128::from(id) << 34;
-        let mut reads: Vec<Read> = Self::tables(params)
-            .into_iter()
-            .filter(|table| !matches!(table, TableId::Divisions | TableId::DivisionStatus | TableId::DivisionLandInputs | TableId::DivisionHistory | TableId::DivisionTemplateIcons))
-            .map(Read::all)
-            .collect();
-        reads.extend([
-            Read::these(TableId::Divisions, [u128::from(id)]),
-            Read::these(TableId::DivisionStatus, [u128::from(id)]),
-            Read::these(TableId::DivisionLandInputs, [u128::from(id)]),
-            Read { table: TableId::DivisionHistory, keys: Keys::Range(history, history | ((1 << 34) - 1)) },
-        ]);
-        reads
-    }
-
-    fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(Content::load(source, load))
-    }
-
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut refusals = Refusals::default();
-        let mut reply = record(frame, division(params), at, &mut refusals)?;
-        reply.warnings = refusals.lines();
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-
-fn division(params: &DivisionRecordParams) -> u64 {
-    params.division.parse().unwrap_or(0)
 }
 
 #[derive(Default)]
@@ -565,48 +371,6 @@ fn status_of(frame: &DecodedFrame, division: u64) -> Option<&DivisionStatusRow> 
 fn manpower_of(frame: &DecodedFrame, division: u64) -> Option<i32> {
     let row = witnessed::<tables::DivisionLandInputs>(frame, u128::from(division)).row()?;
     Some(row.manpower.iter().fold(0i32, |sum, part| sum.wrapping_add(part.amount)))
-}
-
-fn careers(frame: &DecodedFrame, slots: Option<&[u32]>, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DivisionCareersReply> {
-    let mut reply = DivisionCareersReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), missing: None, warnings: Vec::new() };
-    let divisions = match frame.complete::<tables::Divisions>() {
-        Ok(rows) => rows,
-        Err(why) => {
-            reply.missing = Some(format!("Divisions were not read at this hour: {why}"));
-            return Ok(reply);
-        }
-    };
-    let content = at.context;
-    let countries = Countries::read(frame)?.named(at.holders, at.hour);
-    let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
-    let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
-    content.group_notes(refusals);
-    let mut templates = BTreeMap::<u64, ()>::new();
-    for division in divisions.iter().filter(|row| row.reveal_skip == 0) {
-        if reply.divisions.len().is_multiple_of(1024) {
-            dashboard_text::metadata::check_cancel(at.cancelled)?;
-        }
-        let raw = attributed(division, ArmyAttribution::Owner);
-        if let Some(slots) = slots
-            && !countries.slot(raw).is_some_and(|slot| slots.contains(&slot))
-        {
-            continue;
-        }
-        let status = status_of(frame, division.id);
-        let (name, name_missing) = refusals.keep(content.division_name(status));
-        let facts = facts.of(history_of(history, division.id), status, manpower_of(frame, division.id), refusals);
-        templates.insert(division.template, ());
-        reply.divisions.push(CareerRow { division: division.id.to_string(), tag: countries.tag(raw), template: division.template.to_string(), name, name_missing, facts });
-    }
-    for template in templates.into_keys() {
-        reply.templates.push(CareerTemplate {
-            template: template.to_string(),
-            name: refusals.keep(content.template_name(frame, template)).0,
-            icon: refusals.keep(content.template_icon(frame, template)).0,
-        });
-    }
-    reply.medals = facts.medals.medals;
-    Ok(reply)
 }
 
 #[derive(Clone, Debug)]
@@ -810,65 +574,6 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     Ok(reply)
 }
 
-fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DivisionRecordReply> {
-    let mut reply = DivisionRecordReply {
-        division: division.to_string(),
-        absent: false,
-        tag: None,
-        template: None,
-        name: None,
-        name_missing: None,
-        facts: None,
-        medals: Vec::new(),
-        entries: Vec::new(),
-        warnings: Vec::new(),
-    };
-    let row = match witnessed::<tables::Divisions>(frame, u128::from(division)) {
-        Witness::Row(row) => row,
-        Witness::Absent => {
-            reply.absent = true;
-            return Ok(reply);
-        }
-        Witness::NotRecorded(why) => return Err(io::Error::new(io::ErrorKind::InvalidData, why)),
-    };
-    let content = at.context;
-    content.group_notes(refusals);
-    let (countries, links_missing) = Countries::witnessed(frame);
-    if let Some(why) = links_missing {
-        refusals.note(format!("Division countries unavailable: {why}"));
-    }
-    let countries = countries.named(at.holders, at.hour);
-    reply.tag = countries.tag(attributed(row, ArmyAttribution::Owner));
-    let status = status_of(frame, division);
-    (reply.name, reply.name_missing) = refusals.keep(content.division_name(status));
-    reply.template = Some(CareerTemplate {
-        template: row.template.to_string(),
-        name: refusals.keep(content.template_name(frame, row.template)).0,
-        icon: refusals.keep(content.template_icon(frame, row.template)).0,
-    });
-    let history = history_of(frame.complete::<tables::DivisionHistory>().unwrap_or(&[]), division);
-    let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
-    reply.facts = Some(facts.of(history, status, manpower_of(frame, division), refusals));
-    if reply.facts.as_ref().is_some_and(|facts| facts.history_missing.is_none()) {
-        for entry in history.iter().filter(|row| row.list != DivisionHistoryRow::SUMMARY) {
-            let award = entry.list == DivisionHistoryRow::AWARDS;
-            if award && entry.medal_enabled == 0 {
-                continue;
-            }
-            let medal = if award { entry.medal_token.and_then(|token| facts.medals.index(frame, token, entry.medal_definition, content, refusals)) } else { None };
-            let description = if award {
-                medal.and_then(|at| facts.medals.medals[at].name.clone()).ok_or_else(|| "Medal name unavailable".to_owned())
-            } else {
-                describe(frame, entry, content, &countries)
-            };
-            let (description, description_missing) = refusals.keep(description);
-            reply.entries.push(RecordEntry { award, ordinal: entry.ordinal, hour: entry.hour, description, description_missing, provinces: entry.provinces.clone(), medal });
-        }
-    }
-    reply.medals = facts.medals.medals;
-    Ok(reply)
-}
-
 fn province_name(frame: &DecodedFrame, text: &dashboard_text::scripted_text::ScriptedText<'_>, province: u32) -> Result<String, String> {
     if let Some(name) = text.province_display_name_primary(province)? {
         return catalogue::plain_text(&name);
@@ -888,6 +593,9 @@ fn describe(frame: &DecodedFrame, entry: &DivisionHistoryRow, content: &Content,
         return dashboard_text::scripted_text::stored_text(loc, &cat.recorded_language, &ship.ship_name, "Sunk ship name");
     }
     let subject = dashboard_text::scripted_text::stored_text(loc, &cat.recorded_language, &entry.name, "Entry subject")?;
+    if matches!(entry.kind, 12 | 13) && !subject.is_empty() {
+        return Ok(subject);
+    }
     let country = if entry.target_country == 0 {
         String::new()
     } else {

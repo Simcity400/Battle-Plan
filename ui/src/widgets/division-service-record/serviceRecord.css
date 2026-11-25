@@ -1,8 +1,0 @@
-.service-record { display: flex; flex-direction: column; height: 100%; min-height: 0; container-type: inline-size; }
-.service-record-subject { margin: 0; padding: 0 var(--space-4) var(--space-2); font-size: var(--type-xs); color: var(--muted); }
-.service-record-header { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: var(--space-3); padding: 0 var(--space-4) var(--space-3); }
-.service-record-header > img, .service-record-header > .art-fallback { grid-row: span 2; width: var(--space-7, 40px); height: var(--space-6); object-fit: contain; }
-.service-record-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.service-record-header small { color: var(--muted); font-size: var(--type-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.service-record .log { flex: 1; min-height: 0; }
-@container (max-width: 420px) { .service-record-header small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; } }

@@ -466,6 +466,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'division-service-record',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'division-service-record',
+      DEFAULT_VIEW,
+      () => import('../division-service-record/serviceRecordProjection.ts'),
+      mod => ({ projection: mod.serviceRecordProjection, declaration: mod.serviceRecordDeclaration }),
+    ),
+  },
+  {
     kind: 'division-log',
     view: DEFAULT_VIEW,
     family: 'table',

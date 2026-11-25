@@ -219,6 +219,7 @@ struct Filtered {
 pub struct Index<P> {
     entries: Vec<Occurrence<P>>,
     by_subject: HashMap<u128, Vec<u32>>,
+    subject_gaps: HashMap<u128, Vec<MissingSpan>>,
     gaps: Vec<MissingSpan>,
     live: u64,
     filtered: Mutex<VecDeque<(Signature, Arc<Filtered>)>>,
@@ -378,7 +379,12 @@ impl<P> Index<P> {
         gaps.retain(|gap| gap.first_hour <= gap.last_hour);
         gaps.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
         let live = live.iter().fold(0u64, |mask, &state| mask | 1 << state);
-        Ok(Self { entries, by_subject, gaps, live, filtered: Mutex::default() })
+        Ok(Self { entries, by_subject, subject_gaps: HashMap::new(), gaps, live, filtered: Mutex::default() })
+    }
+
+    pub fn with_subject_gaps(mut self, gaps: HashMap<u128, Vec<MissingSpan>>) -> Self {
+        self.subject_gaps = gaps.into_iter().map(|(subject, spans)| (subject, merge_missing_spans(spans))).collect();
+        self
     }
 
     pub fn len(&self) -> usize {
@@ -463,7 +469,10 @@ impl<P> Index<P> {
         let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
         changes.sort_unstable();
         unattributed.sort_unstable();
-        let unknown = members.map_or_else(Vec::new, |members| members.unknown);
+        let mut unknown = members.map_or_else(Vec::new, |members| members.unknown);
+        if let Some(spans) = signature.subject.and_then(|id| self.subject_gaps.get(&id)) {
+            unknown.extend_from_slice(spans);
+        }
         let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown });
         let mut kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
         kept.push_back((signature, Arc::clone(&made)));

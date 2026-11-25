@@ -82,7 +82,7 @@ export interface WidgetMeta {
   defaultTime: 'follow' | 'campaign';
   scope: 'moment' | 'history';
   data: boolean;
-  countrySelection?: boolean;
+  countrySelection?: boolean | 'settings';
   factionColours?: boolean;
   history: boolean;
   minSize: { w: number; h: number };
