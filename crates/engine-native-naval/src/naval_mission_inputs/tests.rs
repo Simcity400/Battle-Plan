@@ -161,9 +161,45 @@ fn task_force_row_keeps_every_efficiency_operand() {
     put_u32(&mut docked, TASK + LOCAL_MODIFIERS + 8, u32::MAX);
     let row = read_row(&docked, &mut vec![0; 2]).unwrap();
     assert_eq!((row.region, row.local), (0, [Value::default(); 9]));
-    let mut stray = bytes;
+    let mut stray = bytes.clone();
     put_u64(&mut stray, PROVINCE, 1_u64);
     assert!(read_row(&stray, &mut vec![0; 2]).is_err());
+
+    struct HealingHeader<'a> {
+        good: &'a [u8],
+        bad_header: [u8; 16],
+        reads: std::cell::Cell<usize>,
+    }
+    impl Memory for HealingHeader<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let header = TASK + LOCAL_MODIFIERS;
+            if address == header && destination.len() == 16 {
+                let seen = self.reads.get();
+                self.reads.set(seen + 1);
+                if seen == 0 {
+                    destination.copy_from_slice(&self.bad_header);
+                    return true;
+                }
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.good,
+            }
+            .copy(address, destination)
+        }
+    }
+    let mut bad_header = [0_u8; 16];
+    bad_header[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    let healing = HealingHeader {
+        good: &bytes,
+        bad_header,
+        reads: std::cell::Cell::new(0),
+    };
+    assert_eq!(
+        read_task_force(&healing, 0, visit(ESCORT), &mut vec![0; 2]),
+        Err("modifier accumulator header unreadable or invalid")
+    );
+    assert_eq!(healing.reads.get(), 1);
 }
 
 #[test]

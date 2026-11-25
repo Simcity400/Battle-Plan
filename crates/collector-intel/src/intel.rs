@@ -7724,12 +7724,33 @@ mod tests {
         assert_eq!(tokens[0].target, 0);
         assert!(tokens[0].tokens.is_empty());
         assert_eq!(tokens[1].tokens, [u32::MAX, 2, 2, 0]);
-        let variables = &complete::<tables::ScriptVariables>(&views[8])[0].entries;
-        assert_eq!(variables[0].name, b"x");
-        assert_eq!(variables[1].name, [0xff, 0]);
+        let scope = &complete::<tables::ScriptVariables>(&views[8])[0];
         assert_eq!(
-            (variables[0].value_raw, variables[1].value_raw),
-            (i64::MAX, i64::MIN)
+            (scope.scope_kind, scope.scope_id, scope.seed),
+            (COUNTRY_SCOPE, u32::MAX, rows::Recorded::Value(Some(u32::MAX)))
+        );
+        assert!(scope.entries.is_empty());
+        let var_names = complete::<tables::ScriptVariableNames>(
+            &views[table_slot(TableId::ScriptVariableNames)],
+        );
+        let var_values = complete::<tables::ScriptVariableValues>(
+            &views[table_slot(TableId::ScriptVariableValues)],
+        );
+        let mut variables: Vec<(&[u8], i64)> = var_values
+            .iter()
+            .map(|row| {
+                assert_eq!((row.scope_kind, row.scope_id), (COUNTRY_SCOPE, u32::MAX));
+                let name = var_names
+                    .iter()
+                    .find(|entry| entry.id == row.var_id)
+                    .expect("interned script variable name");
+                (name.name.as_slice(), row.value_raw)
+            })
+            .collect();
+        variables.sort_unstable_by_key(|&(name, _)| name);
+        assert_eq!(
+            variables,
+            [(&b"x"[..], i64::MAX), (&[0xff, 0][..], i64::MIN)]
         );
         capture.operatives.rows[0].cooldown_kind = None;
         capture.operatives.rows[0].cooldown_start_hour = None;

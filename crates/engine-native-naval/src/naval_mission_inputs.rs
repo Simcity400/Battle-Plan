@@ -423,18 +423,13 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
         if !local_modifiers_copied {
             return Err("modifier accumulator header unreadable or invalid");
         }
-        let local_empty = Array::from_header(
+        let local_array = Array::from_header(
             bytes[128..144].try_into().expect("local modifier header"),
             engine_native_parts::modifier_entry::STRIDE,
         )
-        .is_some_and(|array| array.count == 0);
-        if !local_empty {
-            accumulator::lookup_many_at(
-                memory,
-                at(task, LOCAL_MODIFIERS)?,
-                &TASK_FORCE_KEYS,
-                &mut row.local,
-            )?;
+        .ok_or("modifier accumulator header unreadable or invalid")?;
+        if local_array.count != 0 {
+            accumulator::lookup_many_in(memory, local_array, &TASK_FORCE_KEYS, &mut row.local)?;
         }
     }
     let attached = Array::from_header(bytes[40..56].try_into().expect("header"), 8)

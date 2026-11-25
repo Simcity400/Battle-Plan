@@ -667,7 +667,7 @@ fn quiet_snapshot_publishes_cow_changes_without_copying_flat_arenas() {
             .iter()
             .map(|e| (&grown_names[e.name_start..e.name_start + e.name_len], e.value_raw))
             .collect::<Vec<_>>(),
-        vec![(&b"country"[..], 20), (&b"cow_var"[..], 99)]
+        vec![(&b"country_var"[..], 200_000), (&b"cow_var"[..], 99)]
     );
 }
 

@@ -164,6 +164,55 @@ fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
     );
     assert_eq!(required, 10);
     assert_eq!(&links[..10], &[701, 31, 702, 32, 31, 801, 32, 802, 32, 803]);
+
+    struct OneShot<'a> {
+        inner: &'a Mem,
+        fail: usize,
+        hits: std::cell::Cell<usize>,
+    }
+    impl Memory for OneShot<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address <= self.fail && self.fail < address.saturating_add(destination.len()) {
+                let seen = self.hits.get();
+                self.hits.set(seen + 1);
+                if seen == 0 {
+                    return false;
+                }
+            }
+            self.inner.copy(address, destination)
+        }
+    }
+    let state_ptr_addr = Array::read(&m, GS + cgame_state::STATES, 8)
+        .unwrap()
+        .element(2, 8)
+        .unwrap();
+    let ptr_fault = OneShot {
+        inner: &m,
+        fail: state_ptr_addr,
+        hits: std::cell::Cell::new(0),
+    };
+    let (mut r, mut l, mut req) = (vec![CoreRow::default(); 2], vec![0; 16], 0);
+    assert_eq!(
+        state_cores(&ptr_fault, 0, GS, &[1, 2], &|_| true, &mut r, &mut l, &mut req),
+        Outcome::Unavailable {
+            reason: "state pointer unreadable"
+        }
+    );
+    assert_eq!(ptr_fault.hits.get(), 1);
+    let prov_fault = OneShot {
+        inner: &m,
+        fail: 0x4645_0000 + cprovince::ID,
+        hits: std::cell::Cell::new(0),
+    };
+    let (mut r, mut l, mut req) = (vec![CoreRow::default(); 2], vec![0; 16], 0);
+    assert_eq!(
+        state_cores(&prov_fault, 0, GS, &[1, 2], &|_| true, &mut r, &mut l, &mut req),
+        Outcome::Unavailable {
+            reason: "state province id unreadable or zero"
+        }
+    );
+    assert_eq!(prov_fault.hits.get(), 1);
+
     province(&mut m, 1, 0x4645_0000, 32, STATE_B, &[802]);
     assert!(matches!(run(&m).0, Outcome::Unavailable { .. }));
 }

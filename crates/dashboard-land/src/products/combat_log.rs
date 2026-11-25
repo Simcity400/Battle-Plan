@@ -535,6 +535,17 @@ impl Product for CombatLog {
         let available = |table: TableId| -> io::Result<Option<String>> {
             Ok(replay_lanes::lanes::available_reads(recording, run, table, hour, hour)?.is_empty().then(|| format!("{}: not recorded at this hour", table.words())))
         };
+        let complete = |table: TableId| -> io::Result<Option<String>> {
+            if !replay_lanes::lanes::complete_reads(recording, run, table, hour, hour)?.is_empty() {
+                return Ok(None);
+            }
+            let why = if replay_lanes::lanes::available_reads(recording, run, table, hour, hour)?.is_empty() {
+                "not recorded at this hour"
+            } else {
+                "truncated at this hour"
+            };
+            Ok(Some(format!("{}: {why}", table.words())))
+        };
         let split_observers = recording.predates(TableId::LandCombatResultObservers.index()).is_none();
         let mut availability = CombatLogAvailability {
             groups: unavailable(&frame, &[TableId::CombatLogGroups]),
@@ -548,7 +559,7 @@ impl Product for CombatLog {
             terminal: available(TableId::LandCombatResults)?,
         };
         if split_observers && availability.terminal.is_none() {
-            availability.terminal = available(TableId::LandCombatResultObservers)?;
+            availability.terminal = complete(TableId::LandCombatResultObservers)?;
         }
         if availability.battles.is_none() {
             availability.battles = available(TableId::CombatLogBattleModifiers)?;

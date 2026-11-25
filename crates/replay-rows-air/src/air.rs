@@ -810,18 +810,43 @@ mod tests {
             region: 2,
             enabled: Some(0),
             supply: Recorded::Value(Some(legacy_summary)),
-            ..Default::default()
+            supply_severity: Recorded::NotRecorded,
+            supply_needed: Recorded::NotRecorded,
+            supply_supplied: Recorded::NotRecorded,
+            supply_deficit_extra: Recorded::NotRecorded,
         };
         assert_eq!(legacy.supply_summary(), Recorded::Value(Some(legacy_summary)));
+        let mut legacy_wire = Vec::new();
+        let skipped = legacy.encode_recorded_fields(&mut legacy_wire).unwrap();
+        assert_eq!(skipped, 0b111100);
+        let mut decoder = Decoder::new(&legacy_wire);
+        decoder.recorded_fields = 2;
+        let decoded = AirGroundCrewRow::decode_fields(legacy.key(), &mut decoder).unwrap();
+        decoder.finish().unwrap();
+        assert_eq!(decoded, legacy);
+        assert_eq!(decoded.supply_summary(), Recorded::Value(Some(legacy_summary)));
 
-        let unrecorded = AirGroundCrewRow { country: 1, region: 2, ..Default::default() };
+        let unrecorded = AirGroundCrewRow {
+            country: 1,
+            region: 2,
+            enabled: None,
+            supply: Recorded::NotRecorded,
+            supply_severity: Recorded::NotRecorded,
+            supply_needed: Recorded::NotRecorded,
+            supply_supplied: Recorded::NotRecorded,
+            supply_deficit_extra: Recorded::NotRecorded,
+        };
         assert_eq!(unrecorded.supply_summary(), Recorded::NotRecorded);
 
         let partial = AirGroundCrewRow {
             country: 1,
             region: 2,
+            enabled: None,
+            supply: Recorded::NotRecorded,
             supply_severity: Recorded::Value(Some(1)),
-            ..Default::default()
+            supply_needed: Recorded::NotRecorded,
+            supply_supplied: Recorded::NotRecorded,
+            supply_deficit_extra: Recorded::NotRecorded,
         };
         assert_eq!(partial.supply_summary(), Recorded::NotRecorded);
     }

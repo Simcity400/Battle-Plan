@@ -3225,11 +3225,24 @@ pub mod tests {
             );
             captured.capture_naming_holding(&memory, world.base, &seeds, Some(store), &watches);
             store.hold(captured.attack.epoch());
+            let span = |(at, len): cname_group_member::Span| {
+                captured.names.first[at..at + len].to_vec()
+            };
             let rows: Vec<_> = captured.naming.first[..captured.naming.len]
                 .iter()
                 .map(|row| {
                     (
-                        row.inputs,
+                        row.inputs.map(|inputs| {
+                            (
+                                inputs.kind,
+                                inputs.order,
+                                inputs.ordered,
+                                inputs.programmatic,
+                                span(inputs.custom),
+                                span(inputs.group),
+                                inputs.template,
+                            )
+                        }),
                         row.cached_name
                             .map(|(at, len)| captured.cached_names.first[at..at + len].to_vec()),
                     )

@@ -3019,7 +3019,7 @@ mod carry_cost_bench {
         held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(held.outcomes(), [Outcome::Rows { len: 1 }]);
         assert!(held.store.accumulators.is_empty());
-        assert_eq!(held.store.accumulator((0x1000, 1, 0)), &[][..]);
+        assert!(held.store.accumulator((0x1000, 1, 0)).is_empty());
 
         drop(watches.notify(fleet::ship(1), 0));
         seed_range(&mut held, 1..2);

@@ -326,32 +326,19 @@ fn state_cores_buffer(
                     .element(ids[index], 8)
                     .ok_or("state pointer unreadable")?;
             }
-            if records(
-                memory,
-                &ptr_addrs[..count],
+            let copied_ptrs = memory.copy_records(
+                RecordSources::Pointers(&ptr_addrs[..count]),
                 &ITEM_LAYOUT,
-                &mut ptr_bytes,
-                "state pointer unreadable",
-            )
-            .is_ok()
-            {
-                for index in 0..count {
-                    pointers[index] = usize::try_from(u64_at(&ptr_bytes, index * 8))
-                        .ok()
-                        .filter(|&pointer| pointer != 0)
-                        .ok_or("state pointer null")?;
-                }
-            } else {
-                let mut words = [0_u8; 8];
-                for index in 0..count {
-                    if !memory.copy(ptr_addrs[index], &mut words) {
-                        return Err("state pointer unreadable");
-                    }
-                    pointers[index] = usize::try_from(u64::from_le_bytes(words))
-                        .ok()
-                        .filter(|&pointer| pointer != 0)
-                        .ok_or("state pointer null")?;
-                }
+                &mut ptr_bytes[..count * 8],
+            );
+            for index in 0..copied_ptrs {
+                pointers[index] = usize::try_from(u64_at(&ptr_bytes, index * 8))
+                    .ok()
+                    .filter(|&pointer| pointer != 0)
+                    .ok_or("state pointer null")?;
+            }
+            if copied_ptrs < count {
+                return Err("state pointer unreadable");
             }
             records(
                 memory,
@@ -385,68 +372,72 @@ fn state_cores_buffer(
                     if !memory.copy(start, &mut prov_ptr_bytes[..chunk * 8]) {
                         return Err("state province pointer unreadable or null");
                     }
+                    let mut live = 0;
+                    let mut overflow = None;
                     for slot in 0..chunk {
-                        prov_ptrs[slot] = usize::try_from(u64_at(&prov_ptr_bytes, slot * 8))
+                        let ptr = usize::try_from(u64_at(&prov_ptr_bytes, slot * 8))
                             .ok()
                             .filter(|&pointer| pointer != 0)
                             .ok_or("state province pointer unreadable or null")?;
+                        if let Err(reason) = address(ptr, cprovince::STATE)
+                            .and_then(|_| address(ptr, cprovince::ID))
+                            .and_then(|_| address(ptr, cprovince::STRATEGIC_LOCATIONS))
+                        {
+                            overflow = Some(reason);
+                            break;
+                        }
+                        prov_ptrs[slot] = ptr;
+                        live += 1;
                     }
-                    if records(
-                        memory,
-                        &prov_ptrs[..chunk],
+                    let copied_fields = memory.copy_records(
+                        RecordSources::Pointers(&prov_ptrs[..live]),
                         &PROVINCE_LAYOUT,
-                        &mut prov_records,
-                        "state province disagrees with its state",
-                    )
-                    .is_ok()
-                    {
-                        for slot in 0..chunk {
-                            let prec =
-                                &prov_records[slot * PROVINCE_RECORD..(slot + 1) * PROVINCE_RECORD];
-                            if u64_at(prec, 0) != province_vtable
-                                || u64_at(prec, 8) != pointers[index] as u64
-                            {
-                                return Err("state province disagrees with its state");
-                            }
-                            let id = u32_at(prec, 16);
-                            if id == 0 {
-                                return Err("state province id unreadable or zero");
-                            }
-                            let tokens = Array::from_header(header16(prec, 20), 4)
-                                .ok_or("province strategic location list invalid")?;
-                            if tokens.count != 0 {
-                                province_count = province_count
-                                    .checked_add(tokens.count as usize)
-                                    .ok_or("state core link count overflow")?;
-                                if province_tokens.len() == province_tokens.capacity() {
-                                    crate::allocation::reserve(&mut province_tokens, 1).map_err(
-                                        |_| "province strategic location allocation failed",
-                                    )?;
-                                }
-                                province_tokens.push((id, tokens));
-                            }
+                        &mut prov_records[..live * PROVINCE_RECORD],
+                    );
+                    let complete = copied_fields / PROVINCE_FIELDS.len();
+                    for slot in 0..complete {
+                        let prec =
+                            &prov_records[slot * PROVINCE_RECORD..(slot + 1) * PROVINCE_RECORD];
+                        if u64_at(prec, 0) != province_vtable
+                            || u64_at(prec, 8) != pointers[index] as u64
+                        {
+                            return Err("state province disagrees with its state");
                         }
-                    } else {
-                        for slot in 0..chunk {
-                            let (id, tokens) = province_locations(
-                                memory,
-                                provinces,
-                                ordinal + slot as u32,
-                                province_vtable,
-                                pointers[index],
-                            )?;
-                            if tokens.count != 0 {
-                                province_count = province_count
-                                    .checked_add(tokens.count as usize)
-                                    .ok_or("state core link count overflow")?;
-                                if province_tokens.len() == province_tokens.capacity() {
-                                    crate::allocation::reserve(&mut province_tokens, 1).map_err(
-                                        |_| "province strategic location allocation failed",
-                                    )?;
-                                }
-                                province_tokens.push((id, tokens));
-                            }
+                        let id = u32_at(prec, 16);
+                        if id == 0 {
+                            return Err("state province id unreadable or zero");
                         }
+                        let tokens = Array::from_header(header16(prec, 20), 4)
+                            .ok_or("province strategic location list invalid")?;
+                        if tokens.count != 0 {
+                            province_count = province_count
+                                .checked_add(tokens.count as usize)
+                                .ok_or("state core link count overflow")?;
+                            if province_tokens.len() == province_tokens.capacity() {
+                                crate::allocation::reserve(&mut province_tokens, 1).map_err(
+                                    |_| "province strategic location allocation failed",
+                                )?;
+                            }
+                            province_tokens.push((id, tokens));
+                        }
+                    }
+                    if complete < live {
+                        let prec = &prov_records
+                            [complete * PROVINCE_RECORD..(complete + 1) * PROVINCE_RECORD];
+                        let partial = copied_fields % PROVINCE_FIELDS.len();
+                        if partial == 0 || u64_at(prec, 0) != province_vtable {
+                            return Err("state province disagrees with its state");
+                        }
+                        if partial == 1 || u64_at(prec, 8) != pointers[index] as u64 {
+                            return Err("state province disagrees with its state");
+                        }
+                        if partial == 2 || u32_at(prec, 16) == 0 {
+                            return Err("state province id unreadable or zero");
+                        }
+                        return Err("province strategic location list invalid");
+                    }
+                    if let Some(reason) = overflow {
+                        return Err(reason);
                     }
                     ordinal += chunk as u32;
                 }
@@ -516,32 +507,6 @@ fn state_cores_buffer(
         })
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
-}
-
-fn province_locations(
-    memory: &impl Memory,
-    provinces: Array,
-    ordinal: u32,
-    vtable: u64,
-    state: usize,
-) -> Result<(u32, Array), &'static str> {
-    let pointer = provinces
-        .element(ordinal, 8)
-        .and_then(|at| read::<u64>(memory, at))
-        .and_then(|pointer| usize::try_from(pointer).ok())
-        .filter(|&pointer| pointer != 0)
-        .ok_or("state province pointer unreadable or null")?;
-    if read::<u64>(memory, pointer) != Some(vtable)
-        || read::<u64>(memory, address(pointer, cprovince::STATE)?) != Some(state as u64)
-    {
-        return Err("state province disagrees with its state");
-    }
-    let id = read::<u32>(memory, address(pointer, cprovince::ID)?)
-        .filter(|&id| id != 0)
-        .ok_or("state province id unreadable or zero")?;
-    let tokens = Array::read(memory, address(pointer, cprovince::STRATEGIC_LOCATIONS)?, 4)
-        .ok_or("province strategic location list invalid")?;
-    Ok((id, tokens))
 }
 
 fn copy_paired_tokens(
