@@ -31,7 +31,7 @@ import type {
   TimeChartModel,
   TimeChartSeriesModel,
 } from './model.ts';
-import { branchGapsOf, headReading, missingSpansOf, withinMapOf, type HeadReading } from './seriesHelpers.ts';
+import { branchGapsOf, headReading, missingSpansOf, type HeadReading } from './seriesHelpers.ts';
 import { chartAxis, chartWindow, lineChartSettings, type LineChartSettings } from './settings.ts';
 
 const COLOURED = 8;
@@ -281,7 +281,7 @@ export function factionTotalsLinesSources(
   const ownerScope = group
     ? `group:${group.type}:${group.id ?? group.tag ?? ''}:${group.membership ?? 'hour'}`
     : aggregated
-      ? 'members'
+      ? `members:${ctx.countries.tags.join(',')}`
       : `factions:${membership}:${top ?? 'all'}`;
   const owner = `${ownerPrefix}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${kind}:${measure}:${ownerScope}`;
   if (emptyAgg) return { owner, entries: [], allowEmptyFollow: true };
@@ -323,13 +323,12 @@ export function factionTotalsLinesSources(
     };
   }
 
-  const tileTags = group ? ['group'] : aggregated ? ctx.countries.tags : factionSpansFor(ctx).map(item => item.id);
-  const within = aggregated && !group ? withinMapOf(ctx.countries.membership) : undefined;
+  const tileTags = aggregated ? ['group'] : factionSpansFor(ctx).map(item => item.id);
   const tileFamily: Record<string, unknown> = {
     kind: 'faction-group-lines',
     sourceKind: kind,
     measure,
-    ...(group ? { group } : !aggregated ? { membership } : {}),
+    ...(group ? { group } : members ? { members } : { membership }),
   };
   const entries: SourceEntry[] = [];
   if (tileTags.length > 0) {
@@ -341,7 +340,6 @@ export function factionTotalsLinesSources(
         coverage: group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: tileTags },
         family: tileFamily,
         tags: tileTags,
-        ...(within ? { within } : {}),
       },
     });
   }
