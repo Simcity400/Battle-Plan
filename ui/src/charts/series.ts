@@ -234,20 +234,6 @@ export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
   });
 }
 
-export function sameStretch(runs: readonly Breakable[], from: number, to: number): boolean {
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
-  const first = Math.min(from, to);
-  const last = Math.max(from, to);
-  let index = runIndexAt(runs, first);
-  if (index < 0) return false;
-  while (runs[index].lastHour < last) {
-    const next = runs[index + 1];
-    if (!next || breaksBefore(next) || next.firstHour !== runs[index].lastHour + 1) return false;
-    index++;
-  }
-  return true;
-}
-
 export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: readonly Span[]): T[] {
   const ordered = <S extends Span>(list: readonly S[]) =>
     list.every((item, index) => index === 0 || list[index - 1].firstHour <= item.firstHour) ? list : [...list].sort((a, b) => a.firstHour - b.firstHour);

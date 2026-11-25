@@ -140,34 +140,6 @@ pub(crate) fn either(a: &Option<ProductionSpendingUnknown>, b: &Option<Productio
     a.or(*b)
 }
 
-pub(crate) fn union(mut spans: Vec<(i32, i32)>, first: i32, last: i32) -> Vec<Piece<bool>> {
-    spans.sort_unstable();
-    let mut held: Vec<(i32, i32)> = Vec::new();
-    for (a, b) in spans {
-        match held.last_mut() {
-            Some(open) if a <= open.1.saturating_add(1) => open.1 = open.1.max(b),
-            _ => held.push((a, b)),
-        }
-    }
-    let mut out = Vec::new();
-    let mut at = first;
-    for (a, b) in held {
-        let (a, b) = (a.max(first), b.min(last));
-        if a > b {
-            continue;
-        }
-        if a > at {
-            out.push((at, a - 1, false));
-        }
-        out.push((a, b, true));
-        at = b + 1;
-    }
-    if at <= last {
-        out.push((at, last, false));
-    }
-    out
-}
-
 pub(crate) fn read_at(reads: &[i32], hour: i32) -> Option<i32> {
     let at = reads.partition_point(|&read| read <= hour);
     at.checked_sub(1).map(|at| reads[at])
@@ -214,9 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn presence_is_the_union_of_rows_and_reads_date_an_empty_census() {
-        assert_eq!(union(vec![(12, 15), (3, 5), (6, 8), (30, 50)], 0, 20), vec![(0, 2, false), (3, 8, true), (9, 11, false), (12, 15, true), (16, 20, false)]);
-        assert_eq!(union(Vec::new(), 0, 4), vec![(0, 4, false)]);
+    fn reads_date_an_empty_census() {
         assert_eq!(read_at(&[4, 28, 52], 30), Some(28));
         assert_eq!(read_at(&[4, 28, 52], 3), None);
     }

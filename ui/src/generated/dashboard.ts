@@ -2486,117 +2486,17 @@ bad: Array<[number, number, number]>,
  */
 convoys: Array<Array<[number, number, number]>>, };
 export type ConvoyResource = { id: number, token: string, name: string | null, };
-export type ProductionSpendingParams = { branchId: string, country: CountryRef,
+export type ProductionSpendingScope = "military" | "dockyards" | "dockyardPurposes" | "airPurposes" | "landPurposes";
+export type ProductionSpendingParams = { branchId: string, country: CountryRef, hour: number, scope: ProductionSpendingScope, includeRefits: boolean, };
+export type ProductionSpendingReply = {
 /**
- * Also read the producer's dockyard repair rates.
+ * The branch's first hour: spending is counted from it.
  */
-repairs: boolean,
+from: number, hour: number,
 /**
- * The window of hours asked ([`super::windows`]): running totals over its hours alone.
+ * Everything in the reply stands unchanged from `hour` through this hour.
  */
-window: number, };
-export type ProductionSpendingReply = { branchId: string, tag: string, decimals: number,
-/**
- * Hours either output was read, ascending.
- */
-reads: Array<number>,
-/**
- * The hour each observation began: running totals count from it.
- */
-observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
-/**
- * One leaf per design and purpose, and per Rocket design.
- */
-leaves: Array<ProductionSpendingLeaf>,
-/**
- * Every purpose and Rocket output.
- */
-total: Array<ProductionSpendingRun>,
-/**
- * Every purpose but refits, and Rocket output.
- */
-totalWithoutRefits: Array<ProductionSpendingRun>,
-/**
- * Production lines alone, every purpose.
- */
-equipmentTotal: Array<ProductionSpendingRun>,
-/**
- * Production lines alone, every purpose but refits.
- */
-equipmentTotalWithoutRefits: Array<ProductionSpendingRun>, rocketTotal: Array<ProductionSpendingRun>, production: Array<ProductionPresenceRun>,
-/**
- * Asked with `repairs`: none otherwise.
- */
-repairs: RepairRates | null, window: number,
-/**
- * The hours the window holds of the timeline; first past last where it holds none.
- */
-firstHour: number, lastHour: number, warnings: Array<string>, };
-export type ProductionSpendingUnknown = "notRecorded" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "observationMismatch" | "countryChanged" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "rocketDesignUnreadable";
-export type ProductionPurpose = "new" | "refit" | "converted" | "unknown";
-export type Domain = "land" | "air" | "naval";
-export type StockVariantName = {
-/**
- * The read these names are from; they hold until the next entry.
- */
-firstHour: number,
-/**
- * The variant's display name; null when content does not name it, or when
- * not known.
- */
-name: string | null,
-/**
- * False from an hour the variant's names stopped being known (a gap, or a due
- * read of the variant table that did not land) until the next entry.
- */
-known: boolean,
-/**
- * The design's fingerprint as read then (`equipment::design_fingerprint`: its
- * name, modules and upgrade levels); null where not known. A saved variant
- * choice carries it, so a later branch's other design under the same handle
- * is never taken for it.
- */
-design: string | null, };
-export type ProductionSpendingRun = { firstHour: number, lastHour: number,
-/**
- * Decimal string of the fixed5 total; null is unknown, never a partial sum.
- */
-totalRaw: string | null, reason: ProductionSpendingUnknown | null,
-/**
- * The run starts another holder's or another stretch's totals: nothing is measured across it.
- */
-breakBefore?: boolean, };
-export type ProductionSpendingLeaf = { variant: string, typeKey: string, name: string | null, domain: Domain | null, rocket: boolean,
-/**
- * What the input was for; null for Rocket output, which records none.
- */
-purpose: ProductionPurpose | null,
-/**
- * For input whose purpose was not recorded: the summed magnitudes of it, dated evidence that
- * grows and never cancels; empty when there never was any.
- */
-unproven: Array<ProductionSpendingRun>, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
-export type ProductionPresenceRun = { firstHour: number, lastHour: number,
-/**
- * Any line or Rocket output of the producer; null cannot certify emptiness.
- */
-present: boolean | null,
-/**
- * The output read that found none, where present is false.
- */
-emptyCensusHour: number | null, };
-export type RepairRatePart = { variant: string | null,
-/**
- * The design's equipment type, or its recorded token when content cannot resolve it; empty
- * for the unattributed part.
- */
-typeKey: string, name: string | null, domain: Domain | null, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
-export type RepairRates = { denominator: number, total: Array<ProductionSpendingRun>,
-/**
- * The repaired designs' rates and the unattributed rest, which sum to the total wherever each
- * is known.
- */
-parts: Array<RepairRatePart>, };
+through: number, breakdown: Breakdown, warnings: Array<string>, };
 export type ProductionSpendingMonthsParams = { branchId: string, country: CountryRef, domain: Domain, repairs: boolean, firstHour: number, lastHour: number, };
 export type SpendingMonthBandSpec = { id: string, label: string, remainder: boolean, denominator: number, };
 export type SpendingMonthPart = { raw: string | null, value: number | null, reason: string | null, uncertain: boolean, };
@@ -4018,6 +3918,7 @@ types: Array<ProducedType>,
  */
 mostDelivered: string | null, warnings: Array<string>, };
 export type ProducedType = { key: string, name: string | null, domain: Domain | null, };
+export type Domain = "land" | "air" | "naval";
 export type ProducedCountryParams = { branchId: string, country: CountryRef, count: ProducedCount, measure: ProducedMeasure, refits: boolean, };
 export type ProducedCountryReply = { branchId: string, tag: string,
 /**
@@ -4033,6 +3934,28 @@ export type ProducedModel = { variant: string, rocket: boolean, typeKey: string,
  * False when the design's type was not recorded: it could be of any type.
  */
 typeRecorded: boolean, names: Array<StockVariantName>, series: ProducedSeries, };
+export type StockVariantName = {
+/**
+ * The read these names are from; they hold until the next entry.
+ */
+firstHour: number,
+/**
+ * The variant's display name; null when content does not name it, or when
+ * not known.
+ */
+name: string | null,
+/**
+ * False from an hour the variant's names stopped being known (a gap, or a due
+ * read of the variant table that did not land) until the next entry.
+ */
+known: boolean,
+/**
+ * The design's fingerprint as read then (`equipment::design_fingerprint`: its
+ * name, modules and upgrade levels); null where not known. A saved variant
+ * choice carries it, so a later branch's other design under the same handle
+ * is never taken for it.
+ */
+design: string | null, };
 export type ProducedAtParams = { branchId: string, country: CountryRef, hour: number, measure: ProducedMeasure, refits: boolean, };
 export type ProducedAtReply = { branchId: string, tag: string,
 /**
@@ -7211,7 +7134,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "production-licences": { "hour": "read" },
   "production-line-breakdown": { "hour": "read" },
   "production-lines-at": { "hour": "read" },
-  "production-spending": {},
+  "production-spending": { "hour": "end" },
   "production-spending-months": { "firstHour": "start", "lastHour": "end" },
   "raid-log": { "from": "start", "to": "end" },
   "raid-log-tail": { "hour": "read", "from": "start", "to": "end" },
@@ -7405,7 +7328,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
   "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "handle": "leaf", "hour": "leaf" },
   "production-lines-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "order": "leaf" },
-  "production-spending": { "branchId": "leaf", "country": "any", "repairs": "leaf", "window": "leaf" },
+  "production-spending": { "branchId": "leaf", "country": "any", "hour": "leaf", "includeRefits": "leaf", "scope": "leaf" },
   "production-spending-months": { "branchId": "leaf", "country": "any", "domain": "leaf", "firstHour": "leaf", "lastHour": "leaf", "repairs": "leaf" },
   "raid-log": { "branchId": "leaf", "catalogue": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "to": "leaf" },
   "raid-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "raidTypes": "node", "raidTypes[]": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
@@ -7599,7 +7522,7 @@ export type RequestParams<E, B> = {
   "production-licences": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-line-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-lines-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "production-spending": {};
+  "production-spending": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "production-spending-months": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "raid-log": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "raid-log-tail": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "to"?: B | null };

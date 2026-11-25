@@ -32,8 +32,9 @@ export function breakdownAtHourSource(
   validate: (raw: unknown) => BreakdownAtHour,
 ): SourcePlan {
   const tag = ctx.countryTag;
+  const extra = Object.keys(params).length ? `:${JSON.stringify(params)}` : '';
   return {
-    owner: `${product}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${tag ?? ''}`,
+    owner: `${product}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${tag ?? ''}${extra}`,
     entries: tag ? [{
       name: 'main',
       source: ctx.track.source,

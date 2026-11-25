@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, ProductionSpendingReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
 import { casualtiesBreakdown, casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
+import { dockyardSpendingBreakdown, dockyardSpendingProjection, militaryFactorySpendingBreakdown, productionSpendingBreakdown, productionSpendingProjection } from '../../widgets/production-spending/productionSpendingProjection.ts';
 import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
 import { territoryShare, territoryShareProjection } from '../../widgets/territory/territoryShareProjection.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
@@ -633,4 +634,68 @@ test('territory share resolves slot-keyed countries, keeps Rest of the world neu
   const occupiedCtx = ctx({ kind: 'all' }, 'occupied');
   assert.ok(territoryShare.unavailable!(occupiedCtx), 'occupied rule is refused on world share');
   assert.equal(territoryShare.sources(occupiedCtx, { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]).entries.length, 0);
+});
+
+test('production, dockyard and military factory spending share one at-hour product, keep quiet stretches to one request, and separate owners by scope', () => {
+  const spendingReply: ProductionSpendingReply = {
+    from: START,
+    hour: START + 40,
+    through: START + 140,
+    warnings: [],
+    breakdown: {
+      unrecordedHours: 0,
+      total: { amount: exact('211'), state: 'atLeast', reason: 'Spending was not recorded' },
+      parts: [
+        wire('repair', 2, '211', { name: 'Repairs', share: null, parentShare: null }),
+        wire('new', 0, '0', { name: 'New ships', amount: null, state: 'notRecorded', reason: 'Spending was not recorded', share: null, parentShare: null }),
+        wire('refit', 1, '0', { name: 'Refits', amount: null, state: 'notRecorded', reason: 'Spending was not recorded', share: null, parentShare: null }),
+      ],
+    },
+  };
+  const readView = createBoundedReadView({ hour: START + 40, panels: new Map([['main', spendingReply]]), validInterval: [START + 40, START + 140] });
+  const dock = dockyardSpendingProjection.project(readView, { digits: 0, nothing: 'dockyard spending', notRecorded: 'Dockyard spending was not recorded.' });
+  assert.equal(dock.periodLabel, 'Used since 1 Jan 1936');
+  assert.equal(dock.total.unit, 'IC');
+  assert.equal(dock.total.text, '211');
+  assert.equal(dock.total.partial, true);
+  assert.deepEqual(dock.parts.map(part => [part.name, part.notRecorded ?? false]), [['Repairs', false], ['New ships', true], ['Refits', true]]);
+
+  const notRecordedReply: ProductionSpendingReply = {
+    from: START,
+    hour: START + 40,
+    through: START + 140,
+    warnings: [],
+    breakdown: { unrecordedHours: 0, total: { amount: null, state: 'notRecorded', reason: 'Spending was not recorded' }, parts: [] },
+  };
+  const emptyView = createBoundedReadView({ hour: START + 40, panels: new Map([['main', notRecordedReply]]) });
+  const milEmpty = productionSpendingProjection.project(emptyView, { digits: 2, nothing: 'military production spending', notRecorded: 'Production spending was not recorded.' });
+  assert.equal(milEmpty.empty, 'Not recorded at this time.');
+  assert.equal(milEmpty.emptyKind, 'unavailable');
+
+  const mkCtx = (options: Record<string, unknown>) => ({
+    countryTag: 'GER',
+    options,
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  }) as unknown as Parameters<typeof productionSpendingBreakdown.sources>[0];
+  const vp = { width: 800, height: 300 } as Parameters<typeof productionSpendingBreakdown.sources>[1];
+
+  const milPlan = productionSpendingBreakdown.sources(mkCtx({ factories: 'military', refits: false }), vp);
+  const navPlan = productionSpendingBreakdown.sources(mkCtx({ factories: 'dockyards', refits: true }), vp);
+  const dockPlan = dockyardSpendingBreakdown.sources(mkCtx({}), vp);
+  const airPlan = militaryFactorySpendingBreakdown.sources(mkCtx({ equipment: 'air' }), vp);
+  const landPlan = militaryFactorySpendingBreakdown.sources(mkCtx({ equipment: 'land' }), vp);
+
+  assert.equal(new Set([milPlan.owner, navPlan.owner, dockPlan.owner, airPlan.owner, landPlan.owner]).size, 5, 'each scope and refit toggle owns its own broker entry');
+  assert.deepEqual((milPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'military', includeRefits: false });
+  assert.deepEqual((navPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'dockyards', includeRefits: true });
+  assert.deepEqual((dockPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'dockyardPurposes' });
+  assert.deepEqual((airPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'airPurposes' });
+  assert.deepEqual((landPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'landPurposes' });
+
+  const proof = resolvePlaybackProvenInterval(dockPlan.entries[0]!.read, spendingReply, { anchorHour: START + 40, span: null }, START + 10_000);
+  assert.deepEqual(proof, [START + 40, START + 140]);
+  let asks = 1;
+  for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
+  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
 });
