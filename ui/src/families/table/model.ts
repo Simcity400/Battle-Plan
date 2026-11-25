@@ -238,6 +238,7 @@ export interface TableModel {
   readonly titleSummaryPartial?: string | null;
   readonly windowOffset?: number;
   readonly totalRows?: number;
+  readonly gapBefore?: readonly number[];
 }
 
 export type FlatTableRow =

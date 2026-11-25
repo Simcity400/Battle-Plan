@@ -466,7 +466,16 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   },
   structure({ layout, binding }) {
     const shape = layout.shape;
-    const fields: Record<string, unknown> = { ...shapeFields(shape, layout, binding.width), table: { count: shape.totalCount, totalHeight: shape.totalHeight, focusedIndex: layout.focusedIndex }, range: layout.rowWindow };
+    const fields: Record<string, unknown> = {
+      ...shapeFields(shape, layout, binding.width),
+      table: {
+        count: shape.totalCount,
+        totalHeight: shape.totalHeight,
+        focusedIndex: layout.focusedIndex,
+        ...(shape.model.gapBefore?.length ? { gapBefore: shape.model.gapBefore } : {}),
+      },
+      range: layout.rowWindow,
+    };
     return fields;
   },
   mirror({ model, layout, binding }) {

@@ -313,10 +313,11 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
       return { columns: DECISIONS_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
     }
     const boundary = newIdentityBoundary();
+    const asOf = source.at ?? hour;
     let nextTimerChange = Infinity;
-    const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
+    const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
-      hour,
+      asOf,
       readView.rowWindow,
       rawRow => {
         if (!rawRow.occurrence) return null;
@@ -330,7 +331,7 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
         const first = card?.occurrence.edges[0]?.row;
         const resolved = decisionAt(
           { key: rawRow.key, id: occ.id, hour: first?.hour ?? rawRow.hour, revealedHour: first?.readHour ?? rawRow.hour, by: false, item: card },
-          hour,
+          asOf,
           options.breaks,
         );
         if (!resolved) return null;
@@ -338,7 +339,7 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
         const effective = recorded ? { ...resolved.item, status: recorded } : resolved.item;
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : effective.status === 'active';
         const built = buildDecisionRow(readView, effective, live, options.artwork, boundary);
-        if (built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
+        if (asOf === hour && built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
         return built.row;
       },
     );
@@ -364,6 +365,7 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
       dateGrouped: true,
       windowOffset,
       totalRows,
+      ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt: Math.min(boundary.next, nextTimerChange),
       rowTimeBoundaries: false,
       titleSummary,

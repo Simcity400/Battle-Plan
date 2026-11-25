@@ -665,11 +665,14 @@ async function readEntryExact(
     const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
     const headLimit = Math.max(1, read.tailQuery.limit);
     const window = options.rowWindow;
-    if (window && window.count > 0 && window.first + window.count > headLimit) {
+    const dataWindow = window
+      ? { first: window.dataFirst ?? window.first, count: window.dataCount ?? window.count }
+      : null;
+    if (dataWindow && dataWindow.count > 0 && dataWindow.first + dataWindow.count > headLimit) {
       const at = Math.min(recorded, options.snapshotHour?.(entry.name) ?? recorded);
       const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
       const validate = read.validate ?? validateGenericTailReply;
-      const asks = pageOffsets(window, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
+      const asks = pageOffsets(dataWindow, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
       const raws = await Promise.all(asks.map(ask => fetchRaw(buildTailPageRequest(entry, ask)!)));
       const pages: Record<number, SnapshotPage> = {};
       asks.forEach((ask, i) => { pages[ask.offset] = { ...ask, raw: raws[i], reply: validate(raws[i], at) }; });

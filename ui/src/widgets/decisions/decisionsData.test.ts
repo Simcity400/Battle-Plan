@@ -5,6 +5,8 @@ import { daysLeft, decisionAt, decisionCard, lifecycleLine, STATUS_CHOICES, stat
 import { plainScripted, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { resolveSelectedCountryRefs } from '../../families/table/logHelpers.ts';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { decisionsDeclaration, decisionsProjection } from './decisionsProjection.ts';
 import { eventChoicesDeclaration } from '../event-choices/eventChoicesProjection.ts';
 import { eventFeedDeclaration } from '../event-feed/eventFeedProjection.ts';
@@ -234,4 +236,84 @@ test('R2-S1: real filter-mode log declarations send selected and explicit countr
     assert.equal(all.group, undefined, `${declaration.kind}: all omits group`);
     assert.deepEqual(planAsk(declaration, { kind: 'tags', tags: [] }).countries, [], `${declaration.kind}: explicit empty tags stays empty selection`);
   }
+});
+
+test('S16: explicit tag selection resolves to recorded slots while keeping empty distinct from all', () => {
+  const identities = countryIdentityIndex([
+    { tag: 'AAA', identities: [{ firstHour: 100, lastHour: 150, slot: 7, countryId: 9001 }] },
+    { tag: 'BBB', identities: [{ firstHour: 151, lastHour: 200, slot: 7, countryId: 9001 }] },
+  ]);
+  const resolvedSlots = resolveSelectedCountryRefs({ kind: 'tags', tags: ['AAA'] }, ['AAA'], identities);
+  assert.deepEqual(resolvedSlots, [7], 'explicit tag AAA resolves through CountryIdentityIndex to recorded slot 7');
+  assert.deepEqual(resolveSelectedCountryRefs({ kind: 'tags', tags: [] }, [], identities), [], 'empty explicit selection stays []');
+  assert.equal(resolveSelectedCountryRefs({ kind: 'all' }, [], identities), undefined, 'all returns undefined');
+  assert.deepEqual(resolveSelectedCountryRefs({ kind: 'tags', tags: ['ZZZ'] }, ['ZZZ'], identities), ['ZZZ'], 'unresolved tag keeps its tag so Rust can report unknown-holder gaps');
+
+  const ctx = {
+    track: { source: { id: 's1', revision: 'r1', metadata: { playerCountryId: '9' } }, axisOffset: 0, selectedSlot: 7 },
+    branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
+    widget: { id: 'w1', kind: 'decisions', countries: { kind: 'tags', tags: ['AAA'] }, time: { mode: 'follow' } },
+    options: {},
+    following: true,
+    countries: {
+      all: false,
+      tags: [],
+      selectedSlots: resolvedSlots,
+      filter: { passing: null, unrecorded: [], bounds: [] },
+    },
+    gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
+  } as unknown as FamilyPlanContext<unknown>;
+  const entry = decisionsDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!;
+  if (entry.read.shape !== 'paged-rows') throw new Error('expected paged-rows');
+  const ask = entry.read.tailQuery.ask as { countries?: unknown };
+  assert.deepEqual(ask.countries, [7], 'explicit tag AAA sends resolved recorded slot 7 so later tag B events stay in the log');
+});
+
+test('S20: frozen Decisions page derives row state, timer, and detail asOfHour from source.at rather than playhead hour', () => {
+  const start = day(3, 1);
+  const frozenAt = start + 24;
+  const playhead = start + 72;
+  const occ = card([edge('decisionSelected', start, { days: 3 })]);
+  const rawPage = {
+    branchId: '1',
+    log: 'feed-events',
+    columns: [],
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    offset: '0',
+    total: '1',
+    counts: [{ key: 'running', total: '1' }],
+    rows: [{ hour: start, key: 'k-frozen', ordinal: '0', live: true, status: 'active', occurrence: occ }],
+    facetTotals: [],
+    missing: [],
+    unavailable: [],
+    warnings: [],
+  };
+  const pages = {
+    0: {
+      hour: frozenAt,
+      offset: 0,
+      limit: 256,
+      raw: rawPage,
+      reply: {
+        total: 1,
+        offset: 0,
+        baseOrdinal: 0,
+        firstOrdinal: 0,
+        rows: rawPage.rows as never,
+        facetTotals: new Map([['running', 1]]),
+        missing: [],
+      },
+    },
+  };
+  const source = buildRowSourceFromHead('test:decisions-frozen', undefined, undefined, playhead, pages)!;
+  assert.equal(source.at, frozenAt);
+  const model = decisionsProjection.project(
+    createBoundedReadView({ hour: playhead, rows: new Map([['main', source]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(model.rows.length, 1);
+  const row = model.rows[0]!;
+  assert.deepEqual(row.cells.timer?.value, { kind: 'known', value: '2' }, 'timer must use frozen snapshot hour (2 days left), not playhead (0 days left)');
+  assert.equal((row.meta as { asOfHour: number }).asOfHour, frozenAt, 'detail asOfHour must match frozen snapshot hour');
 });

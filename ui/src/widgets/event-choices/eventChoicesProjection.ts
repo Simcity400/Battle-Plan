@@ -193,7 +193,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
     }
     const boundary = newIdentityBoundary();
     let nextAwaitingChange = Infinity;
-    const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
+    const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
@@ -245,6 +245,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       dateGrouped: true,
       windowOffset,
       totalRows,
+      ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt: Math.min(boundary.next, nextAwaitingChange),
       rowTimeBoundaries: false,
       titleSummary,

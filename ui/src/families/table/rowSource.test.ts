@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PayloadSender } from '../../dashboard/follow/payloads.ts';
+import { tableHostAdapter } from './hostAdapter.ts';
+import { projectPagedSlots } from './logHelpers.ts';
 import { buildNavigableSlots, buildRowSourceFromHead, SnapshotPager, validateGenericTailReply, validateTailReply, type DatedLogRow, type SnapshotPage, type SnapshotPages, type TailReply } from './rowSource.ts';
 
 interface Row extends DatedLogRow {
@@ -164,4 +166,49 @@ test('buildNavigableSlots interleaves recording gaps in newest-first order and k
     '130-140@2',
     '100-110@2',
   ], 'a gap the product placed stays at its ordinal, never among the live rows by hour');
+});
+
+test('S19: display offsets translate to data ordinals across placed gaps and totalRows stays stable when gaps scroll out of view', () => {
+  const sliced: { first: number; count: number }[] = [];
+  const gaps = [
+    { firstHour: 180, lastHour: 190, reason: 'gap 1', before: '10' },
+    { firstHour: 120, lastHour: 130, reason: 'gap 2', before: '50' },
+  ];
+  const source = {
+    identity: 'test:s19',
+    total: 400,
+    at: 200,
+    missing: gaps,
+    refused: null,
+    sliceAt(reqHour: number, first: number, count: number) {
+      sliced.push({ first, count });
+      return Array.from({ length: Math.min(count, Math.max(0, 400 - first)) }, (_, i) => ({
+        kind: 'data' as const,
+        ordinal: first + i,
+        readAt: reqHour,
+        row: { key: `row-${first + i}`, hour: 100 },
+      }));
+    },
+  };
+  const projected = projectPagedSlots(
+    source,
+    200,
+    { first: 300, count: 5 },
+    (row, ordinal) => ({ key: row.key, name: `#${ordinal}`, cells: {} }),
+  );
+  assert.deepEqual(sliced, [{ first: 298, count: 5 }], 'two earlier placed gaps shift display position 300 to data ordinal 298');
+  assert.equal(projected.windowOffset, 300, 'layout offset remains the display offset');
+  assert.equal(projected.totalRows, 402, 'totalRows includes all placed gaps even when they are above the window');
+  assert.deepEqual(projected.gapBefore, [10, 50]);
+  assert.deepEqual(projected.rows.map(r => r.key), ['row-298', 'row-299', 'row-300', 'row-301', 'row-302']);
+
+  const adapterWin = tableHostAdapter.rowWindow!(
+    { width: 600, height: 180, dpr: 1, scrollLeft: 0, scrollTop: 300 * 36, zoomWindow: null },
+    { density: 'normal', barsBehind: 'off', showRank: false, order: [], columns: {}, sort: { column: 'date', direction: 'descending' } },
+    { table: { count: 402, totalHeight: 402 * 36, gapBefore: [10, 50] } },
+  )!;
+  assert.equal(adapterWin.dataFirst, adapterWin.first - 2, 'host adapter translates display scroll offset to data ordinal');
+  const pager = new SnapshotPager(256, 256);
+  const step = pager.window({ first: 257, count: 5, dataFirst: 255, dataCount: 5 }, 200);
+  assert.deepEqual(step.fetch, [{ offset: 0, limit: 256, hour: 200 }, { offset: 256, limit: 256, hour: 200 }], 'pager asks data-ordinal pages across the boundary shifted by earlier gaps');
 });
