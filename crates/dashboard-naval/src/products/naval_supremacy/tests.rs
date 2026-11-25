@@ -301,3 +301,47 @@ fn a_viewers_read_continued_by_a_later_day_is_the_read_made_whole() {
     };
     assert_eq!(read(&[&days[..2], &days[2..]]), read(&[&days]), "a refusal carried across the junction is noted once, as in one read");
 }
+
+#[test]
+fn a_history_continued_by_a_later_day_reads_the_hours_between_and_is_the_history_read_whole() {
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    let viewer = 7_u32;
+    let key = |holder: u32, region: u32| u128::from(holder) << 32 | u128::from(region);
+    let n = Cell::Number;
+    let row = |friendly| Some(Box::from([n(friendly), n(1), n(friendly), n(1), n(0), Cell::Text(0), Cell::Text(0)]));
+    let step = |hour, cells| lanes::Step { hour, cells };
+    let recorded = vec![
+        (key(viewer, 1), vec![step(0, row(40)), step(60, row(50))]),
+        (key(viewer, 9), vec![step(30, row(70)), step(41, None)]),
+        (key(NavalRegionControlRow::EVERY_VIEWER, 2), vec![step(0, row(30))]),
+    ];
+    let mut reads = Vec::new();
+    let mut reader = |_run: u32, _viewer: u32, only: Option<&BTreeSet<u32>>, from: i32, to: i32| -> io::Result<lanes::History> {
+        reads.push((from, to));
+        let keys = recorded
+            .iter()
+            .filter(|(key, _)| only.is_none_or(|only| only.contains(&(*key as u32))))
+            .filter_map(|(key, steps)| {
+                let carried = steps.iter().rev().find(|step| step.hour < from).and_then(|step| step.cells.clone()).filter(|_| !steps.iter().any(|step| step.hour == from));
+                let held: Vec<lanes::Step> = carried.map(|cells| step(from, Some(cells))).into_iter().chain(steps.iter().filter(|step| from <= step.hour && step.hour <= to).cloned()).collect();
+                (!held.is_empty()).then_some((*key, held))
+            })
+            .collect();
+        Ok(lanes::History { columns: COLUMNS.to_vec(), to, texts: vec![Box::from(&b""[..])], keys, statuses: vec![lanes::StatusRun { first: 0, last: 95, status: Status::Complete }], ..Default::default() })
+    };
+    let timeline = Timeline { id: 1, first: 0, last: 95, stretches: vec![Stretch { run: 0, first: 0, last: 95, join: Join::Start }], unheld: Vec::new() };
+    let holders = Holders::new([("GER".to_owned(), vec![HolderRun { first: 0, last: 95, holder: Holder::Found { slot: viewer, id: viewer }, starts_segment: true }])].into(), Vec::new());
+    let sea = SeaContent { sea: Ok(BTreeSet::from([1, 2])), land: Ok(BTreeSet::new()), all: BTreeSet::from([1, 2]), minima: (1..=2).map(|region| (region, Ok(1_000))).collect(), ratio: Ok(200_000), notes: Vec::new() };
+    let country = Country::Tag("GER".into());
+    let cancelled = AtomicBool::new(false);
+    let shown = |history: &NavalHistory| (runs(history.pieces.clone()), history.known.clone(), history.refused.clone(), history.notes.lines("naval supremacy fields"));
+    let mut whole = NavalHistory::default();
+    whole.read(&timeline, &holders, &sea, &country, 0, (0, 71), &mut reader, &cancelled).unwrap();
+    let mut held = NavalHistory::default();
+    for span in [(0, 23), (24, 47), (48, 71)] {
+        held.read(&timeline, &holders, &sea, &country, 0, span, &mut reader, &cancelled).unwrap();
+    }
+    assert!(shown(&held).0.contains_key(&9), "a region whose row came and went between two days' readings is still found");
+    assert_eq!(shown(&held), shown(&whole));
+    assert_eq!(reads[1..], [(23, 23), (24, 47), (23, 23), (48, 71)], "each continuation reads the hours since the last read, and only the new region's earlier days are read again");
+}

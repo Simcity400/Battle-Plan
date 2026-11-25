@@ -5,7 +5,7 @@ use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}, st
 #[cfg(any(test, feature = "export-types"))]
 use dashboard_world::products::sea_regions::Choice;
 use dashboard_base::{Source, catalogue::Refusals, span::HourSpan};
-use dashboard_query::{Query, coverage, identity::Holder};
+use dashboard_query::{Query, coverage, identity::{Holder, Holders}, timeline::Timeline};
 use replay_lanes::{lanes, points::Cell};
 use replay_data::rows::{AirCountryRelationRow, NavalRegionControlRow, TableId, tables};
 use replay_derive::naval_region_control;
@@ -472,30 +472,23 @@ struct NavalHistory {
 }
 
 impl NavalHistory {
-    fn read(&mut self, query: &Query<'_>, sea: &SeaContent, country: &Country, first_day: i32, (first, last): (i32, i32), cancelled: &AtomicBool) -> io::Result<()> {
-        let recording = query.replay.recording();
+    #[expect(clippy::too_many_arguments, reason = "the viewer's days: the timeline and holders, the sea content, the viewer, its first day, the span asked and the read of a viewer's rows")]
+    fn read(&mut self, timeline: &Timeline, holders: &Holders, sea: &SeaContent, country: &Country, first_day: i32, (first, last): (i32, i32), reader: &mut Reader<'_>, cancelled: &AtomicBool) -> io::Result<()> {
         let regions: BTreeSet<u32> = sea.sea.clone().unwrap_or_default();
-        let every = u128::from(NavalRegionControlRow::EVERY_VIEWER) << 32;
-        let ranges = |viewer: u32, only: Option<&BTreeSet<u32>>| -> Vec<(u128, u128)> {
-            let own = u128::from(viewer) << 32;
-            match only {
-                None => vec![(own, own | u128::from(u32::MAX)), (every, every | u128::from(u32::MAX))],
-                Some(only) => only.iter().flat_map(|&region| [(own | u128::from(region), own | u128::from(region)), (every | u128::from(region), every | u128::from(region))]).collect(),
-            }
-        };
         let mut segment: Vec<(u32, i32)> = Vec::new();
         let mut held: Option<(u32, u32)> = self.segments.last().filter(|_| self.open).map(|segment| (segment.run, segment.viewer));
-        let hours = day_hours(&query.timeline, first, last);
+        let hours = day_hours(timeline, first, last);
         let first_held_day = (first.div_euclid(DAY) - first_day) as u32;
-        let flush = |history: &mut Self, held: Option<(u32, u32)>, segment: &mut Vec<(u32, i32)>| -> io::Result<()> {
+        let mut flush = |history: &mut Self, held: Option<(u32, u32)>, segment: &mut Vec<(u32, i32)>| -> io::Result<()> {
             let (Some((run, viewer)), Some(&(_, from)), Some(&(_, to))) = (held, segment.first(), segment.last()) else { return Ok(()) };
             dashboard_text::metadata::check_cancel(cancelled)?;
-            let read = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&ranges(viewer, None)), from, to))?;
+            let continues = history.open && history.segments.last().is_some_and(|held| (held.run, held.viewer) == (run, viewer));
+            let since = history.segments.last().filter(|_| continues).map_or(from, |held| held.to + 1);
+            let read = reader(run, viewer, None, since, to)?;
             let available = |hour: i32| read.statuses.iter().any(|status| status.first <= hour && hour <= status.last && replay_recording::columnar_frames::available(status.status));
             let (shown, unavailable): (Vec<(u32, i32)>, Vec<(u32, i32)>) = segment.drain(..).partition(|&(_, hour)| available(hour));
             history.refused.extend(unavailable.into_iter().map(|(day, _)| (day, "Naval region control was not available on this day".to_owned())));
             history.known.extend(shown.iter().map(|(day, _)| *day));
-            let continues = history.open && history.segments.last().is_some_and(|held| (held.run, held.viewer) == (run, viewer));
             if !continues {
                 history.made.clear();
                 history.segments.push(Segment { run, viewer, from, to, shown: Vec::new(), regions: regions.clone() });
@@ -505,7 +498,7 @@ impl NavalHistory {
             if continues && !fresh.is_empty()
                 && let Some(earlier) = history.segments.last().cloned()
             {
-                let back = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&ranges(viewer, Some(&fresh))), earlier.from, earlier.to))?;
+                let back = reader(run, viewer, Some(&fresh), earlier.from, earlier.to)?;
                 let mut made = HashMap::new();
                 region_runs(&back, viewer, &earlier.shown, &fresh, sea, &mut history.notes, &mut made, &mut history.pieces);
                 history.made.extend(made);
@@ -522,7 +515,7 @@ impl NavalHistory {
         for (day, (run, hour)) in &hours {
             let day = first_held_day + day;
             self.hours.insert(day, (*run, *hour));
-            match query.holders.at(country, *hour).map(|run| run.holder) {
+            match holders.at(country, *hour).map(|run| run.holder) {
                 Some(Holder::Found { slot, .. }) => {
                     if held != Some((*run, slot)) {
                         flush(self, held, &mut segment)?;
@@ -566,6 +559,16 @@ impl NavalHistory {
     }
 }
 
+type Reader<'r> = dyn FnMut(u32, u32, Option<&BTreeSet<u32>>, i32, i32) -> io::Result<lanes::History> + 'r;
+
+fn control_ranges(viewer: u32, only: Option<&BTreeSet<u32>>) -> Vec<(u128, u128)> {
+    let (own, every) = (u128::from(viewer) << 32, u128::from(NavalRegionControlRow::EVERY_VIEWER) << 32);
+    match only {
+        None => vec![(own, own | u128::from(u32::MAX)), (every, every | u128::from(u32::MAX))],
+        Some(only) => only.iter().flat_map(|&region| [(own | u128::from(region), own | u128::from(region)), (every | u128::from(region), every | u128::from(region))]).collect(),
+    }
+}
+
 #[derive(Default)]
 struct HeldHistories {
     histories: HashMap<String, NavalHistory>,
@@ -582,17 +585,19 @@ fn control(source: &Source, load: &LoadContext, query: &Query<'_>, sea: &SeaCont
     }
     let content = load.content.as_ref().map(|options| (dashboard_base::content::content_key(Some(options)), options.presentation.identity().clone()));
     let key = format!("{}|{country:?}|{first}|{content:?}", query.timeline.id);
+    let recording = query.replay.recording();
+    let mut reader = |run: u32, viewer: u32, only: Option<&BTreeSet<u32>>, from: i32, to: i32| dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&control_ranges(viewer, only)), from, to));
     let state = source.state::<HeldHistories>();
     let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).histories.get(&key).filter(|held| held.last == last || (held.last < last && (held.last + 1).rem_euclid(DAY) == 0)).cloned();
     let history = match held {
         Some(held) if held.last == last => held,
         Some(mut held) => {
-            held.read(query, sea, country, first_day, (held.last + 1, last), cancelled)?;
+            held.read(&query.timeline, &query.holders, sea, country, first_day, (held.last + 1, last), &mut reader, cancelled)?;
             held
         }
         None => {
             let mut history = NavalHistory::default();
-            history.read(query, sea, country, first_day, (first, last), cancelled)?;
+            history.read(&query.timeline, &query.holders, sea, country, first_day, (first, last), &mut reader, cancelled)?;
             history
         }
     };

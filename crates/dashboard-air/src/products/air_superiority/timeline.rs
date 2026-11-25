@@ -792,13 +792,18 @@ impl Window {
     }
 }
 
-fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, cancelled: &AtomicBool) -> io::Result<Window> {
+fn day_span(view_first: i32, view_last: i32) -> io::Result<(i32, i32, usize)> {
     let first_day = view_first.div_euclid(DAY);
     let first_hour = first_day.checked_mul(DAY).ok_or_else(|| dashboard_core::invalid("Air timeline start is outside the calendar range"))?;
     let count = (i64::from(view_last.div_euclid(DAY)) - i64::from(first_day) + 1) as usize;
     if count.saturating_mul(2).saturating_sub(1) > MAX_PRODUCT_REPLY_BYTES {
         return Err(dashboard_core::refused("The air timeline's days pass the reply budget: choose a shorter range"));
     }
+    Ok((first_day, first_hour, count))
+}
+
+fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, cancelled: &AtomicBool) -> io::Result<Window> {
+    let (first_day, first_hour, count) = day_span(view_first, view_last)?;
     let stretches: Vec<Stretch> = query.timeline.within(first_hour, view_last).collect();
     let mut days: Vec<Option<DayAt>> = vec![None; count];
     for (at, stretch) in stretches.iter().enumerate() {
@@ -999,7 +1004,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     let (view_first, view_last) = (params.first_hour, params.last_hour);
     let names = names(source, load);
     let mut warnings = names.warnings.clone();
-    let first_hour = view_first.div_euclid(DAY).checked_mul(DAY).ok_or_else(|| dashboard_core::invalid("Air timeline start is outside the calendar range"))?;
+    let (_, first_hour, _) = day_span(view_first, view_last)?;
     let gaps: Vec<HourSpan> = query
         .timeline
         .unheld
