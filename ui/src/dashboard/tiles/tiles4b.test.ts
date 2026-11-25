@@ -155,6 +155,6 @@ test('a landing tile is decoded where replies are parsed, its bytes handed over,
   assert.equal(transfer[0].byteLength, 0, 'the worker keeps no copy');
   const key = (tag: string) => tag;
   assert.deepEqual(tilesOf(moved.data as never, tags, 6, 10, key), tilesOf(data, tags, 6, 10, key));
-  assert.deepEqual(decodeTileBins({ product: 'series-summary', data: { bins: 'AA==' } }), [], 'other replies untouched');
+  assert.deepEqual(decodeTileBins({ product: 'series-state', data: { bins: 'AA==' } }), [], 'other replies untouched');
 });
 

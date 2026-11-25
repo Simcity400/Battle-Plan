@@ -2,7 +2,6 @@ use crate::{answer, products};
 
 pub fn typescript_contract() -> String {
     use dashboard_core::{QueryError, dto::*, map_display, map_settings, protocol, transport};
-    use dashboard_land::products::army;
     use dashboard_politics::products::focus_dto::*;
     use ts_rs::TS;
     let mut declarations = vec![
@@ -68,17 +67,12 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::SeriesPartLife::decl(),
         dashboard_query::series::SeriesOwnerParts::decl(),
         dashboard_query::series::SeriesPartsReply::decl(),
-        dashboard_query::series::ranked::RankedSpan::decl(),
-        dashboard_query::series::ranked::SeriesRankedLine::decl(),
-        dashboard_query::series::ranked::SeriesRankedReply::decl(),
         dashboard_query::series::ranked::SeriesRankMeasure::decl(),
         dashboard_query::series::ranked::SeriesRankRow::decl(),
         dashboard_query::series::ranked::SeriesRankReply::decl(),
         dashboard_query::series::ranked::GroupKind::decl(),
         dashboard_query::series::ranked::GroupMembership::decl(),
         dashboard_query::series::ranked::GroupSelection::decl(),
-        army::ArmyChartLine::decl(),
-        army::ArmyChartReply::decl(),
         dashboard_wars::products::factions::tiles::FactionGroupTileFamily::decl(),
     ];
     for product in products::PRODUCTS {

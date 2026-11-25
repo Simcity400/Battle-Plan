@@ -13,6 +13,7 @@ import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
+import { OPTIONS as OCCUPATION_TREND_OPTIONS } from '../occupation-trend/definition.ts';
 import { OPTIONS as RAID_TALLY_OPTIONS } from '../raid-tally/definition.ts';
 import { OPTIONS as TERRITORY_OPTIONS } from '../territory/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
@@ -47,6 +48,12 @@ const NUCLEAR_ARSENAL_LINES_OPTIONS = [
   ...LINES_VIEW_OPTIONS,
 ];
 const OCCUPATION_RESERVE_BREAKDOWN_OPTIONS = OCCUPATION_RESERVE_OPTIONS.filter(field => ['show', 'holder', 'yMin', 'yMax'].includes(field.key));
+const OCCUPATION_TREND_MIX_OPTIONS = [
+  ...OCCUPATION_TREND_OPTIONS
+    .filter(field => ['view', 'measure', 'rankingMeasure', 'collaboration', 'digits', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
+    .map(field => (field.key === 'endLabels' ? { ...field, visibleWhen: undefined } : field)),
+  ...LINES_VIEW_OPTIONS,
+];
 const RAID_TALLY_LINES_OPTIONS = [
   ...RAID_TALLY_OPTIONS.filter(field => ['view', 'metric', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
   ...LINES_VIEW_OPTIONS,
@@ -348,6 +355,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'lines',
       () => import('../occupation-trend/occupationLinesProjection.ts'),
       mod => ({ projection: mod.occupationLinesProjection, declaration: mod.occupationLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'occupation-trend',
+    view: 'mix',
+    label: 'Mix',
+    family: 'time-chart',
+    options: OCCUPATION_TREND_MIX_OPTIONS,
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'occupation-trend',
+      'mix',
+      () => import('../occupation-trend/occupationMixProjection.ts'),
+      mod => ({ projection: mod.occupationMixProjection, declaration: mod.occupationMixDeclaration }),
     ),
   },
   {

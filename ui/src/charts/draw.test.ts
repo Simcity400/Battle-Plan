@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dayLabel, drawLine, spanLabel } from './draw.ts';
-import { engineHour } from '../dashboard/calendar.ts';
+import { drawLine } from './draw.ts';
 import { plotFrame } from './frame.ts';
 import { heldSegments } from './series.ts';
 import { tokensFromValues } from './tokens.ts';
@@ -32,13 +31,4 @@ test('line geometry follows the complete time scale while its drawn end stays fi
       assert.deepEqual(drawLine(ctx, frame, tokens, runs, 'colour', { held, until: 40 }), { x: frame.toX(40), y: frame.toY(1) });
     }
   }
-});
-
-test('a span of days is one day\'s label within a day, else its first and last days, shared month and year said once', () => {
-  const at = (year: number, month: number, day: number, hour = 1) => engineHour({ year, month, day, hour })!;
-  assert.equal(spanLabel(at(1941, 1, 3), at(1941, 1, 3, 24)), '3 Jan 1941');
-  assert.equal(spanLabel(at(1941, 1, 3), at(1941, 1, 9, 24)), '3–9 Jan 1941');
-  assert.equal(spanLabel(at(1941, 2, 28), at(1941, 3, 3)), '28 Feb – 3 Mar 1941');
-  assert.equal(spanLabel(at(1940, 12, 30), at(1941, 1, 2)), '30 Dec 1940 – 2 Jan 1941');
-  assert.equal(spanLabel(5, 101), `${dayLabel(5)} – ${dayLabel(101)}`);
 });

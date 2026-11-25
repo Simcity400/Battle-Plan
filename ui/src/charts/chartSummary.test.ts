@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
-import { wireSummary } from './chartSummary.fixture.ts';
-import { dayLabel, drawBands, drawLine, spanLabel } from './draw.ts';
+import { drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
+import { drawBands, drawLine } from './draw.ts';
 import { pickLines } from './linePick.ts';
 import { extentOf } from './series.ts';
 import type { Run } from './series.ts';
@@ -238,20 +237,6 @@ test('stack summaries carry the union of part and total approximate spans withou
   assert.deepEqual(exact.approximate,[]);
 });
 
-test('a summary decodes from its bucket columns, gaps and totals in place, and refuses columns that disagree', () => {
-  const later = { ...bucket, firstHour: 60_000, lastHour: 60_009, lastValueHour: 60_004, minHour: 60_001, maxHour: 60_009, firstBreak: true, hasBreak: true, absoluteTotal: '123456789012345678901234567890' };
-  const sent = { from: 0, to: 70_000, width: 4, buckets: [null, { ...bucket, absoluteTotal: '7' }, null, null, later, null] };
-  const wire = wireSummary(sent);
-  assert.deepEqual(wire.buckets.skip, [1, 2]);
-  assert.deepEqual(wire.buckets.hours.slice(5), [60_000 - 49_999, 9, 4, 1, 9]);
-  assert.deepEqual(chartSummaryFrom(wire), sent);
-  assert.equal(chartSummaryFrom(wire), chartSummaryFrom(wire), 'decoded once per reply');
-  for (const columns of [{ slots: 2 }, { flags: [0, 4] }, { totals: ['7', '-1'] }, { hours: [...wire.buckets.hours.slice(0, 6), 3, 4, 1, 9] },
-    { skip: [1] }, { values: [...wire.buckets.values.slice(0, 7), Infinity] }])
-    assert.equal(chartSummaryFrom({ ...wire, buckets: { ...wire.buckets, ...columns } }), null, JSON.stringify(columns));
-  assert.equal(chartSummaryFrom(sent), null, 'bucket objects are not the wire');
-});
-
 test('a frame that cannot place a value draws that column as its placed dots, never a line across it', () => {
   const frame = plotFrame(120, 100, { left: 10, right: 10, top: 10, bottom: 10 }, [0, 29], [1e-323, 1], true);
   assert.equal(frame.toY(0), Infinity, 'the log floor underflows, so zero has no place');
@@ -266,19 +251,4 @@ test('a frame that cannot place a value draws that column as its placed dots, ne
   drawLineSummary(drawn.context, frame, tokens, summary, '#123');
   assert.equal(drawn.paths.length, 2);
   assert.ok(drawn.paths.flat(2).every(value => Number.isFinite(value)));
-});
-
-test('a tooltip of bins\' values names the days the bins span, never one hour of them; one-hour bins name the hour\'s day', () => {
-  const DAY = 24, from = 43_800_000 + 400 * DAY;
-  const bin = (first: number, last: number): ChartBucket => ({ firstHour: first, lastHour: last, firstValue: 1, lastValue: 2, lastValueHour: first,
-    minHour: first, minValue: 1, maxHour: first, maxValue: 2, firstBreak: false, hasBreak: false });
-  const wide = { from, to: from + 8 * 96 - 1, width: 8, buckets: Array.from({ length: 8 }, (_, at) => bin(from + at * 96, from + at * 96 + 95)) };
-  const hovered = from + 96 + 40;
-  assert.deepEqual(binAt(wide, hovered), wide.buckets[1]);
-  assert.equal(binAt(wide, from - 1), null);
-  assert.equal(binsLabel(hovered, [binAt(wide, hovered)]), spanLabel(from + 96, from + 96 + 95));
-  assert.notEqual(binsLabel(hovered, [binAt(wide, hovered)]), dayLabel(hovered));
-  assert.equal(binsLabel(hovered, [bin(from + 100, from + 150), null, bin(from + 96, from + 120)]), spanLabel(from + 96, from + 150));
-  assert.equal(binsLabel(hovered, [bin(hovered, hovered), null]), dayLabel(hovered));
-  assert.equal(binsLabel(hovered, []), dayLabel(hovered));
 });

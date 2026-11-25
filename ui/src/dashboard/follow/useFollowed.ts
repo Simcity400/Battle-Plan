@@ -169,14 +169,6 @@ export function onInstalled(pipeline: Pipeline, widget: number, paint: () => voi
 
 export const heldFor = (held: { key: string; id: number } | null, key: string | null) => held !== null && held.key === key ? held.id : null;
 
-export function useInstalledValue<T extends string | number | boolean | null>(subscribe: ((changed: () => void) => () => void) | undefined, select: () => T): T {
-  const selected = useRef(select);
-  selected.current = select;
-  const listen = useMemo(() => (changed: () => void) => subscribe?.(changed) ?? (() => {}), [subscribe]);
-  const read = useMemo(() => () => selected.current(), []);
-  return useSyncExternalStore(listen, read, read);
-}
-
 const panels = new WeakMap<object, FollowedPanel>();
 
 export function installedPanel(model: ModelField | undefined): FollowedPanel | undefined {

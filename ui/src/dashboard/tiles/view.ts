@@ -372,12 +372,6 @@ export function unrecordedReason(lines: ReadonlyMap<string, SpannedLine> | reado
   return best;
 }
 
-export const mostNamed = (reasons: readonly string[]): string => {
-  const counts = new Map<string, number>();
-  for (const reason of reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
-  return [...counts].reduce((best, entry) => entry[1] > best[1] ? entry : best)[0];
-};
-
 const caches = new WeakMap<object, TileCache>();
 export function tileCache(client: object): TileCache {
   client = (client as { base?: object }).base ?? client;
