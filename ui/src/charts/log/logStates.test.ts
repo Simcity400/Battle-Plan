@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { changesAfter, logStates, logStatesBy } from './logStates.ts';
+import { logStates, logStatesBy } from './logStates.ts';
 import type { LogRow } from './logData';
 
 interface Item { name: string; status: string }
@@ -49,12 +49,4 @@ test('a block read whole only at its first hour, then only the rows that change,
   reads.length = 0;
   assert.deepEqual(shape(logStatesBy(hours, whole, hour => hour === 106 ? null : changing.get(hour) ?? [], rowOf, state, order)), shape(all));
   assert.ok(reads.includes('*@106') && !reads.includes('d@106'));
-});
-
-test('the changes after an hour stop before the limit and at the count', () => {
-  const changes = [103, 105, 106, 140];
-  const next = (hour: number) => changes.find(change => change > hour) ?? Infinity;
-  assert.deepEqual(changesAfter(next, 100, 106, 10), [103, 105]);
-  assert.deepEqual(changesAfter(next, 100, Infinity, 3), [103, 105, 106]);
-  assert.deepEqual(changesAfter(next, 140, Infinity, 3), []);
 });

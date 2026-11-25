@@ -14,22 +14,6 @@ export interface ProductWindows<T> {
 
 export interface Held<T> { identity: string | null; data: ReadonlyMap<number, T>; errors: ReadonlyMap<number, Failure> }
 
-export interface WindowDisplay<T> { identity: string; data: T; hour: number }
-
-export function windowDisplay<T>(previous: WindowDisplay<T> | null, identity: string | null, data: T | undefined, hour: number): WindowDisplay<T> | null {
-  if (identity === null) return null;
-  if (data === undefined) return previous?.identity === identity ? previous : null;
-  return previous?.identity === identity && previous.data === data && previous.hour === hour ? previous : { identity, data, hour };
-}
-
-export function useWindowDisplay<T>(identity: string | null, data: T | undefined, hour: number, client?: DashboardClient): WindowDisplay<T> | null {
-  const owner = useMemo(() => ({ client, identity }), [client, identity]);
-  const [held, setHeld] = useState<{ owner: typeof owner; display: WindowDisplay<T> | null }>({ owner, display: null });
-  const shown = windowDisplay(held.owner === owner ? held.display : null, identity, data, hour);
-  useEffect(() => { setHeld(previous => previous.owner === owner && previous.display === shown ? previous : { owner, display: shown }); }, [shown, owner]);
-  return shown;
-}
-
 const withEntries = withWindowEntries;
 
 function sameOnRerun<S extends object>(update: (previous: S) => S): (previous: S) => S {

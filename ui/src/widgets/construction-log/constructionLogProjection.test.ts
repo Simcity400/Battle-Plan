@@ -1,0 +1,214 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import type { DisplayedHour, EntityKind, IdentityProvider, IdentityResult } from '../../families/plan.ts';
+import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import type { ConstructionLogRow, ConstructionLogTailReply, ConstructionTypeChip } from '../../generated/dashboard';
+import { constructionLogDeclaration, constructionLogProjection, constructionTypeFilterItems } from './constructionLogProjection.ts';
+
+function sampleRow(overrides: Partial<ConstructionLogRow> = {}): ConstructionLogRow {
+  const hour = overrides.hour ?? 100;
+  return {
+    key: '10',
+    hour,
+    exact: true,
+    observed: hour,
+    ordinal: '0',
+    live: true,
+    kind: 'building',
+    source: 'census',
+    workKind: 'new',
+    repairing: false,
+    status: 'building',
+    owner: { tag: 'USA', slot: 2, missing: null },
+    buildingToken: 'industrial_complex',
+    buildingName: 'Civilian Factory',
+    buildingMissing: null,
+    icon: null,
+    place: { kind: 'building', state: 358, toState: null, province: null, atHour: hour },
+    placeMissing: null,
+    levels: { built: 2, total: 3, unknown: 0, possible: 0, added: 0, earlierUnknown: false, countersUnread: false },
+    levelsMissing: null,
+    factories: 15,
+    lastFactories: 15,
+    factoriesMissing: null,
+    createdHour: hour,
+    firstRead: hour,
+    costRaw: '1080000000',
+    baseLevel: null,
+    targetLevel: null,
+    routeProvinces: null,
+    end: null,
+    output: null,
+    ...overrides,
+  };
+}
+
+function sampleReply(rows: ConstructionLogRow[], overrides: Partial<ConstructionLogTailReply> = {}): ConstructionLogTailReply {
+  const liveCount = rows.filter(r => r.live).length;
+  return {
+    branchId: '1',
+    total: String(rows.length),
+    offset: '0',
+    live: String(liveCount),
+    counts: [{ key: 'active', total: String(liveCount) }],
+    buildingTypes: [],
+    repairIcon: null,
+    costScale: 100_000,
+    rows,
+    missing: [],
+    nextChange: null,
+    unavailable: null,
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function makeIdentity(resolve: (kind: EntityKind, key: string, hour: number) => string | null): IdentityProvider {
+  return {
+    resolve(kind: EntityKind, key: string, atHour: DisplayedHour): IdentityResult {
+      const name = resolve(kind, key, atHour);
+      return {
+        kind,
+        key,
+        atHour,
+        holder: { status: 'absent', reason: 'not set' },
+        name: name !== null ? { status: 'ready', value: name } : { status: 'absent', reason: `${kind} ${key} not recorded` },
+        validInterval: [atHour, atHour],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+}
+
+test('building type chips exclude types first seen after the displayed hour and disambiguate duplicate names', () => {
+  const chips: ConstructionTypeChip[] = [
+    { token: 'industrial_complex', firstHour: 10, name: 'Factory', icon: null },
+    { token: 'mod_factory', firstHour: 12, name: 'Factory', icon: null },
+    { token: 'arms_factory', firstHour: 20, name: 'Military Factory', icon: null },
+  ];
+  const at12 = constructionTypeFilterItems(chips, [], 12);
+  assert.deepEqual(
+    at12.map(item => [item.value, item.label, item.checked]),
+    [
+      ['industrial_complex', 'Factory (1)', true],
+      ['mod_factory', 'Factory (2)', true],
+    ],
+  );
+  const at20 = constructionTypeFilterItems(chips, ['arms_factory'], 20);
+  assert.deepEqual(
+    at20.map(item => [item.value, item.label, item.checked]),
+    [
+      ['industrial_complex', 'Factory (1)', false],
+      ['mod_factory', 'Factory (2)', false],
+      ['arms_factory', 'Military Factory', true],
+    ],
+  );
+});
+
+test('construction projection formats levels, railway routes, live factories, statuses, and dated renames honestly', () => {
+  const rows: ConstructionLogRow[] = [
+    sampleRow({
+      key: '1',
+      hour: 100,
+      live: true,
+      kind: 'railway',
+      buildingToken: 'rail_way',
+      buildingName: 'Railways',
+      place: { kind: 'railway', state: 10, toState: 11, province: null, atHour: 100 },
+      levels: { built: 8, total: 9, unknown: 0, possible: 0, added: 0, earlierUnknown: false, countersUnread: false },
+      factories: 15,
+      status: 'building',
+    }),
+    sampleRow({
+      key: '2',
+      hour: 98,
+      live: true,
+      factories: 0,
+      status: 'waiting',
+      levels: { built: 0, total: 1, unknown: 0, possible: 0, added: 0, earlierUnknown: false, countersUnread: false },
+    }),
+    sampleRow({
+      key: '3',
+      hour: 96,
+      live: false,
+      status: 'built',
+      factories: null,
+      levels: { built: 0, total: 1, unknown: 0, possible: 1, added: 0, earlierUnknown: false, countersUnread: false },
+      end: { kind: 'finished', hour: 96, knownAt: 96, unknown: null },
+    }),
+    sampleRow({
+      key: '4',
+      hour: 94,
+      live: false,
+      source: 'outputAlone',
+      status: 'completed',
+      owner: { tag: null, slot: 9, missing: 'No tag at first read' },
+      factories: null,
+      levels: null,
+      levelsMissing: 'Levels not recorded: line is known from factory output only',
+      end: { kind: 'finished', hour: null, knownAt: 94, unknown: null },
+    }),
+  ];
+  const source = buildRowSourceFromHead('test:construction', sampleReply(rows), undefined, 150)!;
+  const readView = createBoundedReadView({
+    hour: 150,
+    rows: new Map([['main', source]]),
+    identity: makeIdentity((kind, key, hour) => {
+      if (kind === 'state' && key === '10') return hour < 120 ? 'Illinois' : 'Renamed Illinois';
+      if (kind === 'state' && key === '11') return 'Indiana';
+      if (kind === 'state' && key === '358') return 'New York';
+      if (kind === 'country' && key === 'USA') return 'United States';
+      return null;
+    }),
+  });
+  const model = constructionLogProjection.project(readView, { artwork: false });
+  assert.equal(model.rows.length, 4);
+  assert.equal(model.titleSummary, '2 building');
+
+  const rail = model.rows[0]!;
+  assert.equal(rail.cells.place?.value.kind === 'known' ? rail.cells.place.value.value : null, 'Illinois – Indiana');
+  assert.equal(rail.cells.levels?.value.kind === 'known' ? rail.cells.levels.value.value : null, '8 / 9');
+  assert.equal(rail.cells.levels?.unitSuffix, 'levels');
+  assert.equal(rail.cells.factories?.value.kind === 'known' ? rail.cells.factories.value.value : null, '15');
+  assert.equal(rail.cells.status?.statusKind, 'running');
+
+  const waiting = model.rows[1]!;
+  assert.equal(waiting.cells.status?.statusKind, 'waiting');
+  assert.equal(waiting.cells.levels?.unitSuffix, 'level');
+
+  const ambiguous = model.rows[2]!;
+  assert.equal(ambiguous.cells.levels?.value.kind === 'known' ? ambiguous.cells.levels.value.value : null, '0 or 1');
+  assert.equal(ambiguous.cells.factories?.blank, true);
+  assert.equal(ambiguous.cells.status?.statusKind, 'finished');
+
+  const untagged = model.rows[3]!;
+  assert.equal(untagged.cells.levels?.value.kind, 'notRecorded');
+  assert.equal(untagged.cells.country?.flags?.[0]?.art?.status, 'unavailable');
+});
+
+test('constructionLogDeclaration sends filters, work kind, queue toggle, order, and resolved country slots', () => {
+  const plan = constructionLogDeclaration.sources({
+    widget: { id: 'w1', kind: 'construction-log', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} } as never,
+    track: { id: 't1', source: { id: 's1', revision: 'r1' }, branch: { id: '1', firstHour: 10, lastHour: 200 }, axisOffset: 0 } as never,
+    branch: { id: '1', firstHour: 10, lastHour: 200 } as never,
+    following: true,
+    hour: 100 as DisplayedHour,
+    options: { types: 'industrial_complex arms_factory', projects: 'repair', queue: true, order: 'start' },
+    countries: { mode: 'filter', keys: ['GER'], tags: ['GER'], selectedSlots: [{ slot: 7 }], selection: { kind: 'tags', tags: ['GER'] }, group: null, label: 'GER', ready: true, unresolved: null },
+    countrySubject: null,
+    gateSpan: (first: number, last: number) => ({ firstHour: first, lastHour: last }) as never,
+  } as never, {} as never);
+  const entry = plan.entries[0]!;
+  assert.equal(entry.read.shape, 'paged-rows');
+  if (entry.read.shape === 'paged-rows') {
+    assert.equal(entry.read.tailQuery.product, 'construction-log-tail');
+    assert.deepEqual(entry.read.tailQuery.ask, {
+      buildingTypes: ['industrial_complex', 'arms_factory'],
+      projects: 'repair',
+      inQueue: true,
+      order: 'start',
+      countries: [{ slot: 7 }],
+    });
+  }
+});

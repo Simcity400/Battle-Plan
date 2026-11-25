@@ -1,15 +1,13 @@
 
 pub mod log;
+pub mod tail;
 pub mod breakdown;
 pub mod spending;
 #[cfg(test)]
 mod tests;
 
 use dashboard_base::Source;
-use dashboard_base::{
-    catalogue::{self, Catalogue, View},
-    products::battles::BattleWindow,
-};
+use dashboard_base::catalogue::{self, Catalogue, View};
 use dashboard_core::config::LoadContext;
 use dashboard_query::{Query, read, series::MissingSpan};
 use content_reader_layers::content::diagnostics::Diagnostics;
@@ -298,13 +296,6 @@ pub fn run_lines(source: &Source, run: u32) -> io::Result<RunLines> {
     Ok(RunLines { lines })
 }
 
-pub fn windows(query: &Query<'_>) -> io::Result<Vec<BattleWindow>> {
-    Ok(dashboard_world::products::army_windows::windows(query)?
-        .into_iter()
-        .map(|span| BattleWindow { first_hour: span.first_hour, last_hour: span.last_hour })
-        .collect())
-}
-
 pub fn recorded(query: &Query<'_>) -> io::Result<bool> {
     let recording = query.replay.recording();
     for stretch in &query.timeline.stretches {
@@ -359,6 +350,10 @@ pub struct Named {
 impl Content {
     pub fn load(source: &Source, context: &LoadContext) -> Self {
         Self { catalogue: context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string()) }
+    }
+
+    pub(crate) fn catalogue(&self) -> Result<&Arc<Catalogue>, &str> {
+        self.catalogue.as_ref().map_err(String::as_str)
     }
 
     pub fn name(&self, source: &Source, types: &BTreeMap<u32, Option<String>>, states: &BTreeSet<u32>, warnings: &mut Vec<String>) -> Named {
@@ -617,6 +612,7 @@ type Runs = dashboard_base::queries::RunCache<RunKey, RunLines>;
 
 pub(crate) fn forget(source: &dashboard_base::Source) {
     Runs::forget(source);
+    tail::forget(source);
 }
 
 pub fn cached_construction(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunLines>> {
