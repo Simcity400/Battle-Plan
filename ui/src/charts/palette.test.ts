@@ -185,6 +185,18 @@ test('ordinal colours are stable and extend lazily', () => {
   assert.notEqual(firstOnly, later);
 });
 
+test('unbounded ordinals such as hashes stay bounded and readable without hanging the palette', () => {
+  const surface = '#16181d';
+  const bg = parseColor(surface)!;
+  for (const ordinal of [2_147_483_648, 0xffff_ffff, Number.MAX_SAFE_INTEGER]) {
+    const hex = colour(surface, ordinal);
+    assert.equal(colour(surface, ordinal), hex);
+    const rgb = parseColor(hex);
+    assert.ok(rgb, `valid hex for ${ordinal}: ${hex}`);
+    assert.ok(contrast(rgb, bg) >= MARK_CONTRAST - 0.05, `readable colour ${hex} for ${ordinal}`);
+  }
+});
+
 test('ordinal palette stays unique and >= 3:1 up to 1,500 across every built-in theme, mode, and chip background', () => {
   const count = 1500;
   for (const theme of BUILT_IN_THEMES) {
