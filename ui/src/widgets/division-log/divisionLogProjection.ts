@@ -48,7 +48,7 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
   const place: TableCell = e.province !== null && e.placeHour !== null
     ? { value: resolveName(view, 'province', String(e.province), { atHour: e.placeHour, boundary }).value, glyph: 'place', missingFigure: 'Place',
       ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) }
-    : { value: notRecorded('Location not recorded'), missingFigure: 'Place' };
+    : { value: notRecorded('Location not recorded'), missingFigure: 'Place', ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) };
   const name = e.name ?? 'Division name not recorded';
   const art = drawableIcon(e.icon);
   const kind = artKindCell(view, urlArtHandle(art), 'drawn', e.templateName, e.iconMissing ?? 'Division template artwork not recorded');

@@ -24,19 +24,23 @@ function figureShape(meta: unknown): { readonly shape: string; readonly texts: r
 
 export class SubjectFigures {
   private readonly shape: string | null;
+  private seen: unknown;
   private texts: readonly string[];
   private writer: FigureWriter | null = null;
 
   constructor(meta: unknown) {
     const split = figureShape(meta);
+    this.seen = meta;
     this.shape = split?.shape ?? null;
     this.texts = split?.texts ?? [];
   }
 
   follow(meta: unknown): boolean {
     if (this.shape === null) return false;
+    if (meta === this.seen) return true;
     const split = figureShape(meta);
     if (!split || split.shape !== this.shape) return false;
+    this.seen = meta;
     this.texts = split.texts;
     this.writer?.(split.texts);
     return true;

@@ -136,6 +136,21 @@ function textSamples(columns: readonly { readonly key: string; readonly numeric?
   return samples;
 }
 
+function flagCounts(columns: readonly { readonly key: string; readonly display?: string }[], rows: readonly FlatTableRow[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
+  for (const column of columns) {
+    if (column.display !== 'flagName') continue;
+    let most = 0;
+    for (let i = 0; i < limit; i++) {
+      const item = rows[i]!;
+      if (item.kind === 'data') most = Math.max(most, item.row.cells[column.key]?.flags?.length ?? 0);
+    }
+    if (most > 1) counts[column.key] = most;
+  }
+  return counts;
+}
+
 function sampleSignature(samples: Record<string, string[]>): string {
   let sig = '';
   for (const [key, list] of Object.entries(samples)) {
@@ -189,10 +204,11 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const layoutWidth = paneGeom ? paneGeom.width : width;
   const baseCols = buildColumnLayouts(model.columns, settings);
   const samples = textSamples(baseCols, flatRows);
-  const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}`;
+  const flags = flagCounts(baseCols, flatRows);
+  const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}${JSON.stringify(flags)}`;
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
-    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true });
+    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true, flags });
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];

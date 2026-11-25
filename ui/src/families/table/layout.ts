@@ -126,6 +126,7 @@ export function buildColumnLayouts(
 
 const OPERATOR_SLOT = 16;
 const HEADER_HATCH = 16;
+const FLAG_GAP = 6;
 const SHORT_OVER_GAP = 8;
 
 function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, headFont: string, unitFont: string): number {
@@ -148,7 +149,7 @@ export function measureFixedColumnWidths(
   theme: Pick<TableTheme, 'font' | 'fontSize'>,
   measure: MeasureText,
   initialSamples?: Readonly<Record<string, readonly string[]>>,
-  options?: { readonly hideHeader?: boolean },
+  options?: { readonly hideHeader?: boolean; readonly flags?: Readonly<Record<string, number>> },
 ): Record<string, number> {
   const bodyFont = fontString(theme, 13.5, VALUE_WEIGHT);
   const headFont = fontString(theme, 13, 600);
@@ -233,7 +234,8 @@ export function measureFixedColumnWidths(
     for (const sample of samples) {
       widest = Math.max(widest, measure(sample, bodyFont));
     }
-    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + TWO_WAY_GAP : displayExtra(column);
+    const moreFlags = column.display === 'flagName' ? Math.max(0, (options?.flags?.[column.key] ?? 1) - 1) * (FLAG_SLOT_WIDTH + FLAG_GAP) : 0;
+    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + TWO_WAY_GAP : displayExtra(column) + moreFlags;
     const contentWidth = widest + extra + CELL_INSET * 2;
     let computed = Math.ceil(Math.max(contentWidth, headerWidth));
     if (column.minWidth !== undefined) computed = Math.max(column.minWidth, computed);

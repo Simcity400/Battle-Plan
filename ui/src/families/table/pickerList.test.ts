@@ -15,3 +15,9 @@ test('a country or kind chosen before a seek no longer filters once the roster l
   assert.deepEqual(appliedFacets({ query: '', country: 'AAA', kind: 'Armour' }, choices), { country: '', kind: '' });
   assert.deepEqual(appliedFacets({ query: '', country: 'BBB', kind: 'Infantry' }, choices), { country: 'BBB', kind: 'Infantry' });
 });
+
+test('a roster with an untagged division keeps every country on offer', () => {
+  const choices = facetChoices([item('a', '', { country: 'BBB' }), item('b', '')]);
+  assert.equal(choices.untagged, true);
+  assert.deepEqual(choices.countries.map(([tag]) => tag), ['BBB']);
+});

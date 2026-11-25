@@ -66,6 +66,7 @@ test('the minimum division log keeps both country flags visible without scrollin
   const flagsOnly = { ...settings, columns: { ...settings.columns, country: { ...settings.columns.country!, showNames: false } } };
   const fixed = measureFixedColumnWidths(buildColumnLayouts(DIVISION_LOG_COLUMNS, flagsOnly), flagsOnly, theme, measure, undefined, { hideHeader: true });
   assert.equal(fixed.country, 48, 'with names off the country column is one flag wide');
-  const named = measureFixedColumnWidths(buildColumnLayouts(SERVICE_COLUMNS, serviceNames), serviceNames, theme, measure, { country: ['German Reich · Kingdom of Hungary'] }, { hideHeader: true });
-  assert.ok(named.country! > 68, `with names on the service record country column takes the names (${named.country})`);
+  const pair = 'German Reich · Kingdom of Hungary';
+  const named = measureFixedColumnWidths(buildColumnLayouts(SERVICE_COLUMNS, serviceNames), serviceNames, theme, measure, { country: [pair] }, { hideHeader: true, flags: { country: 2 } });
+  assert.ok(named.country! >= measure(pair) + 2 * (20 + 6) + 2 + 20, `with names on, a two-country service row fits both flags and both names (${named.country})`);
 });

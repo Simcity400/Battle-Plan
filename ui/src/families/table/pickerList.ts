@@ -79,6 +79,7 @@ export function nextOption(key: string, active: number, count: number, page: num
 }
 
 export interface FacetChoices {
+  readonly untagged: boolean;
   readonly countries: readonly (readonly [string, { readonly name: string; readonly flag?: string }])[];
   readonly kinds: readonly string[];
 }
@@ -87,6 +88,7 @@ export function facetChoices(items: readonly LogKindFilterItem[]): FacetChoices 
   const byTag = new Map<string, { name: string; flag?: string }>();
   for (const item of items) if (item.country && !byTag.has(item.country)) byTag.set(item.country, { name: item.countryName ?? item.country, ...(item.countryFlag ? { flag: item.countryFlag } : {}) });
   return {
+    untagged: items.some(item => !item.country),
     countries: [...byTag].sort((a, b) => collator.compare(a[1].name, b[1].name)),
     kinds: [...new Set(items.flatMap(item => item.detail ? [item.detail] : []))].sort(collator.compare),
   };

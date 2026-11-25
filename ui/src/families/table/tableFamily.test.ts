@@ -2636,9 +2636,11 @@ test('the table host adapter stores and resolves table settings through its decl
   const first = tableHostAdapter.chromeState!({ meta: subject(knownValue(1904)), widths }, undefined) as TableChromeState;
   const written: string[][] = [];
   first.figures.attach(texts => { written.push([...texts]); });
-  const fought = tableHostAdapter.chromeState!({ meta: subject(knownValue(2536)), widths }, first);
+  const foughtMeta = subject(knownValue(2536));
+  const fought = tableHostAdapter.chromeState!({ meta: foughtMeta, widths }, first);
   assert.equal(fought, first, 'a summary figure that only changes its number keeps the chrome state, so playback commits nothing');
-  assert.deepEqual(written, [['1,904'], ['2,536']], 'and the new number is written to the band');
+  assert.equal(tableHostAdapter.chromeState!({ meta: foughtMeta, widths }, first), first);
+  assert.deepEqual(written, [['1,904'], ['2,536']], 'and the new number is written to the band once');
   assert.notEqual(tableHostAdapter.chromeState!({ meta: subject(notRecorded('Casualties not recorded')), widths }, first), first, 'a figure that stops being recorded rebuilds the band');
 });
 

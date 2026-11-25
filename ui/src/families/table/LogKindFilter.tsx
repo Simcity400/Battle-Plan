@@ -60,7 +60,7 @@ function Facets({ choices, country, kind, filters, setFilters }: {
   choices: FacetChoices; country: string; kind: string; filters: Filters; setFilters: (filters: Filters) => void;
 }) {
   const { countries, kinds } = choices;
-  const only = countries.length === 1 ? countries[0]! : null;
+  const only = countries.length === 1 && !choices.untagged ? countries[0]! : null;
   const shown = country ? countries.find(([tag]) => tag === country)?.[1] : only?.[1];
   return <div className="tf-picker-facets">
     {countries.length ? <Select label="Country" value={only ? only[0] : country} className="tf-picker-chip"
@@ -149,7 +149,7 @@ function FilterList({ items, status, single, noun, allLabel, searchThreshold = 8
         onChange={event => setQuery({ ...filters, query: event.target.value })}
         onKeyDown={event => {
           if (event.key === 'Enter' && laid.options.length) { event.preventDefault(); choose(laid.options[Math.max(0, active)]); return; }
-          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+          if ((event.key !== 'ArrowDown' && event.key !== 'ArrowUp') || !laid.options.length) return;
           listbox.current?.focus({ preventScroll: true });
           move(event, active);
         }} />
