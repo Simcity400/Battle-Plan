@@ -288,6 +288,23 @@ export function requestedRowWindow<TSettings>(
   return adapter.rowWindow(viewport, settings, fields);
 }
 
+export interface ReportedRowWindow {
+  readonly window: FamilyRowWindow;
+  readonly hour: number;
+  readonly planSig: string;
+}
+
+export function nextReportedRowWindow(
+  reported: ReportedRowWindow | null,
+  requested: FamilyRowWindow | null,
+  installedHour: number | null,
+  planSig: string,
+): ReportedRowWindow | null {
+  if (!requested || installedHour === null) return null;
+  if (reported && reported.planSig === planSig && reported.window === requested && installedHour >= reported.hour) return null;
+  return { window: requested, hour: installedHour, planSig };
+}
+
 export function parseFamilyHit(adapter: Pick<FamilyHostAdapter, 'parseHit'>, hitKey: string | null): ParsedFamilyHit | null {
   return (adapter.parseHit ?? parseDefaultRowHit)(hitKey);
 }
