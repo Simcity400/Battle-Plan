@@ -229,7 +229,7 @@ Object.assign(window, { findings: {
     const frame = {
       title: widget.title, subject: wording.subject, things: wording.things,
       timeMode: widget.time.mode, pinned: widget.time.mode === 'pin' || widget.time.mode === 'range',
-      bounds: { firstHour: FIRST, lastHour: scene.last ?? LAST }, hasSubject: true, captionSlot: null,
+      bounds: { firstHour: FIRST, lastHour: scene.last ?? LAST }, hasSubject: true,
       openCountries: () => {}, openTime: () => {}, reportState: () => {}, announce: () => {}, clearAnnouncement: () => {},
       setDynamicViewSwitch: () => {}, skeleton: 'generic' as const, setSkeleton: () => {},
     };

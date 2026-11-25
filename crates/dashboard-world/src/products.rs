@@ -9,6 +9,7 @@ pub mod country_flags;
 pub mod land_owners;
 pub mod subjects;
 pub mod autonomy_levels;
+pub mod autonomy_lines;
 pub mod territory;
 pub mod place_name_runs;
 pub mod place_names;

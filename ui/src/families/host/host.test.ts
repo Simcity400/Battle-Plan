@@ -48,6 +48,7 @@ import {
 } from './tooltips.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 import { planFamilySources } from './planSources.ts';
+import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary } from './headerSummary.ts';
 import { airKillsLossesLinesDeclaration } from '../../widgets/air-kills-losses/airKillsLossesLinesProjection.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { countryKey } from '../../dashboard/countryKey.ts';
@@ -1364,4 +1365,54 @@ test('rv19 S2: a selected Range reaches source planning and plan signature for c
   assert.equal(followPlan.ctx.staticSpan, null);
   const followHead = followPlan.plan?.entries.find(e => e.name === 'head')?.read;
   assert.equal(followHead?.shape === 'point' ? followHead.params?.fromHour : 'missing', undefined);
+});
+
+test('#849: header summary folds notes and partial notices into one compact marker, Details diagnostics, and accessible description', () => {
+  assert.equal(resolveHeaderSummary({}), null);
+
+  const plain = resolveHeaderSummary({ summaryText: 'Infantry Equipment · per day' });
+  assert.deepEqual(plain, {
+    label: 'Infantry Equipment · per day',
+    tooltip: null,
+    spoken: 'Infantry Equipment · per day',
+    hasMarker: false,
+  });
+  assert.equal(mergeAccessibleDescription(null, plain), null);
+
+  const noteOnly = resolveHeaderSummary({ notes: ['Loss totals include corrections.'] });
+  assert.deepEqual(noteOnly, {
+    label: 'Note',
+    tooltip: 'Loss totals include corrections.',
+    spoken: 'Note. Loss totals include corrections.',
+    hasMarker: true,
+  });
+  assert.equal(mergeAccessibleDescription(null, noteOnly), 'Note. Loss totals include corrections.');
+
+  const partialOnly = resolveHeaderSummary({ summaryPartial: 'Some rows missing.' });
+  assert.deepEqual(partialOnly, {
+    label: 'Partial',
+    tooltip: 'Some rows missing.',
+    spoken: 'Partial. Some rows missing.',
+    hasMarker: true,
+  });
+
+  const combined = resolveHeaderSummary({
+    summaryText: '69 completed',
+    notes: ['Head: 5 in progress · Radio 50%', 'Head: 5 in progress · Radio 50%'],
+  });
+  assert.deepEqual(combined, {
+    label: '69 completed',
+    tooltip: 'Head: 5 in progress · Radio 50%',
+    spoken: '69 completed. Head: 5 in progress · Radio 50%',
+    hasMarker: true,
+  });
+
+  assert.deepEqual(
+    mergeDiagnosticNotes(['Extra warning'], ['Shared note'], ['Shared note', 'Loss totals include corrections.']),
+    ['Extra warning', 'Shared note', 'Loss totals include corrections.'],
+  );
+  assert.equal(
+    mergeAccessibleDescription('69 completed. Head: 5 in progress · Radio 50%', combined),
+    '69 completed. Head: 5 in progress · Radio 50%',
+  );
 });

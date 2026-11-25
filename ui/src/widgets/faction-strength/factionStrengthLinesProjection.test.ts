@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { tilesOf } from '../../dashboard/tiles/tile.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { compileFollowPlan } from '../../families/broker.ts';
@@ -114,6 +115,46 @@ test('faction-strength lines registers in TIME_CHART_VIEWS and uses pixel-binned
   assert.ok(aggHead && aggHead.read.shape === 'point' && aggHead.read.product === 'faction-totals-at');
   assert.ok(aggHead.read.followQuery && (aggHead.read.followQuery as { panel?: string }).panel === 'faction-totals-at');
   assert.equal(aggPlan.entries.some(e => e.read.shape === 'branch-to-hour'), false);
+});
+
+test('aggregated explicit country list asks one group tile line keyed as group and decodes the single group reply', () => {
+  const ger = countryKey(7);
+  const ita = countryKey(9);
+  const plan = factionStrengthLinesDeclaration.sources(
+    makeCtx({
+      options: { measure: 'factories', count: 'free' },
+      countries: { kind: 'group', group: { type: 'top', count: 2 }, membership: 'hour', aggregate: true },
+      tags: [ger, ita],
+    }),
+    { following: true, staticSpan: null },
+  );
+  const main = plan.entries.find(e => e.name === 'main');
+  assert.ok(main && main.read.shape === 'pixel-binned');
+  assert.deepEqual(main.read.tags, ['group']);
+  assert.deepEqual(main.read.coverage, { mode: 'keyed', keys: ['group'] });
+  assert.deepEqual(main.read.family, {
+    kind: 'faction-group-lines',
+    sourceKind: 'country-factories',
+    measure: 'free7',
+    members: [7, 9],
+  });
+  const reply = {
+    branchId: '1',
+    measure: 'free7',
+    decimals: 0,
+    binHours: 1,
+    index: 0,
+    firstHour: 0,
+    immutable: false,
+    filled: 115,
+    rawValues: true,
+    hourBytes: 0,
+    lines: [{ country: 'group', missing: [], parts: [] }],
+    bins: new Uint8Array(256),
+  };
+  const decoded = tilesOf(reply, main.read.tags, 1, 0, tag => tag);
+  assert.equal(decoded.length, 1);
+  assert.equal(decoded[0]!.tag, 'group');
 });
 
 test('faction-strength lines hides future factions, keeps recorded zeros and missing totals, and builds exact hover details', () => {

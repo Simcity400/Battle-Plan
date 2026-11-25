@@ -20,14 +20,20 @@ pub struct AutonomyLevelsParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AutonomySubject {
     pub overlord_id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub overlord_slot: Option<u32>,
     #[doc = " The overlord's tag; null where it is not recorded."]
     pub overlord: Option<String>,
     pub subject_id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub subject_slot: Option<u32>,
     #[doc = " The subject's tag; null where it is not recorded."]
     pub subject: Option<String>,
     #[doc = " The subject's autonomy level; null where it is not recorded at the hour."]
@@ -43,6 +49,15 @@ pub struct AutonomySubject {
     pub progress_milli: Option<i32>,
     #[doc = " Why the progress is not known, where it is not."]
     pub progress_unknown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub lower_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub upper_score: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -100,6 +115,10 @@ fn subjects(frame: &DecodedFrame, levels: &[SubjectLevel]) -> io::Result<Vec<Aut
     let mut tags = LinkTags::default();
     let tags_known = tags.update(frame).is_ok();
     let tag = |raw: u32| if tags_known { tags.get(raw).cloned() } else { None };
+    let slots: HashMap<u32, u32> = frame
+        .complete::<tables::CountryLinks>()
+        .map(|rows| rows.iter().map(|link| (link.id, link.canonical_slot)).collect())
+        .unwrap_or_default();
     let autonomy = frame.complete::<tables::Autonomy>().map(|rows| rows.iter().map(|row| (row.subject, row)).collect::<HashMap<_, _>>());
     let mut out = Vec::new();
     for row in relations.iter() {
@@ -107,7 +126,7 @@ fn subjects(frame: &DecodedFrame, levels: &[SubjectLevel]) -> io::Result<Vec<Aut
         if row.cancel != 0 || ended {
             continue;
         }
-        let (level, progress) = match &autonomy {
+        let (level, progress, score, lower_score, upper_score) = match &autonomy {
             Ok(rows) => match rows.get(&row.subject) {
                 Some(held) => {
                     let level = std::str::from_utf8(&held.state).ok().filter(|text| !text.is_empty()).map(str::to_owned);
@@ -116,17 +135,25 @@ fn subjects(frame: &DecodedFrame, levels: &[SubjectLevel]) -> io::Result<Vec<Aut
                         Ok(None) => Err("The subject's autonomy progress is out of range".to_owned()),
                         Err(reason) => Err(reason.to_owned()),
                     };
-                    (level, progress)
+                    (
+                        level,
+                        progress,
+                        Some(held.score as f64 / f64::from(WHOLE)),
+                        Some(held.lower_score as f64 / f64::from(WHOLE)),
+                        Some(held.upper_score as f64 / f64::from(WHOLE)),
+                    )
                 }
-                None => (None, Err("The subject's autonomy is not recorded at this hour".to_owned())),
+                None => (None, Err("The subject's autonomy is not recorded at this hour".to_owned()), None, None, None),
             },
-            Err(error) => (None, Err(format!("Autonomy is not recorded at this hour: {error}"))),
+            Err(error) => (None, Err(format!("Autonomy is not recorded at this hour: {error}")), None, None, None),
         };
         let (level_below, level_above, levels_unknown) = neighbours(levels, level.as_deref());
         out.push(AutonomySubject {
             overlord_id: row.overlord,
+            overlord_slot: slots.get(&row.overlord).copied(),
             overlord: tag(row.overlord),
             subject_id: row.subject,
+            subject_slot: slots.get(&row.subject).copied(),
             subject: tag(row.subject),
             level,
             level_below,
@@ -134,6 +161,9 @@ fn subjects(frame: &DecodedFrame, levels: &[SubjectLevel]) -> io::Result<Vec<Aut
             levels_unknown,
             progress_milli: progress.as_ref().ok().copied(),
             progress_unknown: progress.err(),
+            score,
+            lower_score,
+            upper_score,
         });
     }
     out.sort_by(order);
@@ -200,8 +230,10 @@ mod tests {
     fn subject(tag: &str, progress: Result<i32, &str>) -> AutonomySubject {
         AutonomySubject {
             overlord_id: 1,
+            overlord_slot: None,
             overlord: Some("ENG".into()),
             subject_id: tag.len() as u32,
+            subject_slot: None,
             subject: Some(tag.into()),
             level: None,
             level_below: None,
@@ -209,6 +241,9 @@ mod tests {
             levels_unknown: None,
             progress_milli: progress.ok(),
             progress_unknown: progress.err().map(str::to_owned),
+            score: None,
+            lower_score: None,
+            upper_score: None,
         }
     }
 

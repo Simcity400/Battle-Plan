@@ -51,6 +51,7 @@ export interface MeterRow {
   readonly figureMissing?: boolean;
   readonly figureMissingLabel?: string;
   readonly secondary?: string;
+  readonly sparkline?: readonly (number | null)[];
   readonly compactFigure?: string;
   readonly clickable?: boolean;
   readonly spoken: string;

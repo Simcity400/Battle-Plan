@@ -114,7 +114,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   const [filterSlot, setFilterSlot] = useState<HTMLSpanElement | null>(null);
-  const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
   const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
   const [dynamicSwitch, setDynamicSwitch] = useState<DynamicViewSwitch | null>(null);
@@ -343,7 +342,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     pinned: widget.time.mode === 'pin' || widget.time.mode === 'range',
     bounds: campaignTrack ? { firstHour: campaignTrack.branch.firstHour, lastHour: campaignTrack.branch.lastHour } : null,
     hasSubject,
-    captionSlot,
     openCountries: hasSubject && hasCountryOpener ? () => openCountriesRef.current?.() : undefined,
     openTime: showTime && hasTimeOpener ? () => openTimeRef.current?.() : undefined,
     reportState,
@@ -352,7 +350,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     setDynamicViewSwitch,
     skeleton: customSkeleton ?? definition?.skeleton ?? 'generic',
     setSkeleton,
-  }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, hasCountryOpener, captionSlot, showTime, hasTimeOpener, definition?.skeleton, reportState, announce, clearAnnouncement, setDynamicViewSwitch, customSkeleton, setSkeleton]);
+  }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, hasCountryOpener, showTime, hasTimeOpener, definition?.skeleton, reportState, announce, clearAnnouncement, setDynamicViewSwitch, customSkeleton, setSkeleton]);
 
   const drawnHere = !prepared || definition?.preview !== false;
   const pipelineGen = usePipelineGeneration(prepared ? null : runtime.clock);
@@ -390,7 +388,6 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
     <WidgetFrameContext.Provider value={frameValue}>
       <HeldFailureNotices failures={failures} />
-      <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
       <div ref={contentRef} className="dash-widget-content">
         <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
           {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedWidgetKind.Provider value={widget.kind}><FollowedCard.Provider value={card}>

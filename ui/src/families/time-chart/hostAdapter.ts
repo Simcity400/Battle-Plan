@@ -1,35 +1,12 @@
-import type { TiledLine } from '../../dashboard/tiles/view';
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
-import type { SerializedTiledLine } from '../sceneTiles.ts';
+import { serializeTiledBySource } from '../sceneTiles.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
 
 const MIN_ZOOM_SPAN_HOURS = 24;
-const serializedLines = new WeakMap<TiledLine, SerializedTiledLine>();
-
-function serializeTiledLine(source: string, line: TiledLine): SerializedTiledLine {
-  const cached = serializedLines.get(line);
-  if (cached && cached.source === source) return cached;
-  const serialized: SerializedTiledLine = {
-    source,
-    tag: line.tag,
-    head: line.head,
-    decimals: line.decimals,
-    binHours: line.summary.tiles?.binHours ?? 1,
-    from: line.summary.from,
-    to: line.summary.to,
-    width: line.summary.width,
-    buckets: line.summary.buckets,
-    ...(line.summary.runs ? { runs: line.summary.runs } : {}),
-    missing: line.missing,
-    parts: line.parts,
-  };
-  serializedLines.set(line, serialized);
-  return serialized;
-}
 
 type HeadSources = NonNullable<TimeChartBinding['headSourceBySeries']>;
 const headSources = new WeakMap<SourcePlan, HeadSources | null>();
@@ -213,14 +190,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   deriveAuditRows: model => model.auditRows ?? [],
   buildBinding: ctx => {
     if (!ctx.extent) return null;
-    const tiledBySource: Record<string, Record<string, SerializedTiledLine>> = {};
-    if (ctx.tiledSeries) {
-      for (const [sourceName, lines] of Object.entries(ctx.tiledSeries)) {
-        const byTag: Record<string, SerializedTiledLine> = {};
-        for (const [tag, line] of lines) byTag[tag] = serializeTiledLine(sourceName, line);
-        tiledBySource[sourceName] = byTag;
-      }
-    }
+    const tiledBySource = ctx.tiledSeries ? serializeTiledBySource(ctx.tiledSeries) : {};
     const headSourceBySeries = ctx.plan ? headSourcesOf(ctx.plan) : null;
     return {
       extent: ctx.extent,

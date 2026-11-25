@@ -160,12 +160,12 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
     const leader = leaderShown(history, leaderAt(history, hour));
     const partyName = partyNameAt(history, hour);
     const leaderParts = [leader.name, leader.ideology, partyName ?? null].filter((part): part is string => !!part);
-    const note = leaderParts.length > 0 ? leaderParts.join(' · ') : null;
+    const summaryText = leaderParts.length > 0 ? leaderParts.join(' · ') : null;
 
     if (!list.length) {
       return {
         ...base,
-        note,
+        summaryText,
         warnings: history.warnings,
         empty: { message: history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.', kind: 'unavailable' },
       };
@@ -207,7 +207,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       stack,
       markers: markers.length > 0 ? markers : undefined,
       gaps: gaps.length > 0 ? gaps : undefined,
-      note,
+      summaryText,
       hoverDetail: rulingHoverDetail(readView, history, list, subject),
       warnings: history.warnings,
       auditRows,

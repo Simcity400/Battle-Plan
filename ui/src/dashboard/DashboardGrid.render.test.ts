@@ -215,9 +215,13 @@ test('header order, view switch slot, narrow drop order, and settings section or
     assert.deepEqual(mapSections, ['campaign', 'countries', 'time', 'size', 'options', 'map', 'factionColours', 'axes', 'interaction']);
     assert.equal(SECTION_TITLES.factionColours, 'Colours');
     assert.equal(SECTION_TITLES.map, 'Map');
-    const captionPos = rangeHtml.indexOf('dash-widget-caption-slot');
-    const contentPos = rangeHtml.indexOf('dash-widget-content');
-    assert.ok(captionPos > 0 && contentPos > captionPos, 'caption slot sits outside and before the widget content box');
+    assert.equal(rangeHtml.includes('dash-widget-caption-slot'), false, 'notes never take a body caption slot');
+    const { FamilyHeaderSummary } = await vite.ssrLoadModule('/ui/src/families/host/FamilyHeaderSummary.tsx') as typeof import('../families/host/FamilyHeaderSummary');
+    const { resolveHeaderSummary } = await vite.ssrLoadModule('/ui/src/families/host/headerSummary.ts') as typeof import('../families/host/headerSummary');
+    const noteHtml = renderToStaticMarkup(createElement(FamilyHeaderSummary, {
+      summary: resolveHeaderSummary({ notes: ['Loss totals include corrections.'] }),
+    }));
+    assert.match(noteHtml, /class="fh-summary fh-summary-partial" tabindex="0" data-tooltip="Loss totals include corrections\." aria-label="Note\. Loss totals include corrections\.">Note<span class="fh-summary-hatch" aria-hidden="true"><\/span><\/span>/);
   } finally { await vite.close(); }
 });
 
@@ -293,7 +297,7 @@ test('a widget header draws its kind\'s own icon and colour, and an image in its
     assert.ok(preview.includes(renderToStaticMarkup(createElement(Icon, { name: 'anchor', style: { color: '#00ff00' } }))), 'the catalogue preview draws the kind\'s icon');
     const livePreview = renderToStaticMarkup(createElement(WidgetIconsContext.Provider, { value: icons },
       createElement(Preview, { definition, runtime })));
-    assert.ok(livePreview.indexOf('dash-widget-caption-slot') > 0 && livePreview.indexOf('dash-widget-content') > livePreview.indexOf('dash-widget-caption-slot'), 'preview caption slot sits before content');
+    assert.equal(livePreview.includes('dash-widget-caption-slot'), false, 'preview renders no body caption slot');
   } finally { await vite.close(); }
 });
 

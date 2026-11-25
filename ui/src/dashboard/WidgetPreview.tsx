@@ -28,7 +28,6 @@ export default function WidgetPreview({ definition, initial, runtime }: {
   const [summary, setSummary] = useState<HTMLSpanElement | null>(null);
   const [country, setCountry] = useState<HTMLSpanElement | null>(null);
   const [filter, setFilter] = useState<HTMLSpanElement | null>(null);
-  const [captionSlot, setCaptionSlot] = useState<HTMLDivElement | null>(null);
   const [hasBodyState, setHasBodyState] = useState(false);
   const stateOwners = useRef(new Set<object>());
   const [dynamicSwitch, setDynamicSwitch] = useState<DynamicViewSwitch | null>(null);
@@ -55,14 +54,13 @@ export default function WidgetPreview({ definition, initial, runtime }: {
     pinned: widget?.time.mode === 'pin' || widget?.time.mode === 'range',
     bounds: track ? { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } : null,
     hasSubject: definition.data !== false && definition.countrySelection !== false,
-    captionSlot,
     reportState,
     announce: noop,
     clearAnnouncement: noop,
     setDynamicViewSwitch,
     skeleton: (definition.skeleton ?? 'generic') as WidgetSkeletonKind | (() => ReactNode),
     setSkeleton: noop,
-  }), [widget, definition, wording, track, captionSlot, reportState, noop, setDynamicViewSwitch]);
+  }), [widget, definition, wording, track, reportState, noop, setDynamicViewSwitch]);
 
   if (definition.preview === false || !widget || !runtime.tracks.length) return <div className="widget-preview is-empty">
     <StyledIcon icon={icon.icon} fallback={definition.icon} colour={icon.colour} /><span>{definition.preview === false ? 'This widget draws on the page itself, so it has no preview here.' : 'Load a campaign to preview widgets with its data.'}</span></div>;
@@ -88,7 +86,6 @@ export default function WidgetPreview({ definition, initial, runtime }: {
       />
       <WidgetFrameContext.Provider value={frameValue}>
         <HeldFailureNotices failures={failures} />
-        <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
         <div className="dash-widget-content"><div className="dash-widget-scaled">
           <HeldFailuresContext.Provider value={failures}>
             <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} filterSlot={filter} setOption={noop} setOptions={noop} />

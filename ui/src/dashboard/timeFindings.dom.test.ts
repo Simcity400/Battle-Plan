@@ -180,23 +180,15 @@ test('33. A saved range starting before its branch is clipped to the branch befo
   assert.ok(decisions.length > 0 && decisions.every(ask => ask.params?.from === 100 && ask.params?.hour === 105), `the range is clipped to 100–105: ${JSON.stringify(decisions)}`);
 }));
 
-const SUBJECTS = `({ branchId: '1', warnings: [], unobserved: [], levels: [{ token: 'puppet', name: 'Puppet', ordered: true }],
-  runs: [{ firstHour: 100, lastHour: 109, overlord: 'ENG', subject: 'GER', startHour: 100, steps: [{ firstHour: 100, lastHour: 109, level: 'puppet' }] }] })`;
+const AUTONOMY_LEVELS = `({ levels: [{ token: 'puppet', name: 'Puppet', ordered: true }], missing: null, warnings: [],
+  subjects: [{ overlordId: 2, overlordSlot: 2, overlord: 'ENG', subjectId: 1, subjectSlot: 1, subject: 'GER', level: 'puppet', levelBelow: null, levelAbove: null, levelsUnknown: null, progressMilli: 50000, progressUnknown: null }] })`;
 
-test('43. Autonomy of the human subjects at 108: hovering 103, before GER joins the humans, reads nothing for GER', () => onPage(async act => {
-  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'lines', countriesAre: 'subjects' },
-    groups: groupsOf(['GER', 'ENG'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]), replies: { subjects: SUBJECTS } }));
-  const hovered = await act<Read & { called: boolean }>('call("Timeline", "onHover", 103)');
-  assert.ok(hovered.called, 'the timeline takes the hover');
-  const early = hovered.asks.flatMap(ask => (ask.params?.reads ?? []) as { country?: unknown; hour?: number }[]).filter(read => read.hour === 103);
-  assert.deepEqual(early, [], `no read names GER at 103: ${JSON.stringify(hovered.asks)}`);
-  await act(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'lines' },
-    groups: groupsOf(['GER', 'ENG'], [{ tag: 'GER', firstHour: 100, lastHour: 109 }, { tag: 'ENG', firstHour: 107, lastHour: 109 }]), replies: { subjects: SUBJECTS } }));
-  const before = await act<Read & { called: boolean }>('call("Timeline", "onHover", 103)');
-  const read = (asks: Ask[], hour: number) => asks.flatMap(ask => (ask.params?.reads ?? []) as { country?: unknown; hour?: number }[]).filter(item => item.hour === hour);
-  assert.ok(before.called, 'the overlords timeline takes the hover');
-  assert.deepEqual(read(before.asks, 103), [], `GER’s overlord ENG is no human at 103, so nothing is read there: ${JSON.stringify(before.asks)}`);
-  const after = await act<Read & { called: boolean }>('call("Timeline", "onHover", 108)');
-  assert.ok(read(after.asks, 108).length > 0, `once ENG is human at 108 its subject GER is read: ${JSON.stringify(after.asks)}`);
+test('43. Autonomy lines follows autonomy-levels without naming an hour and never asks the removed whole-branch subjects product', () => onPage(async act => {
+  const shown = await act<Read>(scene({ kind: 'autonomy', time: { mode: 'follow' }, hour: 108, countries: HUMANS, options: { view: 'lines', countriesAre: 'subjects' },
+    groups: groupsOf(['GER', 'ENG'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]), replies: { 'autonomy-levels': AUTONOMY_LEVELS } }));
+  assert.deepEqual(shown.asks.filter(ask => ask.product === 'subjects'), [], `removed subjects product is never asked: ${JSON.stringify(shown.asks)}`);
+  const levels = shown.follows.filter(query => query.includes('"autonomy-levels"'));
+  assert.ok(levels.length > 0, `autonomy-levels is followed: ${JSON.stringify(shown.followLog)}`);
+  assert.ok(levels.every(query => !/"hour"/.test(query)), `followed autonomy-levels names no hour: ${JSON.stringify(levels)}`);
 }));
 
