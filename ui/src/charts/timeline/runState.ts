@@ -1,6 +1,9 @@
 
-import { inSpans } from './layout.ts';
 import type { BandStep } from './layout';
+
+function inSpans(spans: readonly HourRange[], hour: number): boolean {
+  return spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
+}
 
 export interface HourRange { firstHour: number; lastHour: number }
 

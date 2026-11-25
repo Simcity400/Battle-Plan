@@ -28,8 +28,8 @@ function GeneralsFamilyWidget(props: FamilyViewProps) {
     if (!track || reference === null || !time) return;
     const history = time.value.mode === 'pin' ? drill.gate.span(track.branch.firstHour, drill.hour ?? Number.NaN) : null;
     const kept = history ? drill.time(history) : time;
-    if (kept) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, props.options.growWithPlayback === true, reference, track, kept));
-  }, [drill, track, reference, runtime, widget, props.options.growWithPlayback]);
+    if (kept) runtime.addWidgetBelow(widget.id, pinnedCareer(widget, reference, track, kept));
+  }, [drill, track, reference, runtime, widget]);
 
   const career = useMemo(() => {
     if (!track || reference === null) return null;

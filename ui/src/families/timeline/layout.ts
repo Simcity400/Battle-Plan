@@ -4,8 +4,13 @@ export const LANE_HEIGHT = 38;
 export const LANE_HEIGHT_COMPACT = 26;
 export const GROUP_LANE_HEIGHT = 38;
 export const HEADING_LANE_HEIGHT = 20;
+export const HEADER_HEIGHT = 54;
+export const METERS_MIN_HEIGHT = 240;
+export const METERS_ROW_HEIGHT = 30;
+export const METERS_HEADER_HEIGHT = 22;
 export const LEGEND_HEIGHT = 20;
 export const AXIS_HEIGHT = 26;
+export const TOP_AXIS_HEIGHT = 22;
 export const BAR_HEIGHT = 14;
 export const BAR_HEIGHT_ICONS = 18;
 export const LANE_ICON = 22;
@@ -30,10 +35,14 @@ export interface TimelinePlacement {
   readonly labelWidth: number;
   readonly plotLeft: number;
   readonly plotRight: number;
+  readonly headerHeight: number;
+  readonly axisPosition: 'bottom' | 'top';
   readonly bodyTop: number;
   readonly bodyHeight: number;
   readonly contentHeight: number;
   readonly axisTop: number;
+  readonly metersTop: number;
+  readonly metersHeight: number;
   readonly lanes: readonly PlacedLane[];
   readonly startHour: number;
 }
@@ -56,12 +65,18 @@ export function placeTimeline(
   expanded: Readonly<Record<string, boolean>>,
 ): TimelinePlacement {
   const w = Math.max(160, width);
-  const bodyTop = model.legend?.length ? LEGEND_HEIGHT : 0;
-  const h = Math.max(bodyTop + AXIS_HEIGHT + LANE_HEIGHT_COMPACT, height);
+  const headerHeight = model.header ? HEADER_HEIGHT : 0;
+  const legendHeight = model.legend?.length ? LEGEND_HEIGHT : 0;
+  const axisPosition = model.axisPosition ?? 'bottom';
+  const axisHeight = axisPosition === 'top' ? TOP_AXIS_HEIGHT : AXIS_HEIGHT;
+  const bodyTop = headerHeight + legendHeight + (axisPosition === 'top' ? axisHeight : 0);
+  const h = Math.max(bodyTop + (axisPosition === 'bottom' ? axisHeight : 0) + LANE_HEIGHT_COMPACT, height);
   const compact = w < MIN_SUBTITLE_WIDTH;
-  const labelWidth = compact
-    ? MIN_LABEL_WIDTH
-    : Math.max(MIN_LABEL_WIDTH, Math.min(model.labelWidth, Math.floor(w * 0.38)));
+  const labelWidth = model.labelWidth < MIN_LABEL_WIDTH
+    ? Math.max(48, Math.min(model.labelWidth, Math.floor(w * 0.28)))
+    : compact
+      ? MIN_LABEL_WIDTH
+      : Math.max(MIN_LABEL_WIDTH, Math.min(model.labelWidth, Math.floor(w * 0.38)));
   const plotLeft = labelWidth + PLOT_GAP;
   const outcome = compact || w < 540 ? 0 : Math.min(model.outcomeWidth ?? 0, Math.floor(w * 0.25));
   const plotRight = Math.max(plotLeft + 24, w - RIGHT_PAD - outcome);
@@ -74,8 +89,36 @@ export function placeTimeline(
     lanes.push({ lane, ordinal: i, y, height: lh });
     y += lh;
   }
-  const bodyHeight = h - AXIS_HEIGHT - bodyTop;
-  return { width: w, height: h, compact, labelWidth, plotLeft, plotRight, bodyTop, bodyHeight, contentHeight: y + TOP_PAD, axisTop: bodyTop + bodyHeight, lanes, startHour: model.firstHour };
+  const contentHeight = y + TOP_PAD;
+  const showMeters = !!model.meters && !compact && h >= METERS_MIN_HEIGHT && w >= 420;
+  const meterRows = showMeters ? Math.min(2, Math.max(1, Math.ceil((model.meters?.items.length ?? 0) / 3))) : 0;
+  const metersHeight = showMeters ? METERS_HEADER_HEIGHT + meterRows * METERS_ROW_HEIGHT + 8 : 0;
+  const bodyHeight = Math.max(
+    LANE_HEIGHT_COMPACT,
+    h - bodyTop - (axisPosition === 'bottom' ? axisHeight : 0) - metersHeight,
+  );
+  const axisTop = axisPosition === 'top' ? headerHeight + legendHeight : bodyTop + bodyHeight;
+  const metersTop = axisPosition === 'top'
+    ? Math.min(bodyTop + contentHeight + 6, h - metersHeight)
+    : bodyTop + bodyHeight + axisHeight;
+  return {
+    width: w,
+    height: h,
+    compact,
+    labelWidth,
+    plotLeft,
+    plotRight,
+    headerHeight,
+    axisPosition,
+    bodyTop,
+    bodyHeight,
+    contentHeight,
+    axisTop,
+    metersTop,
+    metersHeight,
+    lanes,
+    startHour: model.firstHour,
+  };
 }
 
 export function frameTimeline(placement: TimelinePlacement, hour: number): TimelineLayout {

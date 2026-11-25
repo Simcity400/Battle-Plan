@@ -80,6 +80,9 @@ function tooltipFor(
 
 function collectArt(model: TimelineModel, layout: TimelinePlacement, scrollTop: number): string[] {
   const handles: (ArtResult | undefined)[] = [];
+  if (model.header) {
+    handles.push(model.header.portrait, model.header.flag);
+  }
   const [first, end] = visibleRange(layout, scrollTop);
   for (let i = first; i < end; i++) {
     const lane = layout.lanes[i]!.lane;

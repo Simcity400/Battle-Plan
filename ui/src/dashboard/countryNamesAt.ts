@@ -45,12 +45,6 @@ export function answerHeld<V>(held: HeldLookup<V> | undefined, timeline: Country
   return { answered, rest: !unheld.size ? NO_WANTED : unheld.size === missing.size && !answered.size ? wanted : wanted.filter(item => unheld.has(item.hour)) };
 }
 
-export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: AnyFactSpec<V>, maxHours = Infinity, attempt = 0): ReadonlyMap<string, V | Failure> {
-  const read = useCountryFactsRead(client, track, wanted, active, spec, maxHours, attempt);
-  return useMemo(() => new Map([...read].filter((entry): entry is [string, V | Failure] => entry[1] !== null)), [read]);
-}
-
 export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   spec: AnyFactSpec<V>, maxHours = Infinity, attempt = 0): ReadonlyMap<string, V | null | Failure> {
   const { requests, answered, rest, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);

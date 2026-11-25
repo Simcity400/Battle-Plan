@@ -19,7 +19,6 @@ const tracked = (name: string) => (code: string) => {
 };
 const TRANSFORMS: Record<string, (code: string) => string> = {
   '/charts/TimeChart.tsx': capture('TimeChart'),
-  '/charts/timeline/Timeline.tsx': capture('Timeline'),
   '/dashboard/raids.ts': source('useRaidLog'),
   '/dashboard/widgetPerf.ts': source('shownSink'),
   '/widgets/rendererLoaders.ts': tracked('loadWidgetRenderer'),

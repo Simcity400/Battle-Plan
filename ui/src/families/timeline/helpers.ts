@@ -58,6 +58,9 @@ export interface TimelineModelParts {
   readonly hour: DisplayedHour;
   readonly firstHour: number;
   readonly lanes?: readonly TimelineLane[];
+  readonly header?: TimelineModel['header'];
+  readonly meters?: TimelineModel['meters'];
+  readonly axisPosition?: TimelineModel['axisPosition'];
   readonly unobserved?: readonly HourSpan[];
   readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars?: boolean;
@@ -77,6 +80,9 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     hour: parts.hour,
     firstHour: parts.firstHour,
     lanes: parts.lanes ?? [],
+    ...(parts.header ? { header: parts.header } : {}),
+    ...(parts.meters ? { meters: parts.meters } : {}),
+    ...(parts.axisPosition ? { axisPosition: parts.axisPosition } : {}),
     unobserved: clipSpansToHour(parts.unobserved, parts.hour),
     ...(parts.legend?.length ? { legend: parts.legend } : {}),
     iconsOnBars: parts.iconsOnBars ?? false,
