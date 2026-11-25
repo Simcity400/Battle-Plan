@@ -177,6 +177,7 @@ impl Family {
                 LandEventCoverage,
                 LandCombatEdges,
                 LandCombatResultObservers,
+                LandDivisionDamage,
             ],
             Self::Portrait => &[CharacterPortraits, LeaderPortraits, LeaderPortraitPaths],
             Self::Opinion => &[

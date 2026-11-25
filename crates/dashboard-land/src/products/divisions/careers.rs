@@ -6,7 +6,7 @@ use crate::products::army::ArmyAttribution;
 use dashboard_query::coverage::witnessed;
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
-use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
+use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionKillsRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use content_reader_military::unit_medals::{Medal, Medals};
@@ -16,7 +16,8 @@ use std::{cmp::Ordering, collections::{BTreeMap, HashSet}, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-const TABLES: [TableId; 9] = [
+const TABLES: [TableId; 10] = [
+    TableId::DivisionKills,
     TableId::Countries,
     TableId::CountryLinks,
     TableId::Divisions,
@@ -72,6 +73,32 @@ pub struct CareerFacts {
     pub level_name: Option<String>,
     #[doc = " The game's count of the men this division has lost (its panel's Casualties taken); excludes men lost at destruction and in paradrop disruption."]
     pub casualties_taken: Option<i32>,
+    #[doc = " Enemy men this division killed in the battles the recording holds: each time an enemy division it damaged left a battle, that division's realised losses times this division's share of the strength damage pending on it; none with `enemy_killed_missing` saying why."]
+    pub enemy_killed: Option<i32>,
+    pub enemy_killed_missing: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct EnemyKilled {
+    pub killed: Option<i32>,
+    pub missing: Option<String>,
+}
+
+const KILLS_UNKNOWN: &str = "A battle exit's losses or pending damage was not recorded, so this division's kills are not known from then on";
+
+pub(super) fn enemy_killed(frame: &DecodedFrame, division: u64) -> EnemyKilled {
+    match frame.complete::<tables::DivisionKills>() {
+        Err(why) => EnemyKilled { killed: None, missing: Some(format!("Enemy killed is not recorded at this hour: {why}")) },
+        Ok(rows) => match find(Some(rows), division, |row| row.division) {
+            Some(row) if row.incomplete_from.is_some() => EnemyKilled { killed: None, missing: Some(KILLS_UNKNOWN.into()) },
+            Some(row) => EnemyKilled { killed: Some(men(row.killed_raw)), missing: None },
+            None => EnemyKilled { killed: Some(0), missing: None },
+        },
+    }
+}
+
+fn men(raw: i64) -> i32 {
+    i32::try_from(raw.saturating_add(50_000) / 100_000).unwrap_or(i32::MAX)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -95,6 +122,7 @@ pub enum DecoratedRank {
     Medals,
     Experience,
     CasualtiesTaken,
+    EnemyKilled,
     #[doc = " The division's name at the hour."]
     DivisionName,
     #[doc = " The name of the division's country at the hour, as the game shows it."]
@@ -112,7 +140,7 @@ pub struct DecoratedContext {
     looks: Result<BranchLooks, String>,
 }
 
-const RANKS: [DecoratedRank; 3] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken];
+const RANKS: [DecoratedRank; 4] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken, DecoratedRank::EnemyKilled];
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -201,6 +229,7 @@ impl AtHour for DecoratedDivisions {
             TableId::Divisions => mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "template", "reveal_skip"]),
             TableId::DivisionStatus => mask::<DivisionStatusRow>(&["experience", "career_counter", "name", "naming", "country_ordinal"]),
             TableId::DivisionLandInputs => mask::<DivisionLandInputsRow>(&["manpower"]),
+            TableId::DivisionKills => mask::<DivisionKillsRow>(&["killed_raw", "incomplete_from"]),
             _ => return None,
         };
         Some((0..64).filter(|column| fields & 1 << column != 0).collect())
@@ -312,12 +341,22 @@ struct Facts<'a> {
 }
 
 impl Facts<'_> {
-    fn of(&mut self, history: &[SharedDivisionHistoryRow], status: Option<&DivisionStatusRow>, manpower: Option<i32>, refusals: &mut Refusals) -> CareerFacts {
-        self.measured(history, status.zip(manpower).and_then(|(row, men)| row.normalized_experience(men)), status.and_then(DivisionStatusRow::casualties_taken), refusals)
+    fn of(&mut self, history: &[SharedDivisionHistoryRow], status: Option<&DivisionStatusRow>, manpower: Option<i32>, enemy: EnemyKilled, refusals: &mut Refusals) -> CareerFacts {
+        self.measured(history, status.zip(manpower).and_then(|(row, men)| row.normalized_experience(men)), status.and_then(DivisionStatusRow::casualties_taken), enemy, refusals)
     }
 
-    fn measured(&mut self, history: &[SharedDivisionHistoryRow], experience: Option<i64>, casualties_taken: Option<i32>, refusals: &mut Refusals) -> CareerFacts {
-        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, casualties_taken };
+    fn measured(&mut self, history: &[SharedDivisionHistoryRow], experience: Option<i64>, casualties_taken: Option<i32>, enemy: EnemyKilled, refusals: &mut Refusals) -> CareerFacts {
+        let mut out = CareerFacts {
+            medals: None,
+            awards: Vec::new(),
+            history_missing: None,
+            experience_raw: None,
+            level: None,
+            level_name: None,
+            casualties_taken,
+            enemy_killed: enemy.killed,
+            enemy_killed_missing: enemy.missing,
+        };
         match history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY) {
             None => {
                 refusals.note("A division's history was not read");
@@ -383,6 +422,7 @@ pub(super) struct Measures {
     pub medals: Option<i32>,
     pub experience: Option<i64>,
     pub casualties_taken: Option<i32>,
+    pub enemy_killed: Option<i32>,
     #[doc = " The name the rank orders by, when it orders by a name: folded, then as shown."]
     pub name: Option<(String, String)>,
 }
@@ -393,6 +433,7 @@ impl Measures {
             DecoratedRank::Medals => self.medals.map(i64::from),
             DecoratedRank::Experience => self.experience,
             DecoratedRank::CasualtiesTaken => self.casualties_taken.map(i64::from),
+            DecoratedRank::EnemyKilled => self.enemy_killed.map(i64::from),
             DecoratedRank::DivisionName | DecoratedRank::CountryName => None,
         }
     }
@@ -477,6 +518,7 @@ fn rank_word(by: DecoratedRank) -> &'static str {
         DecoratedRank::Medals => "medals",
         DecoratedRank::Experience => "experience",
         DecoratedRank::CasualtiesTaken => "casualties taken",
+        DecoratedRank::EnemyKilled => "enemy killed",
         DecoratedRank::DivisionName => "names",
         DecoratedRank::CountryName => "country names",
     }
@@ -535,6 +577,7 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             medals: summary_medals(history_of(history, division.id)),
             experience: status.zip(manpower_of(frame, division.id)).and_then(|(status, manpower)| status.normalized_experience(manpower)),
             casualties_taken: status.and_then(DivisionStatusRow::casualties_taken),
+            enemy_killed: enemy_killed(frame, division.id).killed,
             name: rank_name(params.by, content, &at.context.looks, status, tag.as_deref(), at.hour),
         };
         unmeasured += usize::from(!measures.known(params.by));
@@ -563,7 +606,7 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
         let Some(division) = find(Some(divisions), measures.id, |row| row.id) else { continue };
         let status = status_of(frame, division.id);
         let (name, name_missing) = refusals.keep(content.division_name(status));
-        let row_facts = facts.of(history_of(history, division.id), status, manpower_of(frame, division.id), refusals);
+        let row_facts = facts.of(history_of(history, division.id), status, manpower_of(frame, division.id), enemy_killed(frame, division.id), refusals);
         templates.insert(division.template, ());
         reply.divisions.push(CareerRow { division: division.id.to_string(), tag: countries.tag(attributed(division, ArmyAttribution::Owner)), template: division.template.to_string(), name, name_missing, facts: row_facts });
     }

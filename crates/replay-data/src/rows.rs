@@ -997,6 +997,10 @@ FuelAwardRecipients = 521 => FuelAwardRecipient(FuelAwardRecipientRow),
 ScriptVariableNames = 522 => ScriptVariableName(ScriptVariableNameRow),
 ScriptVariableValues = 523 => ScriptVariableValue(ScriptVariableValueRow),
 LandCombatResultObservers = 524 => LandCombatResultObserver(CombatLogObserverRow),
+LandDivisionDamage = 525 => LandDivisionDamage(LandDivisionDamageRow),
+}
+derived {
+DivisionKills = 526 => DivisionKill(DivisionKillsRow),
 }
 }
 const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [

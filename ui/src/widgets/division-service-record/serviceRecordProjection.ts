@@ -10,6 +10,7 @@ import { knownValue, notApplicable, notRecorded } from '../../families/value.ts'
 import type { CareerFacts, ServiceEntry, ServiceRecordTailReply } from '../../generated/dashboard';
 import { nameOf, removals, serviceRecordPicker } from './serviceRecordChoices.ts';
 import { SERVICE_COLUMNS } from './definition.ts';
+import { ENEMY_KILLED_NOTE } from '../most-decorated-divisions/definition.ts';
 
 interface Options {
   readonly campaign: string;
@@ -103,7 +104,7 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
           ...(facts?.medals === 0 ? [] : [{ label: 'Honours', value: facts?.medals == null ? notRecorded(facts?.historyMissing ?? 'Honours not recorded') : knownValue(facts.medals),
             ...(facts?.awards.length ? { pictures: honoursOf(view, head, facts) } : {}) }]),
           { label: 'Casualties taken', value: facts?.casualtiesTaken == null ? notRecorded('Casualties taken not recorded') : knownValue(facts.casualtiesTaken) },
-          { label: 'Enemy killed', value: notRecorded('Enemy killed is not recorded yet: the recorder does not read a division’s kills') },
+          { label: 'Enemy killed', value: facts?.enemyKilled == null ? notRecorded(facts?.enemyKilledMissing ?? 'Enemy killed not recorded') : knownValue(facts.enemyKilled), hint: ENEMY_KILLED_NOTE },
         ],
       } } : {}),
       ...(page.slots.length ? {} : unavailable

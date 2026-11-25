@@ -6,18 +6,19 @@ use engine_native_memory::walk::Outcome;
 use engine_land_inputs::land_edges as edges;
 use replay_data::{
     rows::CombatLogObserverRow, rows::DestroyedDivisionsRow, rows::LandCombatEdgesRow,
-    rows::LandCombatResultsRow, rows::LandEquipmentLoss, rows::LandEventCoverageRow,
-    rows::LandResultSide, rows::LandSideLosses, rows::TableId,
+    rows::LandCombatResultsRow, rows::LandDivisionDamageRow, rows::LandEquipmentLoss,
+    rows::LandEventCoverageRow, rows::LandResultSide, rows::LandSideLosses, rows::TableId,
     rows::TableRows,
 };
 use replay_frame::frame::TableView;
-pub const N: usize = 5;
+pub const N: usize = 6;
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatResults,
     TableId::DestroyedDivisions,
     TableId::LandEventCoverage,
     TableId::LandCombatEdges,
     TableId::LandCombatResultObservers,
+    TableId::LandDivisionDamage,
 ];
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -28,6 +29,8 @@ collector_primitives::capacity_max!(Capacities { words });
 pub struct Captured {
     words: Vec<u64>,
     drained: Option<Drain>,
+    damage: Vec<LandDivisionDamageRow>,
+    damage_refused: Option<&'static str>,
 }
 impl Captured {
     pub fn vacant() -> Self {
@@ -39,18 +42,25 @@ impl Captured {
     pub unsafe fn fail(&mut self, hour: i32, reason: &'static str) {
         // SAFETY: Caller owns the capture or publication failure path for land events.
         self.drained = Some(unsafe { crate::land_events::lost_drain(hour, reason) });
+        self.damage.clear();
+        self.damage_refused = Some(reason);
     }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             words: allocation::owned_vec(allocation::default_vec(c.words)),
             drained: None,
+            damage: Vec::new(),
+            damage_refused: None,
         }
     }
     pub fn reset(&mut self) {
         self.drained = None;
+        self.damage.clear();
+        self.damage_refused = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.words.capacity() * size_of::<u64>()
+            + self.damage.capacity() * size_of::<LandDivisionDamageRow>()
     }
     /// # Safety
     /// Caller holds exclusive `&mut` access to this frame while land-event storage stays live for
@@ -78,7 +88,17 @@ impl Captured {
 
     pub(crate) fn drain_from(&mut self, observer: &Observer, hour: i32, invalidating: bool) -> u64 {
         let start = collector_primitives::clock::qpc();
-        self.drained = Some(observer.drain(&mut self.words, hour, invalidating));
+        let drained = observer.drain(&mut self.words, hour, invalidating);
+        self.drained = Some(drained);
+        let mut fold = observer.damage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.damage_refused = if drained.complete {
+            fold.apply(&self.words[..drained.words], drained.first, drained.to_hour, &mut self.damage).err()
+        } else {
+            fold.clear();
+            self.damage.clear();
+            Some(drained.reason)
+        };
+        drop(fold);
         observer.install_offered();
         collector_primitives::clock::qpc()
             .saturating_sub(start)
@@ -118,6 +138,15 @@ impl Captured {
                 }
             });
         let withheld = !crate::land_events::edges_armed();
+        let damage = if withheld {
+            Outcome::Unavailable { reason: EDGES_WITHHELD }
+        } else if !crate::land_events::damage_armed() {
+            Outcome::Unavailable { reason: DAMAGE_WITHHELD }
+        } else if let Some(reason) = self.damage_refused {
+            Outcome::Unavailable { reason }
+        } else {
+            Outcome::Rows { len: self.damage.len() }
+        };
         match counts {
             Ok([a, b, c, d]) => [
                 Outcome::Rows { len: a },
@@ -129,6 +158,7 @@ impl Captured {
                     Outcome::Rows { len: c }
                 },
                 Outcome::Rows { len: d },
+                damage,
             ],
             Err(reason) => [
                 Outcome::Unavailable { reason },
@@ -136,14 +166,15 @@ impl Captured {
                 coverage,
                 Outcome::Unavailable { reason },
                 Outcome::Unavailable { reason },
+                Outcome::Unavailable { reason },
             ],
         }
     }
     pub fn tables(&self) -> [TableView; N] {
-        self.tables_with(crate::land_events::edges_withheld())
+        self.tables_with(crate::land_events::edges_withheld(), crate::land_events::damage_withheld())
     }
 
-    fn tables_with(&self, edges_withheld: Option<String>) -> [TableView; N] {
+    fn tables_with(&self, edges_withheld: Option<String>, damage_withheld: Option<String>) -> [TableView; N] {
         let Some(d) = self.drained else {
             return std::array::from_fn(|_| TableView::Unavailable {
                 reason: "land event drain unavailable".into(),
@@ -187,7 +218,7 @@ impl Captured {
                 TableView::Complete(TableRows::LandCombatResults(results)),
                 TableView::Complete(TableRows::DestroyedDivisions(destroyed)),
                 coverage_table(coverage),
-                match (edges_withheld, edges) {
+                match (edges_withheld.clone(), edges) {
                     (Some(reason), _) => TableView::Unavailable { reason },
                     (None, Err(reason)) => TableView::Unavailable {
                         reason: reason.into(),
@@ -195,6 +226,7 @@ impl Captured {
                     (None, Ok(edges)) => TableView::Complete(TableRows::LandCombatEdges(edges)),
                 },
                 TableView::Complete(TableRows::LandCombatResultObservers(observers)),
+                self.damage_table(edges_withheld, damage_withheld),
             ],
             Err(reason) => {
                 coverage.complete = false;
@@ -212,9 +244,27 @@ impl Captured {
                     TableView::Unavailable {
                         reason: reason.into(),
                     },
+                    TableView::Unavailable {
+                        reason: reason.into(),
+                    },
                 ]
             }
         }
+    }
+
+    fn damage_table(&self, edges_withheld: Option<String>, damage_withheld: Option<String>) -> TableView {
+        if let Some(reason) = edges_withheld.or(damage_withheld) {
+            return TableView::Unavailable { reason };
+        }
+        if let Some(reason) = self.damage_refused {
+            return TableView::Unavailable { reason: reason.into() };
+        }
+        let mut rows = match allocation::collect_vec(self.damage.iter().cloned()) {
+            Ok(rows) => rows,
+            Err(_) => return collector_projection::table_conversion::unavailable("collector allocation failed"),
+        };
+        rows.sort_unstable_by_key(|row| (row.combat, row.id));
+        TableView::Complete(TableRows::LandDivisionDamage(rows))
     }
 }
 fn coverage_table(row: LandEventCoverageRow) -> TableView {
@@ -226,6 +276,7 @@ fn coverage_table(row: LandEventCoverageRow) -> TableView {
     }
 }
 const EDGES_WITHHELD: &str = "land combat edge hooks withheld";
+const DAMAGE_WITHHELD: &str = "division damage hook withheld";
 const EDGE_OUTSIDE_INTERVAL: &str = "land combat edge timestamp outside observed interval";
 const _: () = {
     assert!(edges::COMBAT_UNREADABLE == LandCombatEdgesRow::COMBAT_UNREADABLE);
@@ -254,6 +305,7 @@ fn counts(words: &[u64]) -> Result<[usize; 4], &'static str> {
                     .max(1);
             }
             edges::EXITED => counts[2] += 1,
+            edges::HIT => {}
             9 => counts[3] += 1,
             2..=6 | 8 => {}
             _ => return Err("land event kind unsupported"),
@@ -633,6 +685,7 @@ fn decode(words: &[u64], first: u64, to_hour: i32) -> Result<Decoded, &'static s
                         casualties_before: edges::unpack(reader.word()?),
                         casualties_after: None,
                         withheld: withheld | (packed >> 8) as u8,
+                        pending_strength_raw: None,
                     });
                 }
             }
@@ -646,6 +699,10 @@ fn decode(words: &[u64], first: u64, to_hour: i32) -> Result<Decoded, &'static s
                 if side > 1 && side != LandCombatEdgesRow::NO_SIDE {
                     return Err("land exit side invalid");
                 }
+                let casualties_before = edges::unpack(reader.word()?);
+                let casualties_after = edges::unpack(reader.word()?);
+                let manpower = edges::unpack(reader.word()?);
+                let pool = reader.word()? as i64;
                 allocation::reserve_push_batch(&mut edge_rows, 1)
                     .map_err(|_| "collector allocation failed")?;
                 edge_rows.push(LandCombatEdgesRow {
@@ -655,12 +712,14 @@ fn decode(words: &[u64], first: u64, to_hour: i32) -> Result<Decoded, &'static s
                     combat,
                     division: (division != 0).then_some(division),
                     side,
-                    casualties_before: edges::unpack(reader.word()?),
-                    casualties_after: edges::unpack(reader.word()?),
-                    manpower: edges::unpack(reader.word()?),
-                    withheld,
+                    casualties_before,
+                    casualties_after,
+                    manpower,
+                    withheld: withheld & !edges::POOL_UNREADABLE,
+                    pending_strength_raw: (withheld & edges::POOL_UNREADABLE == 0).then_some(pool),
                 });
             }
+            edges::HIT => {}
             _ => return Err("land event kind unsupported"),
         }
         if reader.at != reader.words.len() {
@@ -858,6 +917,9 @@ mod tests {
                     reason: EDGES_WITHHELD
                 },
                 Outcome::Rows { len: 0 },
+                Outcome::Unavailable {
+                    reason: EDGES_WITHHELD
+                },
             ]
         );
         let TableView::Complete(TableRows::DestroyedDivisions(rows)) = &refreshed[1] else {
@@ -958,7 +1020,7 @@ mod tests {
     #[test]
     fn combat_edges_publish_in_key_order_and_an_edge_outside_the_interval_withholds_only_the_edges() {
         let some = |value: i32| edges::optional(Some(value));
-        let exit = |combat: u64, hour: i32| [10, edges::EXITED, combat, some(hour), 0, 1, 6, some(0), some(5), some(9)];
+        let exit = |combat: u64, hour: i32| [11, edges::EXITED, combat, some(hour), 0, 1, 6, some(0), some(5), some(9), 0];
         let wipe = [12, 7, 10, 17, 4999, 1500, 9, 10, 41, 2, 42, 42];
         let drained = |words: &[u64]| Captured {
             words: words.to_vec(),
@@ -973,15 +1035,17 @@ mod tests {
                 lost: 0,
                 reason: "",
             }),
+            damage: Vec::new(),
+            damage_refused: None,
         };
         let words = [&exit(90, 10)[..], &exit(80, 10)].concat();
-        let [_, _, _, edges, _] = drained(&words).tables_with(None);
+        let [_, _, _, edges, _, _] = drained(&words).tables_with(None, None);
         let TableView::Complete(TableRows::LandCombatEdges(rows)) = edges else {
             panic!("{edges:?}")
         };
         assert_eq!(rows.iter().map(|row| row.combat).collect::<Vec<_>>(), [80, 90]);
         let words = [&wipe[..], &exit(90, 30)].concat();
-        let [_, destroyed, _, edges, _] = drained(&words).tables_with(None);
+        let [_, destroyed, _, edges, _, _] = drained(&words).tables_with(None, None);
         assert!(matches!(destroyed, TableView::Complete(TableRows::DestroyedDivisions(ref rows)) if rows.len() == 1), "{destroyed:?}");
         assert_eq!(edges, TableView::Unavailable { reason: EDGE_OUTSIDE_INTERVAL.into() });
     }
@@ -990,13 +1054,13 @@ mod tests {
         let some = |value: i32| edges::optional(Some(value));
         let none = edges::optional(None);
         let opening = [14, edges::OPENED, 90, some(80), 0, 2, 0, 5, some(9000), some(300), 1 | (u64::from(edges::DIVISION_UNREADABLE) << 8), 0, none, none];
-        let exit = [10, edges::EXITED, 90, none, 0, 1, 6, some(0), some(812), some(4188)];
+        let exit = [11, edges::EXITED, 90, none, 0, 1, 6, some(0), some(812), some(4188), 5_000_000];
         let withheld = [6, edges::OPENED, 91, some(80), u64::from(edges::COMBAT_UNREADABLE), 0];
         let words = [&opening[..], &exit, &withheld].concat();
         assert_eq!(counts(&words).unwrap(), [0, 0, 4, 0]);
         let (_, _, rows, _) = decode(&words, 100, 81).unwrap();
         let row = |id, kind, hour, combat, division, side, manpower, before, after, withheld| LandCombatEdgesRow {
-            id, kind, hour, combat, division, side, manpower, casualties_before: before, casualties_after: after, withheld,
+            id, kind, hour, combat, division, side, manpower, casualties_before: before, casualties_after: after, withheld, pending_strength_raw: None,
         };
         let (opened, exited) = (LandCombatEdgesRow::OPENED, LandCombatEdgesRow::EXITED);
         assert_eq!(
@@ -1004,10 +1068,14 @@ mod tests {
             [
                 row(106, opened, 80, 90, Some(5), 0, Some(9000), Some(300), None, 0),
                 row(110, opened, 80, 90, None, 1, None, None, None, edges::DIVISION_UNREADABLE),
-                row(114, exited, 81, 90, Some(6), 1, Some(4188), Some(0), Some(812), edges::HOUR_UNREADABLE),
-                row(124, opened, 80, 91, None, LandCombatEdgesRow::NO_SIDE, None, None, None, edges::COMBAT_UNREADABLE),
+                LandCombatEdgesRow { pending_strength_raw: Some(5_000_000), ..row(114, exited, 81, 90, Some(6), 1, Some(4188), Some(0), Some(812), edges::HOUR_UNREADABLE) },
+                row(125, opened, 80, 91, None, LandCombatEdgesRow::NO_SIDE, None, None, None, edges::COMBAT_UNREADABLE),
             ]
         );
+        let mut poolless = exit;
+        poolless[4] = u64::from(edges::POOL_UNREADABLE);
+        let (_, _, rows, _) = decode(&poolless, 0, 81).unwrap();
+        assert_eq!((rows[0].pending_strength_raw, rows[0].withheld), (None, edges::HOUR_UNREADABLE), "an unread pool is missing, never a withheld exit");
         for len in 1..words.len() {
             if ![opening.len(), opening.len() + exit.len()].contains(&len) {
                 assert!(decode(&words[..len], 100, 81).is_err(), "a short edge record is refused at {len}");
@@ -1249,6 +1317,8 @@ mod tests {
         let words = vec![12, 7, 80, 17, 4999, 1500, 9, 10, 41, 2, 42, 42];
         let tables = |from_hour| {
             Captured {
+            damage: Vec::new(),
+            damage_refused: None,
                 words: words.clone(),
                 drained: Some(Drain {
                     epoch: 1,
@@ -1274,6 +1344,8 @@ mod tests {
     #[test]
     fn unknown_interval_is_never_an_empty_event_table() {
         let c = Captured {
+            damage: Vec::new(),
+            damage_refused: None,
             words: vec![],
             drained: Some(Drain {
                 epoch: 1,
@@ -1287,7 +1359,8 @@ mod tests {
                 reason: "overflow",
             }),
         };
-        let [a, b, coverage, edges, observers] = c.tables();
+        let [a, b, coverage, edges, observers, damage] = c.tables();
+        assert!(matches!(damage, TableView::Unavailable { .. }));
         assert!(matches!(edges, TableView::Unavailable { .. }));
         assert!(matches!(a, TableView::Unavailable { .. }));
         assert!(matches!(b, TableView::Unavailable { .. }));
@@ -1339,6 +1412,8 @@ mod tests {
             assert_eq!(row.destination, Some(destination));
         }
         let captured = Captured {
+            damage: Vec::new(),
+            damage_refused: None,
             drained: Some(Drain {
                 epoch: 1,
                 first,
@@ -1451,6 +1526,8 @@ mod tests {
         assert_eq!(dead[0].combat_province, None);
         assert!(decode(&words[entry_len..], 77, i32::MAX).is_err());
         let c = Captured {
+            damage: Vec::new(),
+            damage_refused: None,
             words: words.clone(),
             drained: Some(Drain {
                 epoch: 1,
@@ -1489,6 +1566,7 @@ mod tests {
                     }])),
                     TableView::Complete(TableRows::LandCombatEdges(vec![])),
                     TableView::Complete(TableRows::LandCombatResultObservers(vec![])),
+                    TableView::Complete(TableRows::LandDivisionDamage(vec![])),
                 ]
             } else {
                 std::array::from_fn(|_| TableView::Unavailable {

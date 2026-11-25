@@ -816,6 +816,7 @@ fn battle_edges(query: &Query<'_>, run: u32, battle: &Battle, first: i32, last: 
                     casualties_before: n(5).map(|value| value as i32),
                     casualties_after: n(6).map(|value| value as i32),
                     withheld: n(7)? as u8,
+                    pending_strength_raw: None,
                 })
             })
             .collect())

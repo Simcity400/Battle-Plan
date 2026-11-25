@@ -12,7 +12,7 @@ function Text({ value }: { value: Value }) {
 
 function Figure({ figure, text }: { figure: TableSubjectFigure; text: string | null }) {
   const spoken = formatValueState(figure.value).spoken;
-  return <div className="tf-subject-figure">
+  return <div className="tf-subject-figure" data-tooltip={figure.hint}>
     <dt>{figure.label}</dt>
     <dd>{figure.pictures?.length
       ? <>{figure.pictures.map((picture, index) => <span key={index} className="tf-subject-medal" data-tooltip={picture.count ? `${picture.name} ×${picture.count}` : picture.name}>

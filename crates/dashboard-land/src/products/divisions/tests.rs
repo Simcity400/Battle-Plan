@@ -75,7 +75,7 @@ fn a_medal_s_picture_is_its_definition_s_sprite_at_its_authored_frame() {
 fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_ties_by_the_other_measures() {
     use super::careers::{DecoratedRank, Measures, ranked};
     let first_in_order = |measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize| ranked(measured, by, descending, count).0;
-    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, name: None };
+    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, enemy_killed: None, name: None };
     let world = vec![
         division(1, Some(0), Some(10), Some(5)),
         division(2, None, Some(90), Some(900)),
@@ -194,7 +194,7 @@ fn unread_country_links_keep_the_ranking_under_all_and_make_a_filtered_ranking_u
 #[test]
 fn a_tie_at_the_cut_or_between_shown_divisions_decided_by_an_unread_measure_is_not_a_proven_order() {
     use super::careers::{DecoratedRank, Measures, ranked};
-    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, name: None };
+    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, enemy_killed: None, name: None };
     let ids = |(rows, unproven): (Vec<Measures>, bool)| (rows.iter().map(|row| row.id).collect::<Vec<_>>(), unproven);
     let tied = vec![division(1, Some(4), Some(10), Some(1)), division(2, Some(4), None, Some(9)), division(3, Some(1), Some(90), Some(1))];
     assert_eq!(ids(ranked(tied.clone(), DecoratedRank::Medals, true, 1)), (vec![1], true), "equal medals at the cut, one experience unread");
@@ -285,4 +285,25 @@ fn the_type_view_keeps_its_rows_when_the_designs_behind_its_tooltip_are_unread()
     let row = &reply.types[0];
     assert_eq!((row.held_raw.as_deref(), row.missing_raw.as_deref(), row.divisions_short), (Some("300000"), Some("200000"), Some(1)));
     assert!(row.variants.is_empty() && row.variants_missing.as_deref().is_some_and(|why| why.contains("designs unread in the fixture")), "the design list says why it is missing");
+}
+
+#[test]
+fn enemy_killed_is_the_recorded_count_rounded_to_men_zero_when_absent_and_missing_when_not_known() {
+    use super::careers::{EnemyKilled, enemy_killed};
+    use dashboard_base::test_fixtures::source;
+    use replay_data::rows::{DivisionKillsRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let mut frame = source(1, 100, Some(1_000));
+    let rows = vec![
+        DivisionKillsRow { division: 5, killed_raw: 48_049_999, incomplete_from: None },
+        DivisionKillsRow { division: 6, killed_raw: 7, incomplete_from: Some(90) },
+    ];
+    frame.tables[TableId::DivisionKills.index()] = TableView::Complete(TableRows::DivisionKills(rows)).into();
+    assert_eq!(enemy_killed(&frame, 5), EnemyKilled { killed: Some(480), missing: None });
+    assert_eq!(enemy_killed(&frame, 9), EnemyKilled { killed: Some(0), missing: None }, "a division the complete count never credited killed no one it saw");
+    assert!(enemy_killed(&frame, 6).killed.is_none() && enemy_killed(&frame, 6).missing.is_some());
+    frame.tables[TableId::DivisionKills.index()] = TableView::Unavailable { reason: "Division damage has not been recorded yet in this branch".into() }.into();
+    let unknown = enemy_killed(&frame, 5);
+    assert_eq!(unknown.killed, None);
+    assert!(unknown.missing.unwrap().ends_with("Division damage has not been recorded yet in this branch"));
 }

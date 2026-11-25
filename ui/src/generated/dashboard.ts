@@ -5399,7 +5399,7 @@ partial: string | null,
  * Why divisions are unknown at this hour, when they are.
  */
 missing: string | null, warnings: Array<string>, };
-export type DecoratedRank = "medals" | "experience" | "casualtiesTaken" | "divisionName" | "countryName";
+export type DecoratedRank = "medals" | "experience" | "casualtiesTaken" | "enemyKilled" | "divisionName" | "countryName";
 export type CountryHours = { tag: string, firstHour: number, lastHour: number, };
 export type CareerRow = { division: string, tag: string | null, template: string, name: string | null, nameMissing: string | null, facts: CareerFacts, };
 export type CareerFacts = {
@@ -5418,7 +5418,11 @@ level: number | null, levelName: string | null,
 /**
  * The game's count of the men this division has lost (its panel's Casualties taken); excludes men lost at destruction and in paradrop disruption.
  */
-casualtiesTaken: number | null, };
+casualtiesTaken: number | null,
+/**
+ * Enemy men this division killed in the battles the recording holds: each time an enemy division it damaged left a battle, that division's realised losses times this division's share of the strength damage pending on it; none with `enemy_killed_missing` saying why.
+ */
+enemyKilled: number | null, enemyKilledMissing: string | null, };
 export type CareerAward = {
 /**
  * Index into the reply's medals; none for the awards of the recorded total that could not be identified.

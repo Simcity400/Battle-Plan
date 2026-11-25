@@ -689,6 +689,25 @@ impl Fixture for LandCombatEdgesRow {
             casualties_before: Option::<i32>::sample(tick),
             casualties_after: Option::<i32>::sample(tick),
             withheld: (tick % 5) as u8,
+            pending_strength_raw: Option::<i64>::sample(tick),
+        }
+    }
+}
+
+impl Fixture for LandDivisionDamageRow {
+    fn smallest_key() -> u128 {
+        1_u128 << 64
+    }
+
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            id: key as u64,
+            hour: i32::sample(tick),
+            combat: (key >> 64) as u64,
+            target: u64::sample(tick).max(1),
+            attacker: u64::sample(tick + 1).max(1),
+            army: Option::<u64>::sample(tick),
+            strength_raw: i64::sample(tick).checked_abs().unwrap_or(i64::MAX).max(1),
         }
     }
 }
@@ -4386,6 +4405,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
         TableId::LandCombatEdges => {
             TableRows::LandCombatEdges(rows::<LandCombatEdgesRow>(tick))
         }
+        TableId::LandDivisionDamage => {
+            TableRows::LandDivisionDamage(rows::<LandDivisionDamageRow>(tick))
+        }
         TableId::FuelAwardRecipients => {
             TableRows::FuelAwardRecipients(rows::<FuelAwardRecipientRow>(tick))
         }
@@ -6607,6 +6629,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);
     check_table::<CombatEngagementRefreshRow>(TableId::CombatEngagementRefreshes);
     check_table::<LandCombatEdgesRow>(TableId::LandCombatEdges);
+    check_table::<LandDivisionDamageRow>(TableId::LandDivisionDamage);
     check_table::<FuelAwardRecipientRow>(TableId::FuelAwardRecipients);
     check_table::<ScriptVariableNameRow>(TableId::ScriptVariableNames);
     check_table::<ScriptVariableValueRow>(TableId::ScriptVariableValues);

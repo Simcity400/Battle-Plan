@@ -1,5 +1,5 @@
 use engine_deployment::manpower_value_entry;
-use engine_native::{carmy, cland_combat as combat, cland_combatant as side, cnaval_combat, cunit};
+use engine_native::{carmy, cland_combat as combat, cland_combatant as side, cnaval_combat, corders_group, cunit};
 use engine_native_land::unit_history;
 use engine_native_memory::{Memory, cpdx_array::Array, read};
 use engine_native_parts::{cland_border_war_combat, cland_border_war_combatant};
@@ -7,17 +7,25 @@ use engine_sites::Rva;
 
 pub const START_COMBAT_RVA: Rva = Rva(0x00c0_b8d0);
 pub const ARMY_COMBAT_ENDED_RVA: Rva = Rva(0x00ce_7870);
+pub const ATTACK_ACTIVITY_CALL_RVA: Rva = Rva(0x0134_37d5);
+pub const GROUP_ACTIVITY_RVA: Rva = Rva(0x00d3_d3c0);
 
 pub const OPENED: u64 = 10;
 pub const EXITED: u64 = 11;
+pub const HIT: u64 = 12;
 pub const OPENING_WORDS: usize = 6;
 pub const MEMBER_WORDS: usize = 4;
-pub const EXIT_WORDS: usize = 10;
+pub const EXIT_WORDS: usize = 11;
+pub const HIT_WORDS: usize = 8;
+pub const HITS_PER_MEMBER: usize = 2;
 
 pub const COMBAT_UNREADABLE: u8 = 1;
 pub const DIVISION_UNREADABLE: u8 = 2;
 pub const SIDE_UNKNOWN: u8 = 4;
 pub const HOUR_UNREADABLE: u8 = 8;
+pub const POOL_UNREADABLE: u8 = 16;
+pub const TARGET_UNREADABLE: u8 = 4;
+pub const ARMY_UNREADABLE: u8 = 8;
 pub const NO_SIDE: u8 = u8::MAX;
 
 pub const fn optional(value: Option<i32>) -> u64 {
@@ -156,6 +164,7 @@ pub struct Exit {
     side: u8,
     division: u64,
     before: Option<i32>,
+    pool: Option<i64>,
 }
 
 impl Exit {
@@ -185,6 +194,7 @@ impl Exit {
             side: side.map_or(NO_SIDE, |side| side as u8),
             division: division.unwrap_or(0),
             before: division.and_then(|_| counter(memory, army)),
+            pool: division.and_then(|_| field::<i64>(memory, army, carmy::PENDING_STRENGTH_DAMAGE)),
         })
     }
 
@@ -193,12 +203,74 @@ impl Exit {
         put(EXITED);
         put(self.combat);
         put(optional(self.hour));
-        put(u64::from(self.withheld));
+        put(u64::from(self.withheld | if self.pool.is_some() { 0 } else { POOL_UNREADABLE }));
         put(u64::from(self.side));
         put(self.division);
         put(optional(self.before));
         put(optional(read.then(|| counter(memory, army)).flatten()));
         put(optional(read.then(|| manpower(memory, army)).flatten()));
+        put(self.pool.unwrap_or(0) as u64);
+    }
+}
+
+fn hit_combat(memory: &impl Memory, base: usize, observer: usize) -> Option<u64> {
+    let combatant = observer.checked_sub(side::STATS_OBSERVER)?;
+    let vtable = field::<u64>(memory, combatant, 0)? as usize;
+    engine_sites::which(base, vtable, &[side::VTABLE_RVA, cland_border_war_combatant::VTABLE_RVA])?;
+    let pointer = field::<u64>(memory, combatant, side::COMBAT)? as usize;
+    let vtable = field::<u64>(memory, pointer, 0)? as usize;
+    engine_sites::which(base, vtable, &[combat::VTABLE_RVA, cland_border_war_combat::VTABLE_RVA])?;
+    field::<u64>(memory, pointer, combat::HANDLE).filter(|&handle| handle != 0)
+}
+
+fn orders_group(memory: &impl Memory, army: usize) -> Result<u64, ()> {
+    match field::<u64>(memory, army, carmy::ORDERS_GROUP).ok_or(())? {
+        0 => Ok(0),
+        group => field::<u64>(memory, group as usize, corders_group::HANDLE).filter(|&handle| handle != 0).ok_or(()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub combat: u64,
+    pub attacker: u64,
+    pub target: u64,
+    pub army: u64,
+    pub strength: i64,
+    pub withheld: u8,
+}
+
+impl Hit {
+    pub fn read(memory: &impl Memory, base: usize, observer: usize, attacker: usize, target: usize, strength: i64) -> Self {
+        let mut withheld = 0;
+        let mut known = |value: Option<u64>, bit: u8| {
+            value.unwrap_or_else(|| {
+                withheld |= bit;
+                0
+            })
+        };
+        let combat = known(hit_combat(memory, base, observer), COMBAT_UNREADABLE);
+        let attacker_handle = known(division(memory, base, attacker), DIVISION_UNREADABLE);
+        let target = known(division(memory, base, target), TARGET_UNREADABLE);
+        let army = known(if attacker_handle == 0 { None } else { orders_group(memory, attacker).ok() }, ARMY_UNREADABLE);
+        Self { combat, attacker: attacker_handle, target, army, strength, withheld }
+    }
+
+    pub fn copy(&self, put: &mut dyn FnMut(u64)) {
+        put(HIT);
+        put(self.combat);
+        put(self.attacker);
+        put(self.target);
+        put(self.army);
+        put(self.strength as u64);
+        put(u64::from(self.withheld));
+    }
+
+    pub fn decode(words: &[u64]) -> Option<Self> {
+        let [kind, combat, attacker, target, army, strength, withheld] = *words else {
+            return None;
+        };
+        (kind == HIT).then_some(Self { combat, attacker, target, army, strength: strength as i64, withheld: withheld as u8 })
     }
 }
 

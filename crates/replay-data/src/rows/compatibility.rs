@@ -3742,10 +3742,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::LandCombatEdges.index()] = LastChange {
         introduced: LAND_COMBAT_EDGES_FORMAT,
-        ..table(
+        ..appended_at(
             TableId::LandCombatEdges,
-            LAND_COMBAT_EDGES_FORMAT,
-            "land combat openings and division exits",
+            DIVISION_DAMAGE_FORMAT,
+            "land combat openings and division exits, division damage",
+            &[AppendedField {
+                index: 8,
+                name: "pending_strength_raw",
+                introduced: DIVISION_DAMAGE_FORMAT,
+            }],
         )
     };
     history[TableId::CombatEngagementRefreshes.index()] = LastChange {
@@ -3919,6 +3924,22 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             TableId::LandCombatResultObservers,
             RECORDING_SIZE_AUDIT_FORMAT,
             "recording size audit",
+        )
+    };
+    history[TableId::LandDivisionDamage.index()] = LastChange {
+        introduced: DIVISION_DAMAGE_FORMAT,
+        ..table(
+            TableId::LandDivisionDamage,
+            DIVISION_DAMAGE_FORMAT,
+            "division damage",
+        )
+    };
+    history[TableId::DivisionKills.index()] = LastChange {
+        introduced: DIVISION_DAMAGE_FORMAT,
+        ..table(
+            TableId::DivisionKills,
+            DIVISION_DAMAGE_FORMAT,
+            "division damage",
         )
     };
     history
@@ -4270,6 +4291,9 @@ mod tests {
             }
             if format < RECORDING_SIZE_FORMAT {
                 fewer.push((TableId::CountryPowerChanges, 11));
+            }
+            if format < DIVISION_DAMAGE_FORMAT {
+                fewer.push((TableId::LandCombatEdges, 8));
             }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
@@ -4862,7 +4886,20 @@ mod tests {
         assert_eq!(LAND_COMBAT_EDGES_FORMAT, 149);
         assert_eq!(RECORDING_SIZE_FORMAT, 150);
         assert_eq!(RECORDING_SIZE_AUDIT_FORMAT, 151);
-        assert_eq!(FORMAT_VERSION, RECORDING_SIZE_AUDIT_FORMAT);
+        assert_eq!(DIVISION_DAMAGE_FORMAT, 152);
+        assert_eq!(FORMAT_VERSION, DIVISION_DAMAGE_FORMAT);
+        let damage = TableId::LandDivisionDamage.last_change();
+        assert_eq!(damage.introduced, DIVISION_DAMAGE_FORMAT);
+        assert!(damage.table_gap(TableId::LandDivisionDamage, RECORDING_SIZE_AUDIT_FORMAT).is_some());
+        assert!(damage.table_gap(TableId::LandDivisionDamage, DIVISION_DAMAGE_FORMAT).is_none());
+        let kills = TableId::DivisionKills.last_change();
+        assert!(kills.table_gap(TableId::DivisionKills, RECORDING_SIZE_AUDIT_FORMAT).is_some());
+        assert!(kills.table_gap(TableId::DivisionKills, DIVISION_DAMAGE_FORMAT).is_none());
+        let edges = TableId::LandCombatEdges.last_change();
+        assert_eq!((edges.introduced, edges.kind), (LAND_COMBAT_EDGES_FORMAT, ChangeKind::AppendedOnly));
+        assert!(edges.gap(TableId::LandCombatEdges, LAND_COMBAT_EDGES_FORMAT).is_none(), "older edges still play");
+        assert_eq!(edges.fields(TableId::LandCombatEdges, RECORDING_SIZE_AUDIT_FORMAT), 8);
+        assert_eq!(edges.fields(TableId::LandCombatEdges, DIVISION_DAMAGE_FORMAT), 9);
         let observers = TableId::LandCombatResultObservers.last_change();
         assert_eq!(observers.introduced, RECORDING_SIZE_AUDIT_FORMAT);
         assert!(observers.table_gap(TableId::LandCombatResultObservers, RECORDING_SIZE_FORMAT).is_some());

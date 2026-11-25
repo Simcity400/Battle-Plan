@@ -1,5 +1,5 @@
 mod roster;
-use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe};
+use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe, enemy_killed};
 use crate::products::{army::ArmyAttribution, division_log};
 use dashboard_base::queries::country_ids::{RunLinks, run_links};
 use dashboard_base::{
@@ -609,6 +609,7 @@ fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &ro
     let reads = [
         Read { table: TableId::DivisionHistory, keys: at_hour::Keys::Ranges(vec![(key, key), (awards, awards | u128::from(u32::MAX))]) },
         Read::these(TableId::LexicalTokens, division.tokens.iter().copied()),
+        Read::these(TableId::DivisionKills, [u128::from(id)]),
     ];
     let frame = at_hour::frame_with(
         query,
@@ -624,7 +625,7 @@ fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &ro
     let mut details = Facts { frame: &frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     let mut notes = Refusals::default();
     let (experience, casualties) = division.measures.at(at).copied().unwrap_or_default();
-    let facts = details.measured(witnessed_rows::<tables::DivisionHistory>(&frame).rows, experience, casualties, &mut notes);
+    let facts = details.measured(witnessed_rows::<tables::DivisionHistory>(&frame).rows, experience, casualties, enemy_killed(&frame, id), &mut notes);
     Ok(Summary { facts, medals: details.medals.medals, notes })
 }
 

@@ -1956,6 +1956,14 @@ impl BombingTotalRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct DivisionKillsRow {
+    pub division: u64,
+    pub killed_raw: i64,
+    pub incomplete_from: Option<i32>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GarrisonStrengthRow {
     pub controller: u32,
     pub state: u32,
@@ -2099,4 +2107,5 @@ row_codec!(TerritoryRegionTotalRow, 64, |row| (row.holder as u128) << 32 | row.r
 row_codec!(ProducedValueRow, 64, |row| (row.country as u128) << 32 | row.archetype as u128, |key| { country: (key >> 32) as u32, archetype: key as u32 }, {0 => units: I64, 1 => units_reason: U8, 2 => units_without_refits: I64, 3 => units_without_refits_reason: U8, 4 => ic: I64, 5 => ic_reason: U8, 6 => ic_without_refits: I64, 7 => ic_without_refits_reason: U8, 8 => since: OptionalI32, 9 => as_of: OptionalI32}, |_row| Ok(()));
 row_codec!(AirLossTotalRow, 128, |row| (row.slot as u128) << 96 | (row.id as u128) << 64 | (row.region as u128) << 32 | row.cause as u128, |key| { slot: (key >> 96) as u32, id: (key >> 64) as u32, region: (key >> 32) as u32, cause: key as u32 }, {0 => dealt_known: I64, 1 => dealt_unknown: I64, 2 => taken_known: I64, 3 => taken_unknown: I64, 4 => late: I32}, |_row| Ok(()));
 row_codec!(BombingTotalRow, 72, |row| (row.slot as u128) << 40 | (row.id as u128) << 8 | row.cause as u128, |key| { slot: (key >> 40) as u32, id: (key >> 8) as u32, cause: key as u8 }, {0 => dealt: I64, 1 => taken: I64, 2 => late: I32}, |_row| Ok(()));
+row_codec!(DivisionKillsRow, 64, |row| row.division as u128, |key| { division: key as u64 }, {0 => killed_raw: I64, 1 => incomplete_from: OptionalI32}, |row| if row.killed_raw < 0 { Err(invalid("division kills cannot be negative")) } else { Ok(()) });
 row_codec!(GarrisonStrengthRow, 64, |row| (row.controller as u128) << 32 | row.state as u128, |key| { controller: (key >> 32) as u32, state: key as u32 }, {0 => strength: I64, 1 => reason: U8}, |_row| Ok(()));

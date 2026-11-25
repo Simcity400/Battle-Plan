@@ -48,6 +48,7 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
             add(result.words)?;
             add(result.participants().words)?;
             add(result.exit_words())?;
+            add(result.hit_words())?;
             add(6)?;
             if verdict.is_some() {
                 add(8)?;
@@ -559,6 +560,9 @@ impl ResultPlan {
     }
     fn exit_words(&self) -> usize {
         (self.units[0].count as usize + self.units[1].count as usize) * crate::land_edges::EXIT_WORDS
+    }
+    fn hit_words(&self) -> usize {
+        (self.units[0].count as usize + self.units[1].count as usize) * crate::land_edges::HIT_WORDS * crate::land_edges::HITS_PER_MEMBER
     }
     pub fn without_candidates(mut self) -> Self {
         for units in &mut self.units {

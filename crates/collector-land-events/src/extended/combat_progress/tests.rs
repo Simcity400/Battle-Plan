@@ -356,6 +356,7 @@ fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
         TableView::Complete(replay_data::rows::TableRows::LandEventCoverage(coverage)),
         _,
         _,
+        _,
     ] = events.tables()
     else {
         panic!("coverage missing")
