@@ -46,9 +46,9 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
   assert.ok(rows.some(row => row.label === 'Ship 4999'));
 });
 
-test('the followed naval table shows the supplying read, partial sinkings, unrecorded sides and an ended battle without its winner', () => {
+test('the followed naval table shows the supplying read, partial sinkings and IC lost, unrecorded sides and an ended battle without its winner', () => {
   const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
-    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], ships: [3, 0], result: 'ongoing' };
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], icLost: [1992.5, null], ships: [3, 0], result: 'ongoing' };
   const head: NavalBattlesTailReply = { branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
     rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
@@ -57,6 +57,7 @@ test('the followed naval table shows the supplying read, partial sinkings, unrec
   const project = (following: boolean) => model(following).rows[0]!;
   const row = project(true);
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
+  assert.match(model(true).columns.find(column => column.key === 'icLost')!.partialReason!, /lower bound/);
   const ended = model(true).rows[1]!.cells.status!;
   assert.deepEqual([ended.value, ended.statusKind], [{ kind: 'known', value: 'Ended' }, 'finished']);
   assert.deepEqual(ended.tooltipRows!.map(line => [line.label, line.value.kind]), [['Result', 'known'], ['Winner', 'notRecorded']]);
@@ -64,10 +65,13 @@ test('the followed naval table shows the supplying read, partial sinkings, unrec
   const found = { kind: 'data', key: endedRow.key, name: endedRow.name, row: endedRow, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
   const lines = deriveRowTooltip(found, model(true).columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
   assert.deepEqual(lines.map(line => [line.label, line.rawValue?.kind]), [['Date', 'known'], ['Battle', 'notRecorded'], ['Result', 'known'], ['Winner', 'notRecorded'],
-    ['Attackers', 'notRecorded'], ['Ships', 'known'], ['Ships sunk', 'partial'], ['Defenders', 'notRecorded'], ['Ships', 'zero'], ['Ships sunk', 'notRecorded']],
+    ['Attackers', 'notRecorded'], ['Ships', 'known'], ['Ships sunk', 'partial'], ['IC lost', 'partial'],
+    ['Defenders', 'notRecorded'], ['Ships', 'zero'], ['Ships sunk', 'notRecorded'], ['IC lost', 'notRecorded']],
     'the tooltip groups the figures under each side instead of repeating the pair columns');
   assert.deepEqual(row.cells.shipsSunk!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
   assert.equal(row.cells.shipsSunk!.value.kind, 'notRecorded');
+  assert.deepEqual(row.cells.icLost!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
+  assert.equal(row.cells.icLost!.value.kind, 'notRecorded');
   assert.equal(row.cells.ships!.value.kind, 'known');
   assert.equal(row.cells.ships!.pair![1].kind, 'zero');
   assert.deepEqual(row.cells.country!.flags!.map(flag => flag.tag), ['?', '?']);

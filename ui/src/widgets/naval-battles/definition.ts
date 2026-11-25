@@ -10,6 +10,7 @@ export const NAVAL_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
   logCountryColumn({ label: '', minWidth: 68, grow: 0 }),
   logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary' }),
   { ...logPairColumn('shipsSunk', 'Ships sunk', 'total', 68), minWidth: 88, grow: 0, partialReason: 'Sinkings seen during the battle: a lower bound until its result is recorded' },
+  { ...logPairColumn('icLost', 'IC lost', 'hide', 57), grow: 0, partialReason: 'IC of the sinkings seen during the battle: a lower bound until its result is recorded' },
   { ...logPairColumn('ships', 'Ships', 'hide', 57), grow: 0 },
   logStatusColumn({ label: 'Result', widest: ['Defender won'], minWidth: 136, maxWidth: 136, narrow: 'hide' }),
 ];
