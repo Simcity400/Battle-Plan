@@ -541,7 +541,7 @@ test('a drawing that expires at a wall-clock time arms the one timer, even while
 test('incremental families keep their backing canvas out of destructive transferToImageBitmap', async () => {
   const recording = installRecordingCanvas();
   try {
-    const incremental: LaneFamily<Binding, Model, Layout> = { ...family, incremental: true };
+    const incremental: LaneFamily<Binding, Model, Layout> = { ...family, paint: () => ({ drew: true, next: false }) };
     const view = createLaneView(incremental, () => {});
     const lane = driveLane(view, recording.canvases);
     const painted = lane.paint({ label: 'inc', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 10 });

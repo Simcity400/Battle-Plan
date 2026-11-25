@@ -146,6 +146,27 @@ test('addendum 1: the painter paints at the window start, which breaks at the ch
   assert.deepEqual(hours, [120], 'the same day keeps its picture');
 });
 
+test('the lane sends a bounded picture while the page can still install it', async () => {
+  const probe: LaneView = {
+    paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: hour + 4, motion: false }),
+  };
+  const { page, lane, mount, step, presented } = rig({ probe });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe', 0, { offset: 10 });
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const supply = (hour: number) => lane.receive('panels', panels([{ id: 3, hour, kind: 'data', stepped: true, data: { hour } }]));
+  supply(10);
+  await step(3, { playing: true, step: 10 });
+  assert.equal(page.view(1).fields?.first, 10);
+  presented.length = 0;
+  supply(14);
+  await step(8, { step: 10 });
+  assert.deepEqual(presented.flatMap(p => p.entries), []);
+  assert.equal(page.view(1).fields?.first, 10);
+  supply(19);
+  await step(10, { step: 10 });
+  assert.equal(page.view(1).fields?.first, 19);
+});
+
 test('addendum 2: a moving widget stays due, one step per acknowledgement, after every widget whose data changed', async () => {
   let frames = 0;
   const moving: LaneView = { paint: (): Painted => ({ surfaces: [], fields: { step: { value: ++frames, content: `step:${frames}` } }, motion: frames < 3 }) };
