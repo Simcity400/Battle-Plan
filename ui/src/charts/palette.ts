@@ -53,6 +53,7 @@ const LIGHTNESS_STEP = 0.7548776662466927;
 const CHROMA_STEP = 0.5698402909980532;
 const GENERATED_CONTRAST = 4.2;
 const MAX_POOLS = 32;
+const MAX_ORDINAL_SLOTS = 2048;
 
 export type AuthoredColour = readonly [number, number, number] | Rgb | string;
 
@@ -199,9 +200,11 @@ function nextUniqueFallback(pool: GeneratedPool, baseColor: Oklch): { hex: strin
 }
 
 function generatedAt(pool: GeneratedPool, index: number): string {
+  const limit = Math.max(1, MAX_ORDINAL_SLOTS - pool.base.length);
+  const bounded = index >= limit ? index % limit : Math.max(0, index);
   const minBaseGap = pool.target > MARK_CONTRAST ? 3 : 0;
   const minNeighbourGap = pool.target > MARK_CONTRAST ? 12 : 0;
-  while (pool.colors.length <= index) {
+  while (pool.colors.length <= bounded) {
     const prev = pool.rgbs[pool.rgbs.length - 1];
     let accepted: { hex: string; rgb: Rgb } | null = null;
     let lastColor: Oklch = { l: pool.darkSurface ? 0.72 : 0.35, c: 0.14, h: 195 };
@@ -226,7 +229,7 @@ function generatedAt(pool: GeneratedPool, index: number): string {
     pool.colors.push(accepted.hex);
     pool.rgbs.push(accepted.rgb);
   }
-  return pool.colors[index]!;
+  return pool.colors[bounded]!;
 }
 
 export function authoredHex(color: AuthoredColour): string {
@@ -245,17 +248,20 @@ function colourAtSlot(surface: string, slot: number, options?: ColourOptions): s
 }
 
 export function colour(surface: string, ordinal: number, options?: ColourOptions): string {
-  const slot = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
+  const raw = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
+  const slot = raw >= MAX_ORDINAL_SLOTS ? raw % MAX_ORDINAL_SLOTS : raw;
   const candidate = colourAtSlot(surface, slot, options);
   if (!options?.avoid?.length) return candidate;
   const avoid = new Set(options.avoid.map(c => c.toLowerCase()));
   if (!avoid.has(candidate.toLowerCase())) return candidate;
   const pool = poolFor(surface, options);
-  let step = Math.max(0, slot - pool.base.length);
-  while (true) {
-    const next = generatedAt(pool, step++);
+  const limit = Math.max(1, MAX_ORDINAL_SLOTS - pool.base.length);
+  const start = Math.max(0, slot - pool.base.length) % limit;
+  for (let tries = 0; tries < limit; tries++) {
+    const next = generatedAt(pool, (start + tries) % limit);
     if (!avoid.has(next.toLowerCase())) return next;
   }
+  return candidate;
 }
 
 const IDENTITY_COLOURS = {

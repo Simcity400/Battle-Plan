@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { CATEGORY_LIMIT, colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
@@ -78,7 +78,7 @@ function stableColourIndex(key: string): number {
     hash ^= key.charCodeAt(i);
     hash = Math.imul(hash, 16777619);
   }
-  return hash >>> 0;
+  return (hash >>> 0) % CATEGORY_LIMIT;
 }
 
 export function factionTotalsSources(
