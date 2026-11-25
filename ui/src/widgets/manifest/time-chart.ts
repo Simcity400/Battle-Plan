@@ -1,8 +1,10 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
-import { LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
+import { END_LABELS_OPTION, LINE_AXIS_OPTIONS, LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
+import type { OptionField } from '../../dashboard/options';
 import { OPTIONS as AIR_KILLS_LOSSES_OPTIONS } from '../air-kills-losses/definition.ts';
+import { OPTIONS as AIR_FORCE_SIZE_OPTIONS } from '../air-force-size/definition.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
 import { OPTIONS as AUTONOMY_OPTIONS } from '../autonomy/definition.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
@@ -10,10 +12,12 @@ import { OPTIONS as EQUIPMENT_PRODUCED_OPTIONS } from '../equipment-produced/def
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
 import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
+import { OPTIONS as FACTORIES_OPTIONS } from '../factories/definition.ts';
 import { OPTIONS as FACTION_STRENGTH_OPTIONS } from '../faction-strength/definition.ts';
 import { OPTIONS as FUEL_BRANCHES_OPTIONS } from '../fuel-branches/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
+import { OPTIONS as NAVY_SIZE_OPTIONS } from '../navy-size/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
 import { OPTIONS as OCCUPATION_TREND_OPTIONS } from '../occupation-trend/definition.ts';
@@ -21,6 +25,16 @@ import { OPTIONS as RAID_TALLY_OPTIONS } from '../raid-tally/definition.ts';
 import { OPTIONS as TERRITORY_OPTIONS } from '../territory/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
 
+const sizeLinesOptions = (options: readonly OptionField[], keys: readonly string[]): readonly OptionField[] => [
+  ...options.filter(field => keys.includes(field.key)).map(field => ({ ...field, visibleWhen: undefined })),
+  END_LABELS_OPTION,
+  ...LINE_AXIS_OPTIONS,
+  ...LINES_VIEW_OPTIONS,
+];
+const AIR_FORCE_SIZE_LINES_OPTIONS = sizeLinesOptions(AIR_FORCE_SIZE_OPTIONS, ['measure', 'ownership']);
+const ARMY_SIZE_LINES_OPTIONS = sizeLinesOptions(ARMY_SIZE_OPTIONS, ['measure', 'countFor']);
+const FACTORIES_LINES_OPTIONS = sizeLinesOptions(FACTORIES_OPTIONS, ['count', 'types']);
+const NAVY_SIZE_LINES_OPTIONS = sizeLinesOptions(NAVY_SIZE_OPTIONS, ['measure', 'ownership']);
 const AIR_KILLS_LOSSES_LINES_OPTIONS = [
   ...AIR_KILLS_LOSSES_OPTIONS
     .filter(field => ['view', 'measure', 'regions', 'causes', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
@@ -99,7 +113,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
-    options: LINES_VIEW_OPTIONS,
+    options: AIR_FORCE_SIZE_LINES_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'air-force-size',
@@ -163,7 +177,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
-    options: LINES_VIEW_OPTIONS,
+    options: ARMY_SIZE_LINES_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'army-size',
@@ -227,7 +241,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
-    options: LINES_VIEW_OPTIONS,
+    options: FACTORIES_LINES_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'factories',
@@ -336,7 +350,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     view: 'lines',
     label: 'Lines',
     family: 'time-chart',
-    options: LINES_VIEW_OPTIONS,
+    options: NAVY_SIZE_LINES_OPTIONS,
     viewOption: 'view',
     loadSpec: timeChartSpec(
       'navy-size',

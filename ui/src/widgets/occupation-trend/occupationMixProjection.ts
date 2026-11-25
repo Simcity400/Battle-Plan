@@ -308,7 +308,7 @@ export const occupationMixDeclaration: TimeChartWidgetDeclaration<OccupationMixO
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
-      settings: lineChartSettings(ctx.options),
+      settings: lineChartSettings(ctx.options, ctx.following),
     };
   },
 };

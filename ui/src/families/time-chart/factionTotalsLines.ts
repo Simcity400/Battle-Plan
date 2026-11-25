@@ -60,8 +60,10 @@ export interface FactionTotalsLinesOptions {
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
+  readonly rosterUnread: readonly (readonly [number, number])[];
   readonly styles?: Readonly<Record<string, FactionStyle>>;
   readonly shared?: Readonly<Record<string, { readonly colour: string }>>;
+  readonly identities?: ReadonlyMap<string, string | null>;
 }
 
 function stableColourIndex(key: string): number {
@@ -150,10 +152,12 @@ function clipMissingSpans(
 
 function sharedFactionColour(
   shared: FactionTotalsLinesOptions['shared'],
+  saved: string | null | undefined,
   resolvedName: string | null,
   founder: string | null,
 ): string | undefined {
   if (!shared) return undefined;
+  if (saved !== undefined) return saved ? shared[saved]?.colour : undefined;
   const byName = resolvedName ? factionIdentity(resolvedName, null) : null;
   if (byName && shared[byName]?.colour) return shared[byName].colour;
   const byFounder = founder ? factionIdentity(null, founder) : null;
@@ -163,7 +167,7 @@ function sharedFactionColour(
 function factionPresentation(
   readView: BoundedReadView,
   id: string,
-  options: Pick<FactionTotalsLinesOptions, 'aggregated' | 'groupLabel' | 'surface' | 'styles' | 'shared' | 'factions'>,
+  options: Pick<FactionTotalsLinesOptions, 'aggregated' | 'groupLabel' | 'surface' | 'styles' | 'shared' | 'factions' | 'identities'>,
   atHour: number,
   founder?: string | null,
 ): { readonly name: string; readonly color: string; readonly customColour: boolean } {
@@ -175,7 +179,7 @@ function factionPresentation(
   const recordedName = resolved.value.kind === 'known' ? resolved.name : null;
   const name = style?.name ?? (resolved.value.kind === 'known' || resolved.loading ? resolved.name : `Faction ${id}`);
   const founderTag = founder ?? options.factions.find(item => item.id === id)?.founder ?? null;
-  const ownColour = style?.colour ?? sharedFactionColour(options.shared, recordedName, founderTag);
+  const ownColour = style?.colour ?? sharedFactionColour(options.shared, options.identities?.get(id), recordedName, founderTag);
   const color = ownColour
     ?? (resolved.who.colour?.status === 'ready'
       ? resolved.who.colour.value
@@ -196,6 +200,7 @@ function memberNames(readView: BoundedReadView, row: FactionTotalRow, atHour: nu
 function buildHoverDetail(
   readView: BoundedReadView,
   options: FactionTotalsLinesOptions,
+  plotted: readonly string[],
 ): ChartHoverDetail | null {
   let hover;
   try {
@@ -213,7 +218,9 @@ function buildHoverDetail(
       items: [{ label: options.measureLabel, missingReason: reply.missing, tone: 'muted' }],
     };
   }
-  if (!reply.rows.length) {
+  const plottedIds = new Set(plotted);
+  const rows = reply.rows.filter(row => plottedIds.has(row.id));
+  if (!rows.length) {
     return {
       hour: hover.hour,
       replacesSeries: true,
@@ -221,7 +228,7 @@ function buildHoverDetail(
     };
   }
   const items: TooltipListItem[] = [];
-  for (const row of reply.rows) {
+  for (const row of rows) {
     const pres = factionPresentation(readView, row.id, options, hover.hour);
     items.push(
       row.total === null
@@ -262,15 +269,15 @@ export function factionTotalsLinesSources(
   const membership = membershipOf(ctx);
   const members = aggregated && !group ? ctx.countries.tags.map(countryFromKey) : undefined;
   const emptyAgg = aggregated && !group && (!members || !members.length);
-  const atParams: Record<string, unknown> = {
+  const everyParams: Record<string, unknown> = {
     branchId: ctx.branch.id,
     kind,
     measure,
-    ...(top != null ? { top } : {}),
     ...(group ? { group } : {}),
     ...(members ? { members } : {}),
     ...(!aggregated && membership === 'ever' ? { membership: 'ever' } : {}),
   };
+  const atParams: Record<string, unknown> = top != null ? { ...everyParams, top } : everyParams;
   const coverage: SourceCoverage = group
     ? { mode: 'population', form: 'all' }
     : aggregated
@@ -293,7 +300,7 @@ export function factionTotalsLinesSources(
     read: {
       shape: 'exact-hover',
       product: 'faction-totals-at',
-      params: atParams,
+      params: everyParams,
       validate: validateFactionTotalsAt,
     },
   };
@@ -378,9 +385,10 @@ export function factionTotalsLinesOptions(
     directTiles: usesDirectFactionTiles(ctx),
     top: factionSelectionTop(ctx.widget.countries),
     factions: factionSpansFor(ctx),
+    rosterUnread: ctx.countries.factionUnobserved ?? [],
     groupLabel: groupTitleForSelection(ctx.widget.countries),
     endLabels: ctx.options.endLabels !== false,
-    settings: lineChartSettings(ctx.options),
+    settings: lineChartSettings(ctx.options, ctx.following),
     extent: extra.extent,
     gaps: branchGapsOf(ctx.branch),
     surface: extra.surface,
@@ -391,11 +399,18 @@ export function withFactionTotalsStyles(
   declaration: TimeChartWidgetDeclaration<FactionTotalsLinesOptions>,
   styles: FactionTotalsLinesOptions['styles'],
   shared: FactionTotalsLinesOptions['shared'],
+  identities?: FactionTotalsLinesOptions['identities'],
 ): TimeChartWidgetDeclaration<FactionTotalsLinesOptions> {
   return {
     ...declaration,
-    projectionOptions: (ctx, extra) => ({ ...declaration.projectionOptions(ctx, extra), styles, shared }),
+    projectionOptions: (ctx, extra) => ({ ...declaration.projectionOptions(ctx, extra), styles, shared, ...(identities ? { identities } : {}) }),
   };
+}
+
+const ROSTER_UNREAD = 'Faction membership was not recorded at this date.';
+
+function rosterUnreadAt(options: FactionTotalsLinesOptions, hour: number): boolean {
+  return options.rosterUnread.some(([first, last]) => first <= hour && hour <= last);
 }
 
 function projectDirectTiles(
@@ -404,7 +419,6 @@ function projectDirectTiles(
   yAxis: TimeChartModel['yAxis'],
   view: TimeChartModel['view'],
   gaps: TimeChartModel['gaps'],
-  hoverDetail: ChartHoverDetail | null,
 ): TimeChartModel {
   const hour = readView.hour;
   const refused = readView.refused('main');
@@ -419,7 +433,7 @@ function projectDirectTiles(
       yAxis,
       series: [],
       gaps,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
       empty: { message: refused, kind: 'unavailable' },
       auditRows: [],
     };
@@ -435,9 +449,10 @@ function projectDirectTiles(
     return [{ faction, rowIndex, active, known, missing, bounded: tiles?.get(faction.id) ?? null }];
   });
 
-  if (options.top !== null) {
+  const rosterUnread = rosterUnreadAt(options, hour);
+  if (options.top !== null || candidates.length === 0) {
     const activeNow = candidates.filter(item => item.active);
-    if (activeNow.some(item => item.known === null && item.missing !== null)) {
+    if (rosterUnread || (options.top !== null && activeNow.some(item => item.known === null && item.missing !== null))) {
       return {
         kind: options.kind,
         measureTitle: options.measureLabel,
@@ -448,10 +463,14 @@ function projectDirectTiles(
         yAxis,
         series: [],
         gaps,
-        hoverDetail,
-        ...(options.note ? { note: options.note } : {}),
+        hoverDetail: buildHoverDetail(readView, options, []),
+        ...(options.note ? { summaryText: options.note } : {}),
         empty: {
-          message: `The top ${options.top} factions cannot be proved: a faction's total is not known at this hour.`,
+          message: !rosterUnread
+            ? `The top ${options.top} factions cannot be proved: a faction's total is not known at this hour.`
+            : options.top !== null
+              ? `The top ${options.top} factions cannot be proved: faction membership was not recorded at this date.`
+              : ROSTER_UNREAD,
           kind: 'unavailable',
         },
         auditRows: [],
@@ -468,6 +487,7 @@ function projectDirectTiles(
   });
 
   const shown = options.top !== null ? candidates.slice(0, options.top) : candidates;
+  const hoverDetail = buildHoverDetail(readView, options, shown.map(item => item.faction.id));
   const auditRows: FamilyAuditRow[] = [];
   const series: TimeChartSeriesModel[] = shown.map((item, rank) => {
     const isTail = rank >= COLOURED;
@@ -518,7 +538,7 @@ function projectDirectTiles(
       series: [],
       gaps,
       hoverDetail,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
       empty: {
         message: options.aggregated ? 'No members of this group at this date.' : 'No factions at this date.',
         kind: 'empty',
@@ -538,7 +558,7 @@ function projectDirectTiles(
     series,
     gaps,
     hoverDetail,
-    ...(options.note ? { note: options.note } : {}),
+    ...(options.note ? { summaryText: options.note } : {}),
     auditRows,
   };
 }
@@ -548,10 +568,8 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
   const view = chartWindow(options.settings, hour, options.extent[0]);
   const yAxis = { format: 'number' as const, decimals: 0, ...chartAxis(options.settings) };
   const gaps = options.gaps.length > 0 ? options.gaps : undefined;
-  const hoverDetail = buildHoverDetail(readView, options);
-
   if (options.directTiles) {
-    return projectDirectTiles(readView, options, yAxis, view, gaps, hoverDetail);
+    return projectDirectTiles(readView, options, yAxis, view, gaps);
   }
 
   const refused = readView.refused('head') ?? readView.refused('main');
@@ -566,7 +584,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
       yAxis,
       series: [],
       gaps,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
       empty: { message: refused, kind: 'unavailable' },
       auditRows: [],
     };
@@ -584,13 +602,14 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
       yAxis,
       series: [],
       gaps,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
       auditRows: [],
     };
   }
 
   const tiles = readView.series('main');
   if (headPanel.missing !== null) {
+    const hoverDetail = buildHoverDetail(readView, options, options.aggregated ? ['group'] : [...(tiles?.keys() ?? [])]);
     if (options.top !== null || !tiles || tiles.size === 0) {
       return {
         kind: options.kind,
@@ -603,7 +622,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
         series: [],
         gaps,
         hoverDetail,
-        ...(options.note ? { note: options.note } : {}),
+        ...(options.note ? { summaryText: options.note } : {}),
         warnings: headPanel.warnings,
         empty: { message: headPanel.missing, kind: 'unavailable' },
         auditRows: [],
@@ -643,13 +662,14 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
       series,
       gaps,
       hoverDetail,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
       warnings: headPanel.warnings,
       auditRows,
     };
   }
 
   const shown = options.top !== null ? headPanel.rows.slice(0, options.top) : headPanel.rows;
+  const hoverDetail = buildHoverDetail(readView, options, shown.map(row => row.id));
   const auditRows: FamilyAuditRow[] = [];
   const series: TimeChartSeriesModel[] = shown.map((row, rank) => {
     const isTail = rank >= COLOURED;
@@ -699,7 +719,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
       series: [],
       gaps,
       hoverDetail,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
       warnings: headPanel.warnings,
       empty: {
         message: options.aggregated ? 'No members of this group at this date.' : 'No factions at this date.',
@@ -720,7 +740,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
     series,
     gaps,
     hoverDetail,
-    ...(options.note ? { note: options.note } : {}),
+    ...(options.note ? { summaryText: options.note } : {}),
     warnings: headPanel.warnings,
     auditRows,
   };

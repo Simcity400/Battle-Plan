@@ -291,6 +291,52 @@ test('faction-strength lines applies campaign faction renames and colours to lin
   assert.equal(alliesHover?.swatch, '#22c55e');
 });
 
+test('a Top 1 hover reads the plotted faction at the hovered hour, never the faction ranked first then', () => {
+  const ctx = makeCtx({
+    options: { measure: 'factories', count: 'free' },
+    countries: { kind: 'factions', count: 1, membership: 'hour' },
+    factions: [{ id: '10', tag: 'GER', firstHour: 100, lastHour: 600 }, { id: '20', tag: 'ENG', firstHour: 100, lastHour: 600 }],
+  });
+  const hover = factionStrengthLinesDeclaration.sources(ctx, { following: true, staticSpan: null }).entries.find(entry => entry.name === 'hover')!;
+  assert.equal((hover.read as { params: { top?: number } }).params.top, undefined, 'the hover asks every faction under the plotted rule');
+  const view = createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([['main', { decimals: 0, states: [
+      { country: '10', hour: 300, run: { valueRaw: '410' }, missing: null },
+      { country: '20', hour: 300, run: { valueRaw: '350' }, missing: null },
+    ] }]]),
+    hovers: new Map([['hover', { hour: displayedHour(150), data: {
+      hour: 150, kind: 'country-factories', measure: 'free7', missing: null, warnings: [],
+      rows: [{ id: '20', members: ['ENG'], memberCountries: [9], total: 500, missing: null }, { id: '10', members: ['GER'], memberCountries: [7], total: 300, missing: null }],
+    } satisfies FactionTotalsAtReply }]]),
+    identity: fakeIdentity({ 'faction:10': { name: 'Axis', color: '#6b7280' }, 'faction:20': { name: 'Allies', color: '#e11d48' } }),
+  });
+  const model = factionStrengthLinesProjection.project(view, factionStrengthLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }));
+  assert.deepEqual(model.series.map(s => s.id), ['10']);
+  assert.deepEqual(model.hoverDetail?.items.filter(item => item.value !== undefined && item.label !== 'Members').map(item => `${item.label}=${item.value}`), ['Axis=300']);
+});
+
+test('an unread faction roster says so, never "No factions", and a Top N it could change is not shown as proved', () => {
+  const unread = { ...makeCtx({ options: { measure: 'factories', count: 'free' }, factions: [] }) };
+  const ctx = { ...unread, countries: { ...unread.countries, factionUnobserved: [[100, 600]] } } as unknown as FamilyPlanContext;
+  const model = factionStrengthLinesProjection.project(createBoundedReadView({ hour: displayedHour(300) }),
+    factionStrengthLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }));
+  assert.equal(model.empty?.kind, 'unavailable');
+  assert.match(model.empty?.message ?? '', /not recorded/);
+});
+
+test('a shared faction colour is found under the identity the colour editor saved it under', () => {
+  const view = createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([['main', { decimals: 0, states: [{ country: '10', hour: 300, run: { valueRaw: '410' }, missing: null }] }]]),
+    identity: fakeIdentity({}),
+  });
+  const styled = withFactionTotalsStyles(factionStrengthLinesDeclaration, undefined, { '["leader","ITA"]': { colour: '#22c55e' } }, new Map([['10', '["leader","ITA"]']]));
+  const opts = styled.projectionOptions(makeCtx({ options: { measure: 'factories', count: 'free' }, factions: [{ id: '10', tag: 'GER', firstHour: 100, lastHour: 600 }, { id: '10', tag: 'ITA', firstHour: 100, lastHour: 600 }] }),
+    { extent: [100, 600], surface: '#111111' });
+  assert.equal(factionStrengthLinesProjection.project(view, opts).series[0]!.color, '#22c55e', 'the founding leader the editor named, not the member listed first');
+});
+
 test('aggregate and ever-member lines never show a stale value at an unread hour and refuse unproved Top N (S6)', () => {
   const staleTile = {
     tag: 'group',

@@ -4,6 +4,7 @@ import type { ChartBucket } from '../../charts/chartSummary.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { setToken } from '../../dashboard/options.ts';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
+import { readPlanExact } from '../../families/broker.ts';
 import type { FamilyPlanContext, PixelBinnedSourceRead, PointSourceRead } from '../../families/plan.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { knownValue } from '../../families/value.ts';
@@ -118,4 +119,20 @@ test('a refused ranking draws no types and says why; the settings reach the axis
   assert.equal(chosen.yAxis.min, -50);
   assert.deepEqual(chosen.legend?.map(entry => entry.label), ['Infantry equipment']);
   assert.equal(chosen.series[0]!.endLabel, null);
+});
+
+test('the exact audit reads the dated main types, so a correct picture has an exact read to agree with', async () => {
+  const { declaration, projection } = await view();
+  const asked: string[] = [];
+  const client = { product: async (request: { product?: string; params?: { product?: string } }) => {
+    asked.push(JSON.stringify(request).includes('equipment-stockpile-lines') ? 'equipment-stockpile-lines' : 'other');
+    return { data: reply(HOUR, { rifles: 1000, tanks: 20 }, { keys: ['rifles', 'tanks'], refused: null }) };
+  } } as never;
+  const plan = declaration.sources(context({}), { width: 600, height: 300 } as never);
+  const exact = await readPlanExact(plan, HOUR, { client, following: false, timeMode: 'pin', branch: { firstHour: FIRST, lastHour: FIRST + 1000 },
+    window: null, staticSpan: null, gate: { recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as never });
+  assert.ok(exact, 'an exact read exists');
+  assert.deepEqual(asked, ['equipment-stockpile-lines']);
+  const options = declaration.projectionOptions(context({}), { extent: [FIRST, HOUR], surface: '#111111' });
+  assert.deepEqual(projection.project(exact, options).auditRows?.map(row => row.value), ['1K', '20']);
 });

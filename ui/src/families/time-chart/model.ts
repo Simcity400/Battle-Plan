@@ -114,6 +114,7 @@ export interface ChartStackBand {
   readonly color: string;
   readonly opacity?: number;
   readonly values: readonly (number | null)[];
+  readonly outside?: readonly boolean[];
   readonly exact?: readonly (ChartExactRational | null)[];
   readonly endLabel?: ChartEndLabel | null;
   readonly flag?: ChartArtSlot;
@@ -234,6 +235,7 @@ export interface ChartYAxisSpec {
   readonly ticks?: readonly number[];
   readonly log?: boolean;
   readonly decimals?: number;
+  readonly exactDecimals?: number;
 }
 
 export interface TimeChartModel {

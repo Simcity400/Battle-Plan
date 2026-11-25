@@ -24,6 +24,7 @@ import {
   branchGapsOf,
   countrySeriesLooks,
   memberAt,
+  chartTopOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -65,9 +66,6 @@ const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSaf
 const isText = (v: unknown): v is string => typeof v === 'string';
 const maybe = (v: unknown, test: (x: unknown) => boolean): boolean => v === null || test(v);
 
-function topOf(countries: FamilyPlanContext['countries']): number | null {
-  return countries.top ?? (countries.all ? Math.max(1, countries.every.length) : null);
-}
 
 export function raidTallyMetric(raw: unknown): RaidTallyMetric {
   if (raw === 'launched' || raw === 'succeeded') return raw;
@@ -282,7 +280,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
         yAxis,
         series: [],
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
-        note: SUCCESS_NOTE,
+        summaryText: SUCCESS_NOTE,
         auditRows: [],
       };
     }
@@ -435,7 +433,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
         ...(legend ? { legend } : {}),
         gaps: gaps.length > 0 ? gaps : undefined,
         hoverDetail,
-        note: SUCCESS_NOTE,
+        summaryText: SUCCESS_NOTE,
         warnings,
         empty: headMissing !== null
           ? { message: headMissing, kind: 'unavailable' }
@@ -461,7 +459,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       ...(legend ? { legend } : {}),
       gaps: gaps.length > 0 ? gaps : undefined,
       hoverDetail,
-      note: SUCCESS_NOTE,
+      summaryText: SUCCESS_NOTE,
       warnings,
       auditRows,
     };
@@ -477,7 +475,7 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   icon: 'target',
   countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     const tags = top === null ? ctx.countries.tags : [];
     const metric = raidTallyMetric(ctx.options.metric);
     const owner = `raid-tally:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${metric}`;
@@ -521,7 +519,7 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
   },
   projection: raidTallyLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     return {
       tags: top === null ? ctx.countries.tags : [],
       top,
@@ -529,7 +527,7 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
       holders: ctx.countries.holders,
       membership: top === null ? ctx.countries.membership : null,
       endLabels: ctx.options.endLabels !== false,
-      settings: lineChartSettings(ctx.options),
+      settings: lineChartSettings(ctx.options, ctx.following),
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,

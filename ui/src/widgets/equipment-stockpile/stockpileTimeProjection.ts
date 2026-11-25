@@ -208,7 +208,7 @@ export const stockpileTimeDeclaration: TimeChartWidgetDeclaration<StockpileTimeO
         read: { shape: 'exact-hover', product: 'equipment-stockpile-lines', params: { branchId: ctx.branch.id, family }, validate: validateStockpileLines },
       },
     ];
-    return { owner: `${owner}:${JSON.stringify(asked)}`, entries };
+    return { owner: `${owner}:${JSON.stringify(asked)}`, exactEntry: entries[1]!, entries };
   },
   projection: stockpileTimeProjection,
   projectionOptions(ctx, { extent, surface }) {

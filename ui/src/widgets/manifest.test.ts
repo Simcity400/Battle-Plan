@@ -478,12 +478,12 @@ test('every setting a time-chart view shows reaches what that view reads or proj
     const selected: WidgetOptions = view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view };
     const read = familyViewOptionFields(entry.kind, view);
     const fields = read;
-    const seen = (stored: WidgetOptions) => {
+    const seen = (stored: WidgetOptions, following = false) => {
       const options = resolveOptions(read, stored);
       const ctx = {
         track: { source: { id: 's', revision: '1' }, branch: { id: '1', firstHour: 0, lastHour: 1000, gaps: [] }, axisOffset: 0 },
         branch: { id: '1', firstHour: 0, lastHour: 1000, gaps: [] }, lastRecordedHour: 1000, widget: { kind: entry.kind, options: stored, countries: { kind: 'tags', tags: ['GER'] } },
-        options, following: false, aux: undefined, countryTag: 'GER', countrySubject: 'GER', countryName: 'Germany',
+        options, following, aux: undefined, countryTag: 'GER', countrySubject: 'GER', countryName: 'Germany',
         countries: { all: false, tags: ['GER'], holders: null, every: ['GER'], top: null, membership: null, membershipRuns: null, unobserved: [],
           filter: { passing: null, unrecorded: [], bounds: [] }, labels: {}, factions: null, factionUnobserved: [], factionIncomplete: [],
           rankedAt: () => ['GER'], reason: null, known: () => true, unobservedIn: () => false },
@@ -492,8 +492,9 @@ test('every setting a time-chart view shows reaches what that view reads or proj
       return JSON.stringify([declaration.sources(ctx, { width: 800, height: 300 }), declaration.projectionOptions(ctx, { extent: [0, 1000], surface: '#111111' })],
         (_key, value) => typeof value === 'function' ? String(value) : typeof value === 'bigint' ? String(value) : value);
     };
-    const base = seen(selected);
     for (const field of fields) {
+      const following = field.section === 'time';
+      const base = seen(selected, following);
       if (field.key === (entry.viewOption ?? 'view')) continue;
       const value = otherValue(field);
       if (value === field.default) continue;
@@ -502,7 +503,7 @@ test('every setting a time-chart view shows reaches what that view reads or proj
       const shown = field.visibleWhen ? field.visibleWhen(resolveOptions(read, written), undefined as never) : true;
       if (!shown) continue;
       checked.push(`${entry.kind}/${view}: ${field.key}`);
-      if (seen(written) === base) silent.push(`${entry.kind}/${view}: ${field.key}`);
+      if (seen(written, following) === base) silent.push(`${entry.kind}/${view}: ${field.key}`);
     }
   }
   assert.ok(checked.length > 30, `the walk reaches the views' settings: ${checked.length}`);

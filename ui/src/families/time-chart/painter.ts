@@ -28,7 +28,7 @@ import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 import { drawChartRows, parseRowsInspect } from './rows.ts';
 
-export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCache): LegendStripSpec | null {
+export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCache, ink?: string): LegendStripSpec | null {
   const legend = model.legend;
   if (!legend || legend.length === 0) return null;
   const isLineLegend = model.mode === 'lines';
@@ -44,7 +44,7 @@ export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCac
         const item = legend[i]!;
         return {
           label: item.label,
-          color: item.color,
+          color: item.color ?? ink ?? '',
           ...(isLineLegend && !item.hatch ? { line: true } : {}),
           dash: item.dash,
           hatch: item.hatch,
@@ -59,7 +59,7 @@ export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCac
 }
 
 export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, measure: LegendMeasure): LegendFit | null {
-  const spec = layout.legendTop === null ? null : timeChartLegendSpec(model);
+  const spec = layout.legendTop === null ? null : timeChartLegendSpec(model, undefined, resolveKitTokens(theme).textSecondary);
   return spec ? fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure) : null;
 }
 
@@ -215,7 +215,7 @@ function colourStretches(s: TimeChartSeriesModel, layout: TimeChartLayout, hour:
     if (prev && prev.color === run.color) prev.x1 = x1;
     else out.push({ color: run.color, x0, x1 });
   }
-  if (out.length < 2) return null;
+  if (out.length === 0 || (out.length === 1 && out[0]!.color === s.color)) return null;
   out[0]!.x0 -= pad;
   out[out.length - 1]!.x1 += pad;
   return out;
@@ -256,7 +256,7 @@ export function drawTimeChart(
   const overlayFont = `${theme.fontSize.body}px ${theme.font}`;
   const textSecondary = tokens.textSecondary;
 
-  const legendSpec = layout.legendTop === null ? null : timeChartLegendSpec(model, artCache);
+  const legendSpec = layout.legendTop === null ? null : timeChartLegendSpec(model, artCache, tokens.textSecondary);
   if (legendSpec && layout.legendTop !== null) {
     const width = layout.width - layout.left;
     drawLegendStrip(ctx, layout.left, layout.legendTop, width, 14, legendSpec, theme,
@@ -629,15 +629,12 @@ export function drawTimeChart(
 
       const stretches = colourStretches(s, layout, model.hour);
       for (const line of paths) {
-        const strokeSegment = (strokeColor: string, clipTop: number, clipHeight: number, x0?: number, x1?: number) => {
+        const strokeSegment = (strokeColor: string, clip: { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number } | null) => {
+          if (clip && (clip.x1 <= clip.x0 || clip.y1 <= clip.y0)) return;
           ctx.save();
-          if (clipHeight > 0) {
+          if (clip) {
             ctx.beginPath();
-            ctx.rect(layout.left, clipTop, layout.plotWidth + 1, clipHeight);
-            ctx.clip();
-          } else if (x0 !== undefined && x1 !== undefined) {
-            ctx.beginPath();
-            ctx.rect(x0, layout.top - 2, x1 - x0, layout.plotHeight + 4);
+            ctx.rect(clip.x0, clip.y0, clip.x1 - clip.x0, clip.y1 - clip.y0);
             ctx.clip();
           }
           ctx.globalAlpha = opacity;
@@ -650,14 +647,13 @@ export function drawTimeChart(
           ctx.stroke(line.path);
           ctx.restore();
         };
-        if (s.negRed && layout.yDomain[0] < 0) {
-          strokeSegment(s.color, layout.top - 2, Math.max(0, clipZeroY - (layout.top - 2)));
-          strokeSegment(tokens.shortage, clipZeroY, Math.max(0, layout.baseY + 4 - clipZeroY));
-        } else if (stretches) {
-          for (const stretch of stretches) strokeSegment(stretch.color, 0, 0, stretch.x0, stretch.x1);
-        } else {
-          strokeSegment(s.color, 0, 0);
+        const signed = s.negRed === true && layout.yDomain[0] < 0;
+        const above = signed ? clipZeroY : layout.top + layout.plotHeight + 2;
+        const columns = stretches ?? [{ color: s.color, x0: layout.left, x1: layout.left + layout.plotWidth + 1 }];
+        for (const stretch of columns) {
+          strokeSegment(stretch.color, stretches || signed ? { x0: stretch.x0, x1: stretch.x1, y0: layout.top - 2, y1: above } : null);
         }
+        if (signed) strokeSegment(tokens.shortage, { x0: layout.left, x1: layout.left + layout.plotWidth + 1, y0: clipZeroY, y1: layout.baseY + 4 });
       }
 
       if (s.missingSpans && s.missingSpans.length > 0) {

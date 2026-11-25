@@ -137,7 +137,7 @@ function project(readView: BoundedReadView, options: FuelBranchesTimeOptions): T
   const hour = readView.hour;
   const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
   const view = chartWindow(settings, hour, options.extent[0]);
-  const yAxis = { format: 'percent' as const, min: 0, ...chartAxis(settings) };
+  const yAxis = { format: 'percent' as const, ...chartAxis(settings) };
   const base = {
     kind: 'fuel-branches',
     measureTitle: 'Fuel received',
@@ -335,7 +335,7 @@ export const fuelBranchesTimeDeclaration: TimeChartWidgetDeclaration<FuelBranche
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
-      settings: lineChartSettings(ctx.options),
+      settings: lineChartSettings(ctx.options, ctx.following),
     };
   },
 };

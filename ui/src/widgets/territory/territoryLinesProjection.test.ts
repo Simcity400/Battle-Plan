@@ -156,7 +156,8 @@ test('territory lines projects slot-keyed countries, whole-number axis, area not
   const model = territoryLinesProjection.project(view, opts);
   assert.equal(model.yAxis.format, 'number');
   assert.equal(model.yAxis.decimals, 0);
-  assert.equal(model.note, 'Map area exaggerates territory near the poles.');
+  assert.equal(model.summaryText, 'Map area exaggerates territory near the poles.', 'a caveat on the measure is plain text, never the partial-data hatch');
+  assert.equal(model.note, undefined);
   assert.deepEqual(model.series.map(s => [s.id, s.name, s.headValue, s.endLabel?.value ?? null]), [
     [ger, 'German Reich', 142, '142'],
     [sov, 'Soviet Union', null, null],

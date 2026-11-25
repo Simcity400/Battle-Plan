@@ -446,7 +446,8 @@ export function layoutTimeChart(
   let yLo: number;
   let yHi: number;
   const wholeAxis = model.yAxis.format === 'number' && model.yAxis.decimals === 0;
-  const fullPercent = !model.view?.y && !model.yAxis.fixed && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
+  const bounded = model.yAxis.min != null || model.yAxis.max != null;
+  const fullPercent = !model.view?.y && !model.yAxis.fixed && !bounded && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
   const logAsked = model.yAxis.log === true && !model.view?.y && !model.yAxis.fixed;
   const logShown = logAsked && dataMin > 0 && dataMax >= dataMin;
   if (model.view?.y) {
@@ -457,7 +458,7 @@ export function layoutTimeChart(
     yHi = model.yAxis.fixed[1];
   } else if (fullPercent) {
     yLo = 0;
-    yHi = 100;
+    yHi = dataMin <= dataMax && dataMax > 100 ? Math.ceil(dataMax / 25) * 25 : 100;
   } else if (logShown) {
     yLo = model.yAxis.min != null && model.yAxis.min > 0 ? model.yAxis.min : dataMin;
     yHi = model.yAxis.max != null && model.yAxis.max > yLo ? model.yAxis.max : Math.max(dataMax * 1.08, yLo * 10);
