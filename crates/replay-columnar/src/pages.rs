@@ -400,7 +400,7 @@ impl RunDirectory {
     fn validate(&self, run: u32) -> io::Result<()> {
         let blocks = self.blocks();
         let span = i64::from(blocks) * i64::from(UNIT_ORDINALS);
-        if self.first_hour == i32::MIN || span > i64::from(i32::MAX) || i64::from(self.first_hour) + span > i64::from(i32::MAX) {
+        if self.first_hour == i32::MIN || span > i64::from(i32::MAX) || i64::from(self.first_hour) + span.max(1) > i64::from(i32::MAX) {
             return Err(invalid(format!("Run {run}'s hours pass the hour range")));
         }
         if self.spans.len() as u64 != u64::from(blocks / SPAN_BLOCKS) {
