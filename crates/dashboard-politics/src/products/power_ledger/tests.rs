@@ -664,6 +664,25 @@ fn daily_credit_carries_its_native_date_separately_from_debits() {
 }
 
 #[test]
+fn a_credit_whose_amount_was_not_recorded_is_listed_with_or_without_the_day_log() {
+    use super::{Change, TOTALS, Value, listed};
+    let at = |name: &str| TOTALS.iter().position(|held| *held == name).unwrap();
+    let before = [Value::Number(0); TOTALS.len()];
+    let mut after = before;
+    after[at("unknown")] = Value::Number(2);
+    for include_days in [true, false] {
+        let (payment, day) = listed(&Change { ordinal: 3, hour: 144, before: Some(&before), after: &after }, 3, include_days);
+        assert!(payment.is_none(), "a credit is not a payment");
+        let day = day.expect("a credit whose amount was not recorded is listed, never dropped");
+        assert_eq!((day.read, day.unknown_credits, day.credits, day.days, day.payments), (144, 2, 0, 0, 0));
+    }
+    after[at("payments")] = Value::Number(2);
+    let (payment, day) = listed(&Change { ordinal: 3, hour: 144, before: Some(&before), after: &after }, 3, false);
+    assert_eq!(payment.map(|payment| payment.unknown), Some(2), "a charged item's unrecorded payments stay payments");
+    assert!(day.is_none());
+}
+
+#[test]
 fn instant_gains_and_balances_reconcile_across_aliases_epochs_caps_and_unknown_operands() {
     const GER2: u32 = 9002;
     let grant = |country: u32, sequence: u64, epoch: u64, hour: i32, currency: PowerCurrency, operation: PowerOperation, before: i64, after: i64, requested: Option<i64>, cause: PowerCause| {
