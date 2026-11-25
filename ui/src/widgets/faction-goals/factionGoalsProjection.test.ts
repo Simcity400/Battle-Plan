@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import type { CountryFactionGoalsReply, CountryGoal, FactionGoalDefinition } from '../../generated/dashboard';

@@ -3690,86 +3690,8 @@ export type LogDetailTable = { title: string, columns: Array<string>, rows: Arra
 export type LogActiveSide = { combat: string, attacker: boolean, terminal: boolean, progressRaw: string, damageRaw: string, activityGroups: number, leaders: number, lossSource: string | null, details: Array<LogDetailTable>, };
 export type CombatLogAvailability = { groups: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, templates: string | null, battles: string | null, active: string | null, terminal: string | null, };
 export type LandSource = "destruction" | "combatLog";
-export type LossCountry = { slot: number, countryId: number, };
-export type LossesParams = { branchId: string, country: CountryRef, landSource: LandSource,
-/**
- * The identity; the country's holder at `to` when none.
- */
-identity?: LossCountry | null, from: number, to: number, width: number,
-/**
- * Hours whose totals are read exactly.
- */
-reads: Array<number>, };
-export type EquipmentDestructionCause = "unknown" | "land_combat" | "naval_transport" | "immediate" | "attrition" | "garrison" | "air_nuclear" | "air_accident" | "air_strategic" | "air_mission_aa" | "air_land_combat_cas" | "air_raid" | "air_naval_aa" | "division_destroyed" | "division_overrun" | "division_deleted" | "division_disbanded" | "division_capitulation" | "division_scripted" | "division_template_removed" | "paradrop_disruption" | "division_merged" | "exile_equipment" | "volunteer_return_equipment" | "capitulation_escape_equipment" | "scripted_equipment_fraction" | "scripted_stockpile_fraction";
-export type LossSource = { "kind": "combatLog", "reason": number } | { "kind": "recovered" } | { "kind": "sunkShips" } | { "kind": "sunkConvoys" } | { "kind": "lendLeaseSunk" } | { "kind": "lendLeaseSent" } | { "kind": "destruction", "reason": EquipmentDestructionCause };
-export type LossDomain = "land" | "air" | "naval" | "other";
-export type LossName = { key: string | null, template: string | null, text: string | null, };
-export type UnknownReason = "unread" | "endedAfterLastRead" | "destructionWithheld" | "destructionGap" | "destructionUnresolved" | "destructionDomain";
-export type UnknownSpan = { firstHour: number, lastHour: number, reason: UnknownReason, detail: string | null, };
-export type LossPoint = { hour: number,
-/**
- * Exact decimal, in [`LossesReply::amount_scale`] units.
- */
-totalRaw: string, };
-export type ExactLossPoint = { hour: number,
-/**
- * Exact decimal, in [`LossesReply::amount_scale`] units, or null when absent or unrecorded.
- */
-totalRaw: string | null, };
-export type LossLeaf = {
-/**
- * Index into [`LossesReply::designs`]; null when the record names none.
- */
-design: number | null,
-/**
- * The totals row's key, the live cell `equipment-loss-head` names it by.
- */
-key: string,
-/**
- * The running total at the end of each bin it changed in.
- */
-points: Array<LossPoint>,
-/**
- * Exact running totals read at requested hours; null when absent or unrecorded.
- */
-exact: Array<ExactLossPoint>, lowerBoundFrom: number | null, };
-export type LossCause = { source: LossSource, domain: LossDomain, name: LossName,
-/**
- * The Combat Log's attrition column, for reasons 1 to 3.
- */
-group: LossName | null,
-/**
- * False for recovered equipment and lend-lease sent.
- */
-loss: boolean,
-/**
- * Why the amounts are unknown throughout; then no leaves.
- */
-unknown: string | null, unknownSpans: Array<UnknownSpan>,
-/**
- * Sunk ships' leaves are made from [`LossesReply::ships`] at the hour shown.
- */
-leaves: Array<LossLeaf>, };
-export type LossDesignName = { firstHour: number, name: string | null, known: boolean, };
-export type LossDesign = { variant: number, names: Array<LossDesignName>, equipment: string | null, archetype: string | null, archetypeName: string | null, };
-export type ShipListing = { signature: string, listedHour: number, sinkHour: number, design: number | null, count: number, };
-export type Coverage = "logged" | "notLogged" | { "partial": { ungrouped: number, } } | "unknown" | "pruneUnobserved";
-export type CoverageSpan = { firstHour: number, lastHour: number, coverage: Coverage, };
-export type DestructionCoverageSpan = { firstHour: number, lastHour: number, reason: string | null, };
-export type DestructionRun = { firstHour: number, lastHour: number, countedFrom: number | null, withheldFrom: number | null, };
-export type LossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, ships: Array<ShipListing>,
-/**
- * Combat Log land coverage; empty in destruction mode.
- */
-coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionRuns: Array<DestructionRun>, retainedMonths: number | null,
-/**
- * The window and bins the points were read on, and the hours read exactly.
- */
-from: number, to: number, width: number, exactHours: Array<number>,
-/**
- * The first hour of each stretch after hours the timeline does not hold, where totals restart.
- */
-restarts: Array<number>, warnings: Array<string>, };
+export type EquipmentLossesParams = { branchId: string, country: CountryRef, hour: number, landSource: LandSource, };
+export type EquipmentLossesReply = { from: number, hour: number, through: number, landSource: LandSource, breakdown: Breakdown, warnings: Array<string>, };
 export type AirStatisticsRegionsParams = { branchId: string, country: CountryRef, };
 export type AirStatisticsRegionsReply = {
 /**
@@ -6939,9 +6861,6 @@ active: boolean,
  */
 pinned: boolean, cell: AirCell, wings: AirWings, };
 export type AirSuperiorityParamsAtHour = AirSuperiorityParams & { hour: number };
-export type LossHeadParams = { branchId: string, country: CountryRef, identity?: LossCountry | null, };
-export type LossHeadReply = { leaves: Array<string>, warnings: Array<string>, };
-export type LossHeadParamsAtHour = LossHeadParams & { hour: number };
 export type LossStack = "channel" | "type" | "armyGroup";
 export type ArmyLossesParams = { branchId: string, country: CountryRef, view: LossView, stack: LossStack | null, limit: number | null, };
 export type ArmyLossesReply = { tag: string, absent: boolean, rollup: ArmyLossRollup | null, monthDetail: ArmyLossMonthDetail | null, availability: ArmyLossesAvailability, warnings: Array<string>, };
@@ -6994,7 +6913,7 @@ export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_Q
 /** Products whose replies depend on configured game content. */
 export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "army-breakdown", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "subjects", "country-groups-at", "subjects-at", "diplomatic-pacts", "espionage-types", "raid-log", "raid-log-tail", "raid-tally", "raid-tally-at", "resource-balance-months", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "stability-markers", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "production-spending-months", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "research-history", "event-feed-tail", "event-choices-tail", "decisions-tail", "event-feed-activity", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-types", "equipment-stockpile-lines", "faction-state", "wars", "war-timeline", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "equipment-produced-race", "power-spending-breakdown", "power-spend-markers", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "factory-mix", "autonomy-levels", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "raid-log-tail", "raid-tally", "raid-tally-at", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "equipment-produced-race", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "faction-totals-at", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "factory-mix", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
+export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "army-breakdown", "country-styles", "log-tail", "world-tension-stack", "espionage-operation", "espionage-ended", "espionage-types", "raid-log-tail", "raid-tally", "raid-tally-at", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "production-spending-months", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "combat-log-history", "scoreboard", "equipment-produced-at", "equipment-produced-race", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "faction-totals-at", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "factory-mix", "autonomy-levels", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "decorated-divisions", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at", "army-at"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
 export const REPLAY_PRODUCTS = ["event-feed-tail", "event-choices-tail", "decisions-tail"] as const;
 export type HourRole = "read" | "start" | "end" | "bucket";
@@ -7052,8 +6971,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "doctrine-rewards": { "hour": "read" },
   "doctrines": { "hour": "read" },
   "equipment-designs": { "hour": "read" },
-  "equipment-loss-head": { "hour": "read" },
-  "equipment-losses": { "from": "start", "to": "end", "reads[]": "read" },
+  "equipment-losses": { "hour": "end" },
   "equipment-produced": { "rankHour": "read" },
   "equipment-produced-at": { "hour": "read" },
   "equipment-produced-country": {},
@@ -7246,8 +7164,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "doctrine-rewards": { "branchId": "leaf", "country": "any", "folder": "leaf", "hour": "leaf", "track": "leaf" },
   "doctrines": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "equipment-designs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "equipment-loss-head": { "branchId": "leaf", "country": "any", "hour": "leaf", "identity": "node", "identity.countryId": "leaf", "identity.slot": "leaf" },
-  "equipment-losses": { "branchId": "leaf", "country": "any", "from": "leaf", "identity": "node", "identity.countryId": "leaf", "identity.slot": "leaf", "landSource": "leaf", "reads": "node", "reads[]": "leaf", "to": "leaf", "width": "leaf" },
+  "equipment-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "landSource": "leaf" },
   "equipment-produced": { "branchId": "leaf", "count": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "rankHour": "leaf", "refits": "leaf", "top": "leaf", "types": "node", "types[]": "leaf", "window": "leaf" },
   "equipment-produced-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "measure": "leaf", "refits": "leaf" },
   "equipment-produced-country": { "branchId": "leaf", "count": "leaf", "country": "any", "measure": "leaf", "refits": "leaf" },
@@ -7440,8 +7357,7 @@ export type RequestParams<E, B> = {
   "doctrine-rewards": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "doctrines": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-designs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "equipment-loss-head": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "equipment-losses": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "reads"?: readonly (E)[] | null; readonly "to"?: B | null };
+  "equipment-losses": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "equipment-produced": { readonly [key: string]: unknown; readonly "rankHour"?: E | null };
   "equipment-produced-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-produced-country": {};

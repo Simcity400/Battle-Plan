@@ -4,26 +4,18 @@ use replay_lanes::lanes::{Cell, Keys, history};
 use replay_data::rows::{
     EQUIPMENT_DESTRUCTION_LEGACY_PARTIAL_REASON, EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentLossCoverageRow as Row, TableId, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
 };
-use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
-#[cfg(any(test, feature = "export-types"))]
-use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnknownReason {
     Unread,
     EndedAfterLastRead,
     DestructionWithheld,
     DestructionGap,
     DestructionUnresolved,
-    DestructionDomain,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnknownSpan {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -31,9 +23,7 @@ pub struct UnknownSpan {
     pub detail: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coverage {
     Logged,
     NotLogged,
@@ -42,27 +32,21 @@ pub enum Coverage {
     PruneUnobserved,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageSpan {
     pub first_hour: i32,
     pub last_hour: i32,
     pub coverage: Coverage,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DestructionCoverageSpan {
     pub first_hour: i32,
     pub last_hour: i32,
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DestructionRun {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -187,21 +171,9 @@ impl Held {
         out
     }
 
-    fn last_run(&self) -> Option<&RunCells> {
-        self.run.iter().rev().find_map(|(_, _, cells)| cells.as_ref())
-    }
-
-    pub fn active_run_start(&self) -> Option<i32> {
-        self.run_segments().last()?.first().map(|(first, _, _)| *first)
-    }
-
     #[cfg(test)]
     pub fn counted_from(&self) -> Option<i32> {
         self.run_segments().last()?.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min()
-    }
-
-    pub fn incomplete_from(&self) -> Option<i32> {
-        self.run_segments().last()?.iter().rev().find_map(|(_, _, cells)| cells.as_ref())?.incomplete_from
     }
 
     pub fn destruction_runs(&self) -> Vec<DestructionRun> {
@@ -347,35 +319,36 @@ impl Held {
         out
     }
 
-    pub fn warnings(&self, combat_log: bool) -> Vec<String> {
+    pub fn warnings_through(&self, hour: i32, combat_log: bool) -> Vec<String> {
         let mut out = Vec::new();
-        let drops = self.country.iter().rev().find_map(|(_, _, cells)| cells.as_ref()?.convoy_drops).unwrap_or_default();
+        let drops = self
+            .country
+            .iter()
+            .rev()
+            .find_map(|(first, _, cells)| (*first <= hour).then(|| cells.as_ref()?.convoy_drops).flatten())
+            .unwrap_or_default();
         if drops != 0 {
             out.push(format!("{drops} recorded sunk convoys counts fell in value; each was counted as a new entry."));
         }
         if combat_log {
             let land = self.land();
-            if land.iter().any(|span| span.coverage == Coverage::NotLogged) {
+            if land.iter().any(|span| span.first_hour <= hour && span.coverage == Coverage::NotLogged) {
                 out.push("The game did not keep this country's land losses at some hours (the country or feature gate was closed, or its divisions had no orders groups); those losses are unknown, not zero.".to_owned());
             }
-            if land.iter().any(|span| span.coverage == Coverage::Unknown) {
+            if land.iter().any(|span| span.first_hour <= hour && span.coverage == Coverage::Unknown) {
                 out.push("Some hours have recorded gaps, failed blocks/frames, unread division census, unresolved owners or missing writer inputs; land-loss coverage is unknown there.".to_owned());
             }
         }
-        let unresolved = self.last_run().and_then(|cells| if combat_log { cells.unresolved_all } else { cells.unresolved }).unwrap_or_default();
+        let unresolved = self
+            .run
+            .iter()
+            .rev()
+            .find_map(|(first, _, cells)| (*first <= hour).then(|| cells.as_ref().and_then(|cells| if combat_log { cells.unresolved_all } else { cells.unresolved })).flatten())
+            .unwrap_or_default();
         if unresolved != 0 {
             out.push(format!("Recorded loss data name {unresolved} country references the recorded links do not resolve; they are left out."));
         }
         out
-    }
-}
-
-pub fn is_complete_drain(cells: &RunCells, legacy_partial_text: bool) -> bool {
-    match cells.drain_state {
-        Some(Row::DRAIN_STATE_COMPLETE) => cells.drain.as_deref() == Some(""),
-        Some(_) => false,
-        None if legacy_partial_text => cells.drain.as_deref() == Some(""),
-        None => false,
     }
 }
 

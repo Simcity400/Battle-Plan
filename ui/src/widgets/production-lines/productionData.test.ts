@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { compareValues, knownValue } from '../../families/value.ts';
 import { registerWidgets, widgetUnavailable } from '../../dashboard/definitions.ts';

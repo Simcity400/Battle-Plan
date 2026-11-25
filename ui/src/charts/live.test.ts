@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LiveCell, liveAt, liveKey, liveTexts, valuesOf } from './live.ts';
+import { LiveCell, liveAt, liveKey, liveTexts } from './live.ts';
+import { valuesOf } from '../test-support/liveValues.ts';
 
 test('a live value is made again only when the clock moves to another hour, kept while it is the same, and wakes at frames and seeks', () => {
   let position = 10.2, made = 0;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { liveKey, valuesOf } from '../../charts/live.ts';
+import { liveKey } from '../../charts/live.ts';
+import { valuesOf } from '../../test-support/liveValues.ts';
 import { NOT_LIVE_CELL } from '../../dashboard/follow/liveCells.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { TableModel, TableRow, TooltipExtraRow } from '../../families/table/model.ts';

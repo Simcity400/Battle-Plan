@@ -29,25 +29,13 @@ test('every registered widget kind through the production host, half on a track 
   }, 240_000));
 });
 
-const STUBS: Record<string, string> = {
-  '/widgets/land-battles/CombatLogDetails.tsx': 'export default () => null;',
-  '/widgets/equipment-losses/lossesSource.ts': `export const stretchWindow = (_reply, window) => ({ ...window, since: null }); export const exactLossHour = () => true;
-    export const useLossHistory = () => ({ data: globalThis.__fixture.losses, retry() {}, onSummaryView() {}, onHover() {}, navigate() {}, exactAt: async () => undefined });`,
-  '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__fixture.groups, complete: true, retry() {} });',
-  '/charts/sunburst/Sunburst.tsx': 'export default () => null;',
-  '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
-};
-const stubs = { name: 'outside-widgets', enforce: 'pre' as const, transform(_code: string, id: string) {
-  return Object.entries(STUBS).find(([suffix]) => id.replaceAll('\\', '/').split('?')[0].endsWith(suffix))?.[1];
-} };
-
 const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<void>) => withNativePage('outside-widgets', '/ui/src/dashboard/outsideWidgets.dom.fixture.tsx',
-  page => page.stage('outside widgets', () => run(expression => page.evaluate(`window.outsideWidgets.${expression}`)), 120_000), [stubs]);
+  page => page.stage('outside widgets', () => run(expression => page.evaluate(`window.outsideWidgets.${expression}`)), 120_000));
 const outside = OUTSIDE.split(': ')[1];
 
 test('Equipment losses mounted at 99, before a country recorded 100–109, is outside the recording, and binds the country once the clock enters the track', () => onPage(async act => {
   const before = await act<string>("mount('losses', 99)");
   assert.ok(before.includes(outside) && !before.includes('Country unavailable'), `mounted at 99: ${before}`);
   const inside = await act<string>("seek('losses', 105)");
-  assert.ok(/Losses: /.test(inside) && !inside.includes('Country unavailable'), `at 105 the country recorded since 100 is bound and its losses are drawn: ${inside}`);
+  assert.ok(/Land combat losses/.test(inside) && !inside.includes('Country unavailable') && !inside.includes(outside), `at 105 the country recorded since 100 is bound and its losses are drawn: ${inside}`);
 }));
