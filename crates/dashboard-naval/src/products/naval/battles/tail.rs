@@ -1,0 +1,626 @@
+use super::battle_id;
+use dashboard_base::{
+    Source,
+    products::{
+        LoadContext, Product,
+        occurrences::{self, OccurrenceReply, OccurrenceSort},
+    },
+    queries::{self, country_ids::RunLinks},
+};
+use dashboard_follow::panel::Panel;
+use dashboard_query::{
+    Query,
+    identity::{Country, Holders},
+    log::occurrence::{Ask, Index, Occurrence, Order, PlacedGap, Role, Selection, SortKey},
+    series::{MissingSpan, ranked::GroupSelection},
+    timeline::Stretch,
+};
+use dashboard_text::metadata::check_cancel;
+use replay_columnar::manifest::Status;
+use replay_data::rows::{NavalResultObservationRow, TableId};
+use replay_lanes::lanes::{self, Cell, History, Keys, Step};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io,
+    sync::{Arc, PoisonError, atomic::AtomicBool},
+};
+#[cfg(any(test, feature = "export-types"))]
+use ts_rs::TS;
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NavalBattlesTailParams {
+    pub branch_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub from: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub to: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub countries: Option<Vec<Country>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub offset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub sort: Option<OccurrenceSort>,
+    pub limit: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum NavalBattleStatus {
+    Ongoing,
+    AttackerWon,
+    DefenderWon,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct NavalBattleLogRow {
+    pub key: String,
+    pub hour: i32,
+    pub detail_id: String,
+    pub detail_hour: Option<i32>,
+    pub province: Option<u32>,
+    pub countries: [Vec<u32>; 2],
+    pub countries_hour: [i32; 2],
+    pub read_hour: i32,
+    pub ships_sunk: [Option<u32>; 2],
+    pub ic_lost: [Option<f64>; 2],
+    pub ships: [Option<u32>; 2],
+    pub result: NavalBattleStatus,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct NavalBattlesTailReply {
+    pub branch_id: String,
+    pub total: String,
+    pub offset: String,
+    pub rows: Vec<NavalBattleLogRow>,
+    pub missing: Vec<PlacedGap>,
+    pub next_change: Option<i32>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(NavalBattlesTailReply);
+
+impl OccurrenceReply for NavalBattlesTailReply {
+    fn next_change(&self) -> Option<i32> {
+        self.next_change
+    }
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+}
+
+const JOINED: u8 = 4;
+const SHOWN: [u8; 4] = [
+    NavalBattleStatus::Ongoing as u8,
+    NavalBattleStatus::Unknown as u8,
+    NavalBattleStatus::AttackerWon as u8,
+    NavalBattleStatus::DefenderWon as u8,
+];
+const SORT_COLUMNS: &[&str] = &["shipsSunk", "icLost", "ships"];
+type Steps<T> = Vec<(i32, T)>;
+
+fn push<T: PartialEq>(steps: &mut Steps<T>, hour: i32, value: T) {
+    if steps.last().is_some_and(|(at, _)| *at == hour) {
+        steps.pop();
+    }
+    if steps.last().is_none_or(|(_, held)| *held != value) {
+        steps.push((hour, value));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Snapshot {
+    province: Option<u32>,
+    countries: [Vec<u32>; 2],
+    countries_hour: [Option<i32>; 2],
+    ships: [Option<u32>; 2],
+    sunk: [Option<u32>; 2],
+    result: NavalBattleStatus,
+    result_id: Option<u64>,
+    detail_hour: Option<i32>,
+}
+
+#[derive(Default)]
+struct Line {
+    key: String,
+    reads: Steps<Snapshot>,
+    joined: Option<i32>,
+}
+
+impl Line {
+    fn end_live(&mut self, hour: i32) {
+        if let Some((_, previous)) = self.reads.last()
+            && previous.result == NavalBattleStatus::Ongoing
+        {
+            let mut ended = previous.clone();
+            ended.result = NavalBattleStatus::Unknown;
+            ended.detail_hour = Some(hour - 1);
+            push(&mut self.reads, hour, ended);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Battle {
+    Live(u64, i32),
+    Result(u64, i32),
+}
+
+impl Battle {
+    fn date(self) -> i32 {
+        match self {
+            Self::Live(_, date) | Self::Result(_, date) => date,
+        }
+    }
+
+    fn key(self) -> String {
+        match self {
+            Self::Live(combat, first) => battle_id(combat, first),
+            Self::Result(id, _) => format!("result:{id}"),
+        }
+    }
+}
+
+fn number(cells: &[Cell], column: usize) -> Option<i64> {
+    match cells.get(column) {
+        Some(Cell::Number(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn count(cells: &[Cell], column: usize) -> Option<u32> {
+    number(cells, column)?.try_into().ok()
+}
+
+fn at(steps: &[Step], hour: i32) -> Option<&[Cell]> {
+    let i = steps.partition_point(|step| step.hour <= hour);
+    steps.get(i.checked_sub(1)?)?.cells.as_deref()
+}
+
+fn steps(history: &History, key: u128) -> &[Step] {
+    history.keys.binary_search_by_key(&key, |(k, _)| *k).ok().map_or(&[], |i| &history.keys[i].1)
+}
+
+fn members(history: &History, id: u128, shift: u32) -> &[(u128, Vec<Step>)] {
+    let first = history.keys.partition_point(|(key, _)| key >> shift < id);
+    let rest = &history.keys[first..];
+    &rest[..rest.partition_point(|(key, _)| key >> shift == id)]
+}
+
+fn edges(steps: &[Step], first: i32, last: i32, hours: &mut Vec<i32>) {
+    let from = steps.partition_point(|s| s.hour <= first);
+    hours.extend(steps[from..].iter().take_while(|s| s.hour <= last).map(|s| s.hour));
+}
+
+fn complete(history: &History, hour: i32) -> bool {
+    let at = history.statuses.partition_point(|span| span.last < hour);
+    history.statuses.get(at).is_some_and(|s| s.first <= hour && s.status == Status::Complete)
+}
+
+fn country(countries: &mut Vec<u32>, slot: Option<u32>) {
+    if let Some(slot) = slot
+        && !countries.contains(&slot)
+    {
+        countries.push(slot);
+    }
+}
+
+fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32, links: &RunLinks, battles: &History, provinces: &History, participants: &History) {
+    for (combat, battle) in &battles.keys {
+        let roster = members(participants, *combat, 33);
+        let places = steps(provinces, *combat);
+        for (i, step) in battle.iter().enumerate() {
+            let Some(cells) = &step.cells else { continue };
+            let Some(first_hour) = number(cells, 0).and_then(|v| i32::try_from(v).ok()) else {
+                continue;
+            };
+            let first = step.hour.max(span.first).max(first_hour);
+            let last = battle.get(i + 1).map_or(span.last, |s| s.hour - 1);
+            if first > last {
+                continue;
+            }
+            let line = lines.entry(Battle::Live(*combat as u64, first_hour)).or_default();
+            if line.reads.last().is_some_and(|(_, read)| read.result_id.is_some()) {
+                continue;
+            }
+            let mut hours = vec![first];
+            edges(places, first, last, &mut hours);
+            for (_, reads) in roster {
+                edges(reads, first, last, &mut hours);
+                let start = reads.partition_point(|s| s.hour <= first).saturating_sub(1);
+                for (j, read) in reads.iter().enumerate().skip(start).take_while(|(_, s)| s.hour <= last) {
+                    if let Some(owner) = read.cells.as_deref().and_then(|c| count(c, 1)) {
+                        let end = reads.get(j + 1).map_or(last, |s| last.min(s.hour - 1));
+                        hours.extend(links.within(owner, read.hour.max(first), end).skip(1).map(|(_, h, _)| h));
+                    }
+                }
+            }
+            let i = participants.statuses.partition_point(|s| s.last < first);
+            hours.extend(participants.statuses[i..].iter().take_while(|s| s.first <= last).map(|s| s.first.max(first)));
+            hours.sort_unstable();
+            hours.dedup();
+            for hour in hours {
+                if at(places, hour).is_none() && complete(provinces, hour) {
+                    line.end_live(hour);
+                    continue;
+                }
+                let mut ships = [complete(participants, hour).then_some(0); 2];
+                let mut countries = [Vec::new(), Vec::new()];
+                for (key, reads) in roster {
+                    let Some(cells) = at(reads, hour) else {
+                        continue;
+                    };
+                    let side = ((key >> 32) & 1) as usize;
+                    if let Some(n) = &mut ships[side] {
+                        match number(cells, 0) {
+                            Some(0) => {}
+                            Some(_) => *n += 1,
+                            None => ships[side] = None,
+                        }
+                    }
+                    country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
+                }
+                push(
+                    &mut line.reads,
+                    hour,
+                    Snapshot {
+                        province: at(places, hour).and_then(|v| count(v, 0)),
+                        ships,
+                        countries,
+                        countries_hour: [None; 2],
+                        sunk: [count(cells, 1), count(cells, 2)],
+                        result: NavalBattleStatus::Ongoing,
+                        result_id: None,
+                        detail_hour: None,
+                    },
+                );
+            }
+            if last < last_hour && !battle.get(i + 1).and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
+                line.end_live(last + 1);
+            }
+        }
+    }
+}
+
+fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLinks, results: &History, observations: &History, countries: &History) {
+    for (key, result) in &results.keys {
+        let observation = steps(observations, *key);
+        let lists = members(countries, *key, 40);
+        let mut linked = None;
+        for (i, step) in result.iter().enumerate() {
+            let Some(cells) = &step.cells else { continue };
+            let Some(date) = number(cells, 1).and_then(|h| i32::try_from(h).ok()) else {
+                continue;
+            };
+            let first = step.hour.max(date);
+            let last = result.get(i + 1).map_or(span.last, |s| s.hour - 1);
+            if first > last {
+                continue;
+            }
+            let mut hours = vec![first];
+            edges(observation, first, last, &mut hours);
+            for (_, reads) in lists {
+                edges(reads, first, last, &mut hours);
+            }
+            hours.sort_unstable();
+            hours.dedup();
+            for hour in hours {
+                let obs = at(observation, hour)
+                    .filter(|v| number(v, 0) == Some(i64::from(NavalResultObservationRow::OBSERVED)))
+                    .unwrap_or(&[]);
+                let result = Battle::Result(*key as u64, date);
+                if let (Some(combat), Some(start)) = (number(obs, 1), number(obs, 2).and_then(|h| i32::try_from(h).ok()))
+                    && combat != 0
+                    && start <= date
+                {
+                    linked = Some(Battle::Live(combat as u64, start));
+                    if let Some(earlier) = lines.get_mut(&result) {
+                        earlier.joined.get_or_insert(hour);
+                    }
+                }
+                let battle = linked.unwrap_or(result);
+                let mut sides = [Vec::new(), Vec::new()];
+                for (key, reads) in lists {
+                    let side = ((key >> 32) & 255) as usize;
+                    if let Some(list) = sides.get_mut(side)
+                        && at(reads, hour).is_some()
+                    {
+                        country(list, links.slot_at(*key as u32, date));
+                    }
+                }
+                let line = lines.entry(battle).or_default();
+                line.reads.truncate(line.reads.partition_point(|(at, _)| *at <= hour));
+                let countries_hour = std::array::from_fn(|i| {
+                    if !sides[i].is_empty() {
+                        return Some(date);
+                    }
+                    let (at, prior) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty())?;
+                    sides[i].clone_from(&prior.countries[i]);
+                    prior.countries_hour[i].or(Some(*at))
+                });
+                let status = match number(cells, 2) {
+                    Some(1) => NavalBattleStatus::AttackerWon,
+                    Some(2) => NavalBattleStatus::DefenderWon,
+                    _ => NavalBattleStatus::Unknown,
+                };
+                push(
+                    &mut line.reads,
+                    hour,
+                    Snapshot {
+                        province: count(cells, 0),
+                        countries: sides,
+                        countries_hour,
+                        ships: [count(obs, 3), count(obs, 5)],
+                        sunk: [count(obs, 4), count(obs, 6)],
+                        result: status,
+                        result_id: Some(*key as u64),
+                        detail_hour: Some(hour),
+                    },
+                );
+            }
+        }
+    }
+}
+
+fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Index<Line>> {
+    let recording = query.replay.recording();
+    let mut lines = BTreeMap::new();
+    let mut gaps: Vec<_> = query
+        .timeline
+        .unheld
+        .iter()
+        .map(|g| MissingSpan {
+            first_hour: g.first,
+            last_hour: g.last,
+            reason: g.reason.clone(),
+        })
+        .collect();
+    for &span in &query.timeline.stretches {
+        check_cancel(cancelled)?;
+        let absent = |table: TableId| recording.withheld_reason(table.index()).or_else(|| recording.predates(table.index()));
+        let history = |table, columns: &[usize]| {
+            if absent(table).is_some() {
+                Ok(History::default())
+            } else {
+                lanes::history(recording, span.run, table, columns, Keys::All, span.first, span.last)
+            }
+        };
+        for (table, reason) in [(TableId::NavalBattles, "Naval battle census incomplete"), (TableId::NavalResults, "Naval results incomplete")] {
+            let read = if absent(table).is_some() {
+                Vec::new()
+            } else {
+                lanes::complete_reads(recording, span.run, table, span.first, span.last)?
+            };
+            gaps.extend(
+                dashboard_land::products::division_log::unread(&read, span.first, span.last)
+                    .into_iter()
+                    .map(|(first_hour, last_hour)| MissingSpan {
+                        first_hour,
+                        last_hour,
+                        reason: absent(table).unwrap_or(reason).to_owned(),
+                    }),
+            );
+        }
+        let links = queries::links(source, span.run)?;
+        live_lines(
+            &mut lines,
+            span,
+            query.timeline.last,
+            &links,
+            &history(TableId::NavalBattles, &[0, 3, 4])?,
+            &history(TableId::NavalCombats, &[0])?,
+            &history(TableId::NavalCombatParticipants, &[0, 1])?,
+        );
+        result_lines(
+            &mut lines,
+            span,
+            &links,
+            &history(TableId::NavalResults, &[0, 1, 8])?,
+            &history(TableId::NavalResultObservations, &[0, 1, 3, 7, 9, 11, 13])?,
+            &history(TableId::NavalResultCountries, &[0])?,
+        );
+    }
+    let mut entries = Vec::with_capacity(lines.len());
+    for (battle, mut line) in lines {
+        let Some(&(observed, _)) = line.reads.first() else {
+            continue;
+        };
+        let mut states = Vec::new();
+        let mut sunk = Vec::new();
+        let mut ships = Vec::new();
+        let mut roles = Vec::new();
+        let total = |[a, b]: [Option<u32>; 2]| Some(i64::from(a?) + i64::from(b?));
+        for (at, read) in &line.reads {
+            push(&mut states, *at, read.result as u8);
+            push(&mut sunk, *at, total(read.sunk));
+            push(&mut ships, *at, total(read.ships));
+            roles.extend(read.countries.iter().flatten().map(|slot| Role { slot: Some(*slot), at: *at }));
+        }
+        if let Some(joined) = line.joined {
+            push(&mut states, joined, JOINED);
+        }
+        line.key = battle.key();
+        entries.push(Occurrence {
+            id: entries.len() as u128,
+            date: battle.date(),
+            observed,
+            kind: 0,
+            roles: roles.into(),
+            subjects: Box::default(),
+            states: states.into(),
+            sort_keys: [SortKey::dated_numbers(sunk), SortKey::number(None), SortKey::dated_numbers(ships)].into(),
+            text: Box::default(),
+            payload: line,
+        });
+    }
+    Index::new(entries, gaps, &[NavalBattleStatus::Ongoing as u8])
+}
+
+#[derive(Default)]
+struct Branches(HashMap<u64, Arc<Index<Line>>>);
+
+struct Prepared {
+    index: Arc<Index<Line>>,
+    selection: Option<Selection>,
+}
+
+fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &NavalBattlesTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+    let state = source.state::<Branches>();
+    let mut branches = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let index = match branches.0.entry(query.timeline.id) {
+        std::collections::hash_map::Entry::Occupied(e) => Arc::clone(e.get()),
+        std::collections::hash_map::Entry::Vacant(e) => Arc::clone(e.insert(Arc::new(scan(source, query, cancelled)?))),
+    };
+    drop(branches);
+    let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
+    Ok(Prepared { index, selection })
+}
+
+fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams, hour: i32) -> io::Result<NavalBattlesTailReply> {
+    let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
+    let (order, _) = occurrences::order(params.sort.as_ref(), SORT_COLUMNS)?;
+    let mut ask = Ask {
+        hour,
+        from: params.from,
+        to: params.to,
+        selection: prepared.selection.as_ref(),
+        subject: None,
+        kinds: None,
+        states: Some(&SHOWN),
+        search: None,
+        order,
+        live_first: matches!(order, Order::Date(_)),
+        offset,
+        limit,
+        chips: &[],
+    };
+    let gap_end = params.to.unwrap_or(i32::MAX);
+    let answer = prepared.index.ask_with_gap_end(holders, &ask, gap_end)?;
+    let mut visible_change: Option<i32> = None;
+    let rows = answer
+        .rows
+        .iter()
+        .map(|shown| {
+            let entry = prepared.index.get(shown.at);
+            let line = &entry.payload;
+            let mut next = |candidate: Option<i32>| {
+                visible_change = visible_change.into_iter().chain(candidate).min();
+            };
+            let partition = line.reads.partition_point(|(at, _)| *at <= hour);
+            let (at, read) = &line.reads[partition - 1];
+            next(line.reads.get(partition).map(|step| step.0));
+            let result = read.result;
+            NavalBattleLogRow {
+                key: line.key.clone(),
+                hour: entry.date,
+                province: read.province,
+                result,
+                detail_id: read.result_id.map_or_else(|| line.key.clone(), |id| format!("result:{id}")),
+                detail_hour: read.detail_hour,
+                ships_sunk: read.sunk,
+                ships: read.ships,
+                countries: read.countries.clone(),
+                countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
+                read_hour: *at,
+                ic_lost: [None; 2],
+            }
+        })
+        .collect();
+    let mut boundary = answer.next_change;
+    while let Some(candidate) = boundary.filter(|at| visible_change.is_none_or(|visible| *at < visible)) {
+        ask.hour = candidate;
+        let future = prepared.index.ask_with_gap_end(holders, &ask, gap_end)?;
+        if future.total != answer.total || future.rows != answer.rows || future.gaps != answer.gaps || future.unattributed != answer.unattributed {
+            break;
+        }
+        boundary = future.next_change;
+    }
+    let next_change = boundary.into_iter().chain(visible_change).min();
+    let warnings = (answer.unattributed > 0)
+        .then(|| format!("Battles without a recorded country for this filter: {}", answer.unattributed))
+        .into_iter()
+        .collect();
+    let reply = NavalBattlesTailReply {
+        branch_id: params.branch_id.clone(),
+        total: answer.total.to_string(),
+        offset: offset.to_string(),
+        rows,
+        missing: answer.gaps,
+        next_change,
+        warnings,
+    };
+    dashboard_base::products::check_reply_budget(&reply)?;
+    Ok(reply)
+}
+
+pub struct NavalBattlesTail;
+
+impl Product for NavalBattlesTail {
+    const KEY: &'static str = "naval-battles-tail";
+    const CONTENT_DEPENDENT: bool = false;
+    const INTERACTIVE: bool = true;
+    type Params = NavalBattlesTailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, sort, limit];
+    type Reply = NavalBattlesTailReply;
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![
+            NavalBattlesTailParams::decl(),
+            NavalBattlesTailReply::decl(),
+            NavalBattleLogRow::decl(),
+            NavalBattleStatus::decl(),
+        ]
+    }
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        params.countries.iter().flatten().try_for_each(dashboard_base::products::validate_country)
+    }
+
+    fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        check_cancel(cancelled)?;
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let hour = occurrences::cutoff(&query, params.hour)?;
+        let prepared = prepare(source, &query, load, params, cancelled)?;
+        reply(&prepared, &query.holders, params, hour)
+    }
+}
+
+pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    request.as_object_mut().ok_or("Invalid naval-battles-tail panel")?.remove("panel");
+    let params: NavalBattlesTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid naval-battles-tail panel: {error}"))?;
+    NavalBattlesTail::validate(&params)?;
+    let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
+    let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
+    let prepared = prepare(source, &query, load, &params, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let (first, last, holders) = (query.timeline.first, query.timeline.last, query.holders);
+    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+        check_cancel(cancelled)?;
+        if hour < first {
+            return Err(dashboard_core::invalid("The hour asked is before the branch"));
+        }
+        reply(&prepared, &holders, &params, hour.min(last))
+    }))
+}

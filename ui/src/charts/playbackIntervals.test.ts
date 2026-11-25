@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PlaybackIntervals, playbackRows, spanChanges } from './playbackIntervals.ts';
+import { PlaybackIntervals, spanChanges } from './playbackIntervals.ts';
 import { deepFreeze } from '../test-support/frozen.ts';
 
 test('playback intervals retain models until a recorded or computed display boundary', () => {
@@ -15,11 +15,6 @@ test('playback intervals retain models until a recorded or computed display boun
   assert.equal(reads, 2);
   assert.deepEqual(playback.at(101), first);
   assert.equal(reads, 3);
-});
-
-test('unchanged empty rows retain identity across irrelevant recorded changes', () => {
-  const playback = playbackRows([1, 2, 3], () => []);
-  assert.equal(playback.at(1), playback.at(2));
 });
 
 test('a count read at an hour holds over the span its rows show the same, and not past it', () => {

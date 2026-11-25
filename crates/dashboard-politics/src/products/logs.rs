@@ -1,6 +1,6 @@
 
 pub use dashboard_base::products::log_page::{
-    LogCaches, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, page, page_with, quiet_tail_missing, tail,
+    LogCaches, LogCell, LogFacetCountAsk, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, quiet_tail_missing, tail,
     tail_with,
 };
 
@@ -35,73 +35,6 @@ fn cell(held: &log::Cell) -> LogCell {
         log::Cell::List(bytes) => LogCell::List { bytes: dashboard_query::tile::base64(bytes) },
         log::Cell::Missing => LogCell::Missing,
         log::Cell::Unrecorded => LogCell::NotRecorded,
-    }
-}
-
-pub struct LogPage;
-
-impl Product for LogPage {
-    const KEY: &'static str = "log-page";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = LogPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        log,
-        facets,
-        from: Start,
-        to: End,
-        cursor,
-        pageSize,
-        columns,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = LogPageReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![CountrySpan::decl(), UnobservedSpan::decl(), FacetFilter::decl(), LogPageParams::decl(), LogCell::decl(), LogPageRow::decl(), LogPageReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
-    }
-
-    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let log = declared(&params.log)?;
-        let all: Vec<&'static str> = (0..log.table.field_count()).filter_map(|column| log.table.field_name(column)).collect();
-        let shown: Vec<usize> = match &params.columns {
-            None => (0..all.len()).collect(),
-            Some(names) => names.iter().map(|name| dashboard_declare::field(log.table, name)).collect::<io::Result<_>>()?,
-        };
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
-        let caches = dashboard_base::queries::log_caches(source);
-        let (page, rows, missing) = page_with(&query, params, Some(&caches), |paged, tag| LogPageRow {
-            hour: paged.row.hour,
-            key: paged.row.key.to_string(),
-            ordinal: paged.ordinal.to_string(),
-            country: tag.cloned(),
-            own_ordinal: tagged.then(|| paged.own.to_string()),
-            cells: shown.iter().map(|&column| paged.row.cells.get(column).map_or(LogCell::NotRecorded, cell)).collect(),
-        })?;
-        Ok(LogPageReply {
-            branch_id: params.branch_id.clone(),
-            log: params.log.clone(),
-            columns: shown.iter().map(|&column| all[column].to_owned()).collect(),
-            first_ordinal: page.first.to_string(),
-            total: page.total().to_string(),
-            cursor: page.cursor().map(|cursor| cursor.to_string()),
-            rows,
-            missing,
-            warnings: Vec::new(),
-        })
     }
 }
 
@@ -175,7 +108,7 @@ impl Product for LogTail {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![LogFacetCountAsk::decl(), dashboard_base::products::occurrences::OccurrenceCount::decl(), LogTailParams::decl(), LogTailReply::decl()]
+        vec![CountrySpan::decl(), UnobservedSpan::decl(), FacetFilter::decl(), LogCell::decl(), LogPageRow::decl(), LogFacetCountAsk::decl(), dashboard_base::products::occurrences::OccurrenceCount::decl(), LogTailParams::decl(), LogTailReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

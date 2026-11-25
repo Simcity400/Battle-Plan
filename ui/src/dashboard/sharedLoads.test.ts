@@ -16,7 +16,7 @@ function transport() {
   return { client, asked };
 }
 const source = { id: 'shared-loads', revision: '1' } as DashboardSource;
-const request = (window: number): ProductRequest => (productRequest({ sourceId: source.id, revision: source.revision, product: 'naval-battles', params: { branchId: '1', window } }));
+const request = (limit: number): ProductRequest => (productRequest({ sourceId: source.id, revision: source.revision, product: 'naval-battles-tail', params: { branchId: '1', limit } }));
 const final = (value: number) => ({ value });
 
 test('mounts asking the same product share one read, and each is told its reply', async () => {

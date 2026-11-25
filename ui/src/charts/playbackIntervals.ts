@@ -40,10 +40,3 @@ export class PlaybackIntervals<T> {
 export function* spanChanges(spans: Iterable<Readonly<{ firstHour: number; lastHour: number }>>): Generator<number> {
   for (const span of spans) { yield span.firstHour; yield span.lastHour + 1; }
 }
-
-const NO_ROWS: ReadonlyArray<never> = [];
-export function playbackRows<T>(hours: Iterable<number>, read: (hour: number) => ReadonlyArray<T>,
-  bounds?: (rows: ReadonlyArray<T>, hour: number) => PlaybackBounds): PlaybackIntervals<ReadonlyArray<T>> {
-  return new PlaybackIntervals(hours, hour => { const rows = read(hour); return rows.length ? rows : NO_ROWS; }, bounds);
-}
-

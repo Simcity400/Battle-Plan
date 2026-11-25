@@ -192,6 +192,7 @@ export interface TableRow {
   readonly initiallyOpen?: boolean;
   readonly muted?: boolean;
   readonly tooltipTitle?: string;
+  readonly tooltipScrollId?: string;
   readonly tooltipExtra?: readonly TooltipExtraRow[] | (() => readonly TooltipExtraRow[] | undefined);
   readonly tooltipNote?: string;
   readonly tooltipAction?: string;
@@ -1280,6 +1281,7 @@ export function deriveRowTooltip(
     rows,
     ...(firstResolved?.art && firstCell?.country !== undefined ? { countryFlag: tooltipFlag(firstResolved.art) } : {}),
     ...(noteParts.length ? { note: noteParts.join(' \u00b7 ') } : {}),
+    ...(row.tooltipScrollId ? { scrollable: true, scrollId: row.tooltipScrollId } : {}),
     ...(row.tooltipDetail ? { detail: row.tooltipDetail } : {}),
   };
 }

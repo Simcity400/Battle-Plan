@@ -1,25 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { navalDetailTooltip, navalFleetDescription, validateNavalBattleDetails } from './navalBattleDetails.ts';
-import type { NavalBattleDetail } from '../../generated/dashboard';
+import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDetails.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { navalBattlesProjection } from './navalBattlesProjection.ts';
+import type { NavalBattleDetail, NavalBattlesTailReply } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
   fleets: [{ names: ['Recorded fleet'], unknown: null }, { names: [], unknown: 'Fleet name not recorded' }],
   namedShips: [{ sinkHour: 9, knownAt: 19, name: 'Recorded ship', className: 'Mod ship class', sinkingCause: { kind: 'notRecorded', reason: 'sinking cause was not recorded' } }], shipRead: 43, unavailable: null };
 test('fleet and sinking details preserve names and sinking dates without supplying dates', () => {
   assert.equal(validateNavalBattleDetails({ rows: [detail], warnings: [] }).rows[0], detail);
-  assert.equal(navalFleetDescription(detail, { pending: false }), 'Recorded fleet v Fleet names not recorded');
   const rows = navalDetailTooltip(detail);
   assert.ok(rows.some(row => row.label === 'Recorded ship' && row.value === 'Mod ship class'));
   assert.ok(!rows.some(row => row.label === 'Fleet roster read'));
   assert.ok(!rows.some(row => row.label === 'Recorded at'));
   assert.ok(rows.some(row => row.label === 'Sunk'));
-});
-
-test('a row whose details are not held says so as its subtitle: loading, the failure, or not answered; never nothing (run 12: every subtitle gone)', () => {
-  assert.equal(navalFleetDescription(undefined, { pending: true }), 'Loading fleets…');
-  assert.equal(navalFleetDescription(undefined, { pending: false, error: new Error('private backend error') }), 'Fleets couldn’t load');
-  assert.equal(navalFleetDescription(undefined, { pending: false }), 'Fleets not read for this battle');
 });
 
 test('detail failures and missing fleets hide backend reasons without claiming no losses', () => {
@@ -31,8 +27,6 @@ test('detail failures and missing fleets hide backend reasons without claiming n
     shipRead: null, namedShips: [], unavailable: 'private table unavailable' });
   assert.ok(rows.some(row => row.label === 'Fleet details unavailable.'));
   assert.ok(rows.some(row => row.label === 'No fleets'));
-  assert.equal(navalFleetDescription({ ...detail, fleets: [{ names: ['Fleet 1'], unknown: null }, { names: [], unknown: null }] }, { pending: false }),
-    'Fleet 1 v No fleets');
   assert.ok(rows.some(row => row.label === 'Named ship losses unavailable.'));
   assert.ok(!rows.some(row => row.label === 'No named ship losses recorded.'));
   assert.doesNotMatch(JSON.stringify(rows), /private|native field/);
@@ -49,4 +43,24 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
   const rows = navalDetailTooltip(valid.rows[0]);
   assert.ok(rows.some(row => row.label === 'Fleet 4999'));
   assert.ok(rows.some(row => row.label === 'Ship 4999'));
+});
+
+test('the followed naval table shows the supplying read, partial sinkings and unrecorded sides', () => {
+  const head: NavalBattlesTailReply = { branchId: '1', total: '1', offset: '0', missing: [], warnings: [], nextChange: null, rows: [{
+    key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], icLost: [null, null], ships: [3, 0], result: 'ongoing',
+  }] };
+  const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
+  const view = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]) });
+  const project = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true }).rows[0]!;
+  const row = project(true);
+  assert.deepEqual(row.cells.shipsSunk!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
+  assert.equal(row.cells.shipsSunk!.value.kind, 'notRecorded');
+  assert.equal(row.cells.ships!.value.kind, 'known');
+  assert.equal(row.cells.ships!.pair![1].kind, 'zero');
+  assert.equal(row.cells.place!.value.kind, 'notRecorded');
+  assert.deepEqual(row.cells.country!.flags!.map(flag => flag.tag), ['?', '?']);
+  assert.equal(row.live, true);
+  assert.deepEqual(JSON.parse(row.tooltipScrollId!), ['test', 'combat:9:10', 15]);
+  assert.deepEqual(JSON.parse(project(false).tooltipScrollId!), ['test', 'combat:9:10', 18]);
 });

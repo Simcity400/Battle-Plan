@@ -328,15 +328,14 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
           return null;
         }
         const card = decisionCard(occ);
-        const first = card?.occurrence.edges[0]?.row;
         const resolved = decisionAt(
-          { key: rawRow.key, id: occ.id, hour: first?.hour ?? rawRow.hour, revealedHour: first?.readHour ?? rawRow.hour, by: false, item: card },
+          card,
           asOf,
           options.breaks,
         );
         if (!resolved) return null;
         const recorded = rawRow.status ? RECORDED_STATUS[rawRow.status] : null;
-        const effective = recorded ? { ...resolved.item, status: recorded } : resolved.item;
+        const effective = recorded ? { ...resolved, status: recorded } : resolved;
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : effective.status === 'active';
         const built = buildDecisionRow(readView, effective, live, options.artwork, boundary);
         if (asOf === hour && built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
