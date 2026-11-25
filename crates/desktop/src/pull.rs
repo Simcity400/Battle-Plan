@@ -1,5 +1,8 @@
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::{
+    collections::HashSet,
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 use tauri::{
     UriSchemeResponder,
     http::{HeaderValue, Request, Response, StatusCode, header},
@@ -12,13 +15,14 @@ pub trait Outbox: Default {
 
 pub struct Asks<O, R> {
     session: Option<String>,
+    replaced: HashSet<String>,
     parked: Option<R>,
     pub outbox: O,
 }
 
 impl<O: Default, R> Default for Asks<O, R> {
     fn default() -> Self {
-        Self { session: None, parked: None, outbox: O::default() }
+        Self { session: None, replaced: HashSet::new(), parked: None, outbox: O::default() }
     }
 }
 
@@ -38,6 +42,10 @@ fn session_key(session: &str) -> Option<(&str, u64)> {
     (!page.is_empty()).then_some((page, seq.parse::<u64>().ok()?))
 }
 
+fn page(session: &str) -> &str {
+    session_key(session).map_or(session, |(page, _)| page)
+}
+
 fn is_older_session(incoming: &str, current: &str) -> bool {
     matches!((session_key(incoming), session_key(current)), (Some((p1, s1)), Some((p2, s2))) if p1 == p2 && s1 < s2)
 }
@@ -53,11 +61,14 @@ impl<O: Outbox, R> Asks<O, R> {
     }
 
     pub fn ask(&mut self, session: String, asker: R) -> Result<Vec<Answer<R>>, R> {
-        if self.session.as_deref().is_some_and(|current| is_older_session(&session, current)) {
+        if self.replaced.contains(page(&session)) || self.session.as_deref().is_some_and(|current| is_older_session(&session, current)) {
             return Err(asker);
         }
         let mut answers: Vec<Answer<R>> = self.parked.take().map(|replaced| (replaced, Vec::new())).into_iter().collect();
         if self.session.as_deref() != Some(session.as_str()) {
+            if let Some(previous) = self.session.as_deref().map(page).filter(|&previous| previous != page(&session)) {
+                self.replaced.insert(previous.to_owned());
+            }
             self.outbox.restart(&session);
             self.session = Some(session);
             answers.push((asker, Vec::new()));
@@ -258,6 +269,11 @@ mod tests {
         assert_eq!((asker, lengths(&body)), (1, vec![4]));
         assert_eq!(asks.ask("page2:1".into(), 2), Ok(vec![(2, Vec::new())]), "a reloaded page can still take over");
         assert_eq!(asks.outbox.restarts, 2);
+        assert_eq!(asks.ask("page2:1".into(), 3), Ok(Vec::new()));
+        assert_eq!(asks.ask("page1:3".into(), 4), Err(4), "a late ask from the replaced page is refused, whatever its sequence");
+        assert_eq!(asks.outbox.restarts, 2, "and never restarts the stream");
+        asks.outbox.held.push(vec![0; 5]);
+        assert_eq!(asks.offered().map(|(asker, body)| (asker, lengths(&body))), Some((3, vec![5])), "the live page keeps its held ask and its stream");
     }
 
     #[test]
