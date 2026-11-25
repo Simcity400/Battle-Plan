@@ -12,10 +12,6 @@ export function factionNameAt(faction: Pick<FactionGroup, 'name' | 'nameReason' 
   return run ? { name: run.name, reason: run.reason } : { name: null, reason: 'Not recorded' };
 }
 
-export function factionNameLabel(faction: Pick<FactionGroup, 'name' | 'nameReason' | 'names'>, hour?: number, override?: string): string {
-  return factionNameAt(faction, hour, override).name ?? UNNAMED_FACTION;
-}
-
 export function factionChoiceLabel(faction: Pick<FactionGroup, 'name' | 'nameReason' | 'names'>, hour?: number, override?: string): string {
   return factionNameAt(faction, hour, override).name ?? faction.name ?? UNNAMED_FACTION;
 }

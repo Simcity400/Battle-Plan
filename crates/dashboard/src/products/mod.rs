@@ -7,7 +7,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_politics::registrations::POLITICS_ELECTIONS_NEXTELECTIONS,
     dashboard_world::registrations::TERRITORY_TERRITORYSHARE,
     dashboard_world::registrations::TERRITORY_TERRITORYBREAKDOWN,
-    dashboard_wars::registrations::FACTIONS_FACTIONROSTERS,
     dashboard_wars::registrations::FACTIONS_FACTIONTOTALSAT,
     dashboard_world::registrations::SCALARS_GAMESCORE,
     dashboard_world::registrations::SCALARS_NUCLEARARSENAL,

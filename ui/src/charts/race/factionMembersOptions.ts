@@ -2,7 +2,7 @@ import { breakdownOption, DRILL_OPTION } from '../drill/drillState.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { OptionField } from '../../dashboard/options';
 
-export const FACTION_MEMBERS = { id: 'members', label: 'Members' };
+const FACTION_MEMBERS = { id: 'members', label: 'Members' };
 
 export const factionMemberOptions: readonly OptionField[] = [
   breakdownOption([FACTION_MEMBERS], 'Faction totals'),

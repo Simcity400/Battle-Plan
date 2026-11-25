@@ -127,11 +127,11 @@ function formatCountryReading(reading: KnownHeadReading, format: CountryLinesSpe
   return formatCountryValue(reading.value, format, digits);
 }
 
-export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {
+export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {
   readonly projection: TimeChartProjection<CountryLinesOptions>;
   readonly declaration: TimeChartWidgetDeclaration<CountryLinesOptions, TAux>;
 } {
-  const projection = registerFamilyProjection<TimeChartProjection<CountryLinesOptions>>({
+  const projection: TimeChartProjection<CountryLinesOptions> = {
     kind: spec.kind,
     family: 'time-chart',
     variant: 'line',
@@ -283,7 +283,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         auditRows: readings.map(([row, reading]) => auditReading(row, reading, format)),
       };
     },
-  }, spec.view);
+  };
 
   const declaration: TimeChartWidgetDeclaration<CountryLinesOptions, TAux> = {
     family: 'time-chart',
@@ -430,4 +430,13 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
     },
   };
   return { projection, declaration };
+}
+
+export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {
+  readonly projection: TimeChartProjection<CountryLinesOptions>;
+  readonly declaration: TimeChartWidgetDeclaration<CountryLinesOptions, TAux>;
+} {
+  const built = buildCountryLinesView(spec);
+  const projection = registerFamilyProjection(built.projection, spec.view);
+  return { projection, declaration: { ...built.declaration, projection } };
 }

@@ -1,5 +1,3 @@
-import { usWhole } from '../charts/numberFormat.ts';
-
 export type TerritoryMeasure = 'states' | 'provinces' | 'victoryPoints' | 'area';
 export type TerritoryRule = 'controlled' | 'owned' | 'occupied';
 
@@ -24,10 +22,6 @@ export function ruleOf(value: unknown): TerritoryRule {
 
 export function territorySeriesMeasure(measure: TerritoryMeasure, rule: TerritoryRule): string {
   return `${rule}${measure[0].toUpperCase()}${measure.slice(1)}`;
-}
-
-export function formatTerritory(value: number): string {
-  return usWhole.format(value);
 }
 
 export function territoryNote(measure: TerritoryMeasure): string | undefined {

@@ -255,6 +255,9 @@ impl Ranking {
             if let Some(old) = self.slots.remove(&slot) { self.sorted.remove(&old); }
             self.unknown.remove(&slot);
             let Some(key) = cells.key(slot) else { continue };
+            if series.skips_row(key) {
+                continue;
+            }
             let at = tags.by_key.get(&key).copied();
             if at.is_none() && !(*population && unnamed_slot(series, key).is_some()) {
                 if *population {
@@ -534,6 +537,9 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             ranked.clear();
             for slot in cells.rows() {
                 let Some(key) = cells.key(slot) else { continue };
+                if series.skips_row(key) {
+                    continue;
+                }
                 let at = match tags.by_key.get(&key) {
                     Some(&at) => at,
                     None if *population && unnamed_slot(series, key).is_some() => UNNAMED,

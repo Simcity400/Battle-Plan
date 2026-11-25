@@ -30,37 +30,6 @@ fn measure_of(kind: &str, measure: &str) -> Result<(&'static Series, &'static Me
     Ok((series, series.measure(measure).ok_or("Unknown faction measure")?))
 }
 
-pub struct FactionRosters;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FactionRostersParams {
-    pub branch_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FactionRoster {
-    #[doc = " The faction's recorded id."]
-    pub id: String,
-    #[doc = " Its members at the hour, by tag, ascending."]
-    pub members: Vec<String>,
-    #[doc = " Why its roster is not known whole at the hour: its total is not known then."]
-    pub missing: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FactionRostersReply {
-    pub factions: Vec<FactionRoster>,
-    #[doc = " Why no roster is known at this hour."]
-    pub missing: Option<String>,
-    pub warnings: Vec<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +54,7 @@ pub struct FactionLinesReply {
     pub warnings: Vec<String>,
 }
 
-dashboard_base::reply_warnings!(FactionRostersReply, FactionLinesReply);
+dashboard_base::reply_warnings!(FactionLinesReply);
 
 struct Rosters {
     members: BTreeMap<u64, BTreeSet<u32>>,
@@ -119,65 +88,6 @@ fn rosters(frame: &DecodedFrame) -> Result<Rosters, String> {
         }
     }
     Ok(out)
-}
-
-pub fn rosters_at(frame: &DecodedFrame, tags: &HashMap<u32, (&str, u32)>) -> FactionRostersReply {
-    let empty = |missing: String| FactionRostersReply { factions: Vec::new(), missing: Some(missing), warnings: Vec::new() };
-    let rosters = match rosters(frame) {
-        Ok(rosters) if rosters.unread => return empty("Faction memberships were not read at this hour".to_owned()),
-        Ok(rosters) => rosters,
-        Err(reason) => return empty(format!("Faction memberships are not known at this hour: {reason}")),
-    };
-    let factions = rosters
-        .members
-        .iter()
-        .map(|(id, slots)| {
-            let mut missing = rosters.incomplete.contains(id).then(|| "Its roster was not read whole at this hour".to_owned());
-            let mut members: Vec<String> = Vec::with_capacity(slots.len());
-            for slot in slots {
-                match tags.get(slot) {
-                    Some(&(tag, _)) => members.push(tag.to_owned()),
-                    None if missing.is_none() => missing = Some("A member's country is not known at this hour".to_owned()),
-                    None => {}
-                }
-            }
-            members.sort_unstable();
-            FactionRoster { id: id.to_string(), members, missing }
-        })
-        .collect();
-    FactionRostersReply { factions, missing: None, warnings: Vec::new() }
-}
-
-impl AtHour for FactionRosters {
-    const KEY: &'static str = "faction-rosters";
-    const TITLE: &'static str = "Faction rosters";
-    const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
-    type Params = FactionRostersParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
-    type Reply = FactionRostersReply;
-    type Context = ();
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![FactionRostersParams::decl(), FactionRoster::decl(), FactionRostersReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
-    }
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![TableId::GroupSpans, TableId::Groups]
-    }
-
-    fn context(_source: &Source, _load: &LoadContext) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, ()>) -> io::Result<Self::Reply> {
-        Ok(rosters_at(frame, &slot_tags(at.holders, frame.hour)))
-    }
 }
 
 pub struct FactionLines;
