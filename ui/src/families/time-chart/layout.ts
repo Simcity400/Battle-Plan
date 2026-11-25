@@ -445,6 +445,7 @@ export function layoutTimeChart(
 
   let yLo: number;
   let yHi: number;
+  const wholeAxis = model.yAxis.format === 'number' && model.yAxis.decimals === 0;
   const fullPercent = !model.view?.y && !model.yAxis.fixed && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
   const logAsked = model.yAxis.log === true && !model.view?.y && !model.yAxis.fixed;
   const logShown = logAsked && dataMin > 0 && dataMax >= dataMin;
@@ -462,7 +463,8 @@ export function layoutTimeChart(
     yHi = model.yAxis.max != null && model.yAxis.max > yLo ? model.yAxis.max : Math.max(dataMax * 1.08, yLo * 10);
   } else if (dataMin <= dataMax) {
     const autoLo = model.yAxis.min != null ? model.yAxis.min : Math.min(0, dataMin);
-    const padTop = Math.max(Math.abs(dataMax - Math.min(0, autoLo)) * 0.08, 1e-6);
+    const span = Math.abs(dataMax - Math.min(0, autoLo));
+    const padTop = Math.max(span * 0.08, wholeAxis && span === 0 ? 1 : 1e-6);
     const autoHi = model.yAxis.max != null ? model.yAxis.max : Math.max(0, dataMax) + padTop;
     const negPad = autoLo < 0 ? Math.max(Math.abs(autoLo) * 0.12, 1) : 0;
     yLo = model.yAxis.min != null ? model.yAxis.min : autoLo - negPad;
@@ -476,10 +478,10 @@ export function layoutTimeChart(
   const yTicks = model.yAxis.ticks
     ? [...model.yAxis.ticks]
     : logShown
-      ? thinLogTicks(logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
+      ? thinLogTicks(wholeAxis ? logTicks(Math.max(1, yLo), yHi).filter(Number.isInteger) : logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
       : model.yAxis.fixed || fullPercent
-      ? linearTicks(yLo, yHi, small ? 2 : 4)
-      : linearTicks(yLo, yHi, small ? 3 : 5);
+      ? linearTicks(yLo, yHi, small ? 2 : 4, wholeAxis)
+      : linearTicks(yLo, yHi, small ? 3 : 5, wholeAxis);
 
   let maxYLabelW = 0;
   for (const t of yTicks) {

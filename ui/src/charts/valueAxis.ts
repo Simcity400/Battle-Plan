@@ -1,18 +1,21 @@
 
-export function niceStep(span: number, count = 5): number {
+export function niceStep(span: number, count = 5, whole = false): number {
   if (!(span > 0) || !Number.isFinite(span)) return 1;
   const raw = span / Math.max(1, count);
   const power = 10 ** Math.floor(Math.log10(raw));
   const fraction = raw / power;
-  return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10) * power;
+  const step = (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10) * power;
+  if (!whole) return step;
+  if (step < 1) return 1;
+  return Number.isInteger(step) ? step : 5 * power;
 }
 
-export function linearTicks(min: number, max: number, count = 5): number[] {
-  if (!(max > min)) return Number.isFinite(min) ? [min] : [];
-  const step = niceStep(max - min, count);
+export function linearTicks(min: number, max: number, count = 5, whole = false): number[] {
+  if (!(max > min)) return Number.isFinite(min) ? (whole ? [Math.round(min)] : [min]) : [];
+  const step = niceStep(max - min, count, whole);
   const start = Math.ceil(min / step - 1e-9);
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(Math.floor(max / step) + 1)) return [min, max];
-  const decimals = Math.min(100, exactDecimal(step).scale);
+  const decimals = whole ? 0 : Math.min(100, exactDecimal(step).scale);
   const ticks: number[] = [];
   for (let index = start; index * step <= max + step * 1e-9 && ticks.length < 1000; index++) ticks.push(Number((index * step).toFixed(decimals)));
   return ticks;
