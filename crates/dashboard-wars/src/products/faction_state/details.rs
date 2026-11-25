@@ -243,6 +243,14 @@ impl DetailContent {
     pub(super) fn catalogue(&self) -> Result<&Catalogue, &String> {
         self.catalogue.as_deref()
     }
+
+    pub(super) fn naming(&self) -> &ResourceNaming {
+        &self.naming
+    }
+
+    pub(super) fn art(&self) -> &Arc<Art> {
+        &self.art
+    }
 }
 
 pub(super) fn goals_only(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, filter: GoalFilter, at: &At<'_, DetailContent>) -> io::Result<FactionDetailReply> {

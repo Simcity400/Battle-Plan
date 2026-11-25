@@ -19,14 +19,10 @@ import { recordedPanelRows } from '../draw/panels/views.ts';
 import { asFailure, RefusedError } from './queryError.ts';
 import { restartPipeline, type Pipeline } from './follow/pipeline.ts';
 import { coverageOf, useReadsRegion, type ReadCoverage } from './widgetTime.ts';
-import { axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
+import { axisHour, regionFollows, type ParamsFor, type Region } from './regionTime.ts';
 import type { Gate } from './regionGate';
 import { forwardRequest, type DeclaredProduct } from './request.ts';
 import { holdElement } from '../draw/bitmapSurface.ts';
-
-export function headRead(region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]): { follows: boolean; hourAt: (axis: AxisHour) => TrackHour | null } {
-  return { follows: regionFollows(region), hourAt: axis => regionHour(region, track, tracks, axis) };
-}
 
 export const headKey = (widgetKey: string, offset: number, region: Pick<Region, 'action'>) =>
   `${widgetKey}|${offset}${region.action.kind === 'spec' ? '' : region.action.kind === 'at' ? '|detail' : '|follow'}`;
