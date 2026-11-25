@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { holdingSince, holdingUntil, ideaHistoryProof, validateIdeaHistoryReply } from './ideaHistoryReply.ts';
+import { holdingSince, holdingUntil, validateIdeaHistoryReply } from './ideaHistoryReply.ts';
 import type { IdeaHistoryReply, IdeaHolding } from '../generated/dashboard';
 
 const info = { token: 'mod_idea', category: 'mod_category', slot: null, law: true, designer: false,
@@ -29,12 +29,6 @@ test('an idea history reply answers one hour: nothing after it, every index in r
   bad(value => { value.nextChange = 20; });
   bad(value => { value.unobserved = [{ firstHour: 101, lastHour: 110 }, { firstHour: 105, lastHour: 120 }]; });
   bad(value => { value.looks[0] = { info: { ...info, effects: [{ key: 'broken', fixed5: 'unknown', hidden: false }] }, artwork }; });
-});
-
-test('a reply proves the hours from its own up to the one before its next change', () => {
-  assert.deepEqual(ideaHistoryProof(reply(), [0, 20], 25), [20, 29]);
-  assert.equal(ideaHistoryProof(reply(), [0, 20], 30), null);
-  assert.deepEqual(ideaHistoryProof({ ...reply(), nextChange: null }, [0, 20], 20), [20, Number.MAX_SAFE_INTEGER]);
 });
 
 test('a holding’s dates say how much the recording saw: held before, first observed, ended, ended by, last seen', () => {

@@ -4,7 +4,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
+import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLaneRun, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
@@ -20,6 +20,7 @@ export const SUPREMACY_TOP_DEFAULT = 7;
 export interface SupremacyOptions {
   readonly viewer: string | null;
   readonly surface: string;
+  readonly historyStart: number;
   readonly tiles: number;
 }
 
@@ -228,11 +229,8 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
   if (refused) return emptyLanes(hour, { refused });
   const now = readView.panel<NavalSupremacyReply>('now');
   if (!now || !options.surface || now.lastHour > hour) return emptyLanes(hour, {});
-  const tiles: NavalSupremacyReply[] = [];
-  for (const name of dayHistoryNames(options.tiles)) {
-    const tile = readView.panel<NavalSupremacyReply>(name);
-    if (tile && tile.lastHour < now.firstHour) tiles.push(tile);
-  }
+  const tiles = closedDayTiles<NavalSupremacyReply>(readView, options.tiles, options.historyStart, now.firstHour);
+  if (!tiles) return emptyLanes(hour, { waiting: true });
   const look = lookOf(readView, now, options);
   const through = Math.min(hour, now.validThrough);
   const held = tiles.map(tile => tileLanes(tile, `${options.surface}|${look.contested}|${datedSignature(look, tile.firstHour, tile.lastHour)}`, look));
@@ -294,16 +292,14 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
   const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...rankMissing } = regions;
   const entries = dayTileEntries(ctx, {
     product: 'naval-supremacy',
+    span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
     now: {
       params,
       coverage: { mode: 'population', form: 'top', limit: top },
-      span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
-      validThrough: data => (data as NavalSupremacyReply | undefined)?.validThrough ?? null,
     },
     tile: {
       params: { ...base, ...rankMissing },
       coverage: { mode: 'population', form: 'all' },
-      span: (params, first, last) => ({ ...params, firstHour: first, lastHour: last }),
     },
   });
   return {
@@ -331,7 +327,7 @@ export const supremacySharesDeclaration: BarsWidgetDeclaration<SupremacyOptions>
   family: 'bars',
   sources: ctx => supremacySources(ctx, true),
   projection: supremacySharesProjection,
-  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra?.surface ?? '', tiles: 0 }),
+  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra?.surface ?? '', historyStart: ctx.branch.firstHour, tiles: 0 }),
 };
 
 export const supremacyTimelineDeclaration: HeatLanesWidgetDeclaration<SupremacyOptions> = {
@@ -339,5 +335,5 @@ export const supremacyTimelineDeclaration: HeatLanesWidgetDeclaration<SupremacyO
   family: 'heat-lanes',
   sources: ctx => supremacySources(ctx, false),
   projection: supremacyTimelineProjection,
-  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra.surface, tiles: dayTileCount(ctx.branch) }),
+  projectionOptions: (ctx, extra) => ({ viewer: ctx.countryTag, surface: extra.surface, historyStart: ctx.staticSpan?.[0] ?? ctx.branch.firstHour, tiles: dayTileCount(ctx.branch) }),
 };

@@ -27,7 +27,7 @@ export interface WidgetHeaderProps {
   readOnly?: boolean;
   active?: boolean;
   activeSwitch: DynamicViewSwitch | null;
-  hasBodyState: boolean;
+  hasBodyState?: boolean;
   readingBadge?: string | null;
   summarySlotRef: (element: HTMLSpanElement | null) => void;
   countrySlotRef: (element: HTMLSpanElement | null) => void;
@@ -121,12 +121,12 @@ export default function WidgetHeader({
       return;
     }
     const inspect = () => {
-      const next = headerSlotElement.childNodes.length > 0;
+      const next = headerSlotElement.childNodes.length > 0 && !headerSlotElement.hasAttribute('data-body-state');
       setHasSummaryContent(previous => previous === next ? previous : next);
     };
     inspect();
     const observer = new MutationObserver(inspect);
-    observer.observe(headerSlotElement, { childList: true });
+    observer.observe(headerSlotElement, { childList: true, attributes: true, attributeFilter: ['data-body-state'] });
     return () => observer.disconnect();
   }, [headerSlotElement]);
 

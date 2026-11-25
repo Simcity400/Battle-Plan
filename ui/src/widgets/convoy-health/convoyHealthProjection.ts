@@ -1,7 +1,7 @@
 import { CHART_MEASURE_COLOURS, CONVOY_EFFICIENCY_STOPS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import { dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
+import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import {
   spanIndexAt,
@@ -26,6 +26,7 @@ export interface ConvoyProjectionOptions {
   readonly view: ConvoyView;
   readonly surface: string;
   readonly country: string | null;
+  readonly historyStart: number;
   readonly tiles: number;
 }
 
@@ -327,11 +328,8 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
   if (refused) return emptyModel(hour, { refused });
   const now = readView.panel<ConvoyHealthReply>('now');
   if (!now || !options.surface || now.lastHour > hour || now.view !== options.view) return emptyModel(hour, {});
-  const tiles: ConvoyHealthReply[] = [];
-  for (const name of dayHistoryNames(options.tiles)) {
-    const tile = readView.panel<ConvoyHealthReply>(name);
-    if (tile && tile.view === now.view && tile.lastHour < now.firstHour) tiles.push(tile);
-  }
+  const tiles = closedDayTiles<ConvoyHealthReply>(readView, options.tiles, options.historyStart, now.firstHour);
+  if (!tiles || tiles.some(tile => tile.view !== now.view)) return emptyModel(hour, { waiting: true });
   const through = Math.min(hour, now.validThrough);
   const built = now.view === 'regions' ? regionRows(readView, tiles, now, through, options.surface) : tradeRows(tiles, now, through, options.surface);
   const rows = built.map(item => item.row);
@@ -380,28 +378,26 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
     if (!ctx.countryTag) return { owner: `convoy-health:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in widget settings.' };
     const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : CONVOY_TOP_DEFAULT;
     const regions: Record<string, unknown> = view === 'regions' ? regionParams(readRegionChoice(ctx.options.regions)) : {};
-    const params = { branchId: ctx.branch.id, view, country: countryFromKey(ctx.countryTag), from: null, to: null };
-    const shown = view === 'regions' ? { ...params, ...regions, top } : params;
+    const params = { branchId: ctx.branch.id, view, country: countryFromKey(ctx.countryTag) };
+    const shown = view === 'regions' ? { ...params, ...regions, top } : { ...params, listFrom: ctx.staticSpan?.[0] ?? ctx.branch.firstHour };
     const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...rankMissing } = regions;
     return {
       owner: `convoy-health:${JSON.stringify(shown)}`,
       entries: dayTileEntries(ctx, {
         product: 'convoy-health',
+        span: (base, first, last) => ({ ...base, from: first, to: last }),
         now: {
           params: shown,
           coverage: view === 'regions' ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
-          span: (base, first, last, spanFirst) => ({ ...base, from: first, to: last, ...(view === 'trade' ? { listFrom: spanFirst } : {}) }),
-          validThrough: data => (data as ConvoyHealthReply | undefined)?.validThrough ?? null,
         },
         tile: {
           params: view === 'regions' ? { ...params, ...rankMissing, every: true } : params,
           coverage: { mode: 'population', form: 'all' },
-          span: (base, first, last) => ({ ...base, from: first, to: last }),
         },
       }),
     };
   },
   projection: convoyHealthProjection,
-  projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface, country: ctx.countryTag, tiles: dayTileCount(ctx.branch) }),
+  projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface, country: ctx.countryTag, historyStart: ctx.staticSpan?.[0] ?? ctx.branch.firstHour, tiles: dayTileCount(ctx.branch) }),
   jumpToDate: true,
 };

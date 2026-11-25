@@ -120,12 +120,12 @@ test('two widgets on one page each draw their own new sprites through the one sh
   pass(0); pass(1);
   shown[0].onArtDemands(asks[0]);
   shown[1].onArtDemands(asks[1]);
-  pass(0); pass(1);
+  let arrivals = 0;
+  const stop = shown[1].subscribe(() => { arrivals++; });
   shown[1].onArtDemands(asks[1]!);
-  for (let round = 0; round < 8; round++) {
-    pass(0); pass(1);
-    await tick();
-  }
+  for (let round = 0; round < 8; round++) await tick();
+  stop();
+  assert.ok(arrivals > 0, 'the lane receives settled art without another React render');
   const statuses = (at: number) => Object.values(shown[at].resolutions ?? {}).map((art: any) => art.status);
   assert.deepEqual(statuses(0), ['ready', 'ready', 'ready'], `first widget: ${JSON.stringify(requests)}`);
   assert.deepEqual(statuses(1), ['ready', 'ready', 'ready', 'ready'], `the second widget's own sprites load too: ${JSON.stringify(requests)}`);

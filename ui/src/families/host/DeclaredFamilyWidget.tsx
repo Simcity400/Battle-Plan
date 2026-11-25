@@ -155,7 +155,7 @@ export default function DeclaredFamilyWidget<
 
   const { theme } = useFamilyTheme();
 
-  const { resolutions: shownArtResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
+  const laneArt = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;
@@ -341,7 +341,7 @@ export default function DeclaredFamilyWidget<
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}
       hovers={plan.hovers}
-      artResolutions={shownArtResolutions}
+      laneArt={laneArt}
       extent={extent}
       plan={plan.plan}
       exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
@@ -350,7 +350,7 @@ export default function DeclaredFamilyWidget<
       bounds={plan.bounds}
       identitySnapshot={plan.identitySnapshot}
       onIdentityDemands={plan.onIdentityDemands}
-      onArtDemands={handleArtDemands}
+      onArtDemands={laneArt.onArtDemands}
       onViewportChange={handleViewportChange}
       onHoverHour={handleHoverHour}
       selectedKey={selectedKey}

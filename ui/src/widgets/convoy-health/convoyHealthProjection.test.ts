@@ -26,7 +26,7 @@ function reply(lastHour: number): ConvoyHealthReply {
 }
 
 const view = (hour: number, data: ConvoyHealthReply) => createBoundedReadView({ hour, panels: new Map([['now', data]]) });
-const OPTIONS = { view: 'regions' as const, surface: SURFACE, country: null, tiles: 0 };
+const OPTIONS = { view: 'regions' as const, surface: SURFACE, country: null, historyStart: 0, tiles: 0 };
 
 test('the efficiency scale runs from full at the first stop to empty at the last', () => {
   assert.equal(efficiencyColour(1), '#22364f');
@@ -54,7 +54,7 @@ test('no traffic is the empty lane, unrecorded hours keep their reason, and the 
 
 test('a reply that reaches past the displayed hour, or for the other view, draws nothing', () => {
   assert.deepEqual(projectConvoyHealth(view(45, reply(50)), OPTIONS).rows, []);
-  assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE, country: null, tiles: 0 }).rows, []);
+  assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE, country: null, historyStart: 0, tiles: 0 }).rows, []);
 });
 
 test('a lend-lease route stays a status in the lane, the readout and the tooltip, never an efficiency', async () => {
@@ -64,7 +64,7 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
     known: [[], [], [{ firstHour: 0, lastHour: 50 }]],
     leases: [{ handle: '7', giver: [{ firstHour: 0, lastHour: 50, tag: 'USA', name: 'United States' }], bad: [[0, 19, 1], [20, 50, 0]], convoys: [] }],
   };
-  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE, country: null, tiles: 0 });
+  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE, country: null, historyStart: 0, tiles: 0 });
   const [bad, clear] = model.rows[0]!.runs;
   assert.equal(bad!.cell.kind === 'solid' && bad!.cell.label, 'Route bad');
   assert.deepEqual(clear!.cell, { kind: 'clear', label: 'Route clear' });
@@ -74,46 +74,23 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
   assert.ok(!tip.items?.some(item => item.label === 'Efficiency'), 'no measured efficiency is claimed');
 });
 
-test('a hundred played hours ask each completed tile once, the current tile once a day and today alone each hour, never the whole history', async () => {
-  const { askUnits } = await import('../../families/readUnits.ts');
-  const { DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
+test('both convoy views follow bounded history and ask for the identical closed days on a pin or audit', async () => {
   const { convoyHealthDeclaration } = await import('./convoyHealthProjection.ts');
-  const end = 24 * 3000;
-  const branch = { id: '1', firstHour: 0, lastHour: end };
-  const gate = {
-    recorded: (hour: number | null | undefined) => (typeof hour === 'number' ? hour : null) as never,
-    span: (firstHour: number, lastHour: number) => (firstHour <= lastHour ? { firstHour, lastHour } : null) as never,
-  };
-  const start = 24 * 1000 + 5;
+  const { DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
+  const branch = { id: '1', firstHour: 5, lastHour: DAY_TILE_HOURS + 60 };
   for (const view of ['regions', 'trade']) {
-    const ctx = { track: { source: { id: 'src', revision: 'rev', metadata: {} }, axisOffset: 0 }, branch, options: { view }, countryTag: 'GER' } as never;
+    const ctx = { track: { source: { id: 'src' }, axisOffset: 0 }, branch, options: { view }, countryTag: 'GER' } as never;
     const plan = convoyHealthDeclaration.sources(ctx, { following: true, staticSpan: null } as never);
-    const keys = new Map<string, string | null>();
-    let tileAsks = 0;
-    let nowAsks = 0;
-    let widestNow = 0;
-    let widest = 0;
-    for (let hour = start; hour < start + 100; hour++) {
-      const units = askUnits(plan.entries, { following: true, trackOffset: 0, content: 0, hour, playback: () => ({ branch, effectiveEndHour: end, gate }) });
-      for (const unit of units) {
-        if (unit.key !== null && unit.key !== keys.get(unit.name)) {
-          const asked = (unit.spec!.request as unknown as { params: { from: number; to: number } }).params;
-          const width = asked.to - asked.from + 1;
-          widest = Math.max(widest, width);
-          if (unit.name === 'now') {
-            nowAsks++;
-            widestNow = Math.max(widestNow, width);
-          } else tileAsks++;
-        }
-        keys.set(unit.name, unit.key);
-      }
-    }
-    assert.ok(widest <= DAY_TILE_HOURS, `${view}: no ask covers more than one tile`);
-    assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8) + 4, `${view}: every complete tile and every complete eight-day piece of the current tile and every complete day of the current piece once (four midnights)`);
-    assert.ok(nowAsks <= 100 && widestNow <= 24, `${view}: the hourly ask covers today only`);
-    const now = plan.entries.find(entry => entry.name === 'now')!.read;
-    assert.ok(now.shape === 'branch-to-hour');
-    assert.deepEqual(now.provenInterval!({ ...reply(25), validThrough: 30 }, [24, 25], 25), [25, 30], `${view}: a reply proves the hours through its validThrough`);
+    assert.deepEqual(plan.entries.map(entry => entry.name), ['now', 'tile:0', 'tile:1']);
+    const spans = plan.entries.map(({ read }) => {
+      assert.ok(read.shape === 'point' && read.channel === 'panel' && read.followQuery?.panel === 'convoy-health');
+      assert.equal(read.followQuery.listFrom, view === 'trade' && read === plan.entries[0]!.read ? 5 : undefined);
+      const exact = (hour: number) => read.buildExactParams!(read.params!, hour as never, 'exact');
+      const first = exact(10);
+      const later = exact(DAY_TILE_HOURS + 25);
+      return [first && [first.from, first.to], later && [later.from, later.to]];
+    });
+    assert.deepEqual(spans, [[[5, 10], [DAY_TILE_HOURS + 24, DAY_TILE_HOURS + 25]], [null, [5, DAY_TILE_HOURS - 1]], [null, [DAY_TILE_HOURS, DAY_TILE_HOURS + 23]]]);
   }
 });
 
@@ -154,7 +131,7 @@ test('a trade row is every deal of the span, its history from the tiles and its 
     deals: [deal([[0, 47, 80000]], [{ firstHour: 0, lastHour: 47, tag: 'SWE', name: 'Sweden' }])],
   };
   const now: ConvoyHealthReply = { ...reply(50), view: 'trade', firstHour: 48, regions: [], gaps: [], known: [[], [{ firstHour: 48, lastHour: 50 }], []], deals: [deal([], [])] };
-  const model = projectConvoyHealth(createBoundedReadView({ hour: 50, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]) }), { view: 'trade', surface: SURFACE, country: null, tiles: 1 });
+  const model = projectConvoyHealth(createBoundedReadView({ hour: 50, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]) }), { view: 'trade', surface: SURFACE, country: null, historyStart: 0, tiles: 1 });
   assert.equal(model.rows.length, 1);
   assert.equal(model.rows[0]!.label, 'Sweden · Resource not recorded');
   assert.deepEqual(model.rows[0]!.runs.map(run => [run.firstHour, run.lastHour]), [[0, 47]]);

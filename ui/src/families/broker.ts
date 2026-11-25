@@ -586,7 +586,7 @@ export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   const out: SourceEntry[] = [primary];
   for (const entry of plan.entries) {
     if (entry === primary || entry.name === primary.name) continue;
-    if (readsWithoutFollow(entry.read) || (entry.read.shape === 'pixel-binned' && entry.read.exactProduct)) out.push(entry);
+    if (readsWithoutFollow(entry.read) || (entry.read.shape === 'point' && entry.read.channel === 'panel') || (entry.read.shape === 'pixel-binned' && entry.read.exactProduct)) out.push(entry);
   }
   return out;
 }

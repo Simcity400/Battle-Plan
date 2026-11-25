@@ -10,7 +10,7 @@ import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
-import type { ArtResolution } from '../art/types.ts';
+import type { LaneArtResolutions } from '../art/react.ts';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
 import type {
@@ -194,7 +194,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly laneArt?: LaneArtResolutions;
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>;
@@ -258,7 +258,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   tiledSeries,
   tiledRevision = 0,
   hovers,
-  artResolutions,
+  laneArt,
   extent = null,
   plan = null,
   exactReadView,
@@ -297,6 +297,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const bodyRef = useRef<HTMLDivElement>(null);
   const listboxMirrorRef = useRef<HTMLDivElement>(null);
   const accessibleTableRef = useRef<HTMLTableElement>(null);
+  const headerSummaryRef = useRef<HTMLSpanElement>(null);
   const mirrorBodyRef = useRef<HTMLTableSectionElement>(null);
   const mirrorHeadRef = useRef<HTMLTableSectionElement>(null);
   const bodyWrapRef = useRef<HTMLDivElement>(null);
@@ -374,7 +375,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     warnings: NO_STRINGS,
   }));
   const metaRef = useRef(meta);
-  metaRef.current = meta;
 
   const { theme, reducedMotion } = useFamilyTheme();
   const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer(adapter.family);
@@ -436,7 +436,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pagedRows,
     tiledSeries,
     hovers,
-    artResolutions,
+    laneArt,
     extent,
     plan,
     exactReadView,
@@ -604,7 +604,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       ...(cur.pagedRows && Object.keys(cur.pagedRows).length ? { pagedRows: cur.pagedRows } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
-      ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
+      ...(cur.laneArt?.resolutions ? { artResolutions: cur.laneArt.resolutions } : {}),
       extent: cur.extent,
       plan: cur.plan,
       viewport,
@@ -822,13 +822,20 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const notes = raw?.notes ?? NO_STRINGS;
       const warnings = raw?.warnings ?? NO_STRINGS;
       const shown = metaRef.current;
-      if (
+      const sameBody =
         shown.mode === mode && shown.reason === reason && shown.failureOrigin === failureOrigin
         && shown.empty === empty && shown.emptyDetail === emptyDetail && shown.emptyKind === emptyKind
-        && shown.summaryText === summaryText && shown.summaryPartial === summaryPartial && sameStrings(shown.notes, notes) && sameStrings(shown.warnings, warnings)
-      ) return;
+        && sameStrings(shown.notes, notes) && sameStrings(shown.warnings, warnings);
+      if (sameBody && shown.summaryText === summaryText && shown.summaryPartial === summaryPartial) return;
       const next: FamilyMetaState = { mode, reason, failureOrigin, empty, emptyDetail, emptyKind, summaryText, summaryPartial, notes, warnings };
       metaRef.current = next;
+      if (sameBody && shown.summaryText?.trim() && summaryText?.trim() && !summaryPartial && !shown.summaryPartial && !notes.length) {
+        const label = summaryText.trim();
+        if (headerSummaryRef.current) headerSummaryRef.current.textContent = label;
+        const caption = accessibleTableRef.current?.caption;
+        if (caption) caption.textContent = label;
+        return;
+      }
       setMeta(next);
     };
 
@@ -1181,7 +1188,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     tiledSeries,
     tiledRevision,
     hovers,
-    artResolutions,
+    laneArt,
     extent,
     plan,
     selectedKey,
@@ -1200,6 +1207,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (!pipeline || pipe === null) return;
     pipeline.supply(pipe, { identity: identitySnapshot });
   }, [pipeline, pipe, identitySnapshot]);
+
+  useLayoutEffect(() => laneArt?.subscribe(() => bindRef.current()), [laneArt]);
 
   useLayoutEffect(() => staticProof?.subscribe(supplyDated), [staticProof, supplyDated]);
 
@@ -1358,7 +1367,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   });
 
   const headerSummary = meta.mode === 'picture' && !meta.empty && !bodyStateNode
-    ? resolveHeaderSummary(meta)
+    ? resolveHeaderSummary(metaRef.current)
     : null;
   const summaryNote = headerSummary?.spoken ?? null;
   const rowsFocus = (adapter.mirrorFocus ?? 'body') === 'rows';
@@ -1369,7 +1378,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   return (
     <div ref={frameRef} className={className ? `fh-frame ${className}` : 'fh-frame'}>
-      {headerSlot && headerSummary ? createPortal(<FamilyHeaderSummary summary={headerSummary} />, headerSlot) : null}
+      {headerSlot && headerSummary ? createPortal(<FamilyHeaderSummary ref={headerSummaryRef} summary={headerSummary} />, headerSlot) : null}
       {Chrome ? (
         <Chrome
           state={chromeState}
@@ -1391,6 +1400,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           ref={bodyRef}
           className={scrollMode === 'none' ? 'fh-body' : 'fh-body themed-scrollbar'}
           data-scroll={scrollMode}
+          data-family={adapter.family}
           data-clickable={onActivate ? 'true' : undefined}
           {...bodyFocus}
         >

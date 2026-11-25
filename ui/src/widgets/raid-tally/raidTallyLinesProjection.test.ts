@@ -4,11 +4,10 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import {
   displayedHour,
-  type BranchToHourSourceRead,
   type FamilyPlanContext,
   type IdentityProvider,
 } from '../../families/contract.ts';
-import type { ExactHoverSourceRead } from '../../families/plan.ts';
+import type { BranchToHourSourceRead, ExactHoverSourceRead } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import { DEFAULT_LINE_SETTINGS } from '../../families/time-chart/settings.ts';

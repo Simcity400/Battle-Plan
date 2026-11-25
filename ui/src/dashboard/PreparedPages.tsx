@@ -27,8 +27,12 @@ interface Props {
 const none = () => 0;
 
 export default function PreparedPages({ pages, clock, client, viewport, enabled, draw, mounting = none }: Props) {
-  const snapshot = useSyncExternalStore(clock.subscribe, clock.getSnapshot);
-  const on = enabled && !snapshot.playing && pages.length > 0 && viewport !== null;
+  const available = enabled && pages.length > 0 && viewport !== null;
+  const paused = useSyncExternalStore(clock.subscribe, () => {
+    const snapshot = clock.getSnapshot();
+    return available && !snapshot.playing ? snapshot : null;
+  });
+  const on = paused !== null;
   const [round, setRound] = useState<{ index: number; width: number; height: number; token: object } | null>(null);
   const gate = prepareGate(client);
   const owners = useRef(new Map<string, object>());
@@ -50,7 +54,7 @@ export default function PreparedPages({ pages, clock, client, viewport, enabled,
     };
     frame = requestAnimationFrame(wait);
     return () => cancelAnimationFrame(frame);
-  }, [on, pages, snapshot.hour, snapshot.seekSequence, viewport]);
+  }, [on, pages, paused?.hour, paused?.seekSequence, viewport]);
 
   const index = round?.index ?? -1;
   const page = index >= 0 ? pages[index] : undefined;

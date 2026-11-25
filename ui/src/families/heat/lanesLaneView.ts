@@ -65,7 +65,7 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
   family: 'heat-lanes',
   boundary: () => Infinity,
   redraw: () => Infinity,
-  status: model => (model.refused !== undefined ? { refused: model.refused } : 'scene'),
+  status: model => (model.refused !== undefined ? { refused: model.refused } : model.waiting ? 'waiting' : 'scene'),
   view: [],
   layout: (model, _binding, surface) => layoutHeatLanes({
     width: surface.width,

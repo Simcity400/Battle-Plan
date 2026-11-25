@@ -454,6 +454,10 @@
   font-weight: 500;
 }
 
+.fh-body[data-family="table"] {
+  scrollbar-gutter: stable;
+}
+
 .fh-body[data-tf-panes]::-webkit-scrollbar:horizontal {
   height: 0;
 }
