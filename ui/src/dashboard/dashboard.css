@@ -287,6 +287,7 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
 .dash-time-chip.is-compact { padding: 0; width: 24px; gap: 0; }
 .kind-peace-deals { container: peace-deals / inline-size; }
 @container peace-deals (max-width: 320px) {
+  .dash-widget-summary,
   .dash-time-chip[data-time-mode='follow'] .dash-time-label { display: none; }
 }
 .dash-time-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
