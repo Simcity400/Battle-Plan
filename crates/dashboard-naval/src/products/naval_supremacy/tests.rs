@@ -310,7 +310,7 @@ fn a_history_continued_by_a_later_day_reads_the_hours_between_and_is_the_history
     let n = Cell::Number;
     let row = |friendly| Some(Box::from([n(friendly), n(1), n(friendly), n(1), n(0), Cell::Text(0), Cell::Text(0)]));
     let step = |hour, cells| lanes::Step { hour, cells };
-    let recorded = vec![
+    let recorded = [
         (key(viewer, 1), vec![step(0, row(40)), step(60, row(50))]),
         (key(viewer, 9), vec![step(30, row(70)), step(41, None)]),
         (key(NavalRegionControlRow::EVERY_VIEWER, 2), vec![step(0, row(30))]),

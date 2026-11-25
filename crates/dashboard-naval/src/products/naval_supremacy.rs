@@ -565,7 +565,7 @@ fn control_ranges(viewer: u32, only: Option<&BTreeSet<u32>>) -> Vec<(u128, u128)
     let (own, every) = (u128::from(viewer) << 32, u128::from(NavalRegionControlRow::EVERY_VIEWER) << 32);
     match only {
         None => vec![(own, own | u128::from(u32::MAX)), (every, every | u128::from(u32::MAX))],
-        Some(only) => only.iter().flat_map(|&region| [(own | u128::from(region), own | u128::from(region)), (every | u128::from(region), every | u128::from(region))]).collect(),
+        Some(only) => [own, every].into_iter().flat_map(|holder| only.iter().map(move |&region| (holder | u128::from(region), holder | u128::from(region)))).collect(),
     }
 }
 
