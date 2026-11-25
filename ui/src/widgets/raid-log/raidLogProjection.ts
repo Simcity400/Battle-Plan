@@ -2,7 +2,7 @@ import { drawableIcon } from '../../dashboard/artwork.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
-import { contentKey, contentSet } from '../../dashboard/options.ts';
+import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -29,6 +29,7 @@ import { RAID_LOG_COLUMNS } from './definition.ts';
 
 export interface RaidLogProjectionOptions {
   readonly artwork: boolean;
+  readonly selected: readonly string[];
 }
 
 const HEAD_LIMIT = 256;
@@ -67,9 +68,9 @@ function victimSourceLabel(source: RaidVictimSource | null): string {
 export function raidTypeFilterItems(
   chips: readonly RaidTypeChip[],
   selectedSpellings: readonly string[],
-  atHour?: number,
+  atHour: number,
 ): LogKindFilterItem[] {
-  const visible = atHour === undefined ? chips : chips.filter(chip => chip.firstHour <= atHour);
+  const visible = chips.filter(chip => chip.firstHour <= atHour);
   const baseLabels = visible.map(chip => contentTitle(chip.name, chip.spelling, 'Raid name unavailable'));
   const counts = new Map<string, number>();
   for (const label of baseLabels) counts.set(label, (counts.get(label) ?? 0) + 1);
@@ -81,10 +82,11 @@ export function raidTypeFilterItems(
     const ordinal = (seen.get(base) ?? 0) + 1;
     seen.set(base, ordinal);
     const label = counts.get(base)! > 1 ? `${base} (${ordinal})` : base;
+    const value = setToken(chip.spelling);
     return {
-      value: chip.spelling,
+      value,
       label,
-      checked: allSelected || selected.has(chip.spelling),
+      checked: allSelected || selected.has(value),
     };
   });
 }
@@ -334,6 +336,7 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
     const rawHead = source.rawHead as {
       readonly unavailable?: string | null;
       readonly warnings?: readonly string[];
+      readonly raidTypes?: readonly RaidTypeChip[];
     } | undefined;
     const activeCount = source.facetTotals?.get('active') ?? null;
     const titleSummary = activeCount !== null && activeCount > 0
@@ -357,6 +360,7 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
       ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt: Math.min(boundary.next, nextPrepChange),
       rowTimeBoundaries: false,
+      kindFilter: { key: 'types', noun: 'raid types', allLabel: 'All raid types', items: raidTypeFilterItems(rawHead?.raidTypes ?? [], options.selected, Math.min(hour, source.at ?? hour)), selected: options.selected },
       titleSummary,
       ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings ? { warnings } : {}),
@@ -408,6 +412,6 @@ export const raidLogDeclaration: TableWidgetDeclaration<RaidLogProjectionOptions
   },
   projection: raidLogProjection,
   projectionOptions(ctx): RaidLogProjectionOptions {
-    return { artwork: ctx.options.artwork !== false };
+    return { artwork: ctx.options.artwork !== false, selected: contentSet(ctx.options.types ?? '') };
   },
 };

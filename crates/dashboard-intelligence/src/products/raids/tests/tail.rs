@@ -146,3 +146,23 @@ fn statuses_and_the_range_apply_at_the_hour_before_the_count_and_the_slice() {
     assert!(load(&source, &ask(12)).missing.is_empty(), "the unread hour of 13 is not in a reply at 12");
     stepped_equals_cold(&source, serde_json::json!({ "panel": "raid-log-tail", "branchId": "1", "limit": 2 }), &[10, 11, 12, 13, 14, 11, 14]);
 }
+
+#[test]
+fn a_ready_raid_keeps_the_preparation_last_read_and_only_raids_in_preparation_are_counted() {
+    let mut prep = raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE);
+    let ready = raid(7, 1, native::PHASE_PREPARED, native::OUTCOME_NONE);
+    let going = raid(8, 1, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE);
+    let source = opened("tail-ready", &recording(&[vec![
+        at(10, whole(vec![prep.clone()]), 30),
+        at(11, whole(vec![{ prep.preparation_hours = 2; prep.clone() }]), 30),
+        at(12, whole(vec![ready.clone(), going.clone()]), 30),
+        at(13, whole(vec![ready, going]), 30),
+    ]]));
+    let reply = load(&source, &ask(13));
+    let row = reply.rows.iter().find(|row| row.key == "7").unwrap();
+    assert_eq!(row.status, RaidStatus::Prepared);
+    let preparation = row.preparation.as_ref().expect("a raid ready to launch shows the preparation it was last read with");
+    assert_eq!((preparation.since, preparation.hours, preparation.per_hour, preparation.through), (10, 1, 1, Some(11)));
+    assert_eq!((reply.live.as_str(), reply.counts[0].total.as_str()), ("2", "1"), "a raid in progress is live but not in preparation");
+    stepped_equals_cold(&source, serde_json::json!({ "panel": "raid-log-tail", "branchId": "1", "limit": 64 }), &[10, 11, 12, 13, 10, 13]);
+}
