@@ -4,8 +4,9 @@ use dashboard_base::products::equipment_icon::{self, Icon, IconChoice, IconConte
 use dashboard_core::config::LoadContext;
 use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_recording::columnar_frames::Recording;
-use replay_data::rows::{LexicalTokenRow, TableId, tables};
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_data::rows::{CountryAppearanceRow, CountryRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, ReservedCountryNamingRow, TableId, VariantDefinitionRow, mask, tables};
+use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
+use replay_lanes::{dated::Dated, lanes::Keys as HistoryKeys};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -275,12 +276,26 @@ fn wanted(variants: &[u64], organisations: &[u64], named: &Named) -> (Vec<u64>, 
     )
 }
 
+fn icon_hour(frame: &DecodedFrame, context: &Context) -> Result<IconHour, String> {
+    match context {
+        Ok(Content { icons: Ok(icons), .. }) => IconHour::read(frame, icons).map_err(|error| format!("Equipment icons are unavailable at this hour: {error}")),
+        Ok(Content { icons: Err(why), .. }) => Err(why.clone()),
+        Err(why) => Err(why.clone()),
+    }
+}
+
 pub fn name(frame: &DecodedFrame, variants: &[u64], organisations: &[u64], context: &Context, named: &mut Named) {
-    let hour = frame.hour;
     let (wanted_variants, wanted_organisations) = wanted(variants, organisations, named);
     if wanted_variants.is_empty() && wanted_organisations.is_empty() {
         return;
     }
+    let icons = if wanted_variants.is_empty() { Err(String::new()) } else { icon_hour(frame, context) };
+    name_in(frame, (&wanted_variants, &wanted_organisations), context, icons.as_ref().map_err(Clone::clone), named);
+}
+
+fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64], &[u64]), context: &Context, icon_hour: Result<&IconHour, String>, named: &mut Named) {
+    let hour = frame.hour;
+    let (wanted_variants, wanted_organisations) = (wanted_variants.to_vec(), wanted_organisations.to_vec());
     let countries = frame.complete::<tables::Countries>();
     let links = frame.complete::<tables::CountryLinks>();
     let lexical = frame.complete::<tables::LexicalTokens>();
@@ -301,12 +316,6 @@ pub fn name(frame: &DecodedFrame, variants: &[u64], organisations: &[u64], conte
     let tags = Tags::new(countries, links, frame.complete::<tables::CountryAppearance>().ok());
     let texts: Option<&dyn Texts> = context.as_ref().ok().map(|content| content.catalogue.as_ref() as &dyn Texts);
     let no_texts = context.as_ref().err().cloned();
-    let icon_hour = match context {
-        _ if wanted_variants.is_empty() => Err(String::new()),
-        Ok(Content { icons: Ok(icons), .. }) => IconHour::read(frame, icons).map_err(|error| format!("Equipment icons are unavailable at this hour: {error}")),
-        Ok(Content { icons: Err(why), .. }) => Err(why.clone()),
-        Err(why) => Err(why.clone()),
-    };
     match frame.complete::<tables::VariantDefinitions>() {
         Err(error) => {
             for id in wanted_variants {
@@ -423,6 +432,138 @@ pub fn name_at(recording: &Recording, run: u32, hour: i32, variants: &[u64], org
     read_into(recording, run, hour, &mut frame, &spelling)?;
     name(&frame, &wanted_variants, &wanted_organisations, context, named);
     Ok(())
+}
+
+const VARIANT_FIELDS: u64 = !mask::<VariantDefinitionRow>(&["design"]);
+
+const WHOLE_FIELDS: [(TableId, u64); 8] = [
+    (TableId::Countries, mask::<CountryRow>(&["canonical_slot", "tag"])),
+    (TableId::CountryLinks, u64::MAX),
+    (TableId::CountryAppearance, mask::<CountryAppearanceRow>(&["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d", "original_tag", "original_tag_reference"])),
+    (TableId::ReservedCountryNaming, mask::<ReservedCountryNamingRow>(&["original_tag", "original_tag_reference", "dynamic_tag_boundary"])),
+    (TableId::PoliticalParties, mask::<PoliticalPartyRow>(&["is_ruling", "token"])),
+    (TableId::Factions, u64::MAX),
+    (TableId::FactionMembers, u64::MAX),
+    (TableId::Politics, mask::<PoliticsRow>(&["capital", "original_capital"])),
+];
+
+pub struct Naming {
+    run: u32,
+    branch: u64,
+    last: i32,
+    whole: Vec<Dated>,
+    variants: Dated,
+    spelled: Mutex<Spelled>,
+    icon_hours: Mutex<Vec<(Vec<i32>, usize, Arc<Result<IconHour, String>>)>>,
+}
+
+#[derive(Default)]
+struct Spelled {
+    rows: BTreeMap<u32, Option<LexicalTokenRow>>,
+    refused: Option<SharedView>,
+}
+
+const KEPT_ICON_HOURS: usize = 8;
+
+fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, io::Result<T>>) -> io::Result<T> {
+    handle.join().unwrap_or_else(|_| Err(io::Error::other("A design-name history read panicked")))
+}
+
+impl Naming {
+    fn read(recording: &Recording, run: u32) -> io::Result<Self> {
+        let (whole, variants) = std::thread::scope(|scope| {
+            let whole = scope.spawn(|| WHOLE_FIELDS.iter().map(|&(table, fields)| Dated::read(recording, run, table, fields, HistoryKeys::All)).collect::<io::Result<Vec<_>>>());
+            let variants = Dated::read(recording, run, TableId::VariantDefinitions, VARIANT_FIELDS, HistoryKeys::All);
+            (joined(whole), variants)
+        });
+        let held = recording.run(run)?;
+        Ok(Self {
+            run,
+            branch: held.branch,
+            last: held.first_hour + held.ordinals as i32 - 1,
+            whole: whole?,
+            variants: variants?,
+            spelled: Mutex::default(),
+            icon_hours: Mutex::default(),
+        })
+    }
+
+    fn spellings(&self, recording: &Recording, tokens: &BTreeSet<u32>) -> io::Result<SharedView> {
+        let mut held = self.spelled.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.refused.is_none() {
+            let missing: Vec<u128> = tokens.iter().filter(|token| !held.rows.contains_key(token)).map(|&token| u128::from(token)).collect();
+            if !missing.is_empty() {
+                let mut frame = DecodedFrame { branch: self.branch, hour: self.last, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+                read_into(recording, self.run, self.last, &mut frame, &[Read::these(TableId::LexicalTokens, missing.iter().copied())])?;
+                match frame.complete::<tables::LexicalTokens>() {
+                    Ok(rows) => {
+                        held.rows.extend(missing.iter().map(|&token| (token as u32, None)));
+                        held.rows.extend(rows.iter().map(|row| (row.token, Some(row.clone()))));
+                    }
+                    Err(_) => held.refused = Some(frame.tables[TableId::LexicalTokens.index()].clone()),
+                }
+            }
+        }
+        if let Some(refused) = &held.refused {
+            return Ok(refused.clone());
+        }
+        let rows = tokens.iter().filter_map(|token| held.rows.get(token).cloned().flatten()).collect();
+        Ok(TableView::Complete(replay_data::rows::TableRows::LexicalTokens(rows)).into())
+    }
+
+    fn frame(&self, recording: &Recording, hour: i32, variants: &[u64]) -> io::Result<DecodedFrame> {
+        let mut frame = DecodedFrame { branch: self.branch, hour, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        for dated in &self.whole {
+            frame.tables[dated.table().index()] = dated.view(hour)?;
+        }
+        let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
+        frame.tables[TableId::VariantDefinitions.index()] = self.variants.view_of(hour, &keys)?;
+        let tokens: BTreeSet<u32> = variant_tokens(&frame).collect();
+        frame.tables[TableId::LexicalTokens.index()] = self.spellings(recording, &tokens)?;
+        Ok(frame)
+    }
+
+    fn icon_hour(&self, frame: &DecodedFrame, context: &Content) -> Arc<Result<IconHour, String>> {
+        let epochs: Vec<i32> = self.whole.iter().map(|dated| dated.epoch(frame.hour)).collect();
+        let icons = context.icons.as_ref().map_or(0, |icons| Arc::as_ptr(icons) as usize);
+        let mut held = self.icon_hours.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((.., found)) = held.iter().find(|(at, with, _)| *at == epochs && *with == icons) {
+            return Arc::clone(found);
+        }
+        let made = Arc::new(icon_hour(frame, &Ok(context.clone())));
+        if held.len() >= KEPT_ICON_HOURS {
+            held.remove(0);
+        }
+        held.push((epochs, icons, Arc::clone(&made)));
+        made
+    }
+
+    pub fn name_variants(&self, recording: &Recording, hour: i32, variants: &[u64], context: &Context, named: &mut Named) -> io::Result<()> {
+        let (wanted_variants, _) = wanted(variants, &[], named);
+        if wanted_variants.is_empty() {
+            return Ok(());
+        }
+        let frame = self.frame(recording, hour, &wanted_variants)?;
+        let icons = match context {
+            Ok(content @ Content { icons: Ok(_), .. }) => self.icon_hour(&frame, content),
+            _ => Arc::new(icon_hour(&frame, context)),
+        };
+        name_in(&frame, (&wanted_variants, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), named);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct KeptNaming(BTreeMap<u32, Arc<Naming>>);
+
+pub fn naming(source: &Source, recording: &Recording, run: u32) -> io::Result<Arc<Naming>> {
+    let kept = source.state::<KeptNaming>();
+    if let Some(found) = kept.lock().unwrap_or_else(PoisonError::into_inner).0.get(&run) {
+        return Ok(Arc::clone(found));
+    }
+    let made = Arc::new(dashboard_query::cost::storage(|| Naming::read(recording, run))?);
+    kept.lock().unwrap_or_else(PoisonError::into_inner).0.insert(run, Arc::clone(&made));
+    Ok(made)
 }
 
 pub fn plain_names(frame: &DecodedFrame, variants: &[u64], context: &Context) -> BTreeMap<u64, Option<String>> {

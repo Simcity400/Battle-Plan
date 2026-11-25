@@ -37,7 +37,15 @@ pub fn field<'a>(
     let Some(&kind) = table.kinds().get(column) else {
         return Ok(Field::NotRecorded);
     };
-    let value = table.value(column, slot);
+    value_field(kind, table.value(column, slot), |id| table.string(id), format)
+}
+
+pub fn value_field<'a>(
+    kind: Kind,
+    value: Value<'a>,
+    string: impl FnOnce(u32) -> Option<&'a [u8]>,
+    format: u16,
+) -> io::Result<Field<'a>> {
     let number = |value: Value<'_>| match value {
         Value::Number(bits) => Ok(Some(bits)),
         Value::Missing => Ok(None),
@@ -62,8 +70,7 @@ pub fn field<'a>(
         Kind::OptionalU64 => Field::OptionalU64(number(value)?),
         Kind::Bytes => match value {
             Value::Text(id) => Field::Bytes(
-                table
-                    .string(id)
+                string(id)
                     .ok_or_else(|| invalid("A text cell names a string the store does not hold"))?,
             ),
             other => return Err(invalid(format!("A {other:?} cell in a text column"))),
@@ -137,26 +144,35 @@ pub fn cells_rows_of(
     fields: u64,
 ) -> io::Result<TableRows> {
     let keys = engine_allocation::collect_vec(keyed.iter().map(|&(key, _)| key))?;
+    rows_of_fields(id, &keys, fields, &mut |at, column| {
+        table_field(id, table, keyed[at].1, column, format)
+    })
+}
+
+pub fn rows_of_fields<'a>(
+    id: TableId,
+    keys: &[u128],
+    fields: u64,
+    field: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+) -> io::Result<TableRows> {
     let absent = std::cell::Cell::new(None);
-    id.rows_from_wire_fields(&keys, fields & id.full_mask(), &mut |at, column| {
-        let field = table_field(id, table, keyed[at].1, column, format)?;
-        absent.set(matches!(field, Field::NotRecorded).then_some((keyed[at], column)));
-        Ok(field)
+    id.rows_from_wire_fields(keys, fields & id.full_mask(), &mut |at, column| {
+        let held = field(at, column)?;
+        absent.set(matches!(held, Field::NotRecorded).then_some((at, column)));
+        Ok(held)
     })
     .map_err(|error| match absent.get() {
-        Some(((key, slot), column)) => refusal(id, table, key, slot, column, format, error),
+        Some((at, column)) => refusal(id, keys[at], column, error, &mut |other| field(at, other)),
         None => error,
     })
 }
 
-fn refusal(
+fn refusal<'a>(
     id: TableId,
-    table: &TableView<'_>,
     key: u128,
-    slot: u32,
     column: usize,
-    format: u16,
     error: io::Error,
+    field: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
 ) -> io::Error {
     let alone = 1_u64.checked_shl(column as u32).unwrap_or(0);
     let holds = id
@@ -164,7 +180,7 @@ fn refusal(
             if at == column {
                 Ok(Field::NotRecorded)
             } else {
-                table_field(id, table, slot, at, format)
+                field(at)
             }
         })
         .is_ok();
