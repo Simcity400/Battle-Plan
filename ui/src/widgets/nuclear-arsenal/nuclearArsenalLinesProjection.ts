@@ -18,9 +18,22 @@ export function nuclearHoverItems(reply: NuclearArsenalReply, lines: readonly Co
   const typeByOrdinal = new Map(reply.types.map(type => [type.ordinal, typeName(type)]));
   const items: TooltipListItem[] = [];
   for (const line of lines) {
+    if (line.exact && line.exact.value === null) {
+      items.push({
+        label: line.name,
+        swatch: line.color,
+        missingReason: line.exact.reason ?? 'Not recorded at this hour',
+        divider: items.length > 0,
+      });
+      continue;
+    }
     const row = rowForLine(reply, line.tag);
     if (!row) {
-      items.push({ label: line.name, swatch: line.color, value: formatScalar(0, 'integer'), divider: items.length > 0 });
+      if (line.exact && line.exact.value !== null) {
+        items.push({ label: line.name, swatch: line.color, value: formatScalar(line.exact.value, 'integer'), divider: items.length > 0 });
+      } else {
+        items.push({ label: line.name, swatch: line.color, missingReason: 'Not recorded at this hour', divider: items.length > 0 });
+      }
       continue;
     }
     items.push({
@@ -50,7 +63,7 @@ function nuclearHoverDetail(readView: BoundedReadView, lines: readonly CountryLi
     if (error instanceof FutureDataError) return null;
     throw error;
   }
-  if (!hover) return null;
+  if (!hover || !lines.length) return null;
   const items = nuclearHoverItems(hover.data, lines);
   return items.length ? { hour: hover.hour, items, replacesSeries: true } : null;
 }
@@ -73,7 +86,7 @@ export const { projection: nuclearArsenalLinesProjection, declaration: nuclearAr
       read: {
         shape: 'exact-hover',
         product: 'nuclear-arsenal',
-        params: { branchId: ctx.branch.id, countries: [] },
+        params: { branchId: ctx.branch.id },
         validate: validateNuclearArsenal,
       },
     }),

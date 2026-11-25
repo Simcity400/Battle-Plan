@@ -149,6 +149,7 @@ static RATIO_OF_POWER: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: false,
@@ -166,6 +167,7 @@ static NEGATED: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: false,
@@ -190,6 +192,7 @@ static RESOURCE_SURPLUS: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: false,
@@ -762,6 +765,7 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
             aggregates: 0,
             carry: Carry::None,
             rank: 0,
+            rank_zero: dashboard_declare::RankZero::Keep,
         }],
         drops: false,
         absent_none: false,
@@ -779,6 +783,7 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
             aggregates: 0,
             carry: Carry::None,
             rank: 0,
+            rank_zero: dashboard_declare::RankZero::Keep,
         }],
         drops: false,
         absent_none: true,
@@ -1182,4 +1187,87 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     assert_eq!(t2_stats.evaluated, 0, "swapping witnesses across T1 -> T2 must perform zero evaluations for Table-only subscriptions");
     assert_eq!(t2_stats.sent, 0, "swapping witnesses across T1 -> T2 must send zero answers for Table-only subscriptions");
     assert_eq!(t2_msg.as_ref().map(|m| m.answers), Some(0), "clock-advance message carries zero answers");
+}
+
+#[test]
+fn a_followed_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
+    use replay_data::rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, NukeRow, TableId};
+    use replay_data::identity::{CaptureMode, Identity as Recorded, Roster, SampleBoundary, SessionStart, Verification};
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use replay_journal::synthetic::{Input, Sample};
+
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Recorded {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 120, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    let campaign = CampaignRow { id: b"follow-rank-zero".to_vec() };
+    let countries = [
+        CountryRow { id: 9001, canonical_slot: 7, tag: b"ABK".to_vec(), political_power_raw: Some(0), ..CountryRow::default() },
+        CountryRow { id: 9002, canonical_slot: 8, tag: b"USA".to_vec(), political_power_raw: Some(50_000), ..CountryRow::default() },
+    ];
+    let links = [CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 }];
+    let replay = replay::campaign::Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, branch, 122, |frame, hour| {
+        frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        frame.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let nukes = [
+            NukeRow { country: 9001, nuke_type: 0, amount_raw: 0, ready: 0 },
+            NukeRow { country: 9002, nuke_type: 0, amount_raw: if hour >= 121 { 200_000_000 } else { 0 }, ready: 0 },
+        ];
+        frame.table(TableId::Nukes, Input::Snapshot { rows: &nukes, partial: None, read: true, sample: Sample::FromReadBit })?;
+        Ok(())
+    })
+    .unwrap();
+    let timeline = Arc::new(Timeline { id: 1, first: 120, last: 122, stretches: vec![Stretch { run: 0, first: 120, last: 122, join: Join::Start }], unheld: Vec::new() });
+    let holders = Arc::new(dashboard_query::identity::holders(replay.recording(), &timeline).unwrap());
+    let identity = Identity { holders, timeline };
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+
+    let nukes = dashboard_declare::series("country-nuke-totals").unwrap();
+    let q_nukes = Query::series_top(nukes, nukes.measure("total").unwrap(), 5, identity.clone());
+    let pp = dashboard_declare::series("country-measure").unwrap();
+    let q_pp = Query::series_top(pp, pp.measure("politicalPower").unwrap(), 5, identity);
+
+    let mut nuke_lane = lane(&pages, &q_nukes, q_nukes.declared(), 120);
+    let mut changes = Changes::default();
+    let mut ranking = crate::evaluate::Ranking::default();
+    let mut table = crate::answer::Table::default();
+    let mut live_out = Vec::new();
+    let tags_120 = crate::query::tags_at(&q_nukes, 120);
+    let reasons = crate::evaluate::Reasons::default();
+    ranking.write(&q_nukes, &nuke_lane, None, &tags_120, &reasons, &mut table, &mut live_out);
+    let fresh_120 = Answer::parse(&answer_at(&q_nukes, &nuke_lane).unwrap()).unwrap();
+    let live_120 = Answer::parse(&live_out).unwrap();
+    assert_eq!((fresh_120.keys.len(), live_120.keys.len()), (0, 0), "all-zero count top is empty in both fresh and incremental ranking");
+
+    assert_eq!(nuke_lane.step(121, &mut changes).unwrap(), 121);
+    let tags_121 = crate::query::tags_at(&q_nukes, 121);
+    ranking.write(&q_nukes, &nuke_lane, Some(&changes), &tags_121, &reasons, &mut table, &mut live_out);
+    let fresh_121 = Answer::parse(&answer_at(&q_nukes, &nuke_lane).unwrap()).unwrap();
+    let live_121 = Answer::parse(&live_out).unwrap();
+    assert_eq!(rows(&fresh_121).iter().map(|(_, v, n)| (*v, n.as_str())).collect::<Vec<_>>(), vec![(Some(2), "USA")]);
+    assert_eq!(rows(&live_121), rows(&fresh_121));
+
+    let pp_lane = lane(&pages, &q_pp, q_pp.declared(), 121);
+    let fresh_pp = Answer::parse(&answer_at(&q_pp, &pp_lane).unwrap()).unwrap();
+    assert_eq!(rows(&fresh_pp).iter().map(|(_, v, n)| (*v, n.as_str())).collect::<Vec<_>>(), vec![(Some(50_000), "USA"), (Some(0), "ABK")], "signed balance keeps zero in followed top");
 }

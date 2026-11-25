@@ -349,6 +349,7 @@ static RATIO_OF_POWER: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: false,
@@ -471,6 +472,7 @@ static NEGATED: Series = Series {
         aggregates: 0,
         carry: Carry::None,
         rank: 0,
+        rank_zero: dashboard_declare::RankZero::Keep,
     }],
     drops: false,
     absent_none: false,
@@ -723,7 +725,7 @@ static WORLD: Series = Series {
     table: TableId::WorldTension,
     key: Key::Singleton,
     parts: None,
-    measures: &[Measure { name: "tension", column: Column::Cell("total_raw"), decimals: 3, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "tension", column: Column::Cell("total_raw"), decimals: 3, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: false,
 };
@@ -1931,7 +1933,7 @@ static SLOT_POWER: Series = Series {
     table: TableId::Countries,
     key: Key::Slot,
     parts: None,
-    measures: &[Measure { name: "politicalPower", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "politicalPower", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: false,
 };

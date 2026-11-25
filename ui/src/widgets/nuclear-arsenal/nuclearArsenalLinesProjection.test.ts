@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { hoverAsks } from '../../families/broker.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import type { NuclearArsenalReply, SeriesRankReply } from '../../generated/dashboard';
@@ -32,6 +33,7 @@ function makeCtx(overrides: {
   readonly options?: Record<string, unknown>;
   readonly top?: number | null;
   readonly tags?: readonly string[];
+  readonly membership?: Readonly<Record<string, readonly (readonly [number, number])[]>> | null;
 }): FamilyPlanContext {
   const tags = overrides.tags ?? [];
   return {
@@ -44,7 +46,7 @@ function makeCtx(overrides: {
       every: tags,
       tags,
       holders: null,
-      membership: null,
+      membership: overrides.membership ?? null,
       unobserved: [],
     },
     following: true,
@@ -152,4 +154,95 @@ test('nuclear-arsenal lines ranks chosen slots, preserves missing readings, and 
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'Nuclear Bomb' && item.value === '5 (2 ready)'));
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'thermonuclear_bomb' && item.value === '2'));
   assert.throws(() => readView.who('country', slot2, displayedHour(501)), FutureDataError);
+
+  const emptyTopView = createBoundedReadView({
+    hour: displayedHour(200),
+    series: new Map([['main', new Map()]]),
+    identity: fakeIdentity({}),
+  });
+  const emptyTopOpts = nuclearArsenalLinesDeclaration.projectionOptions(
+    makeCtx({ top: 6, options: { endLabels: true } }),
+    { extent: [100, 600], surface: '#111111' },
+  );
+  const emptyModel = nuclearArsenalLinesProjection.project(emptyTopView, emptyTopOpts);
+  assert.deepEqual(emptyModel.empty, { message: 'No nuclear stockpiles recorded at this date.', kind: 'empty' });
+});
+
+test('rv18 S5 & S4: custom hover detail requests and projects only slots eligible at the hover hour and reports missing readings instead of 0', () => {
+  const slot1 = countryKey(1);
+  const slot2 = countryKey(2);
+  const membership = {
+    [slot1]: [[100, 600]] as const,
+    [slot2]: [[120, 600]] as const,
+  };
+  const ctx = makeCtx({ tags: [slot1, slot2], membership });
+  const plan = nuclearArsenalLinesDeclaration.sources(ctx, { following: true, staticSpan: null });
+
+  const asks110 = hoverAsks(plan, 110);
+  const detail110 = asks110.find(ask => ask.name === 'detail');
+  assert.ok(detail110, 'detail ask is emitted when at least one slot is eligible at hour 110');
+  assert.deepEqual((detail110.request.params as { countries?: unknown }).countries, [1], 'S5: slot 2 joined at 120, so hour 110 asks only slot 1');
+  const hover110 = asks110.find(ask => ask.name === 'hover');
+  assert.deepEqual((hover110?.request.params as { reads?: unknown })?.reads, [{ country: 1, hour: 110 }]);
+
+  const asks130 = hoverAsks(plan, 130);
+  const detail130 = asks130.find(ask => ask.name === 'detail');
+  assert.deepEqual((detail130?.request.params as { countries?: unknown })?.countries, [1, 2], 'at hour 130 both slots are eligible');
+
+  const topPlan = nuclearArsenalLinesDeclaration.sources(makeCtx({ top: 6 }), { following: true, staticSpan: null });
+  const topDetail = hoverAsks(topPlan, 480, name => (name === 'main' ? [slot2] : undefined)).find(ask => ask.name === 'detail');
+  assert.deepEqual((topDetail?.request.params as { countries?: unknown })?.countries, [2], 'ranked top detail asks only the displayed slots, never countries: []');
+  assert.equal(hoverAsks(topPlan, 480, () => []).find(ask => ask.name === 'detail'), undefined, 'no displayed slots makes no detail ask');
+
+  const hoverReply: NuclearArsenalReply = {
+    missing: null,
+    warnings: ['1 countries with a stockpile are held by no tag at this hour and are not shown'],
+    types: [{ ordinal: 0, token: 'nuclear_bomb', name: 'Nuclear Bomb' }],
+    countries: [
+      { tag: 'USA', countryId: 2, slot: 2, total: 5, counts: [{ ordinal: 0, value: 5, ready: 1 }] },
+    ],
+  };
+  const exactHover = {
+    branchId: '1',
+    measure: 'total',
+    decimals: 0,
+    states: [
+      { country: 1, hour: 110, drop: null, missing: 'No country held slot 1 at this hour', run: null },
+    ],
+  };
+  const view110 = createBoundedReadView({
+    hour: displayedHour(500),
+    hovers: new Map<string, { readonly hour: ReturnType<typeof displayedHour>; readonly data: unknown }>([
+      ['detail', { hour: displayedHour(110), data: hoverReply }],
+      ['hover', { hour: displayedHour(110), data: exactHover }],
+    ]),
+    identity: fakeIdentity({
+      [slot1]: { name: 'German Reich', color: '#6b7280' },
+      [slot2]: { name: 'United States', color: '#3b82f6' },
+    }),
+  });
+  const opts = nuclearArsenalLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' });
+  const model110 = nuclearArsenalLinesProjection.project(view110, opts);
+  assert.equal(model110.hoverDetail?.hour, 110);
+  const gerColor = model110.series.find(s => s.id === slot1)!.color;
+  assert.deepEqual(
+    model110.hoverDetail?.items,
+    [{ label: 'German Reich', swatch: gerColor, missingReason: 'No country held slot 1 at this hour', divider: false }],
+    'S5 & S4: slot 2 (joins at 120) is omitted at 110, and slot 1 reports its missing reason rather than 0',
+  );
+
+  const viewUnattributed = createBoundedReadView({
+    hour: displayedHour(500),
+    hovers: new Map<string, { readonly hour: ReturnType<typeof displayedHour>; readonly data: unknown }>([
+      ['detail', { hour: displayedHour(130), data: hoverReply }],
+    ]),
+    identity: fakeIdentity({
+      [slot1]: { name: 'German Reich', color: '#6b7280' },
+      [slot2]: { name: 'United States', color: '#3b82f6' },
+    }),
+  });
+  const model130 = nuclearArsenalLinesProjection.project(viewUnattributed, opts);
+  const gerItem = model130.hoverDetail?.items.find(item => item.label === 'German Reich');
+  assert.equal(gerItem?.value, undefined, 'S4: a slot omitted from nuclear-arsenal without a known exact reading never shows 0');
+  assert.ok(gerItem?.missingReason, 'S4: absent slot shows a missing reason');
 });

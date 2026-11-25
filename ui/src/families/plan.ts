@@ -119,6 +119,8 @@ export interface ExactHoverSourceRead {
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly hourParam?: string;
   readonly readsOf?: string;
+  readonly countriesOf?: string;
+  readonly membership?: Readonly<Record<string, readonly (readonly [number, number])[]>> | null;
   readonly validate?: (raw: unknown) => unknown;
 }
 

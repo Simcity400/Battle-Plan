@@ -218,7 +218,8 @@ impl Ranking {
     }
 
     pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
-        let Query::Series { series, countries: names, mode: SeriesMode::Top { n, least, population }, .. } = query else { return None };
+        let Query::Series { series, measure, countries: names, mode: SeriesMode::Top { n, least, population }, .. } = query else { return None };
+        let drop_zero = !*least && measure.drops_zeros_in_top();
         let source = query.source()?;
         let cells = lane.cells();
         out.clear();
@@ -270,6 +271,9 @@ impl Ranking {
                     continue;
                 }
             };
+            if drop_zero && value <= 0 {
+                continue;
+            }
             let ranked = (if *least { value } else { !value }, at.map_or(0, |at| self.order[at as usize]), key);
             self.sorted.insert(ranked);
             self.slots.insert(slot, ranked);
@@ -280,7 +284,7 @@ impl Ranking {
         }
         table.clear(1, false);
         let mut top: Vec<(i64, u32, u128)> = self.sorted.iter().take(*n).copied().collect();
-        if series.absent_none {
+        if series.absent_none && !drop_zero {
             let held: HashSet<u128> = cells.rows().filter_map(|slot| cells.key(slot)).collect();
             let zero = if *least { 0 } else { !0 };
             let mut absent: Vec<(i64, u32, u128)> = tags.by_key.iter().filter(|(key, _)| !held.contains(key)).map(|(&key, &at)| (zero, self.order[at as usize], key)).collect();
@@ -523,8 +527,9 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 }
             }
         }
-        Query::Series { series, countries: names, mode: SeriesMode::Top { n, least, population }, .. } => {
+        Query::Series { series, measure, countries: names, mode: SeriesMode::Top { n, least, population }, .. } => {
             let source = query.source().expect("a checked series");
+            let drop_zero = !*least && measure.drops_zeros_in_top();
             table.clear(1, false);
             ranked.clear();
             for slot in cells.rows() {
@@ -539,7 +544,11 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                     None => continue,
                 };
                 match series_value(&source, cells, slot) {
-                    (value, State::Value, _) => ranked.push((value, key, at)),
+                    (value, State::Value, _) => {
+                        if !drop_zero || value > 0 {
+                            ranked.push((value, key, at));
+                        }
+                    }
                     (_, State::Missing, Some(_)) => {}
                     _ => {
                         answer::not_recorded(&unknown_contender(query, lane, (at != UNNAMED).then_some(at)), out);
@@ -547,7 +556,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                     }
                 }
             }
-            if series.absent_none {
+            if series.absent_none && !drop_zero {
                 let held: HashSet<u128> = cells.rows().filter_map(|slot| cells.key(slot)).collect();
                 ranked.extend(tags.by_key.iter().filter(|(key, _)| !held.contains(key)).map(|(&key, &at)| (0, key, at)));
             }

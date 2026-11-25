@@ -23,6 +23,7 @@ import {
   rankedOrder, unnamedLooks,
   rankedPanelKeys,
   withinMapOf,
+  type ExactReading,
   type HeadReading,
   type KnownHeadReading,
 } from './seriesHelpers.ts';
@@ -49,6 +50,7 @@ export interface CountryLine {
   readonly tag: string;
   readonly name: string;
   readonly color: string;
+  readonly exact?: ExactReading | null;
 }
 
 export interface CountryLinesOptions {
@@ -151,10 +153,40 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         };
       }
       const top = options.top !== null;
+      if (top) {
+        const refused = readView.refused('main');
+        if (refused) {
+          return {
+            kind: spec.kind,
+            measureTitle: spec.title,
+            mode: 'lines',
+            hour,
+            extent: options.extent,
+            yAxis: { format: spec.format },
+            series: [],
+            empty: { message: refused, kind: 'unavailable' },
+            auditRows: [],
+          };
+        }
+      }
       const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
       const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
       const tags = top ? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main')) : options.tags;
+      if (top && drawn !== undefined && tags.length === 0) {
+        return {
+          kind: spec.kind,
+          measureTitle: spec.title,
+          mode: 'lines',
+          hour,
+          extent: options.extent,
+          ...(view ? { view } : {}),
+          yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, ...chartAxis(settings) },
+          series: [],
+          empty: { message: `No ${spec.subject} recorded at this date.`, kind: 'empty' },
+          auditRows: [],
+        };
+      }
       const rowOf = new Map(tags.map((tag, row) => [tag, row]));
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
@@ -184,7 +216,14 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         const look = looks.get(tag)!;
         const { name, flag, color, identities } = look;
         const atDetail = detailHour === null ? look : seriesLookAt(look, detailHour);
-        lines.push({ tag, name: atDetail.name, color: atDetail.color });
+        if (detailHour === null || memberAt(options.membership, tag, detailHour)) {
+          lines.push({
+            tag,
+            name: atDetail.name,
+            color: atDetail.color,
+            exact: exact && (detailHour === null || exact.hour === detailHour) ? exact : null,
+          });
+        }
         const main: TimeChartSeriesModel = {
           id: tag,
           key: tag,
@@ -265,7 +304,26 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
       const family = { kind: measure.kind, measure: measure.measure };
       const secondFamily = second ? { kind: measure.kind, measure: second.measure } : null;
       const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
-      const hover = spec.hover ? [{ ...spec.hover.entry(ctx), name: 'detail' }] : [];
+      const detailEntry = (rankedMode: boolean): SourceEntry[] => {
+        if (!spec.hover) return [];
+        const base = { ...spec.hover.entry(ctx), name: 'detail' };
+        if (base.read.shape !== 'exact-hover') return [base];
+        const read = base.read;
+        if (rankedMode) {
+          return [{
+            ...base,
+            read: read.readsOf !== undefined ? read : { ...read, countriesOf: read.countriesOf ?? 'main' },
+          }];
+        }
+        return [{
+          ...base,
+          read: {
+            ...read,
+            ...(read.params && read.readsOf === undefined ? { params: { ...read.params, countries: tags.map(countryFromKey) } } : {}),
+            ...(ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
+          },
+        }];
+      };
       if (top !== null) {
         const params = { branchId: ctx.branch.id, family, top };
         const ranked: SourceEntry[] = [
@@ -297,7 +355,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
               }]
             : []),
           { name: 'hover', ...common, read: { shape: 'exact-hover', product: 'series-state', params: { branchId: ctx.branch.id, family }, readsOf: 'main' } },
-          ...hover,
+          ...detailEntry(true),
         ];
         return { owner, entries: ranked };
       }
@@ -335,9 +393,14 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         {
           name: 'hover',
           ...common,
-          read: { shape: 'exact-hover', product: 'series-state', params: { branchId: ctx.branch.id, family, reads } },
+          read: {
+            shape: 'exact-hover',
+            product: 'series-state',
+            params: { branchId: ctx.branch.id, family, reads },
+            ...(ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
+          },
         },
-        ...hover,
+        ...detailEntry(false),
       ];
       const rank = rankEntry(ctx, family, tags);
       if (rank) entries.push(rank);

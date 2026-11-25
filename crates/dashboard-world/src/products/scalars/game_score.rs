@@ -137,7 +137,11 @@ pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], unplaced: &[&CountryG
     let mut unread = 0usize;
     for &(tag, score) in scored {
         match part(score, &ask.by) {
-            Some((Recorded::Value(value), CountryGameScoreRow::KNOWN)) => known.push((*value, tag)),
+            Some((Recorded::Value(value), CountryGameScoreRow::KNOWN)) => {
+                if *value > 0 {
+                    known.push((*value, tag));
+                }
+            }
             _ => unread += 1,
         }
     }
@@ -155,7 +159,7 @@ pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], unplaced: &[&CountryG
     let full = known.len() >= usize::try_from(ask.count).unwrap_or(usize::MAX);
     let floor = known.last().map(|&(value, _)| value);
     let contending = unplaced.iter().filter(|score| match part(score, &ask.by) {
-        Some((Recorded::Value(value), CountryGameScoreRow::KNOWN)) => !full || floor.is_none_or(|floor| *value >= floor),
+        Some((Recorded::Value(value), CountryGameScoreRow::KNOWN)) => *value > 0 && (!full || floor.is_none_or(|floor| *value >= floor)),
         _ => true,
     }).count();
     if contending > 0 {

@@ -495,7 +495,7 @@ static POWER: Series = Series {
     table: TableId::Countries,
     key: Key::Country,
     parts: None,
-    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: false,
 };
@@ -505,7 +505,7 @@ static POWER_NONE: Series = Series {
     table: TableId::Countries,
     key: Key::Country,
     parts: None,
-    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: true,
 };
@@ -622,7 +622,7 @@ static PARTS: Series = Series {
     table: TableId::Countries,
     key: Key::Country,
     parts: Some(Parts { bits: 2, id: None }),
-    measures: &[Measure { name: "slot", column: Column::Cell("canonical_slot"), decimals: 0, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "slot", column: Column::Cell("canonical_slot"), decimals: 0, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: false,
 };
@@ -1910,7 +1910,7 @@ static POWER_SLOT: Series = Series {
     table: TableId::Countries,
     key: Key::Slot,
     parts: None,
-    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0 }],
+    measures: &[Measure { name: "power", column: Column::Cell("political_power_raw"), decimals: 5, aggregates: 0, carry: Carry::None, rank: 0, rank_zero: dashboard_declare::RankZero::Keep }],
     drops: false,
     absent_none: false,
 };
