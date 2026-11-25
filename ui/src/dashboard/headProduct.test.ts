@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headKey, headRead, headSubject, momentHour, retain } from './headProduct.ts';
+import { headKey, headSubject, momentHour, retain } from './headProduct.ts';
 import { PlaybackController } from './playback.ts';
 import type { FrameEngine, EngineFrame } from '../engine/frame';
 import { WidgetFrames } from './widgetClock.ts';
 import { followSpan, watchBoundary, watchTrackHours } from './widgetTime.ts';
-import { at, FOLLOW, SPEC, type TrackHour, axisAt } from './regionTime.ts';
+import { at, FOLLOW, regionFollows, regionHour, SPEC, type AxisHour, type Region, type TrackHour, axisAt } from './regionTime.ts';
 import type { BoundTrack, WidgetSpec } from './model';
+
+const headRead = (region: Region, track: BoundTrack | undefined, tracks: readonly BoundTrack[]) => ({
+  follows: regionFollows(region),
+  hourAt: (axis: AxisHour) => regionHour(region, track, tracks, axis),
+});
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;

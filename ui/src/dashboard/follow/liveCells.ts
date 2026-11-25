@@ -268,7 +268,3 @@ export function repliedCells(reply: unknown): Live<LiveValues<number>> {
     return still(noValues(error instanceof Error ? error.message : String(error)));
   }
 }
-
-export function reporting<T>(live: Live<T>, report: () => void): Live<T> {
-  return { read: () => { report(); return live.read(); }, subscribe: live.subscribe };
-}

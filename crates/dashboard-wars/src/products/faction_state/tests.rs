@@ -169,3 +169,165 @@ fn faction_goals_resolve_name_and_follow_only_the_goals_the_filter_shows_and_an_
     let (done, done_definitions, _) = shown_goals(done);
     assert_eq!((done.len(), done[0].ordinal, done_definitions[0].token.as_deref()), (1, None, Some("mod_done")));
 }
+
+#[test]
+fn faction_pools_orders_resources_tracks_quiet_hours_and_resolves_slot_membership() {
+    use super::pools::FactionPools;
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{LoadContext, at_hour::exact_panel},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{
+        CountryRow, FactionDoctrineRow, FactionResearchRow, FactionResourceRow, FactionRow, FactionUnlockRow, ResourceDefinitionRow,
+    };
+    use serde_json::json;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames: Vec<DecodedFrame> = (100..=105)
+        .map(|hour| {
+            let mut frame = source(1, hour, None);
+            let tag = if hour >= 104 { b"BBB".to_vec() } else { b"AAA".to_vec() };
+            set(
+                &mut frame,
+                TableId::Countries,
+                TableRows::Countries(vec![
+                    CountryRow { id: 7, canonical_slot: 3, tag, ..Default::default() },
+                    CountryRow { id: 8, canonical_slot: 4, tag: b"CCC".to_vec(), ..Default::default() },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::CountryLinks,
+                TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: 7, canonical_slot: 3 },
+                    CountryLinkRow { id: 8, canonical_slot: 4 },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::Factions,
+                TableRows::Factions(vec![FactionRow { id: FACTION, ..Default::default() }]),
+            );
+            set(
+                &mut frame,
+                TableId::FactionMembers,
+                TableRows::FactionMembers(vec![
+                    FactionMemberRow { country: 7, faction: FACTION, ordinal: 0 },
+                    FactionMemberRow { country: 8, faction: FACTION, ordinal: 1 },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::ResourceDefinitions,
+                TableRows::ResourceDefinitions(vec![
+                    ResourceDefinitionRow { id: 1, token: 10, active: 1, factory_cost: 0 },
+                    ResourceDefinitionRow { id: 2, token: 11, active: 1, factory_cost: 0 },
+                    ResourceDefinitionRow { id: 3, token: 12, active: 1, factory_cost: 0 },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::LexicalTokens,
+                TableRows::LexicalTokens(vec![
+                    LexicalTokenRow { token: 10, literal: b"oil".to_vec() },
+                    LexicalTokenRow { token: 11, literal: b"steel".to_vec() },
+                    LexicalTokenRow { token: 12, literal: b"rubber".to_vec() },
+                    LexicalTokenRow { token: 20, literal: b"land_doctrine".to_vec() },
+                ]),
+            );
+            if hour == 105 {
+                *frame.tables[TableId::FactionResources.index()] = TableView::Unavailable { reason: "resources unread".into() };
+            } else {
+                let steel = if hour >= 103 { 500_000 } else { 200_000 };
+                set(
+                    &mut frame,
+                    TableId::FactionResources,
+                    TableRows::FactionResources(vec![
+                        FactionResourceRow { faction: FACTION, ordinal: 0, token: 0, raw: 0 },
+                        FactionResourceRow { faction: FACTION, ordinal: 1, token: 10, raw: 200_000 },
+                        FactionResourceRow { faction: FACTION, ordinal: 2, token: 11, raw: steel },
+                        FactionResourceRow { faction: FACTION, ordinal: 3, token: 12, raw: 90_000 },
+                    ]),
+                );
+            }
+            set(
+                &mut frame,
+                TableId::FactionUnlocks,
+                TableRows::FactionUnlocks(vec![FactionUnlockRow { faction: FACTION, manpower: u8::from(hour >= 102), research: 1 }]),
+            );
+            set(
+                &mut frame,
+                TableId::FactionManpower,
+                TableRows::FactionManpower(vec![
+                    FactionManpowerRow { faction: FACTION, ordinal: 0, country: 8, value: 150 },
+                    FactionManpowerRow { faction: FACTION, ordinal: 1, country: 7, value: 400 },
+                ]),
+            );
+            set(
+                &mut frame,
+                TableId::FactionResearch,
+                TableRows::FactionResearch(vec![FactionResearchRow { faction: FACTION, ordinal: 0, scientist_base_raw: 120_000, bonus_raw: 0, countries: vec![7, 8] }]),
+            );
+            set(
+                &mut frame,
+                TableId::FactionDoctrine,
+                TableRows::FactionDoctrine(vec![FactionDoctrineRow { faction: FACTION, ordinal: 0, token: 20 }]),
+            );
+            set(
+                &mut frame,
+                TableId::ReservedCountryNaming,
+                TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow { tag: b"RSV".to_vec(), ..Default::default() }]),
+            );
+            frame
+        })
+        .collect();
+
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "wars".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let load = LoadContext { content: None };
+    let params = json!({ "branchId": "1", "country": 3, "pool": "resources" });
+    let panel = exact_panel::<FactionPools>(&source, &load, &params).unwrap();
+    let exact = panel.exact().unwrap();
+    let h100 = (exact.advance)(100, true, &false.into(), None);
+    assert!(h100.fresh);
+    let r100 = h100.value.as_ref().as_ref().unwrap();
+    assert_eq!(r100["status"], "ok");
+    assert_eq!(r100["decimals"], 5);
+    let ordinals: Vec<u64> = r100["resources"].as_array().unwrap().iter().map(|r| r["ordinal"].as_u64().unwrap()).collect();
+    assert_eq!(ordinals, [1, 2, 3], "equal amounts tie-break by ordinal, skipping zero sentinel ordinal 0");
+    let h101 = (exact.advance)(101, false, &false.into(), None);
+    let h102 = (exact.advance)(102, false, &false.into(), None);
+    assert!(!h101.fresh && !h102.fresh, "quiet hours with unchanged resource inputs do not recompute");
+    let h103 = (exact.advance)(103, false, &false.into(), None);
+    assert!(h103.fresh);
+    let r103 = h103.value.as_ref().as_ref().unwrap();
+    let ordinals103: Vec<u64> = r103["resources"].as_array().unwrap().iter().map(|r| r["ordinal"].as_u64().unwrap()).collect();
+    assert_eq!(ordinals103, [2, 1, 3], "steel rises to the top once its amount exceeds oil");
+    let h104 = (exact.advance)(104, false, &false.into(), None);
+    assert_eq!(h104.value.as_ref().as_ref(), (exact.cold)(104, &false.into()).as_ref(), "slot lookup holds across AAA -> BBB tag change");
+    let h105 = (exact.advance)(105, false, &false.into(), None);
+    let r105 = h105.value.as_ref().as_ref().unwrap();
+    assert_eq!(r105["status"], "poolNotRecorded");
+    assert!(r105["reason"].as_str().unwrap().contains("resources unread"));
+
+    let mp_panel = exact_panel::<FactionPools>(&source, &load, &json!({ "branchId": "1", "country": 3, "pool": "manpower" })).unwrap();
+    let mp_exact = mp_panel.exact().unwrap();
+    assert_eq!((mp_exact.cold)(101, &false.into()).unwrap()["status"], "poolLocked");
+    let mp102 = (mp_exact.cold)(102, &false.into()).unwrap();
+    assert_eq!(mp102["status"], "ok");
+    assert_eq!(mp102["manpowerTotal"], "550");
+    assert_eq!(mp102["manpower"][0]["slot"], 3);
+    assert_eq!(mp102["manpower"][0]["amount"], "400");
+    assert_eq!(mp102["manpower"][1]["slot"], 4);
+
+    let res_panel = exact_panel::<FactionPools>(&source, &load, &json!({ "branchId": "1", "faction": FACTION.to_string(), "pool": "research" })).unwrap();
+    let res = (res_panel.exact().unwrap().cold)(100, &false.into()).unwrap();
+    assert_eq!(res["status"], "ok");
+    assert_eq!(res["research"]["scientistBase"], "120000");
+    assert_eq!(res["research"]["members"].as_array().unwrap().len(), 2);
+
+    let absent_panel = exact_panel::<FactionPools>(&source, &load, &json!({ "branchId": "1", "faction": OTHER.to_string(), "pool": "doctrine" })).unwrap();
+    assert_eq!((absent_panel.exact().unwrap().cold)(100, &false.into()).unwrap()["status"], "factionAbsent");
+}

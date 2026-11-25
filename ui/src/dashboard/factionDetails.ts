@@ -1,6 +1,3 @@
-import { liveKey } from '../charts/live.ts';
-import type { Live, LiveValues } from '../charts/live';
-import type { LiveTexts } from '../charts/LiveText';
 import { object } from './validation.ts';
 import type { FactionDetailReply } from '../generated/dashboard';
 
@@ -34,13 +31,3 @@ export function validateFactionDetails(value: unknown): FactionDetailReply {
 }
 
 export const detailsStructure = (reply: FactionDetailReply): string => JSON.stringify(reply);
-
-export const FACTION_ROW = 'faction';
-export const manpowerTotalKey = liveKey(FACTION_ROW, 'manpower');
-export const researchBaseKey = liveKey(FACTION_ROW, 'research');
-export const resourceKey = (ordinal: number) => liveKey(`resource:${ordinal}`, 'amount');
-export const manpowerKey = (ordinal: number) => liveKey(`manpower:${ordinal}`, 'value');
-
-export function liveTextsOf(live: Live<LiveValues<number>>, write: (values: LiveValues<number>, key: string) => string): LiveTexts {
-  return { text: key => write(live.read(), key), subscribe: changed => live.subscribe(changed) };
-}

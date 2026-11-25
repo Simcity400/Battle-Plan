@@ -1,14 +1,19 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { FACTION_OPTION } from '../../dashboard/factionOption.ts';
-import { POOL_CHOICES } from './poolsData.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
+
+export type FactionPoolChoice = 'resources' | 'manpower' | 'research' | 'doctrine';
+
+export const POOL_CHOICES: readonly { value: FactionPoolChoice; label: string }[] = [
+  { value: 'resources', label: 'Resources' },
+  { value: 'manpower', label: 'Manpower' },
+  { value: 'research', label: 'Research' },
+  { value: 'doctrine', label: 'Doctrine' },
+];
 
 export const OPTIONS: readonly OptionField[] = [
   FACTION_OPTION,
-  { key: 'pool', section: 'options', label: 'Pool', kind: 'choice', default: 'resources', choices: POOL_CHOICES,
-    hint: 'Only the pools the faction has at the time shown are offered.' },
-  DRILL_OPTION,
+  { key: 'pool', section: 'options', label: 'Pool', kind: 'choice', default: 'resources', choices: POOL_CHOICES },
 ];
 
 export const definition = {
