@@ -7,6 +7,7 @@ import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts'
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
 import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
+import { OPTIONS as FACTION_STRENGTH_OPTIONS } from '../faction-strength/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
@@ -16,6 +17,10 @@ import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../worl
 const ARMY_SIZE_BREAKDOWN_OPTIONS = ARMY_SIZE_OPTIONS.filter(field => ['view', 'measure', 'countFor', 'log', 'yMin', 'yMax'].includes(field.key));
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
+const FACTION_STRENGTH_LINES_OPTIONS = [
+  ...FACTION_STRENGTH_OPTIONS.filter(field => ['view', 'measure', 'count', 'territoryMeasure', 'rule', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
+  ...LINES_VIEW_OPTIONS,
+];
 const GAME_SCORE_LINES_OPTIONS = [
   ...GAME_SCORE_OPTIONS.filter(field => ['view', 'topMeasure', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
   ...LINES_VIEW_OPTIONS,
@@ -173,6 +178,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'lines',
       () => import('../factories/factoriesLinesProjection.ts'),
       mod => ({ projection: mod.factoriesLinesProjection, declaration: mod.factoriesLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'faction-strength',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: FACTION_STRENGTH_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'faction-strength',
+      'lines',
+      () => import('../faction-strength/factionStrengthLinesProjection.ts'),
+      mod => ({ projection: mod.factionStrengthLinesProjection, declaration: mod.factionStrengthLinesDeclaration }),
     ),
   },
   {
