@@ -170,9 +170,6 @@ fn battle_provinces(query: &Query<'_>, asks: &[Option<ProvinceAsk>]) -> io::Resu
     for ((combat, run), (keys, from, to)) in groups {
         let table = if combat { TableId::NavalCombats } else { TableId::NavalResults };
         let index = table.index();
-        if recording.predates(index).is_some() || recording.withheld_reason(index).is_some() {
-            continue;
-        }
         let from = match recording.table_coverage(index, run) {
             TableCoverage::Valid => from,
             TableCoverage::WithheldAll(_) => continue,
@@ -182,8 +179,13 @@ fn battle_provinces(query: &Query<'_>, asks: &[Option<ProvinceAsk>]) -> io::Resu
             continue;
         }
         let keys: Vec<u128> = keys.into_iter().collect();
-        let history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[0], Keys::These(&keys), from, to))?;
-        histories.insert((combat, run), history);
+        match dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[0], Keys::These(&keys), from, to)) {
+            Ok(history) => {
+                histories.insert((combat, run), history);
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(asks
         .iter()

@@ -64,8 +64,9 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   const model = project([
     sinking('0', { battle: linked, battleProvince: 601, sinkingCause: { kind: 'ship', name: 'Mod Raider', classKey: 'mod_raider_hull', className: null, assisted: false } }),
     sinking('1', { battle: linked, battleProvince: 601 }),
+    sinking('2', { battle: linked, battleProvince: 999, sinkingCause: { kind: 'airWing', carrierName: null, carrierClassKey: null, carrierClassName: null, assisted: false } }),
   ]);
-  const [known, unknown] = model.rows;
+  const [known, unknown, unnamed] = model.rows;
   assert.deepEqual(known!.cells.cause?.value, { kind: 'known', value: 'Battle of Mod Strait' });
   assert.equal(known!.cells.cause?.strong, true);
   assert.equal(known!.cells.cause?.inlineSubtext, 'by mod_raider_hull');
@@ -78,4 +79,7 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.equal(knownTip.labels.filter(label => label === 'Sea zone').length, 1);
   assert.equal(unknown!.cells.cause?.inlineSubtext, undefined);
   assert.deepEqual(tooltip(unknown!).value('Sunk by'), { kind: 'notRecorded', reason: 'Killer not recorded' });
+  assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'known', value: 'Battle' }, 'a battle whose name is not recorded still shows its killer');
+  assert.equal(unnamed!.cells.cause?.inlineSubtext, 'by aircraft');
+  assert.equal(tooltip(unnamed!).value('Battle')?.kind, 'notRecorded');
 });
