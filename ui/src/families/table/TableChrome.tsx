@@ -37,6 +37,7 @@ interface ChromePanes {
 interface ChromeWidths {
   readonly widths: Readonly<Record<string, number>>;
   readonly visible: readonly string[];
+  readonly totals?: readonly string[];
   readonly scrollable: boolean;
   readonly pinnedCount?: number;
 }
@@ -100,11 +101,11 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       sortable: spec?.sortable,
       hint: spec?.hint,
       notRecordedReason: spec?.notRecordedReason,
-      headerGroup: spec?.headerGroup,
+      headerGroup: measured?.totals?.includes(col.key) ? undefined : col.headerGroup,
       cellKind: spec?.cellKind,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
-  }), [layout, specMap]);
+  }), [layout, specMap, measured]);
 
   const widthVars = useMemo(() => {
     const vars: Record<string, string> = {};

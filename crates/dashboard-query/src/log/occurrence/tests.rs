@@ -250,9 +250,24 @@ fn cutoff_aware_sort_keys_order_ongoing_rows_at_the_asked_hour_and_support_text_
     let num_130 = index.ask(&holders(), &Ask { order: Order::Key(0, Direction::Descending), ..ask(130) }).unwrap();
     assert_eq!(ids(&index, &num_130), [1, 2, 3], "at 130: 500 > 200 > missing");
     assert_eq!(num_130.next_change, Some(135));
+    let second = index.ask(&holders(), &Ask { offset: 1, limit: 1, order: Order::Key(0, Direction::Descending), ..ask(130) }).unwrap();
+    assert_eq!((ids(&index, &second), second.total), (vec![2], 3));
 
+    let smallest = index.ask(&holders(), &Ask { order: Order::Key(0, Direction::Ascending), limit: 1, ..ask(130) }).unwrap();
+    assert_eq!(ids(&index, &smallest), [2]);
+    assert_eq!(smallest.next_change, None, "an off-page figure becoming known below the visible page does not invalidate it");
     let num_135_asc = index.ask(&holders(), &Ask { order: Order::Key(0, Direction::Ascending), ..ask(135) }).unwrap();
     assert_eq!(ids(&index, &num_135_asc), [2, 1, 3], "at 135 asc: 200 < 500 < 900");
+
+    let crossing = |id, figures| Occurrence { sort_keys: Box::new([SortKey::dated_numbers(figures)]), ..occurrence(id, 0, 0) };
+    let middle = Index::new(vec![
+        crossing(1, vec![(0, Some(0)), (6, Some(20)), (8, Some(9))]),
+        crossing(2, vec![(0, Some(10))]),
+        crossing(3, vec![(0, Some(20)), (6, Some(0))]),
+    ], Vec::new(), &[]).unwrap();
+    let page = middle.ask(&holders(), &Ask { order: Order::Key(0, Direction::Ascending), offset: 1, limit: 1, ..ask(5) }).unwrap();
+    assert_eq!(ids(&middle, &page), [2]);
+    assert_eq!(page.next_change, Some(8), "two rows swapping across a page leave its ordinal unchanged until another crosses");
 
     let text_110 = index.ask(&holders(), &Ask { order: Order::Key(1, Direction::Ascending), ..ask(110) }).unwrap();
     assert_eq!(ids(&index, &text_110), [2, 1, 3], "case-insensitive text order: Berlin < gdynia < missing");

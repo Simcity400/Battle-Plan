@@ -55,6 +55,7 @@ export type TableCellKind =
 
 export type TableHeaderGroup =
   | { readonly kind: 'shortOver' }
+  | { readonly kind: 'pair'; readonly labels: readonly [string, string]; readonly icon?: string; readonly iconMissing?: string }
   | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly operator?: string; readonly notRecordedReason?: string }[] };
 
 export interface TableCellFlag {
@@ -103,7 +104,7 @@ export interface TableColumnSpec extends TableColumnDefaults {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
-  readonly narrow?: 'hide' | 'flag' | 'primary';
+  readonly narrow?: 'hide' | 'flag' | 'primary' | 'total';
   readonly textTone?: 'secondary' | 'muted';
 }
 
@@ -134,6 +135,7 @@ export interface TableCell {
   readonly boundedDate?: DateBoundKind;
   readonly splitBar?: readonly TableCellSplitSegment[];
   readonly secondaryValue?: Value;
+  readonly pair?: readonly [Value, Value];
   readonly art?: ArtResult;
   readonly artKey?: string;
   readonly iconSlot?: boolean;
@@ -149,6 +151,7 @@ export interface TableCell {
   readonly status?: 'dot' | 'outline' | 'fill';
   readonly statusKind?: StatusMarkKind;
   readonly actionLabel?: string;
+  readonly actionIcon?: 'play';
   readonly shortage?: boolean;
   readonly stockpile?: TableCellStockpile;
   readonly bar?: TableCellBar | null;
@@ -1167,6 +1170,11 @@ export function deriveTableMirror(
       cells: columns.map(col => {
         const cell = item.row.cells[col.key];
         const resolved = cell ? resolveCellAtHour(cell) : { value: notRecorded('Not recorded') };
+        const group = col.headerGroup;
+        if (group?.kind === 'pair' && cell?.pair) {
+          const spoken = cell.pair.map((value, i) => group.labels[i] + ' ' + spokenValue(value, cell.format ?? col.format)).join(', ');
+          return { column: col.key, spoken };
+        }
         return { column: col.key, spoken: cell?.loading ? formatValueState(resolved.value, cell.format ?? col.format, { loading: true }).spoken : spokenValue(resolved.value, cell?.format ?? col.format) };
       }),
     };
@@ -1240,7 +1248,13 @@ export function deriveRowTooltip(
       rows.push(tooltipRowFromValue(col.label || 'Date', knownValue(text)));
       continue;
     }
-    rows.push(tooltipRowFromValue(col.label, resolved.value, cell.format ?? col.format));
+    if (col.headerGroup?.kind === 'pair' && cell.pair) {
+      for (const [i, value] of cell.pair.entries()) {
+        rows.push(tooltipRowFromValue(col.label + ' (' + col.headerGroup.labels[i] + ')', value, cell.format ?? col.format));
+      }
+    } else {
+      rows.push(tooltipRowFromValue(col.label, resolved.value, cell.format ?? col.format));
+    }
   }
   for (let i = 0; i < allColumns.length; i++) {
     const cell = row.cells[allColumns[i]!.key];

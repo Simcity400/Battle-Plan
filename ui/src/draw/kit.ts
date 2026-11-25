@@ -1753,12 +1753,24 @@ export function drawActionButton(
   label: string,
   active: boolean,
   theme: FamilyTheme,
+  icon?: 'play',
 ): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
   const tokens = resolveKitTokens(theme);
   const iconSize = 13;
-  const drawWindowIcon = (ix: number, iy: number, color: string, alpha: number) => {
+  const drawIcon = (ix: number, iy: number, color: string, alpha: number) => {
     ctx.save();
     ctx.globalAlpha = alpha;
+    if (icon === 'play') {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(ix + 3, iy + 1);
+      ctx.lineTo(ix + 12, iy + iconSize / 2);
+      ctx.lineTo(ix + 3, iy + iconSize - 1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.3;
     ctx.beginPath();
@@ -1773,7 +1785,7 @@ export function drawActionButton(
   if (!active) {
     const ix = right - iconSize;
     const iy = Math.round(middleY - iconSize / 2);
-    drawWindowIcon(ix, iy, theme.muted, 0.55);
+    drawIcon(ix, iy, theme.muted, 0.55);
     return { x: ix - 4, y: iy - 4, width: iconSize + 8, height: iconSize + 8 };
   }
   const font = `500 12px ${theme.font}`;
@@ -1790,7 +1802,7 @@ export function drawActionButton(
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, ROW_CORNER_RADIUS);
   ctx.fill();
-  drawWindowIcon(x + padX, Math.round(middleY - iconSize / 2), theme.text, 0.9);
+  drawIcon(x + padX, Math.round(middleY - iconSize / 2), theme.text, 0.9);
   ctx.fillStyle = theme.text;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';

@@ -9,12 +9,9 @@ dashboard_base::register_products! {
     DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail,
     DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail,
     DIVISION_SERVICE_RECORD_CHOICES => crate::products::divisions::careers::service_record::DivisionServiceRecordChoices,
-    LAND_BATTLES_LANDBATTLESMANIFEST => crate::products::land_battles::LandBattlesManifest,
-    LAND_BATTLES_LANDBATTLES => crate::products::land_battles::LandBattles,
-    LAND_BATTLES_LANDBATTLESRANKING => crate::products::land_battles::LandBattlesRanking,
+    LAND_BATTLES_TAIL => crate::products::land_battles::tail::LandBattlesTail,
     LAND_BATTLES_LANDBATTLECOURSES => crate::products::land_battles::LandBattleCourses,
     LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
-    COMBAT_LOG_COMBATLOG => crate::products::combat_log::CombatLog,
 }
 
 dashboard_base::register_hourly_products! {

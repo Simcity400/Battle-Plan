@@ -127,6 +127,7 @@ const SHORT_OVER_GAP = 8;
 function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, headFont: string, unitFont: string): number {
   const group = column.headerGroup;
   if (!group) return 0;
+  if (group.kind === 'pair') return 2 * (Math.max(...group.labels.map(label => measure(label, headFont))) + CELL_INSET);
   const unit = column.unit ? measure(column.unit, unitFont) : 0;
   if (group.kind === 'shortOver') return measure('Short', headFont) + measure('Over', headFont) + SHORT_OVER_GAP * 2 + 1 + CELL_INSET * 2;
   let slot = 0;
@@ -166,6 +167,10 @@ export function measureFixedColumnWidths(
     }
     if (column.cellKind === 'item' && !column.widest?.length) {
       out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
+      continue;
+    }
+    if (column.headerGroup?.kind === 'pair') {
+      out[column.key] = Math.ceil(Math.max(column.minWidth ?? 0, headerGroupWidth(column, measure, headFont, unitFont)));
       continue;
     }
     if (column.cellKind === 'stockpileNet' || column.cellKind === 'stockpileSum' || column.cellKind === 'stockpileBalance') {
@@ -297,6 +302,7 @@ export function layoutFamilyTable(
     for (let i = primary + 1; primary >= 0 && visible[i]?.narrow === 'flag'; i++) inlineFlags.push(visible[i]!.key);
     visible = visible.map(col => {
       if (col.narrow === 'primary') return { ...col, inlineFlags };
+      if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width };
       if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.minWidth ?? 40, grow: 0 };
       return col;
     });

@@ -500,3 +500,12 @@
 .tf-picker-facets label { display: inline-flex; align-items: center; padding-left: 6px; border-radius: 999px; background: var(--raised); }
 .tf-picker-facets label img { width: 18px; height: 12px; object-fit: contain; }
 .tf-picker-facets select { width: auto; max-width: 120px; padding: 3px 7px; font: inherit; background: var(--raised); color: var(--text); border: 0; border-radius: 999px; }
+.tf-head-row:has(.tf-th-pair) { background: var(--raised); }
+.tf-head-row:has(.tf-th-pair) .tf-th { background: inherit; }
+.tf-head-row:has(.tf-th-pair) .tf-th:not(:has(.tf-th-pair)) { align-items: flex-end; padding-bottom: 5px; }
+.tf-th:has(.tf-th-pair) > .tf-th-label { width: calc(100% + 12px); }
+.tf-head-row .tf-th.sorted:has(.tf-th-pair) { background: var(--hover); }
+.tf-th-pair { display: grid; width: 100%; gap: 2px; }
+.tf-th-pair > :first-child img { width: 16px; height: 16px; object-fit: contain; }
+.tf-th-pair > :first-child { display: flex; justify-content: center; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); }
+.tf-th-pair > :last-child { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; text-align: right; }
