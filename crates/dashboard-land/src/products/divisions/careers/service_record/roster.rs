@@ -33,7 +33,7 @@ impl<T: PartialEq> Steps<T> {
         }
     }
 
-    fn at(&self, hour: i32) -> Option<&T> {
+    pub(super) fn at(&self, hour: i32) -> Option<&T> {
         self.0[..self.0.partition_point(|s| s.0 <= hour)].last().map(|s| &s.1)
     }
 
@@ -58,6 +58,7 @@ pub(super) struct Division {
     pub(super) medals: Steps<Option<i32>>,
     posting: Steps<Posting>,
     name: Steps<Option<String>>,
+    pub(super) measures: Steps<(Option<i64>, Option<i32>)>,
     experience: Steps<(Option<i64>, Option<i32>)>,
     manpower: Steps<Option<i32>>,
 }
@@ -78,7 +79,12 @@ impl Division {
         let next_facts = self.facts.get(self.facts.partition_point(|&at| at <= hour)).copied();
         let template = self.posting.at(hour).and_then(|p| roster.templates.get(&p.template)).and_then(|t| t.next(hour));
         let seen = self.seen.get(self.seen.partition_point(|s| s.1 < hour)).filter(|s| s.0 <= hour);
-        let live = seen.and_then(|&(_, end)| [next_facts, template, Some(end.saturating_add(1))].into_iter().flatten().min());
+        let live = seen.and_then(|&(_, end)| {
+            if self.removed(hour).is_some() {
+                return (end > hour).then(|| hour.saturating_add(1));
+            }
+            [next_facts, template, Some(end.saturating_add(1))].into_iter().flatten().min()
+        });
         [live, next_seen, removal].into_iter().flatten().min()
     }
 }
@@ -145,7 +151,6 @@ impl Roster {
             hours.sort_unstable();
             hours.dedup();
             let mut held = None;
-            let mut last_facts = None;
             for hour in hours.into_iter().take_while(|&h| h <= last) {
                 let serving = d.seen_at(hour) == Some(hour);
                 let medals = d.medals.at(hour).copied().flatten();
@@ -153,11 +158,7 @@ impl Roster {
                 let experience = manpower.at(hour).copied().flatten().and_then(|manpower| {
                     DivisionStatusRow { experience: Recorded::Value(raw), ..Default::default() }.normalized_experience(manpower)
                 });
-                let facts = (experience, casualties);
-                if serving && last_facts != Some(facts) {
-                    d.facts.push(hour);
-                }
-                last_facts = Some(facts);
+                d.measures.put(hour, (experience, casualties));
                 let slot = d.posting.at(hour).and_then(|p| p.slot);
                 let next = if serving && d.removed(hour).is_none() && medals.is_none_or(|n| n > 0) {
                     Some((slot, medals.map(|n| (n, experience, casualties, Reverse(id)))))
@@ -174,6 +175,7 @@ impl Roster {
                     held = next;
                 }
             }
+            d.facts.extend(d.measures.0.iter().map(|s| s.0));
             d.facts.extend(d.name.0.iter().map(|s| s.0));
             d.facts.extend(d.posting.0.iter().map(|s| s.0));
             d.facts.sort_unstable();
@@ -369,8 +371,7 @@ pub(super) fn scan(
             Ok(())
         })?;
     }
-    let status =
-        history(TableId::DivisionStatus, &at_hour::field_columns(TableId::DivisionStatus, &["experience", "career_counter"]))?;
+    let status = history(TableId::DivisionStatus, &at_hour::field_columns(TableId::DivisionStatus, &["experience", "career_counter"]))?;
     for (key, steps) in status.keys {
         let d = divisions.entry(key as u64).or_default();
         for s in steps {
@@ -402,8 +403,7 @@ pub(super) fn scan(
     let mut frames = Frames::new(query)?;
     for (at, ids) in hours {
         check_cancel(cancelled)?;
-        let reads =
-            [TableId::DivisionTemplates, TableId::DivisionTemplateIcons].map(|table| Read::these(table, ids.iter().copied()));
+        let reads = [TableId::DivisionTemplates, TableId::DivisionTemplateIcons].map(|table| Read::these(table, ids.iter().copied()));
         let frame = frames.frame_with(at, &reads, template_columns, TITLE)?;
         for key in ids {
             let icon = witnessed::<tables::DivisionTemplateIcons>(&frame, key).row();
@@ -418,9 +418,7 @@ pub(super) fn scan(
             steps.put(at, Template { name: name.clone(), sprite: sprite.clone() });
             if name.is_some()
                 && icon
-                    .and_then(|r| {
-                        r.display_name.require("display name").ok().and_then(|n| n.as_ref()).and_then(|n| n.sample_hour.stamp())
-                    })
+                    .and_then(|r| r.display_name.require("display name").ok().and_then(|n| n.as_ref()).and_then(|n| n.sample_hour.stamp()))
                     .is_some()
             {
                 steps.put(at.saturating_add(1), Template { name: None, sprite });

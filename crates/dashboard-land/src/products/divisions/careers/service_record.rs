@@ -1,8 +1,5 @@
 mod roster;
-use super::{
-    CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe,
-    manpower_of, status_of,
-};
+use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe};
 use crate::products::{army::ArmyAttribution, division_log};
 use dashboard_base::queries::country_ids::{RunLinks, run_links};
 use dashboard_base::{
@@ -137,7 +134,7 @@ impl OccurrenceReply for ServiceRecordTailReply {
 }
 
 enum Entry {
-    History { key: u128, read: i32 },
+    History(usize),
     Battle { combat: u128, start: i32, province: Option<u32>, owner: Option<u32>, other: Option<u32> },
     Event(Box<ServiceEntry>),
 }
@@ -159,6 +156,7 @@ struct Tail {
     roster: Roster,
     content: Content,
     rendered: Mutex<Rendered>,
+    history: Vec<(ServiceEntry, Refusals)>,
     entries: Index<Entry>,
 }
 
@@ -205,7 +203,9 @@ fn battle_entries(
     let mut joined = Vec::new();
     lanes::at_each(recording, run, TableId::LandCombats, Some(&columns), &asks, &mut |hour, combat, row| {
         check_cancel(cancelled)?;
-        let (Some((view, slot)), lanes::Reading::Cells(battle)) = (row, battles.reading(combat, hour)) else { return Ok(()) };
+        let (Some((view, slot)), lanes::Reading::Cells(battle)) = (row, battles.reading(combat, hour)) else {
+            return Ok(());
+        };
         let Cell::Number(start) = battle[0] else { return Ok(()) };
         let province = view.number(columns[0], slot).map(|id| id as u32);
         for (column, defending) in [(columns[1], false), (columns[2], true)] {
@@ -291,6 +291,7 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
     let mut subject_gaps = HashMap::<u128, Vec<MissingSpan>>::new();
     let mut versions = HashMap::<u128, (i32, usize)>::new();
     let mut participated = BTreeSet::new();
+    let mut history_reads = Vec::new();
     for stretch in &timeline.stretches {
         let links = run_links(recording, stretch.run)?;
         battle_entries(query, stretch, &links, &mut entries, &mut participated, cancelled)?;
@@ -372,8 +373,7 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
                 if list == DivisionHistoryRow::AWARDS {
                     let mut previous = None;
                     for (i, step) in steps.iter().enumerate() {
-                        let award =
-                            step.cells.as_ref().filter(|cells| cells[16] == Cell::Number(1)).map(|cells| (cells[8], cells[9]));
+                        let award = step.cells.as_ref().filter(|cells| cells[16] == Cell::Number(1)).map(|cells| (cells[8], cells[9]));
                         if award != previous || i == 0 {
                             division.facts.push(step.hour);
                             previous = award;
@@ -423,13 +423,15 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
                     if let Some(date) = date {
                         let observed = step.hour.max(date);
                         versions.insert(*key, (date, entries.len()));
+                        let index = history_reads.len();
+                        history_reads.push((step.hour, *key, date, index));
                         entries.push(occurrence(
                             entries.len(),
                             division,
                             date,
                             observed,
                             if award { AWARD } else { CAREER },
-                            Entry::History { key: *key, read: step.hour },
+                            Entry::History(index),
                         ));
                     }
                 }
@@ -447,8 +449,7 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
             let num = |column| division_log::number(&row.cells, column);
             use division_log::column as c;
             let hour = num(c::NATIVE_HOUR).map_or(row.hour, |at| at as i32);
-            let tag =
-                |column| division_log::slot(num(column)).and_then(|slot| query.holders.slot_tag(slot, row.hour)).map(str::to_owned);
+            let tag = |column| division_log::slot(num(column)).and_then(|slot| query.holders.slot_tag(slot, row.hour)).map(str::to_owned);
             let status = division_log::status(kind, num(c::DISPOSITION), num(c::CAUSE));
             if kind != DivisionEventRow::CREATED {
                 divisions.entry(division).or_default().removals.push((row.hour, hour, status.clone()));
@@ -470,11 +471,13 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
             entries.push(occurrence(entries.len(), division, hour, row.hour.max(hour), CAREER, Entry::Event(Box::new(data))));
         }
     }
+    let history = render_history(query, &content, history_reads, cancelled)?;
     roster.finish(query.timeline.last);
     Ok(Tail {
         roster,
         content,
         rendered: Mutex::default(),
+        history,
         entries: Index::new(entries, gaps, &[])?.with_subject_gaps(subject_gaps),
     })
 }
@@ -515,118 +518,112 @@ fn prepare(
     Ok(Prepared { tail, selection })
 }
 
-fn render(
-    frames: &mut at_hour::Frames<'_>,
-    event: &Occurrence<Entry>,
-    key: u128,
+fn render_history(
     query: &Query<'_>,
     content: &Content,
-    warnings: &mut Refusals,
-) -> io::Result<ServiceEntry> {
-    let (history_key, read_at) = match &event.payload {
-        Entry::Event(row) => return Ok((**row).clone()),
-        Entry::Battle { combat, start, province, owner, other } => {
-            let tag = |slot: Option<u32>| slot.and_then(|s| query.holders.slot_tag(s, event.observed)).map(str::to_owned);
-            return Ok(ServiceEntry {
-                key: format!("battle:{combat}:{start}"),
-                hour: event.date,
-                observed: event.observed,
-                kind: "battle".into(),
-                title: Some("Land battle".into()),
-                status: Some("Took part".into()),
-                tag: tag(*owner),
-                other: tag(*other),
-                province: *province,
-                place_hour: province.map(|_| event.observed),
-                medal: None,
-                exact: true,
-            });
+    mut reads: Vec<(i32, u128, i32, usize)>,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<(ServiceEntry, Refusals)>> {
+    reads.sort_unstable();
+    let mut frames = at_hour::Frames::new(query)?;
+    let mut rendered = Vec::with_capacity(reads.len());
+    for group in reads.chunk_by(|a, b| a.0 == b.0) {
+        check_cancel(cancelled)?;
+        let at = group[0].0;
+        let award = |key: u128| (key >> 32) & 3 == u128::from(DivisionHistoryRow::AWARDS);
+        let mut reads = vec![
+            Read::these(TableId::Divisions, group.iter().map(|g| g.1 >> 34)),
+            Read::these(TableId::DivisionHistory, group.iter().map(|g| g.1)),
+            Read::all(TableId::CountryLinks),
+        ];
+        if group.iter().any(|g| award(g.1)) {
+            reads.push(Read::all(TableId::LexicalTokens));
         }
-        Entry::History { key, read } => (*key, *read),
-    };
-    let mut reads = vec![
-        Read::these(TableId::Divisions, [key]),
-        Read::all(TableId::CountryLinks),
-        Read::these(TableId::DivisionHistory, [history_key]),
-    ];
-    if event.kind == AWARD {
-        reads.push(Read::all(TableId::LexicalTokens));
-    }
-    let frame = frames.frame_with(read_at, &reads, DecoratedDivisions::columns, TITLE)?;
-    let countries = Countries::witnessed(&frame).0.named(&query.holders, read_at);
-    let tag =
-        witnessed::<tables::Divisions>(&frame, key).row().and_then(|row| countries.tag(attributed(row, ArmyAttribution::Owner)));
-    let mut medals = MedalIndex::default();
-    let entry = witnessed::<tables::DivisionHistory>(&frame, history_key).row();
-    let award = event.kind == AWARD;
-    let medal = entry
-        .filter(|_| award)
-        .and_then(|row| medals.index(&frame, row.medal_token?, row.medal_definition, content, warnings))
-        .map(|at| medals.medals[at].clone());
-    let title = if award {
-        medal.as_ref().and_then(|m| m.name.clone())
-    } else {
-        let place_frame = if content.cat.is_ok()
-            && entry.is_some_and(|row| {
-                !row.provinces.is_empty()
-                    && !matches!(row.kind, DivisionHistoryRow::OPERATION | DivisionHistoryRow::OPERATION_EXCELLED)
-            }) {
-            let mut reads: Vec<_> = dashboard_text::scripted_text::TABLES
-                .iter()
-                .copied()
-                .chain([TableId::Provinces, TableId::States])
-                .map(Read::all)
-                .collect();
-            reads.sort_by_key(|read| read.table);
-            reads.dedup_by_key(|read| read.table);
-            Some(frames.frame(read_at, &reads, TITLE)?)
+        let frame = frames.frame_with(at, &reads, DecoratedDivisions::columns, TITLE)?;
+        let provinces: BTreeSet<_> = witnessed_rows::<tables::DivisionHistory>(&frame)
+            .rows
+            .iter()
+            .filter(|row| row.list != DivisionHistoryRow::AWARDS && row.sunk_ship.is_none())
+            .flat_map(|row| row.provinces.iter().copied())
+            .collect();
+        let places = if !provinces.is_empty() && content.cat.is_ok() {
+            Some(
+                dashboard_world::products::place_names::read_hour(query, &mut frames, at, &provinces.into_iter().collect::<Vec<_>>(), &[])
+                    .map_err(io::Error::other)?,
+            )
         } else {
             None
         };
-        entry.and_then(|row| warnings.keep(describe(place_frame.as_ref().unwrap_or(&frame), row, content, &countries)).0)
-    };
-    let other = entry.filter(|row| row.target_country != 0).and_then(|row| countries.tag(row.target_country));
-    let province = entry.and_then(|row| row.provinces.first().copied());
-    Ok(ServiceEntry {
-        key: format!("history:{history_key}"),
-        hour: event.date,
-        observed: read_at,
-        kind: if award { "award" } else { "career" }.into(),
-        title,
-        status: entry
-            .and_then(|row| match (award, row.kind) {
-                (true, _) => Some("Awarded"),
-                (false, DivisionHistoryRow::OPERATION | DivisionHistoryRow::NAVAL_COMBAT) => Some("Took part"),
-                (false, DivisionHistoryRow::OPERATION_EXCELLED | DivisionHistoryRow::NAVAL_COMBAT_EXCELLED) => Some("Cited"),
-                _ => None,
-            })
-            .map(str::to_owned),
-        tag,
-        other,
-        province,
-        place_hour: province.map(|_| event.date),
-        medal,
-        exact: true,
-    })
+        let countries = Countries::witnessed(&frame).0.named(&query.holders, at);
+        for &(at, history_key, date, index) in group {
+            let mut notes = Refusals::default();
+            let key = history_key >> 34;
+            let tag =
+                witnessed::<tables::Divisions>(&frame, key).row().and_then(|row| countries.tag(attributed(row, ArmyAttribution::Owner)));
+            let mut medals = MedalIndex::default();
+            let entry = witnessed::<tables::DivisionHistory>(&frame, history_key).row();
+            let award = award(history_key);
+            let medal = entry
+                .filter(|_| award)
+                .and_then(|row| medals.index(&frame, row.medal_token?, row.medal_definition, content, &mut notes))
+                .map(|at| medals.medals[at].clone());
+            let title = if award {
+                medal.as_ref().and_then(|m| m.name.clone())
+            } else {
+                entry.and_then(|row| notes.keep(describe(places.as_ref().unwrap_or(&frame), row, content, &countries)).0)
+            };
+            let other = entry.filter(|row| row.target_country != 0).and_then(|row| countries.tag(row.target_country));
+            let province = entry.and_then(|row| row.provinces.first().copied());
+            let row = ServiceEntry {
+                key: format!("history:{history_key}"),
+                hour: date,
+                observed: at,
+                kind: if award { "award" } else { "career" }.into(),
+                title,
+                status: entry
+                    .and_then(|row| match (award, row.kind) {
+                        (true, _) => Some("Awarded"),
+                        (false, DivisionHistoryRow::OPERATION | DivisionHistoryRow::NAVAL_COMBAT) => Some("Took part"),
+                        (false, DivisionHistoryRow::OPERATION_EXCELLED | DivisionHistoryRow::NAVAL_COMBAT_EXCELLED) => Some("Cited"),
+                        _ => None,
+                    })
+                    .map(str::to_owned),
+                tag,
+                other,
+                province,
+                place_hour: province.map(|_| date),
+                medal,
+                exact: true,
+            };
+            rendered.push((index, (row, notes)));
+        }
+    }
+    rendered.sort_unstable_by_key(|r| r.0);
+    Ok(rendered.into_iter().map(|(_, row)| row).collect())
 }
 
-fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, tokens: &BTreeSet<u128>) -> io::Result<Summary> {
-    let key = u128::from(id);
+fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &roster::Division) -> io::Result<Summary> {
+    let key = u128::from(id) << 34;
+    let awards = key | (u128::from(DivisionHistoryRow::AWARDS) << 32);
     let reads = [
-        Read::these(TableId::DivisionStatus, [key]),
-        Read::these(TableId::DivisionLandInputs, [key]),
-        Read { table: TableId::DivisionHistory, keys: at_hour::Keys::Range(key << 34, (key << 34) | ((1 << 34) - 1)) },
-        Read::these(TableId::LexicalTokens, tokens.iter().copied()),
+        Read { table: TableId::DivisionHistory, keys: at_hour::Keys::Ranges(vec![(key, key), (awards, awards | u128::from(u32::MAX))]) },
+        Read::these(TableId::LexicalTokens, division.tokens.iter().copied()),
     ];
-    let frame = at_hour::frame_with(query, at, &reads, DecoratedDivisions::columns, TITLE)?;
+    let frame = at_hour::frame_with(
+        query,
+        at,
+        &reads,
+        |table| {
+            (table == TableId::DivisionHistory).then(|| {
+                at_hour::field_columns(table, &["available", "reason", "amount", "medal_token", "medal_definition", "medal_enabled"])
+            })
+        },
+        TITLE,
+    )?;
     let mut details = Facts { frame: &frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     let mut notes = Refusals::default();
-    let facts = details.of(
-        witnessed_rows::<tables::DivisionHistory>(&frame).rows,
-        status_of(&frame, id),
-        manpower_of(&frame, id),
-        &mut notes,
-    );
+    let (experience, casualties) = division.measures.at(at).copied().unwrap_or_default();
+    let facts = details.measured(witnessed_rows::<tables::DivisionHistory>(&frame).rows, experience, casualties, &mut notes);
     Ok(Summary { facts, medals: details.medals.medals, notes })
 }
 
@@ -678,37 +675,48 @@ fn reply(
     let mut facts = None;
     let mut medals = Vec::new();
     if let (Some(id), Some(choice), Some(division)) = (subject, &choice, division) {
-        let key = u128::from(id);
         let mut rendered = tail.rendered.lock().unwrap_or_else(PoisonError::into_inner);
         let summary = if choice.last_seen == hour && choice.removed_at.is_none() {
-            summary(query, content, id, hour, &division.tokens)?
+            summary(query, content, id, hour, division)?
         } else {
             let saved = match rendered.last_seen.entry((id, choice.last_seen)) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(summary(query, content, id, choice.last_seen, &division.tokens)?)
-                }
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(summary(query, content, id, choice.last_seen, division)?),
             };
             saved.clone()
         };
         facts = Some(summary.facts);
         medals = summary.medals;
         warnings = summary.notes;
-        let mut frames = at_hour::Frames::new(query)?;
         for shown in &answer.rows {
             check_cancel(cancelled)?;
             let event = tail.entries.get(shown.at);
-            if let Entry::Event(row) = &event.payload {
-                entries.push((**row).clone());
-                continue;
-            }
-            let (row, notes) = match rendered.rows.entry(shown.at) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let mut notes = Refusals::default();
-                    let row = render(&mut frames, event, key, query, content, &mut notes)?;
-                    entry.insert((row, notes))
+            let (row, notes) = match &event.payload {
+                Entry::Event(row) => {
+                    entries.push((**row).clone());
+                    continue;
                 }
+                Entry::History(index) => &tail.history[*index],
+                Entry::Battle { combat, start, province, owner, other } => rendered.rows.entry(shown.at).or_insert_with(|| {
+                    let tag = |slot: Option<u32>| slot.and_then(|s| query.holders.slot_tag(s, event.observed)).map(str::to_owned);
+                    (
+                        ServiceEntry {
+                            key: format!("battle:{combat}:{start}"),
+                            hour: event.date,
+                            observed: event.observed,
+                            kind: "battle".into(),
+                            title: Some("Land battle".into()),
+                            status: Some("Took part".into()),
+                            tag: tag(*owner),
+                            other: tag(*other),
+                            province: *province,
+                            place_hour: province.map(|_| event.observed),
+                            medal: None,
+                            exact: true,
+                        },
+                        Refusals::default(),
+                    )
+                }),
             };
             entries.push(row.clone());
             for (reason, count) in &notes.0 {
@@ -808,11 +816,7 @@ impl Product for DivisionServiceRecordChoices {
         let scope = Scope::at(&query, prepared.selection.as_ref(), hour);
         let mut choices: Vec<_> = roster.divisions.keys().filter_map(|&id| roster.choice(id, hour, &scope)).collect();
         choices.sort_by(|a, b| {
-            b.removed_at
-                .cmp(&a.removed_at)
-                .then(b.medals.cmp(&a.medals))
-                .then(a.name.cmp(&b.name))
-                .then(a.division.cmp(&b.division))
+            b.removed_at.cmp(&a.removed_at).then(b.medals.cmp(&a.medals)).then(a.name.cmp(&b.name)).then(a.division.cmp(&b.division))
         });
         Ok(ServiceChoicesReply { choices, warnings: Vec::new() })
     }

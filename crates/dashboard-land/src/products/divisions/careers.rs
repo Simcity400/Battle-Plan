@@ -313,7 +313,11 @@ struct Facts<'a> {
 
 impl Facts<'_> {
     fn of(&mut self, history: &[SharedDivisionHistoryRow], status: Option<&DivisionStatusRow>, manpower: Option<i32>, refusals: &mut Refusals) -> CareerFacts {
-        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, casualties_taken: status.and_then(|row| row.casualties_taken()) };
+        self.measured(history, status.zip(manpower).and_then(|(row, men)| row.normalized_experience(men)), status.and_then(DivisionStatusRow::casualties_taken), refusals)
+    }
+
+    fn measured(&mut self, history: &[SharedDivisionHistoryRow], experience: Option<i64>, casualties_taken: Option<i32>, refusals: &mut Refusals) -> CareerFacts {
+        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, casualties_taken };
         match history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY) {
             None => {
                 refusals.note("A division's history was not read");
@@ -348,7 +352,7 @@ impl Facts<'_> {
                 }
             }
         }
-        if let Some(experience) = status.zip(manpower).and_then(|(status, manpower)| status.normalized_experience(manpower)) {
+        if let Some(experience) = experience {
             out.experience_raw = Some(experience.to_string());
             match &self.levels.experience {
                 Ok(levels) => {
