@@ -434,7 +434,7 @@ pub(super) fn listed(change: &Change<'_>, item: u32, include_days: bool) -> (Opt
             unknown_credits,
         })
     } else {
-        (unknown_credits > 0).then_some(SpendDay {
+        (unknown_credits > 0).then(|| SpendDay {
             item,
             day: None,
             read: change.hour,

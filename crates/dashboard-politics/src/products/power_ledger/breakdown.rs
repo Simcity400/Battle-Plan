@@ -347,7 +347,9 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         }
         let leaf = built.leaf(path);
         let count = Some(u64::from(entry.payments));
+        let credit_only = entry.payments == 0 && (entry.credits > 0 || entry.unknown_credits > 0);
         match entry.charge.and_then(|charge| Exact::scaled(charge, reply.decimals)) {
+            _ if credit_only => {}
             Some(charge) => {
                 let amount = if entry.uncovered { Amount::Partial(charge, "Some payments may be missing.".into()) } else { Amount::Known(charge) };
                 built.add(entry.read, leaf, amount, count);

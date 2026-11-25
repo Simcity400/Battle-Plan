@@ -194,6 +194,7 @@ fn a_credit_is_named_from_the_day_it_was_read() {
     assert_eq!(index.at(49).through, 49);
     assert_eq!(index.at(50).warnings.len(), 1);
     assert_eq!(index.at(59).through, 59, "a credit whose amount was not recorded is a dated change of its own");
+    assert_eq!(index.at(60).breakdown, index.at(59).breakdown, "a credit is not spending: it adds no amount and moves no date");
     assert_eq!(
         index.at(60).warnings[1],
         "Negative daily cost component Daily cost: its credit's amount was not recorded and is not counted as spending",
