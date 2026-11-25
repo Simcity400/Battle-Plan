@@ -94,6 +94,7 @@ const OWN: &[Registered] = &[
     dashboard_politics::registrations::LOGS_LOGCOUNTS,
     dashboard_air::registrations::AIR_LEDGER_MILITARYAIRLEDGER,
     dashboard_air::registrations::AIR_LEDGER_AT_MILITARYAIRAT,
+    dashboard_air::registrations::AIR_LEDGER_BREAKDOWN_BOMBINGDAMAGEBREAKDOWN,
     dashboard_politics::registrations::POLITICS_HISTORY_POLITICSSTATEHISTORY,
     dashboard_politics::registrations::POLITICS_CIVIL_WARS_CIVILWARS,
     dashboard_wars::registrations::FACTIONS_FACTIONLINES,

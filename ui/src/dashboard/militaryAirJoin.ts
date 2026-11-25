@@ -1,7 +1,6 @@
 import type { HourSpan, MilitaryAirCountry, MilitaryAirName, MilitaryAirCauseName, MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
 import { WINDOW_HOURS, windowsOf } from './heldWindows.ts';
-import { keepLedgerTotals, ledgerTotals, openingTotals } from './militaryAirLedger.ts';
-import type { LedgerTotal, MilitaryAirLedger } from './militaryAirLedger';
+import type { MilitaryAirLedger } from './militaryAirLedger';
 
 export type LedgerReach = 'shown' | 'end';
 
@@ -53,7 +52,6 @@ export class LedgerJoin {
   private readonly notes = new Map<string, number>();
   private readonly warnings: string[] = [];
   private readonly warned = new Set<string>();
-  private readonly totals = new Map<string | null, LedgerTotal[]>();
   private given: MilitaryAirLedger | null = null;
 
   readonly key: string;
@@ -71,12 +69,7 @@ export class LedgerJoin {
     this.last++;
     this.given = null;
     if (window.firstHour > window.lastHour) return;
-    if (!this.head) {
-      this.head = window;
-      for (const [identity, carried] of openingTotals(window.openings)) {
-        if (carried.dealt !== 0n || carried.taken !== 0n) this.totals.set(identity, [{ readHour: window.firstHour - 1, nativeHour: null, ...carried }]);
-      }
-    }
+    if (!this.head) this.head = window;
     this.tail = window;
     for (const span of window.observed) pushJoined(this.observed, span);
     for (const span of window.incomplete) pushJoined(this.incomplete, span);
@@ -90,10 +83,8 @@ export class LedgerJoin {
         for (const span of country.membership) pushJoined(held.membership, span);
       }
     }
-    const byHolder = new Map<string | null, MilitaryAirPart[]>();
     for (const part of window.parts) {
       const key = partKey(part), held = this.parts.get(key);
-      byHolder.set(part.identity, [...(byHolder.get(part.identity) ?? []), part]);
       if (!held) {
         this.parts.set(key, { part: { ...part, points: [...part.points] }, carried: part.points[part.points.length - 1]?.[2] ?? '0' });
         continue;
@@ -102,13 +93,6 @@ export class LedgerJoin {
       const base = held.carried;
       for (const [hour, readHour, total] of part.points) held.part.points.push([hour, readHour, carried(base, total)]);
       held.carried = held.part.points[held.part.points.length - 1]![2];
-    }
-    for (const [identity, parts] of byHolder) {
-      const local = ledgerTotals(parts);
-      if (!local.length) continue;
-      const held = this.totals.get(identity) ?? [], before = held[held.length - 1];
-      for (const total of local) held.push(before ? { ...total, dealt: total.dealt + before.dealt, taken: total.taken + before.taken } : total);
-      this.totals.set(identity, held);
     }
     for (const name of window.regions) if (!this.regions.has(Number(name.id))) this.regions.set(Number(name.id), name);
     for (const name of window.buildings) if (!this.buildings.has(name.id)) this.buildings.set(name.id, name);
@@ -131,7 +115,6 @@ export class LedgerJoin {
       causes: [...this.causes].sort(([a], [b]) => a - b).map(([, cause]) => cause),
       warnings: [...[...this.notes].sort(([a], [b]) => compareText(a, b)).map(([reason, events]) => `${events} events: ${reason}`), ...this.warnings],
     };
-    keepLedgerTotals(ledger, this.totals);
     this.given = ledger;
     return ledger;
   }

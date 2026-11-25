@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, EquipmentLossesReply, PowerSpendingBreakdownReply, ProductionSpendingReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
+import type { BombingDamageBreakdownReply, Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, EquipmentLossesReply, PowerSpendingBreakdownReply, ProductionSpendingReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
+import { bombingDamageBreakdown, bombingDamageBreakdownProjection } from '../../widgets/bombing-damage-breakdown/bombingBreakdownProjection.ts';
 import { casualtiesBreakdown, casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
 import { constructionBreakdown, constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { equipmentLossesBreakdown, equipmentLossesProjection } from '../../widgets/equipment-losses/equipmentLossesProjection.ts';
@@ -722,6 +723,7 @@ test('S6: at-hour breakdowns key plan owner and product request by recorded coun
     ['dockyard-spending', dockyardSpendingBreakdown, {}],
     ['military-factory-spending', militaryFactorySpendingBreakdown, { equipment: 'air' }],
     ['equipment-losses', equipmentLossesBreakdown, { landSource: 'destruction' }],
+    ['bombing-damage-breakdown', bombingDamageBreakdown, { direction: 'taken' }],
   ] as const) {
     const asA = decl.sources(mkCtx('AAA', countryKey(7), options), vp);
     const asB = decl.sources(mkCtx('BBB', countryKey(7), options), vp);
@@ -780,6 +782,61 @@ test('equipment losses projects exact fractions, separates landSource owners, an
   assert.deepEqual(logPlan.entries[0]!.read.params, { branchId: '1', country: 7, landSource: 'combatLog' });
 
   const proof = resolvePlaybackProvenInterval(destPlan.entries[0]!.read, lossReply, { anchorHour: START + 40, span: null }, START + 10_000);
+  assert.deepEqual(proof, [START + 40, START + 140]);
+  let asks = 1;
+  for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
+  assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+});
+
+test('bombing damage breakdown projects taken/dealt, keeps slivers non-zero, separates direction owners, and keeps quiet stretches to one request', () => {
+  const takenReply: BombingDamageBreakdownReply = {
+    from: START,
+    hour: START + 40,
+    through: START + 140,
+    direction: 'taken',
+    warnings: [],
+    breakdown: {
+      unrecordedHours: 0,
+      total: { amount: { numerator: '25001', denominator: '10000' }, state: 'known', reason: null },
+      parts: [
+        wire('building:air_base', 9, '2', { name: 'Air Base', amount: { numerator: '5', denominator: '2' }, share: 25000 / 25001, parentShare: 25000 / 25001 }),
+        wire('building:infrastructure', 10, '0', { name: 'Infrastructure', amount: { numerator: '1', denominator: '10000' }, share: 1 / 25001, parentShare: 1 / 25001 }),
+      ],
+    },
+  };
+  const taken = bombingDamageBreakdownProjection.project(
+    createBoundedReadView({ hour: START + 40, panels: new Map([['main', takenReply]]), validInterval: [START + 40, START + 140] }),
+    { direction: 'taken' },
+  );
+  assert.equal(taken.periodLabel, 'Suffered since 1 Jan 1936');
+  assert.equal(taken.total.unit, 'building levels');
+  assert.equal(taken.total.text, '2.5');
+  assert.deepEqual(taken.parts.map(part => [part.name, part.text]), [['Air Base', '2.5'], ['Infrastructure', '<0.01']]);
+
+  const dealt = bombingDamageBreakdownProjection.project(
+    createBoundedReadView({ hour: START + 40, panels: new Map([['main', { ...takenReply, direction: 'dealt' }]]), validInterval: [START + 40, START + 140] }),
+    { direction: 'dealt' },
+  );
+  assert.equal(dealt.periodLabel, 'Inflicted since 1 Jan 1936');
+
+  const vp = { width: 800, height: 300 } as Parameters<typeof bombingDamageBreakdown.sources>[1];
+  const mkCtx = (direction: 'taken' | 'dealt') => ({
+    countryTag: 'GER',
+    countrySubject: countryKey(7),
+    options: { direction },
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  }) as unknown as Parameters<typeof bombingDamageBreakdown.sources>[0];
+
+  const takenPlan = bombingDamageBreakdown.sources(mkCtx('taken'), vp);
+  const dealtPlan = bombingDamageBreakdown.sources(mkCtx('dealt'), vp);
+  assert.notEqual(takenPlan.owner, dealtPlan.owner, 'switching direction owns a distinct broker entry');
+  assert.equal(takenPlan.entries[0]!.read.shape, 'point');
+  assert.deepEqual(takenPlan.entries[0]!.read.params, { branchId: '1', country: 7, direction: 'taken' });
+  assert.equal(dealtPlan.entries[0]!.read.shape, 'point');
+  assert.deepEqual(dealtPlan.entries[0]!.read.params, { branchId: '1', country: 7, direction: 'dealt' });
+
+  const proof = resolvePlaybackProvenInterval(takenPlan.entries[0]!.read, takenReply, { anchorHour: START + 40, span: null }, START + 10_000);
   assert.deepEqual(proof, [START + 40, START + 140]);
   let asks = 1;
   for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;

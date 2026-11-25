@@ -9,9 +9,6 @@ import Table from './table/Table';
 import type { TableColumn } from './table/Table';
 import type { SortValue } from './table/logic';
 import Timeline from './timeline/Timeline';
-import Sunburst from './sunburst/Sunburst';
-import type { SunburstValues } from './sunburst/Sunburst';
-import type { SunburstItem } from './sunburst/layout';
 import DrillParts from './drill/DrillParts';
 import type { DrillPart, LiveDrillParts } from './drill/DrillParts';
 import { canvasElement } from '../test-support/canvasElement';
@@ -86,15 +83,6 @@ const rowKey = (row: Row) => row.key;
 const lanes = [{ id: 'slot', label: 'Slot', spans: [{ id: 'holder', firstHour: 0, lastHour: 1000, label: 'Holder' }] }];
 const timelineHead = new LiveCell(100);
 
-const sunItems = (a: number, b: number, c?: number): SunburstItem[] => [
-  { path: [{ id: 'a', label: 'Alpha' }], value: a, exact: BigInt(a) },
-  { path: [{ id: 'b', label: 'Beta' }], value: b, exact: BigInt(b) },
-  ...c === undefined ? [] : [{ path: [{ id: 'c', label: 'Gamma' }], value: c, exact: BigInt(c) }],
-];
-const sunLive = new LiveCell<SunburstValues>({ items: sunItems(10, 20) });
-const sunText = { format: (_value: number, exact: bigint | null) => exact == null ? 'Not recorded' : `A${exact}`, unit: 'units', valueLabel: 'Amount', missingLabel: 'Not recorded' };
-const sunSettings = { growth: 'share' as const, labels: true, legend: true, breadcrumb: true, dimming: true };
-
 const drillParts = (a: number | null, b: number | null): DrillPart[] => [
   { id: 'a', label: 'Alpha', value: a, text: a == null ? 'Not known' : `${a} units` },
   { id: 'b', label: 'Beta', value: b, text: b == null ? 'Not known' : `${b} units` },
@@ -132,20 +120,6 @@ export const fixture = {
   },
   async pushHead(hour: number) { timelineHead.set(hour); await settle(); },
   playheadX: () => lastFrame('timeline').heads[0] ?? null,
-
-  async mountSunburst(live: boolean) {
-    const { root } = host('sunburst', 700, 360);
-    root.render(counted('sunburst', <Sunburst key={String(live)} label="Synthetic sunburst" items={sunItems(10, 20)} root={{ id: 'all', label: 'All' }} text={sunText}
-      settings={sunSettings} active fold={false} live={live ? sunLive : undefined} />));
-    await settle();
-  },
-  async pushSunburst(values: SunburstValues) { sunLive.set(values); await settle(); },
-  items: sunItems,
-  sunburst() {
-    return { canvas: lastFrame('sunburst').texts,
-      legend: [...roots.get('sunburst')!.host.querySelectorAll<HTMLElement>('.sunburst-legend [role="group"], .sunburst-legend button')]
-        .map(row => [row.querySelector('.sunburst-name')?.textContent, row.querySelector('b')?.textContent, row.querySelector('b + small')?.textContent ?? '']) };
-  },
 
   async mountDrill(live: boolean) {
     const { root } = host('drill', 400, 200);
