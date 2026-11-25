@@ -4,14 +4,13 @@ import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart, clipSpansToHour } from '../../families/timeline/helpers.ts';
+import { countryLook, inHourSpans, timelineModel, spanStart, clipSpansToHour } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { groupCountsRead, rankedCounts } from '../../dashboard/groupCounts.ts';
 import { groupsAt, historyAtRead, subjectsAt } from '../../dashboard/historyAt.ts';
 import type { CountryGroupReply, GroupCountsReply, SubjectsAtReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import {
-  changeHours,
   laneCountries,
   levelColours,
   overlordViews,
@@ -42,10 +41,6 @@ function viewsOf(reply: SubjectReply, groups: CountryGroupReply) {
   return held;
 }
 
-function boundaries(reply: SubjectReply, groups: CountryGroupReply | undefined): number[] {
-  return changeHours(reply, groups?.identityChanges);
-}
-
 export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerFamilyProjection<TimelineProjection<SubjectsOptions>>({
   family: 'timeline',
   kind: 'subjects',
@@ -54,7 +49,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
     const main = subjectsAt(readView, 'main');
     const groups = groupsAt(readView, 'groups');
     const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
-    return main ? Math.min(counts, main.nextChange, groups?.nextChange ?? Infinity, nextBoundaryAfter(boundaries(main.subjects, groups?.groups), readView.hour)) : Infinity;
+    return main ? Math.min(counts, main.nextChange, groups?.nextChange ?? Infinity) : Infinity;
   },
 
   project(readView, opt) {
@@ -66,7 +61,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
     const base = { hour, firstHour: opt.firstHour, labelWidth: 230 };
     if (!reply || !groups) return timelineModel(base);
     const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
-    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, main!.nextChange, groupsRead!.nextChange, nextBoundaryAfter(boundaries(reply, groups), hour));
+    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, main!.nextChange, groupsRead!.nextChange);
     const warnings = [...reply.warnings, ...groups.warnings];
     if (!reply.runs.length) return timelineModel({ ...base, empty: 'No subjects recorded', warnings, nextChangeAt });
     const overlords = viewsOf(reply, groups);

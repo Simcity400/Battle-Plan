@@ -4,7 +4,7 @@ import type { HourRanges } from '../../families/holders.ts';
 import { bridgeGaps } from '../../charts/timeline/runState.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { boundedRuns, clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel } from '../../families/timeline/helpers.ts';
+import { boundedRuns, clipSpansToHour, countryLook, inHourSpans, spanStart, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
@@ -12,7 +12,6 @@ import { groupCountsRead, rankedCounts } from '../../dashboard/groupCounts.ts';
 import { groupsAt, historyAtRead } from '../../dashboard/historyAt.ts';
 import type { CountryGroupReply, FactionGroup, GroupCountsReply } from '../../generated/dashboard';
 import {
-  factionChangeHours,
   factionGaps,
   factionLanes,
   factionViews,
@@ -91,10 +90,10 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
   family: 'timeline',
   kind: 'factions',
 
-  nextChange(readView, opt) {
+  nextChange(readView) {
     const at = groupsAt(readView, 'main');
     const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
-    return at ? Math.min(counts, at.nextChange, nextBoundaryAfter(factionChangeHours(at.groups, viewsOf(readView, at.groups, opt)), readView.hour)) : Infinity;
+    return at ? Math.min(counts, at.nextChange) : Infinity;
   },
 
   project(readView, opt) {
@@ -105,7 +104,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
     if (!reply) return timelineModel(base);
     const views = viewsOf(readView, reply, opt);
     const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
-    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, at!.nextChange, nextBoundaryAfter(factionChangeHours(reply, views), hour));
+    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, at!.nextChange);
     if (!reply.factions.length) return timelineModel({ ...base, empty: 'No factions recorded', warnings: reply.warnings, nextChangeAt });
     const gaps = factionGaps(reply);
     const selected = selectedAt(opt, hour);

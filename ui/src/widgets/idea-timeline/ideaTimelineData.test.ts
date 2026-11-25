@@ -131,3 +131,17 @@ test('a slot that holds several items at once gets a lane per item held together
   ], [council]);
   assert.deepEqual(lanesFor(reply, council).map(lane => [lane.id, lane.spans.map(span => span.holding.token)]), [['mod_faction', ['a', 'c']], ['mod_faction#1', ['b']]]);
 });
+
+test('a slot a mod lists twice in one category is one slot with two seats: each holding drawn once, every lane key its own', () => {
+  const factions: CategoryInfo = { token: 'internal_factions', name: 'Internal factions', kind: null, hidden: false, politicsTab: true, slots: [
+    { token: 'internal_factions', name: 'Faction', character: false, seats: 1, laws: [] },
+    { token: 'internal_factions', name: 'Faction', character: false, seats: 1, laws: [] },
+  ] };
+  const reply = replyOf(500, [
+    { token: 'army_hardliners', first: 0, last: 500, info: idea('army_hardliners', 'internal_factions', 'internal_factions') },
+    { token: 'industrialists', first: 100, last: 500, info: idea('industrialists', 'internal_factions', 'internal_factions') },
+  ], [factions]);
+  const lanes = lanesFor(reply, factions);
+  assert.deepEqual(lanes.map(lane => lane.id), ['internal_factions', 'internal_factions#1']);
+  assert.deepEqual(lanes.map(lane => lane.spans.map(span => span.holding.token)), [['army_hardliners'], ['industrialists']]);
+});
