@@ -63,6 +63,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     let query = dashboard_base::queries::query(&src, 1).unwrap();
     let mut prepared = prepare(&src, &query, 1, &LoadContext { content: None }, &ask(105), &AtomicBool::new(false)).unwrap();
     prepared.context = Arc::new(context);
+    prepared.namings = Arc::new(namings(&src, &query).unwrap());
     let mid = load_tail_at(&prepared, &query, &ask(105), 105, &AtomicBool::new(false)).unwrap();
     assert_eq!(mid.total, "1");
     let contract = &mid.rows[0];
@@ -85,6 +86,61 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
         let stepped = (exact.advance)(hour, true, &AtomicBool::new(false), None);
         assert_eq!(*stepped.value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped vs cold at {hour}");
     }
+}
+
+#[test]
+fn a_design_whose_token_the_run_never_spells_keeps_the_refusal_of_its_own_hour() {
+    let (cat, _folder) = dashboard_base::catalogue::tests::localisation_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+        ("localisation/mod_l_english.yml", "\u{feff}l_english:\n rifle_0:0 \"Default Rifle\"\n"),
+    ]);
+    let context: names::Context = Ok(names::Content::from_catalogue(Arc::new(cat)));
+    let frames: Vec<_> = (100..=106)
+        .map(|hour| {
+            let mut frame = ownership_frame(1, hour, 9001);
+            *frame.tables[TableId::LexicalTokens.index()] = if hour == 100 {
+                TableView::Unavailable { reason: "synthetic lexical refusal".into() }
+            } else {
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 2, literal: b"rifle_0".to_vec() }]))
+            };
+            *frame.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(vec![
+                VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Stored Design".to_vec(), ..Default::default() },
+                VariantDefinitionRow { id: 7, equipment_token: 2, display_name: b"Later Spelled".to_vec(), ..Default::default() },
+            ]));
+            if hour == 100 {
+                *frame.tables[TableId::MarketContractTerms.index()] = TableView::Complete(TableRows::MarketContractTerms(vec![MarketContractTermsRow {
+                    country: 9001,
+                    buyer: 44,
+                    id: 0x12,
+                    kind: 1,
+                    equipment: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 500_000 }] }.into(),
+                    prices: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 96_000 }, MarketEquipment { variant: 7, amount_raw: 12_000 }] }.into(),
+                    ..Default::default()
+                }]));
+            }
+            let events = if hour == 100 { vec![event(1, hour, 11, MarketEventRow::default())] } else { Vec::new() };
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+            frame
+        })
+        .collect();
+    let src = opened("mkt-unspelled", frames);
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    let mut prepared = prepare(&src, &query, 1, &LoadContext { content: None }, &ask(104), &AtomicBool::new(false)).unwrap();
+    prepared.context = Arc::new(context);
+    prepared.namings = Arc::new(namings(&src, &query).unwrap());
+    let reply = load_tail_at(&prepared, &query, &ask(104), 104, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        reply.rows[0].quotes,
+        [
+            MarketQuote { variant: "6".into(), name: None, name_missing: Some(UNNAMED.into()), price_raw: "96000".into() },
+            MarketQuote { variant: "7".into(), name: Some("Later Spelled".into()), name_missing: None, price_raw: "12000".into() },
+        ],
+        "the hour's lexical refusal stands for a token the run never spells, and a token the run spells later still names its design in the same reply"
+    );
 }
 
 #[test]
