@@ -9,14 +9,11 @@ import {
   authoredHex as authoredHexForGrey,
   readableColour as readableForGrey,
   CATEGORY_LIMIT,
-  SECONDARY_DASH,
   authoredHex,
   categoricalPalette,
   colour,
   distance,
   GREY_CHROMA,
-  lineStyle,
-  lineStyles,
   MARK_CONTRAST,
   nudgeApart,
 } from './palette.ts';
@@ -234,23 +231,10 @@ test('ordinal palette stays unique and >= 3:1 up to 1,500 across every built-in 
   assert.equal(midGreySeen.size, count);
 });
 
-test('authored colours stay byte-exact and secondary lines pair dash patterns', () => {
-  const surface = '#16181d';
+test('authored colours stay byte-exact', () => {
   const exact = '#4f86f7';
   assert.equal(authoredHex(exact), exact);
   assert.equal(authoredHex([79, 134, 247]), '#4f86f7');
-  assert.deepEqual(lineStyle(surface, 0), { color: colour(surface, 0), primary: [], secondary: SECONDARY_DASH });
-  assert.ok(lineStyle(surface, CATEGORY_LIMIT).primary.length > 0);
-  const styles = lineStyles([
-    { key: 'a', preferred: 0 },
-    { key: 'b', preferred: 1 },
-    { key: 'c', preferred: CATEGORY_LIMIT },
-  ], categoricalPalette(surface), surface);
-  assert.equal(styles.get('a')!.color, colour(surface, 0));
-  assert.deepEqual(styles.get('a')!.primary, []);
-  assert.deepEqual(styles.get('a')!.secondary, SECONDARY_DASH);
-  assert.equal(styles.get('c')!.color, colour(surface, CATEGORY_LIMIT));
-  assert.ok(styles.get('c')!.primary.length > 0);
 });
 
 

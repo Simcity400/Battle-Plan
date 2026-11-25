@@ -2,6 +2,7 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type Fam
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import { LINES_VIEW_OPTIONS } from '../../dashboard/lineChartOptions.ts';
+import { OPTIONS as AIR_KILLS_LOSSES_OPTIONS } from '../air-kills-losses/definition.ts';
 import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
@@ -14,6 +15,12 @@ import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-man
 import { OPTIONS as RAID_TALLY_OPTIONS } from '../raid-tally/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
 
+const AIR_KILLS_LOSSES_LINES_OPTIONS = [
+  ...AIR_KILLS_LOSSES_OPTIONS
+    .filter(field => ['view', 'measure', 'regions', 'causes', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
+    .map(field => ({ ...field, visibleWhen: undefined })),
+  ...LINES_VIEW_OPTIONS,
+];
 const ARMY_SIZE_BREAKDOWN_OPTIONS = ARMY_SIZE_OPTIONS.filter(field => ['view', 'measure', 'countFor', 'log', 'yMin', 'yMax'].includes(field.key));
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
@@ -64,6 +71,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'lines',
       () => import('../air-force-size/airForceLinesProjection.ts'),
       mod => ({ projection: mod.airForceLinesProjection, declaration: mod.airForceLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'air-kills-losses',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: AIR_KILLS_LOSSES_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'air-kills-losses',
+      'lines',
+      () => import('../air-kills-losses/airKillsLossesLinesProjection.ts'),
+      mod => ({ projection: mod.airKillsLossesLinesProjection, declaration: mod.airKillsLossesLinesDeclaration }),
     ),
   },
   {

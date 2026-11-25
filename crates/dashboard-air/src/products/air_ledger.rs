@@ -22,6 +22,7 @@ use std::{
 use ts_rs::TS;
 
 pub mod at;
+pub mod tiles;
 #[cfg(test)]
 mod reference;
 #[cfg(test)]
@@ -884,6 +885,7 @@ fn join(spans: &mut Vec<(i32, i32)>, first: i32, last: i32) {
 
 pub(crate) fn forget(source: &Source) {
     *source.state::<Observed>().lock().unwrap_or_else(PoisonError::into_inner) = Observed::default();
+    tiles::forget(source);
 }
 
 fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: u32) -> io::Result<Arc<RunReads>> {

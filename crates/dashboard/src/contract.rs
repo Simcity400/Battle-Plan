@@ -194,6 +194,7 @@ pub fn series_walk() -> dashboard_query::fields::Walk {
         .nest("family", dashboard_players::products::player_apm::head::tile_family_walk())
         .nest("family", dashboard_land::products::army::tile_family_walk())
         .nest("family", dashboard_production::products::stockpile::lines::tile_family_walk())
+        .nest("family", dashboard_air::products::air_ledger::tiles::tile_family_walk())
         .join(Walk { heads: Some(vec!["least".to_owned()]), leaves: std::collections::BTreeMap::from([("least".to_owned(), Leaf::Text)]), ..Walk::default() })
 }
 
