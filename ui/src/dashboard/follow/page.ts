@@ -174,6 +174,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private queue: Presentation<B>[] = [];
   private touched = new Set<Widget<B>>();
   private redated = new Set<Widget<B>>();
+  private pictures = 0;
 
   constructor({ lanes = 1, post = () => {}, seek = 0 }: { lanes?: number; post?: (lane: number | 'all', message: PageMessage) => void; seek?: number } = {}) {
     this.lanes = lanes; this.post = post; this.seek = seek;
@@ -584,7 +585,7 @@ export class Page<B extends Bitmap = Bitmap> {
       for (let k = 0; k < widget.surfaces.length; k++) {
         const part = entry.surfaces[k];
         if (entry.mode !== 'picture' || !part) widget.surfaces[k]!.clear();
-        else if (part !== SAME) widget.surfaces[k]!.install(part);
+        else if (part !== SAME) { widget.surfaces[k]!.install(part); this.pictures++; }
       }
     } catch {
       closeParts(entry);
@@ -736,6 +737,21 @@ export class Page<B extends Bitmap = Bitmap> {
     this.clear(widget, 'reading');
     this.tell();
     this.request(true, false);
+  }
+
+  takePictures(): number {
+    const pictures = this.pictures;
+    this.pictures = 0;
+    return pictures;
+  }
+
+  expired(): number[] {
+    const out: number[] = [];
+    for (const widget of this.widgets.values()) {
+      const shown = widget.installed, at = this.target(widget);
+      if (shown && at > Math.min(shown.hi, shown.c) && !(widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1]))) out.push(widget.id);
+    }
+    return out;
   }
 
   lane(id: number) { return this.widgets.get(id)?.lane; }

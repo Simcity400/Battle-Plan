@@ -351,6 +351,8 @@ export class PerfRecorder {
   private position: number | null = null;
   private views = '';
   private laneCountValue: number | null = null;
+  private framePictures = 0;
+  private frameExpired: readonly string[] = [];
 
   constructor() {
     const types = PerformanceObserver.supportedEntryTypes;
@@ -377,8 +379,12 @@ export class PerfRecorder {
         this.zones.clear();
         this.causes.clear();
         const painted = this.takePaints(this.lastFrame);
+        const pictures = this.framePictures, expired = this.frameExpired;
+        this.framePictures = 0;
+        this.frameExpired = [];
         const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(Math.max(0, now - this.lastFrame)), playing: this.playing,
-          late: round(Math.max(0, performance.now() - now)), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
+          late: round(Math.max(0, performance.now() - now)), commits: takeCommits(), commitSequence: this.commitSequence, pictures, ...(expired.length && { expired }),
+          ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
         const main = mains.get(this.lastFrame);
         if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
       }
@@ -489,6 +495,11 @@ export class PerfRecorder {
   get hour(): number | null { return this.position === null ? null : Math.floor(this.position); }
   get laneCount(): number | null { return this.laneCountValue; }
   lanes(count: number): void { this.laneCountValue = count; }
+
+  pictures(installed: number, expired: readonly string[]): void {
+    this.framePictures += installed;
+    this.frameExpired = expired;
+  }
 
   clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number, composedAt?: number): void {
     const now = performance.now();

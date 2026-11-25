@@ -177,6 +177,8 @@ export class Pipeline {
     const rawStep = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
     const step = next.playing ? Math.min(rawStep, nominal) : rawStep;
     this.page.publish(next.hour, { playing: next.playing, seek: next.seekSequence, step, speed: next.hoursPerSecond });
+    const pictures = this.page.takePictures();
+    if (perfLog && next.playing) perfLog.pictures(pictures, this.expiredNames());
     this.dated = true;
     this.flush();
     if (next.playing) noteFrame(performance.now());
@@ -374,6 +376,14 @@ export class Pipeline {
   }
 
   private readonly shared = new Map<string, { id: number; holders: number; widget: string }>();
+
+  private expiredNames(): string[] {
+    const expired = this.page.expired();
+    if (!expired.length) return [];
+    const ids = new Set(expired), names: string[] = [];
+    for (const held of this.shared.values()) if (ids.has(held.id)) names.push(held.widget);
+    return names;
+  }
 
   acquire(key: string, options: MountOptions): number {
     let held = this.shared.get(key);
