@@ -844,10 +844,25 @@ export function drawFamilyTable(
       const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
       const contentH = item.isLiveEnd ? rowH - LIVE_END_GAP : rowH;
       const hl = hairlineSpec(item, index, pinnedOnly);
-      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1, inspected, selected, focused, hl.kind, hl.left);
+      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1 && !item.row.detailColumn, inspected || !!item.row.pageGroup?.open, selected, focused, hl.kind, hl.left);
       if (rank > 0) {
         drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, contentH);
         if (picture && !pinnedOnly) picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
+      }
+      const detailRow = rowGeom?.detailRows?.get(index);
+      const detail = detailRow && layout.columns.find(col => col.key === item.row.detailColumn);
+      if (detail && detailRow) {
+        const { width, indent, lines } = detailRow;
+        ctx.fillStyle = theme.line;
+        ctx.fillRect(indent, y, 1, contentH);
+        const look = computeLook(item, detail);
+        drawApprovedCell(renderCtx, {
+          item, column: { ...detail, width, inlineFlags: undefined, leadInset: 0, trailInset: 0 }, labelLines: lines,
+          colIndex: -1, x: indent + CELL_INSET, y, rowHeight: contentH,
+          paintModel: look.paintModel, formatted: look.formatted, fraction: look.fraction, fill: look.fill, rowHovered: inspected, rowFocused: focused,
+        });
+        paintedCells++;
+        continue;
       }
       let x = pinnedOnly ? rank : rank - bounds.left;
       for (let colIndex = startCol; colIndex < endCol; colIndex++) {

@@ -27,7 +27,7 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
 import { formatDateParts, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
+import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -83,6 +83,7 @@ export interface CellRenderContext {
 }
 
 export interface CellDrawArgs {
+  readonly labelLines?: readonly number[];
   readonly item: Extract<FlatTableRow, { kind: 'data' }>;
   readonly column: FamilyColumnLayout;
   readonly colIndex: number;
@@ -266,7 +267,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (colIndex === rc.treeColumn) {
-    if (rc.hasActionColumn) {
+    if (rc.hasActionColumn || (item.row.pageGroup && kind === 'date')) {
       if (item.level > 1 && !item.row.pageParent) left += (item.level - 1) * TREE_CHEVRON_LANE;
     } else {
       left += treeTextStart(item.level, rc.treeLevels);
@@ -616,6 +617,15 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
   }
 
+  if (cell?.quantities?.length) {
+    for (const { figure, unit } of cell.quantities) {
+      if (left >= right) break;
+      left += drawInlineRuns(rc, figure, left, middle, right - left, fontOf(theme, 13, 600), theme.text) + 4;
+      left += drawInlineRuns(rc, unit, left, middle, right - left, fontOf(theme, 13, 400), theme.muted) + 12;
+    }
+    return;
+  }
+
   if (cell?.inlinePrefix && !column.numeric) {
     const font = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
     const room = Math.max(0, right - left);
@@ -628,6 +638,21 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (cell?.flags && cell.flags.length > 0) {
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+    if (args.labelLines?.length) {
+      const font = fontOf(theme, theme.fontSize.body, 400);
+      for (const [line, start] of args.labelLines.entries()) {
+        fx = left;
+        const mid = y + (line + 0.5) * DETAIL_LINE_HEIGHT;
+        const end = args.labelLines[line + 1] ?? cell.flags.length;
+        for (let i = start; i < end; i++) {
+          const flag = cell.flags[i]!;
+          drawFlagSlot(ctx, fx, Math.round(mid - FLAG_SLOT_HEIGHT / 2), slotOf(flag.art, flag.tag, rc), theme, { dimmed: flag.dimmed });
+          fx += FLAG_SLOT_WIDTH + 5;
+          fx += drawInlineRuns(rc, flag.label ?? flag.tag, fx, mid, right - fx, font, tokens.childText) + 6;
+        }
+      }
+      return;
+    }
     for (const fl of cell.flags) {
       if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
       const state = slotOf(fl.art, fl.tag, rc);
@@ -659,7 +684,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
     if (kind === 'item' && formatted.kind === 'notRecorded' && !cell?.missingFigure) {
-      const hatchW = Math.min(148, Math.max(48, right - left - 8));
+      const hatchW = Math.min(148, Math.max(0, right - left - 4));
       drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
       return;
     }

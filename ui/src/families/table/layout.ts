@@ -1,5 +1,5 @@
 import { VALUE_WEIGHT } from '../../charts/draw.ts';
-import { DATE_COLUMN_WIDTH } from '../../draw/kit.ts';
+import { DATE_COLUMN_WIDTH, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
 import {
   CELL_INSET,
   CHILD_ROW_HEIGHT,
@@ -327,7 +327,16 @@ export interface RowLayoutGeometry {
   readonly tops: readonly number[];
   readonly heights: readonly number[];
   readonly totalHeight: number;
+  readonly detailRows?: ReadonlyMap<number, DetailRowLayout>;
 }
+
+export interface DetailRowLayout {
+  readonly indent: number;
+  readonly width: number;
+  readonly lines: readonly number[];
+}
+
+export const DETAIL_LINE_HEIGHT = 28;
 
 export function rowHeightOf(
   item: FlatTableRow,
@@ -346,17 +355,38 @@ export function computeRowLayout(
   rows: readonly FlatTableRow[],
   density: TableDensity,
   mode: 'standard' | 'media' = 'standard',
+  detail?: { width: number; columns: readonly FamilyColumnLayout[]; theme: TableTheme; measure: MeasureText },
 ): RowLayoutGeometry {
   const tops = new Array<number>(rows.length);
   const heights = new Array<number>(rows.length);
+  const detailRows = new Map<number, DetailRowLayout>();
   let y = 0;
   for (let i = 0; i < rows.length; i++) {
-    const h = rowHeightOf(rows[i]!, density, mode);
+    const row = rows[i]!;
+    let h = rowHeightOf(row, density, mode);
+    if (detail && row.kind === 'data' && row.row.detailColumn) {
+      const indent = (detail.columns.find(col => col.cellKind === 'date')?.width ?? 0) + CELL_INSET;
+      const width = Math.max(0, detail.width - indent - CELL_INSET * 2);
+      const flags = row.row.cells[row.row.detailColumn]?.flags ?? [];
+      const lines: number[] = [];
+      let used = 0;
+      for (const [at, flag] of flags.entries()) {
+        if (flag.label === undefined) continue;
+        const required = FLAG_SLOT_WIDTH + 5 + detail.measure(flag.label, fontString(detail.theme, detail.theme.fontSize.body, 400)) + 6;
+        if (!lines.length || used + required > width - CELL_INSET * 2) {
+          lines.push(at);
+          used = 0;
+        }
+        used += required;
+      }
+      detailRows.set(i, { indent, width, lines });
+      h = lines.length ? lines.length * DETAIL_LINE_HEIGHT : 30;
+    }
     tops[i] = y;
     heights[i] = h;
     y += h;
   }
-  return { tops, heights, totalHeight: y };
+  return { tops, heights, totalHeight: y, ...(detailRows.size ? { detailRows } : {}) };
 }
 
 export const TABLE_WINDOW_OVERSCAN = 4;

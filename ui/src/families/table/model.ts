@@ -58,6 +58,7 @@ export type TableHeaderGroup =
   | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly operator?: string; readonly notRecordedReason?: string }[] };
 
 export interface TableCellFlag {
+  readonly label?: string;
   readonly tag: string;
   readonly art: ArtResult;
   readonly artKey?: string;
@@ -125,6 +126,7 @@ export interface TableCell {
   readonly glyph?: 'award' | 'battle' | 'helmet' | 'place' | 'loss' | 'transfer';
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
+  readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
@@ -182,6 +184,7 @@ export interface TableRow {
   readonly group?: TableGroupSpec;
   readonly pageGroup?: { readonly members: number; readonly open: boolean };
   readonly pageParent?: string;
+  readonly detailColumn?: string;
   readonly children?: readonly TableRow[];
   readonly initiallyOpen?: boolean;
   readonly muted?: boolean;
@@ -1084,7 +1087,7 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
       rowOut.push(auditCell(item.key, col.key, canonicalAuditData({
         ...painted,
         artKey: cell?.artKey ?? null,
-        flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true]) ?? null,
+        flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true, ...(flag.label ? [flag.label] : [])]) ?? null,
       })));
     }
     const { countryFlag: _flagStatus, rows: tooltipRows, ...tooltip } = deriveRowTooltip(item, model.columns);
