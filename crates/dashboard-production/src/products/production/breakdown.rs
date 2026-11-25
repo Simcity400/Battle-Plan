@@ -846,22 +846,26 @@ impl Product for ProductionLineBreakdown {
         let key = u128::from(handle);
         let tables = [(TableId::ProductionLines, None), (TableId::ProductionLineModifiers, None), (TableId::CountryProductionModifiers, None), (TableId::CountryLinks, None)];
         let mut read: Option<LineAt> = None;
-        let mut unread: Option<&str> = None;
+        let mut unread: Option<String> = None;
         dashboard_query::read::walk(recording, stretch.run, &tables, hour, hour, |_, readers| {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            if !readers[0].available() {
-                unread = Some("Production lines were not recorded at this hour");
-                return Ok(());
-            }
-            let Some(line) = row::<tables::ProductionLines>(&readers[0], key, format) else { return Ok(()) };
-            if !readers[3].available() {
-                unread = Some("Country links were not recorded at this hour, so the line's country is not known");
-                return Ok(());
-            }
-            let linked = row::<tables::CountryLinks>(&readers[3], u128::from(line.country), format)
-                .and_then(|link| dashboard_text::metadata::link_slot(std::slice::from_ref(&link), line.country));
-            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format);
-            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format);
+            let line = match row::<tables::ProductionLines>(&readers[0], key, format) {
+                Ok(Some(line)) => line,
+                Ok(None) => return Ok(()),
+                Err(reason) => {
+                    unread = Some(reason);
+                    return Ok(());
+                }
+            };
+            let linked = match row::<tables::CountryLinks>(&readers[3], u128::from(line.country), format) {
+                Ok(link) => link.and_then(|link| dashboard_text::metadata::link_slot(std::slice::from_ref(&link), line.country)),
+                Err(reason) => {
+                    unread = Some(format!("{reason}, so the line's country is not known"));
+                    return Ok(());
+                }
+            };
+            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format).ok().flatten();
+            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format).ok().flatten();
             read = Some((line, modifiers, country, linked));
             Ok(())
         })?;

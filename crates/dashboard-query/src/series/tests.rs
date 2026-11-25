@@ -460,6 +460,71 @@ fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
     assert_eq!(states[3].missing.as_deref(), Some("Country fuel consumers read only in part at this hour (1 rows not read)"));
 }
 
+#[test]
+fn a_step_stops_where_an_empty_measure_changes_its_explanation() {
+    use crate::{
+        identity,
+        timeline::{Join, Stretch, Timeline},
+    };
+    use replay::campaign::Replay;
+    use replay_data::{
+        identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{CampaignRow, ClockRow, CountryFuelConsumerRow, CountryLinkRow, CountryRow},
+    };
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use replay_journal::synthetic::{Input, Sample};
+
+    let (first, last, unread) = (10_000, 10_011, 10_004..=10_006);
+    let campaign = CampaignRow { id: b"fuel-explained".to_vec() };
+    let session = SessionStart {
+        id: 1,
+        process_id: 1,
+        process_start_time: 1,
+        qpc_frequency: 10_000_000,
+        sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: vec![],
+            mods: vec![],
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let start = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: first, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    fn read<R>(rows: &[R]) -> Input<'_, R> {
+        Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }
+    }
+    let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, start, last, |frame, hour| {
+        frame.table(TableId::Clock, read(&[ClockRow { hour, ..ClockRow::default() }]))?;
+        frame.table(TableId::Campaign, read(std::slice::from_ref(&campaign)))?;
+        frame.table(TableId::Countries, read(&[CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }]))?;
+        frame.table(TableId::CountryLinks, read(&[CountryLinkRow { id: 9001, canonical_slot: 7 }]))?;
+        if unread.contains(&hour) {
+            frame.table::<CountryFuelConsumerRow>(TableId::CountryFuelConsumers, Input::Unavailable { reason: "reader fault", read: false, sample: Sample::FromReadBit })
+        } else {
+            frame.table(TableId::CountryFuelConsumers, read(&[CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 0, received_raw: 0 }]))
+        }
+    })
+    .unwrap();
+    let timeline = Arc::new(Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() });
+    let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+    let query = crate::Query { replay: &replay, timeline, holders };
+    let series = dashboard_declare::series("fuel-consumers").unwrap();
+    let measure = series.measure("receivedShare").unwrap();
+    let line = Line::new(&query, series, measure).unwrap();
+    let ask = Ask { country: Country::from("GER"), part: 0 };
+    let step = |origin: i32, key| line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), key, (first, last), &Within::new()).unwrap();
+    assert_eq!(step(first + 1, NavigationKey::ArrowRight), Some(*unread.start()), "no fuel requested, then not recorded: a step forward stops where the reason changes");
+    assert_eq!(step(last - 1, NavigationKey::ArrowLeft), Some(*unread.end() + 1), "and a step back stops where it changes back");
+}
+
 static NEGATED: Series = Series {
     kind: "test-negated",
     table: TableId::Countries,

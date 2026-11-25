@@ -19,23 +19,29 @@ pub fn touched(reader: &TableReader, key: u128) -> bool {
     changes.witnessed.binary_search(&slot).is_ok() || changes.inserted.contains(&slot) || changes.written.iter().any(|slots| slots.contains(&slot))
 }
 
-pub fn number(reader: &TableReader, key: u128, column: usize) -> Option<i64> {
-    if !reader.available() {
-        return None;
+fn witnessed_slot(reader: &TableReader, key: u128) -> Result<Option<u32>, String> {
+    let slot = reader.slot(key);
+    let witnessed = match reader.read_rows() {
+        Some(read) => slot.is_some_and(|slot| read.binary_search(&slot).is_ok()),
+        None => true,
+    };
+    match crate::coverage::row_coverage(reader.table(), reader.status(), reader.reason(), witnessed) {
+        crate::coverage::Coverage::Recorded => Ok(slot),
+        crate::coverage::Coverage::NotRecorded(reason) => Err(reason),
     }
-    reader.view().number(column, reader.slot(key)?)
 }
 
-pub fn row<T: replay_data::rows::TableSchema>(reader: &TableReader, key: u128, format: u16) -> Option<T::Row>
+pub fn number(reader: &TableReader, key: u128, column: usize) -> Option<i64> {
+    reader.view().number(column, witnessed_slot(reader, key).ok()??)
+}
+
+pub fn row<T: replay_data::rows::TableSchema>(reader: &TableReader, key: u128, format: u16) -> Result<Option<T::Row>, String>
 where
     T::Row: Clone,
 {
-    if !reader.available() {
-        return None;
-    }
-    let slot = reader.slot(key)?;
-    let rows = replay_frame::frame::cells_rows(T::ID, &reader.view(), &[(key, slot)], format).ok()?;
-    rows.rows::<T>()?.first().cloned()
+    let Some(slot) = witnessed_slot(reader, key)? else { return Ok(None) };
+    let rows = replay_frame::frame::cells_rows(T::ID, &reader.view(), &[(key, slot)], format).map_err(|error| format!("{} could not be read at this hour: {error}", crate::coverage::table_title(T::ID)))?;
+    Ok(rows.rows::<T>().and_then(|rows| rows.first().cloned()))
 }
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -144,6 +150,57 @@ pub fn columns_of(source: &summary::Source) -> Vec<usize> {
     }
 }
 
+struct InputCells<'a> {
+    columns: &'a [usize],
+    values: Vec<Option<i64>>,
+}
+
+impl summary::Cells for InputCells<'_> {
+    fn number(&self, column: usize, _slot: u32) -> Option<i64> {
+        self.columns.iter().position(|&held| held == column).and_then(|at| self.values[at])
+    }
+
+    fn key(&self, _slot: u32) -> Option<u128> {
+        None
+    }
+
+    fn slot(&self, _key: u128) -> Option<u32> {
+        None
+    }
+
+    fn each_row(&self, _each: &mut dyn FnMut(u32)) {}
+}
+
+fn value_at(runs: &[(i32, i32, Option<i64>)], hour: i32) -> Option<i64> {
+    let at = runs.partition_point(|run| run.1 < hour);
+    runs.get(at).filter(|run| run.0 <= hour).and_then(|run| run.2)
+}
+
+fn explanation_changes(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: &[u128],
+    computed: &HashMap<u128, Runs>,
+    (start, from, to): (i32, i32, i32),
+) -> io::Result<Vec<i32>> {
+    let summary::Source::Computed { value, .. } = source else { return Ok(Vec::new()) };
+    let columns = columns_of(&source);
+    let inputs: Vec<HashMap<u128, Runs>> = columns.iter().map(|&column| runs(recording, run, table, summary::Source::Cell(column), Some(keys), start, to)).collect::<io::Result<_>>()?;
+    let state = |key: u128, hour: i32| value(&InputCells { columns: &columns, values: inputs.iter().map(|held| held.get(&key).and_then(|runs| value_at(runs, hour))).collect() }, 0);
+    let mut out = Vec::new();
+    for &key in keys {
+        let empty = Vec::new();
+        let numbers = computed.get(&key).unwrap_or(&empty);
+        let mut hours: Vec<i32> = inputs.iter().filter_map(|held| held.get(&key)).flatten().map(|run| run.0).filter(|&hour| from <= hour && hour <= to).collect();
+        hours.sort_unstable();
+        hours.dedup();
+        out.extend(hours.into_iter().filter(|&hour| value_at(numbers, hour).is_none() && value_at(numbers, hour - 1).is_none() && state(key, hour) != state(key, hour - 1)));
+    }
+    Ok(out)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Held {
     Nothing,
@@ -247,15 +304,20 @@ fn nearest_change_counted(
         (first, (first + UNIT_ORDINALS as i32 - 1).min(run_last))
     };
     let exact = |from: i32, to: i32| -> io::Result<Option<i32>> {
-        let found = runs(recording, run, table, source, Some(keys), (from - 1).max(run_first), to)?;
+        let start = (from - 1).max(run_first);
+        let found = runs(recording, run, table, source, Some(keys), start, to)?;
         let mut best: Option<i32> = None;
+        let mut offer = |hour: i32| best = Some(best.map_or(hour, |best| if forward { best.min(hour) } else { best.max(hour) }));
         for runs in found.values() {
             for (at, &(first, _, _)) in runs.iter().enumerate() {
                 if at == 0 || first < from || first > to {
                     continue;
                 }
-                best = Some(best.map_or(first, |best| if forward { best.min(first) } else { best.max(first) }));
+                offer(first);
             }
+        }
+        for hour in explanation_changes(recording, run, table, source, keys, &found, (start, from, to))? {
+            offer(hour);
         }
         Ok(best)
     };
