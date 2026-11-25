@@ -143,15 +143,6 @@ export function extentOfSummary(summary: ChartSummary, from = summary.from, to =
   return low <= high ? [low, high] : null;
 }
 
-export function scaleSummary(summary: ChartSummary, factor: number): ChartSummary {
-  if (factor === 1) return summary;
-  const tiles = summary.tiles;
-  return { ...summary, buckets: summary.buckets.map(bucket => bucket && { ...bucket, firstValue: bucket.firstValue * factor,
-    lastValue: bucket.lastValue * factor, minValue: bucket.minValue * factor, maxValue: bucket.maxValue * factor }),
-  ...(summary.runs ? { runs: summary.runs.map(run => ({ ...run, value: run.value * factor })) } : {}),
-  ...(tiles ? { tiles: { ...tiles, valueAt: (hour: number) => { const value = tiles.valueAt(hour); return value === null ? null : value * factor; } } } : {}) };
-}
-
 export function summaryExtent(summary: ChartSummary, x: readonly [number, number], until: number | null): [number, number] | null {
   const end = Math.min(x[1], until ?? x[1]);
   if (summary.tiles) return summary.from > x[1] || summary.to < x[0] ? null : extentOfSummary(summary, x[0], end);

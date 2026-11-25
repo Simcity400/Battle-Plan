@@ -10,6 +10,7 @@ import { TIME_OPTIONS as RESOURCE_TIME_OPTIONS } from '../resource-balance/defin
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
 import { OPTIONS as FACTION_STRENGTH_OPTIONS } from '../faction-strength/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
+import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
 import { OPTIONS as RAID_TALLY_OPTIONS } from '../raid-tally/definition.ts';
@@ -30,6 +31,12 @@ const FACTION_STRENGTH_LINES_OPTIONS = [
 ];
 const GAME_SCORE_LINES_OPTIONS = [
   ...GAME_SCORE_OPTIONS.filter(field => ['view', 'topMeasure', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
+  ...LINES_VIEW_OPTIONS,
+];
+const NAVAL_LOSSES_LINES_OPTIONS = [
+  ...NAVAL_LOSSES_OPTIONS
+    .filter(field => ['view', 'kind', 'attribution', 'period', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key))
+    .map(field => ({ ...field, visibleWhen: undefined })),
   ...LINES_VIEW_OPTIONS,
 ];
 const NUCLEAR_ARSENAL_LINES_OPTIONS = [
@@ -266,6 +273,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'time',
       () => import('../resource-balance/resourceTimeProjection.ts'),
       mod => ({ projection: mod.resourceTimeProjection, declaration: mod.resourceTimeDeclaration }),
+    ),
+  },
+  {
+    kind: 'naval-losses',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    options: NAVAL_LOSSES_LINES_OPTIONS,
+    loadSpec: timeChartSpec(
+      'naval-losses',
+      'lines',
+      () => import('../naval-losses/navalLossesLinesProjection.ts'),
+      mod => ({ projection: mod.navalLossesLinesProjection, declaration: mod.navalLossesLinesDeclaration }),
     ),
   },
   {

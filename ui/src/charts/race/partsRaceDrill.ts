@@ -1,31 +1,10 @@
 import type { GatedTime } from '../../dashboard/regionTime';
 import { CLOSED, pinnedBreakdown, reduceDrill, type PinnedSpec } from '../drill/drillState.ts';
 import type { DrillAction, DrillState } from '../drill/drillState';
-import { shownRuns } from './lines.ts';
-import type { Run, Span } from '../series';
-import { partsRaceAt, partsRaceSegmentAt } from '../../dashboard/partsRace.ts';
-import type { PartsRaceModel, PartsRaceReply, PartsRaceSeries } from '../../dashboard/partsRace';
-import type { CountryIdentityRun } from '../../generated/dashboard';
-import type { CountryPartsData, CountryPartsSelection } from './countryPartsDrillData';
+import type { CountryPartsSelection } from './countryPartsDrillData';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 
 export const UNATTRIBUTED_PART = { id: '', label: 'Other' };
-
-export interface NativePartsRaceReply extends PartsRaceReply {
-  series: (PartsRaceSeries & { identities: CountryIdentityRun[] })[];
-}
-
-export function partsRaceDrillData(model: PartsRaceModel, histories: NativePartsRaceReply['series'],
-  tooltip: CountryPartsData['tooltip']): CountryPartsData {
-  return { histories, warnings: model.reply.warnings,
-    parts: () => model.reply.parts.map(part => ({ id: part.key, label: part.name ?? 'Part name unavailable' })),
-    at: (tag, hour) => partsRaceAt(model, tag, hour),
-    bands: (tag, range) => partsRaceDrillBands(model, tag, null, range),
-    segmentAt: (tag, hour) => partsRaceSegmentAt(model, tag, hour),
-    readHour: (tag, hour) => partsRaceAt(model, tag, hour) ? hour : null,
-    keyHours: [...new Set(histories.flatMap(series => series.runs.map(run => run.firstHour)))].sort((a, b) => a - b),
-    tooltip };
-}
 
 export function partsRaceDrillActors(tag: string | undefined, choices: readonly string[] | undefined,
   fallback: () => string | null): readonly string[] {
@@ -60,21 +39,6 @@ export function reducePartsRaceDrill(state: PartsRaceDrillState, action: NativeP
   return { ...reduceDrill(state, action), choices: null,
     ...(action.type !== 'close' && selection ? { selection } : {}),
     ...(action.type !== 'close' && (action.owner ?? state.owner) ? { owner: action.owner ?? state.owner } : {}) };
-}
-
-export function partsRaceDrillBands(model: PartsRaceModel, tag: string, membership: readonly Span[] | null, range: Span): Run[][] {
-  return Array.from({ length: model.reply.parts.length + 1 }, (_, index) => {
-    const runs: Run[] = [];
-    for (const run of model.series.get(tag)?.series.runs ?? []) {
-      if (run.total == null) continue;
-      const value = index < model.reply.parts.length ? run.values[index] ?? 0
-        : run.total - run.values.reduce<number>((sum, part) => sum + (part ?? 0), 0);
-      const previous = runs.at(-1);
-      if (previous && !run.startsSegment && previous.lastHour + 1 === run.firstHour && previous.value === value) previous.lastHour = run.lastHour;
-      else runs.push({ firstHour: run.firstHour, lastHour: run.lastHour, value, ...(run.startsSegment ? { breakBefore: true } : {}) });
-    }
-    return shownRuns(runs, membership, range);
-  });
 }
 
 export function pinPartsRace(source: WidgetSpec, track: Pick<BoundTrack, 'id'>, tag: string, time: GatedTime, label: string): PinnedSpec {

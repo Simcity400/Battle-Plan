@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, scaleSummary, summaryExtent, summaryGeometry } from './chartSummary.ts';
+import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryExtent, summaryGeometry } from './chartSummary.ts';
 import { wireSummary } from './chartSummary.fixture.ts';
 import { dayLabel, drawBands, drawLine, spanLabel } from './draw.ts';
 import { pickLines } from './linePick.ts';
@@ -281,21 +281,4 @@ test('a tooltip of bins\' values names the days the bins span, never one hour of
   assert.equal(binsLabel(hovered, [bin(from + 100, from + 150), null, bin(from + 96, from + 120)]), spanLabel(from + 96, from + 150));
   assert.equal(binsLabel(hovered, [bin(hovered, hovered), null]), dayLabel(hovered));
   assert.equal(binsLabel(hovered, []), dayLabel(hovered));
-});
-
-test('a summary drawn in another unit scales every value, the head a tiled summary draws at included', () => {
-  const at = (first: number, firstValue: number, lastValue: number): ChartBucket => ({ firstHour: first, lastHour: first + 23, firstValue, lastValue,
-    lastValueHour: first + 23, minHour: first, minValue: Math.min(firstValue, lastValue), maxHour: first + 23, maxValue: Math.max(firstValue, lastValue),
-    firstBreak: first === 0, hasBreak: false });
-  const units = 32_768;
-  const tiled: ChartSummary = { from: 0, to: 47, width: 2, buckets: [at(0, units, 2 * units), at(24, 2 * units, 500 * units)],
-    tiles: { binHours: 24, valueAt: hour => hour >= 24 ? 500 * units : null } };
-  const points = scaleSummary(tiled, 1 / units);
-  assert.deepEqual(points.buckets[0], { ...tiled.buckets[0]!, firstValue: 1, lastValue: 2, minValue: 1, maxValue: 2 });
-  assert.equal(points.tiles!.valueAt(30), 500, 'the head is in points too, never the raw units beside a scaled line');
-  assert.equal(points.tiles!.valueAt(10), null, 'a head with no value stays without one');
-  assert.deepEqual(summaryExtent(points, [0, 47], 30), [1, 500], 'the axis spans the scaled values, the head among them');
-  const raw = scaleSummary({ ...tiled, tiles: undefined, runs: [{ firstHour: 0, lastHour: 9, value: 1.5 }] }, 100_000);
-  assert.deepEqual(raw.runs, [{ firstHour: 0, lastHour: 9, value: 150_000 }]);
-  assert.equal(scaleSummary(tiled, 1), tiled);
 });
