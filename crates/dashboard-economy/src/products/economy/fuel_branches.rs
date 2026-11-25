@@ -10,6 +10,10 @@ use std::io;
 use ts_rs::TS;
 
 const LABELS: [&str; 3] = ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"];
+const TOPBAR_WINDOW: &str = "topbar";
+const CONSUMER_ICONS: [&str; 3] = ["experience_icon", "air_experience_icon", "navy_experience_icon"];
+const FUEL_ICON: &str = "fuel_icon";
+const ICON_EDGE: u32 = 32;
 
 pub const SCALE: u32 = 100_000;
 
@@ -42,6 +46,14 @@ pub struct FuelBranchesReply {
     pub scale: u32,
     #[doc = " Each consumer index's label from the recorded content; null where it names none."]
     pub consumer_names: Vec<Option<String>>,
+    #[doc = " Each consumer index's insignia artwork URL from the installed interface; null where unavailable."]
+    pub consumer_icons: Vec<Option<String>>,
+    #[doc = " Why a consumer index's insignia icon is unavailable; null when an icon URL is present."]
+    pub consumer_icon_reasons: Vec<Option<String>>,
+    #[doc = " The fuel artwork URL from the installed interface; null where unavailable."]
+    pub fuel_icon: Option<String>,
+    #[doc = " Why the fuel icon is unavailable; null when an icon URL is present."]
+    pub fuel_icon_reason: Option<String>,
     #[doc = " The hour the consumers were last read: they are read once a day."]
     pub read_hour: Option<i32>,
     #[doc = " The country's consumers in index order; none when it requested no fuel."]
@@ -55,6 +67,8 @@ dashboard_base::reply_warnings!(FuelBranchesReply);
 
 pub struct Labels {
     names: [Option<String>; 3],
+    consumer_icons: [Result<String, String>; 3],
+    fuel_icon: Result<String, String>,
     warnings: Vec<String>,
 }
 
@@ -78,7 +92,11 @@ fn labels(source: &Source, load: &LoadContext) -> Labels {
         }
         name
     });
-    Labels { names, warnings }
+    let consumer_icons = CONSUMER_ICONS.map(|icon| {
+        dashboard_base::products::artwork::window_icon_url(source, load.content.as_ref(), TOPBAR_WINDOW, icon, ICON_EDGE)
+    });
+    let fuel_icon = dashboard_base::products::artwork::window_icon_url(source, load.content.as_ref(), TOPBAR_WINDOW, FUEL_ICON, ICON_EDGE);
+    Labels { names, consumer_icons, fuel_icon, warnings }
 }
 
 fn range(id: u32) -> Keys {
@@ -88,10 +106,18 @@ fn range(id: u32) -> Keys {
 
 fn reply(frame: &DecodedFrame, tag: &str, id: u32, labels: &Labels) -> FuelBranchesReply {
     let view = &frame.tables[TableId::CountryFuelConsumers.index()];
+    let (fuel_icon, fuel_icon_reason) = match &labels.fuel_icon {
+        Ok(url) => (Some(url.clone()), None),
+        Err(why) => (None, Some(why.clone())),
+    };
     let mut out = FuelBranchesReply {
         tag: tag.to_owned(),
         scale: SCALE,
         consumer_names: Vec::new(),
+        consumer_icons: Vec::new(),
+        consumer_icon_reasons: Vec::new(),
+        fuel_icon,
+        fuel_icon_reason,
         read_hour: view.sampled_at(),
         consumers: Vec::new(),
         missing: None,
@@ -114,6 +140,16 @@ fn reply(frame: &DecodedFrame, tag: &str, id: u32, labels: &Labels) -> FuelBranc
     let beyond = out.consumers.iter().filter(|row| row.index as usize >= LABELS.len()).count();
     let count = out.consumers.last().map_or(0, |row| row.index as usize + 1).max(LABELS.len());
     out.consumer_names = (0..count).map(|index| labels.names.get(index).cloned().flatten()).collect();
+    out.consumer_icons = (0..count)
+        .map(|index| labels.consumer_icons.get(index).and_then(|res| res.as_ref().ok().cloned()))
+        .collect();
+    out.consumer_icon_reasons = (0..count)
+        .map(|index| match labels.consumer_icons.get(index) {
+            Some(Ok(_)) => None,
+            Some(Err(why)) => Some(why.clone()),
+            None => Some("This fuel consumer beyond the fuel panel's three has no interface icon".to_owned()),
+        })
+        .collect();
     if beyond > 0 {
         out.warnings.push(format!("{beyond} fuel consumers beyond the fuel panel's three have no content label"));
     }
@@ -124,6 +160,7 @@ impl AtHour for FuelBranches {
     const KEY: &'static str = "fuel-branches";
     const TITLE: &'static str = "Fuel by branch";
     const CONTENT_DEPENDENT: bool = true;
+    const REPLY_NAMES_NO_HOUR: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = FuelBranchesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];

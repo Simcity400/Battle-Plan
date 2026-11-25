@@ -6,6 +6,7 @@ import { OPTIONS as ARMY_SIZE_OPTIONS } from '../army-size/definition.ts';
 import { OPTIONS as EQUIPMENT_PRODUCED_OPTIONS } from '../equipment-produced/definition.ts';
 import { OPTIONS as FACTION_STRENGTH_OPTIONS } from '../faction-strength/definition.ts';
 import { OPTIONS as FACTORIES_OPTIONS } from '../factories/definition.ts';
+import { OPTIONS as FUEL_BRANCHES_OPTIONS } from '../fuel-branches/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NAVY_SIZE_OPTIONS } from '../navy-size/definition.ts';
@@ -53,6 +54,7 @@ const RAID_TALLY_RACE_OPTIONS: readonly OptionField[] = [
 const TERRITORY_RACE_OPTIONS = raceScopedOptions(TERRITORY_OPTIONS, new Set(['view', 'measure', 'rule']));
 const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
 const RESOURCE_BALANCE_BARS_OPTIONS = raceScopedOptions(RESOURCE_BALANCE_OPTIONS, new Set(['view', 'hideEmpty']));
+const FUEL_BRANCHES_BARS_OPTIONS = raceScopedOptions(FUEL_BRANCHES_OPTIONS, new Set(['view', 'fuelDecimals']));
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -456,6 +458,18 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../resource-balance/resourceBalanceProjection.ts').then(mod => ({
       family: 'bars', kind: 'resource-balance', view: 'bars',
       projection: mod.resourceBalanceProjection, declaration: mod.resourceBalanceDeclaration,
+    })),
+  },
+  {
+    kind: 'fuel-branches',
+    view: 'bars',
+    label: 'Bars',
+    family: 'bars',
+    viewOption: 'view',
+    options: FUEL_BRANCHES_BARS_OPTIONS,
+    loadSpec: () => import('../fuel-branches/fuelBranchesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'fuel-branches', view: 'bars',
+      projection: mod.fuelBranchesProjection, declaration: mod.fuelBranchesDeclaration,
     })),
   },
   {

@@ -2,9 +2,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { FUEL_DECIMALS_OPTION } from './fuelBranchesData.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
-
-export const CONSUMPTION = { id: 'consumption', label: 'Current consumption' };
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
 
@@ -18,7 +15,6 @@ export const OPTIONS: readonly OptionField[] = [
   { ...AFTER_PLAYHEAD_OPTION, visibleWhen: options => overTime(options) && options.playback === 'cursor' },
   { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
     visibleWhen: options => overTime(options) && options.playback === 'window' },
-  DRILL_OPTION,
 ];
 
 export const definition = {
