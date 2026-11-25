@@ -840,11 +840,11 @@ fn a_product_lane_redeclared_on_its_table_keeps_every_flag_it_asked_for() {
         host: Some(HostCells { follow: follow.clone(), held: vec![true; 4] }), followed: None, input: None, resend: false,
         read: Arc::new(|_, _, _, _| panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }),
     };
-    let lane = |keyed, hourly| Declared { table: 2, columns: vec![1], keyed, passing: false, hourly };
-    product.read_lanes(&[lane(false, false)]);
-    product.read_lanes(&[lane(true, true)]);
-    assert_eq!(product.lanes, [lane(true, true)]);
-    assert_eq!(follow.declared().unwrap(), [lane(true, true)], "the playhead is told the lane's flags, not only its columns");
+    let lane = |flag| Declared { table: 2, columns: vec![1], keyed: flag, passing: flag, hourly: flag };
+    product.read_lanes(&[lane(false)]);
+    product.read_lanes(&[lane(true)]);
+    assert_eq!(product.lanes, [lane(true)]);
+    assert_eq!(follow.declared().unwrap(), [lane(true)], "the playhead is told the lane's flags, not only its columns");
 }
 
 #[cfg(test)]

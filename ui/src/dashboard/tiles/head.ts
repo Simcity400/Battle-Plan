@@ -24,6 +24,9 @@ export function followAtHead(head: string, read: () => Followed): () => void {
 export function valueAtHead(head: string, summary: Line, binHours: number, hour: number): number | null {
   const held = followed.get(head)?.at(-1)?.();
   if (held && held.value !== undefined && Math.floor(hour) >= held.hour) return held.value;
-  const slot = Math.floor(hour / binHours) - Math.floor(summary.from / binHours) - 1;
-  return slot >= 0 && slot < summary.buckets.length ? summary.buckets[slot]?.lastValue ?? null : null;
+  const hourly = binHours === 1;
+  const slot = Math.floor(hour / binHours) - Math.floor(summary.from / binHours) - (hourly ? 0 : 1);
+  if (slot < 0 || slot >= summary.buckets.length) return null;
+  const bucket = summary.buckets[slot];
+  return (hourly ? bucket?.firstValue : bucket?.lastValue) ?? null;
 }

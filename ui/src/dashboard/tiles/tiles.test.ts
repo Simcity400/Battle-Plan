@@ -6,7 +6,7 @@ import { summaryFits } from '../../charts/chartSummary.ts';
 import { plotFrame } from '../../charts/frame.ts';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
-import { followAtHead } from './head.ts';
+import { followAtHead, valueAtHead } from './head.ts';
 import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, TILE_BINS, binHoursOf, tilesOf } from './tile.ts';
 import type { Tile } from './tile.ts';
 import { TileView, tileBuckets, unrecordedReason } from './view.ts';
@@ -322,6 +322,17 @@ test('a tiled line fits the frame and answers the head value from the tile summa
   const stop = followAtHead(lines[0].head, () => ({ hour: live, value: 12_345 }));
   assert.equal(lines[0].summary.tiles!.valueAt(head), bucket, 'an hour before the followed one is answered from its bucket, never the live value');
   assert.equal(lines[0].summary.tiles!.valueAt(live), 12_345, 'the followed hour is answered with the followed value');
+  stop();
+});
+
+test('at hourly zoom a historical hour is answered from its own bucket, a missing one as missing', () => {
+  const at = (hour: number, value: number): ChartBucket => ({ firstHour: hour, lastHour: hour, firstValue: value, lastValue: value, lastValueHour: hour,
+    minHour: hour, minValue: value, maxHour: hour, maxValue: value, firstBreak: false, hasBreak: false });
+  const summary = { from: 100, buckets: [at(100, 5), at(101, 7), null] };
+  assert.equal(valueAtHead('hourly', summary, 1, 101), 7);
+  assert.equal(valueAtHead('hourly', summary, 1, 102), null);
+  const stop = followAtHead('hourly', () => ({ hour: 0, value: undefined }));
+  assert.equal(valueAtHead('hourly', summary, 1, 100), 5, 'a follower with no answer yet leaves the buckets to answer');
   stop();
 });
 
