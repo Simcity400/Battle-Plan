@@ -1,5 +1,4 @@
-import { formatDay } from '../../dashboard/calendar.ts';
-import { subjectHandle, subjectToken } from '../../dashboard/chosen.ts';
+import { subjectHandle } from '../../dashboard/chosen.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
@@ -19,13 +18,12 @@ interface Options {
 
 const base = { columns: SERVICE_COLUMNS, hideHeader: true, unsorted: true, dateGrouped: true, dayDividersOnly: true, rowTimeBoundaries: false } as const;
 const blank: TableCell = { value: notApplicable('Does not apply to this entry'), blank: true };
-const removals: Readonly<Record<string, string>> = {
+export const removals: Readonly<Record<string, string>> = {
   loss: 'Lost', division_destroyed: 'Destroyed', division_overrun: 'Overrun', division_deleted: 'Removed', division_disbanded: 'Disbanded',
   division_capitulation: 'Removed at capitulation', division_scripted: 'Removed by script', division_template_removed: 'Template removed',
   returned: 'Returned', merged: 'Merged', hq_transferred: 'HQ transferred', volunteer_transferred: 'Volunteer transferred', exile_transferred: 'Exile transferred',
 };
-const groups = ['Recently destroyed', 'Most decorated', 'Other removals', 'Last observed'];
-const nameOf = (row: ServiceDivision) => row.name ?? `Division name not recorded (${row.division})`;
+export const nameOf = (row: ServiceDivision) => row.name ?? `Division name not recorded (${row.division})`;
 
 function serviceRow(view: BoundedReadView, row: ServiceEntry, sprite: string | null, boundary: IdentityBoundary): TableRow {
   const award = row.kind === 'award';
@@ -63,10 +61,8 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
     const refused = view.refused('main') ?? source?.refused;
     if (!source || refused) return { ...base, hour, rows: [], ...(refused ? { refused } : {}) };
     const head = source.rawHead as ServiceRecordTailReply | undefined;
-    const at = Math.min(hour, source.at ?? hour);
     const boundary = newIdentityBoundary();
-    const choices = head?.choices ?? [];
-    const chosen = choices.find(row => row.division === head?.selected);
+    const chosen = head?.selected;
     const spriteUrl = (key: string | null | undefined, frame = 0) => {
       const art = key ? view.art({ kind: 'sprite', key, frame }) : null;
       return art?.status === 'ready' ? art.url : undefined;
@@ -80,16 +76,8 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
       return art?.status === 'ready' ? [art.url] : [];
     }) ?? [];
     const country = chosen?.tag ? resolveIdentity(view, 'country', chosen.tag, { atHour: chosen.lastSeen, boundary }) : null;
-    const items = choices.map(row => ({
-      value: subjectToken(options.campaign, row.division), label: nameOf(row), checked: row.division === chosen?.division,
-      icon: spriteUrl(row.sprite), group: row.removedAt !== null ? ['division_destroyed', 'division_overrun'].includes(row.removed ?? '') ? 'Recently destroyed' : 'Other removals'
-        : row.lastSeen < at ? 'Last observed' : 'Most decorated',
-      country: row.tag ?? 'Country not recorded', detail: row.template ?? 'Template not recorded',
-      note: row.removedAt !== null ? `${removals[row.removed ?? ''] ?? 'Removed'} · ${formatDay(row.removedAt)}`
-        : row.medals === null ? 'Honours not recorded' : `${formatScalar(row.medals)} ${row.medals === 1 ? 'honour' : 'honours'}`,
-    })).sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
-    const filter = { key: 'division', noun: 'divisions', allLabel: 'Follow most decorated', items, selected: options.chosen ? [options.chosen] : [],
-      single: { pinned: !!options.chosen, countryTag: chosen?.tag ?? undefined, countryLabel: country?.name, countryFlag: country?.art?.status === 'ready' ? country.art.url : undefined,
+    const filter = { key: 'division', noun: 'divisions', allLabel: 'Follow most decorated', items: [], selected: options.chosen ? [options.chosen] : [],
+      single: { selected: chosen?.division, pinned: !!options.chosen, countryTag: chosen?.tag ?? undefined, countryLabel: country?.name, countryFlag: country?.art?.status === 'ready' ? country.art.url : undefined,
         label: chosen ? nameOf(chosen) : 'Choose division', ...(icon ? { icon } : {}) } };
     if (options.chosen && subjectHandle(options.campaign, options.chosen) === null) {
       return { ...base, hour, rows: [], kindFilter: filter, emptyKind: 'unavailable', empty: 'The chosen division belongs to another campaign.' };
@@ -115,6 +103,7 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
 });
 
 export const serviceRecordDeclaration: TableWidgetDeclaration<Options> = {
+  picker: () => import('./ServiceRecordPicker.tsx'),
   family: 'table', kind: 'division-service-record', jumpToDate: true, label: 'Division service record', subject: 'division', icon: 'medal',
   emptyCampaign: 'Load a campaign to see a division’s record.', countries: { mode: 'filter' }, columns: SERVICE_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },

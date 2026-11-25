@@ -8,6 +8,7 @@ dashboard_base::register_products! {
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
     DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail,
     DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail,
+    DIVISION_SERVICE_RECORD_CHOICES => crate::products::divisions::careers::service_record::DivisionServiceRecordChoices,
     LAND_BATTLES_LANDBATTLESMANIFEST => crate::products::land_battles::LandBattlesManifest,
     LAND_BATTLES_LANDBATTLES => crate::products::land_battles::LandBattles,
     LAND_BATTLES_LANDBATTLESRANKING => crate::products::land_battles::LandBattlesRanking,

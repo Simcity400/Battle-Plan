@@ -593,7 +593,7 @@ fn describe(frame: &DecodedFrame, entry: &DivisionHistoryRow, content: &Content,
         return dashboard_text::scripted_text::stored_text(loc, &cat.recorded_language, &ship.ship_name, "Sunk ship name");
     }
     let subject = dashboard_text::scripted_text::stored_text(loc, &cat.recorded_language, &entry.name, "Entry subject")?;
-    if matches!(entry.kind, 12 | 13) && !subject.is_empty() {
+    if matches!(entry.kind, DivisionHistoryRow::OPERATION | DivisionHistoryRow::OPERATION_EXCELLED) && !subject.is_empty() {
         return Ok(subject);
     }
     let country = if entry.target_country == 0 {

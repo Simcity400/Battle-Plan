@@ -41,7 +41,7 @@ interface ChromeWidths {
   readonly pinnedCount?: number;
 }
 
-export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
+export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, shownHour, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
   const chrome = state as TableChromeState | undefined;
   const meta = (chrome?.meta ?? {}) as ChromeMeta;
   const measured = chrome?.widths as ChromeWidths | undefined;
@@ -191,6 +191,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       </div>}
       {meta.kindFilter && setFilterOption ? <LogKindFilter
         slot={filterSlot}
+        shownHour={shownHour}
         compact={viewportWidth < 440}
         single={meta.kindFilter.single}
         allLabel={meta.kindFilter.allLabel}

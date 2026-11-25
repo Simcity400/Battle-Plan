@@ -206,7 +206,7 @@ fn a_tie_at_the_cut_or_between_shown_divisions_decided_by_an_unread_measure_is_n
 
 #[test]
 fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_gaps() {
-    use super::careers::service_record::DivisionServiceRecordTail;
+    use super::careers::service_record::{DivisionServiceRecordChoices, DivisionServiceRecordTail};
     use dashboard_base::products::{LoadContext, Product};
     use replay_data::rows::{DivisionHistoryRow, LandCombatRow, TableId, TableRows};
     use replay_frame::frame::TableView;
@@ -237,14 +237,17 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     let ask = |hour, division: Option<&str>| DivisionServiceRecordTail::load(&source,
         &serde_json::from_value(json!({"branchId": "1", "hour": hour, "division": division, "limit": 12})).unwrap(),
         &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+    let choices = |hour| DivisionServiceRecordChoices::load(&source,
+        &serde_json::from_value(json!({"branchId": "1", "hour": hour})).unwrap(),
+        &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap().choices;
     let early = ask(101, None);
-    assert_eq!(early.selected.as_deref(), Some("2"));
-    assert_eq!(early.choices.len(), 2);
+    assert_eq!(early.selected.as_ref().map(|d| d.division.as_str()), Some("2"));
+    assert_eq!(choices(101).len(), 2);
     assert_eq!(early.next_change, Some(102));
-    assert_eq!(ask(102, None).selected.as_deref(), Some("3"));
+    assert_eq!(ask(102, None).selected.as_ref().map(|d| d.division.as_str()), Some("3"));
     assert!(ask(103, Some("1")).rows.iter().any(|row| row.kind == "career" && row.hour == 91));
     let pinned = ask(104, Some("1"));
-    assert_eq!(pinned.choices.len(), 3);
+    assert_eq!(choices(104).len(), 3);
     assert_eq!(pinned.rows.iter().filter(|row| row.kind == "battle").map(|row| (row.hour, row.province)).collect::<Vec<_>>(), [(100, Some(9))]);
     assert!(ask(104, Some("3")).rows.iter().all(|row| row.kind != "battle"));
     assert!(pinned.missing.iter().any(|gap| gap.first_hour == 102 && gap.reason.contains("division's history")));

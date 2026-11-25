@@ -253,7 +253,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Deployment orders, divisions in training, manpower and equipment come from the recorded daily queue read; template, priority, location and archetype names resolve through the recorded naming operands and the content stack.".into())
         }
-        <divisions::careers::DecoratedDivisions as at_hour::AtHour>::KEY | divisions::careers::service_record::DivisionServiceRecordTail::KEY => {
+        <divisions::careers::DecoratedDivisions as at_hour::AtHour>::KEY | divisions::careers::service_record::DivisionServiceRecordTail::KEY | divisions::careers::service_record::DivisionServiceRecordChoices::KEY => {
             content.catalogue()?;
             Ok("Division histories, medal totals, experience and casualties taken come from recorded rows; medal, level, entry and place names resolve through recorded lexical spellings and the content stack's localisation and defines.".into())
         }
