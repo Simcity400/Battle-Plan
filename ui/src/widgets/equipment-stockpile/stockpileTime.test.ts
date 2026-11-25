@@ -67,10 +67,10 @@ test('the Time view asks the product for the main types at the date, and a chose
   assert.equal(lines.params?.top, 5);
   assert.deepEqual(lines.provenInterval?.({ nextChange: HOUR + 24 }, HOUR), [HOUR, HOUR + 23]);
   assert.deepEqual(lines.provenInterval?.({ nextChange: null }, HOUR), [HOUR, Infinity]);
-  const chosen = declaration.sources(context({ chosen: `${setToken('tanks')} ${setToken('rifles')}`, measure: 'share' }), { width: 600, height: 300 } as never);
+  const chosen = declaration.sources(context({ chosen: `${setToken('mod#tanks')} ${setToken('rifles')}`, measure: 'share' }), { width: 600, height: 300 } as never);
   const chosenTiles = chosen.entries.find(entry => entry.name === 'stock')!.read as PixelBinnedSourceRead;
   assert.equal(chosenTiles.top, undefined);
-  assert.deepEqual(chosenTiles.tags, ['tanks', 'rifles']);
+  assert.deepEqual(chosenTiles.tags, ['mod#tanks', 'rifles'], 'a quoted type key keeps its #');
   assert.equal((chosenTiles.family as { measure: string }).measure, 'share');
   assert.equal((chosen.entries.find(entry => entry.name === 'lines')!.read as PointSourceRead).params?.top, undefined);
 });
