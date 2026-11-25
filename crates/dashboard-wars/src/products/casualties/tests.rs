@@ -265,3 +265,56 @@ fn product_answers_at_the_hour_with_branch_start_and_no_future_warnings() {
     assert_eq!(reply.through, 1_800, "quiet stretch stands through the window end");
     assert!(reply.warnings.is_empty());
 }
+
+#[test]
+fn slot_viewpoint_preserves_ended_war_grouping_after_tag_change() {
+    use crate::products::war_fixtures::recorded;
+    use dashboard_base::test_fixtures::{CAMPAIGN, records};
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryRow, TableId, TableRows, WarRelationRow};
+    use replay_frame::frame::TableView;
+    use std::sync::Arc;
+
+    let frames: Vec<_> = (100..=115)
+        .map(|hour| {
+            let mut frame = recorded(hour);
+            let slot_one_tag: &[u8] = if hour <= 105 { b"AAA" } else { b"BBB" };
+            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                CountryRow { id: 1, canonical_slot: 1, tag: slot_one_tag.to_vec(), ..Default::default() },
+                CountryRow { id: 2, canonical_slot: 2, tag: b"TWO".to_vec(), ..Default::default() },
+                CountryRow { id: 3, canonical_slot: 3, tag: b"THREE".to_vec(), ..Default::default() },
+            ]))
+            .into();
+            if hour <= 105 {
+                frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(vec![
+                    WarRelationRow { first_country: 1, second_country: 2, start_hour: 90, first_was_instigator: 1, first_casualties: 500, second_casualties: 7, ..Default::default() },
+                    WarRelationRow { first_country: 1, second_country: 3, start_hour: 90, first_was_instigator: 1, first_casualties: 300, second_casualties: 7, ..Default::default() },
+                ]))
+                .into();
+            } else {
+                frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::empty(TableId::WarRelations)).into();
+                frame.tables[TableId::WarOwnedRelations.index()] = TableView::Complete(TableRows::empty(TableId::WarOwnedRelations)).into();
+            }
+            for (index, table) in frame.tables.iter().enumerate() {
+                if matches!(&**table, TableView::Complete(_)) {
+                    frame.metrics.table_ns[index] = 1;
+                }
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "casualties-s6".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let load = LoadContext { content: None };
+    let cancelled = AtomicBool::new(false);
+
+    let by_tag = CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: Country::Tag("BBB".into()), hour: 110 }, &load, &cancelled).unwrap();
+    assert!(by_tag.breakdown.parts.iter().any(|part| part.key == "~war:none"), "asking by post-change tag loses the pre-change war grouping: {:?}", by_tag.breakdown.parts);
+
+    let by_slot = CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: Country::Slot(1), hour: 110 }, &load, &cancelled).unwrap();
+    assert_eq!(by_slot.breakdown.total.amount, figure("800"));
+    assert_eq!(by_slot.breakdown.parts.len(), 1);
+    assert_ne!(by_slot.breakdown.parts[0].key, "~war:none", "asking by recorded slot preserves the ended war grouping across AAA -> BBB: {:?}", by_slot.breakdown.parts);
+    let enemies: Vec<&str> = by_slot.breakdown.parts[0].children.iter().map(|child| child.key.as_str()).collect();
+    assert_eq!(enemies, ["slot:2", "slot:3"]);
+}

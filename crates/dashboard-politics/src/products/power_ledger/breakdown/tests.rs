@@ -124,6 +124,16 @@ fn hours_when_no_holder_is_known_are_unrecorded_never_a_zero() {
     let timeline = Timeline { id: 1, first: 0, last: 100, stretches: vec![Stretch { run: 0, first: 0, last: 100, join: Join::Start }], unheld: Vec::new() };
     let gaps = unrecorded(&timeline, &holders, &"AAA".into(), &[covered(0, 39), covered(60, 100)], 0, 100);
     assert_eq!(gaps, [(40, 59, "No holder is known at these hours".to_owned())], "a hole with no run for the tag while no holder is known is not a recorded zero");
+    let unlinked = Holders::new(
+        [
+            ("AAA".to_owned(), vec![run(0, 39), HolderRun { first: 40, last: 59, holder: Holder::Unresolved, starts_segment: false }]),
+            ("BBB".to_owned(), vec![run(60, 100)]),
+        ]
+        .into(),
+        Vec::new(),
+    );
+    let slot_gaps = unrecorded(&timeline, &unlinked, &dashboard_base::products::Country::Slot(1), &[covered(0, 39), covered(60, 100)], 0, 100);
+    assert_eq!(slot_gaps, [(40, 59, "The country's holder was not recorded".to_owned())], "a slot query keeps unresolved tag runs as unrecorded holes");
 }
 
 #[test]

@@ -31,11 +31,11 @@ export function breakdownAtHourSource(
   params: Readonly<Record<string, unknown>>,
   validate: (raw: unknown) => BreakdownAtHour,
 ): SourcePlan {
-  const tag = ctx.countryTag;
+  const subject = ctx.countrySubject;
   const extra = Object.keys(params).length ? `:${JSON.stringify(params)}` : '';
   return {
-    owner: `${product}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${tag ?? ''}${extra}`,
-    entries: tag ? [{
+    owner: `${product}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${subject ?? ''}${extra}`,
+    entries: subject ? [{
       name: 'main',
       source: ctx.track.source,
       branch: ctx.branch.id,
@@ -46,7 +46,7 @@ export function breakdownAtHourSource(
         coverage: { mode: 'population', form: 'parts' },
         product,
         followQuery: null,
-        params: { branchId: ctx.branch.id, country: countryFromKey(tag), ...params },
+        params: { branchId: ctx.branch.id, country: countryFromKey(subject), ...params },
         hourParam: 'hour',
         provenInterval: (data, hour) => {
           const reply = data as BreakdownAtHour;

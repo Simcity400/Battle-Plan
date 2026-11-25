@@ -3,7 +3,7 @@ import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, ProductionSpendingReply, TerritoryBreakdownReply, TerritoryShareReply } from '../../generated/dashboard';
 import { casualtiesBreakdown, casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
-import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
+import { constructionBreakdown, constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { dockyardSpendingBreakdown, dockyardSpendingProjection, militaryFactorySpendingBreakdown, productionSpendingBreakdown, productionSpendingProjection } from '../../widgets/production-spending/productionSpendingProjection.ts';
 import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
@@ -415,6 +415,7 @@ test('territory asks the product for the chosen countries or the group itself, n
 test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {
   const ctx = {
     countryTag: 'AAA',
+    countrySubject: countryKey(1),
     track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
     branch: { id: '1', firstHour: START },
   } as unknown as Parameters<typeof ppSpendingBreakdown.sources>[0];
@@ -556,6 +557,7 @@ test('casualties breakdown resolves slot-keyed enemies at their live or ended ho
 
   const ctx = {
     countryTag: 'GER',
+    countrySubject: countryKey(3),
     track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
     branch: { id: '1', firstHour: START },
   } as unknown as Parameters<typeof casualtiesBreakdown.sources>[0];
@@ -674,6 +676,7 @@ test('production, dockyard and military factory spending share one at-hour produ
 
   const mkCtx = (options: Record<string, unknown>) => ({
     countryTag: 'GER',
+    countrySubject: countryKey(3),
     options,
     track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
     branch: { id: '1', firstHour: START },
@@ -687,15 +690,47 @@ test('production, dockyard and military factory spending share one at-hour produ
   const landPlan = militaryFactorySpendingBreakdown.sources(mkCtx({ equipment: 'land' }), vp);
 
   assert.equal(new Set([milPlan.owner, navPlan.owner, dockPlan.owner, airPlan.owner, landPlan.owner]).size, 5, 'each scope and refit toggle owns its own broker entry');
-  assert.deepEqual((milPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'military', includeRefits: false });
-  assert.deepEqual((navPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'dockyards', includeRefits: true });
-  assert.deepEqual((dockPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'dockyardPurposes' });
-  assert.deepEqual((airPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'airPurposes' });
-  assert.deepEqual((landPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 'GER', scope: 'landPurposes' });
+  assert.deepEqual((milPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'military', includeRefits: false });
+  assert.deepEqual((navPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'dockyards', includeRefits: true });
+  assert.deepEqual((dockPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'dockyardPurposes' });
+  assert.deepEqual((airPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'airPurposes' });
+  assert.deepEqual((landPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', country: 3, scope: 'landPurposes' });
 
   const proof = resolvePlaybackProvenInterval(dockPlan.entries[0]!.read, spendingReply, { anchorHour: START + 40, span: null }, START + 10_000);
   assert.deepEqual(proof, [START + 40, START + 140]);
   let asks = 1;
   for (let hour = START + 41; hour <= START + 140; hour++) if (hour > proof[1]) asks++;
   assert.equal(asks, 1, 'a quiet 100 played hours asks once');
+});
+
+test('S6: at-hour breakdowns key plan owner and product request by recorded country slot across tag changes', () => {
+  const vp = { width: 800, height: 300 } as Parameters<typeof casualtiesBreakdown.sources>[1];
+  const mkCtx = (countryTag: string | null, countrySubject: string | null, options: Record<string, unknown> = {}) => ({
+    countryTag,
+    countrySubject,
+    options,
+    track: { source: { id: 'source', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: START },
+  }) as unknown as Parameters<typeof casualtiesBreakdown.sources>[0];
+
+  for (const [name, decl, options] of [
+    ['casualties', casualtiesBreakdown, {}],
+    ['power-spending', ppSpendingBreakdown, {}],
+    ['construction', constructionBreakdown, {}],
+    ['production-spending', productionSpendingBreakdown, { factories: 'military', refits: false }],
+    ['dockyard-spending', dockyardSpendingBreakdown, {}],
+    ['military-factory-spending', militaryFactorySpendingBreakdown, { equipment: 'air' }],
+  ] as const) {
+    const asA = decl.sources(mkCtx('AAA', countryKey(7), options), vp);
+    const asB = decl.sources(mkCtx('BBB', countryKey(7), options), vp);
+    assert.equal(asA.entries.length, 1, `${name} emits one entry when slot is known`);
+    assert.equal(asB.entries.length, 1, `${name} emits one entry after tag change`);
+    assert.equal(asA.owner, asB.owner, `${name} keeps the same plan owner when slot 7 changes tag AAA -> BBB`);
+    assert.equal(asA.entries[0]!.read.shape, 'point');
+    assert.equal(asB.entries[0]!.read.shape, 'point');
+    assert.equal(asA.entries[0]!.read.params?.country, 7, `${name} sends recorded slot 7 under tag AAA`);
+    assert.equal(asB.entries[0]!.read.params?.country, 7, `${name} sends recorded slot 7 under tag BBB`);
+    const unresolved = decl.sources(mkCtx('BBB', null, options), vp);
+    assert.equal(unresolved.entries.length, 0, `${name} withholds requests until the recorded slot is resolved`);
+  }
 });
