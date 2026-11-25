@@ -43,11 +43,6 @@ export class LogStates<T> {
   }
 }
 
-export function logStates<T>(hours: readonly number[], rowsAt: (hour: number) => readonly LogRow<T>[], state: (row: LogRow<T>) => string,
-  order: (a: LogRow<T>, b: LogRow<T>) => number): LogRow<T>[] {
-  return logStatesBy(hours, rowsAt, () => null, () => null, state, order);
-}
-
 export function logStatesBy<T>(hours: readonly number[], rowsAt: (hour: number) => readonly LogRow<T>[], changed: (hour: number) => Iterable<string> | null,
   rowOf: (identity: string, hour: number) => LogRow<T> | null, state: (row: LogRow<T>) => string, order: (a: LogRow<T>, b: LogRow<T>) => number): LogRow<T>[] {
   const states = new LogStates<T>(state);

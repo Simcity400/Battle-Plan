@@ -6,6 +6,6 @@ A war-end outcome joins a recorded conference only at the same hour with each wi
 
 Use gaps in the hourly finalizer and ownership reads to report periods when conferences could be missing. The daily roster's normal cadence is complete for its purpose. A conference opening and closing between roster reads can still be captured by the finalizer or an ownership change. Keep the gaps when filtering and retain the full recorded action list for a conference that matches a selected category.
 
-Prepare visible conference-card states over a block, then reveal and hide those states at their recorded hours without a React render inside the block. Preload labels for every prepared card in the block, and paint headline counts from cards revealed at the current hour. Binary cutoff over pre-shaped rows keeps playback from reshaping the campaign. Estimate offscreen card height, then measure actual wrapping once mounted. Width fitting never removes participants or outcomes from the tooltip. A war name is unavailable, so describe the sides instead.
+The shared table pages treaty, recipient and term rows from the branch occurrence index. Playback reveals the treaty and its children at publication. The recording lacks an unambiguous war name, so the war column shows it as missing.
 
-[Peace data](../../ui/src/widgets/peace-deals/peaceData.ts) · [Conference cards](../../ui/src/widgets/peace-deals/PeaceDealsWidget.tsx) · [Settlement tests](../../ui/src/widgets/peace-deals/peaceData.test.ts)
+[Peace deals](../../ui/src/widgets/peace-deals/peaceDealsProjection.ts) · [Treaty index and tests](../../crates/dashboard-wars/src/products/peace/tail.rs)

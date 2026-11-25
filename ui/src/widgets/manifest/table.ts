@@ -477,6 +477,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'peace-deals',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'peace-deals',
+      DEFAULT_VIEW,
+      () => import('../peace-deals/peaceDealsProjection.ts'),
+      mod => ({ projection: mod.peaceDealsProjection, declaration: mod.peaceDealsDeclaration }),
+    ),
+  },
+  {
     kind: 'division-log',
     view: DEFAULT_VIEW,
     family: 'table',

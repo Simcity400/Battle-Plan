@@ -151,7 +151,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     use dashboard_world::products::{country_flags, identities, subjects};
     use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, forces, leaders, training_queue};
     use dashboard_naval::products::naval;
-    use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
+    use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, scoreboard, territory_transfers, volunteers, wargoals, wars};
     use dashboard_politics::products::{feed, national_focus, stability, technology_artwork};
     use dashboard_economy::products::{convoys, economy, trade_flow};
     use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending, production_spending_months};
@@ -390,14 +390,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("No offline check: idea, advisor, leader, ideology and modifier names are read at the reply from the recorded lines and parts dictionary, in the country's look at the hour.".into())
         }
         casualties::CasualtyBreakdown::KEY | <casualty_matrix::CasualtyMatrix as at_hour::AtHour>::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
-        peace::PeaceDeals::KEY | territory_transfers::TerritoryTransfers::KEY => {
-            let catalogue = content.catalogue()?;
-            if catalogue.localised("PEACE_TAKE_STATES_DEMAND", dashboard_base::catalogue::View::Scripted).is_none() {
-                findings.push(Finding::new(Kind::Refused, "peace action names", "localisation PEACE_TAKE_STATES_DEMAND is missing; state transfers are unnamed"));
-            }
-            take(catalogue, "peace action names", findings);
-            Ok("The state-taking action's name checked; other action names come from the recorded settlements' keys and cached names.".into())
-        }
+        dashboard_wars::products::peace::tail::PeaceDealsTail::KEY => Ok("Treaty terms and participant slots come from the recording. Country groups need their recorded membership.".into()),
+        territory_transfers::TerritoryTransfers::KEY => Ok("Territory transfers use recorded state ownership, settlement participants and state victory points.".into()),
         dashboard_world::products::sea_regions::StrategicRegions::KEY => {
             let regions = dashboard_base::content::strategic_regions(&content.resolved.layers).map_err(|why| why.to_string())?;
             for note in &regions.notes {

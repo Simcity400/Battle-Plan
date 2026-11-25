@@ -448,7 +448,13 @@ window.tableFamilyDom = {
     if (!body) throw new Error('No accessible mirror body');
     const fac: [bigint, bigint, bigint, bigint] = [15n, 95n, 30n, -1n];
     const cas: [bigint, bigint, bigint, bigint] = [1n, 2n, 0n, 0n];
-    let hour = pipeline.view(pipeId)?.h ?? 0;
+    let hour = clock.getSnapshot().hour + 1;
+    clock.seek(hour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(hour, fac, cas, true);
+    const seeded = await until(() => pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim
+      && body.querySelector('[data-row-key="FRA"] td:last-child')?.textContent === String(cas[1]));
+    if (!seeded) throw new Error(`Unchanged-content baseline did not install: ${body.textContent}`);
     const step = async () => {
       hour++;
       sendHour(hour, fac, cas);
@@ -456,7 +462,6 @@ window.tableFamilyDom = {
       clock.step(1);
       return until(() => installs > before && pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim && body.children.length > 0, 2000);
     };
-    await step();
     let mutations = 0;
     const observer = new MutationObserver(records => { mutations += records.length; });
     observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true });

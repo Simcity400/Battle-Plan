@@ -518,6 +518,10 @@ impl<P> Index<P> {
     }
 
     pub fn ask_with_gap_end(&self, holders: &Holders, ask: &Ask<'_>, gap_end: i32) -> io::Result<Answer> {
+        self.ask_visible(holders, ask, gap_end, |_| true)
+    }
+
+    pub fn ask_visible(&self, holders: &Holders, ask: &Ask<'_>, gap_end: i32, visible: impl Fn(&P) -> bool) -> io::Result<Answer> {
         if ask.limit == 0 {
             return Err(invalid("An occurrence window holds one row or more"));
         }
@@ -549,7 +553,7 @@ impl<P> Index<P> {
                 continue;
             }
             let state = entry.state_at(hour);
-            if !state_ok(state) {
+            if !state_ok(state) || !visible(&entry.payload) {
                 continue;
             }
             if let Order::Key(column, _) = ask.order

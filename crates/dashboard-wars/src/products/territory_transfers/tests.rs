@@ -1,5 +1,5 @@
 use super::*;
-use crate::products::peace::{PeaceCaptured, PeaceDates, PeaceObservation, PeaceTransferGraph, PeaceTransferLink, PeaceTransferredState};
+use crate::products::peace::{PeaceCaptured, PeaceDates, PeaceObservation, PeaceTransferredState};
 use dashboard_base::span::HourSpan;
 
 fn country(slot: u32, tag: &str, hour: i32) -> PeaceTransferCountry {
@@ -14,7 +14,6 @@ fn state(state: u32, from: PeaceTransferCountry, to: PeaceTransferCountry, after
         dates: PeaceDates { before_hour: after - 1, after_hour: after },
         victory_points: points.map(str::to_owned),
         victory_points_read_hour: read,
-        released: false,
     }
 }
 
@@ -24,16 +23,12 @@ fn deal(id: &str, captured: Option<(i32, i32)>, states: Vec<PeaceTransferredStat
         derived: captured.is_none(),
         observation: PeaceObservation::RecordedConference,
         conference_id: None,
-        war_name: None,
         first_observed_hour: 0,
         last_observed_hour: 0,
-        current_turn: None,
-        finalized: None,
         first_finalized_hour: None,
         end_hour: None,
         end_is_by: false,
         first_absent_hour: None,
-        participants_derived: false,
         winners: Vec::new(),
         losers: Vec::new(),
         items: Vec::new(),
@@ -49,10 +44,7 @@ fn deal(id: &str, captured: Option<(i32, i32)>, states: Vec<PeaceTransferredStat
         capture_unavailable: None,
         capture_observed_hour: None,
         capture_unavailable_hour: None,
-        transfers: PeaceTransferGraph {
-            nodes: Vec::new(),
-            links: vec![PeaceTransferLink { id: format!("{id}:link"), source: String::new(), target: String::new(), state_count: states.len() as u32, victory_points: None, states }],
-        },
+        transfers: states,
         limitations: Vec::new(),
     }
 }

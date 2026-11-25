@@ -1,19 +1,23 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import type { OptionField } from '../../dashboard/options';
-import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
+import { columnsControl } from '../../families/settingsControls.ts';
+import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn } from '../../families/table/logHelpers.ts';
+import type { TableColumnSpec } from '../../families/table/model.ts';
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
-export const OPTIONS: readonly OptionField[] = [
-  { key: 'actions', section: 'options', label: 'Peace actions', hint: 'Show conferences with these actions.',
-    kind: 'content-set', automatic: 'Every action', default: '' },
-  ...LOG_OPTIONS,
+export const PEACE_DEALS_COLUMNS: readonly TableColumnSpec[] = [
+  logDateColumn({ minWidth: 68, widest: ['by 30 Aug'] }),
+  logKindColumn({ minWidth: 36 }),
+  logCountryColumn({ label: 'Sides', minWidth: 60, grow: 0 }),
+  logItemColumn({ label: 'War', minWidth: 36, grow: 4, narrow: 'primary' }),
+  logPlaceColumn({ key: 'terms', label: 'Terms', minWidth: 80, grow: 5, textTone: 'muted', widest: ['White peace'] }),
+  logActionColumn({ minWidth: 24, narrow: 'hide' }),
 ];
 
 export const definition = {
-  kind: 'peace-deals', version: 1, title: 'Peace deals', icon: 'history', category: 'Diplomacy',
+  kind: 'peace-deals', version: 2, title: 'Peace deals', icon: 'olive-branch', category: 'Diplomacy',
   description: 'Peace conferences, winners and outcomes.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
-  countrySelection: false,
-  countries: { max: Number.MAX_SAFE_INTEGER },
-  defaultCountries: { kind: 'all' }, minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 12 },
-  options: OPTIONS,
+  countrySelection: 'settings', countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'all' },
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 12 },
+  options: [columnsControl(PEACE_DEALS_COLUMNS, LOG_TABLE_BASE, { key: TABLE_SETTINGS_KEY })],
 } as const satisfies WidgetMeta;

@@ -196,7 +196,8 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
-  const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode) : null;
+  const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode,
+    { width, columns: columns.columns, theme, measure: canvasMeasureText(measure) }) : null;
   const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
