@@ -608,6 +608,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
+  const narrowText = column.narrowed ? cell?.narrowText : undefined;
   if (column.inlineFlags?.length && !cell?.inlinePrefix) {
     const marks = column.inlineFlags.flatMap(key => {
       const tail = item.row.cells[key];
@@ -621,7 +622,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       const font = fontOf(theme, density === 'compact' ? 13 : 13.5, 600);
       const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
       let at = left + (missing ? drawMissingMark(ctx, left, middle, room, theme, { figure: cell?.missingFigure }).width
-        : drawInlineRuns(rc, formatted.text, left, middle, room, font, theme.text)) + gap;
+        : drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, room, font, theme.text)) + gap;
       for (const mark of marks) {
         if (mark.glyph) { drawGlyph(rc, mark.glyph, at, middle); at += 16 + gap; }
         for (const flag of mark.flags ?? []) {
@@ -792,19 +793,23 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
     const titleColor = item.row.muted ? theme.muted : (isChild ? tokens.childText : theme.text);
-    drawInlineRuns(rc, formatted.text, left, middle - 8, avail, titleFont, titleColor);
+    drawInlineRuns(rc, narrowText ?? formatted.text, left, middle - 8, avail, titleFont, titleColor);
     drawInlineRuns(rc, subtext, left, middle + 9, avail, subFont, theme.muted);
     return;
   }
 
-  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
-  const textColor = item.row.muted || column.textTone === 'muted'
+  const textFont = fontOf(theme, density === 'compact' ? 13 : 13.5, cell?.strong ? 600 : column.textTone ? 400 : isChild ? 500 : (isPrimary ? 600 : 400));
+  const textColor = item.row.muted
     ? theme.muted
-    : isChild || column.textTone === 'secondary'
-      ? tokens.childText
-      : theme.text;
-  const drawnW = drawInlineRuns(rc, formatted.text, left, middle, avail, textFont, textColor);
-  if (cell?.inlineSubtext && !column.inlineFlags) {
+    : cell?.strong
+      ? theme.text
+      : column.textTone === 'muted'
+        ? theme.muted
+        : isChild || column.textTone === 'secondary'
+          ? tokens.childText
+          : theme.text;
+  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail, textFont, textColor);
+  if (cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined) {
     const gap = 8;
     const rem = avail - drawnW - gap;
     if (rem >= 20) {
