@@ -133,8 +133,10 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     if (!followedEntry || !spec) return;
     const lane = keyedLane(spec);
     const stops = spec.keys.map((key, at) => followAtHead(tileHead(lane, ids[at]), () => {
-      const row = followedRow(followedEntry.answer, key, partBits);
-      return row < 0 ? null : rowAmount(followedEntry.answer, row, decimals);
+      const answer = followedEntry.answer;
+      if (!answer) return { hour: followedEntry.hour, value: undefined };
+      const row = followedRow(answer, key, partBits);
+      return { hour: followedEntry.hour, value: row < 0 ? null : rowAmount(answer, row, decimals) };
     }));
     return () => stops.forEach(stop => stop());
   }, [followedEntry, ids, decimals, partBits]);

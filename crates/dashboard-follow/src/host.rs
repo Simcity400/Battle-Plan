@@ -279,11 +279,13 @@ impl StepProduct {
         let mut lanes = self.lanes.clone();
         for wanted in read.iter().filter(|wanted| host.held.get(wanted.table) == Some(&true)) {
             match lanes.iter_mut().find(|lane| lane.table == wanted.table) {
-                Some(lane) if wanted.columns.iter().all(|column| lane.columns.contains(column)) => {}
                 Some(lane) => {
                     lane.columns.extend(&wanted.columns);
                     lane.columns.sort_unstable();
                     lane.columns.dedup();
+                    lane.keyed |= wanted.keyed;
+                    lane.passing |= wanted.passing;
+                    lane.hourly |= wanted.hourly;
                 }
                 None => lanes.push(wanted.clone()),
             }
@@ -752,6 +754,7 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
 
     fn anchor(&self, anchor: Anchor) {
         let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+        let anchor = Anchor { sought: anchor.sought || anchor.seek != reads.seek, ..anchor };
         self.follow.anchor(anchor.seek, || {
             (self.anchored)(&self.owner, anchor);
             self.playhead().epoch()
@@ -826,6 +829,22 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let new = current.tokens[&4].clone();
     current.remove(4);
     assert!(new.load(Ordering::Acquire));
+}
+
+#[cfg(test)]
+#[test]
+fn a_product_lane_redeclared_on_its_table_keeps_every_flag_it_asked_for() {
+    let follow = Follow::new(0);
+    let mut product = StepProduct {
+        id: 4, lanes: Vec::new(), seed: None, pending_seed: None, last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1),
+        host: Some(HostCells { follow: follow.clone(), held: vec![true; 4] }), followed: None, input: None, resend: false,
+        read: Arc::new(|_, _, _, _| panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }),
+    };
+    let lane = |flag| Declared { table: 2, columns: vec![1], keyed: flag, passing: flag, hourly: flag };
+    product.read_lanes(&[lane(false)]);
+    product.read_lanes(&[lane(true)]);
+    assert_eq!(product.lanes, [lane(true)]);
+    assert_eq!(follow.declared().unwrap(), [lane(true)], "the playhead is told the lane's flags, not only its columns");
 }
 
 #[cfg(test)]

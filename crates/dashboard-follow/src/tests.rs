@@ -2017,3 +2017,71 @@ fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming()
     assert!(data_hours.contains(&50), "anchored hour 50 must be delivered after pending warm finishes, got data at {data_hours:?}");
     drop(host);
 }
+
+#[test]
+fn a_new_page_seek_while_paused_reads_again_a_product_whose_read_it_cancelled() {
+    use crate::{
+        host::PlayheadHost,
+        panel::{AtHour, ExactReader, PanelRows, ProductRead, ProductReader, dated},
+        push::{PANEL, Push},
+        registry::{Anchor, Hosted},
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct NoRows;
+    impl PanelRows for NoRows {
+        fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+            Err(io::Error::other("unused"))
+        }
+    }
+
+    let pages = record(quiet);
+    let follow = Follow::new(0);
+    let hook = follow.hook(Box::new(|_, _| {}));
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap());
+    let anchored = |playhead: &Playhead, anchor: Anchor| {
+        playhead.frame_rate(anchor.frame_rate);
+        if anchor.sought {
+            playhead.seek(anchor.hour);
+        }
+        if !anchor.playing {
+            playhead.pause();
+        }
+    };
+    let held = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host = PlayheadHost::new(Arc::clone(&playhead), |p| p, anchored, follow, held).unwrap();
+    let push = Arc::new(Push::default());
+    host.show_panels(Arc::new(NoRows), Arc::clone(&push));
+
+    let first = Arc::new(AtomicBool::new(true));
+    let (started, wait_started) = std::sync::mpsc::channel();
+    let advance: ProductReader = Arc::new(move |hour, _values, cancelled, _step| {
+        if first.swap(false, Ordering::AcqRel) {
+            started.send(()).unwrap();
+            while !cancelled.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }
+        ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() }
+    });
+    let cold: ExactReader = Arc::new(|hour, _: &AtomicBool| Ok(serde_json::json!({ "hour": hour })));
+    host.panel(8, Box::new(AtHour { read: Arc::clone(&cold), cold, advance }), 4).unwrap();
+    wait_started.recv().unwrap();
+
+    let hour: Hour = 0;
+    let epoch = playhead.epoch();
+    host.anchor(Anchor { seek: 2, frame_rate: 60.0, hour, position: f64::from(hour), timestamps: None, playing: false, speed: 1.0, sought: false });
+    assert_ne!(playhead.epoch(), epoch, "a new page seek is a seek, so every product is read again at it");
+
+    loop {
+        let (kind, bytes, _) = push.take_sent().expect("panel packet");
+        if kind != PANEL || dated::stamp(&bytes).map(|(_, seek)| seek) != Some(2) {
+            continue;
+        }
+        if dated::records(&bytes).unwrap().iter().any(|r| r.id == 8 && r.kind == dated::DATA && r.hour == hour) {
+            break;
+        }
+    }
+    drop(host);
+}

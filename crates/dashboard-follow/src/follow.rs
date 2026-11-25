@@ -264,7 +264,7 @@ fn redeclare(control: &mut Control, joining: bool) -> io::Result<()> {
 }
 
 fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
-    let mut tables: BTreeMap<usize, (BTreeSet<usize>, bool, bool)> = BTreeMap::new();
+    let mut tables: BTreeMap<usize, (BTreeSet<usize>, bool, bool, bool)> = BTreeMap::new();
     for reads in control.followed.values().filter(|reads| reads.table != head::TABLE) {
         let entry = tables.entry(reads.table).or_default();
         entry.0.extend(&reads.columns);
@@ -274,16 +274,18 @@ fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
     for lane in control.products.values().flatten() {
         let entry = tables.entry(lane.table).or_default();
         entry.0.extend(&lane.columns);
+        entry.1 |= lane.passing;
         entry.2 |= lane.keyed;
+        entry.3 |= lane.hourly;
     }
     let mut declared = Vec::with_capacity(tables.len());
-    for (table, (columns, feed, keyed)) in tables {
+    for (table, (columns, feed, keyed, hourly)) in tables {
         let log = match (&control.logs, control.classes.get(&table)) {
             (_, Some(&log)) => log,
             (Some(logs), None) => *control.classes.entry(table).or_insert(logs.is_log(table)?),
             (None, None) => false,
         };
-        declared.push(Declared { table, columns: columns.into_iter().collect(), keyed, passing: feed && !log, hourly: false });
+        declared.push(Declared { table, columns: columns.into_iter().collect(), keyed, passing: feed && !log, hourly });
     }
     Ok(declared)
 }
