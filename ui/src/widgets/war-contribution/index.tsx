@@ -3,6 +3,7 @@ import { dayLabel } from '../../charts/draw';
 import { CountryFlag } from '../../components/CountryFlag';
 import type { FamilyViewCountryChipProps, FamilyViewProps, FamilyViewRenderer, FamilyViewSubjectMenuProps, ResolvedViewOptions } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
+import { resolveWidgetCampaign } from '../../dashboard/campaigns';
 import { setToken } from '../../dashboard/options';
 import { failureText } from '../../dashboard/queryError.ts';
 import type { InstalledAction } from '../../families/contract.ts';
@@ -69,14 +70,15 @@ function WarChip(props: FamilyViewCountryChipProps) {
 }
 
 function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuProps) {
-  const reply = useWarsReply(widget, runtime, true);
+  const reply = useWarsReply(resolveWidgetCampaign({ ...widget, options: {} }, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), runtime, true);
   const wars = reply.data;
+  const pending = !wars ? (reply.error ? failureText(reply.error, 'The wars were not read') : 'Loading wars…') : wars.available ? null : 'Wars are not in this recording.';
   const saved = storedWar(options);
   const choose = (id: string | null) => setOption('war', id === null ? '' : setToken(id));
   return <div className="war-menu" role="group" aria-label="War">
     <div className="war-menu-heading">War</div>
     <button type="button" className={`war-menu-row${saved === null ? ' is-chosen' : ''}`} onClick={() => choose(null)}>The country’s main war at the date</button>
-    {!wars && <div className="war-menu-pending" role="status">{reply.error ? failureText(reply.error, 'The wars were not read') : 'Loading wars…'}</div>}
+    {pending && <div className="war-menu-pending" role="status">{pending}</div>}
     {(wars?.wars ?? []).map(war => {
       const observation = war.observations.at(-1) ?? null;
       const name = observation?.name.known ? observation.name.text : 'War name not recorded';

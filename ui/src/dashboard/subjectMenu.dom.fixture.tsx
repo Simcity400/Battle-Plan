@@ -36,7 +36,7 @@ const track = { id: 'main', roleId: 'main', label: 'main', branchIndex: 0, ancho
 const runtime = { tracks: [track], campaignTracks: [track], defaultRoleId: 'main', clock, client, campaigns: [], recordings: [] } as unknown as WidgetRuntime;
 
 const state: { widget: WidgetSpec; rebuilt: number } = {
-  widget: { id: 'war', kind: 'war-contribution', configVersion: 1, title: 'War contribution', campaign: 'default', trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] },
+  widget: { id: 'war', kind: 'war-contribution', configVersion: 1, title: 'War contribution', campaign: 'default', trackIds: ['unloaded'], countries: { kind: 'tags', tags: ['GER'] },
     time: { mode: 'follow' }, options: { view: 'measure', 'measure@measure': 'casualties' } } as unknown as WidgetSpec,
   rebuilt: 0,
 };
