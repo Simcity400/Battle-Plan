@@ -69,6 +69,7 @@ fn frame(hour: i32) -> DecodedFrame {
     set(&mut frame, TableId::PowerBalanceMembers, TableRows::PowerBalanceMembers(members));
     let wars = if (105..=120).contains(&hour) { vec![CountryCivilWarRow { country: GER, ordinal: 0, target: ENG }] } else { Vec::new() };
     set(&mut frame, TableId::CountryCivilWars, TableRows::CountryCivilWars(wars));
+    frame.metrics.table_ns[TableId::CountryCivilWars.index()] = 1;
     frame
 }
 
@@ -222,6 +223,57 @@ fn a_civil_war_is_an_episode_of_listings_ongoing_while_a_listed_country_exists()
     assert_eq!(war.at_war.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(105, 115)], "neither side exists after hour 115");
     assert!(war.outcome.is_none(), "no outcome without an annexation in the feed");
     assert!(reply.warnings.is_empty(), "the feed's annexations are read: {:?}", reply.warnings);
+}
+
+#[test]
+fn two_civil_wars_join_only_from_the_hour_a_listing_connects_them() {
+    let listing = |a, b, first, last| civil_wars::Listing { a, b, first, last };
+    let evidence = civil_wars::Evidence {
+        listings: vec![listing(1, 2, 100, 200), listing(3, 4, 100, 200), listing(2, 3, 110, 200)],
+        known: vec![dashboard_base::span::HourSpan { first_hour: 100, last_hour: 200 }],
+        changes: vec![100, 110, 201],
+        ..Default::default()
+    };
+    let at = |hour| civil_wars::answer_at(&evidence, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour }, 200);
+    let before = at(105);
+    assert_eq!(before.wars.len(), 2, "the listing that joins them is not read before 110");
+    assert_eq!(before.next_change, Some(110));
+    let after = at(110);
+    assert_eq!(after.wars.len(), 1);
+    assert_eq!(after.wars[0].sides.len(), 4);
+}
+
+#[test]
+fn a_rebel_listed_with_its_parent_at_the_outbreak_keeps_the_parent_whatever_their_slot_order() {
+    let mut tags = std::collections::BTreeMap::new();
+    tags.insert(2, vec![super::HolderTag { hour: 100, tag: "REB".into() }]);
+    tags.insert(9, vec![super::HolderTag { hour: 0, tag: "PAR".into() }]);
+    let evidence = civil_wars::Evidence { listings: vec![civil_wars::Listing { a: 2, b: 9, first: 100, last: 200 }], tags, ..Default::default() };
+    let reply = civil_wars::answer_at(&evidence, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: 150 }, 200);
+    let sides = &reply.wars[0].sides;
+    assert_eq!(sides.iter().map(|side| (side.slot, side.parent)).collect::<Vec<_>>(), [(2, Some(1)), (9, None)], "the rebel broke from the country that existed before");
+}
+
+#[test]
+fn hours_the_civil_war_lists_were_not_read_are_not_known_and_say_why() {
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if (122..=126).contains(&hour) {
+                *frame.tables[TableId::CountryCivilWars.index()] = TableView::Unavailable { reason: "civil-war lists unreadable".into() };
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "politics-unread".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let reply = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: LAST }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.known.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(FIRST, 121), (127, LAST)]);
+    assert!(reply.warnings.iter().any(|warning| warning.contains("civil-war lists unreadable")), "{:?}", reply.warnings);
+    let early = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: 121 }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(early.next_change, Some(122), "the unread stretch is a change");
+    assert!(early.warnings.is_empty(), "a reason dated later is not given earlier: {:?}", early.warnings);
 }
 
 #[test]

@@ -3,12 +3,13 @@ use super::{HolderTag, by_id, holdings, pieces, stretch_runs, tag_at, tags_of, v
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use dashboard_base::span::HourSpan;
 use dashboard_query::Query;
+use replay_columnar::manifest::Status;
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -127,8 +128,10 @@ impl Product for CivilWars {
     }
 
     fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid civil war branch"))?)?;
-        let reply = answer(&query, params, cancelled)?;
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid civil war branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let evidence = indexed(source, &query, branch, cancelled)?;
+        let reply = answer_at(&evidence, params, query.timeline.last);
         check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -144,71 +147,97 @@ pub(crate) struct Listing {
 
 type HolderRuns = BTreeMap<u32, Vec<(i32, i32, i64)>>;
 
-struct Next(Option<i32>, i32);
-
-impl Next {
-    fn see(&mut self, at: i32) {
-        if at > self.1 && self.0.is_none_or(|next| at < next) {
-            self.0 = Some(at);
-        }
-    }
-
-    fn span(&mut self, first: i32, last: i32) {
-        self.see(first);
-        self.see(last.saturating_add(1));
-    }
+#[derive(Debug, Default)]
+pub(crate) struct Evidence {
+    pub listings: Vec<Listing>,
+    pub exists: HolderRuns,
+    pub tags: Tags,
+    pub annexations: Vec<Annexation>,
+    pub known: Vec<HourSpan>,
+    pub unread: Vec<(i32, String)>,
+    pub unresolved: Vec<i32>,
+    pub changes: Vec<i32>,
 }
 
-fn cut_war(war: &CivilWar, hour: i32) -> CivilWar {
-    let mut remap: Vec<Option<u32>> = vec![None; war.sides.len()];
-    let mut sides = Vec::new();
-    for (old_idx, side) in war.sides.iter().enumerate() {
-        if side.first_hour > hour {
-            continue;
+const KEPT: usize = 4;
+
+#[derive(Default)]
+struct Kept(Vec<(u64, Arc<Mutex<Option<Arc<Evidence>>>>)>);
+
+fn indexed(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Evidence>> {
+    let slot = {
+        let state = source.state::<Kept>();
+        let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = match kept.0.iter().position(|(held, _)| *held == branch) {
+            Some(at) => kept.0.remove(at),
+            None => (branch, Arc::new(Mutex::new(None))),
+        };
+        let slot = Arc::clone(&entry.1);
+        kept.0.push(entry);
+        if kept.0.len() > KEPT {
+            kept.0.remove(0);
         }
-        let new_idx = sides.len() as u32;
-        remap[old_idx] = Some(new_idx);
-        sides.push(CivilWarSide {
-            slot: side.slot,
-            tags: side.tags.iter().filter(|entry| entry.hour <= hour).cloned().collect(),
-            first_hour: side.first_hour,
-            last_hour: side.last_hour.min(hour),
-            parent: side.parent.and_then(|parent| remap.get(parent as usize).copied().flatten()),
-            existed_before: side.existed_before,
-            exit: side.exit.as_ref().filter(|exit| exit.read_hour <= hour && exit.hour <= hour).cloned(),
-        });
+        slot
+    };
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(evidence) = held.as_ref() {
+        return Ok(Arc::clone(evidence));
     }
-    let outcome = war
-        .outcome
-        .as_ref()
-        .filter(|outcome| outcome.read_hour <= hour && outcome.hour <= hour)
-        .and_then(|outcome| {
-            remap.get(outcome.winner as usize).copied().flatten().map(|winner| CivilWarOutcome {
-                winner,
-                hour: outcome.hour,
-                read_hour: outcome.read_hour,
-            })
-        });
-    let at_war = war
-        .at_war
-        .iter()
-        .filter(|span| span.first_hour <= hour)
-        .map(|span| HourSpan { first_hour: span.first_hour, last_hour: span.last_hour.min(hour) })
-        .collect();
-    CivilWar { id: war.id.clone(), first_hour: war.first_hour, last_hour: war.last_hour.min(hour), at_war, sides, outcome }
+    let evidence = Arc::new(evidence(query, cancelled)?);
+    *held = Some(Arc::clone(&evidence));
+    Ok(evidence)
 }
 
-pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBool) -> io::Result<CivilWarsReply> {
-    let hour = params.hour.min(query.timeline.last);
-    let mut next = Next(None, hour);
-    let mut full_known = Vec::new();
+fn unread_reason(query: &Query<'_>, run: u32, status: Status, first: i32) -> io::Result<String> {
+    Ok(match status {
+        Status::Complete => String::new(),
+        Status::NotRecorded => "The civil-war lists were not recorded".to_owned(),
+        Status::Truncated { missing } => format!("The civil-war lists were read in part ({missing} rows not read)"),
+        Status::Unavailable { reason } => {
+            let recording = query.replay.recording();
+            let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, TableId::CountryCivilWars, first, None, replay_lanes::lanes::Keys::These(&[])))?;
+            held.strings.get(reason).map_or_else(|| "The civil-war lists were not available".to_owned(), |text| String::from_utf8_lossy(text).into_owned())
+        }
+    })
+}
+
+fn merged(runs: &mut Vec<(i32, i32, i64)>) {
+    runs.sort_unstable_by_key(|run| run.0);
+    let mut out: Vec<(i32, i32, i64)> = Vec::with_capacity(runs.len());
+    for &run in runs.iter() {
+        match out.last_mut() {
+            Some(last) if last.2 == run.2 && last.1.saturating_add(1) >= run.0 => last.1 = last.1.max(run.1),
+            _ => out.push(run),
+        }
+    }
+    *runs = out;
+}
+
+pub(crate) fn evidence(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Evidence> {
     let held = holdings(&query.holders);
     let ids = by_id(&held);
     let mut listings = Vec::new();
     let mut exists: HolderRuns = BTreeMap::new();
-    let mut unresolved = 0_u64;
+    let mut known = Vec::new();
+    let mut unread: Vec<(i32, i32, String)> = Vec::new();
+    let mut unresolved = Vec::new();
+    let mut changes = BTreeSet::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
+        for status in dashboard_query::read::statuses(query.replay.recording(), stretch.run, TableId::CountryCivilWars, stretch.first, stretch.last)? {
+            if replay_recording::columnar_frames::complete(status.status) {
+                match known.last_mut() {
+                    Some(HourSpan { last_hour, .. }) if last_hour.saturating_add(1) == status.first => *last_hour = status.last,
+                    _ => known.push(HourSpan { first_hour: status.first, last_hour: status.last }),
+                }
+                continue;
+            }
+            let reason = unread_reason(query, stretch.run, status.status, status.first)?;
+            match unread.last_mut() {
+                Some((_, last, held)) if last.saturating_add(1) == status.first && *held == reason => *last = status.last,
+                _ => unread.push((status.first, status.last, reason)),
+            }
+        }
         let targets = stretch_runs(query, stretch, TableId::CountryCivilWars, "target")?;
         let owned = stretch_runs(query, stretch, TableId::CountryCounterInputs, "owned_state_count")?;
         for (&key, runs) in &owned {
@@ -222,11 +251,7 @@ pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBoo
             let country = (key >> 32) as u32;
             for (first, last, target) in within(Some(runs), stretch.first, stretch.last) {
                 let (Some(own), Some(rivals)) = (ids.get(&country), u32::try_from(target).ok().and_then(|target| ids.get(&target))) else {
-                    if first <= hour {
-                        unresolved += 1;
-                    } else {
-                        next.see(first);
-                    }
+                    unresolved.push(first);
                     continue;
                 };
                 for holding in own {
@@ -239,55 +264,99 @@ pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBoo
                 }
             }
         }
-        full_known.push(HourSpan { first_hour: stretch.first, last_hour: stretch.last });
     }
+    listings.sort_by_key(|listing| (listing.first, listing.a, listing.b));
+    unresolved.sort_unstable();
+    let listed: BTreeSet<u32> = listings.iter().flat_map(|listing| [listing.a, listing.b]).collect();
+    exists.retain(|slot, _| listed.contains(slot));
     for runs in exists.values_mut() {
-        runs.sort_unstable_by_key(|run| run.0);
+        merged(runs);
     }
-    let evidence = crate::products::feed::annexations(query)?;
-    let tags: BTreeMap<u32, Vec<HolderTag>> = held.iter().map(|(&slot, held)| (slot, tags_of(held))).collect();
-    let full_wars = episodes(listings, &tags, &exists, &evidence);
-    for span in &full_known {
-        next.span(span.first_hour, span.last_hour);
-    }
-    for war in &full_wars {
-        next.span(war.first_hour, war.last_hour);
-        for span in &war.at_war {
-            next.span(span.first_hour, span.last_hour);
+    let tags: Tags = held.iter().filter(|(slot, _)| listed.contains(slot)).map(|(&slot, held)| (slot, tags_of(held))).collect();
+    let mut annexations = crate::products::feed::annexations(query)?;
+    annexations.sort_by_key(|annexation| (annexation.hour, annexation.read_hour));
+    for listing in &listings {
+        changes.insert(listing.first);
+        changes.insert(listing.last.saturating_add(1));
+        for (first, last) in joined_pieces(predicate(listing, &exists)) {
+            changes.insert(first);
+            changes.insert(last.saturating_add(1));
         }
-        for side in &war.sides {
-            next.span(side.first_hour, side.last_hour);
-            for tag in &side.tags {
-                next.see(tag.hour);
+    }
+    for entry in tags.values().flatten() {
+        changes.insert(entry.hour);
+    }
+    for annexation in &annexations {
+        changes.insert(annexation.hour);
+        changes.insert(annexation.read_hour);
+        let Some(annexed) = annexation.annexed.as_deref() else { continue };
+        for (slot, held) in &tags {
+            if tag_at(held, annexation.hour) != Some(annexed) {
+                continue;
             }
-            if let Some(exit) = &side.exit {
-                next.see(exit.hour);
-                next.see(exit.read_hour);
+            if let Some(&(first, ..)) = exists.get(slot).into_iter().flatten().find(|run| run.2 != 0 && run.1 > annexation.hour) {
+                changes.insert(first.max(annexation.hour.saturating_add(1)));
             }
         }
-        if let Some(outcome) = &war.outcome {
-            next.see(outcome.hour);
-            next.see(outcome.read_hour);
-        }
     }
-    let known = full_known
-        .into_iter()
+    for span in &known {
+        changes.insert(span.first_hour);
+        changes.insert(span.last_hour.saturating_add(1));
+    }
+    for &(first, last, _) in &unread {
+        changes.insert(first);
+        changes.insert(last.saturating_add(1));
+    }
+    changes.extend(unresolved.iter().copied());
+    let unread = unread.into_iter().map(|(first, _, reason)| (first, reason)).collect();
+    Ok(Evidence { listings, exists, tags, annexations, known, unread, unresolved, changes: changes.into_iter().collect() })
+}
+
+pub fn answer(query: &Query<'_>, params: &CivilWarsParams, cancelled: &AtomicBool) -> io::Result<CivilWarsReply> {
+    Ok(answer_at(&evidence(query, cancelled)?, params, query.timeline.last))
+}
+
+pub(crate) fn answer_at(evidence: &Evidence, params: &CivilWarsParams, timeline_last: i32) -> CivilWarsReply {
+    let hour = params.hour.min(timeline_last);
+    let listings: Vec<Listing> = evidence
+        .listings
+        .iter()
+        .take_while(|listing| listing.first <= hour)
+        .map(|listing| Listing { last: listing.last.min(hour), ..*listing })
+        .collect();
+    let exists: HolderRuns = evidence
+        .exists
+        .iter()
+        .map(|(&slot, runs)| (slot, runs.iter().filter(|run| run.0 <= hour).map(|&(first, last, value)| (first, last.min(hour), value)).collect()))
+        .collect();
+    let tags: Tags = evidence.tags.iter().map(|(&slot, held)| (slot, held.iter().filter(|entry| entry.hour <= hour).cloned().collect())).collect();
+    let annexations: Vec<Annexation> = evidence.annexations.iter().filter(|annexation| annexation.hour <= hour && annexation.read_hour <= hour).cloned().collect();
+    let wars = episodes(listings, &tags, &exists, &annexations);
+    let known = evidence
+        .known
+        .iter()
         .filter(|span| span.first_hour <= hour)
         .map(|span| HourSpan { first_hour: span.first_hour, last_hour: span.last_hour.min(hour) })
         .collect();
-    let wars = full_wars.iter().filter(|war| war.first_hour <= hour).map(|war| cut_war(war, hour)).collect();
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let unresolved = evidence.unresolved.partition_point(|&first| first <= hour);
     if unresolved != 0 {
         warnings.push(format!("{unresolved} refused civil-war listings: a listed country has no identity"));
     }
-    Ok(CivilWarsReply {
+    for (first, reason) in &evidence.unread {
+        if *first <= hour && !warnings.contains(reason) {
+            warnings.push(reason.clone());
+        }
+    }
+    let next = evidence.changes.partition_point(|&at| at <= hour);
+    CivilWarsReply {
         branch_id: params.branch_id.clone(),
         hour,
-        next_change: next.0.filter(|&at| at <= query.timeline.last),
+        next_change: evidence.changes.get(next).copied().filter(|&at| at <= timeline_last),
         known,
         wars,
         warnings,
-    })
+    }
 }
 
 type Tags = BTreeMap<u32, Vec<HolderTag>>;
@@ -317,6 +386,17 @@ pub(crate) fn episodes(mut listings: Vec<Listing>, tags: &Tags, exists: &HolderR
     let mut wars: Vec<CivilWar> = groups.into_iter().map(|group| war(group, tags, exists, annexations)).collect();
     wars.sort_by_key(|war| (war.first_hour, war.id.clone()));
     wars
+}
+
+fn joined_pieces(pieces: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    let mut out: Vec<(i32, i32)> = Vec::with_capacity(pieces.len());
+    for (first, last) in pieces {
+        match out.last_mut() {
+            Some(held) if held.1.saturating_add(1) >= first => held.1 = held.1.max(last),
+            _ => out.push((first, last)),
+        }
+    }
+    out
 }
 
 fn predicate(listing: &Listing, exists: &HolderRuns) -> Vec<(i32, i32)> {
