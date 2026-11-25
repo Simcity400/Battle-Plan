@@ -1,5 +1,6 @@
 use super::{ResearchModifier, ResearchModifierSource, ResearchModifiers};
 use replay_data::{rows::ResearchInputRow, rows::ResearchModifierRow as R};
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<ResearchModifiers> {
     if input.technology_present == 0 {
@@ -100,11 +101,25 @@ fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<Research
     }
     let mut sharing_sources = Vec::new();
     let mut sharing = 0_i128;
-    let groups: Vec<_> = slot.iter().filter(|r| r.kind == R::SHARING).collect();
-    let mut predecessor_rows = std::collections::BTreeMap::<u32, Vec<&R>>::new();
-    for row in slot.iter().filter(|r| r.kind == R::SHARING_PREDECESSOR) {
-        u32::try_from(row.raw).ok()?;
-        predecessor_rows.entry(row.count).or_default().push(row);
+    let mut groups = Vec::new();
+    let mut members_of = HashMap::<u32, Vec<&R>>::new();
+    let mut filters_of = HashMap::<u32, Vec<&R>>::new();
+    let mut categories = HashSet::<(u32, &[u8])>::new();
+    let mut predecessor_rows = HashMap::<u32, Vec<&R>>::new();
+    for row in slot {
+        match row.kind {
+            R::SHARING => groups.push(row),
+            R::SHARING_MEMBER | R::SHARING_MISSING_MEMBER => members_of.entry(row.count).or_default().push(row),
+            R::SHARING_FILTER => filters_of.entry(row.count).or_default().push(row),
+            R::SHARING_CATEGORY => {
+                categories.insert((row.source_id, row.name.as_slice()));
+            }
+            R::SHARING_PREDECESSOR => {
+                u32::try_from(row.raw).ok()?;
+                predecessor_rows.entry(row.count).or_default().push(row);
+            }
+            _ => {}
+        }
     }
     let doctrine = if groups.is_empty() {
         0
@@ -112,13 +127,7 @@ fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<Research
         u8::try_from(unique(slot, R::SHARING_DOCTRINE)?).ok()?
     };
     for row in &groups {
-        let members: Vec<_> = slot
-            .iter()
-            .filter(|r| {
-                matches!(r.kind, R::SHARING_MEMBER | R::SHARING_MISSING_MEMBER)
-                    && r.count == row.ordinal
-            })
-            .collect();
+        let members = members_of.get(&row.ordinal).map_or(&[][..], Vec::as_slice);
         if members.len() != row.count as usize {
             return None;
         }
@@ -137,16 +146,9 @@ fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<Research
                 contributors += 1;
             }
         }
-        let filters: Vec<_> = slot
-            .iter()
-            .filter(|r| r.kind == R::SHARING_FILTER && r.count == row.ordinal)
-            .collect();
+        let filters = filters_of.get(&row.ordinal).map_or(&[][..], Vec::as_slice);
         let matches = filters.is_empty()
-            || filters.iter().any(|f| {
-                slot.iter().any(|c| {
-                    c.kind == R::SHARING_CATEGORY && c.source_id == f.source_id && c.name == f.name
-                })
-            });
+            || filters.iter().any(|f| categories.contains(&(f.source_id, f.name.as_slice())));
         let contribution = ((i128::from(row.raw) + i128::from(row.auxiliary))
             .checked_mul(i128::from(contributors))?
             .checked_mul(100_000 + i128::from(sharing_multiplier))?
@@ -518,6 +520,80 @@ mod tests {
             row.raw = i64::MAX;
         }
         assert!(breakdown(&input, Some(&rows)).is_none());
+    }
+
+    #[test]
+    fn same_name_sharing_groups_keep_their_own_members_filters_and_order() {
+        let (input, mut rows) = fixture();
+        slot_row(
+            &mut rows,
+            R {
+                kind: R::SHARING_DOCTRINE,
+                ..Default::default()
+            },
+        );
+        let group = |rows: &mut Vec<R>, raw| {
+            slot_row(
+                rows,
+                R {
+                    kind: R::SHARING,
+                    raw,
+                    count: 1,
+                    name: b"pact".to_vec(),
+                    ..Default::default()
+                },
+            )
+        };
+        let first = group(&mut rows, 10_000);
+        let second = group(&mut rows, 20_000);
+        for (count, source_id) in [(second, 2), (first, 1)] {
+            slot_row(
+                &mut rows,
+                R {
+                    kind: R::SHARING_MEMBER,
+                    raw: 1,
+                    auxiliary: 1,
+                    count,
+                    source_id,
+                    ..Default::default()
+                },
+            );
+        }
+        slot_row(
+            &mut rows,
+            R {
+                kind: R::SHARING_FILTER,
+                count: second,
+                source_id: 42,
+                name: b"electronics".to_vec(),
+                ..Default::default()
+            },
+        );
+        slot_row(
+            &mut rows,
+            R {
+                kind: R::SHARING_CATEGORY,
+                source_id: 42,
+                name: b"infantry".to_vec(),
+                ..Default::default()
+            },
+        );
+        let sharing = breakdown(&input, Some(&rows))
+            .unwrap()
+            .components
+            .into_iter()
+            .find(|c| c.kind == "sharing")
+            .unwrap();
+        assert_eq!(sharing.raw, "20000");
+        assert_eq!(
+            sharing
+                .sources
+                .iter()
+                .map(|s| (s.token.as_deref(), s.raw.as_str()))
+                .collect::<Vec<_>>(),
+            [(Some("pact"), "20000"), (Some("pact"), "0")],
+            "each group keeps its own members and filters, in group order"
+        );
     }
 
     #[test]
