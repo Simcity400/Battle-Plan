@@ -55,6 +55,7 @@
 .lb-designs tbody th { overflow: hidden; font-weight: 500; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .lb-designs tbody td { font-variant-numeric: tabular-nums; text-align: right; }
 .lb-designs tbody td[colspan] { text-align: left; }
+.lb-designs tbody td.lb-note { color: var(--muted); }
 .lb-designs tbody tr:last-child > * { border-bottom: 0; }
 .lb-designs tbody tr[data-tooltip]:hover > * { background: color-mix(in srgb, var(--text) 4.5%, transparent); }
 

@@ -64,8 +64,9 @@ function totalOf(side: DesignLoss[] | string | undefined): Figure {
   return { value: wholeEquipment(side.reduce((sum, entry) => sum + entry.raw, 0n)) };
 }
 
-function DesignTable({ role, side, pending }: { readonly role: string; readonly side: DesignLoss[] | string | undefined; readonly pending: boolean }) {
+function DesignTable({ role, side, pending, unread }: { readonly role: string; readonly side: DesignLoss[] | string | undefined; readonly pending: boolean; readonly unread: string | null }) {
   const body = pending ? <tr><td colSpan={2} className="lb-note">Reading equipment</td></tr>
+    : unread ? <tr><td colSpan={2}><Missing label="Equipment not available" reason={unread} /></td></tr>
     : side === undefined ? <tr><td colSpan={2}><Missing label="Equipment not recorded" reason="No equipment read reached this hour." /></td></tr>
       : typeof side === 'string' ? <tr><td colSpan={2}><Missing label="Equipment not recorded" reason={side} /></td></tr>
         : side.length === 0 ? <tr><td colSpan={2} className="lb-note">No equipment lost</td></tr>
@@ -161,8 +162,8 @@ function BattleBody({ subject, hour, course, colours }: {
           {equipment && <span>{equipment.terminal ? 'Final' : 'So far'} · read {formatDateTime(equipment.hour)}</span>}
         </header>
         <div className="lb-equipment-sides">
-          {ROLES.map((role, index) => <DesignTable key={role} role={role} pending={pending}
-            side={unread ?? (equipment ? equipment.sides[index] : undefined)} />)}
+          {ROLES.map((role, index) => <DesignTable key={role} role={role} pending={pending} unread={unread}
+            side={equipment ? equipment.sides[index] : undefined} />)}
         </div>
       </section>
     </div>
