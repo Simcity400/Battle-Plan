@@ -44,6 +44,9 @@ pub struct FactionGroupTileFamily {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub group: Option<GroupSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub members: Option<Vec<Country>>,
 }
 
 pub fn tile_family_walk() -> dashboard_query::fields::Walk {
@@ -289,6 +292,14 @@ pub fn tile(
     for country in &ask.countries {
         validate_country(country).map_err(invalid)?;
     }
+    if let Some(members) = &family.members {
+        for country in members {
+            validate_country(country).map_err(invalid)?;
+        }
+    }
+    if family.group.is_none() && family.membership != Some(GroupMembership::Ever) && family.members.is_none() {
+        return Err(invalid("Faction group tiles require group, membership, or members"));
+    }
     if ask.bin_hours < 1 {
         return Err(invalid("Invalid binHours"));
     }
@@ -391,7 +402,7 @@ pub fn tile(
                     ask.bin_hours,
                 )?);
             }
-        } else if !ask.countries.is_empty() {
+        } else if let Some(members) = &family.members {
             let within_map: BTreeMap<String, Vec<(i32, i32)>> = ask
                 .within
                 .unwrap_or_default()
@@ -403,14 +414,13 @@ pub fn tile(
                     )
                 })
                 .collect();
-            let drawn: Vec<(Country, Vec<(i32, i32)>)> = ask
-                .countries
+            let drawn: Vec<(Country, Vec<(i32, i32)>)> = members
                 .iter()
                 .filter_map(|country| {
                     let raw = within_map
                         .get(country.key().as_ref())
                         .cloned()
-                        .unwrap_or_else(|| vec![(first, clip)]);
+                        .unwrap_or_else(|| vec![(first.max(query.timeline.first), clip)]);
                     let spans = merged(raw, first, clip);
                     (!spans.is_empty()).then(|| (country.clone(), spans))
                 })
@@ -427,14 +437,12 @@ pub fn tile(
                 ask.bin_hours,
             )?);
         }
-    } else if family.group.is_some() {
+    } else if family.group.is_some() || family.members.is_some() {
         built.push(empty_line(Country::Tag(GROUP_LINE.to_owned()), Vec::new()));
     } else if family.membership == Some(GroupMembership::Ever) {
         for country in &ask.countries {
             built.push(empty_line(country.clone(), Vec::new()));
         }
-    } else if !ask.countries.is_empty() {
-        built.push(empty_line(Country::Tag(GROUP_LINE.to_owned()), Vec::new()));
     }
 
     let scale = 10f64.powi(i32::from(measure.decimals));
@@ -873,5 +881,52 @@ mod tests {
         assert_eq!(unread_early.lines.len(), 2);
         assert_eq!(unread_early.lines[1].country, Country::Tag("20".into()));
         assert!(!unread_early.lines[1].missing.is_empty(), "when faction rosters are unobserved before founding, emit a refusal reason rather than an empty line");
+
+        let explicit_members = tile(
+            &src,
+            &query,
+            &serde_json::json!({
+                "branchId": "1",
+                "family": {
+                    "kind": SERIES,
+                    "sourceKind": "country-factories",
+                    "measure": "free7",
+                    "members": [7, 9]
+                },
+                "binHours": 1,
+                "index": 0,
+                "countries": ["group"]
+            }),
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(explicit_members.lines.len(), 1);
+        assert_eq!(explicit_members.lines[0].country, Country::Tag(GROUP_LINE.into()));
+        assert!(explicit_members.lines[0].missing.is_empty());
+        assert!(!explicit_members.bins.is_empty());
+
+        let explicit_past_end = tile(
+            &src,
+            &query,
+            &serde_json::json!({
+                "branchId": "1",
+                "family": {
+                    "kind": SERIES,
+                    "sourceKind": "country-factories",
+                    "measure": "free7",
+                    "members": [7, 9]
+                },
+                "binHours": 1,
+                "index": 2,
+                "countries": ["group"]
+            }),
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(explicit_past_end.lines.len(), 1);
+        assert_eq!(explicit_past_end.lines[0].country, Country::Tag(GROUP_LINE.into()));
+        assert!(!explicit_past_end.bins.is_empty());
     }
 }
