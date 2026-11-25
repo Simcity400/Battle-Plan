@@ -33,7 +33,9 @@ import {
   lazyActionKeys,
   nextReportedRowWindow,
   parseFamilyHit,
+  reconcileInstalledRowWindow,
   requestedRowWindow,
+  sameRowWindow,
   type FamilyArtDemand,
   type FamilyContextHit,
   type FamilyGestureContext,
@@ -564,7 +566,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     };
     const asked = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
     const held = requestedWindowRef.current;
-    const rowWindow = asked && held && asked.first === held.first && asked.count === held.count && asked.dataFirst === held.dataFirst && asked.dataCount === held.dataCount ? held : asked;
+    const rowWindow = sameRowWindow(held, asked) ? held : asked;
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
@@ -896,7 +898,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
-      reportWindow();
       const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
         summaryText: rawMeta?.summaryText ?? null,
         summaryPartial: rawMeta?.summaryPartial ?? null,
@@ -922,6 +923,36 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           }
         }
       }
+
+      const [defW, defH] = activeAdapter.defaultSize ?? [320, 200];
+      const vp = viewportRef.current;
+      const installedViewport: FamilyViewportState = {
+        width: vp.width || defW,
+        height: vp.height || defH,
+        dpr: vp.dpr,
+        scrollLeft: vp.scrollLeft,
+        scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
+        zoomWindow: vp.zoomWindow,
+      };
+      const installedUpdate = reconcileInstalledRowWindow(
+        windowRef.current,
+        requestedWindowRef.current,
+        activeAdapter,
+        cur.plan,
+        installedViewport,
+        cur.settings,
+        fields,
+        installed.hour,
+        planSignature(cur.plan),
+      );
+      requestedWindowRef.current = installedUpdate.requested;
+      if (!installedUpdate.requested) {
+        windowRef.current = null;
+      } else if (installedUpdate.report) {
+        windowRef.current = installedUpdate.report;
+        cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
+      }
+      if (installedUpdate.changed) queueMicrotask(() => bindRef.current());
 
       if (activeAdapter.chromeState) {
         const nextChrome = activeAdapter.chromeState(fields, chromeStateRef.current);
