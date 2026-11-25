@@ -6,7 +6,6 @@ dashboard_base::register_products! {
     NAVAL_BATTLES_NAVALBATTLEDETAILS => crate::products::naval::battles::NavalBattleDetails,
     NAVAL_SUNK_SHIPSSUNKMANIFEST => crate::products::naval::sunk::ShipsSunkManifest,
     NAVAL_SUNK_SHIPSSUNK => crate::products::naval::sunk::ShipsSunk,
-    NAVAL_LOSSES_NAVALLOSSES => crate::products::naval::losses::NavalLosses,
     NAVAL_LOSSES_NAVALLOSSESAT => crate::products::naval::losses::NavalLossesAt,
 }
 

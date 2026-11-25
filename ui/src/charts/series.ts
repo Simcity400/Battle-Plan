@@ -59,16 +59,6 @@ export function spansCovered(values: readonly Span[], observed: readonly Span[])
   return true;
 }
 
-export function stretchStarts(runs: readonly Breakable[]): number[] {
-  const starts: number[] = [];
-  runs.forEach((run, index) => {
-    const previous = runs[index - 1];
-    const continues = previous != null && !breaksBefore(run) && previous.lastHour + 1 === run.firstHour;
-    starts.push(continues ? starts[index - 1] : run.firstHour);
-  });
-  return starts;
-}
-
 export function rangeBounds(runs: readonly Span[], from: number, to: number): [number, number] {
   let low = 0, high = runs.length;
   while (low < high) { const mid = (low + high) >>> 1; if (runs[mid].lastHour < Math.floor(from)) low = mid + 1; else high = mid; }
