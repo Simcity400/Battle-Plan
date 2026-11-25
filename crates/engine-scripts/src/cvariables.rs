@@ -520,112 +520,210 @@ fn walk_head_buffer(
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
         let mut unread_rows = 0_u32;
-        const BLOCK_NODES: usize = 16;
-        let mut block = [0_u8; BLOCK_NODES * variable_hash_node::STRIDE];
-        for index in 0..slots {
-            let pointer = index
-                .checked_mul(variable_hash_node::STRIDE)
-                .and_then(|offset| storage.checked_add(offset))
-                .ok_or("variables node address overflow")?;
-            let block_index = index % BLOCK_NODES;
-            if block_index == 0 {
-                let block_len = (slots - index).min(BLOCK_NODES) * variable_hash_node::STRIDE;
-                if !read_slice(memory, pointer, &mut block[..block_len]) {
-                    return Err("variables node block unreadable");
+        const BLOCK_NODES: usize = 256;
+        const HEAP_BATCH: usize = 32;
+        #[derive(Clone, Copy, Default)]
+        struct PendingHeap {
+            source: usize,
+            terminator: usize,
+            dst_start: usize,
+            name_len: usize,
+        }
+        fn flush_heap_batch(
+            memory: &impl Memory,
+            names: &mut [u8],
+            batch: &[PendingHeap],
+        ) -> Result<(), &'static str> {
+            if batch.is_empty() {
+                return Ok(());
+            }
+            let fast_ok = {
+                let mut addresses = [0_usize; HEAP_BATCH * 2];
+                let mut terms = [[1_u8]; HEAP_BATCH];
+                let mut dests: [&mut [u8]; HEAP_BATCH * 2] = std::array::from_fn(|_| &mut [][..]);
+                let mut rest = &mut names[..];
+                let mut cursor = 0_usize;
+                for (i, (entry, term)) in batch.iter().zip(terms.iter_mut()).enumerate() {
+                    let (_, after) = rest.split_at_mut(entry.dst_start - cursor);
+                    let (dst, tail) = after.split_at_mut(entry.name_len);
+                    rest = tail;
+                    cursor = entry.dst_start + entry.name_len;
+                    addresses[i * 2] = entry.terminator;
+                    dests[i * 2] = &mut term[..];
+                    addresses[i * 2 + 1] = entry.source;
+                    dests[i * 2 + 1] = dst;
                 }
-            }
-            let node = &block[block_index * variable_hash_node::STRIDE
-                ..(block_index + 1) * variable_hash_node::STRIDE];
-            let distance = node[variable_hash_node::DISTANCE];
-            if distance == 0 {
-                continue;
-            }
-            if distance > tail {
-                return Err("variables probe distance invalid");
-            }
-            let hash = u32::from_le_bytes(node[..4].try_into().unwrap());
-            let home = (hash & mask) as usize;
-            if home.checked_add(usize::from(distance) - 1) != Some(index) {
-                return Err("variables probe location invalid");
-            }
-            occupied = occupied
-                .checked_add(1)
-                .ok_or("variables entry count overflow")?;
-            if occupied > count {
-                return Err("variables occupied count mismatch");
-            }
-            let name_len = u64::from_le_bytes(node[0x18..0x20].try_into().unwrap());
-            let capacity = u64::from_le_bytes(node[0x20..0x28].try_into().unwrap());
-            if capacity < 15 || name_len > capacity {
-                return Err("variable name header invalid");
-            }
-            let name_len =
-                usize::try_from(name_len).map_err(|_| "variable name length overflow")?;
-            required_bytes = required_bytes
-                .checked_add(name_len)
-                .ok_or("variable name byte count overflow")?;
-            let source = if capacity == 15 {
-                pointer
-                    .checked_add(variable_hash_node::KEY)
-                    .ok_or("variable name address overflow")?
-            } else {
-                usize::try_from(u64::from_le_bytes(node[8..16].try_into().unwrap()))
-                    .ok()
-                    .filter(|&p| p != 0)
-                    .ok_or("variable name pointer invalid")?
+                let copied = memory.copy_scattered_prefetched(addresses, &mut dests);
+                copied == HEAP_BATCH * 2 && terms[..batch.len()].iter().all(|t| t[0] == 0)
             };
-            let heap = capacity != 15;
-            if !heap && node[variable_hash_node::KEY + name_len] != 0 {
-                return Err("variable name terminator invalid or unreadable");
+            if fast_ok {
+                return Ok(());
             }
-            let terminator = if heap {
-                source
-                    .checked_add(name_len)
-                    .ok_or("variable name address overflow")?
-            } else {
-                0
-            };
-            let gathered = heap && required_bytes <= names.len();
-            if heap && !gathered && read::<u8>(memory, terminator) != Some(0) {
-                return Err("variable name terminator invalid or unreadable");
-            }
-            names.ensure(required_bytes)?;
-            let fits = len < output.len() && name_len <= names.len() - bytes_len;
-            if gathered {
+            for entry in batch {
                 let mut end = [1_u8];
-                let payload: &mut [u8] = if fits {
-                    &mut names[bytes_len..bytes_len + name_len]
-                } else {
-                    &mut []
-                };
-                let copied = memory.copy_scattered([terminator, source], &mut [&mut end, payload]);
+                let copied = memory.copy_scattered(
+                    [entry.terminator, entry.source],
+                    &mut [
+                        &mut end,
+                        &mut names[entry.dst_start..entry.dst_start + entry.name_len],
+                    ],
+                );
                 if copied == 0 || end[0] != 0 {
                     return Err("variable name terminator invalid or unreadable");
                 }
-                if fits && copied != 2 {
+                if copied != 2 {
                     return Err("variable name bytes unreadable");
                 }
             }
-            if !fits {
-                unread_rows += 1;
-                continue;
+            Ok(())
+        }
+        let mut block = [0_u8; BLOCK_NODES * variable_hash_node::STRIDE];
+        let mut pending = [PendingHeap::default(); HEAP_BATCH];
+        let mut pending_len = 0_usize;
+        for index in 0..slots {
+            let slot_step = (|| -> Result<(), &'static str> {
+                let pointer = index
+                    .checked_mul(variable_hash_node::STRIDE)
+                    .and_then(|offset| storage.checked_add(offset))
+                    .ok_or("variables node address overflow")?;
+                let block_index = index % BLOCK_NODES;
+                if block_index == 0 {
+                    let block_len = (slots - index).min(BLOCK_NODES) * variable_hash_node::STRIDE;
+                    if !read_slice(memory, pointer, &mut block[..block_len]) {
+                        return Err("variables node block unreadable");
+                    }
+                }
+                let node = &block[block_index * variable_hash_node::STRIDE
+                    ..(block_index + 1) * variable_hash_node::STRIDE];
+                let distance = node[variable_hash_node::DISTANCE];
+                if distance == 0 {
+                    return Ok(());
+                }
+                if distance > tail {
+                    return Err("variables probe distance invalid");
+                }
+                let hash = u32::from_le_bytes(node[..4].try_into().unwrap());
+                let home = (hash & mask) as usize;
+                if home.checked_add(usize::from(distance) - 1) != Some(index) {
+                    return Err("variables probe location invalid");
+                }
+                occupied = occupied
+                    .checked_add(1)
+                    .ok_or("variables entry count overflow")?;
+                if occupied > count {
+                    return Err("variables occupied count mismatch");
+                }
+                let name_len = u64::from_le_bytes(node[0x18..0x20].try_into().unwrap());
+                let capacity = u64::from_le_bytes(node[0x20..0x28].try_into().unwrap());
+                if capacity < 15 || name_len > capacity {
+                    return Err("variable name header invalid");
+                }
+                let name_len =
+                    usize::try_from(name_len).map_err(|_| "variable name length overflow")?;
+                required_bytes = required_bytes
+                    .checked_add(name_len)
+                    .ok_or("variable name byte count overflow")?;
+                let source = if capacity == 15 {
+                    pointer
+                        .checked_add(variable_hash_node::KEY)
+                        .ok_or("variable name address overflow")?
+                } else {
+                    usize::try_from(u64::from_le_bytes(node[8..16].try_into().unwrap()))
+                        .ok()
+                        .filter(|&p| p != 0)
+                        .ok_or("variable name pointer invalid")?
+                };
+                let heap = capacity != 15;
+                if !heap && node[variable_hash_node::KEY + name_len] != 0 {
+                    return Err("variable name terminator invalid or unreadable");
+                }
+                let terminator = if heap {
+                    source
+                        .checked_add(name_len)
+                        .ok_or("variable name address overflow")?
+                } else {
+                    0
+                };
+                let ensured = if heap {
+                    let already_room = required_bytes <= names.len();
+                    if already_room {
+                        names.ensure(required_bytes)?;
+                        true
+                    } else {
+                        match names.ensure(required_bytes) {
+                            Ok(room) => room,
+                            Err(err) => {
+                                if pending_len != 0 {
+                                    flush_heap_batch(
+                                        memory,
+                                        &mut names[..bytes_len],
+                                        &pending[..pending_len],
+                                    )?;
+                                    pending_len = 0;
+                                }
+                                if read::<u8>(memory, terminator) != Some(0) {
+                                    return Err("variable name terminator invalid or unreadable");
+                                }
+                                return Err(err);
+                            }
+                        }
+                    }
+                } else {
+                    names.ensure(required_bytes)?
+                };
+                let fits = ensured && len < output.len() && name_len <= names.len() - bytes_len;
+                if !fits {
+                    if heap {
+                        if pending_len != 0 {
+                            flush_heap_batch(
+                                memory,
+                                &mut names[..bytes_len],
+                                &pending[..pending_len],
+                            )?;
+                            pending_len = 0;
+                        }
+                        if read::<u8>(memory, terminator) != Some(0) {
+                            return Err("variable name terminator invalid or unreadable");
+                        }
+                    }
+                    unread_rows += 1;
+                    return Ok(());
+                }
+                if !heap {
+                    names[bytes_len..bytes_len + name_len].copy_from_slice(&node[8..8 + name_len]);
+                } else {
+                    pending[pending_len] = PendingHeap {
+                        source,
+                        terminator,
+                        dst_start: bytes_len,
+                        name_len,
+                    };
+                    pending_len += 1;
+                }
+                output[len] = Row {
+                    name_start: bytes_len,
+                    name_len,
+                    value_raw: i64::from_le_bytes(
+                        node[variable_hash_node::VALUE..].try_into().unwrap(),
+                    ),
+                };
+                bytes_len += name_len;
+                len += 1;
+                if pending_len == HEAP_BATCH {
+                    flush_heap_batch(memory, &mut names[..bytes_len], &pending[..pending_len])?;
+                    pending_len = 0;
+                }
+                Ok(())
+            })();
+            if let Err(err) = slot_step {
+                if pending_len != 0 {
+                    flush_heap_batch(memory, &mut names[..bytes_len], &pending[..pending_len])?;
+                }
+                return Err(err);
             }
-            if !heap {
-                names[bytes_len..bytes_len + name_len].copy_from_slice(&node[8..8 + name_len]);
-            } else if !gathered
-                && !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len])
-            {
-                return Err("variable name bytes unreadable");
-            }
-            output[len] = Row {
-                name_start: bytes_len,
-                name_len,
-                value_raw: i64::from_le_bytes(
-                    node[variable_hash_node::VALUE..].try_into().unwrap(),
-                ),
-            };
-            bytes_len += name_len;
-            len += 1;
+        }
+        if pending_len != 0 {
+            flush_heap_batch(memory, &mut names[..bytes_len], &pending[..pending_len])?;
         }
         if occupied != count {
             return Err("variables occupied count mismatch");

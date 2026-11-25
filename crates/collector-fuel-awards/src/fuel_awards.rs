@@ -846,7 +846,7 @@ fn append_buffer(
     name: Option<native::StoredName>,
     memory: &impl Memory,
 ) -> bool {
-    let index = log.cursor.fetch_add(1, Ordering::SeqCst);
+    let index = log.cursor.fetch_add(1, Ordering::AcqRel);
     buffer.cursor.fetch_max(index + 1, Ordering::Relaxed);
     let pending = index
         .wrapping_sub(
@@ -1036,7 +1036,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     #[cfg(feature = "callback_profile")]
     let _tag = TagTimer::new(tag);
     let call = LOG.enter();
-    if !LOG.enabled.load(Ordering::SeqCst) {
+    if !LOG.enabled.load(Ordering::Acquire) {
         return;
     }
     let memory = unsafe { LiveMemory::new() };
@@ -1081,7 +1081,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 REGISTRY.with(|registry| *registry.borrow_mut() = native::Registry::default());
                 let old = PENDING.replace(Some(Pending {
                     root: ROOT.fetch_add(1, Ordering::Relaxed),
-                    epoch: LOG.epoch.load(Ordering::SeqCst),
+                    epoch: LOG.epoch.load(Ordering::Acquire),
                     started,
                     located,
                     stamp: stamp(),
@@ -1112,7 +1112,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         COUNTERS[1].fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if pending.epoch != LOG.epoch.load(Ordering::SeqCst) {
+    if pending.epoch != LOG.epoch.load(Ordering::Acquire) {
         pending.refused = true;
         pending.cause.get_or_insert(0);
     }

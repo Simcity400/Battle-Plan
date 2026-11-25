@@ -185,8 +185,16 @@ pub fn record_countries(carried: u64, read: u64) {
 }
 
 pub fn record_daily(domain: Domain, carried: bool, read: bool) {
-    for (target, value) in READS[domain as usize].iter().zip([carried, read]) {
-        target.fetch_add(u64::from(value), Ordering::Relaxed);
+    record_daily_counts(domain, u64::from(carried), u64::from(read));
+}
+
+pub fn record_daily_counts(domain: Domain, carried: u64, read: u64) {
+    let reads = &READS[domain as usize];
+    if carried != 0 {
+        reads[0].fetch_add(carried, Ordering::Relaxed);
+    }
+    if read != 0 {
+        reads[1].fetch_add(read, Ordering::Relaxed);
     }
 }
 

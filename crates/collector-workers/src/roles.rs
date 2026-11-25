@@ -282,7 +282,8 @@ impl Role {
             | Self::AdvisorRoles
             | Self::CountryLeaderRoles
             | Self::CharacterTraits
-            | Self::CharacterPortraits => 1,
+            | Self::CharacterPortraits
+            | Self::ScriptVariables => 1,
             Self::ObserverBoundary
             | Self::Intel
             | Self::World
@@ -294,7 +295,6 @@ impl Role {
             | Self::Supremacy
             | Self::Sunk
             | Self::AirSupply
-            | Self::ScriptVariables
             | Self::Slow
             | Self::Stability
             | Self::WarOverview

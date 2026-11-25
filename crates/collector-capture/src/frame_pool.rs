@@ -29,7 +29,7 @@ const SURPLUS_STREAK: u32 = 48;
 
 const STEADY_IDLE_STREAK: u32 = 4;
 
-const STEADY_PARK_STREAK: u32 = 6;
+const STEADY_PARK_STREAK: u32 = 720;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {

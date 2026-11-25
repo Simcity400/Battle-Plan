@@ -1545,8 +1545,9 @@ fn stat_timing_quiet_refuses_when_design_hooks_are_disabled() {
         stat_timing_quiet(),
         Err("variant stat writer hooks disabled")
     );
-    let mut witness = StatLaneWitness;
+    let mut witness = StatLaneWitness::default();
     native::StatWitness::record_withheld(&mut witness, 4, "variant stat writer hooks disabled");
+    drop(witness);
     let reported = stat_witness_snapshot();
     assert_eq!(reported.last_lane, Some("maximum_speed"));
     assert_eq!(

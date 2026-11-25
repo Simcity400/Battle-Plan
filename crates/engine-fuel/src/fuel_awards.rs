@@ -589,21 +589,51 @@ pub fn unit_with_name(
                     "counter unit identity invalid"
                 });
             }
-            let (resolved, taken) = match registry {
+            let (resolved, taken, gathered_name) = match registry {
+                Some(registry) if kind == 0 => {
+                    if let Some((header, cell, taken)) =
+                        registry.0.first_cell(memory, base, handle)?
+                    {
+                        if let Some(name_at) = name_ptr.checked_add(0x60) {
+                            let mut bucket = [0_u8; 24];
+                            let mut desc = [0_u8; msvc_string::STRIDE];
+                            if memory.copy_scattered([cell, name_at], &mut [&mut bucket, &mut desc])
+                                == 2
+                            {
+                                (
+                                    registry.0.resolve_gathered(memory, header, handle, bucket)?,
+                                    taken,
+                                    Some((name_at, desc)),
+                                )
+                            } else {
+                                (registry.0.resolve(memory, base, handle)?, taken, None)
+                            }
+                        } else {
+                            (registry.0.resolve(memory, base, handle)?, taken, None)
+                        }
+                    } else {
+                        (None, false, None)
+                    }
+                }
                 Some(registry) => {
                     let taken = registry.0.holds(base, handle);
-                    (registry.0.resolve(memory, base, handle)?, taken)
+                    (registry.0.resolve(memory, base, handle)?, taken, None)
                 }
-                None => (creference_registry::resolve(memory, base, handle)?, false),
+                None => (creference_registry::resolve(memory, base, handle)?, false, None),
             };
             if resolved != pointer.checked_add(0x10) {
                 return Err("counter unit registry identity mismatch");
             }
             let name = if kind == 0 {
-                name_ptr
-                    .checked_add(0x60)
-                    .ok_or("fuel recipient name address overflow")
-                    .and_then(|at| msvc_string::Descriptor::read(memory, at).map(StoredName))
+                match gathered_name {
+                    Some((at, desc)) => {
+                        msvc_string::Descriptor::from_header(memory, at, desc).map(StoredName)
+                    }
+                    None => name_ptr
+                        .checked_add(0x60)
+                        .ok_or("fuel recipient name address overflow")
+                        .and_then(|at| msvc_string::Descriptor::read(memory, at).map(StoredName)),
+                }
             } else {
                 msvc_string::Descriptor::from_header(memory, name_ptr, name_header).map(StoredName)
             };
@@ -714,9 +744,32 @@ pub fn air_held_with(
         let owner = value::<u32>(memory, container, ccountry_air_container::COUNTRY)?;
         (reference, owner, None, None)
     };
-    let resolved = match registry {
-        Some(registry) => registry.0.resolve(memory, base, reference)?,
-        None => creference_registry::resolve(memory, base, reference)?,
+    let mut gathered_backlink: Option<u64> = None;
+    let resolved = match (registry, held, containers) {
+        (Some(registry), Some(country), Some(containers))
+            if owner == consuming && reference >> 32 != 0 =>
+        {
+            if let Some((header, cell, _)) = registry.0.first_cell(memory, base, reference)? {
+                if let Some(slot_at) = containers.element(country.canonical_slot, 8) {
+                    let mut bucket = [0_u8; 24];
+                    let mut backlink = [0_u8; 8];
+                    if memory.copy_scattered([cell, slot_at], &mut [&mut bucket, &mut backlink])
+                        == 2
+                    {
+                        gathered_backlink = Some(u64::from_le_bytes(backlink));
+                        registry.0.resolve_gathered(memory, header, reference, bucket)?
+                    } else {
+                        registry.0.resolve(memory, base, reference)?
+                    }
+                } else {
+                    registry.0.resolve(memory, base, reference)?
+                }
+            } else {
+                None
+            }
+        }
+        (Some(registry), _, _) => registry.0.resolve(memory, base, reference)?,
+        (None, _, _) => creference_registry::resolve(memory, base, reference)?,
     };
     if reference >> 32 == 0 || resolved != Some(pointer) {
         return Err("fuel air base registry identity mismatch");
@@ -740,23 +793,29 @@ pub fn air_held_with(
             country
         }
     };
-    let containers = match containers {
-        Some(containers) => containers,
-        None => Array::read(
-            memory,
-            pointer
-                .checked_add(cair_base::COUNTRY_CONTAINERS)
-                .ok_or("fuel air container address overflow")?,
-            8,
-        )
-        .ok_or("fuel air container vector invalid")?,
-    };
-    if containers
-        .element(country.canonical_slot, 8)
-        .and_then(|p| read::<u64>(memory, p))
-        != Some(container as u64)
-    {
-        return Err("fuel air container backlink mismatch");
+    if let Some(backlink) = gathered_backlink {
+        if backlink != container as u64 {
+            return Err("fuel air container backlink mismatch");
+        }
+    } else {
+        let containers = match containers {
+            Some(containers) => containers,
+            None => Array::read(
+                memory,
+                pointer
+                    .checked_add(cair_base::COUNTRY_CONTAINERS)
+                    .ok_or("fuel air container address overflow")?,
+                8,
+            )
+            .ok_or("fuel air container vector invalid")?,
+        };
+        if containers
+            .element(country.canonical_slot, 8)
+            .and_then(|p| read::<u64>(memory, p))
+            != Some(container as u64)
+        {
+            return Err("fuel air container backlink mismatch");
+        }
     }
     let host = match host {
         Some(host) => host,

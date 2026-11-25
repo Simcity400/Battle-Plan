@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     ops::Range,
     sync::{
-        Mutex, OnceLock,
+        OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -61,7 +61,7 @@ impl Cache {
         }
     }
 }
-static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+static CACHE: OnceLock<RwLock<Cache>> = OnceLock::new();
 static OWN: AtomicBool = AtomicBool::new(false);
 static PUBLICATION: AtomicBool = AtomicBool::new(false);
 static LIFETIME: AtomicBool = AtomicBool::new(false);
@@ -96,7 +96,7 @@ fn retire(pointer: usize) {
     let Some(cache) = CACHE.get() else {
         return;
     };
-    match cache.try_lock() {
+    match cache.try_write() {
         Ok(mut cache) => {
             cache.retire(pointer);
         }
@@ -109,10 +109,30 @@ pub fn read(memory: &impl Memory, pointer: usize, id: u64) -> Option<u8> {
     }
     let epoch = EPOCH.load(Ordering::Acquire);
     let revision = REVISION.load(Ordering::Acquire);
-    let mut cache = CACHE
-        .get_or_init(|| Mutex::new(Cache::default()))
-        .lock()
-        .ok()?;
+    let lock = CACHE.get_or_init(|| RwLock::new(Cache::default()));
+    if let Ok(cache) = lock.read()
+        && cache.epoch == epoch
+        && let Some(value) = cache
+            .values
+            .get(&pointer)
+            .filter(|value| value.id == id && value.epoch == epoch)
+    {
+        let setting = value.setting;
+        drop(cache);
+        if ACTIVE.load(Ordering::Acquire) != 0
+            || EPOCH.load(Ordering::Acquire) != epoch
+            || REVISION.load(Ordering::Acquire) != revision
+        {
+            if let Ok(mut cache) = lock.write() {
+                cache.retire(pointer);
+            } else {
+                invalidate();
+            }
+            return None;
+        }
+        return setting;
+    }
+    let mut cache = lock.write().ok()?;
     let value = cache.read(memory, pointer, id, epoch);
     if ACTIVE.load(Ordering::Acquire) != 0
         || EPOCH.load(Ordering::Acquire) != epoch
@@ -177,7 +197,7 @@ fn command(memory: &impl Memory, pointer: usize) -> Result<(), &'static str> {
         return Ok(());
     };
     let mut cache = cache
-        .try_lock()
+        .try_write()
         .map_err(|_| "wing preference watch storage busy")?;
     if cache.values.is_empty() || !AVAILABLE.load(Ordering::Acquire) {
         return Ok(());
@@ -301,7 +321,7 @@ impl Drop for Hooks {
         refresh();
         if let Some(cache) = CACHE.get() {
             *cache
-                .lock()
+                .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Cache::default();
         }
     }
@@ -309,6 +329,7 @@ impl Drop for Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     static SERIAL: Mutex<()> = Mutex::new(());
     #[test]
     fn complete_wing_hook_batch_admits_initial_preference_and_withdrawal_revokes_it() {

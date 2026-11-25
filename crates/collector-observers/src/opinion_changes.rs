@@ -117,7 +117,7 @@ impl Mutation {
     }
 
     fn mark_always(&self, status: usize) {
-        let index = CURSOR.fetch_add(1, Ordering::SeqCst);
+        let index = CURSOR.fetch_add(1, Ordering::AcqRel);
         publish(index, status, diplomacy(status));
     }
 }
@@ -155,9 +155,9 @@ fn publish(index: u64, status: usize, diplomacy: usize) -> bool {
         return true;
     };
     let slot = (index & (log.len() - 1)) as usize;
-    log.owners[slot].store(diplomacy, Ordering::SeqCst);
-    log.statuses[slot].store(status, Ordering::SeqCst);
-    let lapped = CURSOR.load(Ordering::SeqCst).wrapping_sub(index) > log.len();
+    log.owners[slot].store(diplomacy, Ordering::Relaxed);
+    log.statuses[slot].store(status, Ordering::Release);
+    let lapped = CURSOR.load(Ordering::Acquire).wrapping_sub(index) > log.len();
     if lapped {
         invalidate();
     }

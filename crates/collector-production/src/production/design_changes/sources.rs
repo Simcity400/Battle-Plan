@@ -12,6 +12,7 @@ pub(super) struct Interests {
     dirty_authors: std::collections::HashSet<u64>,
     pub(super) organisations: HashMap<u64, usize>,
     pub(super) organisation_pointers: HashMap<usize, u64>,
+    any_dirty: bool,
 }
 impl Interests {
     pub fn prepare(&mut self, entries: usize) -> Result<(), &'static str> {
@@ -72,6 +73,7 @@ impl Interests {
     pub(super) fn changed(&mut self, key: Key) -> Option<u32> {
         let (owner, dirty) = self.entries.get_mut(&key)?;
         *dirty = true;
+        self.any_dirty = true;
         Some(*owner)
     }
     pub(super) fn author_changed(&mut self, handle: u64) {
@@ -86,6 +88,10 @@ impl Interests {
             return;
         }
         self.dirty_authors.insert(handle);
+        self.any_dirty = true;
+    }
+    pub(super) fn is_clean(&self) -> bool {
+        !self.any_dirty && self.dirty_authors.is_empty()
     }
 }
 

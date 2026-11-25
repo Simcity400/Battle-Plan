@@ -225,7 +225,7 @@ mod demand;
 mod flag_store;
 pub use flag_store::{FlagReuse, FlagStore};
 mod variable_store;
-pub use variable_store::{VariableDelta, VariableReuse, VariableStore};
+pub use variable_store::{VariableDelta, VariableReuse, VariableSnapshot, VariableStore};
 mod variable_work;
 use variable_work::{AllScopes, Complete, Path};
 pub use variable_work::{VariableTotals, VariableWork};
@@ -324,9 +324,36 @@ pub struct VariableBaselines<'a> {
     pub values: Option<(BaselineToken, &'a [rows::ScriptVariableValueRow])>,
 }
 
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = state;
+    }
+}
+
+type FastMap<K, V> =
+    std::collections::HashMap<K, V, std::hash::BuildHasherDefault<FnvHasher>>;
+type FastSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<FnvHasher>>;
+
 #[derive(Default)]
 struct VariableInterner {
-    by_name: std::collections::HashMap<Vec<u8>, u32>,
+    by_name: FastMap<Vec<u8>, u32>,
     names: Vec<Vec<u8>>,
     published: usize,
 }
@@ -1165,6 +1192,7 @@ pub struct Captured {
     source_census_complete: bool,
     flags: CaptureRows<ScopedFlag>,
     variables: CaptureRows<cvariables::ScopeRow>,
+    variable_snapshot: Option<VariableSnapshot>,
     variable_delta: VariableDelta,
     operations: CaptureRows<coperation_instance::Row>,
     assignments: CaptureRows<operation_assigned_operative::Row>,
@@ -1304,6 +1332,7 @@ impl Captured {
             source_census_complete: false,
             flags: CaptureRows::new(capacity.rows[7]),
             variables: CaptureRows::new(capacity.rows[8]),
+            variable_snapshot: None,
             variable_delta: VariableDelta::default(),
             operations: CaptureRows::new(capacity.rows[9]),
             assignments: CaptureRows::new(capacity.rows[10]),
@@ -1458,6 +1487,7 @@ impl Captured {
         self.source_census_complete = false;
         self.flags.reset();
         self.variables.reset();
+        self.variable_snapshot = None;
         self.variable_delta.clear();
         self.country_intel.release();
         self.country_intel_outcome = UNCAPTURED;
@@ -1503,6 +1533,10 @@ impl Captured {
             + self.source_seeds.capacity() * size_of::<crate::source_state::Seed>()
             + self.flags.allocated_bytes()
             + self.variables.allocated_bytes()
+            + self
+                .variable_snapshot
+                .as_ref()
+                .map_or(0, VariableSnapshot::allocated_bytes_shallow)
             + self.variable_delta.allocated_bytes()
             + self.operations.allocated_bytes()
             + self.assignments.allocated_bytes()
@@ -2292,6 +2326,7 @@ impl Captured {
                     &mut self.variables,
                     &mut self.variable_entries,
                     &mut self.variable_names,
+                    &mut self.variable_snapshot,
                     &mut self.variable_delta,
                     variables,
                 );
@@ -3300,6 +3335,52 @@ impl Captured {
         })
     }
 
+    fn variable_scope_count(&self, outcome: Outcome) -> Option<usize> {
+        let len = outcome.len();
+        if let Some(snapshot) = &self.variable_snapshot {
+            (snapshot.len() == len).then_some(len)
+        } else {
+            let (entries, names) = (&self.variable_entries, &self.variable_names);
+            (self.variables.rows.len() >= len
+                && entries.len <= entries.first.len()
+                && names.len <= names.first.len()
+                && entries.required >= entries.len
+                && names.required >= names.len)
+                .then_some(len)
+        }
+    }
+
+    fn variable_scope(
+        &self,
+        ordinal: usize,
+    ) -> Option<(cvariables::Scope, Option<u32>, &[cvariables::Row], &[u8])> {
+        if let Some(snapshot) = &self.variable_snapshot {
+            snapshot.get(ordinal)
+        } else {
+            let scope = self.variables.rows.get(ordinal)?;
+            let (entries, names) = (&self.variable_entries, &self.variable_names);
+            if !fits(scope.entries_start, scope.entries_len, entries.len) {
+                return None;
+            }
+            let slice =
+                &entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
+            Some((scope.scope, scope.seed, slice, &names.first[..names.len]))
+        }
+    }
+
+    fn valid_variable_source(&self, outcome: Outcome) -> bool {
+        if let Some(snapshot) = &self.variable_snapshot {
+            matches!(outcome, Outcome::Rows { len } if len == snapshot.len())
+        } else {
+            valid_variables(
+                outcome,
+                &self.variables.rows,
+                &self.variable_entries,
+                &self.variable_names,
+            )
+        }
+    }
+
     #[cfg(test)]
     fn variables_equal(
         &self,
@@ -3309,7 +3390,7 @@ impl Captured {
         previous_values: &[rows::ScriptVariableValueRow],
         scratch: &mut ScriptVariableComparison,
     ) -> bool {
-        let Some(scopes) = self.variables.rows.get(..outcome.len()) else {
+        let Some(len) = self.variable_scope_count(outcome) else {
             return false;
         };
         if !matches!(outcome, Outcome::Rows { .. }) || !scratch.interner.sync(previous_names) {
@@ -3319,7 +3400,7 @@ impl Captured {
         let mut value_edits = ValueEdits::new();
         let ok = self
             .mapped_edits(
-                scopes,
+                len,
                 None,
                 previous_scopes,
                 previous_values,
@@ -3405,16 +3486,10 @@ impl Captured {
         else {
             return self.complete_variables(outcome, Complete::NoBaseline, scratch, work);
         };
-        let Outcome::Rows { len } = outcome else {
+        let Outcome::Rows { .. } = outcome else {
             return self.complete_variables(outcome, Complete::NotComplete, scratch, work);
         };
-        let (entries, names) = (&self.variable_entries, &self.variable_names);
-        let Some(scopes) = self.variables.rows.get(..len).filter(|_| {
-            entries.len <= entries.first.len()
-                && names.len <= names.first.len()
-                && entries.required >= entries.len
-                && names.required >= names.len
-        }) else {
+        let Some(len) = self.variable_scope_count(outcome) else {
             return self.complete_variables(outcome, Complete::Refused, scratch, work);
         };
         if !scratch.interner.sync(prev_names) {
@@ -3436,7 +3511,7 @@ impl Captured {
         let mut value_edits = ValueEdits::new();
         let decided = match changed {
             Ok(changed) if delta.same_scopes && len == prev_scopes.len() => self.listed_edits(
-                scopes,
+                len,
                 changed,
                 prev_scopes,
                 prev_values,
@@ -3448,7 +3523,7 @@ impl Captured {
             Ok(changed) => {
                 work.reordered = true;
                 self.mapped_edits(
-                    scopes,
+                    len,
                     Some(changed),
                     prev_scopes,
                     prev_values,
@@ -3461,7 +3536,7 @@ impl Captured {
             Err(reason) => {
                 work.path = Path::AllScopes(reason);
                 self.mapped_edits(
-                    scopes,
+                    len,
                     None,
                     prev_scopes,
                     prev_values,
@@ -3523,7 +3598,7 @@ impl Captured {
     )]
     fn listed_edits(
         &self,
-        scopes: &[cvariables::ScopeRow],
+        len: usize,
         changed: &[u32],
         previous: &[rows::ScriptVariablesRow],
         prev_values: &[rows::ScriptVariableValueRow],
@@ -3535,20 +3610,24 @@ impl Captured {
         let mut next = 0;
         for &ordinal in changed {
             let ordinal = ordinal as usize;
-            if ordinal < next {
+            if ordinal < next || ordinal >= len {
                 return None;
             }
             next = ordinal + 1;
-            let scope = scopes.get(ordinal)?;
-            let index = baseline_index(previous, ordinal, scope_identity(scope.scope))?;
-            self.scope_edit(
+            let (scope, seed, current, names) = self.variable_scope(ordinal)?;
+            let index = baseline_index(previous, ordinal, scope_identity(scope))?;
+            scope_edit(
                 scope,
+                seed,
+                current,
+                names,
                 Some(&previous[index]),
                 prev_values,
                 scratch,
                 work,
                 scope_edits,
                 value_edits,
+                true,
             )?;
         }
         Some(())
@@ -3560,7 +3639,7 @@ impl Captured {
     )]
     fn mapped_edits(
         &self,
-        scopes: &[cvariables::ScopeRow],
+        len: usize,
         changed: Option<&[u32]>,
         previous: &[rows::ScriptVariablesRow],
         prev_values: &[rows::ScriptVariableValueRow],
@@ -3573,12 +3652,13 @@ impl Captured {
             return None;
         }
         let mut listed = changed.map(|changed| changed.iter().peekable());
-        for (ordinal, scope) in scopes.iter().enumerate() {
+        for ordinal in 0..len {
             let compared = match &mut listed {
                 Some(listed) => listed.next_if(|&&next| next as usize == ordinal).is_some(),
                 None => true,
             };
-            let index = baseline_index(previous, ordinal, scope_identity(scope.scope));
+            let (scope, seed, current, names) = self.variable_scope(ordinal)?;
+            let index = baseline_index(previous, ordinal, scope_identity(scope));
             if let Some(index) = index
                 && !first_seen(&mut scratch.scopes, index)
             {
@@ -3586,14 +3666,18 @@ impl Captured {
             }
             let row = index.map(|index| &previous[index]);
             match (row, compared) {
-                (_, true) => self.scope_edit(
+                (_, true) => scope_edit(
                     scope,
+                    seed,
+                    current,
+                    names,
                     row,
                     prev_values,
                     scratch,
                     work,
                     scope_edits,
                     value_edits,
+                    false,
                 )?,
                 (Some(_), false) => {}
                 (None, false) => return None,
@@ -3615,223 +3699,6 @@ impl Captured {
             }
         }
         Some(())
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "per-scope variable diff borrows previous values, interner, scratch and edit accumulators"
-    )]
-    fn scope_edit(
-        &self,
-        scope: &cvariables::ScopeRow,
-        previous: Option<&rows::ScriptVariablesRow>,
-        prev_values: &[rows::ScriptVariableValueRow],
-        scratch: &mut ScriptVariableComparison,
-        work: &mut VariableWork,
-        scope_edits: &mut ScopeEdits,
-        value_edits: &mut ValueEdits,
-    ) -> Option<()> {
-        let started = std::time::Instant::now();
-        let (entries, names) = (&self.variable_entries, &self.variable_names);
-        if !fits(scope.entries_start, scope.entries_len, entries.len) {
-            return None;
-        }
-        let current = &entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
-        let mut bytes = 0;
-        for entry in current {
-            if !fits(entry.name_start, entry.name_len, names.len) {
-                return None;
-            }
-            bytes += entry.name_len;
-        }
-        work.scopes_compared += 1;
-        work.entries_compared += current.len() as u64;
-        work.bytes_compared += (size_of_val(current) + bytes) as u64;
-        let identity = scope_identity(scope.scope);
-        let (scope_kind, scope_id) = identity;
-        let mut scope_changed = false;
-        match previous {
-            None => {
-                work.scopes_added += 1;
-                scope_changed = true;
-            }
-            Some(prev) => {
-                if !prev.entries.is_empty() {
-                    return None;
-                }
-                let seed = prev.seed.require("ScriptVariables.seed").ok()?;
-                if *seed != scope.seed {
-                    work.rows_changed += 1;
-                    scope_changed = true;
-                }
-            }
-        }
-        let mut build_ns = 0_u64;
-        if scope_changed {
-            let built = std::time::Instant::now();
-            let row = rows::ScriptVariablesRow {
-                scope_kind,
-                scope_id,
-                entries: Vec::new(),
-                seed: rows::Recorded::Value(scope.seed),
-            };
-            reserve(scope_edits, 1).ok()?;
-            scope_edits.push((row.key(), Some(row)));
-            work.rows_built += 1;
-            build_ns = build_ns.saturating_add(elapsed_ns(built));
-        }
-        let old = if previous.is_some() {
-            &prev_values[value_range(prev_values, identity)]
-        } else {
-            &[]
-        };
-        let values_equal = previous.is_some()
-            && current.len() == old.len()
-            && self.scope_values_match(current, old, &scratch.interner, &mut scratch.entries)?;
-        if !values_equal {
-            let built = std::time::Instant::now();
-            scratch.next_values.clear();
-            let extra = current.len().saturating_sub(scratch.next_values.capacity());
-            reserve(&mut scratch.next_values, extra).ok()?;
-            for entry in current {
-                let name = &names.first[entry.name_start..entry.name_start + entry.name_len];
-                let var_id = scratch.interner.intern(name)?;
-                scratch.next_values.push((var_id, entry.value_raw));
-            }
-            scratch.next_values.sort_unstable_by_key(|&(id, _)| id);
-            if scratch.next_values.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-                return None;
-            }
-            let before = value_edits.len();
-            let (mut i, mut j) = (0_usize, 0_usize);
-            while i < old.len() && j < scratch.next_values.len() {
-                let old_row = &old[i];
-                let (new_id, new_val) = scratch.next_values[j];
-                match old_row.var_id.cmp(&new_id) {
-                    std::cmp::Ordering::Equal => {
-                        if old_row.value_raw != new_val {
-                            let row = rows::ScriptVariableValueRow {
-                                scope_kind,
-                                scope_id,
-                                var_id: new_id,
-                                value_raw: new_val,
-                            };
-                            reserve(value_edits, 1).ok()?;
-                            value_edits.push((row.key(), Some(row)));
-                        }
-                        i += 1;
-                        j += 1;
-                    }
-                    std::cmp::Ordering::Less => {
-                        reserve(value_edits, 1).ok()?;
-                        value_edits.push((old_row.key(), None));
-                        i += 1;
-                    }
-                    std::cmp::Ordering::Greater => {
-                        let row = rows::ScriptVariableValueRow {
-                            scope_kind,
-                            scope_id,
-                            var_id: new_id,
-                            value_raw: new_val,
-                        };
-                        reserve(value_edits, 1).ok()?;
-                        value_edits.push((row.key(), Some(row)));
-                        j += 1;
-                    }
-                }
-            }
-            while i < old.len() {
-                reserve(value_edits, 1).ok()?;
-                value_edits.push((old[i].key(), None));
-                i += 1;
-            }
-            while j < scratch.next_values.len() {
-                let (new_id, new_val) = scratch.next_values[j];
-                let row = rows::ScriptVariableValueRow {
-                    scope_kind,
-                    scope_id,
-                    var_id: new_id,
-                    value_raw: new_val,
-                };
-                reserve(value_edits, 1).ok()?;
-                value_edits.push((row.key(), Some(row)));
-                j += 1;
-            }
-            if !scope_changed {
-                work.rows_built += 1;
-            }
-            if value_edits.len() > before && previous.is_some() {
-                work.entry_sets_changed += 1;
-                if !scope_changed {
-                    work.rows_changed += 1;
-                }
-            }
-            build_ns = build_ns.saturating_add(elapsed_ns(built));
-        }
-        work.build_ns = work.build_ns.saturating_add(build_ns);
-        work.compare_ns = work
-            .compare_ns
-            .saturating_add(elapsed_ns(started).saturating_sub(build_ns));
-        Some(())
-    }
-
-    fn scope_values_match(
-        &self,
-        current: &[cvariables::Row],
-        old: &[rows::ScriptVariableValueRow],
-        interner: &VariableInterner,
-        seen: &mut Vec<u64>,
-    ) -> Option<bool> {
-        let mut diverged = None;
-        for (index, (entry, prev)) in current.iter().zip(old.iter()).enumerate() {
-            if index > 0 && old[index - 1].var_id >= prev.var_id {
-                return None;
-            }
-            let name =
-                &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
-            let Some(&var_id) = interner.by_name.get(name) else {
-                return Some(false);
-            };
-            if prev.var_id != var_id {
-                diverged = Some(index);
-                break;
-            }
-            if entry.value_raw != prev.value_raw {
-                return Some(false);
-            }
-        }
-        let Some(from) = diverged else {
-            return Some(true);
-        };
-        if old[from..]
-            .windows(2)
-            .any(|pair| pair[0].var_id >= pair[1].var_id)
-            || !clear_seen(seen, old.len())
-        {
-            return None;
-        }
-        let full = from / 64;
-        seen[..full].fill(u64::MAX);
-        if from % 64 != 0 {
-            seen[full] = (1_u64 << (from % 64)) - 1;
-        }
-        for entry in &current[from..] {
-            let name =
-                &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
-            let Some(&var_id) = interner.by_name.get(name) else {
-                return Some(false);
-            };
-            let Ok(index) = old.binary_search_by_key(&var_id, |row| row.var_id) else {
-                return Some(false);
-            };
-            if !first_seen(seen, index) {
-                return Some(false);
-            }
-            if entry.value_raw != old[index].value_raw {
-                return Some(false);
-            }
-        }
-        Some(true)
     }
 
     fn complete_variables(
@@ -3873,12 +3740,7 @@ impl Captured {
         if let Outcome::Unavailable { reason } = outcome {
             return all_unavailable(reason);
         }
-        if !valid_variables(
-            outcome,
-            &self.variables.rows,
-            &self.variable_entries,
-            &self.variable_names,
-        ) {
+        if !self.valid_variable_source(outcome) {
             return all_unavailable("script variable entry or name lies outside captured arena");
         }
         if matches!(outcome, Outcome::Truncated { .. }) {
@@ -3908,26 +3770,23 @@ impl Captured {
             return all_unavailable("script variable allocation failed");
         }
         order.extend(0..len);
-        order.sort_unstable_by_key(|&i| scope_identity(self.variables.rows[i].scope));
-        if order
-            .windows(2)
-            .any(|p| scope_identity(self.variables.rows[p[0]].scope) == scope_identity(self.variables.rows[p[1]].scope))
-        {
+        order.sort_unstable_by_key(|&i| scope_identity(self.variable_scope(i).unwrap().0));
+        if order.windows(2).any(|p| {
+            scope_identity(self.variable_scope(p[0]).unwrap().0)
+                == scope_identity(self.variable_scope(p[1]).unwrap().0)
+        }) {
             return all_unavailable("duplicate script variable scope");
         }
         let total_entries: usize = order
             .iter()
-            .map(|&i| self.variables.rows[i].entries_len)
+            .map(|&i| self.variable_scope(i).unwrap().2.len())
             .sum();
         let mut added: Vec<&[u8]> = Vec::new();
-        let mut seen_new: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        let mut seen_new: FastSet<&[u8]> = FastSet::default();
         for &i in &order {
-            let scope = &self.variables.rows[i];
-            let entries =
-                &self.variable_entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
+            let (_, _, entries, names) = self.variable_scope(i).unwrap();
             for entry in entries {
-                let name =
-                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
+                let name = &names[entry.name_start..entry.name_start + entry.name_len];
                 if !interner.by_name.contains_key(name) && !seen_new.contains(name) {
                     if reserve(&mut added, 1).is_err()
                         || engine_allocation::reserve_set(&mut seen_new, 1).is_err()
@@ -3974,25 +3833,22 @@ impl Captured {
         }
         let mut scope_vals: Vec<(u32, i64)> = Vec::new();
         for &i in &order {
-            let scope = &self.variables.rows[i];
-            let (scope_kind, scope_id) = scope_identity(scope.scope);
+            let (scope, seed, entries, names) = self.variable_scope(i).unwrap();
+            let (scope_kind, scope_id) = scope_identity(scope);
             scope_rows.push(rows::ScriptVariablesRow {
                 scope_kind,
                 scope_id,
                 entries: Vec::new(),
-                seed: rows::Recorded::Value(scope.seed),
+                seed: rows::Recorded::Value(seed),
             });
             scope_vals.clear();
-            let extra = scope.entries_len.saturating_sub(scope_vals.capacity());
+            let extra = entries.len().saturating_sub(scope_vals.capacity());
             if reserve(&mut scope_vals, extra).is_err() {
                 interner.rollback();
                 return all_unavailable("script variable allocation failed");
             }
-            let entries =
-                &self.variable_entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
             for entry in entries {
-                let name =
-                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
+                let name = &names[entry.name_start..entry.name_start + entry.name_len];
                 let var_id = interner.by_name[name];
                 scope_vals.push((var_id, entry.value_raw));
             }
@@ -4023,7 +3879,17 @@ impl Captured {
             Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
             Outcome::Unavailable { .. } => return,
         };
-        if let Some(rows) = self.variables.rows.get(..len) {
+        if let Some(snapshot) = &self.variable_snapshot {
+            for ordinal in 0..len.min(snapshot.len()) {
+                if let Some((_, seed, _, _)) = snapshot.get(ordinal) {
+                    if seed.is_some() {
+                        work.captured = work.captured.saturating_add(1);
+                    } else {
+                        work.refused = work.refused.saturating_add(1);
+                    }
+                }
+            }
+        } else if let Some(rows) = self.variables.rows.get(..len) {
             for row in rows {
                 if row.seed.is_some() {
                     work.captured = work.captured.saturating_add(1);
@@ -4035,17 +3901,25 @@ impl Captured {
     }
 
     fn variables_table(&self, outcome: Outcome) -> TableView {
-        if !valid_variables(
-            outcome,
-            &self.variables.rows,
-            &self.variable_entries,
-            &self.variable_names,
-        ) {
+        if !self.valid_variable_source(outcome) {
             return unavailable("script variable entry or name lies outside captured arena");
         }
-        let view = table::<tables::ScriptVariables, _>(outcome, &self.variables.rows, |r| {
-            self.variable_row(r)
-        });
+        let view = if let Some(snapshot) = &self.variable_snapshot {
+            table_iter::<tables::ScriptVariables, _>(
+                outcome,
+                (0..outcome.len()).map(|ordinal| snapshot.get(ordinal).unwrap()),
+                |(scope, seed, entries, names)| variable_row_from(scope, seed, entries, names),
+            )
+        } else {
+            table::<tables::ScriptVariables, _>(outcome, &self.variables.rows, |r| {
+                variable_row_from(
+                    r.scope,
+                    r.seed,
+                    &self.variable_entries.first[r.entries_start..r.entries_start + r.entries_len],
+                    &self.variable_names.first,
+                )
+            })
+        };
         let values = match &view {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
             _ => return view,
@@ -4063,26 +3937,6 @@ impl Captured {
             return unavailable("duplicate literal script variable key");
         }
         view
-    }
-
-    fn variable_row(&self, r: &cvariables::ScopeRow) -> rows::ScriptVariablesRow {
-        let (scope_kind, scope_id) = scope_identity(r.scope);
-        let mut entries = owned_vec(map_slice(
-            &self.variable_entries.first[r.entries_start..r.entries_start + r.entries_len],
-            |entry| rows::ScriptVariableEntry {
-                name: owned_vec(copy_vec(
-                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len],
-                )),
-                value_raw: entry.value_raw,
-            },
-        ));
-        entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-        rows::ScriptVariablesRow {
-            scope_kind,
-            scope_id,
-            entries,
-            seed: rows::Recorded::Value(r.seed),
-        }
     }
 
     fn operations_table(&self, outcome: Outcome) -> TableView {
@@ -4424,7 +4278,253 @@ fn scope_identity(scope: cvariables::Scope) -> (u8, u32) {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the walk's operands, its row arenas, the delta and the held store"
+    reason = "per-scope variable diff borrows previous values, interner, scratch and edit accumulators"
+)]
+fn scope_edit(
+    scope: cvariables::Scope,
+    seed: Option<u32>,
+    current: &[cvariables::Row],
+    names: &[u8],
+    previous: Option<&rows::ScriptVariablesRow>,
+    prev_values: &[rows::ScriptVariableValueRow],
+    scratch: &mut ScriptVariableComparison,
+    work: &mut VariableWork,
+    scope_edits: &mut ScopeEdits,
+    value_edits: &mut ValueEdits,
+    expect_changed: bool,
+) -> Option<()> {
+    let started = std::time::Instant::now();
+    let mut bytes = 0;
+    for entry in current {
+        if !fits(entry.name_start, entry.name_len, names.len()) {
+            return None;
+        }
+        bytes += entry.name_len;
+    }
+    work.scopes_compared += 1;
+    work.entries_compared += current.len() as u64;
+    work.bytes_compared += (size_of_val(current) + bytes) as u64;
+    let identity = scope_identity(scope);
+    let (scope_kind, scope_id) = identity;
+    let mut scope_changed = false;
+    match previous {
+        None => {
+            work.scopes_added += 1;
+            scope_changed = true;
+        }
+        Some(prev) => {
+            if !prev.entries.is_empty() {
+                return None;
+            }
+            let prev_seed = prev.seed.require("ScriptVariables.seed").ok()?;
+            if *prev_seed != seed {
+                work.rows_changed += 1;
+                scope_changed = true;
+            }
+        }
+    }
+    let mut build_ns = 0_u64;
+    if scope_changed {
+        let built = std::time::Instant::now();
+        let row = rows::ScriptVariablesRow {
+            scope_kind,
+            scope_id,
+            entries: Vec::new(),
+            seed: rows::Recorded::Value(seed),
+        };
+        reserve(scope_edits, 1).ok()?;
+        scope_edits.push((row.key(), Some(row)));
+        work.rows_built += 1;
+        build_ns = build_ns.saturating_add(elapsed_ns(built));
+    }
+    let old = if previous.is_some() {
+        &prev_values[value_range(prev_values, identity)]
+    } else {
+        &[]
+    };
+    let values_equal = !expect_changed
+        && previous.is_some()
+        && current.len() == old.len()
+        && scope_values_match(current, names, old, &scratch.interner, &mut scratch.entries)?;
+    if !values_equal {
+        let built = std::time::Instant::now();
+        scratch.next_values.clear();
+        let extra = current.len().saturating_sub(scratch.next_values.capacity());
+        reserve(&mut scratch.next_values, extra).ok()?;
+        let mut sorted = true;
+        let mut prev_id = 0_u32;
+        for entry in current {
+            let name = &names[entry.name_start..entry.name_start + entry.name_len];
+            let var_id = scratch.interner.intern(name)?;
+            if !scratch.next_values.is_empty() && var_id <= prev_id {
+                sorted = false;
+            }
+            prev_id = var_id;
+            scratch.next_values.push((var_id, entry.value_raw));
+        }
+        if !sorted {
+            scratch.next_values.sort_unstable_by_key(|&(id, _)| id);
+            if scratch.next_values.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return None;
+            }
+        }
+        let before = value_edits.len();
+        let (mut i, mut j) = (0_usize, 0_usize);
+        while i < old.len() && j < scratch.next_values.len() {
+            let old_row = &old[i];
+            let (new_id, new_val) = scratch.next_values[j];
+            match old_row.var_id.cmp(&new_id) {
+                std::cmp::Ordering::Equal => {
+                    if old_row.value_raw != new_val {
+                        let row = rows::ScriptVariableValueRow {
+                            scope_kind,
+                            scope_id,
+                            var_id: new_id,
+                            value_raw: new_val,
+                        };
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((row.key(), Some(row)));
+                    }
+                    i += 1;
+                    j += 1;
+                }
+                std::cmp::Ordering::Less => {
+                    reserve(value_edits, 1).ok()?;
+                    value_edits.push((old_row.key(), None));
+                    i += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    let row = rows::ScriptVariableValueRow {
+                        scope_kind,
+                        scope_id,
+                        var_id: new_id,
+                        value_raw: new_val,
+                    };
+                    reserve(value_edits, 1).ok()?;
+                    value_edits.push((row.key(), Some(row)));
+                    j += 1;
+                }
+            }
+        }
+        while i < old.len() {
+            reserve(value_edits, 1).ok()?;
+            value_edits.push((old[i].key(), None));
+            i += 1;
+        }
+        while j < scratch.next_values.len() {
+            let (new_id, new_val) = scratch.next_values[j];
+            let row = rows::ScriptVariableValueRow {
+                scope_kind,
+                scope_id,
+                var_id: new_id,
+                value_raw: new_val,
+            };
+            reserve(value_edits, 1).ok()?;
+            value_edits.push((row.key(), Some(row)));
+            j += 1;
+        }
+        if value_edits.len() > before {
+            if !scope_changed {
+                work.rows_built += 1;
+            }
+            if previous.is_some() {
+                work.entry_sets_changed += 1;
+                if !scope_changed {
+                    work.rows_changed += 1;
+                }
+            }
+        }
+        build_ns = build_ns.saturating_add(elapsed_ns(built));
+    }
+    work.build_ns = work.build_ns.saturating_add(build_ns);
+    work.compare_ns = work
+        .compare_ns
+        .saturating_add(elapsed_ns(started).saturating_sub(build_ns));
+    Some(())
+}
+
+fn scope_values_match(
+    current: &[cvariables::Row],
+    names: &[u8],
+    old: &[rows::ScriptVariableValueRow],
+    interner: &VariableInterner,
+    seen: &mut Vec<u64>,
+) -> Option<bool> {
+    let mut diverged = None;
+    for (index, (entry, prev)) in current.iter().zip(old.iter()).enumerate() {
+        if index > 0 && old[index - 1].var_id >= prev.var_id {
+            return None;
+        }
+        let name = &names[entry.name_start..entry.name_start + entry.name_len];
+        let Some(&var_id) = interner.by_name.get(name) else {
+            return Some(false);
+        };
+        if prev.var_id != var_id {
+            diverged = Some(index);
+            break;
+        }
+        if entry.value_raw != prev.value_raw {
+            return Some(false);
+        }
+    }
+    let Some(from) = diverged else {
+        return Some(true);
+    };
+    if old[from..]
+        .windows(2)
+        .any(|pair| pair[0].var_id >= pair[1].var_id)
+        || !clear_seen(seen, old.len())
+    {
+        return None;
+    }
+    let full = from / 64;
+    seen[..full].fill(u64::MAX);
+    if from % 64 != 0 {
+        seen[full] = (1_u64 << (from % 64)) - 1;
+    }
+    for entry in &current[from..] {
+        let name = &names[entry.name_start..entry.name_start + entry.name_len];
+        let Some(&var_id) = interner.by_name.get(name) else {
+            return Some(false);
+        };
+        let Ok(index) = old.binary_search_by_key(&var_id, |row| row.var_id) else {
+            return Some(false);
+        };
+        if !first_seen(seen, index) {
+            return Some(false);
+        }
+        if entry.value_raw != old[index].value_raw {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+fn variable_row_from(
+    scope: cvariables::Scope,
+    seed: Option<u32>,
+    raw_entries: &[cvariables::Row],
+    names: &[u8],
+) -> rows::ScriptVariablesRow {
+    let (scope_kind, scope_id) = scope_identity(scope);
+    let mut entries = owned_vec(map_slice(raw_entries, |entry| rows::ScriptVariableEntry {
+        name: owned_vec(copy_vec(
+            &names[entry.name_start..entry.name_start + entry.name_len],
+        )),
+        value_raw: entry.value_raw,
+    }));
+    entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    rows::ScriptVariablesRow {
+        scope_kind,
+        scope_id,
+        entries,
+        seed: rows::Recorded::Value(seed),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the walk's operands, its row arenas, snapshot, delta and the held store"
 )]
 fn walk_variables(
     memory: &impl Memory,
@@ -4433,19 +4533,31 @@ fn walk_variables(
     rows: &mut CaptureRows<cvariables::ScopeRow>,
     entries: &mut Arena<cvariables::Row>,
     names: &mut Arena<u8>,
+    snapshot: &mut Option<VariableSnapshot>,
     delta: &mut VariableDelta,
     store: Option<&mut VariableStore>,
 ) {
     let mut reuse =
         store.map(|store| VariableReuse::begin(store, &crate::variable_changes::Observer));
     delta.clear();
+    *snapshot = None;
+    if let Some(reuse_ref) = reuse.as_mut()
+        && let Some((walk, snap)) = {
+            let _reads = read_accounting::table(TABLES[8]);
+            reuse_ref.quiet_hour_snapshot(memory, base, state)
+        }
+    {
+        rows.outcome = walk.outcome;
+        entries.len = 0;
+        entries.required = 0;
+        names.len = 0;
+        names.required = 0;
+        *snapshot = Some(snap);
+        reuse.unwrap().finish_quiet(delta);
+        return;
+    }
     capture_variables(rows, entries, names, |scopes, entries, names| {
         let _reads = read_accounting::table(TABLES[8]);
-        if let Some(reuse) = reuse.as_mut()
-            && let Some(walk) = reuse.quiet_hour(memory, base, state, scopes, entries, names)
-        {
-            return walk;
-        }
         let (scopes, entries, names) = (
             engine_native_memory::walk::Buffer::Growing(scopes),
             engine_native_memory::walk::Buffer::Growing(entries),
@@ -4478,6 +4590,7 @@ pub struct VariablePart {
     rows: CaptureRows<cvariables::ScopeRow>,
     entries: Arena<cvariables::Row>,
     names: Arena<u8>,
+    snapshot: Option<VariableSnapshot>,
     delta: VariableDelta,
     left_out: bool,
 }
@@ -4487,6 +4600,10 @@ impl VariablePart {
         self.rows.allocated_bytes()
             + self.entries.allocated_bytes()
             + self.names.allocated_bytes()
+            + self
+                .snapshot
+                .as_ref()
+                .map_or(0, VariableSnapshot::allocated_bytes_shallow)
             + self.delta.allocated_bytes()
     }
 
@@ -4499,6 +4616,7 @@ impl VariablePart {
         self.rows.reset();
         self.entries.reset();
         self.names.reset();
+        self.snapshot = None;
         self.delta.clear();
     }
 
@@ -4523,6 +4641,7 @@ impl VariablePart {
             &mut self.rows,
             &mut self.entries,
             &mut self.names,
+            &mut self.snapshot,
             &mut self.delta,
             store,
         );
@@ -4548,6 +4667,7 @@ impl Captured {
             rows: std::mem::replace(&mut self.variables, CaptureRows::new(0)),
             entries: std::mem::replace(&mut self.variable_entries, Arena::new(0)),
             names: std::mem::replace(&mut self.variable_names, Arena::new(0)),
+            snapshot: self.variable_snapshot.take(),
             delta: std::mem::take(&mut self.variable_delta),
             left_out: self.left_out[8] && self.left_out[26] && self.left_out[27],
         }
@@ -4557,6 +4677,7 @@ impl Captured {
         self.variables = part.rows;
         self.variable_entries = part.entries;
         self.variable_names = part.names;
+        self.variable_snapshot = part.snapshot;
         self.variable_delta = part.delta;
         self.variables_apart = false;
     }

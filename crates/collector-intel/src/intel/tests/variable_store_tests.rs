@@ -612,11 +612,63 @@ fn a_renewed_quiet_hour_patches_only_its_visited_stores_in_place() {
     let grown = walk(&bytes, &mut store, &watches);
     assert!(grown.counts.quiet);
     assert_eq!(grown.published(), fresh(&bytes));
-    assert_eq!(store.full_copies(), copies + 1);
+    assert_eq!(store.full_copies(), copies);
     watches.boundary(false);
     let carried = walk(&bytes, &mut store, &watches);
     assert_eq!(carried.counts.visited, 0);
     assert_eq!(carried.published(), fresh(&bytes));
+}
+
+#[test]
+fn quiet_snapshot_publishes_cow_changes_without_copying_flat_arenas() {
+    let mut bytes = variable_scopes();
+    let watches = Watches::enabled(16);
+    let mut store = VariableStore::new();
+    let first = settled(&bytes, &mut store, &watches);
+    let _ = first;
+    let copies = store.full_copies();
+
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut reuse = VariableReuse::begin(&mut store, &watches);
+    let (walk, quiet_snap) = reuse
+        .quiet_hour_snapshot(&memory, BASE, GAME)
+        .expect("settled hour uses quiet snapshot");
+    let mut delta = VariableDelta::default();
+    reuse.finish_quiet(&mut delta);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 5 });
+    assert!(delta.same_scopes);
+    assert!(delta.changed.is_empty());
+    assert_eq!(store.full_copies(), copies);
+    watches.boundary(false);
+
+    let insert = watches.notify(STORES[1], site("get_mutable_value"));
+    add_variable(&mut bytes, 1, b"cow_var", 99);
+    drop(insert);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut reuse = VariableReuse::begin(&mut store, &watches);
+    let (walk, grown_snap) = reuse
+        .quiet_hour_snapshot(&memory, BASE, GAME)
+        .expect("grown quiet hour uses COW snapshot");
+    reuse.finish_quiet(&mut delta);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 5 });
+    assert_eq!(delta.changed, [1]);
+    assert_eq!(store.full_copies(), copies);
+    assert_eq!(quiet_snap.get(1).unwrap().2.len(), 1);
+    assert_eq!(grown_snap.get(1).unwrap().2.len(), 2);
+    let (_, _, grown_entries, grown_names) = grown_snap.get(1).unwrap();
+    assert_eq!(
+        grown_entries
+            .iter()
+            .map(|e| (&grown_names[e.name_start..e.name_start + e.name_len], e.value_raw))
+            .collect::<Vec<_>>(),
+        vec![(&b"country"[..], 20), (&b"cow_var"[..], 99)]
+    );
 }
 
 #[test]

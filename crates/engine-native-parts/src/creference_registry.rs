@@ -136,6 +136,41 @@ impl HeaderResolver {
                 .is_ok_and(|root| self.headers.iter().flatten().any(|(key, _)| *key == root))
     }
 
+    pub fn first_cell(
+        &mut self,
+        memory: &impl engine_native_memory::Memory,
+        base: usize,
+        handle: u64,
+    ) -> Result<Option<(Header, usize, bool)>, &'static str> {
+        if handle == 0 {
+            return Ok(None);
+        }
+        let root = root_address(base, handle)?;
+        let (header, taken) = if let Some((_, header)) =
+            self.headers.iter().flatten().find(|(key, _)| *key == root)
+        {
+            (*header, true)
+        } else {
+            let Some(header) = read_header(memory, base, root)? else {
+                return Ok(None);
+            };
+            self.headers[self.next] = Some((root, header));
+            self.next = (self.next + 1) % self.headers.len();
+            (header, false)
+        };
+        Ok(first_cell(header, handle)?.map(|cell| (header, cell, taken)))
+    }
+
+    pub fn resolve_gathered(
+        &self,
+        memory: &impl engine_native_memory::Memory,
+        header: Header,
+        handle: u64,
+        first: [u8; 24],
+    ) -> Result<Option<usize>, &'static str> {
+        probe_with(memory, header, handle, Some(first))
+    }
+
     pub fn resolve(
         &mut self,
         memory: &impl engine_native_memory::Memory,
