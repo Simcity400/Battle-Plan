@@ -73,7 +73,13 @@ impl Division {
         self.removals[..self.removals.partition_point(|r| r.0 <= hour)].last().filter(|r| r.0 >= seen)
     }
 
-    pub(super) fn next_change(&self, hour: i32, roster: &Roster) -> Option<i32> {
+    pub(super) fn next_change(&self, hour: i32, roster: &Roster, scope: &Scope) -> Option<i32> {
+        let posting = self.seen_at(hour).and_then(|at| self.posting.at(at));
+        if posting.is_none_or(|p| !scope.includes(p.slot)) {
+            let unlinked = posting.is_some_and(|p| p.slot.is_none());
+            let after = &self.posting.0[self.posting.0.partition_point(|p| p.0 <= hour)..];
+            return after.iter().find(|(_, p)| scope.includes(p.slot) || p.slot.is_none() != unlinked).map(|p| p.0);
+        }
         let next_seen = self.seen.get(self.seen.partition_point(|s| s.0 <= hour)).map(|s| s.0);
         let removal = self.removals.get(self.removals.partition_point(|r| r.0 <= hour)).map(|r| r.0);
         let next_facts = self.facts.get(self.facts.partition_point(|&at| at <= hour)).copied();
@@ -230,21 +236,24 @@ impl Roster {
         }
     }
 
-    pub(super) fn choice(&self, id: u64, hour: i32, scope: &Scope) -> Option<ServiceDivision> {
+    pub(super) fn choice(&self, id: u64, hour: i32, scope: &Scope, partial: &mut bool) -> Option<ServiceDivision> {
         let d = self.divisions.get(&id)?;
         let at = d.seen_at(hour)?;
         let posting = d.posting.at(at)?;
-        if scope.slots.as_ref().is_some_and(|slots| !posting.slot.is_some_and(|s| slots.contains(&s))) {
+        if !scope.includes(posting.slot) {
+            *partial |= posting.slot.is_none();
             return None;
         }
         let template = self.templates.get(&posting.template).and_then(|steps| steps.at(at));
         let removed = d.removed(hour);
+        let medals = d.medals.at(at).copied().flatten();
+        *partial |= at == hour && removed.is_none() && medals.is_none();
         Some(ServiceDivision {
             division: id.to_string(),
             last_seen: at,
             name: d.name.at(at).cloned().flatten(),
             tag: posting.tag.clone(),
-            medals: d.medals.at(at).copied().flatten(),
+            medals,
             template: template.and_then(|t| t.name.clone()),
             sprite: template.and_then(|t| t.sprite.clone()),
             removed: removed.map(|r| r.2.clone()),
@@ -261,6 +270,10 @@ pub(super) struct Scope {
 }
 
 impl Scope {
+    fn includes(&self, slot: Option<u32>) -> bool {
+        self.slots.as_ref().is_none_or(|slots| slot.is_some_and(|s| slots.contains(&s)))
+    }
+
     pub(super) fn at(query: &Query<'_>, selection: Option<&Selection>, hour: i32) -> Self {
         let Some(set) = selection else { return Self::default() };
         let mut slots = BTreeSet::new();

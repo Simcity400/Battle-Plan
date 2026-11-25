@@ -2510,7 +2510,7 @@ export type ServiceDivision = { division: string, name: string | null, tag: stri
 export type ServiceEntry = { key: string, hour: number, observed: number, kind: string, title: string | null, status: string | null, tag: string | null, other: string | null, province: number | null, placeHour: number | null, medal: CareerMedal | null, exact: boolean, };
 export type ServiceRecordTailReply = { branchId: string, selected: ServiceDivision | null, facts: CareerFacts | null, medals: Array<CareerMedal>, total: string, offset: string, rows: Array<ServiceEntry>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
 export type ServiceChoicesParams = { branchId: string, hour: number, countries?: Array<CountryRef>, group?: GroupSelection, };
-export type ServiceChoicesReply = { choices: Array<ServiceDivision>, warnings: Array<string>, };
+export type ServiceChoicesReply = { partial: string | null, choices: Array<ServiceDivision>, warnings: Array<string>, };
 export type LandBattlesManifestReply = {
 /**
  * The replay's blocks, cut to the hours the timeline holds.

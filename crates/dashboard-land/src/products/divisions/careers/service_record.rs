@@ -163,6 +163,7 @@ struct Tail {
 const TITLE: &str = "Division service record";
 const CAREER: u16 = 0;
 const AWARD: u16 = 1;
+const PARTIAL_ROSTER: &str = "Some divisions' countries or medal totals were not recorded at this hour";
 
 fn occurrence(id: usize, division: u64, date: i32, observed: i32, kind: u16, payload: Entry) -> Occurrence<Entry> {
     Occurrence {
@@ -640,12 +641,12 @@ fn reply(
     let mut warnings = Refusals::default();
     let scope = Scope::at(query, prepared.selection.as_ref(), hour);
     let pinned = params.division.as_ref().and_then(|id| id.parse::<u64>().ok());
-    let (subject, ambiguous, leader_change) = match pinned {
+    let (subject, mut ambiguous, leader_change) = match pinned {
         Some(id) => (Some(id), false, None),
         None => tail.roster.leader(&scope, hour),
     };
     let division = subject.and_then(|id| tail.roster.divisions.get(&id));
-    let choice = subject.and_then(|id| tail.roster.choice(id, hour, &scope));
+    let choice = subject.and_then(|id| tail.roster.choice(id, hour, &scope, &mut ambiguous));
     let subject = subject.filter(|_| choice.is_some());
     let show = match params.show {
         Some(ServiceEntries::Career) => Some(&[CAREER][..]),
@@ -669,7 +670,7 @@ fn reply(
             limit,
             chips: &[],
         },
-        division.and_then(|d| d.removed(hour)).map_or(i32::MAX, |r| r.0),
+        subject.and(division).and_then(|d| d.removed(hour)).map_or(i32::MAX, |r| r.0),
     )?;
     let mut entries = Vec::new();
     let mut facts = None;
@@ -724,7 +725,7 @@ fn reply(
             }
         }
     }
-    let next_change = [answer.next_change, scope.next, leader_change, division.and_then(|d| d.next_change(hour, &tail.roster))]
+    let next_change = [answer.next_change, scope.next, leader_change, division.and_then(|d| d.next_change(hour, &tail.roster, &scope))]
         .into_iter()
         .flatten()
         .filter(|&at| at <= query.timeline.last)
@@ -743,7 +744,7 @@ fn reply(
         None
     };
     if ambiguous {
-        warnings.note("Some divisions' countries or medal totals were not recorded at this hour");
+        warnings.note(PARTIAL_ROSTER);
     }
     content.group_notes(&mut warnings);
     let reply = ServiceRecordTailReply {
@@ -781,6 +782,7 @@ pub struct ServiceChoicesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceChoicesReply {
+    pub partial: Option<String>,
     pub choices: Vec<ServiceDivision>,
     pub warnings: Vec<String>,
 }
@@ -814,11 +816,12 @@ impl Product for DivisionServiceRecordChoices {
         let prepared = prepare(source, &query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
         let roster = &prepared.tail.roster;
         let scope = Scope::at(&query, prepared.selection.as_ref(), hour);
-        let mut choices: Vec<_> = roster.divisions.keys().filter_map(|&id| roster.choice(id, hour, &scope)).collect();
+        let mut partial = scope.unknown;
+        let mut choices: Vec<_> = roster.divisions.keys().filter_map(|&id| roster.choice(id, hour, &scope, &mut partial)).collect();
         choices.sort_by(|a, b| {
             b.removed_at.cmp(&a.removed_at).then(b.medals.cmp(&a.medals)).then(a.name.cmp(&b.name)).then(a.division.cmp(&b.division))
         });
-        Ok(ServiceChoicesReply { choices, warnings: Vec::new() })
+        Ok(ServiceChoicesReply { choices, partial: partial.then(|| PARTIAL_ROSTER.to_owned()), warnings: Vec::new() })
     }
 }
 

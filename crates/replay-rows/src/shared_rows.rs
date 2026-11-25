@@ -91,6 +91,13 @@ impl<T: SharedRow> RowCodec for Arc<T> {
     ) -> io::Result<Self> {
         T::from_wire(key, wire).map(Arc::new)
     }
+    fn from_wire_fields<'a>(
+        key: u128,
+        mask: u64,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<Self> {
+        T::from_wire_fields(key, mask, wire).map(Arc::new)
+    }
     fn patch_from_wire<'a>(
         &mut self,
         mask: u64,
