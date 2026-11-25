@@ -374,8 +374,9 @@ export default function DeclaredFamilyWidget<
 
   const picker = declaration.picker;
   const widgetHost = picker && displayedCtx ? <PickerContext.Provider value={(at, selected, children) => {
-    const hour = plan.recorded(at);
-    return hour === null ? null : <ProductPicker spec={picker} runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</ProductPicker>;
+    const hour = at === null ? null : plan.recorded(at);
+    return hour === null ? children([], { kind: 'unrecorded' })
+      : <ProductPicker spec={picker} runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</ProductPicker>;
   }}>{host}</PickerContext.Provider> : host;
   if (!declaration.className && !bannerFailure) return regionChooser ? <>{widgetHost}{regionChooser}</> : widgetHost;
   return (

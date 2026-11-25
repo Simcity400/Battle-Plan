@@ -29,7 +29,6 @@ interface Tally { count: number; bytes: number; from: number; to: number }
 const FLUSH_MS = 500;
 const FLUSH_BYTES = 2 << 20;
 const PENDING_BYTES = 16 << 20;
-const MEASURE_UNGATED = typeof __BATTLEPLAN_MEASURE_UNGATED__ !== 'undefined' && __BATTLEPLAN_MEASURE_UNGATED__;
 const encoder = new TextEncoder();
 const round = (value: number) => Math.round(value * 1000) / 1000;
 const epoch = (now: number) => round(performance.timeOrigin + now);
@@ -392,7 +391,7 @@ export class PerfRecorder {
       }
     };
     this.push({ t: 'page', at: epoch(performance.now()), dpr: devicePixelRatio, width: innerWidth, height: innerHeight, longtask, loaf,
-      hardwareConcurrency: navigator.hardwareConcurrency, ...(MEASURE_UNGATED && { ungated: true }) }, true);
+      hardwareConcurrency: navigator.hardwareConcurrency }, true);
     if (longtask) this.observe('longtask', list => {
       for (const entry of list.getEntries()) this.push({ t: 'longtask', at: epoch(entry.startTime), dur: round(entry.duration) });
     });
@@ -670,7 +669,7 @@ export async function startPerf(): Promise<void> {
   });
   Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
     beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), auditPicturesBatch: (limit: number) => recorder.auditPicturesBatch(limit),
-    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour, lanes: () => recorder.laneCount, ungated: MEASURE_UNGATED,
+    pressureMerges: () => invoke('playback_pressure_merges'), hour: () => recorder.hour, lanes: () => recorder.laneCount,
     preloadStatus: async () => (await import('../widgets/rendererLoaders.ts')).preloadStatus(),
     waitPreloadComplete: async () => (await import('../widgets/rendererLoaders.ts')).whenPreloadComplete() } });
 }

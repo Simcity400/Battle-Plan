@@ -22,24 +22,6 @@ fn declared(name: &str) -> io::Result<&'static dashboard_declare::Log> {
     dashboard_declare::log(name).ok_or_else(|| invalid(format!("No declared log {name}")))
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LogPageParams {
-    pub branch_id: String,
-    pub log: String,
-    #[serde(default)]
-    pub facets: Vec<FacetFilter>,
-    #[doc = " The timeline's first hour when none."]
-    pub from: Option<f64>,
-    pub to: f64,
-    #[doc = " The ordinal the page starts at, counted from the timeline's first hour."]
-    pub cursor: Option<String>,
-    pub page_size: u32,
-    #[doc = " The columns a row carries, by name; every column when none. A followed page pushes these."]
-    pub columns: Option<Vec<String>>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -71,24 +53,6 @@ pub struct LogPageRow {
     #[doc = " By the reply's `columns`."]
     pub cells: Vec<LogCell>,
 }
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LogPageReply {
-    pub branch_id: String,
-    pub log: String,
-    pub columns: Vec<String>,
-    pub first_ordinal: String,
-    pub total: String,
-    pub cursor: Option<String>,
-    pub rows: Vec<LogPageRow>,
-    #[doc = " Hours of the range the timeline does not hold, with why."]
-    pub missing: Vec<MissingSpan>,
-    pub warnings: Vec<String>,
-}
-
-crate::reply_warnings!(LogPageReply);
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -340,32 +304,6 @@ fn reader_for<'q, 'a>(query: &'q Query<'a>, log: &'static dashboard_declare::Log
         Some(caches) => log::Reader::with_cache(query, log, Arc::clone(&caches.buckets)),
         None => log::Reader::new(query, log),
     }
-}
-
-pub fn page<R>(query: &Query<'_>, params: &LogPageParams, map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R) -> io::Result<(log::Page, Vec<R>, Vec<MissingSpan>)> {
-    page_with(query, params, None, map)
-}
-
-pub fn page_with<R>(
-    query: &Query<'_>,
-    params: &LogPageParams,
-    caches: Option<&LogCaches>,
-    mut map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R,
-) -> io::Result<(log::Page, Vec<R>, Vec<MissingSpan>)> {
-    let log = declared(&params.log)?;
-    let reader = reader_for(query, log, caches)?;
-    let to = hour_of(Some(params.to), "to")?;
-    let from = params.from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
-    if !(1..=PAGE_LIMIT).contains(&params.page_size) {
-        return Err(invalid("Invalid page size"));
-    }
-    let cursor = params.cursor.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid cursor"))?;
-    let selection = reader.select(&params.facets, query.timeline.first, to)?;
-    let page = reader.page_with(&selection.patterns, selection.groups.len(), from, to, cursor, params.page_size, selection.overlap)?;
-    let rows = page.rows.iter().map(|paged| map(paged, selection.groups[paged.group].as_ref())).collect();
-    let mut gaps = missing_with(query, log, from, to, caches.map(|c| c.coverage.as_ref()))?;
-    append_unobserved(&mut gaps, &params.facets, from, to);
-    Ok((page, rows, gaps))
 }
 
 pub fn tail<R>(

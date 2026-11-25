@@ -27,14 +27,36 @@ import {
 } from './rowSource.ts';
 import { OFFERED, type TableBase } from './settings.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { knownValue, notApplicable, notRecorded, type Value } from '../value.ts';
-import type { DateBoundKind } from '../valueFormat.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../value.ts';
 
 export const LOG_TABLE_BASE: TableBase = {
   density: 'normal',
   barsBehind: 'off',
   sort: { column: 'date', direction: 'descending' },
 };
+
+const LEAST_SHARE = 0.03;
+
+export function logPairColumn(key: string, label: string, narrow: 'hide' | 'total', slot?: number): TableColumnSpec {
+  return { key, label, priority: 1, as: 'plain', numeric: true, format: 'integer', offered: OFFERED.text,
+    headerGroup: { kind: 'pair', labels: ['Attacker', 'Defender'], ...(slot ? { slot } : {}) }, minWidth: 82, grow: 0.45, narrow };
+}
+
+export function logPairCell([a, b]: [number | null, number | null], label: string, colors?: readonly (string | undefined)[], lowerBound?: string): TableCell {
+  const value = (n: number | null) => n === null ? notRecorded(label + ' not recorded') : lowerBound ? partialValue(n, lowerBound, { atLeast: true }) : knownValue(n);
+  const total = a === null || b === null ? null : a + b;
+  const share = a !== null && total !== null && total > 0 ? a / total : null;
+  const fraction = share !== null && share > 0 && share < 1 ? Math.min(1 - LEAST_SHARE, Math.max(LEAST_SHARE, share)) : share;
+  const cell: TableCell = { value: value(total), pair: [value(a), value(b)] };
+  if (!colors) return cell;
+  if (total === 0) return { ...cell, splitBar: [] };
+  if (fraction === null || fraction < 0 || fraction > 1) {
+    return { ...cell, splitBar: [{ fraction: 1, fill: '', hatched: true }] };
+  }
+  return { ...cell, splitBar: [fraction, 1 - fraction].map((share, i) => ({
+    fraction: share, fill: colors[i] ?? '', hatched: !colors[i],
+  })) };
+}
 
 export function logDateColumn(overrides?: Partial<TableColumnSpec>): TableColumnSpec {
   return {
@@ -158,11 +180,10 @@ export function logWatchCell(): TableCell {
   return { value: knownValue('Watch'), actionLabel: 'Watch', actionIcon: 'play' };
 }
 
-export function logDateCell(hour: number | null, bounded?: DateBoundKind, missingReason = 'Date not recorded'): TableCell {
+export function logDateCell(hour: number | null, missingReason = 'Date not recorded'): TableCell {
   if (hour === null) return { value: notRecorded(missingReason) };
   return {
     value: knownValue(hour),
-    ...(bounded ? { boundedDate: bounded } : {}),
   };
 }
 

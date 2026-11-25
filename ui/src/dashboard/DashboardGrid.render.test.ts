@@ -185,9 +185,13 @@ test('header order, view switch slot, narrow drop order, and settings section or
       hasTime: true, timeFull: 66, timeCompact: 24,
     }), { stage: 0, dropPill: false, collapseView: false, compactSubject: false, compactTime: false },
       'Army losses by month at 790 px keeps segmented switch and full subject name');
-    const stages = [760, 620, 550, 440, 260].map(w => headerDropStage(w, measured));
+    const stages = [760, 620, 550, 470, 260].map(w => headerDropStage(w, measured));
     assert.deepEqual(stages.map(s => s.stage), [0, 1, 2, 3, 4], 'each drop stage triggers only when the previous stage overflows');
     assert.deepEqual(stages[4], { stage: 4, dropPill: true, collapseView: true, compactSubject: true, compactTime: true });
+    assert.equal(headerDropStage(440, measured).stage, 4, 'the time chip collapses before the title is cut');
+    assert.equal(headerDropStage(520, { ...measured, filterFull: 110, filterCompact: 46 }).stage, 3, 'a header filter collapses with the subject chip');
+    assert.deepEqual(headerDropStage(470, { ...measured, timeLive: true }), { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: true },
+      'a live time chip collapses to its dot with the subject chip');
 
     const { timeChipSummary } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetTimeChip.tsx') as typeof import('./WidgetTimeChip');
     const { engineHour } = await vite.ssrLoadModule('/ui/src/dashboard/calendar.ts') as typeof import('./calendar');

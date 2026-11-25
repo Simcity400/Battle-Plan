@@ -787,7 +787,6 @@ def build(args):
 
 UI_BUNDLE_MARKER = ".battleplan-ui-bundle"
 STOCK_VITE_CONFIG = ROOT / "ui" / "vite.config.ts"
-UNGATED_VITE_CONFIG = ROOT / "ui" / "vite.ungated.config.ts"
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
@@ -831,9 +830,8 @@ def validate_ui_output(out):
     return raw
 
 
-def build_ui_command(out, ungated=False):
-    config = UNGATED_VITE_CONFIG if ungated else STOCK_VITE_CONFIG
-    return ["npx.cmd", "vite", "build", "--config", str(config), "--outDir", str(out), "--emptyOutDir", "false"]
+def build_ui_command(out):
+    return ["npx.cmd", "vite", "build", "--config", str(STOCK_VITE_CONFIG), "--outDir", str(out), "--emptyOutDir", "false"]
 
 
 def _is_marked_bundle_dir(path):
@@ -850,7 +848,7 @@ def find_ui_leftovers(target):
     return [*old, *staging]
 
 
-def run_build_ui(out, ungated=False, runner=subprocess.run):
+def run_build_ui(out, runner=subprocess.run):
     """Builds into a fresh staging folder beside `--out`, then swaps `--out` and writes the marker only on success."""
     target = validate_ui_output(out)
     leftovers = find_ui_leftovers(target)
@@ -860,9 +858,8 @@ def run_build_ui(out, ungated=False, runner=subprocess.run):
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=str(target.parent)))
     env = dict(os.environ)
-    env.pop("BATTLEPLAN_MEASURE_UNGATED", None)
     try:
-        code = runner(build_ui_command(staging, ungated=ungated), cwd=ROOT, env=env).returncode
+        code = runner(build_ui_command(staging), cwd=ROOT, env=env).returncode
         if code != 0:
             shutil.rmtree(staging, ignore_errors=True)
             return code
@@ -898,8 +895,8 @@ def run_build_ui(out, ungated=False, runner=subprocess.run):
 
 
 def build_ui(args):
-    """Builds a production UI bundle into `--out`; `--ungated` selects the dedicated ungated Vite config."""
-    return run_build_ui(args.out, ungated=args.ungated)
+    """Builds a production UI bundle into `--out`."""
+    return run_build_ui(args.out)
 
 
 def parse(argv):
@@ -911,8 +908,6 @@ def parse(argv):
                                help="the measuring shell: the release app serving its UI from the bundle `run --ui` names")
     build_ui_command = commands.add_parser("build-ui", help="build a production UI bundle for the measuring shell")
     build_ui_command.add_argument("--out", required=True)
-    build_ui_command.add_argument("--ungated", action="store_true",
-                                  help="measurement-only build that bypasses the playsBackDated placeholder gate")
     accept_command = commands.add_parser("accept", help="make a run's captures the visual baseline")
     accept_command.add_argument("--run", required=True, help="the run's report folder")
     accept_command.add_argument("--reason", required=True, help="the change this baseline accepts")

@@ -195,7 +195,6 @@ test('an end-dated row shows endedHour and names the end observation raider, nev
   const first = model.rows[0]!;
   assert.equal(first.rowHour, 5);
   assert.deepEqual(first.cells.date?.value, { kind: 'known', value: 5 });
-  assert.equal(first.cells.date?.boundedDate, undefined);
   assert.deepEqual(first.cells.country?.flags?.map(flag => [flag.tag, Boolean(flag.dimmed)]), [['GER', false], ['ROM', true]]);
   assert.deepEqual(first.cells.country?.value, { kind: 'known', value: 'Deutsches Reich · Romania' });
   assert.equal(first.cells.status?.statusKind, 'succeeded');
@@ -204,7 +203,6 @@ test('an end-dated row shows endedHour and names the end observation raider, nev
   const second = model.rows[1]!;
   assert.equal(second.rowHour, 16);
   assert.deepEqual(second.cells.date?.value, { kind: 'known', value: 16 });
-  assert.equal(second.cells.date?.boundedDate, 'by');
   assert.deepEqual(second.cells.country?.flags?.map(flag => flag.tag), ['?', 'ENG']);
   assert.equal(second.cells.status?.statusKind, 'ended');
   assert.equal(second.muted, true);

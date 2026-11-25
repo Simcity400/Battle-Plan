@@ -898,7 +898,7 @@ mod lane_tests {
         for product in products::PRODUCTS.iter().filter(|product| !product.replays) {
             assert_ne!(product_lane(product.key, &params), Lane::Replays, "{}", product.key);
         }
-        for key in ["idea-history", "civil-wars", "country-flags", "log-page", "division-log-tail"] {
+        for key in ["idea-history", "civil-wars", "country-flags", "division-log-tail"] {
             assert_ne!(product_lane(key, &params), Lane::Replays, "{key} waits behind pages");
         }
     }

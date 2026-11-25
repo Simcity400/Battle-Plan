@@ -120,7 +120,7 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
   assert.ok(at(220).includes('Modded Realm: Ended day 200'));
   assert.ok(at(260).includes('Modded Realm: Autonomy level name unavailable · Since day 250'));
   assert.ok(at(305).includes('Modded Realm: Last recorded day 299'));
-  assert.ok(at(320).includes('Modded Realm: Ended by day 310'));
+  assert.ok(at(320).includes('Modded Realm: Ended day 310'));
   assert.ok(at(305).includes('Free Republic: Subjects not recorded'));
   assert.ok(!at(320, { ended: false }).some(label => label.startsWith('Modded Realm')));
   assert.deepEqual(at(320, { countries: new Set(['CAN']), countryIds: identities.selected(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · Since day 10']);

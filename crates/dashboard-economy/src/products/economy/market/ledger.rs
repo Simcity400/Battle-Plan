@@ -484,16 +484,13 @@ struct Terms {
     prices: Vec<(u64, i64)>,
 }
 
-fn read_terms<'r>(query: &Query<'r>, seeker: &mut Option<replay_lanes::at::Seeker<'r>>, wanted: &BTreeMap<(u32, i32), Vec<(u32, u64, u8)>>, cancelled: &AtomicBool) -> io::Result<HashMap<(i32, u32, u64, u8), Terms>> {
+fn read_terms(query: &Query<'_>, wanted: &BTreeMap<(u32, i32), Vec<(u32, u64, u8)>>, cancelled: &AtomicBool) -> io::Result<HashMap<(i32, u32, u64, u8), Terms>> {
     let recording = query.replay.recording();
     let mut out = HashMap::new();
+    let mut seeker = replay_lanes::at::Seeker::new(recording)?;
     for ((run, hour), keys) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let held = match seeker.as_mut() {
-            Some(held) => held,
-            None => seeker.insert(replay_lanes::at::Seeker::new(recording)?),
-        };
-        let frame = dashboard_query::cost::storage(|| held.frame(*run, *hour, &[replay_lanes::at::Read::all(TableId::MarketContractTerms)]))?;
+        let frame = dashboard_query::cost::storage(|| seeker.frame(*run, *hour, &[replay_lanes::at::Read::all(TableId::MarketContractTerms)]))?;
         let Ok(rows) = frame.complete::<tables::MarketContractTerms>() else { continue };
         for row in rows {
             if keys.contains(&(row.country, row.id, row.kind)) {
@@ -505,9 +502,9 @@ fn read_terms<'r>(query: &Query<'r>, seeker: &mut Option<replay_lanes::at::Seeke
     Ok(out)
 }
 
-fn variant_names<'r>(
-    query: &Query<'r>,
-    seeker: &mut Option<replay_lanes::at::Seeker<'r>>,
+fn variant_names(
+    query: &Query<'_>,
+    namings: &BTreeMap<u32, Arc<names::Naming>>,
     context: &names::Context,
     wanted: BTreeMap<(u32, i32), BTreeSet<u64>>,
     cancelled: &AtomicBool,
@@ -516,27 +513,13 @@ fn variant_names<'r>(
     if context.is_err() {
         return Ok(out);
     }
-    let recording = query.replay.recording();
     let mut icons: HashMap<String, String> = HashMap::new();
     for ((run, hour), variants) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let held = match seeker.as_mut() {
-            Some(held) => held,
-            None => seeker.insert(replay_lanes::at::Seeker::new(recording)?),
-        };
+        let naming = namings.get(&run).ok_or_else(|| invalid(format!("Run {run} has no design names")))?;
         let variants: Vec<u64> = variants.into_iter().collect();
-        let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
-        let mut reads: Vec<replay_lanes::at::Read<'_>> = names::WHOLE.iter().map(|&table| replay_lanes::at::Read::all(table)).collect();
-        reads.push(replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: replay_lanes::at::Keys::These(&keys) });
-        let mut frame = dashboard_query::cost::storage(|| held.frame(run, hour, &reads))?;
-        let tokens: Vec<u128> = names::variant_tokens(&frame).collect::<BTreeSet<_>>().into_iter().map(u128::from).collect();
-        if !tokens.is_empty() {
-            let token_read = [replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&tokens) }];
-            let lexical = dashboard_query::cost::storage(|| held.frame(run, hour, &token_read))?;
-            frame.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
-        }
         let mut named = Named::default();
-        names::name(&frame, &variants, &[], context, &mut named);
+        naming.name_variants(query.replay.recording(), hour, &variants, context, &mut named)?;
         for icon in named.icons() {
             icons.insert(icon.key, icon.image);
         }
@@ -561,15 +544,29 @@ struct Prepared {
     selection: Option<Selection>,
     links: Arc<BTreeMap<u32, Arc<RunLinks>>>,
     context: Arc<names::Context>,
+    namings: Arc<BTreeMap<u32, Arc<names::Naming>>>,
+}
+
+fn namings(source: &Source, query: &Query<'_>) -> io::Result<BTreeMap<u32, Arc<names::Naming>>> {
+    let mut out = BTreeMap::new();
+    for stretch in &query.timeline.stretches {
+        if let std::collections::btree_map::Entry::Vacant(slot) = out.entry(stretch.run) {
+            slot.insert(names::naming(source, query.replay.recording(), stretch.run)?);
+        }
+    }
+    Ok(out)
 }
 
 fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, params: &MarketLedgerTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
     let selection = dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
+    let context = names::context(source, load)?;
+    let namings = if context.is_ok() { namings(source, query)? } else { BTreeMap::new() };
     Ok(Prepared {
         ledger: ledger(source, query, branch, cancelled)?,
         selection,
         links: Arc::new(links_by_run(source, query)?),
-        context: Arc::new(names::context(source, load)?),
+        context: Arc::new(context),
+        namings: Arc::new(namings),
     })
 }
 
@@ -617,14 +614,13 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             }
         }
     }
-    let mut seeker: Option<replay_lanes::at::Seeker<'_>> = None;
-    let terms = read_terms(query, &mut seeker, &terms_wanted, cancelled)?;
+    let terms = read_terms(query, &terms_wanted, cancelled)?;
     for (&(when, ..), found) in &terms {
         if let Some(run) = run_of(when) {
             variants_wanted.entry((run, when)).or_default().extend(found.equipment.iter().chain(&found.prices).map(|&(variant, _)| variant));
         }
     }
-    let named = variant_names(query, &mut seeker, &prepared.context, variants_wanted, cancelled)?;
+    let named = variant_names(query, &prepared.namings, &prepared.context, variants_wanted, cancelled)?;
     let name_of = |when: i32, variant: u64| -> (Option<String>, Option<String>, Option<String>) {
         if let Err(why) = prepared.context.as_ref() {
             return (None, None, Some(why.clone()));

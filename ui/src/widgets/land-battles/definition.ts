@@ -1,13 +1,8 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { columnsControl } from '../../families/settingsControls.ts';
-import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn, logStatusColumn } from '../../families/table/logHelpers.ts';
+import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logItemColumn, logKindColumn, logPlaceColumn, logPairColumn, logStatusColumn } from '../../families/table/logHelpers.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
-import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-
-function sides(key: string, label: string, slot: number, narrow: 'hide' | 'total'): TableColumnSpec {
-  return { key, label, priority: 1, as: 'plain', numeric: true, format: 'integer', offered: OFFERED.text,
-    headerGroup: { kind: 'pair', labels: ['Attacker', 'Defender'], slot }, minWidth: 82, grow: 0, narrow };
-}
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const LAND_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
   logDateColumn({ sortable: true, minWidth: 70, maxWidth: 70 }),
@@ -15,9 +10,9 @@ export const LAND_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
   logCountryColumn({ label: '', minWidth: 68, grow: 0 }),
   logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary' }),
   logPlaceColumn({ label: 'Province', minWidth: 140, maxWidth: 140, grow: 0, narrow: 'hide', textTone: 'muted' }),
-  sides('casualties', 'Casualties', 68, 'total'),
-  sides('icLost', 'IC lost', 57, 'hide'),
-  sides('divisions', 'Divisions', 58, 'hide'),
+  { ...logPairColumn('casualties', 'Casualties', 'total', 68), grow: 0 },
+  { ...logPairColumn('icLost', 'IC lost', 'hide', 57), grow: 0 },
+  { ...logPairColumn('divisions', 'Divisions', 'hide', 58), grow: 0 },
   logStatusColumn({ label: 'Result', widest: ['Defender won'], minWidth: 136, maxWidth: 136, narrow: 'hide' }),
   logActionColumn({ minWidth: 84, narrow: 'hide' }),
 ];

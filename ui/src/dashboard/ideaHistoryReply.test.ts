@@ -31,10 +31,10 @@ test('an idea history reply answers one hour: nothing after it, every index in r
   bad(value => { value.looks[0] = { info: { ...info, effects: [{ key: 'broken', fixed5: 'unknown', hidden: false }] }, artwork }; });
 });
 
-test('a holding’s dates say how much the recording saw: held before, first observed, ended, ended by, last seen', () => {
+test('a holding labels its start and end dates and identifies an unknown end by its last sighting', () => {
   assert.equal(holdingSince({ ...holding, start: 'heldBefore' }).label, 'Held before');
-  assert.equal(holdingSince({ ...holding, start: 'firstObserved' }).label, 'First observed');
+  assert.equal(holdingSince({ ...holding, start: 'firstObserved' }).label, 'Since');
   assert.deepEqual(holdingUntil(holding), { label: 'Until', value: 'Held now' });
-  assert.equal(holdingUntil({ ...holding, end: { kind: 'endedBy', hour: 30 } }).label, 'Ended by');
+  assert.equal(holdingUntil({ ...holding, end: { kind: 'endedBy', hour: 30 } }).label, 'Until');
   assert.equal(holdingUntil({ ...holding, end: { kind: 'lastSeen' } }).label, 'Last seen');
 });

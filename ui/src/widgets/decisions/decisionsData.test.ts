@@ -24,8 +24,7 @@ const edge = (kind: EventFeedKind, hour: number, extra: Partial<ScriptEdge> = {}
 const card = (edges: ScriptEdge[], opened = true): ScriptOccurrence => ({ id: edges[0].row.id, opened, edges });
 const at = (edges: ScriptEdge[], hour: number, breaks: { firstHour: number; lastHour: number }[] = [], opened = true) => {
   const held = decisionCard(card(edges, opened));
-  const first = held?.occurrence.edges[0].row;
-  return decisionAt({ key: '1', id: held?.occurrence.id ?? '1', hour: first?.hour ?? edges[0].row.readHour, revealedHour: first?.readHour ?? edges[0].row.readHour, by: false, item: held }, hour, breaks)?.item ?? null;
+  return decisionAt(held, hour, breaks);
 };
 const pp = (amount: string): ScriptCost[] => [{ currency: 'politicalPower', amount }];
 

@@ -71,7 +71,7 @@ export const nationalFocusProjection: CardProjection<Record<string, never>> = re
           hour,
           items: [
             item.completedByHour !== null
-              ? { label: 'Completed by', value: formatDateHover(item.completedByHour) }
+              ? { label: 'Completed', value: formatDateHover(item.completedByHour) }
               : { label: 'Completed', missingReason: item.dateMissing ?? 'The completion date was not recorded' },
             ...(item.art.icon ? [] : [{ label: 'Art', missingReason: `${item.art.iconMissing ?? 'Icon not found'}; art missing from the current installation` }]),
           ],

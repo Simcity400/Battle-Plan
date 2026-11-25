@@ -22,11 +22,10 @@ test('a removed division keeps its last recorded facts and the opponent of its r
   } });
   const model = serviceRecordProjection.project(view, { campaign: 'c', chosen: subjectToken('c', '17') });
   assert.equal(model.empty, undefined);
-  assert.equal(model.subjectSummary?.country, 'ABC at 91');
-  assert.deepEqual(model.subjectSummary?.metrics.map(metric => metric.value), ['—', '—']);
+  assert.deepEqual(model.subjectSummary?.country, { kind: 'known', value: 'ABC at 91' });
+  assert.deepEqual(model.subjectSummary?.figures.map(figure => [figure.label, figure.value.kind]), [['Casualties taken', 'notRecorded'], ['Enemy killed', 'notRecorded']]);
   assert.equal(model.kindFilter?.single?.label, 'Second division');
   const cells = model.rows[0]!.cells;
   assert.deepEqual(cells.place!.value, { kind: 'known', value: '5 at 91' });
   assert.deepEqual(cells.country!.flags?.map(flag => [flag.tag, Boolean(flag.dimmed)]), [['DEF', false], ['ABC', true]]);
-  assert.equal(cells.date!.boundedDate, 'by');
 });

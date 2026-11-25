@@ -286,18 +286,3 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, identities).reason;
   return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
 }
-
-export function countryMatchFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
-  index?: CountryIdentityIndex | null, firstHour = -2147483648): {
-    tags: string[] | null; membership: MembershipRun[] | null; unobserved: HourSpan[];
-  } {
-  if (selection.kind === 'all') return { tags: null, membership: null, unobserved: [] };
-  const identities = identitiesFor(groups, index);
-  if (!identities) return { tags: null, membership: [], unobserved: [] };
-  if (selection.kind === 'group' && selection.membership === 'hour') {
-    return { tags: null, membership: groups ? identities.membershipRuns(groupRuns(groups, selection.group) ?? [], firstHour, lastHour) : [],
-      unobserved: groups ? groupUnobserved(groups, selection.group) : [] };
-  }
-  const { countryIds } = worldFilter(selection, fallback, groups, lastHour, identities);
-  return { tags: null, membership: identities.aliasRuns(countryIds ?? new Set(), firstHour, lastHour), unobserved: [] };
-}

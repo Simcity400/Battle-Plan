@@ -6,6 +6,7 @@ import { buildColumnLayouts, layoutFamilyTable, tableRowWindow } from './layout.
 import { deriveTableAudit, resolveTableRows, tableRank, type TableColumnSpec, type TableModel } from './model.ts';
 import { combinedPaneRows, paneGeometry, resolvePanes } from './panes.ts';
 import { displayWindowToData } from './rowSource.ts';
+import { SubjectFigures } from './subjectFigures.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 interface TableWidthsField {
@@ -23,6 +24,7 @@ export interface TableChromeState {
   readonly meta: unknown;
   readonly widths: unknown;
   readonly panes: unknown;
+  readonly figures: SubjectFigures;
 }
 
 function tableColumns(declaration: AnyTableWidgetDeclaration, ctx: FamilyPlanContext<unknown> | null): readonly TableColumnSpec[] {
@@ -72,9 +74,8 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   settings: tableSettingsPolicy,
   chromeState: (fields, previous) => {
     const prev = previous as TableChromeState | undefined;
-    if (prev && prev.meta === fields.meta && prev.widths === fields.widths && prev.panes === fields.panes) return prev;
-    const next: TableChromeState = { meta: fields.meta, widths: fields.widths, panes: fields.panes };
-    return next;
+    if (prev && prev.widths === fields.widths && prev.panes === fields.panes && (prev.meta === fields.meta || prev.figures.follow(fields.meta))) return prev;
+    return { meta: fields.meta, widths: fields.widths, panes: fields.panes, figures: new SubjectFigures(fields.meta) };
   },
   parseHit: parseTableHit,
   getScrollExtent: fields => {

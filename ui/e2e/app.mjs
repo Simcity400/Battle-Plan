@@ -98,8 +98,7 @@ export function createApp(page, config) {
           const pixels = canvas.toDataURL();
           return { width: canvas.width, height: canvas.height, pixels, geometry: geometry(canvas) };
         });
-        const loading = [...root.querySelectorAll('.list-skeleton,.spinner,[data-parity-loading],[aria-busy=true],[aria-label^="Loading"],[aria-label="Flag loading"]')].filter(shown).length
-          + [...root.querySelectorAll('.log-page')].filter(element => visibleGeometry(element) && /Loading/.test(element.textContent)).length;
+        const loading = [...root.querySelectorAll('.list-skeleton,.spinner,[data-parity-loading],[aria-busy=true],[aria-label^="Loading"],[aria-label="Flag loading"]')].filter(shown).length;
         const images = [...root.querySelectorAll('img')].filter(image => visibleGeometry(image) && !image.complete).length;
         const mounted = !root.matches('.dash-widget') || !!root.querySelector('.dash-widget-header h2') && !!root.querySelector('.dash-widget-scaled')?.children.length;
         const state = { text: root.innerText, geometry: geometry(root), canvas, loading, images, mounted, browserErrors: window.__hoi4ParityBrowserErrors ?? [],

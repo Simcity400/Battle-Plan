@@ -34,9 +34,9 @@ fn spans(missing: &[MissingSpan]) -> Vec<(i32, i32, bool)> {
     missing.iter().map(|span| (span.first_hour, span.last_hour, span.reason.contains(WHY))).collect()
 }
 
-fn page(source: &Source, from: Option<i32>) -> LogPageReply {
-    let params = LogPageParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: from.map(f64::from), to: f64::from(LAST), cursor: None, page_size: 100, columns: None };
-    LogPage::load(source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
+fn page(source: &Source, from: Option<i32>) -> LogTailReply {
+    let params = LogTailParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: from.map(f64::from), hour: Some(LAST), offset: None, limit: 100, count_facets: vec![], columns: None };
+    LogTail::load(source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
 }
 
 #[test]
@@ -44,14 +44,14 @@ fn a_log_unavailable_for_a_stretch_is_missing_there_with_its_reason_in_pages() {
     let source = opened();
     let whole = page(&source, None);
     assert_eq!(whole.total, "6", "the events of the hours read");
-    assert_eq!(whole.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), [120, 124, 128, 132, 136, 140]);
+    assert_eq!(whole.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), [140, 136, 132, 128, 124, 120]);
     assert_eq!(spans(&whole.missing), [(FIRST, UNREAD, true)], "{:?}", whole.missing);
     assert_eq!(spans(&page(&source, Some(110)).missing), [(110, UNREAD, true)], "cut to the asked range");
     assert!(page(&source, Some(UNREAD + 1)).missing.is_empty());
 }
 
 #[test]
-fn log_tail_and_dated_panel_match_page_in_reverse_with_exact_facet_totals() {
+fn log_tail_and_dated_panel_match_with_exact_facet_totals() {
     let source = opened();
     let params = LogTailParams {
         branch_id: "1".into(),
@@ -175,20 +175,21 @@ fn log_pages_keep_recorded_coverage_gaps_between_page_boundaries() {
     )
     .unwrap();
     let load = LoadContext { content: None };
-    let ask = |cursor: Option<String>| LogPageParams {
+    let ask = |cursor: Option<String>| LogTailParams {
         branch_id: "1".into(),
         log: "market-events".into(),
         facets: Vec::new(),
         from: Some(100.0),
-        to: 200.0,
-        cursor,
-        page_size: 1,
+        hour: Some(200),
+        offset: cursor,
+        limit: 1,
+        count_facets: vec![],
         columns: None,
     };
-    let page0 = LogPage::load(&src, &ask(None), &load, &AtomicBool::new(false)).unwrap();
-    let page1 = LogPage::load(&src, &ask(Some("1".into())), &load, &AtomicBool::new(false)).unwrap();
-    assert_eq!(page0.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [110]);
-    assert_eq!(page1.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [190]);
+    let page0 = LogTail::load(&src, &ask(None), &load, &AtomicBool::new(false)).unwrap();
+    let page1 = LogTail::load(&src, &ask(Some("1".into())), &load, &AtomicBool::new(false)).unwrap();
+    assert_eq!(page0.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [190]);
+    assert_eq!(page1.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [110]);
     let gap = |m: &[MissingSpan]| m.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>();
     assert_eq!(gap(&page0.missing), [(140, 150)], "page 0 keeps full-interval truncation gap");
     assert_eq!(gap(&page1.missing), [(140, 150)], "page 1 keeps full-interval truncation gap");
@@ -253,18 +254,18 @@ fn later_damaged_run_does_not_prevent_reading_earlier_healthy_interval() {
     )
     .unwrap();
     let load = LoadContext { content: None };
-    let early = LogPage::load(
+    let early = LogTail::load(
         &src,
-        &LogPageParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: Some(100.0), to: 150.0, cursor: None, page_size: 32, columns: None },
+        &LogTailParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: Some(100.0), hour: Some(150), offset: None, count_facets: vec![], limit: 32, columns: None },
         &load,
         &AtomicBool::new(false),
     )
     .expect("healthy earlier run must succeed despite later run damage");
     assert_eq!(early.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [120]);
     assert!(early.missing.is_empty());
-    let late = LogPage::load(
+    let late = LogTail::load(
         &src,
-        &LogPageParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: Some(100.0), to: 240.0, cursor: None, page_size: 32, columns: None },
+        &LogTailParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: Some(100.0), hour: Some(240), offset: None, count_facets: vec![], limit: 32, columns: None },
         &load,
         &AtomicBool::new(false),
     );

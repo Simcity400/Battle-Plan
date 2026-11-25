@@ -81,19 +81,6 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             };
             Ok(Query::Series { series, measure, countries: tags, mode, identity: identity.clone() })
         }
-        "log-page" => {
-            if scope == CoverageScope::Row {
-                return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
-            }
-            let name = text(params, "log")?;
-            let log = dashboard_declare::log(name).ok_or_else(|| invalid(format!("No declared log {name}")))?;
-            let mut columns = Vec::new();
-            for column in params.get("columns").and_then(Value::as_array).ok_or_else(|| invalid("A followed log page names the columns it pushes"))? {
-                let column = column.as_str().ok_or_else(|| invalid("A log's column is named by text"))?;
-                columns.push(dashboard_declare::field(log.table, column)?);
-            }
-            Ok(Query::Cells { table: log.table.index(), columns, rows: crate::Rows::Appended })
-        }
         "army-size" => {
             if params.get("byType").and_then(Value::as_bool) == Some(true) {
                 return Err(invalid("Army sizes by unit type are not followed at the head"));

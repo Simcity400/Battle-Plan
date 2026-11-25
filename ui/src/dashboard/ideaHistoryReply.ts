@@ -25,17 +25,14 @@ export function holdingLabel(look: IdeaLook, holding: IdeaHolding): string {
 }
 
 export function holdingSince(holding: IdeaHolding): { readonly label: string; readonly value: string } {
-  const date = formatDateOnly(holding.firstHour);
-  if (holding.start === 'heldBefore') return { label: 'Held before', value: date };
-  if (holding.start === 'firstObserved') return { label: 'First observed', value: date };
-  return { label: 'Since', value: date };
+  return { label: holding.start === 'heldBefore' ? 'Held before' : 'Since', value: formatDateOnly(holding.firstHour) };
 }
 
 export function holdingUntil(holding: IdeaHolding): { readonly label: string; readonly value: string } {
   switch (holding.end.kind) {
     case 'held': return { label: 'Until', value: 'Held now' };
     case 'ended': return { label: 'Until', value: formatDateOnly(holding.lastHour) };
-    case 'endedBy': return { label: 'Ended by', value: formatDateOnly(holding.end.hour) };
+    case 'endedBy': return { label: 'Until', value: formatDateOnly(holding.end.hour) };
     case 'lastSeen': return { label: 'Last seen', value: formatDateOnly(holding.lastHour) };
   }
 }

@@ -374,9 +374,9 @@ if (sweep) {
     auditedPlacements = result.placements;
     await writeFile(path.join(files.out, 'dated-playback.json'), JSON.stringify(result, null, 2));
     const passedCount = result.placements.filter(p => p.pass === true).length;
-    const realFailedCount = result.placements.filter(p => p.pass === false && p.status !== 'not migrated').length;
+    const failedCount = result.placements.filter(p => p.pass === false).length;
     const summaryNote = result.placements.length
-      ? `Placements: ${passedCount} passed, ${result.notMigrated} not migrated, ${realFailedCount} failed.`
+      ? `Placements: ${passedCount} passed, ${failedCount} failed.`
       : null;
     section('Dashboard playback at 1,440 game hours per second', ['Result', 'Why'],
       [{ pass: result.pass, cells: [verdict(result.pass), why(result.reasons)] }], summaryNote);
@@ -430,9 +430,9 @@ if (sweep) {
 
   under('playback', 'visual');
   const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts, auditedPlacements) : null;
-  section(`Freshness by widget kind (exact while paused, worker eligibility within ${MAX_PLAYBACK_AGE_HOURS} h at p95, zero future frames; placeholders fail as not migrated)`, ['Kind', 'Placements', 'Displayed lag p95 (h)', 'Worker eligible lag p95 (h)', 'Result', 'Why'],
+  section(`Freshness by widget kind (exact while paused, worker eligibility within ${MAX_PLAYBACK_AGE_HOURS} h at p95, zero future frames)`, ['Kind', 'Placements', 'Displayed lag p95 (h)', 'Worker eligible lag p95 (h)', 'Result', 'Why'],
     freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', '–', verdict(false), 'no perf log'] }]
-      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', kind.status === 'not migrated' ? '**FAIL** (not migrated)' : verdict(kind.pass), why(kind.reasons)] })));
+      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', verdict(kind.pass), why(kind.reasons)] })));
 
   under('widget-costs');
   const costResults = area('widget-costs');
@@ -441,19 +441,17 @@ if (sweep) {
     const widgetWindows = costResults.filter(r => !r.isEmpty);
     const costSessionSlug = costResults[0]?.session ?? null;
     const costConf = costSessionConfinement(run, sweep, costSessionSlug);
-    const ungated = Boolean(costConf.page?.ungated || (records ?? []).some(r => r.t === 'page' && (!costSessionSlug || !r.session || r.session === costSessionSlug) && r.ungated));
     const costReport = summarizeWidgetCosts(widgetWindows, records ?? [], {
       baselines: emptyWindows,
       profile: { name: run.profile ?? null, cpuThrottle: run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1, cores: run.cores ?? null },
       confinement: costConf,
-      ungated,
     });
     await writeFile(path.join(files.out, 'widget-costs.json'), JSON.stringify(costReport, null, 2));
     const ms1 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(1));
     const signed = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}`);
     const byOutcome = new Map();
     for (const w of costReport.widgets) byOutcome.set(w.outcome, (byOutcome.get(w.outcome) ?? 0) + 1);
-    const outcomeLine = ['content', 'placeholder', 'refusal', 'error'].map(k => `${byOutcome.get(k) ?? 0} ${k}`).join(', ');
+    const outcomeLine = ['content', 'refusal', 'error'].map(k => `${byOutcome.get(k) ?? 0} ${k}`).join(', ');
     const baseMain = costReport.baseline.main;
     const sampleLine = (costReport.baseline.samples ?? []).map(sample =>
       `${sample.label}: p50 ${ms1(sample.main.p50)} / p95 ${ms1(sample.main.p95)} / max ${ms1(sample.main.max)} ms (${sample.main.n} frames)`).join('; ');

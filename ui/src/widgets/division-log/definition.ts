@@ -5,13 +5,13 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const DIVISION_LOG_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ minWidth: 60 }),
-  logKindColumn({ minWidth: 36 }),
-  logItemColumn({ label: 'Division', minWidth: 94, narrow: 'primary', grow: 6 }),
-  logCountryColumn({ as: 'flagName', showNamesDefault: true, minWidth: 36, maxWidth: 190, narrow: 'flag', textTone: 'secondary', grow: 1.8 }),
-  logPlaceColumn({ narrow: 'hide', textTone: 'muted', minWidth: 110, maxWidth: 170, grow: 1.5 }),
-  logCountryColumn({ key: 'outcome', label: 'Removal', as: 'flagName', showNamesDefault: true, minWidth: 48, maxWidth: 160, narrow: 'flag', textTone: 'secondary', grow: 1.5 }),
-  logActionColumn({ minWidth: 20, maxWidth: 24 }),
+  logDateColumn({ minWidth: 68, maxWidth: 68 }),
+  logKindColumn({ minWidth: 34, maxWidth: 34 }),
+  logItemColumn({ label: 'Division', minWidth: 94, narrow: 'primary' }),
+  logCountryColumn({ as: 'flagName', showNamesDefault: true, flagsWidth: 48, minWidth: 224, maxWidth: 224, narrow: 'flag', textTone: 'secondary' }),
+  logPlaceColumn({ narrow: 'hide', textTone: 'muted', minWidth: 164, maxWidth: 164 }),
+  logCountryColumn({ key: 'outcome', label: 'Removal', as: 'flagName', showNamesDefault: true, flagsWidth: 64, minWidth: 180, maxWidth: 180, narrow: 'flag', textTone: 'secondary' }),
+  logActionColumn({ minWidth: 24, maxWidth: 24 }),
 ];
 
 export const definition = {

@@ -111,7 +111,7 @@ export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = re
             targetFlag: flagOf(target),
             targetName: target.name,
             dateText,
-            spoken: `${group.owner.name} broke ${target.name} cipher${!pair.brokenAt ? ', date not recorded' : pair.brokenAt.upperBound ? ` ${dateText}` : ` on ${dateText}`}`,
+            spoken: `${group.owner.name} broke ${target.name} cipher${!pair.brokenAt ? ', date not recorded' : ` on ${dateText}`}`,
             audit: `${group.owner.tag}>${target.tag}|broken|${dateText ?? 'not-recorded'}`,
             tooltip: {
               title,

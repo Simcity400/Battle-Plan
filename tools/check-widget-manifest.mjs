@@ -5,7 +5,7 @@ import { parseOptionKey, scopedOptionKey } from '../ui/src/dashboard/options.ts'
 import { DEFAULT_VIEW, normalizeView, viewKey } from '../ui/src/families/manifest.ts';
 import { widgetMetas } from '../ui/src/widgets/definitions.ts';
 import { FAMILY_MANIFESTS, FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
-import { LEGACY_WIDGETS } from '../ui/src/widgets/legacyManifest.ts';
+import { NATIVE_WIDGETS } from '../ui/src/widgets/manifest.ts';
 import { walkImportGraph } from './ui-import-graph.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -75,55 +75,35 @@ for (const entry of FAMILY_VIEWS) {
   }
 }
 
-const legacyByKind = new Map();
-const legacyPairs = new Set();
-for (const entry of LEGACY_WIDGETS) {
-  if (!entry.kind) {
-    errors.push('LEGACY_WIDGETS entry missing kind');
-    continue;
-  }
-  if (!metaByKind.has(entry.kind)) errors.push(`LEGACY_WIDGETS references unknown kind: ${entry.kind}`);
-  if (typeof entry.load !== 'function') errors.push(`LEGACY_WIDGETS(${entry.kind}) missing load function`);
-  const view = normalizeView(entry.view);
-  const key = viewKey(entry.kind, view);
-  if (legacyPairs.has(key)) errors.push(`duplicate LEGACY_WIDGETS entry: (${entry.kind}, ${view})`);
-  if (familyPairs.has(key)) errors.push(`(${entry.kind}, ${view}) is registered in both FAMILY_VIEWS and LEGACY_WIDGETS`);
-  legacyPairs.add(key);
-  let list = legacyByKind.get(entry.kind);
-  if (!list) legacyByKind.set(entry.kind, list = []);
-  list.push(entry);
+const nativeKinds = new Set();
+for (const { kind, renderer, load } of NATIVE_WIDGETS) {
+  if (!metaByKind.has(kind)) errors.push(`NATIVE_WIDGETS references unknown kind: ${kind}`);
+  if (renderer !== 'native' || typeof load !== 'function') errors.push(`NATIVE_WIDGETS(${kind}) requires a native renderer and load function`);
+  if (nativeKinds.has(kind) || familyByKind.has(kind)) errors.push(`native kind "${kind}" is registered more than once`);
+  nativeKinds.add(kind);
 }
 
 for (const meta of widgetMetas) {
+  if (nativeKinds.has(meta.kind)) continue;
   const familyEntries = familyByKind.get(meta.kind) ?? [];
-  const legacyEntries = legacyByKind.get(meta.kind) ?? [];
-  if (familyEntries.length === 0 && legacyEntries.length === 0) {
-    errors.push(`kind "${meta.kind}" is neither in FAMILY_VIEWS nor in LEGACY_WIDGETS`);
+  if (familyEntries.length === 0) {
+    errors.push(`kind "${meta.kind}" is missing from FAMILY_VIEWS and NATIVE_WIDGETS`);
     continue;
   }
-  if (familyEntries.length > 0 && legacyEntries.length === 0 && meta.playsBackDated !== undefined) {
-    errors.push(`family kind "${meta.kind}" must not set playsBackDated in definition.ts`);
-  }
-  if (familyEntries.length + legacyEntries.length > 1) {
+  if (familyEntries.length > 1) {
     if (familyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
       errors.push(`multi-view kind "${meta.kind}" cannot use default view in FAMILY_VIEWS`);
     }
-    if (legacyEntries.some(entry => normalizeView(entry.view) === DEFAULT_VIEW)) {
-      errors.push(`multi-view kind "${meta.kind}" cannot use default view in LEGACY_WIDGETS`);
-    }
   }
-  const named = [...familyEntries, ...legacyEntries].some(entry => normalizeView(entry.view) !== DEFAULT_VIEW);
+  const named = familyEntries.some(entry => normalizeView(entry.view) !== DEFAULT_VIEW);
   if (named) {
     const viewOptionKey = familyEntries.find(entry => entry.viewOption)?.viewOption ?? meta.viewSwitch?.option ?? 'view';
     const viewField = meta.options?.find(field => field.key === viewOptionKey);
     if (viewField?.kind === 'choice') {
-      const covered = new Set([
-        ...familyEntries.map(entry => normalizeView(entry.view)),
-        ...legacyEntries.map(entry => normalizeView(entry.view)),
-      ]);
+      const covered = new Set(familyEntries.map(entry => normalizeView(entry.view)));
       for (const choice of viewField.choices) {
         if (!covered.has(choice.value)) {
-          errors.push(`kind "${meta.kind}" view "${choice.value}" is missing from both FAMILY_VIEWS and LEGACY_WIDGETS`);
+          errors.push(`kind "${meta.kind}" view "${choice.value}" is missing from FAMILY_VIEWS`);
         }
       }
     }
@@ -168,12 +148,11 @@ if (drawnSource.includes('registerAll')) {
 
 const familyKinds = familyByKind.size;
 const familyViews = FAMILY_VIEWS.length;
-const legacyCount = LEGACY_WIDGETS.length;
 
 if (errors.length > 0) {
   for (const error of errors) console.error(`widget-manifest: ${error}`);
-  console.error(`widget-manifest: FAILED (${errors.length} error(s)); ${familyViews} family view(s) across ${familyKinds} kind(s); ${legacyCount} entry/entries still on old renderer`);
+  console.error(`widget-manifest: FAILED (${errors.length} error(s)); ${familyViews} family view(s) across ${familyKinds} kind(s); ${nativeKinds.size} native kind(s)`);
   process.exit(1);
 }
 
-console.log(`widget-manifest: OK (${familyViews} family view(s) across ${familyKinds} kind(s); ${legacyCount} still on old renderer)`);
+console.log(`widget-manifest: OK (${familyViews} family view(s) across ${familyKinds} kind(s); ${nativeKinds.size} native kind(s))`);

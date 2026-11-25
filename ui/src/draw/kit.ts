@@ -112,9 +112,15 @@ function buildKitTokens(theme: KitTokenInput) {
     hoverTabBg: theme.hoverTabBg ?? theme.text,
     hoverTabText: theme.hoverTabText ?? theme.surface,
     textSecondary: dark ? '#d4d4d4' : theme.muted,
-    quiet: mix(theme.muted, theme.surface, 0.32),
     autoName: mix(theme.text, theme.surface, 0.25),
     childText: dark ? '#d4d4d4' : theme.text,
+    quiet: mix(theme.muted, theme.surface, 0.32),
+    tileTop: mix(theme.raised ?? theme.surface, theme.text, 0.05),
+    tileBottom: mix(theme.raised ?? theme.surface, theme.surface, 0.3),
+    tileEdge: `rgba(${ink}, ${dark ? 0.06 : 0.08})`,
+    tileFlat: `rgba(${ink}, ${dark ? 0.07 : 0.06})`,
+    tileInk: mix(theme.text, theme.surface, 0.28),
+    treeLine: `rgba(${ink}, ${dark ? 0.14 : 0.18})`,
     barNeutral: dark ? '#cfcfcf' : '#64748b',
     trackGrey: dark ? '#c4c4c4' : '#64748b',
     twoWayNeutral: dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)',
@@ -344,6 +350,39 @@ export interface ArtSlotResult {
   readonly label?: string;
 }
 
+interface DrawnBounds { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+const drawnBounds = new WeakMap<object, DrawnBounds | null>();
+const OPAQUE = 24;
+
+export function artDrawnBounds(source: CanvasImageSource, width: number, height: number): DrawnBounds | null {
+  if (typeof source !== 'object' || source === null) return null;
+  if (drawnBounds.has(source)) return drawnBounds.get(source)!;
+  let bounds: DrawnBounds | null = null;
+  try {
+    const canvas = new OffscreenCanvas(width, height);
+    const g = canvas.getContext('2d', { willReadFrequently: true });
+    if (g) {
+      g.drawImage(source, 0, 0);
+      const data = g.getImageData(0, 0, width, height).data;
+      let x0 = width, y0 = height, x1 = -1, y1 = -1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (data[(y * width + x) * 4 + 3]! <= OPAQUE) continue;
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+      bounds = x1 < 0 ? null : { x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1 };
+    }
+  } catch {
+    bounds = null;
+  }
+  drawnBounds.set(source, bounds);
+  return bounds;
+}
+
 function drawSlotImage(
   ctx: Canvas2D,
   x: number,
@@ -352,9 +391,13 @@ function drawSlotImage(
   height: number,
   state: Extract<ArtSlotState, { kind: 'ready' }>,
   radius: number,
+  trim = false,
 ): void {
-  const sw = Math.max(1, state.width);
-  const sh = Math.max(1, state.height);
+  const box = trim ? artDrawnBounds(state.bitmap, Math.max(1, state.width), Math.max(1, state.height)) : null;
+  const sx = box?.x ?? 0;
+  const sy = box?.y ?? 0;
+  const sw = box?.width ?? Math.max(1, state.width);
+  const sh = box?.height ?? Math.max(1, state.height);
   const scale = Math.min(width / sw, height / sh);
   const dw = sw * scale;
   const dh = sh * scale;
@@ -364,7 +407,7 @@ function drawSlotImage(
     ctx.roundRect(x, y, width, height, radius);
     ctx.clip();
   }
-  ctx.drawImage(state.bitmap, x + (width - dw) / 2, y + (height - dh) / 2, dw, dh);
+  ctx.drawImage(state.bitmap, sx, sy, sw, sh, x + (width - dw) / 2, y + (height - dh) / 2, dw, dh);
   ctx.restore();
 }
 
@@ -425,7 +468,7 @@ export function drawArtSlot(
   height: number,
   state: ArtSlotState,
   theme: FamilyTheme,
-  options?: { readonly radius?: number; readonly alpha?: number },
+  options?: { readonly radius?: number; readonly alpha?: number; readonly trim?: boolean },
 ): ArtSlotResult {
   const radius = options?.radius ?? 3;
   if (width <= 0 || height <= 0 || state.kind === 'none' || state.kind === 'pending') {
@@ -434,7 +477,7 @@ export function drawArtSlot(
   ctx.save();
   if (options?.alpha !== undefined) ctx.globalAlpha = options.alpha;
   if (state.kind === 'ready') {
-    drawSlotImage(ctx, x, y, width, height, state, radius);
+    drawSlotImage(ctx, x, y, width, height, state, radius, options?.trim);
     ctx.restore();
     return { x, y, width, height, drawn: 'ready' };
   }
@@ -832,6 +875,8 @@ export function drawProgressRing(
 }
 
 export type StatusMarkKind = 'running' | 'waiting' | 'succeeded' | 'finished' | 'ended';
+export const STATUS_WORD_SIZE = 12.5;
+export const STATUS_MARK_LEAD = 15;
 
 export const STATUS_MARK_LABELS: Readonly<Record<StatusMarkKind, string>> = {
   running: 'Running',
@@ -847,32 +892,36 @@ export function drawStatusMark(
   middleY: number,
   kind: StatusMarkKind,
   theme: FamilyTheme,
-  options?: { readonly label?: string; readonly maxWidth?: number; readonly dot?: number; readonly gap?: number; readonly fontSize?: number; readonly weight?: number; readonly ink?: string },
+  options?: { readonly label?: string; readonly maxWidth?: number },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const dotDiameter = options?.dot ?? 6;
-  const dotRadius = dotDiameter / 2;
-  const gap = options?.gap ?? 6;
+  const tokens = resolveKitTokens(theme);
+  const dotRadius = 3.5;
+  const dotDiameter = dotRadius * 2;
+  const gap = STATUS_MARK_LEAD - dotDiameter;
   const color = kind === 'running' || kind === 'waiting'
     ? theme.accent
     : kind === 'succeeded'
       ? theme.green
-      : theme.muted;
+      : kind === 'ended'
+        ? tokens.quiet
+        : theme.muted;
   const ring = kind === 'waiting' || kind === 'ended';
+  const stroke = kind === 'waiting' ? 1.5 : 1.4;
   ctx.save();
   ctx.beginPath();
-  ctx.arc(x + dotRadius, middleY, ring ? dotRadius - 0.6 : dotRadius, 0, Math.PI * 2);
+  ctx.arc(x + dotRadius, middleY, ring ? dotRadius - stroke / 2 : dotRadius, 0, Math.PI * 2);
   if (ring) {
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = stroke;
     ctx.stroke();
   } else {
     ctx.fillStyle = color;
     ctx.fill();
   }
   const word = options?.label ?? STATUS_MARK_LABELS[kind];
-  const fontSize = options?.fontSize ?? theme.fontSize.small;
-  ctx.font = `${options?.weight ?? LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
-  ctx.fillStyle = kind === 'ended' ? theme.muted : options?.ink ?? theme.text;
+  const fontSize = STATUS_WORD_SIZE;
+  ctx.font = `400 ${fontSize}px ${theme.font}`;
+  ctx.fillStyle = kind === 'ended' ? theme.muted : tokens.childText;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - dotDiameter - gap) : 10_000;
@@ -968,7 +1017,7 @@ export function drawDateColumn(
   rowHeight: number,
   hour: number | null,
   theme: FamilyTheme,
-  options?: { readonly width?: number; readonly align?: 'left' | 'right'; readonly ink?: string; readonly yearInk?: string },
+  options?: { readonly width?: number; readonly align?: 'left' | 'right' },
 ): { readonly missing: boolean; readonly full: string; readonly hover: string } {
   const width = options?.width ?? DATE_COLUMN_WIDTH;
   const align = options?.align ?? 'left';
@@ -980,19 +1029,20 @@ export function drawDateColumn(
     return { missing: true, full: notRecordedLabel('Date'), hover: notRecordedLabel('Date') };
   }
   const anchorX = align === 'right' ? x + width : x;
+  const tokens = resolveKitTokens(theme);
   ctx.save();
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   if (rowHeight >= 32) {
     ctx.font = `500 12.5px ${theme.font}`;
-    ctx.fillStyle = options?.ink ?? theme.text;
+    ctx.fillStyle = tokens.childText;
     ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY - 6);
     ctx.font = `400 10.5px ${theme.font}`;
-    ctx.fillStyle = options?.yearInk ?? theme.muted;
+    ctx.fillStyle = tokens.quiet;
     ctx.fillText(ellipsise(parts.year, width, s => textWidth(ctx, s)), anchorX, middleY + 7);
   } else {
     ctx.font = `500 11.5px ${theme.font}`;
-    ctx.fillStyle = theme.text;
+    ctx.fillStyle = tokens.childText;
     ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY);
   }
   ctx.restore();

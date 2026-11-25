@@ -24,8 +24,6 @@ type Live = LiveValues<number | bigint | string> | null | undefined;
 const COLUMNS = { art: { width: 30, height: 38 }, figure: 180, figureAlign: 'right' } as const;
 const ROW_HEIGHT = 48;
 const PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
-const DATE_WORDS = ['before ', '', 'by '] as const;
-const TRAIT_DATE_WORDS = ['Held before', 'Gained', 'Held by'] as const;
 
 export function validateLeaderHour(input: unknown): LeaderHourReply {
   const reply = input as LeaderHourReply;
@@ -64,7 +62,7 @@ const traitName = (trait: LeaderTrait | undefined) => trait?.name ?? trait?.toke
 
 function traitText(trait: LeaderTrait | undefined, date: readonly [number, number] | null | undefined): string {
   const year = date ? gameDate(date[0])?.year : undefined;
-  return year === undefined ? `${traitName(trait)} · date not recorded` : `${traitName(trait)} · ${DATE_WORDS[date![1]] ?? ''}${year}`;
+  return year === undefined ? `${traitName(trait)} · date not recorded` : `${traitName(trait)} · ${date?.[1] === 0 ? 'before ' : ''}${year}`;
 }
 
 function header(readView: Parameters<CardProjection['project']>[0], reply: LeaderHourReply, reference: string, partial: boolean): CardItemRow {
@@ -158,7 +156,7 @@ function traitsRow(reply: LeaderHourReply): CardRow {
       items: held.map((trait, i) => {
         const date = reply.traitDates[i];
         return date
-          ? { label: traitName(trait), value: `${TRAIT_DATE_WORDS[date[1]] ?? 'Held by'} ${formatDateOnly(date[0])}` }
+          ? { label: traitName(trait), value: `${date[1] === 0 ? 'Held before' : 'Gained'} ${formatDateOnly(date[0])}` }
           : { label: traitName(trait), missingReason: 'Date not recorded' };
       }),
     },

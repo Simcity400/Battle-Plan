@@ -5,30 +5,12 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
-import { LOG_TABLE_BASE, logCountryCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
-import type { TableCell, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
+import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
+import type { TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { LandBattleLogRow, LandBattlesTailReply } from '../../generated/dashboard';
 import { LAND_BATTLES_COLUMNS } from './definition.ts';
-
-const LEAST_SHARE = 0.03;
-
-function figures([a, b]: [number | null, number | null], label: string, colors?: readonly (string | undefined)[]): TableCell {
-  const value = (n: number | null) => n === null ? notRecorded(label + ' not recorded') : knownValue(n);
-  const total = a === null || b === null ? null : a + b;
-  const share = a !== null && total !== null && total > 0 ? a / total : null;
-  const fraction = share !== null && share > 0 && share < 1 ? Math.min(1 - LEAST_SHARE, Math.max(LEAST_SHARE, share)) : share;
-  const cell: TableCell = { value: value(total), pair: [value(a), value(b)] };
-  if (!colors) return cell;
-  if (total === 0) return { ...cell, splitBar: [] };
-  if (fraction === null || fraction < 0 || fraction > 1) {
-    return { ...cell, splitBar: [{ fraction: 1, fill: '', hatched: true }] };
-  }
-  return { ...cell, splitBar: [fraction, 1 - fraction].map((share, i) => ({
-    fraction: share, fill: colors[i] ?? '', hatched: !colors[i],
-  })) };
-}
 
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
   const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
@@ -43,12 +25,12 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, sides, colors },
     cells: {
-      date: logDateCell(row.hour, row.exact ? undefined : 'by'),
+      date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 }, 'square', 'Land battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
       place: { value: row.state === null ? notRecorded('Province state not recorded') : resolveName(view, 'state', String(row.state), { atHour: row.hour, boundary }).value },
-      casualties: figures(row.casualties, 'Casualties', colors), icLost: figures(row.icLost, 'IC lost', colors),
-      divisions: figures(row.divisions, 'Divisions'), status, action: logWatchCell(),
+      casualties: logPairCell(row.casualties, 'Casualties', colors), icLost: logPairCell(row.icLost, 'IC lost', colors),
+      divisions: logPairCell(row.divisions, 'Divisions'), status, action: logWatchCell(),
     },
   };
 }

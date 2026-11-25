@@ -47,7 +47,7 @@ pub fn row_coverage(
 #### Functions and types that still carry `CoverageScope`
 
 1. `crates/dashboard-follow/src/query.rs::SeriesMode::Keyed(CoverageScope)` — explicitly keyed country list with no `top` and no `parts`; emits one independent cell per requested key in caller order. `SeriesMode::Top` and `SeriesMode::Parts` have no scope field.
-2. `crates/dashboard-follow/src/parse.rs::parse` — parses optional outer `"coverage": "table" | "row"` on followed requests and validates the original request shape before expanding `"reads": "every"` or discarding `top`, rejecting `"row"` on `"reads": "every"`, any `top` (including `army-size`, `air-force-size`, and `navy-size` with both `countries` and `top`), `parts`, and `log-page`.
+2. `crates/dashboard-follow/src/parse.rs::parse` — parses optional outer `"coverage": "table" | "row"` on followed requests and validates the original request shape before expanding `"reads": "every"` or discarding `top`, rejecting `"row"` on `"reads": "every"`, any `top` (including `army-size`, `air-force-size`, and `navy-size` with both `countries` and `top`), and `parts`.
 3. `crates/dashboard-follow/src/live.rs::Cells::add(scope: CoverageScope, ...)` (private) -> `Group.scope` — `Cells::sum` hardcodes `CoverageScope::Table` and takes no scope argument; only single-key `value`, `difference`, and `ratio` pass `CoverageScope::Row`.
 
 No function in `dashboard-query` takes a `CoverageScope` argument.
@@ -102,7 +102,7 @@ Let `{Name}` be `table.words()` with its first letter capitalized (for example, 
 | `follow.rs::Follow::evaluate` (`Rows::LiveTable`) | `Table` | Multi-row live sums refuse via `Reasons::unrecorded`. |
 | `live.rs::Cells::value`, `difference`, `ratio` -> `group_values` | `Row` | Single-key live cell reads (`minefields.rs` owner mines, `research/slots.rs` slot progress, per-row scalars) take a fast path on `Status::Complete` and binary-search `TableView::Truncated` per key via `row_coverage`. |
 | `live.rs::Cells::sum` -> `group_values` | `Table` | Multi-row population sums (`minefields.rs` region `"total"`, `production/live.rs` line `"output"`, `faction_state/details.rs` faction `"manpower"`, `occupation/states.rs` state `"assigned"`, `world_tension.rs` and `territory.rs` `"unnamed"`) refuse via `evaluate::unrecorded`, keeping `"total"` registered with `main`'s truncation reason. |
-| `parse.rs::parse` | `Table` default; `Row` opt-in | Defaults all followed requests to `CoverageScope::Table`; accepts outer `"coverage": "row"` only on explicitly keyed non-ranked, non-parts series requests and rejects it on `"reads": "every"`, any `top` (even when `countries` is also passed), `parts`, and `log-page`. |
+| `parse.rs::parse` | `Table` default; `Row` opt-in | Defaults all followed requests to `CoverageScope::Table`; accepts outer `"coverage": "row"` only on explicitly keyed non-ranked, non-parts series requests and rejects it on `"reads": "every"`, any `top` (even when `countries` is also passed), and `parts`. |
 
 #### UI followed queries (`gate.follow`)
 
@@ -118,7 +118,7 @@ Let `{Name}` be `table.words()` with its first letter capitalized (for example, 
 | `ui/src/widgets/scoreboard/scoreboardProjection.ts` (`top == null`) | `Row` | Explicitly selected scoreboard countries (`coverage: 'row'` on columns and partials, matching exact `board::at(Rows::Countries)`). |
 | `ui/src/widgets/scoreboard/scoreboardProjection.ts` (`top != null`) | `Table` | Top-N ranked scoreboard (omits `coverage`, matching exact `board::at(Rows::Top)`). |
 | `ui/src/widgets/autonomy/AutonomyWidget.tsx`, `country-measure/MeasureWidget.tsx`, `experience/ExperienceWidget.tsx`, `fuel/FuelWidget.tsx`, `stability/StabilityWidget.tsx`, `supply-health/supplyHead.ts`, `supply-health/supplySeries.ts` | `Row` | Per-country keyed line heads. |
-| `ui/src/widgets/army-size/ArmyBreakdown.tsx`, `player-apm/ApmWidget.tsx`, `special-projects/useProjectHistory.ts` | `Table` | Non-series panel / log-page queries. |
+| `ui/src/widgets/army-size/ArmyBreakdown.tsx`, `player-apm/ApmWidget.tsx`, `special-projects/useProjectHistory.ts` | `Table` | Non-series panel queries. |
 
 ### A lane history at an hour read in part
 

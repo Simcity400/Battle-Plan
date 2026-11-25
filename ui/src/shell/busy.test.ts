@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { busy, busyCount, busyKinds, busyPreparing, inBackground } from './busy.ts';
 import { FrameScheduler } from '../charts/scheduler.ts';
-import { inFrame, inFrameNow } from '../dashboard/frameUpdates.ts';
+import { inFrame } from '../dashboard/frameUpdates.ts';
 
 
 test('each thing in flight counts once until it ends, by its kind', () => {
@@ -63,11 +63,11 @@ test('data updates are in flight from when they are queued until their frame ren
   try {
     const ran: string[] = [];
     inFrame(() => ran.push('reply'));
-    inFrameNow(() => ran.push('name'));
+    inFrame(() => ran.push('name'));
     assert.equal(busyKinds().updates, 1, 'one frame holds them all');
     assert.equal(frames.length, 1);
     frames.shift()!();
-    assert.deepEqual(ran, ['name', 'reply']);
+    assert.deepEqual(ran, ['reply', 'name']);
     assert.equal(busyKinds().updates, 0);
     assert.equal(busyKinds().commits, 0, 'the batch finished rendering');
     assert.equal(busyCount(), 0);

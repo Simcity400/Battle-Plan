@@ -1,4 +1,4 @@
-import type { FamilyViewRenderer, WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
+import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
 import { scopedOptionKey, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
 import type { FamilyProjection } from './contract.ts';
 import type { FamilyHostAdapter } from './host/adapter.ts';
@@ -50,20 +50,16 @@ export interface FamilyManifestModule {
   readonly hostAdapter?: FamilyHostAdapter<any, any, any, any>;
 }
 
-export interface LegacyWidgetEntry {
+export interface NativeWidgetEntry {
   readonly kind: string;
-  readonly view?: string;
-  readonly label?: string;
-  readonly playsBackDated?: boolean;
-  readonly slots?: readonly ('render' | 'countryChip' | 'subjectMenu')[];
-  readonly load: () => Promise<{ default: WidgetRenderer | FamilyViewRenderer }>;
+  readonly renderer: 'native';
+  readonly load: () => Promise<{ default: WidgetRenderer }>;
 }
 
 export interface ViewOptionChoice {
   readonly value: string;
   readonly label: string;
-  readonly source: 'family' | 'legacy';
-  readonly family?: FamilyId;
+  readonly family: FamilyId;
 }
 
 export function resolveViewOptionKey(
@@ -82,7 +78,6 @@ export function resolveViewOptionKey(
 export function declaredViewChoices(
   meta: Pick<WidgetMeta, 'viewSwitch' | 'options'> | undefined,
   familyEntries: readonly FamilyViewEntry[],
-  legacyEntries: readonly LegacyWidgetEntry[],
 ): readonly ViewOptionChoice[] {
   const out: ViewOptionChoice[] = [];
   const seen = new Set<string>();
@@ -97,13 +92,7 @@ export function declaredViewChoices(
     const view = normalizeView(entry.view);
     if (seen.has(view)) continue;
     seen.add(view);
-    out.push({ value: view, label: labelFor(view, entry.label), source: 'family', family: entry.family });
-  }
-  for (const entry of legacyEntries) {
-    const view = normalizeView(entry.view);
-    if (seen.has(view)) continue;
-    seen.add(view);
-    out.push({ value: view, label: labelFor(view, entry.label), source: 'legacy' });
+    out.push({ value: view, label: labelFor(view, entry.label), family: entry.family });
   }
   const declared = metaChoiceField?.choices.map(choice => choice.value);
   if (!declared) return out;
@@ -120,9 +109,8 @@ export function resolveActiveView(
   stored: WidgetOptions | undefined,
   meta: Pick<WidgetMeta, 'viewSwitch' | 'options'> | undefined,
   familyEntries: readonly FamilyViewEntry[],
-  legacyEntries: readonly LegacyWidgetEntry[],
 ): string {
-  const views = declaredViewChoices(meta, familyEntries, legacyEntries);
+  const views = declaredViewChoices(meta, familyEntries);
   if (views.length <= 1) return views[0]?.value ?? DEFAULT_VIEW;
   const optionKey = resolveViewOptionKey(meta, familyEntries);
   const raw = stored?.[optionKey];
@@ -136,10 +124,9 @@ export function scopedOptionFields(
   meta: Pick<WidgetMeta, 'viewSwitch' | 'options'> | undefined,
   activeView: string,
   familyEntries: readonly FamilyViewEntry[],
-  legacyEntries: readonly LegacyWidgetEntry[],
 ): readonly OptionField[] {
   const activeFamily = familyEntries.find(entry => normalizeView(entry.view) === activeView);
-  const views = declaredViewChoices(meta, familyEntries, legacyEntries);
+  const views = declaredViewChoices(meta, familyEntries);
   const optionKey = resolveViewOptionKey(meta, familyEntries);
   const baseFields = meta?.options ?? [];
 
@@ -172,10 +159,9 @@ export function scopedOptionFields(
 export function manifestViewSwitch(
   meta: Pick<WidgetMeta, 'viewSwitch' | 'options' | 'title'> | undefined,
   familyEntries: readonly FamilyViewEntry[],
-  legacyEntries: readonly LegacyWidgetEntry[],
 ): WidgetViewSwitch | undefined {
   if (meta?.viewSwitch) return meta.viewSwitch;
-  const views = declaredViewChoices(meta, familyEntries, legacyEntries);
+  const views = declaredViewChoices(meta, familyEntries);
   if (views.length <= 1) return undefined;
   const option = resolveViewOptionKey(meta, familyEntries);
   return {

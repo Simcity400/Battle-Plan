@@ -59,12 +59,12 @@ export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOption
       hour: hit.hour ?? model.hour,
       items: [
         { label: meta.mutual ? 'With' : agreement.outgoing ? 'To' : 'From', value: lane.label },
-        { label: 'Since', value: `${agreement.sinceBound ? 'By ' : ''}${formatDateOnly(agreement.since)}` },
+        { label: 'Since', value: formatDateOnly(agreement.since) },
         ...(agreement.expires != null ? [{ label: 'Expires', value: formatDateOnly(agreement.expires) }] : []),
         state.state === 'present'
           ? { label: 'Status', value: 'In force' }
           : state.state === 'gone'
-            ? { label: 'Ended', value: `By ${formatDateOnly(state.by)}` }
+            ? { label: 'Ended', value: formatDateOnly(state.by) }
             : { label: 'Status', missingReason: `Not recorded after ${formatDateOnly(state.since)}` },
       ],
     };

@@ -10,7 +10,7 @@ import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineModel, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
-import type { HourSpan, ResearchBound, ResearchHistoryReply, ResearchItem, ResearchSlotsReply } from '../../generated/dashboard';
+import type { HourSpan, ResearchHistoryReply, ResearchItem, ResearchSlotsReply } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
 import { isUnjoinedResearch, researchHistoryProof, researchLooks, validateResearchHistory, validateResearchSlots, type ResearchLooks } from './researchData.ts';
 import { slotNumbers } from './researchSlots.ts';
@@ -34,7 +34,6 @@ interface ResearchSpanMeta {
 interface ResearchLaneMeta {
   readonly slotIndex: number;
   readonly openedHour: number | null;
-  readonly openedRecorded: boolean;
   readonly availability: readonly HourSpan[];
 }
 
@@ -115,10 +114,6 @@ function slotsAtHit(readView: BoundedReadView, at: number): SlotsAtHit {
   }
   const reply = readView.hover<ResearchSlotsReply>('hover', at)?.data;
   return { reply, live: null, pending: !reply };
-}
-
-function boundText(bound: ResearchBound): string {
-  return bound.kind === 'exact' || bound.kind === 'lastSeen' ? formatDateOnly(bound.hour) : `By ${formatDateOnly(bound.hour)}`;
 }
 
 function nextChangeOf(reply: ResearchHistoryReply | undefined, slotsNow: ResearchSlotsReply | undefined, hour: number): number {
@@ -239,7 +234,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
       const label = `Slot ${slot.index + 1}`;
       const openingSpan = openedHour === null ? undefined : coverage.find(span => span.firstHour <= openedHour && openedHour <= span.lastHour);
       const openedRecorded = openedHour !== null && !!openingSpan && openedHour > openingSpan.firstHour;
-      const laneMeta: ResearchLaneMeta = { slotIndex: slot.index, openedHour, openedRecorded, availability };
+      const laneMeta: ResearchLaneMeta = { slotIndex: slot.index, openedHour, availability };
       return {
         key: `slot:${slot.index}`,
         kind: 'item',
@@ -287,11 +282,11 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
       });
       if (inHourSpans(model.unobserved, at)) return status('Not recorded');
       if (laneMeta?.openedHour != null && at < laneMeta.openedHour) {
-        return status('Not yet opened', [{ label: laneMeta.openedRecorded ? 'Opened' : 'Opened by', value: formatDateOnly(laneMeta.openedHour) }]);
+        return status('Not yet opened', [{ label: 'Opened', value: formatDateOnly(laneMeta.openedHour) }]);
       }
       if (laneMeta && laneMeta.availability.length && !runAt(laneMeta.availability, at)) {
         const before = laneMeta.availability.filter(span => span.lastHour < at).at(-1);
-        return status('Closed', before ? [{ label: 'Closed by', value: formatDateOnly(before.lastHour + 1) }] : []);
+        return status('Closed', before ? [{ label: 'Closed', value: formatDateOnly(before.lastHour + 1) }] : []);
       }
       const hitRead = laneMeta ? slotsHit.reply?.slots.find(item => item.index === laneMeta.slotIndex) : undefined;
       const saved = hitRead && hitRead.state.token === null ? slotNumbers(hitRead, at).saved : '';
@@ -322,7 +317,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
         hour: at,
         items: [
           { label: 'Status', value: 'In progress' },
-          ...(item ? [{ label: 'Started', value: boundText(item.start) }] : []),
+          ...(item ? [{ label: 'Started', value: formatDateOnly(item.start.hour) }] : []),
           {
             label: 'Progress',
             ...(reading ?? (numbers && numbers.fraction !== null ? { value: numbers.percent } : { missingReason: unread ?? 'Research progress not recorded' })),
@@ -345,11 +340,11 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
         subtitle,
         hour: at,
         items: [
-          { label: 'Completed', value: boundText(item.end) },
-          { label: 'Started', value: boundText(began) },
+          { label: 'Completed', value: formatDateOnly(item.end.hour) },
+          { label: 'Started', value: formatDateOnly(began.hour) },
           item.tookDays !== null
             ? { label: 'Took', value: `${formatScalar(item.tookDays, 'integer')} ${item.tookDays === 1 ? 'day' : 'days'}` }
-            : { label: 'Took', missingReason: 'The start or the completion date is an observation bound' },
+            : { label: 'Took', missingReason: 'The exact start or completion time was not recorded' },
           ...(item.origin ? [{ label: 'Started in', value: `Slot ${item.origin.slot + 1}` }] : []),
           ...naming,
         ],
@@ -364,8 +359,8 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
       hour: at,
       items: [
         { label: 'Status', value: switched ? 'Switched' : 'Outcome not recorded' },
-        { label: 'Started', value: boundText(item.start) },
-        ...(item.end ? [{ label: switched ? 'Switched' : 'Last seen', value: boundText(item.end) }] : []),
+        { label: 'Started', value: formatDateOnly(item.start.hour) },
+        ...(item.end ? [{ label: switched ? 'Switched' : 'Last seen', value: formatDateOnly(item.end.hour) }] : []),
         ...naming,
       ],
       ...described,

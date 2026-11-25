@@ -4,7 +4,7 @@ import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
-import { buildColumnLayouts, computeRowLayout, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, layoutFamilyTable, measureFixedColumnWidths, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import {
   computeColumnMaxima,
   deriveTableAudit,
@@ -136,6 +136,21 @@ function textSamples(columns: readonly { readonly key: string; readonly numeric?
   return samples;
 }
 
+function flagCounts(columns: readonly { readonly key: string; readonly display?: string }[], rows: readonly FlatTableRow[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
+  for (const column of columns) {
+    if (column.display !== 'flagName') continue;
+    let most = 0;
+    for (let i = 0; i < limit; i++) {
+      const item = rows[i]!;
+      if (item.kind === 'data') most = Math.max(most, item.row.cells[column.key]?.flags?.length ?? 0);
+    }
+    if (most > 1) counts[column.key] = most;
+  }
+  return counts;
+}
+
 function sampleSignature(samples: Record<string, string[]>): string {
   let sig = '';
   for (const [key, list] of Object.entries(samples)) {
@@ -189,10 +204,11 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const layoutWidth = paneGeom ? paneGeom.width : width;
   const baseCols = buildColumnLayouts(model.columns, settings);
   const samples = textSamples(baseCols, flatRows);
-  const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}`;
+  const flags = flagCounts(baseCols, flatRows);
+  const widthKey = `${widthConfigOf(model.columns, settings, theme, model.hideHeader === true)}${sampleSignature(samples)}${JSON.stringify(flags)}`;
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
-    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true });
+    : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true, flags });
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth, rhythm: model.rhythm });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
@@ -201,7 +217,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
-  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight);
+  const totalHeight = localTotal + (panes ? 0 : Math.max(0, totalCount - flatRows.length) * rowHeight + (model.endNote ? END_NOTE_HEIGHT : 0));
   let maximaCols = '';
   for (const col of columns.columns) if (col.numeric) maximaCols += `${col.key}:${col.display}|`;
   const maxima = inc && prev && prev.maximaCols === maximaCols && model.changedKeys
@@ -444,6 +460,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         hasGroupHeaders: shape.hasGroups,
         dateGrouped: model.dateGrouped === true,
         dayDividersOnly: model.dayDividersOnly,
+        ...(model.endNote && shape.windowOffset + shape.flatRows.length >= shape.totalCount ? { endNote: model.endNote } : {}),
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
       }, picture).drew;

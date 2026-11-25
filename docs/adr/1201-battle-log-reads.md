@@ -1,11 +1,7 @@
-# The battle log draws recorded state changes ahead of the playback clock
+# The battle log shows recorded state changes at the playback hour
 
-The shared log takes its facts and wording from battle-specific adapters. A followed log renders one block at a time and reveals a row state for a start, changed sides, end or result at that state's hour. Measures paint between structural changes. Read all battles at the first hour and at any global change. At another change hour, read only the affected battle. The frame painter, tooltip and render share the same replay of the rows for a head hour. Browsed and pinned views use their selected hour for both structure and measures. Biggest battles rank on a 256-hour grid while following and may use a supported measure when the selected one is unavailable. A range trims the displayed span, while peak and duration describe the whole battle.
+Land and naval battle logs use a bounded page at the displayed hour. The branch index places ongoing battles first in date order and ranks numeric columns by the two sides’ totals at that hour. Its next change covers new observations, results, gaps and changes in the rows on screen.
 
-Retain the head, visible and adjacent windows, with two windows of prefetch while following. Draw ahead only through contiguous data, at most into the next window, so the next structural boundary begins in a window already requested. A window that arrives inside a displayed block does not replace its prepared end. In the followed list, entering an already held window or revealing a row needs no history request. Scrolling to a window outside the held set can request it. The current structural order and the prepared state order agree because the comparator depends on each row's start, state and ID.
+Naval battle tooltips load the recorded fleets and named ship losses for the inspected row. A followed row uses the start of its current reading. A pinned live battle uses the displayed hour.
 
-Prepare place and detail reads as their windows arrive, leading with visible rows in display order. Preserve the separate read hour of each country's side and use the first hour of a battle run for detail reads in a followed log. A pinned or browsed row requests details for its shown hour. Keep in-flight keyed reads across a new block or window arrival, and paint names and details on arrival. Distinguish loading, unrecorded and failed details. Measured flag capacity is a presentation limit, and the tooltip retains every country. A row held ahead has no box until revealed and can measure without a render on reveal or resize.
-
-Browser fixtures exercise a high-speed followed log over multiple windows and deliberately delay place replies for many rows to check request scope, response-to-paint time and render commits.
-
-[View and windows](../../ui/src/widgets/battles/BattleLogView.tsx) · [Rows](../../ui/src/widgets/battles/battleRows.ts) · [Shared log](../../ui/src/widgets/battles/BattleLog.tsx)
+[Land battles](../../crates/dashboard-land/src/products/land_battles/tail.rs) · [Naval battles](../../crates/dashboard-naval/src/products/naval/battles/tail.rs)
