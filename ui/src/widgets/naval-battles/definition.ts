@@ -5,7 +5,7 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const NAVAL_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ sortable: true, minWidth: 80, maxWidth: 90, widest: ['by 30 May', 'by 30 Aug'] }),
+  logDateColumn({ sortable: true }),
   logKindColumn({ minWidth: 26 }),
   logCountryColumn({ label: '', grow: 0 }),
   logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary', grow: 6 }),
