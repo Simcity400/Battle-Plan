@@ -7,33 +7,6 @@ export const liveKey = (...parts: readonly string[]) => parts.join('\u0000');
 
 export const noValues = (reason: string): LiveValues<never> => ({ get: () => undefined, missing: () => reason });
 
-export interface LiveClock {
-  getSnapshot(): { position: number };
-  subscribeFrame(listener: () => void): () => void;
-  subscribe?(listener: () => void): () => void;
-}
-
-export function liveAt<T>(clock: LiveClock, at: (position: number) => number, read: (hour: number) => T,
-  same: (a: T, b: T) => boolean = Object.is): Live<T> & { hour(): number } {
-  let made: { hour: number; value: T } | null = null;
-  const hour = () => at(clock.getSnapshot().position);
-  return {
-    hour,
-    read: () => {
-      const now = hour();
-      if (!made || made.hour !== now) {
-        const value = read(now);
-        made = { hour: now, value: made && same(made.value, value) ? made.value : value };
-      }
-      return made.value;
-    },
-    subscribe: changed => {
-      const stops = [clock.subscribeFrame(changed), ...clock.subscribe ? [clock.subscribe(changed)] : []];
-      return () => { for (const stop of stops) stop(); };
-    },
-  };
-}
-
 export function mapLive<T, U>(source: Live<T>, make: (value: T) => U): Live<U> {
   let made: { from: T; value: U } | null = null;
   return {

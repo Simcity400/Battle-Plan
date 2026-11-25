@@ -79,33 +79,6 @@ export function rescale(raw: string | bigint, denominator: bigint | number, deci
   return value < 0n ? -((-value + half) / whole) : (value + half) / whole;
 }
 
-export function fractionSum(values: Iterable<readonly [bigint, bigint | number]>): readonly [bigint, bigint] {
-  const totals = new Map<bigint, bigint>();
-  for (const [raw, denominator] of values) {
-    const units = BigInt(denominator);
-    if (units <= 0n) throw new RangeError('A fraction’s denominator must be positive.');
-    totals.set(units, (totals.get(units) ?? 0n) + raw);
-  }
-  const gcd = (first: bigint, second: bigint) => {
-    let a = first < 0n ? -first : first;
-    let b = second;
-    while (b) [a, b] = [b, a % b];
-    return a;
-  };
-  let sum = 0n;
-  let denominator = 1n;
-  for (const [units, raw] of totals) {
-    if (!raw) continue;
-    const common = gcd(denominator, units);
-    sum = sum * (units / common) + raw * (denominator / common);
-    denominator *= units / common;
-    const divisor = gcd(sum, denominator);
-    sum /= divisor;
-    denominator /= divisor;
-  }
-  return [sum, denominator];
-}
-
 export function formatAmount(raw: string | bigint, scale: number, digits = 2): string {
   const text = formatFixed(raw, scale, digits);
   return text.includes('.') ? text.replace(/\.?0+$/, '') : text;

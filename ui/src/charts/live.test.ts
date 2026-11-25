@@ -1,31 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LiveCell, liveAt, liveKey, liveTexts } from './live.ts';
+import { LiveCell, liveKey, liveTexts } from './live.ts';
 import { valuesOf } from '../test-support/liveValues.ts';
-
-test('a live value is made again only when the clock moves to another hour, kept while it is the same, and wakes at frames and seeks', () => {
-  let position = 10.2, made = 0;
-  const frames = new Set<() => void>(), seeks = new Set<() => void>();
-  const clock = { getSnapshot: () => ({ position }),
-    subscribeFrame: (listener: () => void) => { frames.add(listener); return () => frames.delete(listener); },
-    subscribe: (listener: () => void) => { seeks.add(listener); return () => seeks.delete(listener); } };
-  const live = liveAt(clock, at => Math.floor(at), hour => { made++; return [hour >= 12 ? 'later' : 'early']; },
-    (a, b) => a.length === b.length && a.every((v, i) => v === b[i]));
-  const first = live.read();
-  position = 10.9;
-  assert.equal(live.read(), first);
-  assert.equal(made, 1, 'the same hour reads what it made');
-  position = 11;
-  assert.equal(live.read(), first, 'another hour with the same entries keeps the array');
-  assert.equal(made, 2);
-  position = 12;
-  assert.deepEqual(live.read(), ['later']);
-  assert.equal(live.hour(), 12);
-  const stop = live.subscribe(() => {});
-  assert.equal(frames.size + seeks.size, 2, 'a frame of playback and a seek both wake the chart');
-  stop();
-  assert.equal(frames.size + seeks.size, 0);
-});
 
 test('a key the values do not hold is missing with its reason, and a set cell tells its readers only when it changes', () => {
   const values = valuesOf(new Map([[liveKey('GER', 'opinion'), 12]]), key => `no ${key.split('\u0000')[0]}`);
