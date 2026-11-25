@@ -228,6 +228,7 @@ impl ProductReads {
 struct StepProduct {
     id: u32,
     seed: Option<(u64, Hour)>,
+    pending_seed: Option<(u64, u32, Hour)>,
     read: panel::ProductReader,
     lanes: Vec<Declared>,
     wire: panel::product::Delivery,
@@ -449,6 +450,9 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 due.clear();
                 due.extend(products.keys().map(|&id| (step.last(), id)));
                 *resend = Some(step.last());
+                if step.reset() {
+                    for product in products.values_mut() { product.pending_seed = None; }
+                }
             } else if panels.resend.is_some_and(|reset| step.last() > reset) {
                 panels.resend = None;
                 let Panels { due, products, .. } = &mut *panels;
@@ -466,6 +470,29 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 } else {
                     product.seed = None;
                 }
+                if let Some((e, g, at)) = product.pending_seed {
+                    if (e, g) != (step.epoch(), page_seek) || at >= step.last() || product.last.is_some_and(|(le, lg, _)| (le, lg) == (e, g)) {
+                        product.pending_seed = None;
+                    } else {
+                        let head = get(&owner).head(Instant::now()).clamp(at, step.last());
+                        if head < step.last() {
+                            let Some(change) = product.read_at(page_seek, step.epoch(), head, true, &cancelled, Some(panel::ProductStep { step, lanes, held: None, wake: Some(&wake) })) else {
+                                pending.push(id);
+                                continue;
+                            };
+                            if !current() { held_over.push(id); continue; }
+                            let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
+                            if reads.current(step.epoch(), page_seek) && current()
+                                && let Some((kind, body)) = change {
+                                push.offer_from(session, PANEL, panel::dated::encoded(clock, route, page_seek, id, head, kind, body));
+                                product.wire.commit();
+                            }
+                            product.pending_seed = None;
+                        } else {
+                            product.pending_seed = None;
+                        }
+                    }
+                }
                 if !product.joined && let Some((epoch, g, mut h)) = product.last && (epoch, g) == (step.epoch(), page_seek) && !step.reset() {
                     while h.saturating_add(quantum) < step.first() {
                         h += quantum;
@@ -479,6 +506,12 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 if !current() { held_over.push(id); continue; }
                 let joining = !product.joined;
                 let Some(change) = product.read_at(page_seek, step.epoch(), step.last(), step.reset(), &cancelled, Some(panel::ProductStep { step, lanes, held: None, wake: Some(&wake) })) else {
+                    if product.last.is_none_or(|(e, g, _)| (e, g) != (step.epoch(), page_seek))
+                        && !product.pending_seed.is_some_and(|(e, g, _)| (e, g) == (step.epoch(), page_seek))
+                    {
+                        product.pending_seed = Some((step.epoch(), page_seek, step.last()));
+                        product.joined = false;
+                    }
                     pending.push(id);
                     continue;
                 };
@@ -636,7 +669,7 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
                 self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
                 let seed = Some((self.playhead().epoch(), self.playhead().head(Instant::now())));
                 let host = Some(HostCells { follow: self.follow.clone(), held: self.held.clone() });
-                let product = StepProduct { id, seed, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), class, host, followed: None, input: None, resend: false };
+                let product = StepProduct { id, seed, pending_seed: None, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), class, host, followed: None, input: None, resend: false };
                 panels.due.insert((Hour::MIN, id));
                 panels.products.insert(id, product);
                 self.needs_seed.store(true, Ordering::Release);
@@ -773,7 +806,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let (release, wait_release) = std::sync::mpsc::channel();
     let wait_release = Mutex::new(wait_release);
     let mut product = StepProduct {
-        id: 4, lanes: Vec::new(), seed: Some((1, 12)), last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, lanes: Vec::new(), seed: Some((1, 12)), pending_seed: None, last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
