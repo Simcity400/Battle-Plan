@@ -529,6 +529,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
       slots: folded.slots,
       windowOffset: paged.windowOffset,
       totalRows: paged.totalRows,
+      ...(paged.gapBefore?.length ? { gapBefore: paged.gapBefore } : {}),
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}),

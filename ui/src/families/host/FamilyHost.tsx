@@ -564,11 +564,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     };
     const asked = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
     const held = requestedWindowRef.current;
-    const rowWindow = asked && held && asked.first === held.first && asked.count === held.count ? held : asked;
+    const rowWindow = asked && held && asked.first === held.first && asked.count === held.count && asked.dataFirst === held.dataFirst && asked.dataCount === held.dataCount ? held : asked;
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, rowWindow?.first, rowWindow?.count, cur.settings, expansionRef.current, cur.theme];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, rowWindow?.first, rowWindow?.count, rowWindow?.dataFirst, rowWindow?.dataCount, cur.settings, expansionRef.current, cur.theme];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;

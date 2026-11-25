@@ -5,6 +5,7 @@ import type { FamilyTableBinding } from './laneView.ts';
 import { buildColumnLayouts, layoutFamilyTable, tableRowWindow } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, tableRank, type TableColumnSpec, type TableModel } from './model.ts';
 import { combinedPaneRows, paneGeometry, resolvePanes } from './panes.ts';
+import { displayWindowToData } from './rowSource.ts';
 import { encodeTableSettings, MEDIA_ROW_HEIGHT, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 interface TableWidthsField {
@@ -15,6 +16,7 @@ interface TableWidthsField {
 interface TableInfoField {
   readonly count: number;
   readonly totalHeight: number;
+  readonly gapBefore?: readonly number[];
 }
 
 export interface TableChromeState {
@@ -86,8 +88,13 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   rowWindow: (viewport, settings, fields) => {
     if (!settings) return null;
     const media = (fields.meta as { readonly rowHeightMode?: string } | undefined)?.rowHeightMode === 'media';
-    const count = (fields.table as TableInfoField | undefined)?.count ?? Number.POSITIVE_INFINITY;
-    return tableRowWindow(count, null, (media ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height);
+    const table = fields.table as TableInfoField | undefined;
+    const count = table?.count ?? Number.POSITIVE_INFINITY;
+    const win = tableRowWindow(count, null, (media ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height);
+    const gapBefore = table?.gapBefore;
+    if (!gapBefore || gapBefore.length === 0) return win;
+    const data = displayWindowToData(win, gapBefore, Number.isFinite(count) ? Math.max(0, count - gapBefore.length) : undefined);
+    return { ...win, dataFirst: data.first, dataCount: data.count };
   },
   deriveAuditRows: (model, _hour, { settings, expanded, viewport, fields }) => {
     if (!settings) return [];

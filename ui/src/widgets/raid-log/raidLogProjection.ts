@@ -328,7 +328,7 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
     }
     const boundary = newIdentityBoundary();
     let nextPrepChange = Infinity;
-    const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
+    const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
@@ -362,6 +362,7 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
       dateGrouped: true,
       windowOffset,
       totalRows,
+      ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt: Math.min(boundary.next, nextPrepChange),
       rowTimeBoundaries: false,
       titleSummary,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
@@ -85,6 +86,7 @@ import {
   trackGate,
   type FrozenGate,
 } from '../sources.ts';
+import { resolveSelectedCountryRefs } from '../table/logHelpers.ts';
 import {
   DEFAULT_TAIL_PAGE_SIZE,
   validateGenericTailReply,
@@ -481,9 +483,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [isFilter, widget.countries, groups.data],
   );
 
+  const selectedSlots = useMemo(() => {
+    if (!isFilter && !isMulti) return undefined;
+    const identities = groups.data && Array.isArray(groups.data.countryIdentities)
+      ? countryIdentityIndex(groups.data.countryIdentities)
+      : null;
+    return resolveSelectedCountryRefs(widget.countries, selectedFallback, identities);
+  }, [isFilter, isMulti, widget.countries, selectedFallback, groups.data]);
+
   const countriesState = useMemo<DeclaredCountryState>(() => ({
     all: widget.countries.kind === 'all',
     tags: effectiveMulti?.tags ?? NO_TAGS,
+    ...(selectedSlots !== undefined ? { selectedSlots } : {}),
     holders,
     every: allTags,
     top: effectiveMulti?.top ?? null,
@@ -498,7 +509,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),

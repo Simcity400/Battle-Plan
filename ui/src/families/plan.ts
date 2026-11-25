@@ -18,6 +18,7 @@ import type {
   ArtProvenance as GeneratedArtProvenance,
   ArtResolution as GeneratedArtResolution,
   CountryFlagSize,
+  CountryRef,
   HourSpan,
   MissingSpan,
 } from '../generated/dashboard';
@@ -367,6 +368,7 @@ export interface DeclaredCountryFilter {
 export interface DeclaredCountryState {
   readonly all: boolean;
   readonly tags: readonly string[];
+  readonly selectedSlots?: readonly CountryRef[];
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly every: readonly string[];
   readonly top: number | null;
