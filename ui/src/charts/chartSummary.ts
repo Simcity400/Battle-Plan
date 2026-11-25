@@ -2,10 +2,8 @@ import type { PlotFrame } from './frame.ts';
 import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
 import { drawLine, tracePath } from './draw.ts';
-import { ordinates } from './linePick.ts';
-import { curveSegments, extentOf, heldSegments, runAt } from './series.ts';
+import { extentOf, runAt } from './series.ts';
 import type { PathCommand, Point, Run } from './series.ts';
-import type { ChartPick } from './TimeChart';
 import { addStackAmount, stackEdges } from './stack.ts';
 import type { CompactStackModel } from './stack';
 
@@ -263,37 +261,10 @@ function columnGeometryFromStream(frame: PlotFrame, stream: BucketStreamReader, 
   return { paths, dots, end: end && Number.isFinite(end.y) ? end : null };
 }
 
-function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean, before = Infinity): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
-  return columnGeometryFromStream(frame, bucketsStream(summary.buckets), held, summary.to, before);
-}
-
 function shapeEnd(frame: PlotFrame, shape: SummaryShape): Point | null {
   if (!shape.end) return null;
   const end = { x: frame.toX(shape.end[0]), y: frame.toY(shape.end[1]) };
   return Number.isFinite(end.y) ? end : null;
-}
-
-function shapeCommands(frame: PlotFrame, shape: SummaryShape, from: number, to: number): PathCommand[] {
-  const path: PathCommand[] = [];
-  for (let vertex = from; vertex < to; vertex++) {
-    path.push([vertex === from ? 'M' : 'L', frame.toX(shape.points[2 * vertex]), frame.toY(shape.points[2 * vertex + 1])]);
-  }
-  return path;
-}
-
-export function summaryGeometry(frame: PlotFrame, summary: ChartSummary, held = false, until: number | null = null):
-  { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
-  if (!summaryFits(frame, summary, until)) return { paths: [], dots: [], end: null };
-  const runs = exactRuns(summary);
-  if (runs) {
-    const segments = (held ? heldSegments : curveSegments)(runs, frame.x[0], summary.to, frame.toX, frame.toY);
-    return { paths: segments.map(segment => segment.path), dots: [], end: segments.at(-1)?.points.at(-1) ?? null };
-  }
-  const shape = summaryShape(summary, held), paths: PathCommand[][] = [], dots: Point[] = [];
-  if (!placeable(frame, shape)) return columnGeometry(frame, summary, held);
-  for (let line = 0; line + 1 < shape.starts.length; line++) paths.push(shapeCommands(frame, shape, shape.starts[line], shape.starts[line + 1]));
-  for (let at = 0; at < shape.dots.length; at += 2) dots.push({ x: frame.toX(shape.dots[at]), y: frame.toY(shape.dots[at + 1]) });
-  return { paths, dots, end: shapeEnd(frame, shape) };
 }
 
 export function drawApproximateSpans(ctx: Canvas2D, frame: PlotFrame,
@@ -388,7 +359,7 @@ function lineEnd(ctx: Canvas2D, tokens: ChartTokens, end: Point | null, options:
 }
 
 function strokeColumns(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens,
-  geometry: ReturnType<typeof columnGeometry>, color: string, options: SummaryLineOptions): Point | null {
+  geometry: ReturnType<typeof columnGeometryFromStream>, color: string, options: SummaryLineOptions): Point | null {
   const baseline = lineStyle(ctx, frame, tokens, color, options);
   for (const path of geometry.paths) {
     if (options.area) {
@@ -453,52 +424,6 @@ function lower(count: number, before: (index: number) => boolean): number {
   let low = 0, high = count;
   while (low < high) { const middle = (low + high) >> 1; if (before(middle)) low = middle + 1; else high = middle; }
   return low;
-}
-
-function shapeOrdinates(frame: PlotFrame, shape: SummaryShape, x: number, targetY: number): number[] {
-  const { points, starts } = shape, lines = starts.length - 1;
-  const at = (vertex: number) => frame.toX(points[2 * vertex]);
-  const ys: number[] = [];
-  for (let line = lower(lines, index => at(starts[index + 1] - 1) < x - 1e-6); line < lines; line++) {
-    const from = starts[line], to = starts[line + 1];
-    if (at(from) > x + 1e-6) break;
-    const first = Math.max(from, from + lower(to - from, index => at(from + index) < x - 1e-6) - 1);
-    const past = from + lower(to - from, index => at(from + index) <= x + 1e-6);
-    ys.push(...ordinates(shapeCommands(frame, shape, first, Math.min(to, past + 1)), x, targetY));
-  }
-  return ys;
-}
-
-export function pickSummaryLines(lines: readonly { key: string; summary: ChartSummary; held?: boolean }[], hour: number,
-  known: ReadonlySet<string>, context?: ChartPick): string[] {
-  if (!context?.frame || hour < Math.floor(context.frame.x[0]) || hour > Math.min(context.frame.x[1], context.until ?? Infinity)) return [];
-  const frame = context.frame, distances = new Map<string, number>();
-  const x = context.point?.x ?? frame.toX(Math.max(frame.x[0], hour));
-  const targetY = context.point?.y ?? frame.plotTop + frame.plotHeight / 2;
-  for (const line of lines) {
-    if (!known.has(line.key)) continue;
-    const runs = exactRuns(line.summary);
-    if (runs && !runAt(runs, hour)) continue;
-    const ys: number[] = [];
-    const shape = !runs && summaryFits(frame, line.summary, context.until) ? summaryShape(line.summary, line.held ?? false) : null;
-    if (shape && placeable(frame, shape)) {
-      const dots = shape.dots;
-      ys.push(...shapeOrdinates(frame, shape, x, targetY));
-      for (let at = 2 * lower(dots.length / 2, index => frame.toX(dots[2 * index]) < x - 1); at < dots.length && frame.toX(dots[at]) <= x + 1; at += 2)
-        ys.push(frame.toY(dots[at + 1]));
-    } else {
-      const geometry = summaryGeometry(frame, line.summary, line.held ?? false, context.until);
-      ys.push(...geometry.paths.flatMap(path => ordinates(path, x, targetY)));
-      for (const point of geometry.dots) if (Math.abs(point.x - x) <= 1) ys.push(point.y);
-    }
-    const visible = ys.filter(y => Number.isFinite(y) && y >= frame.plotTop && y <= frame.plotTop + frame.plotHeight);
-    if (!visible.length) continue;
-    distances.set(line.key, context.point ? visible.reduce((distance, y) => Math.min(distance, Math.abs(y - context.point!.y)), Infinity) : 0);
-  }
-  if (!context.point) return [...distances.keys()];
-  let nearest = Infinity;
-  for (const distance of distances.values()) nearest = Math.min(nearest, distance);
-  return [...distances].filter(([, distance]) => distance <= nearest + 2).map(([key]) => key);
 }
 
 export function summaryStack(parts: readonly ChartSummary[], total?: ChartSummary) {

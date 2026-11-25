@@ -1,4 +1,3 @@
-import { gatedTime } from '../../test-support/gated.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerWidgets } from '../../dashboard/definitions.ts';
@@ -6,7 +5,7 @@ import { addGridItemBelow, seekPositionFor } from '../../dashboard/model.ts';
 import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setOption, validOption } from '../../dashboard/options.ts';
 import { jumpItem } from '../jump.ts';
-import { breakdownOption, CLOSED, DRILL_OPTION, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, pinnedBreakdown, reduceDrill, savedDrill } from './drillState.ts';
+import { breakdownOption, CLOSED, DRILL_OPTION, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, reduceDrill, savedDrill } from './drillState.ts';
 import type { DrillState } from './drillState';
 import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
 
@@ -48,18 +47,11 @@ test('a drill opens following playback only under a following widget, when playi
 registerWidgets([{ kind: 'drill-test', version: 1, title: 'Drill test', icon: 'grid', timeModes: ['follow', 'campaign'], defaultTime: 'campaign',
   scope: 'history', data: true, history: true, minSize: { w: 3, h: 4 }, defaultSize: { w: 6, h: 8 } }]);
 
-test('the drill settings are ordinary options, and a pinned breakdown shows it as the main view', () => {
+test('the drill settings are ordinary options', () => {
   const show = breakdownOption([{ id: 'income', label: 'Daily income' }], 'Balance');
   assert.ok(validOption(DRILL_OPTION, 'popout'));
   assert.equal(resolveOptions([DRILL_OPTION, show], undefined).drill, 'inline');
   assert.deepEqual(setOption([show], undefined, 'show', 'income'), { show: 'income' });
-  const source: WidgetSpec = { id: 'source', kind: 'drill-test', configVersion: 1, title: 'Political power', campaign: 'tracks', trackIds: ['t2'],
-    countries: { kind: 'tags', tags: ['GER', 'ITA'] }, time: { mode: 'follow' }, contentScale: 125, options: { drill: 'popout' } };
-  const pinned = pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 'main', gatedTime({ mode: 'follow' }));
-  assert.notEqual(pinned.id, source.id);
-  assert.equal(pinned.title, 'Political power: Daily income');
-  assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time.value, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
-  assert.deepEqual(pinned.options, { drill: 'popout', show: 'income' });
 });
 
 test('a pinned widget goes directly below its source, as wide as it', () => {

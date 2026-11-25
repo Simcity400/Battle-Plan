@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
+import { drawApproximateSpans, drawLineSummary } from './chartSummary.ts';
 import { drawBands, drawLine } from './draw.ts';
-import { pickLines } from './linePick.ts';
 import { extentOf } from './series.ts';
 import type { Run } from './series.ts';
 import type { ChartBucket, ChartSummary } from './chartSummary.ts';
@@ -23,17 +22,6 @@ function canvas() {
   } as unknown as CanvasRenderingContext2D };
 }
 const summary: ChartSummary = { from: 0, to: 50_000, width: 100, buckets: [bucket] };
-
-test('summary picks require exact known actors and preserve overlaps and gaps', () => {
-  const lines = ['A', 'B'].map(key => ({ key, summary }));
-  const context = { frame, until: null, point: { x: frame.toX(40_000), y: frame.toY(1) } };
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(), context), []);
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A']), context), ['A']);
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A', 'B']), context), ['A', 'B']);
-  const broken = { ...summary, buckets: [{ ...bucket, hasBreak: true }] };
-  assert.deepEqual(pickSummaryLines([{ key: 'A', summary: broken }], 40_000, new Set(['A']), context), []);
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A']), { ...context, until: 30_000 }), []);
-});
 
 test('summary draws chronological extrema with held direction using width-sized geometry', () => {
   const { context, paths } = canvas();
@@ -108,19 +96,6 @@ test('dense summary extents keep only the buckets that reach the hours asked for
   assert.deepEqual(extentOfSummary(retained, 999.5, 2200), [5, 900], 'a bucket partly in view keeps its whole envelope');
   assert.deepEqual(extentOfSummary(retained, 50, 999), [5, 900]);
   assert.equal(extentOfSummary(retained, 2001, 2200), null);
-});
-
-test('exact summary picks follow legacy curves and held paths with overlaps, gaps and clipping', () => {
-  const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-5, 30], false);
-  for (const held of [false, true]) for (const until of [null, 5.5, 9.25, 18.5]) {
-    const lines = [exactSource, exactSource.map(run => ({ ...run, value: run.value + 2 })), exactSource].map((runs, index) => ({ key: String(index), runs, held }));
-    const summaries = lines.map(line => ({ ...line, summary: hourlySummary(line.runs, frame.x[0], until ?? frame.x[1], Math.ceil(frame.plotWidth)) }));
-    for (const hour of [2, 3, 4, 5, 7, 9, 10, 12, 18]) for (const point of [undefined, { x: frame.toX(hour + 0.4), y: frame.toY(18) }, { x: frame.toX(hour), y: frame.toY(8) }]) {
-      const context = { frame, until, point };
-      assert.deepEqual(pickSummaryLines(summaries, hour, new Set(lines.map(line => line.key)), context), pickLines(lines, hour, context));
-      assert.deepEqual(pickSummaryLines(summaries, hour, new Set(), context), []);
-    }
-  }
 });
 
 test('gaps and identity breaks never become a connecting summary stroke', () => {
@@ -243,12 +218,9 @@ test('a frame that cannot place a value draws that column as its placed dots, ne
   const column = (first: number, low: number): ChartBucket => ({ firstHour: first, lastHour: first + 9, firstValue: 0.5, lastValue: 0.5, lastValueHour: first,
     minHour: first + 2, minValue: low, maxHour: first, maxValue: 0.5, firstBreak: false, hasBreak: false });
   const summary: ChartSummary = { from: 0, to: 29, width: 100, buckets: [column(0, 0.25), column(10, 0), column(20, 0.25)] };
-  const geometry = summaryGeometry(frame, summary);
-  assert.equal(geometry.paths.length, 2, 'the unplaced column joins neither neighbour');
-  assert.ok(geometry.paths.flat().every(command => command.slice(1).every(value => Number.isFinite(value))));
-  assert.equal(geometry.dots.length, 3, 'its placed corners stay as dots');
   const drawn = canvas();
-  drawLineSummary(drawn.context, frame, tokens, summary, '#123');
+  drawLineSummary(drawn.context, frame, tokens, summary, '#123', false, null, { endDot: false });
   assert.equal(drawn.paths.length, 2);
   assert.ok(drawn.paths.flat(2).every(value => Number.isFinite(value)));
+  assert.equal(drawn.dots.length, 3, 'its placed corners stay as dots');
 });

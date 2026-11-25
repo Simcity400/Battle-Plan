@@ -161,42 +161,6 @@ export interface CompactStackModel {
   breakBefore: boolean[];
 }
 
-export function compactStack(bands: readonly (readonly StackRun[])[]): CompactStackModel {
-  const events = new Map<number, { band: number; value: number | null; fresh: boolean }[]>();
-  const add = (hour: number, band: number, value: number | null, fresh = false) => {
-    const rows = events.get(hour) ?? [];
-    rows.push({ band, value, fresh });
-    events.set(hour, rows);
-  };
-  bands.forEach((runs, band) => {
-    for (const run of runs) {
-      add(run.firstHour, band, run.value, breaksBefore(run));
-      if (!events.has(run.lastHour)) events.set(run.lastHour, []);
-      add(run.lastHour + 1, band, null);
-    }
-  });
-  const hours = [...events.keys()].sort((a, b) => a - b);
-  const values: (number | null)[] = bands.map(() => null);
-  const model: CompactStackModel = { bands, hours, bounds: [], breakBefore: [] };
-  let known = 0;
-  const up: StackSum = { sum: 0, error: 0 }; const down: StackSum = { sum: 0, error: 0 };
-  for (const hour of hours) {
-    const changes = events.get(hour)!;
-    changes.sort((a, b) => Number(a.value !== null) - Number(b.value !== null));
-    let fresh = false;
-    for (const change of changes) {
-      const old = values[change.band];
-      if (old !== null) { known--; addStackAmount(old >= 0 ? up : down, -old); }
-      values[change.band] = change.value;
-      if (change.value !== null) { known++; addStackAmount(change.value >= 0 ? up : down, change.value); }
-      fresh ||= change.fresh;
-    }
-    model.bounds.push(bands.length && known === bands.length ? [down.sum + down.error, up.sum + up.error] : null);
-    model.breakBefore.push(fresh);
-  }
-  return model;
-}
-
 export function forEachCompactStackSegment(model: CompactStackModel, from: number, to: number, minHours: number,
   visit: (segment: StackSegment) => void, sample?: (hour: number) => Edge[]): void {
   if (!(to >= from)) return;
