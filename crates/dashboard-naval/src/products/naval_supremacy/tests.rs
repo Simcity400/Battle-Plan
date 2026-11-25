@@ -60,7 +60,7 @@ fn a_viewers_row_comes_first_then_the_every_viewer_row_then_zeros_and_a_refusal_
     };
     let mut notes = Refusals::default();
     let mut pieces = BTreeMap::new();
-    region_runs(&history, viewer, &[(0, 120), (1, 160), (2, 170)], &BTreeSet::from([3]), &sea, &mut notes, &mut pieces);
+    region_runs(&history, viewer, &[(0, 120), (1, 160), (2, 170)], &BTreeSet::from([3]), &sea, &mut notes, &mut HashMap::new(), &mut pieces);
     let at = |region: u32, day: u32| pieces[&region].iter().find(|run: &&(u32, u32, Values)| run.0 <= day && day <= run.1).unwrap().2.clone();
     let first = BTreeMap::from([1, 2, 3, 4].map(|region| (region, at(region, 0))));
     assert_eq!((first[&1].friendly, first[&1].enemy, first[&1].own), (Some(300), Some(100), Some(50)), "the viewer's own row, not the every-viewer row");
@@ -265,7 +265,7 @@ fn a_region_a_truncated_hour_did_not_reach_is_not_recorded_with_why_never_zero()
     };
     let sea = SeaContent { sea: Ok(BTreeSet::from([1, 2])), land: Ok(BTreeSet::new()), all: BTreeSet::from([1, 2]), minima: (1..=2).map(|region| (region, Ok(1_000))).collect(), ratio: Ok(200_000), notes: Vec::new() };
     let mut pieces = BTreeMap::new();
-    region_runs(&history, viewer, &[(0, 23), (1, 47), (2, 71)], &BTreeSet::new(), &sea, &mut Refusals::default(), &mut pieces);
+    region_runs(&history, viewer, &[(0, 23), (1, 47), (2, 71)], &BTreeSet::new(), &sea, &mut Refusals::default(), &mut HashMap::new(), &mut pieces);
     let at = |region: u32, day: u32| pieces[&region].iter().find(|run: &&(u32, u32, Values)| run.0 <= day && day <= run.1).unwrap().2.clone();
     assert_eq!(at(2, 1).friendly, Some(60), "the truncated read reached region 2: its value stands");
     let unread = at(1, 1);
@@ -273,4 +273,31 @@ fn a_region_a_truncated_hour_did_not_reach_is_not_recorded_with_why_never_zero()
     assert!(unread.missing.is_some_and(|reason| !reason.is_empty()));
     assert_eq!(at(1, 2).friendly, Some(50));
     assert_eq!(activity_on(&runs(pieces.clone())[&1], 1), None, "an unread region leaves the rank unproven");
+}
+
+#[test]
+fn a_viewers_read_continued_by_a_later_day_is_the_read_made_whole() {
+    let viewer = 7_u32;
+    let key = |holder: u32, region: u32| u128::from(holder) << 32 | u128::from(region);
+    let n = Cell::Number;
+    let row = |friendly, refusal: u32| Some(Box::from([n(friendly), n(1), n(friendly), n(1), n(0), Cell::Text(refusal), Cell::Text(0)]));
+    let step = |hour, cells| lanes::Step { hour, cells };
+    let history = lanes::History {
+        columns: COLUMNS.to_vec(),
+        to: 95,
+        texts: vec![Box::from(&b""[..]), Box::from(&b"Naval current owner identity is unresolved"[..])],
+        keys: vec![(key(viewer, 1), vec![step(0, row(40, 1)), step(60, row(50, 1))]), (key(viewer, 2), vec![step(0, row(30, 0))])],
+        statuses: vec![lanes::StatusRun { first: 0, last: 95, status: Status::Complete }],
+        ..Default::default()
+    };
+    let sea = SeaContent { sea: Ok(BTreeSet::from([1, 2])), land: Ok(BTreeSet::new()), all: BTreeSet::from([1, 2]), minima: (1..=2).map(|region| (region, Ok(1_000))).collect(), ratio: Ok(200_000), notes: Vec::new() };
+    let days = [(0, 23), (1, 47), (2, 71), (3, 95)];
+    let read = |parts: &[&[(u32, i32)]]| {
+        let (mut notes, mut made, mut pieces) = (Refusals::default(), HashMap::new(), BTreeMap::new());
+        for days in parts {
+            region_runs(&history, viewer, days, &BTreeSet::from([1, 2]), &sea, &mut notes, &mut made, &mut pieces);
+        }
+        (runs(pieces), notes.lines("naval supremacy fields"))
+    };
+    assert_eq!(read(&[&days[..2], &days[2..]]), read(&[&days]), "a refusal carried across the junction is noted once, as in one read");
 }

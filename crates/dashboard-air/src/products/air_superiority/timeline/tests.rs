@@ -358,3 +358,52 @@ fn a_known_side_beside_an_unknown_one_is_not_a_leader() {
     let close = AirDaySides::new(vec![AirDayPart { side: 0, tag: "GER".into(), friendly: (big + 1).to_string() }, AirDayPart { side: 1, tag: "ENG".into(), friendly: big.to_string() }], vec![], vec![], vec![], false);
     assert_eq!(close.lead, AirLead::Leading { side: 0, share_bp: 5000 }, "one point ahead at 2^53 leads, compared in exact integers");
 }
+
+#[test]
+fn a_history_extended_by_later_days_is_the_history_composed_whole() {
+    let world = world();
+    let index = index();
+    let holders = holders();
+    let cancelled = AtomicBool::new(false);
+    let params = params(AirMode::Sides, None, false, None);
+    let theatres: Vec<Option<Result<HashSet<u32>, ()>>> = (0..DAYS).map(|day| if day == 2 { None } else { Some(Ok([1, 2, 3, 9].into())) }).collect();
+    let days_from = |from: usize, to: usize| -> Vec<Option<DayRead>> {
+        reads(&world, LAST).into_iter().enumerate().filter(|(day, _)| (from..to).contains(day)).map(|(_, read)| read).collect()
+    };
+    let compose = |from: usize, to: usize, regions: &[u32], dictionary: &mut Dictionary| {
+        let days = days_from(from, to);
+        let rows = Held(world[from..to].to_vec());
+        let timeline = Days { index: &index, holders: &holders, days: &days, rows: &rows, params: &params, theatres: Some(&theatres[from..to]) };
+        let mut regions = regions.to_vec();
+        regions.push(ABSENT);
+        let Composition { mut cells, excluded, viewpoints } = timeline.compose(&regions, &index, dictionary, &mut crate::products::air_superiority::NullSideResolver, &cancelled).unwrap();
+        let absent = cells.pop().unwrap();
+        regions.pop();
+        AirHistory {
+            through: (to as i32) * DAY - 1,
+            hours: days.iter().map(|read| read.as_ref().map(|read| read.hour)).collect(),
+            excluded,
+            viewpoints,
+            theatres: Some(theatres[from..to].to_vec()),
+            dictionary: dictionary.clone(),
+            regions: regions.into_iter().zip(cells).collect(),
+            absent,
+            unread: Vec::new(),
+            used: 0,
+        }
+    };
+    let mut dictionary = Dictionary::default();
+    let whole = compose(0, DAYS, &[1, 2, 3, 4, 9], &mut dictionary);
+    let mut dictionary = Dictionary::default();
+    let mut held = compose(0, 6, &[1, 2, 3, 9], &mut dictionary);
+    let next = compose(6, DAYS, &[1, 2, 3, 4, 9], &mut dictionary);
+    held.join(next);
+    assert_eq!(held.regions[&4][..2], [(2, Some(AirDayCell::Reason { reason: "outside-theatres".into() })), (1, Some(AirDayCell::Reason { reason: "theatres-not-recorded".into() }))], "a region first scored later takes the earlier days of a region without a score, outside the theatres it is not in");
+    let shown = |history: &AirHistory| {
+        let cells = history.regions.values().cloned().chain([history.absent.clone()]).collect();
+        finish(Composition { cells, excluded: history.excluded.clone(), viewpoints: history.viewpoints.clone() }, &history.hours, &history.dictionary.sides, AirMode::Sides)
+    };
+    let (joined, whole) = (shown(&held), shown(&whole));
+    assert_eq!(joined.cells, whole.cells);
+    assert_eq!((joined.sides, joined.legend, joined.viewpoint, joined.excluded, joined.readouts), (whole.sides, whole.legend, whole.viewpoint, whole.excluded, whole.readouts), "sides are numbered as the whole view meets them");
+}

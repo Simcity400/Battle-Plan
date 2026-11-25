@@ -394,12 +394,17 @@ impl<'a> Days<'a> {
     }
 
     pub(crate) fn shown_with_resolver(&self, regions: &[u32], index: &AirIndex, resolver: &mut dyn SideResolver, cancelled: &AtomicBool) -> io::Result<Shown> {
-        let keep = self.keep();
         let mut dictionary = Dictionary::default();
+        let composed = self.compose(regions, index, &mut dictionary, resolver, cancelled)?;
+        let hours: Vec<Option<i32>> = self.days.iter().map(|day| day.as_ref().map(|day| day.hour)).collect();
+        Ok(finish(composed, &hours, &dictionary.sides, self.params.mode.unwrap_or_default()))
+    }
+
+    fn compose(&self, regions: &[u32], index: &AirIndex, dictionary: &mut Dictionary, resolver: &mut dyn SideResolver, cancelled: &AtomicBool) -> io::Result<Composition> {
+        let keep = self.keep();
         let mut cells: Vec<Vec<(u32, Option<AirDayCell>)>> = vec![Vec::new(); regions.len()];
         let mut excluded = vec![0u32; self.days.len()];
-        let mut viewpoint = None;
-        let mut latest_by_key: BTreeMap<String, (i32, u32)> = BTreeMap::new();
+        let mut viewpoints = vec![DayViewpoint::Keep; self.days.len()];
         self.each(regions, 0..self.days.len(), cancelled, |day, composed| {
             for (row, &region) in cells.iter_mut().zip(regions) {
                 let cell = composed.map(|composed| match self.theatre_reason(day, region) {
@@ -408,47 +413,129 @@ impl<'a> Days<'a> {
                         dictionary.index(index, composed.epoch, composed.hour, composed.sides, position, resolver)
                     }),
                 });
-                if let (Some(composed), Some(AirDayCell::Sides(sides_cell))) = (composed, &cell) {
-                    for side in sides_cell.parts.iter().map(|part| part.side).chain(sides_cell.unknown.iter().copied()).chain(sides_cell.no_air_object.iter().copied()) {
-                        let key = &dictionary.sides[side as usize].key;
-                        match latest_by_key.get_mut(key) {
-                            Some(entry) if composed.hour >= entry.0 => *entry = (composed.hour, side),
-                            Some(_) => {}
-                            None => {
-                                latest_by_key.insert(key.clone(), (composed.hour, side));
-                            }
-                        }
-                    }
-                }
-                match row.last_mut() {
-                    Some((repeat, held)) if *held == cell => *repeat += 1,
-                    _ => row.push((1, cell)),
-                }
+                push_days(row, (1, cell));
             }
             if let Some(composed) = composed {
                 if matches!(self.params.mode.unwrap_or_default(), AirMode::Sides) {
                     excluded[day] = composed.compose.excluded() as u32;
                 }
-                match self.view(composed.sides, composed.hour) {
-                    View::Side(Some(position)) => {
-                        viewpoint = Some(dictionary.index(index, composed.epoch, composed.hour, composed.sides, position, resolver));
-                    }
-                    View::Side(None) if composed.has_roster => viewpoint = None,
-                    _ => {}
-                }
+                viewpoints[day] = match self.view(composed.sides, composed.hour) {
+                    View::Side(Some(position)) => DayViewpoint::Side(dictionary.index(index, composed.epoch, composed.hour, composed.sides, position, resolver)),
+                    View::Side(None) if composed.has_roster => DayViewpoint::Clear,
+                    _ => DayViewpoint::Keep,
+                };
             }
         })?;
-        let legend = match self.params.mode.unwrap_or_default() {
-            AirMode::Sides => latest_by_key.into_values().map(|(_, side)| side).collect(),
-            AirMode::Viewpoint => viewpoint.into_iter().collect(),
-        };
-        let last_hour = self.days.last().and_then(|day| day.as_ref().map(|day| day.hour));
-        let readouts = cells
-            .iter()
-            .map(|runs| readout_of(runs.last().and_then(|(_, cell)| cell.as_ref()), last_hour))
-            .collect();
-        Ok(Shown { cells, excluded, sides: dictionary.sides, legend, viewpoint, readouts })
+        Ok(Composition { cells, excluded, viewpoints })
     }
+}
+
+type DayRuns = Vec<(u32, Option<AirDayCell>)>;
+
+fn push_days(row: &mut DayRuns, (count, cell): (u32, Option<AirDayCell>)) {
+    match row.last_mut() {
+        Some((repeat, held)) if *held == cell => *repeat += count,
+        _ => row.push((count, cell)),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DayViewpoint {
+    Keep,
+    Clear,
+    Side(u32),
+}
+
+struct Composition {
+    cells: Vec<DayRuns>,
+    excluded: Vec<u32>,
+    viewpoints: Vec<DayViewpoint>,
+}
+
+fn renumber(cell: &mut AirDayCell, order: &[u32]) {
+    let at = |side: &mut u32| *side = order[*side as usize];
+    match cell {
+        AirDayCell::Reason { .. } => {}
+        AirDayCell::Sides(sides) => {
+            sides.parts.iter_mut().for_each(|part| at(&mut part.side));
+            sides.viewpoints.iter_mut().for_each(|(side, _)| at(side));
+            sides.unknown.iter_mut().for_each(at);
+            sides.no_air_object.iter_mut().for_each(at);
+            if let AirLead::Leading { side, .. } = &mut sides.lead {
+                at(side);
+            }
+        }
+        AirDayCell::View { side, .. } => side.iter_mut().for_each(at),
+    }
+}
+
+fn finish(composition: Composition, hours: &[Option<i32>], sides: &[AirSide], mode: AirMode) -> Shown {
+    let Composition { mut cells, excluded, viewpoints } = composition;
+    let mut order: Vec<Option<u32>> = vec![None; sides.len()];
+    let mut placed: Vec<u32> = Vec::with_capacity(sides.len());
+    let mut meet = |side: u32| {
+        if order[side as usize].is_none() {
+            order[side as usize] = Some(placed.len() as u32);
+            placed.push(side);
+        }
+    };
+    let mut latest_by_key: BTreeMap<&str, (i32, u32)> = BTreeMap::new();
+    let mut viewpoint = None;
+    let mut cursors = vec![(0usize, 0u32); cells.len()];
+    for (day, hour) in hours.iter().enumerate() {
+        for (row, cursor) in cells.iter().zip(cursors.iter_mut()) {
+            let Some((count, cell)) = row.get(cursor.0) else { continue };
+            cursor.1 += 1;
+            if cursor.1 == *count {
+                *cursor = (cursor.0 + 1, 0);
+            }
+            match cell {
+                Some(AirDayCell::Sides(cell)) => {
+                    cell.parts.iter().map(|part| part.side).chain(cell.viewpoints.iter().map(|(side, _)| *side)).chain(cell.unknown.iter().copied()).chain(cell.no_air_object.iter().copied()).for_each(&mut meet);
+                    if let Some(hour) = *hour {
+                        for side in cell.parts.iter().map(|part| part.side).chain(cell.unknown.iter().copied()).chain(cell.no_air_object.iter().copied()) {
+                            let key = sides[side as usize].key.as_str();
+                            match latest_by_key.get_mut(key) {
+                                Some(entry) if hour >= entry.0 => *entry = (hour, side),
+                                Some(_) => {}
+                                None => {
+                                    latest_by_key.insert(key, (hour, side));
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(AirDayCell::View { side: Some(side), .. }) => meet(*side),
+                _ => {}
+            }
+        }
+        match viewpoints[day] {
+            DayViewpoint::Side(side) => {
+                meet(side);
+                viewpoint = Some(side);
+            }
+            DayViewpoint::Clear => viewpoint = None,
+            DayViewpoint::Keep => {}
+        }
+    }
+    for side in 0..sides.len() as u32 {
+        meet(side);
+    }
+    let order: Vec<u32> = order.into_iter().map(|at| at.unwrap_or_default()).collect();
+    for row in &mut cells {
+        for (_, cell) in row.iter_mut() {
+            if let Some(cell) = cell {
+                renumber(cell, &order);
+            }
+        }
+    }
+    let legend = match mode {
+        AirMode::Sides => latest_by_key.into_values().map(|(_, side)| order[side as usize]).collect(),
+        AirMode::Viewpoint => viewpoint.into_iter().map(|side: u32| order[side as usize]).collect(),
+    };
+    let last_hour = hours.last().copied().flatten();
+    let readouts = cells.iter().map(|runs| readout_of(runs.last().and_then(|(_, cell)| cell.as_ref()), last_hour)).collect();
+    Shown { cells, excluded, sides: placed.iter().map(|&side| sides[side as usize].clone()).collect(), legend, viewpoint: viewpoint.map(|side| order[side as usize]), readouts }
 }
 
 pub(crate) fn readout_of(cell: Option<&AirDayCell>, hour: Option<i32>) -> AirReadout {
@@ -482,7 +569,7 @@ pub(crate) struct Shown {
     pub readouts: Vec<AirReadout>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Dictionary {
     sides: Vec<AirSide>,
     at: HashMap<(usize, u32, i32), u32>,
@@ -687,12 +774,12 @@ fn theatre_days(query: &Query<'_>, stretches: &[Stretch], days: &[Option<DayRead
 
 struct Window {
     first_day: i32,
-    first_hour: i32,
     days: Vec<Option<DayAt>>,
     parts: Vec<Part>,
     at_hours: HashMap<usize, DayRows>,
     reads: Vec<Option<DayRead>>,
     theatres: Option<Vec<Option<Result<HashSet<u32>, ()>>>>,
+    unread: Vec<(usize, i32, String)>,
 }
 
 impl Window {
@@ -705,7 +792,7 @@ impl Window {
     }
 }
 
-fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, warnings: &mut Vec<String>, cancelled: &AtomicBool) -> io::Result<Window> {
+fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, cancelled: &AtomicBool) -> io::Result<Window> {
     let first_day = view_first.div_euclid(DAY);
     let first_hour = first_day.checked_mul(DAY).ok_or_else(|| dashboard_core::invalid("Air timeline start is outside the calendar range"))?;
     let count = (i64::from(view_last.div_euclid(DAY)) - i64::from(first_day) + 1) as usize;
@@ -725,6 +812,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
 
     let mut at_hours: HashMap<usize, DayRows> = HashMap::new();
     let mut unread: HashSet<usize> = HashSet::new();
+    let mut unread_notes: Vec<(usize, i32, String)> = Vec::new();
     for (at, read) in days.iter().enumerate() {
         let Some(read) = read else { continue };
         if read.hour != stretches[read.part].last || (read.hour + 1).rem_euclid(BUCKET) == 0 {
@@ -739,10 +827,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
                 at_hours.insert(at, (rows.to_vec(), complete, links));
             }
             Err(error) => {
-                warnings.push(match at + 1 == count {
-                    true => format!("Air scores are not recorded at the view's last hour: {error}"),
-                    false => format!("Air scores are not recorded at hour {}, where a stretch of the timeline ends: {error}", read.hour),
-                });
+                unread_notes.push((at, read.hour, error.to_string()));
                 unread.insert(at);
             }
         }
@@ -780,7 +865,130 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
     }
     dashboard_text::metadata::check_cancel(cancelled)?;
     let theatres = params.theatres.as_deref().filter(|ids| !ids.is_empty()).map(|ids| theatre_days(query, &stretches, &reads, &days, ids));
-    Ok(Window { first_day, first_hour, days, parts, at_hours, reads, theatres })
+    Ok(Window { first_day, days, parts, at_hours, reads, theatres, unread: unread_notes })
+}
+
+#[derive(Clone)]
+struct AirHistory {
+    through: i32,
+    hours: Vec<Option<i32>>,
+    excluded: Vec<u32>,
+    viewpoints: Vec<DayViewpoint>,
+    theatres: Option<Vec<Option<Result<HashSet<u32>, ()>>>>,
+    dictionary: Dictionary,
+    regions: BTreeMap<u32, DayRuns>,
+    absent: DayRuns,
+    unread: Vec<(usize, i32, String)>,
+    used: u64,
+}
+
+impl AirHistory {
+    #[expect(clippy::too_many_arguments, reason = "one read of the history's days: the query, the side index, the view, and the regions and sides it already holds")]
+    fn read(query: &Query<'_>, index: &AirIndex, params: &AirTimelineParams, (first, last): (i32, i32), held: &[u32], mut dictionary: Dictionary, resolver: &mut dyn SideResolver, cancelled: &AtomicBool) -> io::Result<Self> {
+        let window = window(query, params, first, last, cancelled)?;
+        let mut regions: Vec<u32> = window.candidates().into_iter().chain(held.iter().copied()).collect::<BTreeSet<u32>>().into_iter().collect();
+        regions.push(ABSENT);
+        let charted = window.charted();
+        let days = Days { index, holders: &query.holders, days: &window.reads, rows: &charted, params, theatres: window.theatres.as_deref() };
+        let Composition { mut cells, excluded, viewpoints } = days.compose(&regions, index, &mut dictionary, resolver, cancelled)?;
+        let absent = cells.pop().unwrap_or_default();
+        regions.pop();
+        Ok(Self {
+            through: last,
+            hours: window.reads.iter().map(|read| read.as_ref().map(|read| read.hour)).collect(),
+            excluded,
+            viewpoints,
+            theatres: window.theatres,
+            dictionary,
+            regions: regions.into_iter().zip(cells).collect(),
+            absent,
+            unread: window.unread,
+            used: 0,
+        })
+    }
+
+    fn unscored(&self, region: u32) -> DayRuns {
+        let mut out = DayRuns::new();
+        let mut day = 0usize;
+        for (count, cell) in &self.absent {
+            for _ in 0..*count {
+                let outside = cell.is_some() && matches!(self.theatres.as_ref().and_then(|theatres| theatres.get(day)), Some(Some(Ok(regions))) if !regions.contains(&region));
+                push_days(&mut out, (1, if outside { Some(AirDayCell::Reason { reason: "outside-theatres".into() }) } else { cell.clone() }));
+                day += 1;
+            }
+        }
+        out
+    }
+
+    fn join(&mut self, next: Self) {
+        let offset = self.hours.len();
+        for (region, runs) in next.regions {
+            if !self.regions.contains_key(&region) {
+                let earlier = self.unscored(region);
+                self.regions.insert(region, earlier);
+            }
+            if let Some(held) = self.regions.get_mut(&region) {
+                runs.into_iter().for_each(|run| push_days(held, run));
+            }
+        }
+        next.absent.into_iter().for_each(|run| push_days(&mut self.absent, run));
+        self.hours.extend(next.hours);
+        self.excluded.extend(next.excluded);
+        self.viewpoints.extend(next.viewpoints);
+        if let (Some(held), Some(theatres)) = (self.theatres.as_mut(), next.theatres) {
+            held.extend(theatres);
+        }
+        self.unread.extend(next.unread.into_iter().map(|(at, hour, error)| (at + offset, hour, error)));
+        self.dictionary = next.dictionary;
+        self.through = next.through;
+    }
+}
+
+#[derive(Default)]
+struct HeldHistories {
+    histories: HashMap<String, AirHistory>,
+    uses: u64,
+}
+
+const HELD_HISTORIES: usize = 16;
+
+fn history(source: &Source, query: &Query<'_>, index: &AirIndex, params: &AirTimelineParams, load: &LoadContext, resolver: &mut dyn SideResolver, cancelled: &AtomicBool) -> io::Result<AirHistory> {
+    let (first, last) = (params.first_hour, params.last_hour);
+    let content = load.content.as_ref().map(|options| (dashboard_base::content::content_key(Some(options)), options.presentation.identity().clone()));
+    let key = format!("{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{content:?}", params.branch_id, first.div_euclid(DAY), params.mode, params.viewpoint, params.viewpoint_country, params.sides, params.theatres);
+    let state = source.state::<HeldHistories>();
+    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).histories.get(&key).filter(|held| held.through == last || (held.through < last && (held.through + 1).rem_euclid(DAY) == 0)).cloned();
+    let history = match held {
+        Some(held) if held.through == last => held,
+        Some(mut held) => {
+            let regions: Vec<u32> = held.regions.keys().copied().collect();
+            let next = AirHistory::read(query, index, params, (held.through + 1, last), &regions, held.dictionary.clone(), resolver, cancelled)?;
+            held.join(next);
+            held
+        }
+        None => AirHistory::read(query, index, params, (first, last), &[], Dictionary::default(), resolver, cancelled)?,
+    };
+    let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.uses += 1;
+    let used = state.uses;
+    if state.histories.len() >= HELD_HISTORIES
+        && !state.histories.contains_key(&key)
+        && let Some(oldest) = state.histories.iter().min_by_key(|(_, held)| held.used).map(|(key, _)| key.clone())
+    {
+        state.histories.remove(&oldest);
+    }
+    state.histories.insert(key, AirHistory { used, ..history.clone() });
+    Ok(history)
+}
+
+fn unread_warnings(unread: &[(usize, i32, String)], count: usize) -> Vec<String> {
+    unread
+        .iter()
+        .map(|(at, hour, error)| match at + 1 == count {
+            true => format!("Air scores are not recorded at the view's last hour: {error}"),
+            false => format!("Air scores are not recorded at hour {hour}, where a stretch of the timeline ends: {error}"),
+        })
+        .collect()
 }
 
 fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<AirTimelineReply> {
@@ -791,8 +999,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     let (view_first, view_last) = (params.first_hour, params.last_hour);
     let names = names(source, load);
     let mut warnings = names.warnings.clone();
-    let shown_window = window(&query, params, view_first, view_last, &mut warnings, cancelled)?;
-    let first_hour = shown_window.first_hour;
+    let first_hour = view_first.div_euclid(DAY).checked_mul(DAY).ok_or_else(|| dashboard_core::invalid("Air timeline start is outside the calendar range"))?;
     let gaps: Vec<HourSpan> = query
         .timeline
         .unheld
@@ -822,16 +1029,25 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             .collect()
     };
     let every = params.every == Some(true);
-    let charted = shown_window.charted();
-    let composer = Days { index: &index, holders: &query.holders, days: &shown_window.reads, rows: &charted, params, theatres: shown_window.theatres.as_deref() };
     let mut rank_missing = None;
     let mut filtered = (0u32, 0u32);
     let mut active_unlisted = ActiveRegions::default();
-    let shown = if every {
-        let mut shown: Vec<u32> = shown_window.candidates().into_iter().collect();
+    let mut resolved = Vec::new();
+    let (shown, mut cells, days) = if every {
+        let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut resolved)?;
+        let history = history(source, &query, &index, params, load, &mut resolver, cancelled)?;
+        warnings.extend(unread_warnings(&history.unread, history.hours.len()));
+        let mut shown: Vec<u32> = history.regions.keys().copied().collect();
         shown.push(ABSENT);
-        shown
+        let cells = history.regions.values().cloned().chain([history.absent.clone()]).collect();
+        let composition = Composition { cells, excluded: history.excluded.clone(), viewpoints: history.viewpoints.clone() };
+        let cells = finish(composition, &history.hours, &history.dictionary.sides, params.mode.unwrap_or_default());
+        (shown, cells, history.hours)
     } else {
+        let shown_window = window(&query, params, view_first, view_last, cancelled)?;
+        warnings.extend(unread_warnings(&shown_window.unread, shown_window.reads.len()));
+        let charted = shown_window.charted();
+        let composer = Days { index: &index, holders: &query.holders, days: &shown_window.reads, rows: &charted, params, theatres: shown_window.theatres.as_deref() };
         let candidates: Vec<u32> = shown_window.candidates().into_iter().filter(|region| !pinned_set.contains(region)).collect();
         let ranked = composer.rank_at(&candidates, cancelled)?;
         filtered = (ranked.regions.iter().filter(|region| hidden_set.contains(region)).count() as u32, ranked.outside);
@@ -840,10 +1056,11 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         active_unlisted = chosen.active_unlisted;
         let mut shown = pinned_list;
         shown.extend(chosen.listed);
-        shown
+        let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut resolved)?;
+        let cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
+        (shown, cells, shown_window.reads.iter().map(|read| read.as_ref().map(|read| read.hour)).collect())
     };
-    let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut warnings)?;
-    let mut cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
+    warnings.extend(resolved);
     let absent = every.then(|| cells.cells.pop().unwrap_or_default());
     if every {
         cells.readouts.pop();
@@ -855,7 +1072,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         first_hour,
         last_hour: view_last,
         day_hours: DAY,
-        days: shown_window.reads.iter().map(|read| read.as_ref().map(|read| read.hour)).collect(),
+        days,
         excluded: cells.excluded,
         sides: cells.sides,
         legend: cells.legend,
