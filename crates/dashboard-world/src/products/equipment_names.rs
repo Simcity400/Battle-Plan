@@ -488,31 +488,34 @@ impl Naming {
         })
     }
 
-    fn spellings(&self, recording: &Recording, hour: i32, tokens: &BTreeSet<u32>) -> io::Result<SharedView> {
-        let keyed_at = |at: i32, keys: &[u128]| -> io::Result<SharedView> {
-            let mut frame = DecodedFrame { branch: self.branch, hour: at, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
-            read_into(recording, self.run, at, &mut frame, &[Read::these(TableId::LexicalTokens, keys.iter().copied())])?;
-            Ok(frame.tables[TableId::LexicalTokens.index()].clone())
-        };
+    fn keyed_at(&self, recording: &Recording, at: i32, tokens: &BTreeSet<u32>) -> io::Result<SharedView> {
+        let mut frame = DecodedFrame { branch: self.branch, hour: at, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        read_into(recording, self.run, at, &mut frame, &[Read::these(TableId::LexicalTokens, tokens.iter().map(|&token| u128::from(token)))])?;
+        Ok(frame.tables[TableId::LexicalTokens.index()].clone())
+    }
+
+    fn spelled_last(&self, recording: &Recording, tokens: &BTreeSet<u32>) -> io::Result<BTreeSet<u32>> {
         let mut held = self.spelled.lock().unwrap_or_else(PoisonError::into_inner);
         if !held.refused {
-            let missing: Vec<u128> = tokens.iter().filter(|token| !held.rows.contains_key(token)).map(|&token| u128::from(token)).collect();
+            let missing: BTreeSet<u32> = tokens.iter().copied().filter(|token| !held.rows.contains_key(token)).collect();
             if !missing.is_empty() {
-                let last = keyed_at(self.last, &missing)?;
-                match last.held() {
+                match self.keyed_at(recording, self.last, &missing)?.held() {
                     TableView::Complete(rows) => {
-                        held.rows.extend(missing.iter().map(|&token| (token as u32, None)));
+                        held.rows.extend(missing.iter().map(|&token| (token, None)));
                         held.rows.extend(rows.rows::<tables::LexicalTokens>().into_iter().flatten().map(|row| (row.token, Some(row.clone()))));
                     }
                     _ => held.refused = true,
                 }
             }
         }
-        if held.refused || tokens.iter().any(|token| held.rows.get(token).is_some_and(Option::is_none)) {
-            drop(held);
-            let keys: Vec<u128> = tokens.iter().map(|&token| u128::from(token)).collect();
-            return keyed_at(hour, &keys);
+        Ok(if held.refused { BTreeSet::new() } else { tokens.iter().copied().filter(|token| held.rows.get(token).is_some_and(Option::is_some)).collect() })
+    }
+
+    fn spellings(&self, recording: &Recording, hour: i32, tokens: &BTreeSet<u32>) -> io::Result<SharedView> {
+        if self.spelled_last(recording, tokens)?.len() < tokens.len() {
+            return self.keyed_at(recording, hour, tokens);
         }
+        let held = self.spelled.lock().unwrap_or_else(PoisonError::into_inner);
         let rows = tokens.iter().filter_map(|token| held.rows.get(token).cloned().flatten()).collect();
         Ok(TableView::Complete(replay_data::rows::TableRows::LexicalTokens(rows)).into())
     }
@@ -551,12 +554,24 @@ impl Naming {
         if wanted_variants.is_empty() {
             return Ok(());
         }
-        let frame = self.frame(recording, hour, &wanted_variants)?;
-        let icons = match context {
-            Ok(content @ Content { icons: Ok(_), .. }) => self.icon_hour(&frame, content),
-            _ => Arc::new(icon_hour(&frame, context)),
+        let keys: Vec<u128> = wanted_variants.iter().map(|&id| u128::from(id)).collect();
+        let tokens: BTreeMap<u64, u32> = match self.variants.view_of(hour, &keys)?.held() {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<tables::VariantDefinitions>().into_iter().flatten().map(|row| (row.id, row.equipment_token)).collect(),
+            _ => BTreeMap::new(),
         };
-        name_in(&frame, (&wanted_variants, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), named);
+        let spelled = self.spelled_last(recording, &tokens.values().copied().collect())?;
+        let (late, unspelled): (Vec<u64>, Vec<u64>) = wanted_variants.iter().partition(|id| tokens.get(id).is_none_or(|token| spelled.contains(token)));
+        for group in [late, unspelled] {
+            if group.is_empty() {
+                continue;
+            }
+            let frame = self.frame(recording, hour, &group)?;
+            let icons = match context {
+                Ok(content @ Content { icons: Ok(_), .. }) => self.icon_hour(&frame, content),
+                _ => Arc::new(icon_hour(&frame, context)),
+            };
+            name_in(&frame, (&group, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), named);
+        }
         Ok(())
     }
 }

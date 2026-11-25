@@ -107,7 +107,10 @@ fn a_design_whose_token_the_run_never_spells_keeps_the_refusal_of_its_own_hour()
                 TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 2, literal: b"rifle_0".to_vec() }]))
             };
             *frame.tables[TableId::VariantDefinitions.index()] =
-                TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Stored Design".to_vec(), ..Default::default() }]));
+                TableView::Complete(TableRows::VariantDefinitions(vec![
+                VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Stored Design".to_vec(), ..Default::default() },
+                VariantDefinitionRow { id: 7, equipment_token: 2, display_name: b"Later Spelled".to_vec(), ..Default::default() },
+            ]));
             if hour == 100 {
                 *frame.tables[TableId::MarketContractTerms.index()] = TableView::Complete(TableRows::MarketContractTerms(vec![MarketContractTermsRow {
                     country: 9001,
@@ -115,7 +118,7 @@ fn a_design_whose_token_the_run_never_spells_keeps_the_refusal_of_its_own_hour()
                     id: 0x12,
                     kind: 1,
                     equipment: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 500_000 }] }.into(),
-                    prices: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 96_000 }] }.into(),
+                    prices: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 96_000 }, MarketEquipment { variant: 7, amount_raw: 12_000 }] }.into(),
                     ..Default::default()
                 }]));
             }
@@ -130,7 +133,14 @@ fn a_design_whose_token_the_run_never_spells_keeps_the_refusal_of_its_own_hour()
     prepared.context = Arc::new(context);
     prepared.namings = Arc::new(namings(&src, &query).unwrap());
     let reply = load_tail_at(&prepared, &query, &ask(104), 104, &AtomicBool::new(false)).unwrap();
-    assert_eq!(reply.rows[0].quotes, [MarketQuote { variant: "6".into(), name: None, name_missing: Some(UNNAMED.into()), price_raw: "96000".into() }], "the hour's lexical refusal stands when the last hour does not spell the token either");
+    assert_eq!(
+        reply.rows[0].quotes,
+        [
+            MarketQuote { variant: "6".into(), name: None, name_missing: Some(UNNAMED.into()), price_raw: "96000".into() },
+            MarketQuote { variant: "7".into(), name: Some("Later Spelled".into()), name_missing: None, price_raw: "12000".into() },
+        ],
+        "the hour's lexical refusal stands for a token the run never spells, and a token the run spells later still names its design in the same reply"
+    );
 }
 
 #[test]
