@@ -30,6 +30,7 @@ export interface FactionsOptions {
   readonly members: MemberOrder;
   readonly showEnded: boolean;
   readonly firstHour: number;
+  readonly branchFirstHour: number;
   readonly surface: string;
   readonly selected: readonly string[] | null;
   readonly styles: Readonly<Record<string, { readonly colour?: string; readonly name?: string }>>;
@@ -115,7 +116,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
       countries: selected,
       countryIds: selected ? views[0]?.identities.selected([...selected]) ?? null : null,
       counts,
-    }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, gaps, opt.firstHour);
+    }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, gaps, opt.branchFirstHour);
     if (!built.lanes.length) {
       return timelineModel({ ...base, empty: selected ? 'None of the chosen countries has been in a faction yet' : 'No factions yet', warnings: reply.warnings, nextChangeAt });
     }
@@ -135,7 +136,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
           firstHour: span.firstHour,
           lastHour: Math.min(span.lastHour, hour),
           color: about.faction.color,
-          ...spanStart(span.firstHour, opt.firstHour, unknown),
+          ...spanStart(span.firstHour, opt.branchFirstHour, unknown),
           endUnseen: !open && inHourSpans(unknown, span.lastHour + 1),
           open,
         });
@@ -224,6 +225,7 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
     members: (ctx.options.members as MemberOrder) ?? 'joined',
     showEnded: ctx.options.ended !== 'hidden',
     firstHour: extra.extent[0],
+    branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
     selected: ctx.countries.all ? null : ctx.countries.tags,
     membership: ctx.countries.membership,

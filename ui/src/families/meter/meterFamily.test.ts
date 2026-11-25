@@ -21,7 +21,7 @@ import { drawMeterModel, hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
 import { matrixCellAt } from '../heat/matrixModel.ts';
-import { autonomyLevelsProjection } from '../../widgets/autonomy/autonomyLevelsProjection.ts';
+import { autonomyLevelsDeclaration, autonomyLevelsProjection, sampleSparkline } from '../../widgets/autonomy/autonomyLevelsProjection.ts';
 import type { AutonomyLevelsReply } from '../../generated/dashboard';
 import { createLaneView } from '../laneRuntime.ts';
 
@@ -657,4 +657,29 @@ test('autonomyLevelsProjection keeps the product order, lists an unread subject 
 test('bounded readView throws FutureDataError on future who() lookups', () => {
   const view = createBoundedReadView({ hour: 100 });
   assert.throws(() => view.who('country', 'GER', 101), FutureDataError);
+});
+
+test('an autonomy sparkline breaks over hours not recorded instead of carrying the earlier value across them', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number, firstBreak: boolean) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak, hasBreak: false });
+  const tile = {
+    tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice([bucket(hour - 300, hour - 201, 0.2, true), null, bucket(hour - 99, hour, 0.8, true)], 3),
+    missing: createBoundedSlice([{ firstHour: hour - 200, lastHour: hour - 100, reason: 'Subjects not read' }], 1),
+    validInterval: [hour - 300, hour] as const,
+  };
+  const line = sampleSparkline(tile as never, hour)!;
+  const gapAt = (h: number) => Math.round(((h - (hour - 300)) / 300) * 15);
+  assert.equal(line[0], 0.2);
+  assert.equal(line[15], 0.8);
+  assert.equal(line[gapAt(hour - 150)], null, 'a sample inside the unread stretch is a break, not 20%');
+});
+
+test('autonomy meters ask for every subject the recording names, with no fixed cap', () => {
+  const ctx = { track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, countries: { every: Array.from({ length: 1501 }, (_, i) => `T${i}`) } };
+  const trend = autonomyLevelsDeclaration.sources(ctx as never, {} as never).entries.find(entry => entry.name === 'trend')!;
+  assert.equal(trend.read.shape === 'pixel-binned' ? trend.read.top?.n : null, 1501);
+  const loading = autonomyLevelsDeclaration.sources({ ...ctx, countries: { every: [] } } as never, {} as never).entries;
+  assert.ok(!loading.some(entry => entry.name === 'trend'), 'no ranked trend is asked before the population is known');
 });

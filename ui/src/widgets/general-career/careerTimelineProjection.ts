@@ -36,6 +36,7 @@ export interface CareerTimelineOptions {
 }
 
 const PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
+const PARTIAL_MONTH = 'Part of this month was not recorded: battles then are not counted.';
 const FLEET_NOTE = 'Fleet commands cover fleets the recording names this leader for.';
 const COMMAND_COLOURS = ['#394d72', '#3b64a8', '#44587e', '#355c96'] as const;
 const HELD_DIAMOND = '#5c8df6';
@@ -87,6 +88,41 @@ interface BattleMonth {
   won: number;
   lost: number;
   unresolved: number;
+}
+
+type Span = readonly [first: number, last: number];
+
+function intersect(a: readonly Span[], b: readonly Span[]): Span[] {
+  const out: Span[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const first = Math.max(a[i]![0], b[j]![0]);
+    const last = Math.min(a[i]![1], b[j]![1]);
+    if (first <= last) out.push([first, last]);
+    if (a[i]![1] < b[j]![1]) i++;
+    else j++;
+  }
+  return out;
+}
+
+function coveredHours(spans: readonly Span[], first: number, last: number): number {
+  let hours = 0;
+  for (const [a, b] of intersect(spans, [[first, last]])) hours += b - a + 1;
+  return hours;
+}
+
+function gapsWithin(observed: readonly Span[], first: number, last: number): { firstHour: number; lastHour: number }[] {
+  const gaps: { firstHour: number; lastHour: number }[] = [];
+  let cursor = first;
+  for (const [a, b] of observed) {
+    if (b < cursor) continue;
+    if (a > last) break;
+    if (a > cursor) gaps.push({ firstHour: cursor, lastHour: a - 1 });
+    cursor = Math.max(cursor, b + 1);
+  }
+  if (cursor <= last) gaps.push({ firstHour: cursor, lastHour: last });
+  return gaps;
 }
 
 function battleMonths(battles: readonly CareerBattle[], firstHour: number, hour: number): BattleMonth[] {
@@ -223,8 +259,9 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
       });
     }
 
-    const header = buildHeader(readView, hourReply, career, reference);
-    const meters = buildMeters(readView, hourReply);
+    const serving = hourReply?.missing === null ? hourReply : undefined;
+    const header = buildHeader(readView, serving, career, reference);
+    const meters = buildMeters(readView, serving);
 
     const commandSpans: TimelineSpan[] = career.commands
       .filter(cmd => cmd.firstHour <= hour && cmd.lastHour >= opt.firstHour)
@@ -242,36 +279,48 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
         };
       });
 
+    const observed: Span[] = career.observed.map(([first, last]) => [first, Math.min(last, hour)] as const);
+    const service: Span[] = career.runs.map(run => [run.firstHour, Math.min(run.lastHour, hour)] as const);
+    const inService = intersect(observed, service);
     const months = battleMonths(career.battles, opt.firstHour, hour);
     const maxMonthly = months.reduce((top, m) => Math.max(top, m.won, m.lost), 1);
-    const battleSpans: TimelineSpan[] = months.map((m, index) => ({
-      id: `bat:${index}:${m.first}`,
-      firstHour: m.first,
-      lastHour: m.last,
-      color: CHART_MEASURE_COLOURS.supplyOk,
-      open: false,
-      histogram: { positive: m.won, negative: m.lost, max: maxMonthly },
-      meta: { kind: 'battle', ...m },
-    }));
+    const battleSpans: TimelineSpan[] = months.flatMap((m, index) => {
+      const pieces = intersect(inService, [[m.first, m.last]]);
+      const partial = coveredHours(observed, m.first, m.last) < m.last - m.first + 1;
+      const meta = { kind: 'battle', ...m, partial };
+      return (pieces.length ? pieces : [[m.first, m.last] as const]).map(([first, last]) => ({
+        id: `bat:${index}:${first}`,
+        firstHour: first,
+        lastHour: last,
+        color: CHART_MEASURE_COLOURS.supplyOk,
+        open: false,
+        histogram: { positive: m.won, negative: m.lost, max: maxMonthly },
+        meta,
+      }));
+    });
 
-    const traitSpans: TimelineSpan[] = career.traitGains
-      .filter(([at]) => at <= hour)
-      .map(([at, idx, gainClass], ordinal) => {
-        const name = traitName(career.traits[idx]);
-        const clamped = Math.max(opt.firstHour, at);
-        return {
-          id: `trait:${ordinal}:${at}:${idx}`,
-          firstHour: clamped,
-          lastHour: clamped,
-          color: gainClass === 0 ? HELD_DIAMOND : GAINED_DIAMOND,
-          open: false,
-          diamond: {
-            color: gainClass === 0 ? HELD_DIAMOND : GAINED_DIAMOND,
-            ...(gainClass === 0 ? {} : { text: name }),
-          },
-          meta: { kind: 'trait', name, hour: at, gainClass },
-        };
-      });
+    const gainsAt = new Map<number, { readonly name: string; readonly gainClass: number }[]>();
+    for (const [at, idx, gainClass] of career.traitGains) {
+      if (at > hour) continue;
+      const list = gainsAt.get(at);
+      const entry = { name: traitName(career.traits[idx]), gainClass };
+      if (list) list.push(entry);
+      else gainsAt.set(at, [entry]);
+    }
+    const traitSpans: TimelineSpan[] = [...gainsAt].sort((a, b) => a[0] - b[0]).map(([at, entries]) => {
+      const clamped = Math.max(opt.firstHour, at);
+      const gained = entries.filter(entry => entry.gainClass !== 0);
+      const colour = gained.length ? GAINED_DIAMOND : HELD_DIAMOND;
+      return {
+        id: `trait:${at}`,
+        firstHour: clamped,
+        lastHour: clamped,
+        color: colour,
+        open: false,
+        diamond: { color: colour, ...(gained.length ? { text: gained.map(entry => entry.name).join(', ') } : {}) },
+        meta: { kind: 'trait', hour: at, entries },
+      };
+    });
 
     const lanes: TimelineLane[] = [
       {
@@ -304,10 +353,11 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     ];
 
     const notes: string[] = [];
-    const partial = (hourReply?.battlesPartialFrom !== null && hourReply?.battlesPartialFrom !== undefined && hourReply.battlesPartialFrom <= hour)
+    if (hourReply?.missing) notes.push(hourReply.missing);
+    const partial = (serving?.battlesPartialFrom !== null && serving?.battlesPartialFrom !== undefined && serving.battlesPartialFrom <= hour)
       || (career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
     if (partial) notes.push(PARTIAL);
-    const roleKind = hourReply?.role?.kind ?? career.runs.at(-1)?.role.kind;
+    const roleKind = serving?.role?.kind ?? career.runs.at(-1)?.role.kind;
     if (roleKind === 2) notes.push(FLEET_NOTE);
 
     return timelineModel({
@@ -315,6 +365,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
       header,
       ...(meters ? { meters } : {}),
       lanes,
+      unobserved: gapsWithin(observed, opt.firstHour, hour),
       warnings,
       notes,
       nextChangeAt,
@@ -348,16 +399,16 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
           { label: 'Lost', value: formatScalar(Number(meta.lost), { decimals: 0 }) },
           { label: 'Unresolved', value: formatScalar(Number(meta.unresolved), { decimals: 0 }) },
         ],
+        ...(meta.partial ? { note: PARTIAL_MONTH } : {}),
       };
     }
     if (meta?.kind === 'trait') {
-      const cls = TRAIT_CLASSES[Number(meta.gainClass)] ?? 'Recorded';
-      return {
-        title: String(meta.name),
-        subtitle: 'Trait',
-        hour: at,
-        items: [{ label: cls, value: formatDateOnly(Number(meta.hour)) }],
-      };
+      const entries = meta.entries as readonly { readonly name: string; readonly gainClass: number }[];
+      const date = formatDateOnly(Number(meta.hour));
+      const classOf = (entry: { readonly gainClass: number }) => TRAIT_CLASSES[entry.gainClass] ?? 'Recorded';
+      return entries.length === 1
+        ? { title: entries[0]!.name, subtitle: 'Trait', hour: at, items: [{ label: classOf(entries[0]!), value: date }] }
+        : { title: `${formatScalar(entries.length, { decimals: 0 })} traits`, subtitle: date, hour: at, items: entries.map(entry => ({ label: entry.name, value: classOf(entry) })) };
     }
     return {
       title: model.header?.title ?? lane.label,

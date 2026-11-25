@@ -65,29 +65,27 @@ export function overlordKeyOf(item: Pick<AutonomySubject, 'overlordSlot' | 'over
 
 export function sampleSparkline(series: BoundedSeries | undefined, hour: number, points = 16): readonly (number | null)[] | undefined {
   if (!series || series.buckets.length === 0) return undefined;
-  const values: { readonly hour: number; readonly value: number }[] = [];
+  const pieces: { readonly first: number; readonly last: number; readonly firstValue: number; readonly lastValue: number }[] = [];
   for (const bucket of series.buckets) {
     if (!bucket) continue;
     if (bucket.firstHour > hour) break;
-    const clampedHour = Math.min(bucket.lastHour, hour);
-    values.push({ hour: bucket.firstHour, value: bucket.firstValue });
-    if (clampedHour > bucket.firstHour) {
-      values.push({ hour: clampedHour, value: bucket.lastValue });
-    }
+    pieces.push({ first: bucket.firstHour, last: Math.min(bucket.lastHour, hour), firstValue: bucket.firstValue, lastValue: bucket.lastValue });
   }
-  if (values.length < 2) return undefined;
-  const first = values[0]!.hour;
-  const last = values[values.length - 1]!.hour;
+  if (!pieces.length) return undefined;
+  const first = pieces[0]!.first;
+  const last = pieces[pieces.length - 1]!.last;
   if (last <= first) return undefined;
+  const missing = [...series.missing];
+  const unread = (at: number) => missing.some(span => span.firstHour <= at && at <= span.lastHour);
   const out: (number | null)[] = [];
   let cursor = 0;
   let known = 0;
   for (let i = 0; i < points; i++) {
     const target = first + ((last - first) * i) / (points - 1);
-    while (cursor + 1 < values.length && values[cursor + 1]!.hour <= target) cursor++;
-    const hit = values[cursor];
-    if (hit) {
-      out.push(hit.value);
+    while (cursor < pieces.length && pieces[cursor]!.last + 1 <= target && cursor + 1 < pieces.length) cursor++;
+    const piece = pieces[cursor]!;
+    if (piece.first <= target && target < piece.last + 1 && !unread(Math.floor(target))) {
+      out.push(target >= piece.last ? piece.lastValue : piece.firstValue);
       known++;
     } else {
       out.push(null);
@@ -237,20 +235,20 @@ export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOpt
           validate: validateAutonomyLevels,
         },
       },
-      {
+      ...(ctx.countries.every.length ? [{
         name: 'trend',
         source: ctx.track.source,
         branch: ctx.branch.id,
         offset: ctx.track.axisOffset,
         read: {
-          shape: 'pixel-binned',
-          coverage: { mode: 'population', form: 'all' },
+          shape: 'pixel-binned' as const,
+          coverage: { mode: 'population' as const, form: 'all' as const },
           family: { kind: 'autonomy-lines' },
           tags: [],
-          top: { n: 1500 },
+          top: { n: ctx.countries.every.length },
           headQuery: null,
         },
-      },
+      }] : []),
     ],
   }),
   projection: autonomyLevelsProjection,

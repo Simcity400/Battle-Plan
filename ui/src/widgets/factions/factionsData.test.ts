@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup, GroupCount } from '../../generated/dashboard';
 import { rankedCounts } from '../../dashboard/groupCounts.ts';
 import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, tagAt } from './factionsData.ts';
+import { factionsProjection } from './factionsProjection.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
@@ -328,4 +330,18 @@ test('member lanes retain native flag refusals while faction headings stay flagl
     if (lane.depth === 1) assert.equal(lane.identity?.countryFlag?.flagReason, `Recorded refusal for ${lane.identity?.label}`);
     else assert.equal(lane.identity?.countryFlag, undefined);
   }
+});
+
+test('with a Range, a membership that began inside the recording is joined, not held before, and only one held at the recording start is', () => {
+  const at = 400;
+  const readView = createBoundedReadView({ hour: at, panels: new Map([['main', { hour: at, nextChange: null, groups: reply }]]) });
+  const model = factionsProjection.project(readView, {
+    order: 'founded', members: 'joined', showEnded: true, firstHour: 300, branchFirstHour: 100, surface: '#161616',
+    selected: null, styles: {}, shared: {}, membership: null,
+  });
+  const member = (tag: string) => model.lanes.find(lane => lane.kind === 'item' && lane.flagTag === tag)!;
+  assert.equal(member('HUN').spans[0]!.firstHour, 120);
+  assert.equal(member('HUN').spans[0]!.heldBefore, undefined, 'joined at 120, after the recording began at 100');
+  assert.match(member('HUN').subtitle!, /Joined/);
+  assert.equal(member('D01').spans[0]!.heldBefore, true, 'a member at the first recorded hour is held before it');
 });

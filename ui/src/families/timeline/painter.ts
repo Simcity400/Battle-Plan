@@ -29,6 +29,7 @@ import {
   LANE_ICON,
   LEGEND_HEIGHT,
   METERS_HEADER_HEIGHT,
+  METERS_PER_ROW,
   METERS_ROW_HEIGHT,
   placedLaneAt,
   TOP_AXIS_HEIGHT,
@@ -512,11 +513,10 @@ function drawMeters(ctx: Canvas2D, input: TimelinePaintInput): void {
     ctx.restore();
     return;
   }
-  const cols = 3;
+  const cols = METERS_PER_ROW;
   const gap = 16;
   const colW = Math.max(80, (layout.width - LABEL_PAD * 2 - gap * (cols - 1)) / cols);
-  const shown = meters.items.slice(0, 6);
-  shown.forEach((item, index) => {
+  meters.items.forEach((item, index) => {
     const col = index % cols;
     const row = Math.floor(index / cols);
     const x = LABEL_PAD + col * (colW + gap);
@@ -741,11 +741,13 @@ export function hitTimeline(layout: TimelineLayout, resolution: TimelineResoluti
   if (lane.expandable && x < layout.labelWidth) return { kind: 'toggle', laneKey: lane.key };
   if (x < layout.plotLeft || x > layout.plotRight) return { kind: 'lane', laneKey: lane.key };
   const hour = Math.floor(xToHour(layout, x));
-  let nearest: { readonly spanId: string; readonly distance: number } | null = null;
+  let nearest: { readonly span: TimelineSpan; readonly distance: number } | null = null;
   for (const { span, x0, x1 } of paintedSpans(resolution, lane, layout)) {
     if (x >= x0 && x < x1) return { kind: 'span', laneKey: lane.key, spanId: span.id, hour };
     const distance = x < x0 ? x0 - x : x - x1;
-    if (distance <= HIT_SLACK && (!nearest || distance < nearest.distance)) nearest = { spanId: span.id, distance };
+    if (distance <= HIT_SLACK && (!nearest || distance < nearest.distance)) nearest = { span, distance };
   }
-  return nearest ? { kind: 'span', laneKey: lane.key, spanId: nearest.spanId, hour } : { kind: 'lane', laneKey: lane.key, hour };
+  if (!nearest) return { kind: 'lane', laneKey: lane.key, hour };
+  const { span } = nearest;
+  return { kind: 'span', laneKey: lane.key, spanId: span.id, hour: Math.max(span.firstHour, span.open ? hour : Math.min(hour, span.lastHour)) };
 }

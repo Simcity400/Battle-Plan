@@ -28,6 +28,15 @@ function spanEnd(span: TimelineSpan): number {
   return span.open ? Infinity : span.lastHour + 1;
 }
 
+function artKey(art: TimelineSpan['icon']): string {
+  return art === undefined ? '' : art.status === 'ready' ? art.url : art.status;
+}
+
+function interchangeable(a: TimelineSpan, b: TimelineSpan): boolean {
+  return a.color === b.color && a.label === b.label && artKey(a.icon) === artKey(b.icon)
+    && !a.diamond && !b.diamond && !a.histogram && !b.histogram && !a.halves && !b.halves && !a.marks?.length && !b.marks?.length;
+}
+
 export function coalescedSpans(resolution: TimelineResolution, lane: TimelineLane): readonly TimelineSpan[] {
   const held = resolution.lanes.get(lane.key);
   if (held) return held;
@@ -36,7 +45,7 @@ export function coalescedSpans(resolution: TimelineResolution, lane: TimelineLan
   for (const span of lane.spans) {
     const prev = out.at(-1);
     const tiny = spanEnd(span) - span.firstHour < min;
-    if (prev && tiny && !prev.open && span.firstHour - spanEnd(prev) < min && prev.color === span.color) {
+    if (prev && tiny && !prev.open && span.firstHour - spanEnd(prev) < min && interchangeable(prev, span)) {
       out[out.length - 1] = { ...prev, lastHour: span.lastHour, open: span.open, endUnseen: span.endUnseen };
       continue;
     }

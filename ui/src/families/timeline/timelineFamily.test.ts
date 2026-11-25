@@ -6,8 +6,8 @@ import type { CategoryInfo, IdeaHistoryReply, IdeaHolding, IdeaInfo, IdeaLook } 
 import { ideaTimelineProjection } from '../../widgets/idea-timeline/ideaTimelineProjection.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { timelineHostAdapter } from './hostAdapter.ts';
-import { frameTimeline, LEGEND_HEIGHT, placeTimeline } from './layout.ts';
-import { resolutionFor } from './resolution.ts';
+import { frameTimeline, LEGEND_HEIGHT, METERS_HEADER_HEIGHT, METERS_ROW_HEIGHT, placeTimeline } from './layout.ts';
+import { coalescedSpans, resolutionFor } from './resolution.ts';
 import { timelineLane, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { timelineModel } from './helpers.ts';
@@ -314,4 +314,53 @@ test('a paused timeline draws a flag that arrives after its projection, through 
   assert.equal(images, 0);
   paint('ready');
   assert.ok(images > 0, 'the same model paints the flag once the frame’s art has it');
+});
+
+test('zoomed out, only interchangeable spans merge: markers and differently named spans each stay their own target', () => {
+  const tiny = (id: string, first: number, label: string, extra: Partial<TimelineLane['spans'][number]> = {}) =>
+    ({ id, firstHour: first, lastHour: first, color: '#fff', open: false, label, ...extra });
+  const lanes: TimelineLane[] = [
+    { key: 'marks', kind: 'item', label: 'Traits', auditValue: 'Traits', spans: [
+      tiny('a', FIRST + 1000, 'First', { diamond: { color: '#fff' } }), tiny('b', FIRST + 1001, 'Second', { diamond: { color: '#fff' } }),
+    ] },
+    { key: 'bars', kind: 'item', label: 'Holders', auditValue: 'Holders', spans: [
+      tiny('c', FIRST + 2000, 'Alpha'), tiny('d', FIRST + 2002, 'Beta'), tiny('e', FIRST + 2004, 'Beta'),
+    ] },
+  ];
+  const model: TimelineModel = { hour: H(1946) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 120, warnings: [], nextChangeAt: Infinity };
+  const layout = frameTimeline(placeTimeline(model, 400, 200, {}), H(1946));
+  const resolution = resolutionFor(null, model, layout);
+  assert.ok(resolution.minHours > 8, 'campaign zoom merges spans a few hours apart');
+  assert.deepEqual(coalescedSpans(resolution, lanes[0]!).map(span => span.id), ['a', 'b'], 'markers are never merged');
+  assert.deepEqual(coalescedSpans(resolution, lanes[1]!).map(span => span.id), ['c', 'd'], 'Alpha and Beta stay apart; the two Beta stretches merge');
+});
+
+test('every trait in training gets a meter when the widget has room for it', () => {
+  const items = Array.from({ length: 7 }, (_, i) => ({ key: `t${i}`, label: `Trait ${i}`, figure: `${i}`, fraction: i / 7 }));
+  const model = timelineModel({ hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, labelWidth: 72, meters: { title: 'Traits in training', items },
+    lanes: [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [] }] });
+  const layout = frameTimeline(placeTimeline(model, 640, 420, {}), H(1940));
+  assert.ok(layout.metersHeight >= METERS_HEADER_HEIGHT + 3 * METERS_ROW_HEIGHT, 'three rows of three are reserved for seven meters');
+  const drawn: string[] = [];
+  const ctx = new Proxy({}, { get: (_target, prop) => {
+    if (prop === 'measureText') return (text: string) => ({ width: text.length * 6 });
+    if (prop === 'createLinearGradient') return () => ({ addColorStop() {} });
+    if (prop === 'fillText') return (text: string) => { drawn.push(text); };
+    return () => {};
+  }, set: () => true });
+  drawTimeline(ctx as never, { model, layout, theme: LANE_THEME, scrollTop: 0, expanded: {}, inspectedKey: null, selectedKey: null, focusedKey: null, resolution: resolutionFor(null, model, layout) });
+  for (const item of items) assert.ok(drawn.includes(item.label), `${item.label} is drawn`);
+});
+
+test('a pointer within the slack of a bar names that bar at an hour inside it', () => {
+  const lanes: TimelineLane[] = [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [
+    { id: 'a', firstHour: H(1937), lastHour: H(1938) - 1, color: '#fff', open: false },
+  ] }];
+  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  const x = layout.plotLeft + ((H(1938) - FIRST) / (H(1940) - FIRST)) * (layout.plotRight - layout.plotLeft) + 2;
+  const hit = hitTimeline(layout, resolution, x, layout.lanes[0]!.y + 10, 0)!;
+  assert.equal(hit.spanId, 'a');
+  assert.ok(hit.hour! <= H(1938) - 1, `hour ${hit.hour} lies inside the bar it names`);
 });

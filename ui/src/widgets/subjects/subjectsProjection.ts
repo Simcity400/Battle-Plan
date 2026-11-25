@@ -27,6 +27,7 @@ export interface SubjectsOptions {
   readonly showEnded: boolean;
   readonly levelNames: boolean;
   readonly firstHour: number;
+  readonly branchFirstHour: number;
   readonly surface: string;
   readonly selected: readonly string[] | null;
 }
@@ -106,7 +107,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
           lastHour: Math.min(span.lastHour, hour),
           color: span.color ?? other,
           ...(!heading && opt.levelNames && span.label ? { label: span.label } : {}),
-          ...spanStart(span.firstHour, opt.firstHour, unobserved),
+          ...spanStart(span.firstHour, opt.branchFirstHour, unobserved),
           endUnseen: !open && inHourSpans(unobserved, span.lastHour + 1),
           open,
         });
@@ -183,6 +184,7 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
     showEnded: ctx.options.ended !== 'hidden',
     levelNames: ctx.options.names !== false,
     firstHour: extra.extent[0],
+    branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
     selected: ctx.countries.all ? null : ctx.countries.tags,
   }),

@@ -17,6 +17,7 @@ export interface SpecialProjectsHistoryOptions {
   readonly tags: readonly string[];
   readonly membership: Readonly<Record<string, HourRanges>> | null;
   readonly firstHour: number;
+  readonly branchFirstHour: number;
   readonly surface: string;
 }
 
@@ -102,7 +103,7 @@ function projectLane(readView: BoundedReadView, reply: SpecialProjectsReply, pro
         color: fill,
         label: info.name,
         icon,
-        ...spanStart(first, options.firstHour, gaps),
+        ...spanStart(first, options.branchFirstHour, gaps),
         endUnseen: !open && inHourSpans(gaps, last + 1),
         open,
         meta: { tag: reply.tag, project: project.id },
@@ -253,6 +254,7 @@ export const specialProjectsHistoryDeclaration: TimelineWidgetDeclaration<Specia
     tags: ctx.countries.tags,
     membership: ctx.countries.membership,
     firstHour: extra.extent[0],
+    branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
   }),
 };

@@ -17,6 +17,7 @@ import type { CivilWar, CivilWarSide, CivilWarsReply, SideExit } from '../../gen
 export interface CivilWarsProjectionOptions {
   readonly showEnded: boolean;
   readonly firstHour: number;
+  readonly branchFirstHour: number;
   readonly surface: string;
   readonly selected: readonly string[] | null;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
@@ -287,7 +288,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
     let unnamedCount = 0;
 
     for (const war of reply.wars) {
-      if (war.firstHour > reply.hour) continue;
+      if (war.firstHour > reply.hour || war.lastHour < opt.firstHour) continue;
       if (opt.selected && !war.sides.some(side => sideMatchesSelected(side, reply.hour, opt.selected!, opt.holders, opt.membership))) {
         continue;
       }
@@ -370,7 +371,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       const topColor = pair ? pair[0].colour : (sides[0]?.colour ?? colour(opt.surface, 0));
       let bottomColor = pair ? pair[1].colour : colour(opt.surface, 1);
       if (bottomColor === topColor) bottomColor = colour(opt.surface, 1);
-      const endHour = ongoing ? hour : Math.min(war.lastHour, hour);
+      const endHour = ongoing ? hour : Math.min(war.atWar.at(-1)?.lastHour ?? war.lastHour, hour);
       const span: TimelineSpan = {
         id: 'war',
         firstHour: war.firstHour,
@@ -379,7 +380,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
         halves: [topColor, bottomColor],
         endCap: !ongoing,
         open: ongoing,
-        startBy: startUnseen(war.firstHour, opt.firstHour, unread),
+        startBy: startUnseen(war.firstHour, opt.branchFirstHour, unread),
         endUnseen: !ongoing && state.kind === 'ended' && state.lastSeen !== null,
       };
       const outcome = war.outcome && winnerName
@@ -434,7 +435,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
             lastHour: sideOpen ? hour : Math.min(side.side.lastHour, hour),
             color: side.colour,
             open: sideOpen,
-            startBy: startUnseen(side.side.firstHour, opt.firstHour, unread),
+            startBy: startUnseen(side.side.firstHour, opt.branchFirstHour, unread),
             endUnseen: !sideOpen && side.state.kind === 'ended' && side.state.lastSeen !== null,
           }],
           auditValue: `${side.tag ?? `slot:${side.side.slot}`}|${aside}`,
@@ -565,6 +566,7 @@ export const civilWarsDeclaration: TimelineWidgetDeclaration<CivilWarsProjection
   projectionOptions: (ctx, extra) => ({
     showEnded: ctx.options.ended !== 'hidden',
     firstHour: extra.extent[0],
+    branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
     selected: ctx.countries.all ? null : ctx.countries.tags,
     holders: ctx.countries.holders,

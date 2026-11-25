@@ -165,7 +165,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
         ...base,
         ...(reply.partial
           ? { empty: `${reply.partial}.`, emptyKind: 'unavailable' as const }
-          : { empty: `No research slots recorded by ${formatDateOnly(hour)}.`, emptyKind: 'empty' as const }),
+          : { empty: 'No research slots recorded yet.', emptyKind: 'empty' as const }),
         warnings,
         nextChangeAt,
       });

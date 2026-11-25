@@ -8,6 +8,8 @@ export const HEADER_HEIGHT = 54;
 export const METERS_MIN_HEIGHT = 240;
 export const METERS_ROW_HEIGHT = 30;
 export const METERS_HEADER_HEIGHT = 22;
+export const METERS_PER_ROW = 3;
+const METERS_MIN_BODY = 3 * LANE_HEIGHT_COMPACT;
 export const LEGEND_HEIGHT = 20;
 export const AXIS_HEIGHT = 26;
 export const TOP_AXIS_HEIGHT = 22;
@@ -90,9 +92,11 @@ export function placeTimeline(
     y += lh;
   }
   const contentHeight = y + TOP_PAD;
-  const showMeters = !!model.meters && !compact && h >= METERS_MIN_HEIGHT && w >= 420;
-  const meterRows = showMeters ? Math.min(2, Math.max(1, Math.ceil((model.meters?.items.length ?? 0) / 3))) : 0;
-  const metersHeight = showMeters ? METERS_HEADER_HEIGHT + meterRows * METERS_ROW_HEIGHT + 8 : 0;
+  const meterRows = Math.max(1, Math.ceil((model.meters?.items.length ?? 0) / METERS_PER_ROW));
+  const wantedMeters = METERS_HEADER_HEIGHT + meterRows * METERS_ROW_HEIGHT + 8;
+  const showMeters = !!model.meters && !compact && h >= METERS_MIN_HEIGHT && w >= 420
+    && h - bodyTop - (axisPosition === 'bottom' ? axisHeight : 0) - wantedMeters >= METERS_MIN_BODY;
+  const metersHeight = showMeters ? wantedMeters : 0;
   const bodyHeight = Math.max(
     LANE_HEIGHT_COMPACT,
     h - bodyTop - (axisPosition === 'bottom' ? axisHeight : 0) - metersHeight,

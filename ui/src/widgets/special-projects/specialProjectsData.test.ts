@@ -126,7 +126,7 @@ test('History lanes come from each country’s recorded statuses: one bar per wo
   const a = reply('AAA', [status(10, 29, 20, 'running'), status(30, 39, 40, 'running'), status(45, 99, 40, 'running'), status(100, 200, 100, 'completed')]);
   const b = reply('BBB', [status(10, 39, 50, 'running'), status(45, 200, 50, 'running')]);
   const panels = new Map<string, unknown>([['projects:AAA', a], ['projects:BBB', b]]);
-  const options = { tags: ['AAA', 'BBB'], membership: { BBB: [[20, 30]] as const } as Record<string, readonly (readonly [number, number])[]>, firstHour: 0, surface: '#111111' };
+  const options = { tags: ['AAA', 'BBB'], membership: { BBB: [[20, 30]] as const } as Record<string, readonly (readonly [number, number])[]>, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
   const model = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 60, panels }), options);
   assert.deepEqual(model.lanes.map(lane => [lane.kind, lane.key]), [['heading', 'country:AAA'], ['item', 'AAA:AAA:p'], ['heading', 'country:BBB'], ['item', 'BBB:BBB:p']]);
   const own = model.lanes[1]!;

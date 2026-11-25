@@ -180,6 +180,7 @@ test('missing research is said with its reason; an empty campaign is said only w
   assert.equal(partial.emptyKind, 'unavailable', 'no slots over an unread stretch is not "no slots"');
   const empty = researchProjection.project(viewAt(at, replyAt(at, { slots: [], partial: null })), opt);
   assert.equal(empty.emptyKind, 'empty');
+  assert.equal(empty.empty, 'No research slots recorded yet.', 'a plain statement, no qualified date');
   assert.throws(() => validateResearchHistory({ ...replyAt(at), coverage: [span(day(0), at + 1)] }), /does not match/, 'nothing after the answered hour');
   assert.deepEqual(researchHistoryProof(replyAt(at), [day(0), at], at + 3), [at, day(170) - 1]);
   assert.equal(researchHistoryProof(replyAt(at), [day(0), at], day(170)), null);
