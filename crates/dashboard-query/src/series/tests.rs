@@ -543,49 +543,6 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
             assert_eq!(reply.refused.is_some(), known.len() < 2, "an unrecorded country leaves the order unproven at {hour}");
         }
     }
-    let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": last, "width": 64 }))).unwrap();
-    assert!(!chart.lines.is_empty());
-    for line in &chart.lines {
-        assert!(!line.membership.is_empty() && !line.parts.is_empty(), "{} ranks somewhere and is held there", line.tag);
-        for (bin, bucket) in line.summary.buckets.iter().enumerate() {
-            let Some(bucket) = bucket else { continue };
-            assert!(line.membership.iter().any(|span| span.first_hour <= bucket.last_hour && bucket.first_hour <= span.last_hour), "{} bin {bin} lies in its membership", line.tag);
-        }
-    }
-    let mut checked = 0;
-    for to in (FIRST + 300..end - 9).filter(|hour| (hour + 1).rem_euclid(6) != 0).take(24) {
-        let edge: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": to, "width": 64 }))).unwrap();
-        for line in &edge.lines {
-            let Some(Some(bucket)) = line.summary.buckets.last() else { continue };
-            let id = [9001, 9002].into_iter().find(|&id| tag_of(id) == line.tag).unwrap();
-            assert!(bucket.last_hour <= to, "{}'s last bin ends at the view's last hour {to}", line.tag);
-            if let Some(raw) = power(id, to).filter(|_| exists(id, to) && held(&query, &line.tag, to)) {
-                assert_eq!(bucket.last_hour, to, "{}'s last bin reaches the view's last hour {to}", line.tag);
-                assert_eq!(bucket.last_value, raw as f64 / 10f64.powi(i32::from(edge.decimals)), "{}'s last value is the view's last hour's ({to})", line.tag);
-                checked += 1;
-            }
-        }
-    }
-    assert!(checked > 10, "{checked} views whose member holds a value at the view's last hour");
-    let scale = 10f64.powi(i32::from(chart.decimals));
-    let mut ends = 0;
-    for line in &chart.lines {
-        let id = [9001, 9002].into_iter().find(|&id| tag_of(id) == line.tag).unwrap();
-        let Some(bucket) = line.summary.buckets.iter().flatten().find(|bucket| bucket.first_hour <= end && end <= bucket.last_hour) else { continue };
-        let values: Vec<i64> = (bucket.first_hour..=end).filter(|&hour| exists(id, hour) && held(&query, &line.tag, hour)).filter_map(|hour| power(id, hour)).collect();
-        assert_eq!(bucket.last_hour, end, "{}'s bin ends at the stretch's last hour", line.tag);
-        assert_eq!(bucket.last_value, power(id, end).unwrap() as f64 / scale, "{}'s last value is the stretch's last hour's", line.tag);
-        assert_eq!((bucket.min_value, bucket.max_value), (*values.iter().min().unwrap() as f64 / scale, *values.iter().max().unwrap() as f64 / scale), "{}'s bin at {end}", line.tag);
-        ends += 1;
-    }
-    assert_eq!(ends, 1, "the leader at the stretch's last hour draws its bin");
-    let tiles = serde_json::json!({ "top": null, "from": FIRST, "to": last, "width": 64, "countries": ["GER"] });
-    assert!(answer(&query, "series-summary", &{
-        let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
-        params.as_object_mut().unwrap().extend(tiles.as_object().unwrap().clone());
-        params
-    })
-    .is_err(), "chosen lines are tiles");
     let origin = ITA_FROM + 10;
     let next: SeriesKeyReply = serde_json::from_value(ask("series-next-change", serde_json::json!({ "top": 1, "key": "ArrowRight", "from": origin, "firstHour": FIRST, "lastHour": last }))).unwrap();
     let leader = line_of(&query).rank_at(origin, 1, false).unwrap().unwrap();
@@ -611,8 +568,6 @@ fn a_request_naming_1500_countries_is_answered() {
     assert_eq!(states.states.len(), 1_500);
     assert!(states.states[..2].iter().all(|state| state.run.is_some()), "GER and ITA read at {hour}");
     assert!(states.states[2..].iter().all(|state| state.run.is_none() && state.missing.is_some()), "a tag no country holds is missing");
-    let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1_500, "from": first, "to": last, "width": 7 }))).unwrap();
-    assert_eq!(chart.lines.iter().map(|line| line.tag.as_str()).collect::<std::collections::BTreeSet<_>>(), TAGS.into_iter().collect());
     let next: SeriesKeyReply =
         serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": tags, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
     assert!(next.hour.is_some_and(|next| next > f64::from(hour)));

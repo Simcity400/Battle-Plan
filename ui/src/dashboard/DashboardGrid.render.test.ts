@@ -106,22 +106,6 @@ test('frame subtitles identify only campaigns different from the sidebar, warnin
     assert.match(staticHtml, /<span[^>]*dash-time-chip is-static[^>]*>.*Live.*<\/span>/);
     assert.doesNotMatch(staticHtml, /<button[^>]*dash-time-chip/);
 
-    const { default: Chip } = await vite.ssrLoadModule('/ui/src/dashboard/DatedCountryChip.tsx') as typeof import('./DatedCountryChip');
-    const chip = (label: Parameters<typeof Chip>[0]['label'], reason: string | null = null, hour: number | null = 43800024) =>
-      renderToStaticMarkup(createElement(Chip, { label, reason, hour }));
-    assert.match(chip({ name: 'TAG' }), />Loading…</);
-    assert.doesNotMatch(chip({ name: 'TAG' }), /Name unavailable/);
-    assert.match(chip({ name: 'TAG', known: false }), />Unavailable</);
-    assert.match(chip({ name: 'TAG', nameFailed: true }), /Couldn’t load country name\./);
-    const failure = new Error('Synthetic dated chip decoder failure');
-    assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: failure }), /data-detail="Synthetic dated chip decoder failure"/);
-    const { RefusedError } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts');
-    assert.match(chip({ name: 'TAG', nameFailed: true, nameFailure: new RefusedError('Synthetic dated name refusal') }), />Synthetic dated name refusal</);
-    assert.doesNotMatch(chip(null, 'Synthetic native refusal'), /Synthetic native refusal/);
-    assert.match(chip({ name: 'Name', known: true }), /As of /);
-    assert.doesNotMatch(chip({ name: '', known: true }), /Loading…|Unavailable/);
-    assert.match(chip({ name: 'Name', known: true }, null, null), />Unavailable</);
-
     const { default: CountryChip } = await vite.ssrLoadModule('/ui/src/dashboard/CountryChip.tsx') as typeof import('./CountryChip');
     runtime.tracks = [tracks[0]];
     const chipWidget = { ...widget, kind: 'synthetic', time: { mode: 'campaign' as const }, trackIds: ['track-one'] };

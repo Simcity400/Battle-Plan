@@ -8,12 +8,6 @@ export type RaceView = 'race' | 'lines' | 'mix';
 
 export const TOP_COUNTRIES: CountrySelection = { kind: 'group', group: { type: 'top', count: DEFAULT_TOP }, membership: 'hour', aggregate: false };
 
-export function mixCountry(countries: CountrySelection, fallback: string | null, ranked: readonly { tag: string }[]): string | null {
-  if (countries.kind === 'tags') return countries.tags[0] ?? null;
-  if (countries.kind === 'selected') return fallback;
-  return ranked[0]?.tag ?? null;
-}
-
 export function raceViewOption(mixLabel?: string, defaultView: RaceView = 'race',
   extraViews: readonly { value: string; label: string }[] = []): OptionField {
   return { key: 'view', section: 'options', label: 'View', kind: 'choice', default: defaultView,

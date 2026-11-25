@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, FactRequests, factsKey, HourStore, nameKey, transientError } from './countryFacts.ts';
-import { branchHour, lookHour, lookPlan, looksRead, LOOK_STEP } from './countryLooks.ts';
+import { lookHour, lookPlan, looksRead, LOOK_STEP } from './countryLooks.ts';
 import { matchesLookSegment, nextLooks, retainLooks, sampledLooks } from './looks.ts';
 import type { Look, LookRead } from './looks';
 import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
@@ -105,9 +105,6 @@ test("a view following the head reads its rows' looks exactly where one of them 
   const hours = new Map([['GER', 7_000]]);
   assert.deepEqual(looksRead(false, 4_321, 5_000, heldBound, hours, true), { hour: 5_000, segmentAt: heldBound, hours, exact: true });
   assert.deepEqual(looksRead(true, null, 5_000, heldBound), { hour: 5_000, segmentAt: heldBound, hours: undefined, exact: false });
-  assert.equal(branchHour(branch, 999), null);
-  assert.equal(branchHour(branch, 100_001), null);
-  assert.equal(branchHour(branch, 4_321.7), 4_321);
 });
 
 test("a coarse step of the head is a step from the branch's first hour, never one before it", () => {

@@ -46,7 +46,6 @@ import './charts.css';
 
 export type ChartLayer = PureChartLayer<CanvasRenderingContext2D>;
 
-export type { ChartStrip } from './strip';
 
 export type { ChartPick } from './pick';
 

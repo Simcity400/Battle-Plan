@@ -793,8 +793,8 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
     }
     let unknown = serde_json::json!({ "product": "navy-size", "params": { "branchId": "1", "countries": ["GER"], "measure": "planes", "ownership": "roster" } });
     assert_eq!(crate::parse(&unknown, &nobody()).err().unwrap().to_string(), "No navy-size measure planes counted for roster");
-    let other = serde_json::json!({ "product": "series-summary", "params": {} });
-    assert_eq!(crate::parse(&other, &nobody()).err().unwrap().to_string(), "series-summary is not followed at the head");
+    let other = serde_json::json!({ "product": "series-rank", "params": {} });
+    assert_eq!(crate::parse(&other, &nobody()).err().unwrap().to_string(), "series-rank is not followed at the head");
     let parts = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "resource-balance", "measure": "supply" }, "reads": [{ "country": "GER", "hour": 5 }], "top": 3 } });
     match crate::parse(&parts, &nobody()).unwrap() {
         Query::Series { series, measure, countries, mode: SeriesMode::Parts { top: Some(3) }, .. } => assert_eq!((series.kind, measure.name, countries), ("resource-balance", "supply", vec!["GER".into()])),

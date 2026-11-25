@@ -1,38 +1,9 @@
 
-use super::{Line, MissingSpan, NavigationKey, SeriesRead, SeriesState, hour_of, invalid};
-use crate::{chart::ChartSummary, identity::Country, tile::TilePart};
+use super::{Line, NavigationKey, SeriesRead, SeriesState, hour_of, invalid};
+use crate::identity::Country;
 use serde::{Deserialize, Serialize};
 use std::io;
 use ts_rs::TS;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct RankedSpan {
-    pub first_hour: i32,
-    pub last_hour: i32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SeriesRankedLine {
-    pub tag: String,
-    #[doc = " Its holders over the view."]
-    pub parts: Vec<TilePart>,
-    pub summary: ChartSummary,
-    pub membership: Vec<RankedSpan>,
-    pub missing: Vec<MissingSpan>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SeriesRankedReply {
-    pub branch_id: String,
-    pub measure: String,
-    pub decimals: u8,
-    pub lines: Vec<SeriesRankedLine>,
-}
-
-const WIDTH: u32 = 8192;
 
 pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<usize>> {
     match (top, line.series.parts) {
@@ -235,30 +206,6 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
     let mut readings: Vec<Vec<SeriesState>> = (0..asked.len()).map(|_| cells.iter_mut().map(|column| column.next().expect("one reading per asked country")).collect()).collect();
     let rows = order.into_iter().map(|at| SeriesRankRow { country: asked[at].clone(), slot: slots[at], unnamed: named[at].take(), readings: std::mem::take(&mut readings[at]) }).collect();
     Ok(SeriesRankReply { branch_id: branch_id.to_owned(), hour, measures, rows, refused, from, until })
-}
-
-pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, to: Option<f64>, width: Option<u32>, n: usize) -> io::Result<SeriesRankedReply> {
-    let (from, to) = (hour_of(from, "from")?, hour_of(to, "to")?);
-    if from > to {
-        return Err(invalid("Invalid view"));
-    }
-    let width = width.filter(|width| (1..=WIDTH).contains(width)).ok_or_else(|| invalid("Invalid width"))?;
-    let mut lines = Vec::new();
-    for ranked in line.ranked(from, to, width, n)? {
-        let parts = line
-            .parts(&ranked.tag, from, to)
-            .into_iter()
-            .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })
-            .collect();
-        lines.push(SeriesRankedLine {
-            tag: ranked.tag,
-            parts,
-            summary: ranked.summary,
-            membership: ranked.membership.into_iter().map(|(first_hour, last_hour)| RankedSpan { first_hour, last_hour }).collect(),
-            missing: ranked.missing,
-        });
-    }
-    Ok(SeriesRankedReply { branch_id: branch_id.to_owned(), measure: line.measure_name().to_owned(), decimals: line.decimals(), lines })
 }
 
 pub(super) fn stepped(line: &Line<'_, '_>, origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), n: usize) -> io::Result<Vec<Country>> {

@@ -2,7 +2,6 @@ import type { Failure } from '../dashboard/queryError';
 import type { PlotFrame } from './frame.ts';
 import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
-import type { TooltipRow } from './tooltip.ts';
 import { APPROXIMATE_ALPHA, APPROXIMATE_DASH } from './prepared.ts';
 
 
@@ -37,12 +36,6 @@ export function badgesAt(point: { x: number; y: number }, frame: PlotFrame, badg
     .sort((a, b) => a.distance - b.distance || a.badge.hour - b.badge.hour);
   if (!near.length) return [];
   return near.filter(entry => entry.badge.hour === near[0].badge.hour).map(entry => entry.badge);
-}
-
-export function badgeRows(badges: readonly EventBadge[]): TooltipRow[] {
-  return badges.map((badge, index) => ({ label: `${badge.glyph} ${badge.label}`, swatch: badge.color, divider: index === 0,
-    ...(badge.failure ? { detail: badge.failure.message } : {}),
-    ...(badge.approximate ? { value: 'Approximate' } : {}) }));
 }
 
 export function drawBadges(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, badges: readonly EventBadge[], playhead: number | null): void {

@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
-import { wireSummary } from './chartSummary.fixture.ts';
-import { dayLabel, drawBands, drawLine, spanLabel } from './draw.ts';
-import { pickLines } from './linePick.ts';
+import { drawApproximateSpans, drawLineSummary } from './chartSummary.ts';
+import { drawBands, drawLine } from './draw.ts';
 import { extentOf } from './series.ts';
 import type { Run } from './series.ts';
 import type { ChartBucket, ChartSummary } from './chartSummary.ts';
@@ -24,17 +22,6 @@ function canvas() {
   } as unknown as CanvasRenderingContext2D };
 }
 const summary: ChartSummary = { from: 0, to: 50_000, width: 100, buckets: [bucket] };
-
-test('summary picks require exact known actors and preserve overlaps and gaps', () => {
-  const lines = ['A', 'B'].map(key => ({ key, summary }));
-  const context = { frame, until: null, point: { x: frame.toX(40_000), y: frame.toY(1) } };
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(), context), []);
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A']), context), ['A']);
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A', 'B']), context), ['A', 'B']);
-  const broken = { ...summary, buckets: [{ ...bucket, hasBreak: true }] };
-  assert.deepEqual(pickSummaryLines([{ key: 'A', summary: broken }], 40_000, new Set(['A']), context), []);
-  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A']), { ...context, until: 30_000 }), []);
-});
 
 test('summary draws chronological extrema with held direction using width-sized geometry', () => {
   const { context, paths } = canvas();
@@ -109,19 +96,6 @@ test('dense summary extents keep only the buckets that reach the hours asked for
   assert.deepEqual(extentOfSummary(retained, 999.5, 2200), [5, 900], 'a bucket partly in view keeps its whole envelope');
   assert.deepEqual(extentOfSummary(retained, 50, 999), [5, 900]);
   assert.equal(extentOfSummary(retained, 2001, 2200), null);
-});
-
-test('exact summary picks follow legacy curves and held paths with overlaps, gaps and clipping', () => {
-  const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-5, 30], false);
-  for (const held of [false, true]) for (const until of [null, 5.5, 9.25, 18.5]) {
-    const lines = [exactSource, exactSource.map(run => ({ ...run, value: run.value + 2 })), exactSource].map((runs, index) => ({ key: String(index), runs, held }));
-    const summaries = lines.map(line => ({ ...line, summary: hourlySummary(line.runs, frame.x[0], until ?? frame.x[1], Math.ceil(frame.plotWidth)) }));
-    for (const hour of [2, 3, 4, 5, 7, 9, 10, 12, 18]) for (const point of [undefined, { x: frame.toX(hour + 0.4), y: frame.toY(18) }, { x: frame.toX(hour), y: frame.toY(8) }]) {
-      const context = { frame, until, point };
-      assert.deepEqual(pickSummaryLines(summaries, hour, new Set(lines.map(line => line.key)), context), pickLines(lines, hour, context));
-      assert.deepEqual(pickSummaryLines(summaries, hour, new Set(), context), []);
-    }
-  }
 });
 
 test('gaps and identity breaks never become a connecting summary stroke', () => {
@@ -238,47 +212,15 @@ test('stack summaries carry the union of part and total approximate spans withou
   assert.deepEqual(exact.approximate,[]);
 });
 
-test('a summary decodes from its bucket columns, gaps and totals in place, and refuses columns that disagree', () => {
-  const later = { ...bucket, firstHour: 60_000, lastHour: 60_009, lastValueHour: 60_004, minHour: 60_001, maxHour: 60_009, firstBreak: true, hasBreak: true, absoluteTotal: '123456789012345678901234567890' };
-  const sent = { from: 0, to: 70_000, width: 4, buckets: [null, { ...bucket, absoluteTotal: '7' }, null, null, later, null] };
-  const wire = wireSummary(sent);
-  assert.deepEqual(wire.buckets.skip, [1, 2]);
-  assert.deepEqual(wire.buckets.hours.slice(5), [60_000 - 49_999, 9, 4, 1, 9]);
-  assert.deepEqual(chartSummaryFrom(wire), sent);
-  assert.equal(chartSummaryFrom(wire), chartSummaryFrom(wire), 'decoded once per reply');
-  for (const columns of [{ slots: 2 }, { flags: [0, 4] }, { totals: ['7', '-1'] }, { hours: [...wire.buckets.hours.slice(0, 6), 3, 4, 1, 9] },
-    { skip: [1] }, { values: [...wire.buckets.values.slice(0, 7), Infinity] }])
-    assert.equal(chartSummaryFrom({ ...wire, buckets: { ...wire.buckets, ...columns } }), null, JSON.stringify(columns));
-  assert.equal(chartSummaryFrom(sent), null, 'bucket objects are not the wire');
-});
-
 test('a frame that cannot place a value draws that column as its placed dots, never a line across it', () => {
   const frame = plotFrame(120, 100, { left: 10, right: 10, top: 10, bottom: 10 }, [0, 29], [1e-323, 1], true);
   assert.equal(frame.toY(0), Infinity, 'the log floor underflows, so zero has no place');
   const column = (first: number, low: number): ChartBucket => ({ firstHour: first, lastHour: first + 9, firstValue: 0.5, lastValue: 0.5, lastValueHour: first,
     minHour: first + 2, minValue: low, maxHour: first, maxValue: 0.5, firstBreak: false, hasBreak: false });
   const summary: ChartSummary = { from: 0, to: 29, width: 100, buckets: [column(0, 0.25), column(10, 0), column(20, 0.25)] };
-  const geometry = summaryGeometry(frame, summary);
-  assert.equal(geometry.paths.length, 2, 'the unplaced column joins neither neighbour');
-  assert.ok(geometry.paths.flat().every(command => command.slice(1).every(value => Number.isFinite(value))));
-  assert.equal(geometry.dots.length, 3, 'its placed corners stay as dots');
   const drawn = canvas();
-  drawLineSummary(drawn.context, frame, tokens, summary, '#123');
+  drawLineSummary(drawn.context, frame, tokens, summary, '#123', false, null, { endDot: false });
   assert.equal(drawn.paths.length, 2);
   assert.ok(drawn.paths.flat(2).every(value => Number.isFinite(value)));
-});
-
-test('a tooltip of bins\' values names the days the bins span, never one hour of them; one-hour bins name the hour\'s day', () => {
-  const DAY = 24, from = 43_800_000 + 400 * DAY;
-  const bin = (first: number, last: number): ChartBucket => ({ firstHour: first, lastHour: last, firstValue: 1, lastValue: 2, lastValueHour: first,
-    minHour: first, minValue: 1, maxHour: first, maxValue: 2, firstBreak: false, hasBreak: false });
-  const wide = { from, to: from + 8 * 96 - 1, width: 8, buckets: Array.from({ length: 8 }, (_, at) => bin(from + at * 96, from + at * 96 + 95)) };
-  const hovered = from + 96 + 40;
-  assert.deepEqual(binAt(wide, hovered), wide.buckets[1]);
-  assert.equal(binAt(wide, from - 1), null);
-  assert.equal(binsLabel(hovered, [binAt(wide, hovered)]), spanLabel(from + 96, from + 96 + 95));
-  assert.notEqual(binsLabel(hovered, [binAt(wide, hovered)]), dayLabel(hovered));
-  assert.equal(binsLabel(hovered, [bin(from + 100, from + 150), null, bin(from + 96, from + 120)]), spanLabel(from + 96, from + 150));
-  assert.equal(binsLabel(hovered, [bin(hovered, hovered), null]), dayLabel(hovered));
-  assert.equal(binsLabel(hovered, []), dayLabel(hovered));
+  assert.equal(drawn.dots.length, 3, 'its placed corners stay as dots');
 });

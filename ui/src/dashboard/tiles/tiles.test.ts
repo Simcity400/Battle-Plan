@@ -8,7 +8,7 @@ import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
 import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, TILE_BINS, binHoursOf, tilesOf } from './tile.ts';
 import type { Tile } from './tile.ts';
-import { TileView, mostNamed, tileBuckets, unrecordedReason } from './view.ts';
+import { TileView, tileBuckets, unrecordedReason } from './view.ts';
 import type { TiledLine, TileLane, TileViewport } from './view.ts';
 
 function reply(tags: readonly string[], binHours: number, index: number, lastHour: number, value: (tag: number, hour: number) => number | null): SeriesTileReply {
@@ -369,8 +369,6 @@ test('a chart whose lines hold no value anywhere in view says why, naming the re
   assert.equal(unrecordedReason([empty]), rowless, "a ranked reply's lines read alike");
   assert.equal(unrecordedReason([empty, held]), null);
   assert.equal(unrecordedReason([]), null);
-  assert.equal(mostNamed([after, rowless, rowless]), rowless);
-  assert.equal(mostNamed([after]), after);
 });
 
 test('a page chart joining a tile the prepare lane holds waiting sends it at once; a prepared chart joining it does not', async () => {

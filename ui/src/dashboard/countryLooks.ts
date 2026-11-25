@@ -40,11 +40,6 @@ export function lookPlan(branch: RecordedBranch | undefined, tags: readonly stri
   return { samples, wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
-export function branchHour(branch: Pick<RecordedBranch, 'firstHour' | 'lastHour'>, hour: number): number | null {
-  const at = Math.floor(hour);
-  return at < branch.firstHour || at > branch.lastHour ? null : at;
-}
-
 export function looksRead(following: boolean, identityHour: number | null, moment: number,
   segmentAt?: (tag: string, hour: number) => number | null, hours?: ReadonlyMap<string, number>, exact = false) {
   return following && identityHour !== null
