@@ -799,6 +799,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return this.facts.release(fact => shown.has(fact));
   }
 
+  placement(id: number): { binding: number; owner?: string; offset: number; pin: number | null; route: number | null } | null {
+    const widget = this.widgets.get(id);
+    if (!widget) return null;
+    return { binding: widget.binding.generation, ...widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}, offset: widget.binding.offset, pin: widget.binding.pin, route: this.routeOf(widget) };
+  }
+
   private routeOf(widget: Widget) {
     for (const sub of widget.subs) { const route = this.subs.get(sub)?.route; if (route !== null && route !== undefined) return route; }
     return null;

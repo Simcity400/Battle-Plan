@@ -18,7 +18,11 @@ export type ToLane =
   | { type: 'stream'; route: number; seek: number; target: number }
   | { type: 'fail'; route: number; seek: number; command: number; reason: string }
   | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
+  | { type: 'canvas'; widget: number; canvas: OffscreenCanvas }
+  | ({ type: 'clock' } & StageClock)
   | FrameRequest;
+
+export interface StageClock { playing: boolean; speed: number; position: number; at: number; seek: number; last: number; frameRate: number }
 
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)

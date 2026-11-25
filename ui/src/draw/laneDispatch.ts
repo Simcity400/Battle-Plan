@@ -1,5 +1,7 @@
 import { Lane, type Bitmapped, type LaneHost, type LaneView } from './lane.ts';
 import type { FromLane, FromPull, ToLane, ToPull } from './laneMessages';
+import { WORKER_PRESENTS } from '../proof/arm.ts';
+import { Stage } from '../proof/stage.ts';
 
 export interface WakeChannel {
   readonly port1: { onmessage: ((ev: MessageEvent) => unknown) | null };
@@ -24,6 +26,13 @@ export function macrotaskSchedule(
     current = { token, run };
     wake.port2.postMessage(token);
   };
+}
+
+function macrotaskQueue(): (run: () => void) => void {
+  if (typeof MessageChannel !== 'function') return run => setTimeout(run, 0);
+  const channel = new MessageChannel(), queue: (() => void)[] = [];
+  channel.port1.onmessage = () => { const run = queue.shift(); run?.(); };
+  return run => { queue.push(run); channel.port2.postMessage(0); };
 }
 
 export function cropAll<S, B extends { close(): void }>(sources: readonly S[], make: (source: S) => Promise<B>): Promise<B[]> {
@@ -144,6 +153,9 @@ export interface LaneSide {
 
 export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]) => void, side: LaneSide): (message: ToLane) => void {
   let lane: Lane<ImageBitmap> | null = null, rate = 1;
+  const defer = macrotaskQueue();
+  const stretchLater = (ms: number) => { if (side.stretch && ms > 0) defer(() => side.stretch!(ms, rate)); };
+  const stage = WORKER_PRESENTS ? new Stage(message => post(message), stretchLater) : null;
   const views = new Map<string, LaneView>();
   const viewOf = (kind: string) => {
     let held = views.get(kind);
@@ -155,7 +167,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       lane: index, lanes, views: viewOf, crop: side.crop, later: side.later,
       ...side.schedule ? { schedule: side.schedule } : {},
       ...side.clock ? { clock: side.clock } : {},
-      present: (presentation, transfer) => post({ type: 'presentation', ...presentation }, transfer),
+      present: (presentation, transfer) => stage ? stage.offer(presentation) : post({ type: 'presentation', ...presentation }, transfer),
       release: bytes => port.postMessage({ release: bytes } satisfies ToPull),
       hit: (widget, key, installedId, owner) => post({
         type: 'hit',
@@ -168,8 +180,9 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       fail: reason => post({ type: 'failure', lane: index, reason }),
       failSub: (sub, reason) => post({ type: 'sub-failed', lane: index, sub, reason }),
       failWidget: (widget, reason, stamp) => post({ type: 'widget-failed', lane: index, widget, reason, ...stamp !== undefined ? { stamp } : {} }),
-      ...side.stretch ? { stretch: (ms: number) => side.stretch!(ms, rate) } : {},
+      ...side.stretch ? { stretch: stage ? stretchLater : (ms: number) => side.stretch!(ms, rate) } : {},
     });
+    stage?.start(made, index);
     port.onmessage = ({ data }: MessageEvent<FromPull>) => {
       if (data.kind === 'failure') { post({ type: 'failure', lane: index, reason: data.reason }); return; }
       try { made.receive(data.kind, data.bytes, data.kind === 'follow' ? data.resets : undefined); }
@@ -180,13 +193,15 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
   return m => {
     if (m.type === 'init') { rate = m.rate; lane = start(m.lane, m.lanes, m.port); return; }
     if (m.type === 'options') { rate = m.rate; return; }
+    if (m.type === 'canvas') { stage?.attach(m.widget, m.canvas); return; }
+    if (m.type === 'clock') { stage?.clock(m); return; }
     if (!lane) return;
     switch (m.type) {
       case 'follow': lane.follow(m.sub, m.channel, m.product); break;
       case 'route': lane.bindRoute(m.sub, m.route, m.native, m.seek, m.offset); break;
       case 'unfollow': lane.unfollow(m.sub); break;
       case 'mount': lane.mount(m.widget, m.subs, m.view, m.model); break;
-      case 'unmount': lane.unmount(m.widget); break;
+      case 'unmount': lane.unmount(m.widget); stage?.detach(m.widget); break;
       case 'bind': lane.bind(m.widget, m.binding, m.model, m.retry, m.remounted); break;
       case 'supply': lane.supply(m.widget, m); break;
       case 'payloads': lane.payloads(m); break;
@@ -194,7 +209,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'stream': lane.stream(m.route, m.seek, m.target); break;
       case 'fail': lane.fail(m.route); break;
       case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed); break;
-      case 'frame': lane.frame(m); break;
+      case 'frame': if (stage) stage.exact(m); else lane.frame(m); break;
     }
   };
 }

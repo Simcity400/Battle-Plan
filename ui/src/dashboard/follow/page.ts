@@ -1,4 +1,5 @@
 import { answerShape } from './message.ts';
+import { WORKER_PRESENTS, markPictures } from '../../proof/arm.ts';
 import type { InstalledViewport } from '../../families/plan.ts';
 
 export const SAME = 'same' as const;
@@ -38,6 +39,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   fields: Readonly<Record<string, unknown>>;
   ms?: number;
   stamp?: number;
+  forwarded?: true;
 }
 
 export interface Presentation<B extends Bitmap = Bitmap> {
@@ -174,6 +176,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private queue: Presentation<B>[] = [];
   private touched = new Set<Widget<B>>();
   private redated = new Set<Widget<B>>();
+  private pictures = 0;
 
   constructor({ lanes = 1, post = () => {}, seek = 0 }: { lanes?: number; post?: (lane: number | 'all', message: PageMessage) => void; seek?: number } = {}) {
     this.lanes = lanes; this.post = post; this.seek = seek;
@@ -348,7 +351,17 @@ export class Page<B extends Bitmap = Bitmap> {
       }
     }
     this.tell();
+    if (playing && !wake) this.countDue();
     this.request(wake || !playing, wake);
+  }
+
+  private countDue() {
+    const due = ((globalThis as { __bpDue?: { frames: number; due: number } }).__bpDue ??= { frames: 0, due: 0 });
+    due.frames++;
+    for (const widget of this.widgets.values()) {
+      const shown = widget.installed;
+      if (shown && this.target(widget) > shown.hi) { due.due++; return; }
+    }
   }
 
   frame() {
@@ -358,6 +371,7 @@ export class Page<B extends Bitmap = Bitmap> {
   }
 
   private request(exact: boolean, retire: boolean) {
+    if (WORKER_PRESENTS && !exact && this.playing) return;
     if (exact && retire && this.earlyWidgets.size) {
       for (const widget of [...this.earlyWidgets]) {
         this.stats.visited++;
@@ -439,6 +453,11 @@ export class Page<B extends Bitmap = Bitmap> {
   }
 
   private commit() {
+    this.pictures = 0;
+    try { this.committing(); } finally { markPictures(this.pictures); }
+  }
+
+  private committing() {
     const queue = this.queue;
     this.queue = [];
     for (const presentation of queue) for (const [id, reset] of presentation.resets ?? []) {
@@ -557,7 +576,7 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private refuse(widget: Widget<B>, entry: Entry<B>, reason: string) {
     this.stats.rejected[reason] = (this.stats.rejected[reason] ?? 0) + 1;
-    this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason });
+    if (!entry.forwarded) this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason });
     this.earlyClosed.delete(entry);
     closeParts(entry);
     this.disown(entry);
@@ -568,7 +587,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (!widget) {
       closeParts(entry);
       this.disown(entry);
-      if (lane >= 0) { this.stats.rejected.unmounted = (this.stats.rejected.unmounted ?? 0) + 1; this.refusals[lane]!.push({ widget: entry.widget, id: entry.id, reason: 'unmounted' }); }
+      if (lane >= 0 && !entry.forwarded) { this.stats.rejected.unmounted = (this.stats.rejected.unmounted ?? 0) + 1; this.refusals[lane]!.push({ widget: entry.widget, id: entry.id, reason: 'unmounted' }); }
       return;
     }
     const why = this.reject(widget, entry);
@@ -584,7 +603,7 @@ export class Page<B extends Bitmap = Bitmap> {
       for (let k = 0; k < widget.surfaces.length; k++) {
         const part = entry.surfaces[k];
         if (entry.mode !== 'picture' || !part) widget.surfaces[k]!.clear();
-        else if (part !== SAME) widget.surfaces[k]!.install(part);
+        else if (part !== SAME) { widget.surfaces[k]!.install(part); this.pictures++; }
       }
     } catch {
       closeParts(entry);
@@ -631,7 +650,7 @@ export class Page<B extends Bitmap = Bitmap> {
     widget.installed = installed;
     widget.status = entry.mode; widget.reason = entry.reason;
     widget.failureOrigin = entry.mode === 'failed' ? entry.failureOrigin : undefined;
-    this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });
+    if (!entry.forwarded) this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });
     this.stats.installs++;
     if (drew) { widget.drawn++; this.touched.add(widget); } else this.redated.add(widget);
   }

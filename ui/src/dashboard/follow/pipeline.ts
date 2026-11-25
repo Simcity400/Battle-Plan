@@ -14,6 +14,9 @@ import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
 import type { GatedParams } from '../regionTime';
 import { asFailure, RefusedError, type Failure } from '../queryError.ts';
+import { WORKER_PRESENTS } from '../../proof/arm.ts';
+
+const PRESENTED_BY_WORKER = { width: 1, close() {} } as unknown as ImageBitmap;
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
@@ -114,6 +117,7 @@ export class Pipeline {
     this.stopPublish = clock.onPublish((previous, next) => this.published(previous, next), true);
     this.stopClock = clock.subscribe(() => this.anchor());
     const s = clock.getSnapshot();
+    if (WORKER_PRESENTS) this.tellClock(s);
     this.page.publish(s.hour, { playing: s.playing, speed: s.hoursPerSecond, step: 0 });
   }
 
@@ -168,8 +172,22 @@ export class Pipeline {
     return false;
   }
 
+  private tellClock(s: PlaybackSnapshot) {
+    const message = { type: 'clock' as const, playing: s.playing, speed: s.hoursPerSecond, position: s.position, at: performance.timeOrigin + (s.composedAt ?? performance.now()),
+      seek: s.seekSequence, last: s.bounds?.lastHour ?? s.position, frameRate: Math.max(1, this.host.frameRate()) };
+    for (const lane of this.host.lanes) lane.postMessage(message);
+  }
+
+  canvas(id: number, canvas: OffscreenCanvas) {
+    const widget = this.widgets.get(id);
+    if (!widget || this.closed) return;
+    this.host.lanes[widget.lane]!.postMessage({ type: 'canvas', widget: id, canvas }, [canvas]);
+  }
+
   private published(previous: PlaybackSnapshot, next: PlaybackSnapshot) {
     if (this.closed) return;
+    if (WORKER_PRESENTS && (next.playing !== previous.playing || next.seekSequence !== previous.seekSequence || next.hoursPerSecond !== previous.hoursPerSecond
+      || (!next.playing && next.position !== previous.position) || next.bounds?.lastHour !== previous.bounds?.lastHour)) this.tellClock(next);
     const rate = this.host.rate();
     if (rate !== this.rate) { this.rate = rate; for (const lane of this.host.lanes) lane.postMessage({ type: 'options', rate }); }
     const fps = Math.max(1, this.host.frameRate());
@@ -333,8 +351,11 @@ export class Pipeline {
         playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms, ...message.cancelled ? { cancelled: true } : {} });
       return;
     }
-    this.page.offer(message);
-    if (!this.page.playing) this.commitSoon();
+    const offered = WORKER_PRESENTS && message.entries.some(entry => entry.forwarded)
+      ? { ...message, entries: message.entries.map(entry => entry.forwarded ? { ...entry, surfaces: entry.surfaces.map(part => part === null ? null : PRESENTED_BY_WORKER) } : entry) }
+      : message;
+    this.page.offer(offered);
+    if (!this.page.playing || offered !== message) this.commitSoon();
   }
 
   private commitSoon() {

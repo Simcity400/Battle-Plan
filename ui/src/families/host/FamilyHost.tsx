@@ -10,6 +10,7 @@ import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
+import { HOLD_DOM } from '../../proof/arm.ts';
 import type { LaneArtResolutions } from '../art/react.ts';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
@@ -341,6 +342,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const heldRef = useRef(held);
   heldRef.current = held;
   const pauseFlushRef = useRef(0);
+  const installRef = useRef<() => void>(() => {});
   const recordRef = useRef<InstalledRecord | null>(null);
   const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => recordRef.current?.picture ?? null);
   const selectionsRef = useRef(new BoundSelections());
@@ -857,7 +859,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
       const fields = shown?.fields;
       const rawMeta = fields?.meta as RawMeta | undefined;
-      updateMeta(shown?.mode ?? 'reading', shown?.reason ?? null, shown?.failureOrigin ?? 'local', rawMeta);
+      const holding = HOLD_DOM && pipeline.page.playing && !focusInsideRef.current && shown?.mode === 'picture';
+      if (!holding) updateMeta(shown?.mode ?? 'reading', shown?.reason ?? null, shown?.failureOrigin ?? 'local', rawMeta);
 
       const idDemands = fields?.identityDemands as readonly (readonly [EntityKind, string, number])[] | undefined;
       if (idDemands && idDemands !== lastIdentityDemandsRef.current && cur.onIdentityDemands) {
@@ -916,7 +919,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         summaryPartial: rawMeta?.summaryPartial ?? null,
         notes: rawMeta?.notes ?? NO_STRINGS,
       });
-      describe(mergeAccessibleDescription(installed.accessibleDescription, rawSummary));
+      if (!holding) describe(mergeAccessibleDescription(installed.accessibleDescription, rawSummary));
 
       const extentSize = activeAdapter.getScrollExtent?.(fields);
       if (extentSize) {
@@ -966,7 +969,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
       if (installedUpdate.changed) queueMicrotask(() => bindRef.current());
 
-      if (activeAdapter.chromeState) {
+      if (activeAdapter.chromeState && !holding) {
         const nextChrome = activeAdapter.chromeState(fields, chromeStateRef.current);
         if (nextChrome !== chromeStateRef.current) {
           chromeStateRef.current = nextChrome;
@@ -975,7 +978,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       const table = fields.table as { readonly count: number } | undefined;
-      if (table && table !== lastTableRef.current) {
+      if (table && table !== lastTableRef.current && !holding) {
         lastTableRef.current = table;
         if (lastRowCountRef.current !== table.count) {
           lastRowCountRef.current = table.count;
@@ -991,7 +994,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
-      const mirror = mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
+      const mirror = holding ? undefined : mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
       if (mirror !== undefined) {
         lastMirrorObjRef.current = mirror;
         lastMirrorSelectedRef.current = record.selectedKey;
@@ -999,7 +1002,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       const phases = fields.phases;
-      if (perfLog && phases && phases !== lastPhasesRef.current && frameNode) {
+      if (perfLog && phases && phases !== lastPhasesRef.current && frameNode && !holding) {
         lastPhasesRef.current = phases;
         frameNode.dataset.familyPhases = JSON.stringify(phases);
       }
@@ -1035,6 +1038,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     };
 
     install();
+    installRef.current = install;
     const stopInstall = pipeline.onInstall(pipe, install);
     const resolveInstalled = () => {
       const shown = pipeline.view(pipe);
@@ -1215,6 +1219,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;
+    if (HOLD_DOM) installRef.current();
     pauseFlushRef.current++;
     bindRef.current();
     const mirror = pipeline.view(pipe)?.fields?.mirror as MirrorModel | undefined;

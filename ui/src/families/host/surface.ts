@@ -11,6 +11,9 @@ import { AuditSnapshotStore, auditRowsOf, isFamilyAuditing, subscribeFamilyAudit
 import type { FamilySourceSubscription } from '../contract.ts';
 import { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
 import { FamilyTooltipController } from './tooltips.ts';
+import { WORKER_PRESENTS } from '../../proof/arm.ts';
+
+const WORKER_SURFACE: ReturnType<typeof bitmapSurface> = { install() {}, clear() {} };
 
 const subscribeAuditing = (listener: () => void) => subscribeFamilyAuditing(() => { listener(); });
 
@@ -187,7 +190,9 @@ export function mountFamilyCanvas(
     canvas.setAttribute('aria-hidden', 'true');
     canvas.dataset.surface = surfaceKind;
     canvas.dataset.placement = String(pipe);
-    return { canvas, surface: bitmapSurface(canvas) };
+    if (!WORKER_PRESENTS) return { canvas, surface: bitmapSurface(canvas) };
+    pipeline.canvas(pipe, canvas.transferControlToOffscreen());
+    return { canvas, surface: WORKER_SURFACE };
   })!;
   extent.className = extentClassName;
   extent.append(drawn.canvas);
