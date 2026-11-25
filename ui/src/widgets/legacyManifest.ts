@@ -6,7 +6,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'construction-log', load: () => import('./construction-log') },
   { kind: 'division-log', load: () => import('./division-log') },
   { kind: 'division-service-record', load: () => import('./division-service-record') },
-  { kind: 'equipment-produced', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./equipment-produced') },
   { kind: 'espionage-log', load: () => import('./espionage-log') },
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
   { kind: 'general-career', view: 'timeline', label: 'Timeline', load: () => import('./general-career') },

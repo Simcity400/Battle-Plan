@@ -1,6 +1,5 @@
 
 use super::{ProducedMeasure, ProducedUnknown, value::Amount};
-use crate::products::production_spending::runs::Piece;
 
 pub fn month_before(hour: i32) -> Option<i32> {
     use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
@@ -43,63 +42,13 @@ pub fn difference(at: Counted, before: Option<Counted>) -> Amount {
     }
 }
 
-fn find<T: Copy>(pieces: &[Piece<T>], hour: i32) -> Option<T> {
-    let at = pieces.partition_point(|piece| piece.1 < hour);
-    pieces.get(at).filter(|piece| piece.0 <= hour).map(|piece| piece.2)
-}
-
 pub fn read_at(reads: &[i32], hour: i32) -> Option<i32> {
     reads.partition_point(|&read| read <= hour).checked_sub(1).map(|at| reads[at])
-}
-
-pub fn window_at(totals: &[Piece<Counted>], reads: &[i32], measure: ProducedMeasure, hour: i32) -> Amount {
-    let first = totals.first().map_or(i32::MAX, |piece| piece.0);
-    let Some(read) = read_at(reads, hour).filter(|&read| read >= first) else {
-        return Amount::Unknown(ProducedUnknown::WindowIncomplete);
-    };
-    let Some(at) = find(totals, read) else {
-        return Amount::Unknown(ProducedUnknown::NotRecorded);
-    };
-    let before = back(measure, read).filter(|&start| start >= first && reads.binary_search(&start).is_ok()).and_then(|start| find(totals, start));
-    difference(at, before)
-}
-
-pub fn measured(totals: &[Piece<Counted>], reads: &[i32], measure: ProducedMeasure) -> Vec<Piece<Amount>> {
-    let (Some(first), Some(last)) = (totals.first().map(|piece| piece.0), totals.last().map(|piece| piece.1)) else {
-        return Vec::new();
-    };
-    let mut out: Vec<Piece<Amount>> = Vec::with_capacity(totals.len());
-    let mut push = |from: i32, to: i32, value: Amount| match out.last_mut() {
-        Some(open) if open.2 == value && open.1.checked_add(1) == Some(from) => open.1 = to,
-        _ => out.push((from, to, value)),
-    };
-    if measure == ProducedMeasure::Total {
-        for &(from, to, (value, _)) in totals {
-            push(from, to, value);
-        }
-        return out;
-    }
-    let shown: Vec<i32> = reads.iter().copied().filter(|&read| first <= read && read <= last).collect();
-    if shown.first().is_none_or(|&read| read > first) {
-        push(first, shown.first().map_or(last, |read| read - 1), Amount::Unknown(ProducedUnknown::WindowIncomplete));
-    }
-    for (index, &read) in shown.iter().enumerate() {
-        let to = shown.get(index + 1).map_or(last, |next| next - 1);
-        push(read, to, window_at(totals, &shown, measure, read));
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ProducedUnknown as Why;
-
-    const OBSERVED: (Option<i32>, Option<i32>) = (Some(0), Some(0));
-
-    fn known(value: i128) -> Counted {
-        (Amount::Known(value), OBSERVED)
-    }
 
     #[test]
     fn a_month_before_is_the_same_day_or_the_shorter_months_last() {
@@ -110,39 +59,5 @@ mod tests {
         assert_eq!(month_before(day(365 + 3, 1)), Some(day(334 + 3, 1)));
         assert_eq!(month_before(day(3, 1)), None);
         assert_eq!(month_before(HOUR_EPOCH - 1), None);
-    }
-
-    #[test]
-    fn a_day_is_the_total_at_a_read_less_the_total_read_a_day_before_inside_the_stretch() {
-        let totals = [(0, 11, known(0)), (12, 35, known(5)), (36, 59, known(12)), (60, 100, known(12))];
-        let reads = [0, 12, 36, 60, 84];
-        assert_eq!(measured(&totals, &reads, ProducedMeasure::Day), vec![
-            (0, 35, Amount::Unknown(Why::WindowIncomplete)),
-            (36, 59, Amount::Known(7)),
-            (60, 100, Amount::Known(0)),
-        ]);
-        assert_eq!(measured(&totals, &reads, ProducedMeasure::Total), vec![(0, 11, Amount::Known(0)), (12, 35, Amount::Known(5)), (36, 100, Amount::Known(12))]);
-        assert_eq!(measured(&totals, &reads, ProducedMeasure::Week), vec![(0, 100, Amount::Unknown(Why::WindowIncomplete))]);
-        assert_eq!(window_at(&totals, &reads, ProducedMeasure::Day, 50), Amount::Known(7));
-        assert_eq!(window_at(&totals, &reads, ProducedMeasure::Day, 20), Amount::Unknown(Why::WindowIncomplete));
-        assert!(measured(&[], &reads, ProducedMeasure::Day).is_empty());
-        assert_eq!(measured(&totals, &[12, 36], ProducedMeasure::Day)[0], (0, 35, Amount::Unknown(Why::WindowIncomplete)));
-    }
-
-    #[test]
-    fn an_unknown_end_or_another_observation_leaves_the_window_unknown() {
-        let totals = [
-            (0, 29, known(3)),
-            (30, 53, (Amount::Unknown(Why::LostOutput), OBSERVED)),
-            (54, 77, known(9)),
-            (78, 120, (Amount::Known(1), (Some(78), Some(0)))),
-        ];
-        let reads = [6, 30, 54, 78, 102];
-        assert_eq!(measured(&totals, &reads, ProducedMeasure::Day), vec![
-            (0, 29, Amount::Unknown(Why::WindowIncomplete)),
-            (30, 77, Amount::Unknown(Why::LostOutput)),
-            (78, 101, Amount::Unknown(Why::ObservationRestarted)),
-            (102, 120, Amount::Known(0)),
-        ]);
     }
 }

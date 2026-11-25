@@ -122,6 +122,7 @@ pub fn answers(product: &str, params: &Value) -> bool {
                 || (product == dashboard_query::tile::PRODUCT && dashboard_air::products::air_ledger::tiles::SERIES == kind)
                 || (product == dashboard_query::tile::PRODUCT && dashboard_naval::products::naval::losses::tiles::SERIES == kind)
                 || (product == dashboard_query::tile::PRODUCT && dashboard_wars::products::factions::tiles::SERIES == kind)
+                || (product == dashboard_query::tile::PRODUCT && dashboard_production::products::equipment_produced::tiles::SERIES == kind)
         });
     }
     crate::products::MOVED.contains(&product)
@@ -180,6 +181,12 @@ pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadCont
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "Faction group totals over time are served as tiles and faction-totals-at"));
             }
             return Ok(serde_json::to_value(dashboard_wars::products::factions::tiles::tile(source, &query, params, context, cancelled)?)?);
+        }
+        if kind(params) == Some(dashboard_production::products::equipment_produced::tiles::SERIES) {
+            if product != dashboard_query::tile::PRODUCT {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Equipment produced over time is served as tiles and equipment-produced-race"));
+            }
+            return Ok(serde_json::to_value(dashboard_production::products::equipment_produced::tiles::tile(source, &query, params, context, cancelled)?)?);
         }
         if kind(params) == Some(dashboard_land::products::army::SERIES) {
             if product == dashboard_query::tile::PRODUCT {

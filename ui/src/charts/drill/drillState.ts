@@ -5,8 +5,6 @@ import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { at, FOLLOW, regionFollows, SPEC, type GatedTime, type PinnedSpec, type Region, type RegionAction } from '../../dashboard/regionTime.ts';
 
-export type { PinnedSpec };
-
 export interface Breakdown { id: string; label: string }
 export interface DrillHolder { tag: string; origin: number }
 export interface DrillState { breakdown: string | null; spec: boolean; follow: boolean; hour: number | null; country?: DrillHolder | null }

@@ -8,4 +8,4 @@ Units default to the most delivered type and are never summed across types. Indu
 
 Requests identify the country the drill asked for and names resolve at the selected read. Artwork uses the same dated stockpile artwork lookup as logistics, with a named placeholder for unavailable pictures. The settings escape content keys that cannot be stored verbatim.
 
-[Production widget](../../ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx) · [Production windows](../../ui/src/widgets/equipment-produced/producedData.ts) · [Production breakdown](../../ui/src/widgets/equipment-produced/producedDrill.ts) · [Production artwork](../../ui/src/widgets/equipment-produced/producedArtwork.ts)
+[Production lines](../../ui/src/widgets/equipment-produced/equipmentProducedLinesProjection.ts) · [Production race](../../ui/src/widgets/equipment-produced/equipmentProducedRaceProjection.ts) · [Production breakdown](../../ui/src/widgets/equipment-produced/family.tsx)
