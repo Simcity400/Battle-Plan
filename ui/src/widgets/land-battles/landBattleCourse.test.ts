@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { sampleSeriesValueAt } from '../../families/time-chart/hitTest.ts';
 import { courseDivisions, courseEquipment, courseManpower, courseMissing, coursePoints, sharedSpans, validateLandBattleCourse, validateLandBattleTerrain } from './landBattleCourse.ts';
 
 const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
@@ -16,6 +17,11 @@ test('a course rebuilds every read by design and refuses orphan changes and repe
     { hour: 15, terminal: true, sides: [{ manpower: 11, variants: [[1, '300000'], [0, '0']] }, { manpower: 4, variants: [[2, '-100000']] }] },
   ]));
   assert.equal(course.reads.length, 4);
+  assert.equal(course.end, null);
+  const ending = (end: unknown) => validateLandBattleCourse({ ...wire([]), battle: { ...wire([]).battle, end } }).end;
+  assert.deepEqual(ending({ hour: 15, bound: 'exact' }), { hour: 15, bound: 'exact' });
+  assert.deepEqual(ending({ unknown: 'Ending hour not recorded' }), { unknown: 'Ending hour not recorded' });
+  assert.throws(() => ending({ hour: 15 }), /malformed/);
   const second = course.reads[1].sides;
   assert.ok(typeof second !== 'string');
   assert.deepEqual([...(second[0].equipment as Map<number, bigint>)], [[0, 100000n], [1, 250000n]]);
@@ -59,18 +65,23 @@ test('manpower and divisions are held steps to the shown hour, broken at unread 
     { firstHour: 18, lastHour: 19, value: 6, breakBefore: true }]);
 });
 
-test('a course chart holds each step to its end, breaks at unread spans and marks what neither side recorded', () => {
+test('a course chart holds each read hour, breaks where reading stops and marks each unread hour, even the shown one', () => {
   const attacker = [{ firstHour: 10, lastHour: 11, value: 5 }, { firstHour: 14, lastHour: 16, value: 9, breakBefore: true }];
   const defender = [{ firstHour: 12, lastHour: 13, value: 1 }];
   assert.deepEqual(coursePoints(attacker, 16), [
     { hour: 10, value: 5 }, { hour: 12, value: 5 }, { hour: 12, value: null }, { hour: 14, value: 9 }, { hour: 16, value: 9 },
   ]);
+  const series = { id: 'a', key: 'a', name: 'Attacker', color: '#fff', role: 'primary' as const, step: true, points: coursePoints(attacker, 16) };
+  assert.deepEqual([11, 12, 13, 14, 16].map(hour => sampleSeriesValueAt(series, hour, 16)?.value ?? null), [5, null, null, 9, 9]);
   assert.deepEqual(coursePoints([], 16), []);
-  assert.deepEqual(courseMissing(attacker, 10, 16), [{ firstHour: 12, lastHour: 14 }]);
-  assert.deepEqual(courseMissing(defender, 10, 16), [{ firstHour: 10, lastHour: 12 }, { firstHour: 14, lastHour: 16 }]);
+  assert.deepEqual(coursePoints([{ firstHour: 10, lastHour: 12, value: 3 }], 16), [{ hour: 10, value: 3 }, { hour: 13, value: 3 }, { hour: 13, value: null }]);
+  assert.deepEqual(courseMissing(attacker, 10, 16), [{ firstHour: 12, lastHour: 13 }]);
+  assert.deepEqual(courseMissing(defender, 10, 16), [{ firstHour: 10, lastHour: 11 }, { firstHour: 14, lastHour: 16 }]);
+  assert.deepEqual(courseMissing([{ firstHour: 10, lastHour: 15, value: 1 }], 10, 16), [{ firstHour: 16, lastHour: 16 }]);
   assert.deepEqual(courseMissing([], 10, 16), [{ firstHour: 10, lastHour: 16 }]);
   assert.deepEqual(sharedSpans(courseMissing(attacker, 10, 16), courseMissing(defender, 10, 16)), []);
-  assert.deepEqual(sharedSpans(courseMissing(attacker, 10, 16), courseMissing([], 10, 16)), [{ firstHour: 12, lastHour: 14 }]);
+  assert.deepEqual(sharedSpans(courseMissing(attacker, 10, 16), courseMissing([], 10, 16)), [{ firstHour: 12, lastHour: 13 }]);
+  assert.deepEqual(sharedSpans([{ firstHour: 16, lastHour: 16 }], [{ firstHour: 14, lastHour: 16 }]), [{ firstHour: 16, lastHour: 16 }]);
 });
 
 

@@ -16,7 +16,7 @@ function LandBattlesView(props: FamilyViewProps) {
       selectedKey={shown?.subject.row.key} onActivate={action => {
         if (scope && action.meta) setOpened({ scope, subject: action.meta as BattleDetailSubject, hour: action.hour });
       }} contextMenuItems={hit => hit.meta && track ? [jumpItem(props.runtime, track.id, (hit.meta as BattleDetailSubject).row.hour)] : []} />}
-    <LandBattleWindow opened={shown} track={track} client={props.runtime.client} active={props.active} anchor={anchor} onClose={() => setOpened(null)} />
+    {shown && track && <LandBattleWindow opened={shown} track={track} client={props.runtime.client} active={props.active} anchor={anchor} onClose={() => setOpened(null)} />}
   </div>;
 }
 

@@ -4,7 +4,7 @@ import { drawingSurface, sizeCanvas, watchCanvasSize } from '../../charts/surfac
 import { canvasMeasureText } from '../../charts/textWidth.ts';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
 import { useFamilyTheme } from '../../families/host/theme.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatDateHover, formatScalar } from '../../families/valueFormat.ts';
 import { resolveTooltipEntryContent } from '../../families/host/tooltips.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from '../../families/time-chart/layout.ts';
@@ -37,7 +37,7 @@ function courseChartModel(title: string, sides: readonly CourseSide[], extent: r
         id: side.id, key: side.id, name: side.label, color: side.color, role: 'primary', step: true,
         points: coursePoints(side.runs, until),
         missingSpans: missing[index]!.map(span => ({ ...span, reason })),
-        endLabel: last ? { name: side.label, value: formatScalar(last.value, 'integer') } : null,
+        endLabel: last && last.lastHour >= until ? { name: side.label, value: formatScalar(last.value, 'integer') } : null,
       };
     }),
     gaps: missing.reduce((shared, spans) => sharedSpans(shared, spans)).map(span => ({ ...span, reason })),
@@ -102,7 +102,8 @@ export default function BattleCourseChart({ title, sides, extent }: {
         hover.current.paint();
       }
       const entry = inspect ? deriveTimeChartTooltip(model, layout, inspect) : null;
-      if (entry) showTooltip(tooltipId, resolveTooltipEntryContent(entry), event.clientX, event.clientY);
+      const content = entry ? resolveTooltipEntryContent(entry) : null;
+      if (entry && content) showTooltip(tooltipId, content.subtitle ? content : { ...content, subtitle: formatDateHover(Math.floor(entry.hour)) }, event.clientX, event.clientY);
       else hideTooltip(tooltipId);
     }} />
   </figure>;

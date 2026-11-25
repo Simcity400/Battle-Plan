@@ -1,4 +1,4 @@
-import { useId, useMemo, type ReactNode, type RefObject } from 'react';
+import { useId, useMemo, type RefObject } from 'react';
 import { colour, distance, readableColour } from '../../charts/palette.ts';
 import type { Run } from '../../charts/series';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -106,7 +106,7 @@ function BattleBody({ subject, hour, course, colours }: {
   const data = course.data;
   const end = row.result === 'ongoing' || !data ? hour : Math.max(data.reads.at(-1)?.hour ?? row.hour, data.runs.at(-1)?.lastHour ?? row.hour);
   const at = Math.min(hour, end);
-  const extent = useMemo<readonly [number, number]>(() => [row.hour, Math.max(row.hour + 1, at)], [row.hour, at]);
+  const extent = useMemo<readonly [number, number]>(() => [row.hour, Math.max(row.hour, at)], [row.hour, at]);
   const manpower = useMemo(() => data ? courseManpower(data, at) : null, [data, at]);
   const divisions = useMemo(() => data ? courseDivisions(data, at) : null, [data, at]);
   const equipment = useMemo(() => data ? courseEquipment(data, at) : null, [data, at]);
@@ -170,50 +170,52 @@ function BattleBody({ subject, hour, course, colours }: {
   </div>;
 }
 
+function endingOf(course: LandCourse | undefined, result: BattleDetailSubject['row']['result']): { readonly hour: number | null; readonly missing: string | null } {
+  if (result === 'ongoing' || !course) return { hour: null, missing: null };
+  const end = course.end;
+  if (end === null) return { hour: null, missing: 'The recording has the result but not the hour the battle ended.' };
+  return 'unknown' in end ? { hour: null, missing: end.unknown } : { hour: end.hour, missing: null };
+}
+
 export default function LandBattleWindow({ opened, track, client, active, anchor, onClose }: {
-  readonly opened: OpenedBattle | null;
-  readonly track: BoundTrack | undefined;
+  readonly opened: OpenedBattle;
+  readonly track: BoundTrack;
   readonly client: DashboardClient;
   readonly active: boolean;
   readonly anchor: RefObject<HTMLDivElement | null>;
   readonly onClose: () => void;
 }) {
   const { theme } = useFamilyTheme();
-  const subject = opened?.subject ?? null;
-  const row = subject?.row ?? null;
-  const wanted = active && row !== null && track !== undefined;
-  const course = useProduct(client, row && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'land-battle-course', params: { branchId: track.branch.id, id: row.key } }) : null, wanted, validateLandBattleCourse);
-  const terrain = useProduct(client, row?.province != null && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'land-battle-terrain', params: { provinces: [row.province] } }) : null, wanted, validateLandBattleTerrain);
+  const { subject } = opened;
+  const { row } = subject;
+  const course = useProduct(client, productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'land-battle-course', params: { branchId: track.branch.id, id: row.key } }), active, validateLandBattleCourse);
+  const terrain = useProduct(client, row.province === null ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'land-battle-terrain', params: { provinces: [row.province] } }), active, validateLandBattleTerrain);
   const surface = theme?.surface ?? '#111111';
-  const colours = useMemo(() => sideColours(subject?.colors ?? [], surface), [subject, surface]);
+  const colours = useMemo(() => sideColours(subject.colors, surface), [subject, surface]);
 
-  let when: ReactNode = null;
-  let result: ReactNode = null;
-  if (row && opened) {
-    const data = course.data;
-    const ended = row.result !== 'ongoing' && data ? Math.max(data.reads.at(-1)?.hour ?? row.hour, data.runs.at(-1)?.lastHour ?? row.hour) : null;
-    const range = row.result === 'ongoing' ? formatDateRange(row.hour, opened.hour)
-      : ended !== null ? formatDateRange(row.hour, Math.min(opened.hour, ended)) : formatDay(row.hour);
-    const ground = terrain.data?.provinces[0];
-    const place = row.province === null ? <Missing label="Terrain not recorded" reason="Province not recorded" />
-      : ground?.name ? <span>{ground.name}</span>
-        : ground?.missing ? <Missing label="Terrain not recorded" reason={ground.missing} />
-          : terrain.error ? <Missing label="Terrain not recorded" reason={failureText(terrain.error, 'Terrain could not be read.')} /> : null;
-    when = <span className="lb-when">
-      <time data-tooltip={row.exact ? undefined : `By ${formatDay(row.hour)}: already under way when the recording first read it`}>{range}</time>
-      {place && <span className="lb-terrain">{place}</span>}
+  const ending = endingOf(course.data, row.result);
+  const range = row.result === 'ongoing' ? formatDateRange(row.hour, opened.hour)
+    : ending.hour !== null ? formatDateRange(row.hour, ending.hour) : formatDay(row.hour);
+  const ground = terrain.data?.provinces[0];
+  const place = row.province === null ? <Missing label="Terrain not recorded" reason="Province not recorded" />
+    : ground?.name ? <span>{ground.name}</span>
+      : ground?.missing ? <Missing label="Terrain not recorded" reason={ground.missing} />
+        : terrain.error ? <Missing label="Terrain not recorded" reason={failureText(terrain.error, 'Terrain could not be read.')} /> : null;
+  const when = <span className="lb-when">
+    <time data-tooltip={row.exact ? undefined : `By ${formatDay(row.hour)}: already under way when the recording first read it`}>{range}</time>
+    {ending.missing && <span className="lb-terrain"><Missing label="End not recorded" reason={ending.missing} /></span>}
+    {place && <span className="lb-terrain">{place}</span>}
+  </span>;
+  const result = row.result === 'unknown' ? <Missing label="Result not recorded" reason="Battle result not recorded" />
+    : <span className={`lb-result${row.result === 'ongoing' ? ' is-running' : ''}`}>
+      {row.result === 'ongoing' ? 'Ongoing' : row.result === 'attackerWon' ? 'Attacker won' : 'Defender won'}
     </span>;
-    result = row.result === 'unknown' ? <Missing label="Result not recorded" reason="Battle result not recorded" />
-      : <span className={`lb-result${row.result === 'ongoing' ? ' is-running' : ''}`}>
-        {row.result === 'ongoing' ? 'Ongoing' : row.result === 'attackerWon' ? 'Attacker won' : 'Defender won'}
-      </span>;
-  }
 
-  return <DetailWindowHost open={opened !== null} subject={row?.key ?? null} hour={opened?.hour ?? null} title={subject?.title ?? ''}
-    day={when} headerActions={result} placement="center" anchor={anchor} returnFocus={row ? mirrorRowSelector(row.key) : undefined}
+  return <DetailWindowHost open subject={row.key} hour={opened.hour} title={subject.title}
+    day={when} headerActions={result} placement="center" anchor={anchor} returnFocus={mirrorRowSelector(row.key)}
     className="lb-window" closeLabel="Close battle detail" onClose={onClose}>
-    {subject && opened && <BattleBody subject={subject} hour={opened.hour} course={course} colours={colours} />}
+    <BattleBody subject={subject} hour={opened.hour} course={course} colours={colours} />
   </DetailWindowHost>;
 }

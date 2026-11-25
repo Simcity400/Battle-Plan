@@ -19,7 +19,7 @@
 .lb-result.is-running::before { background: var(--accent); }
 
 .lb-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.lb-sides { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 10px 28px; padding: 2px 18px 14px; }
+.lb-sides { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 10px 28px; max-height: 45%; overflow: auto; padding: 2px 18px 14px; }
 .lb-side { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
 .lb-side.is-defender { align-items: flex-end; }
 .lb-who { display: flex; align-items: center; gap: 10px; max-width: 100%; min-width: 0; }
