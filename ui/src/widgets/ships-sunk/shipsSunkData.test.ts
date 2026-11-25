@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryGroupReply, ShipsSunkManifestReply, ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
-import { logCountryRequests } from '../../charts/log/logData.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
 import { countryMatch } from '../../dashboard/groups.ts';
@@ -143,7 +142,7 @@ test('one token shares content and artwork while recorded class fallback names s
   assert.equal(shipClassName(data, data.rows[1]), 'Another recorded design');
 });
 
-test('ships log retains fifty thousand sinking rows while only visible countries are requested', context => {
+test('ships log reuses the sorted rows through the playback hour in a large campaign', context => {
   const data = fixture();
   data.lastHour = 50100;
   data.rows = Array.from({ length: 50000 }, (_, index) => row({ sinkHour: 100 + index, knownAt: 100 + index,
@@ -152,7 +151,6 @@ test('ships log retains fifty thousand sinking rows while only visible countries
   context.diagnostic(`50,000 ships / 5,000 countries UI fixture: ${Buffer.byteLength(JSON.stringify(data))} JSON bytes.`);
   assert.equal(rows.length, 50000);
   assert.equal(rows[0].hour, 50099);
-  assert.equal(logCountryRequests(rows.slice(0, 20), item => ({ hour: item.hour, tags: [item.item.victim, item.item.attacker] })).length, 40);
   const ordered = shipLogOrder(data);
   const playbackRows = shipLogRows(data, 25099, [], 'both', () => true, null, ordered);
   assert.equal(playbackRows.length, 25000);

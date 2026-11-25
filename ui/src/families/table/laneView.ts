@@ -329,6 +329,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       summaryText: model.titleSummary ?? null,
       summaryPartial: model.titleSummaryPartial ?? null,
       hideHeader: model.hideHeader === true,
+      kindFilter: model.kindFilter,
       rowHeightMode: shape.rowHeightMode,
       notes: [],
       warnings: model.warnings ?? [],
@@ -438,6 +439,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         empty: model.empty,
         hasGroupHeaders: shape.hasGroups,
         dateGrouped: model.dateGrouped === true,
+        dayDividersOnly: model.dayDividersOnly,
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
       }, picture);

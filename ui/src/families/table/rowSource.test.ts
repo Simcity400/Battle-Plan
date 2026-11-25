@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PayloadSender } from '../../dashboard/follow/payloads.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
-import { projectPagedSlots } from './logHelpers.ts';
+import { gatedHour } from '../../test-support/gated.ts';
+import { projectPagedSlots, tailFollowParams } from './logHelpers.ts';
 import { buildNavigableSlots, buildRowSourceFromHead, SnapshotPager, validateGenericTailReply, validateTailReply, type DatedLogRow, type SnapshotPage, type SnapshotPages, type TailReply } from './rowSource.ts';
 
 interface Row extends DatedLogRow {
@@ -211,4 +212,16 @@ test('S19: display offsets translate to data ordinals across placed gaps and tot
   const pager = new SnapshotPager(256, 256);
   const step = pager.window({ first: 257, count: 5, dataFirst: 255, dataCount: 5 }, 200);
   assert.deepEqual(step.fetch, [{ offset: 0, limit: 256, hour: 200 }, { offset: 256, limit: 256, hour: 200 }], 'pager asks data-ordinal pages across the boundary shifted by earlier gaps');
+});
+
+test('a dated tail follows its selected categories and group', () => {
+  const tail = tailFollowParams({
+    product: 'event-feed-tail',
+    branchId: '1',
+    from: gatedHour(100),
+    limit: 256,
+    ask: { categories: ['politics'], group: { type: 'faction', id: '42', membership: 'hour' } },
+  });
+  assert.deepEqual(tail, { panel: 'event-feed-tail', branchId: '1', from: 100, limit: 256, categories: ['politics'], group: { type: 'faction', id: '42', membership: 'hour' } },
+    'a tail panel carries its real follow parameters and the group, never a member list');
 });

@@ -4,7 +4,8 @@ import type { FamilyChromeProps } from '../host/FamilyHost.tsx';
 import { syncTableEdges } from './edges.ts';
 import type { TableChromeState } from './hostAdapter.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
-import type { TableColumnSpec } from './model.ts';
+import LogKindFilter from './LogKindFilter.tsx';
+import type { TableColumnSpec, TableModel } from './model.ts';
 import { updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn, type TableHeaderIdentity } from './TableHeader.tsx';
 import './tableFamily.css';
@@ -14,6 +15,7 @@ const NO_COLUMNS: readonly TableColumnSpec[] = [];
 const NO_WIDTHS: Readonly<Record<string, number>> = {};
 
 interface ChromeMeta {
+  readonly kindFilter?: TableModel['kindFilter'];
   readonly hideHeader?: boolean;
   readonly unsorted?: boolean;
   readonly rankShown?: boolean;
@@ -37,7 +39,7 @@ interface ChromeWidths {
   readonly pinnedCount?: number;
 }
 
-export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets }: FamilyChromeProps<TableSettings>) {
+export default function TableChrome({ state, settings, onSettings, editable, viewportWidth, bodyBlocked, announce, targets, filterSlot, setFilterOption }: FamilyChromeProps<TableSettings>) {
   const chrome = state as TableChromeState | undefined;
   const meta = (chrome?.meta ?? {}) as ChromeMeta;
   const measured = chrome?.widths as ChromeWidths | undefined;
@@ -173,6 +175,22 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
 
   return (
     <>
+      {meta.kindFilter && setFilterOption ? <LogKindFilter
+        slot={filterSlot}
+        compact={viewportWidth < 440}
+        allLabel={meta.kindFilter.allLabel}
+        noun={meta.kindFilter.noun}
+        items={meta.kindFilter.items}
+        onSelectAll={() => setFilterOption(meta.kindFilter!.key, '')}
+        onToggle={(token, checked) => {
+          const filter = meta.kindFilter!;
+          const visible = filter.items.map(item => item.value);
+          const selected = new Set(filter.selected.length ? filter.selected : visible);
+          selected.delete('-');
+          if (checked) selected.add(token); else selected.delete(token);
+          setFilterOption(filter.key, visible.every(value => selected.has(value)) ? '' : [...selected].join(' ') || '-');
+        }}
+      /> : null}
       {!meta.hideHeader && panes ? (
         <div className="tf-head-clip tf-pane-heads" style={bodyBlocked ? { ...widthVars, display: 'none' } : { ...widthVars, columnGap: panes.gutter }}>
           {panes.titles.map(title => <div key={title.key} className="tf-pane-head" style={{ width: panes.width }}>{header(title)}</div>)}

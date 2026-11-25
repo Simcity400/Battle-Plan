@@ -165,6 +165,8 @@ export interface FamilyChromeProps<TSettings = unknown> {
   readonly announce: (message: string) => void;
   readonly targets: FamilyChromeTargets;
   readonly headerSlot: HTMLElement | null;
+  readonly filterSlot?: HTMLElement | null;
+  readonly setFilterOption?: (key: string, value: string) => void;
 }
 
 const NO_TARGETS: FamilyChromeTargets = { body: null, bodyWrap: null, extent: null, mirrorHead: null };
@@ -212,6 +214,8 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly emptyAction?: ReactNode | ((openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => ReactNode);
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
+  readonly filterSlot?: HTMLElement | null;
+  readonly setFilterOption?: (key: string, value: string) => void;
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
@@ -274,6 +278,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   emptyAction,
   contextMenuItems,
   headerSlot = null,
+  filterSlot,
+  setFilterOption,
   onDiagnostics,
   extraWarnings,
   blockedState = null,
@@ -1377,6 +1383,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           bodyBlocked={!!bodyStateNode}
           announce={say}
           targets={targets}
+          filterSlot={filterSlot}
+          setFilterOption={setFilterOption}
           headerSlot={headerSlot}
         />
       ) : null}

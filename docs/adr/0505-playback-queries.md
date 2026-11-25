@@ -12,4 +12,4 @@ During following playback, country labels read from the last identity change at 
 
 Widget catalogue placements compare options after applying field defaults, because a value equal to its default is omitted from storage. Content presets take the place of a generic default card when they exist. An unavailable capture mode stays distinguishable even for older product shapes that carry availability without a reason.
 
-[Hover labels](../../ui/src/dashboard/useHoverLabels.ts), [Idea tooltips](../../ui/src/dashboard/useIdeaTooltips.ts), [Log pages](../../ui/src/dashboard/useLogPages.ts), [Chart reads](../../ui/src/dashboard/viewRead.ts), [Wire validation](../../ui/src/dashboard/validation.ts)
+[Hover labels](../../ui/src/dashboard/useHoverLabels.ts), [Idea tooltips](../../ui/src/dashboard/useIdeaTooltips.ts), [Chart reads](../../ui/src/dashboard/viewRead.ts), [Wire validation](../../ui/src/dashboard/validation.ts)

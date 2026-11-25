@@ -2343,7 +2343,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   );
 
   const geom = computeRowLayout(flatExpanded, 'normal', 'standard');
-  const queue = Array.from({ length: 120 }, (_, i) => ({ kind: 'data', key: `q${i}`, level: i % 4 === 0 ? 1 : 2, isLiveEnd: false }) as unknown as FlatTableRow);
+  const queue = Array.from({ length: 120 }, (_, i) => ({ kind: 'data', key: `q${i}`, level: i % 4 === 0 ? 1 : 2, isLiveEnd: false, row: {} }) as unknown as FlatTableRow);
   const queueGeom = computeRowLayout(queue, 'comfortable', 'standard');
   const deep = tableRowWindow(queue.length, queueGeom, ROW_HEIGHT.comfortable, queueGeom.tops[100]!, 200);
   assert.equal(deep.first + TABLE_WINDOW_OVERSCAN, 100, 'deep in an expanded queue the published window starts at the row under the scroll position, not at scrollTop / 44');

@@ -45,6 +45,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'army-size': { load: () => import('./army-size/family.tsx') },
   'command-power': { load: () => import('./command-power'), slots: ['render', 'countryChip'] },
   'decisions': { load: () => import('./decisions') },
+  'division-log': { load: () => import('./division-log') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'construction-log': { load: () => import('./construction-log') },

@@ -31,6 +31,9 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
+  readonly narrow?: TableColumnSpec['narrow'];
+  readonly textTone?: TableColumnSpec['textTone'];
+  readonly inlineFlags?: readonly string[];
   readonly leadInset?: number;
   readonly trailInset?: number;
 }
@@ -99,6 +102,8 @@ export function buildColumnLayouts(
       headerGroup: spec.headerGroup,
       minWidth: spec.minWidth,
       maxWidth: spec.maxWidth,
+      textTone: spec.textTone,
+      narrow: own?.width == null ? spec.narrow : undefined,
       grow: own?.width != null ? 0 : spec.grow,
     });
   };
@@ -283,8 +288,20 @@ export function layoutFamilyTable(
     readonly rankWidth?: number;
   } = {},
 ): FamilyTableLayout {
-  const shown = withEdgeInsets(columns.filter(col => col.shown));
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
+  let visible = columns.filter(col => col.shown);
+  if (visible.some(col => col.narrow) && rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) > available) {
+    visible = visible.filter(col => col.narrow !== 'hide');
+    const primary = visible.findIndex(col => col.narrow === 'primary');
+    const inlineFlags: string[] = [];
+    for (let i = primary + 1; primary >= 0 && visible[i]?.narrow === 'flag'; i++) inlineFlags.push(visible[i]!.key);
+    visible = visible.map(col => {
+      if (col.narrow === 'primary') return { ...col, inlineFlags };
+      if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.minWidth ?? 40, grow: 0 };
+      return col;
+    });
+  }
+  const shown = withEdgeInsets(visible);
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
     if (shown[i]!.pinned === true) pinnedCount = i + 1;
@@ -321,7 +338,7 @@ export function rowHeightOf(
   if (item.kind === 'gap') return GAP_ROW_HEIGHT;
   if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
   if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
-  const base = item.level > 1 ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
+  const base = item.level > 1 && !item.row.pageParent ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
   return item.isLiveEnd ? base + LIVE_END_GAP : base;
 }
 

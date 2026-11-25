@@ -8,13 +8,10 @@ use dashboard_base::products::{LoadContext, Product};
 use dashboard_base::Source;
 use dashboard_follow::panel::Panel;
 #[cfg(any(test, feature = "export-types"))]
-use dashboard_query::log::{CountrySpan, UnobservedSpan};
-use dashboard_query::{
-    Query,
-    log::{self, FacetFilter},
-    series::{MissingSpan, hour_of},
-};
-use serde::{Deserialize, Serialize};
+use dashboard_query::log::{CountrySpan, FacetFilter, UnobservedSpan};
+#[cfg(test)]
+use dashboard_query::series::MissingSpan;
+use dashboard_query::{Query, log};
 use std::{io, sync::{Arc, atomic::AtomicBool}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -22,53 +19,6 @@ use ts_rs::TS;
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LogCountsParams {
-    pub branch_id: String,
-    pub log: String,
-    #[serde(default)]
-    pub facets: Vec<FacetFilter>,
-    pub from: f64,
-    pub to: f64,
-    #[doc = " 1 to 5, or whole six-hour buckets."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
-    pub bin_hours: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LogCountLine {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub country: Option<dashboard_base::products::Country>,
-    #[doc = " Its rows on the timeline before the range: a mark's ordinals count from it."]
-    pub before: String,
-    pub total: String,
-    #[doc = " Per bin with rows: its index from `firstHour` and its count."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number]>"))]
-    pub bins: Vec<(u32, u64)>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct LogCountsReply {
-    pub branch_id: String,
-    pub log: String,
-    #[doc = " The first hour of bin 0."]
-    pub first_hour: i32,
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
-    pub bin_hours: i64,
-    pub lines: Vec<LogCountLine>,
-    pub missing: Vec<MissingSpan>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(LogCountsReply);
 
 fn branch(text: &str) -> io::Result<u64> {
     text.parse().map_err(|_| invalid("Invalid branch"))
@@ -277,70 +227,6 @@ pub fn dated_panel(source: &Source, _load: &LoadContext, asked: &serde_json::Val
             load_tail_at(&query, Some(&caches), &params, hour, cancelled)
         },
     ))
-}
-
-pub struct LogCounts;
-
-impl Product for LogCounts {
-    const KEY: &'static str = "log-counts";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = LogCountsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
-        branchId,
-        log,
-        facets,
-        from: Start,
-        to: End,
-        binHours,
-        "facets[].countries[]",
-        "facets[].values[]",
-        "facets[].membership[].country",
-        "facets[].membership[].firstHour": Start,
-        "facets[].membership[].lastHour": End,
-        "facets[].unobserved[].firstHour": Start,
-        "facets[].unobserved[].lastHour": End
-    ];
-    type Reply = LogCountsReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![FacetFilter::decl(), LogCountsParams::decl(), LogCountLine::decl(), LogCountsReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
-    }
-
-    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        let log = declared(&params.log)?;
-        let reader = log::Reader::new(&query, log)?;
-        let (from, to) = (hour_of(Some(params.from), "from")?, hour_of(Some(params.to), "to")?);
-        if from > to {
-            return Err(invalid("Invalid span"));
-        }
-        let selection = reader.select(&params.facets, query.timeline.first, to)?;
-        let (counts, groups) = (reader.counts_with(&selection.patterns, selection.groups.len(), from, to, params.bin_hours, selection.overlap)?, selection.groups);
-        Ok(LogCountsReply {
-            branch_id: params.branch_id.clone(),
-            log: params.log.clone(),
-            first_hour: (i64::from(from).div_euclid(params.bin_hours) * params.bin_hours) as i32,
-            bin_hours: params.bin_hours,
-            lines: counts
-                .into_iter()
-                .zip(groups)
-                .map(|(counts, country)| LogCountLine {
-                    country,
-                    before: counts.before.to_string(),
-                    total: counts.bins.iter().map(|(_, count)| count).sum::<u64>().to_string(),
-                    bins: counts.bins,
-                })
-                .collect(),
-            missing: missing(&query, log, from, to)?,
-            warnings: Vec::new(),
-        })
-    }
 }
 
 #[cfg(test)]

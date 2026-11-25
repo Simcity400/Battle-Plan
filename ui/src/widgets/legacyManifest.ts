@@ -1,7 +1,6 @@
 import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
-  { kind: 'division-log', load: () => import('./division-log') },
   { kind: 'division-service-record', load: () => import('./division-service-record') },
   { kind: 'land-battles', load: () => import('./land-battles') },
   { kind: 'map', load: () => import('./map') },

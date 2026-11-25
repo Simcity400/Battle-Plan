@@ -44,7 +44,7 @@ test('widget metadata preserves world controls and content-choice title policies
       timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history',
       minSize: { w: 2, h: 2 }, defaultSize: { w: 4, h: 6 } };
     registerWidgets([meta, { ...meta, kind: 'test-country', title: 'Country history', countrySelection: true, category: undefined },
-      { ...meta, kind: 'test-unavailable', title: 'Unavailable world', availability: { product: 'division-log-manifest', params: {} } }]);
+      { ...meta, kind: 'test-unavailable', title: 'Unavailable world', availability: { product: 'division-log-tail', params: { limit: 1 } } }]);
     const template: DashboardTemplate = { version: 1, name: 'Synthetic', alignment: 'calendar',
       roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
       tracks: [{ id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: null }], widgets: [], layouts: {} };

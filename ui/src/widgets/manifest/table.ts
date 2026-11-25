@@ -466,6 +466,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'division-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'division-log',
+      DEFAULT_VIEW,
+      () => import('../division-log/divisionLogProjection.ts'),
+      mod => ({ projection: mod.divisionLogProjection, declaration: mod.divisionLogDeclaration }),
+    ),
+  },
+  {
     kind: 'espionage-log',
     view: DEFAULT_VIEW,
     family: 'table',

@@ -33,19 +33,6 @@ export interface LogPage<T> {
 export type LogColumns<T> = string | ((row: LogRow<T>) => string);
 export const logRowColumns = <T>(columns: LogColumns<T>, row: LogRow<T>): string => typeof columns === 'string' ? columns : columns(row);
 
-export interface CountryRequest { readonly hour: number; readonly tag: string }
-
-export function logCountryRequests<T>(rows: readonly LogRow<T>[], countries: (row: LogRow<T>) => { hour: number; tags: readonly (string | null)[] }): CountryRequest[] {
-  const wanted = new Map<number, Set<string>>();
-  for (const row of rows) {
-    const { hour, tags } = countries(row);
-    const set = wanted.get(hour) ?? new Set<string>();
-    for (const tag of tags) if (tag !== null) set.add(tag);
-    wanted.set(hour, set);
-  }
-  return [...wanted].flatMap(([hour, tags]) => [...tags].map(tag => ({ hour, tag })));
-}
-
 export const rowId = (row: LogRow<unknown>) => row.id ?? row.key;
 
 export interface LogTip { id: string; by: 'pointer' | 'keyboard'; x: number; y: number }

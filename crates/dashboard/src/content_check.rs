@@ -295,6 +295,10 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "agency names, defence and upgrades", findings);
             Ok(format!("The default agency name, the defence line and every acquired upgrade's name checked ({} refused); agencies and their levels need a recording.", refused.len()))
         }
+        dashboard_land::products::division_log::DivisionLogTail::KEY => {
+            content.catalogue()?;
+            Ok("Division names, template labels and artwork use the recorded naming operands and content stack.".into())
+        }
         intelligence::espionage_tail::EspionageLogTail::KEY => {
             let catalogue = content.catalogue()?;
             let politics = std::sync::Arc::new(dashboard_base::products::politics_content::PoliticsContent::load(std::sync::Arc::clone(catalogue)).map_err(|error| error.to_string())?);

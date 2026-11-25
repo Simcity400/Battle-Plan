@@ -102,6 +102,8 @@ export interface TableColumnSpec extends TableColumnDefaults {
   readonly minWidth?: number;
   readonly maxWidth?: number;
   readonly grow?: number;
+  readonly narrow?: 'hide' | 'flag' | 'primary';
+  readonly textTone?: 'secondary' | 'muted';
 }
 
 export interface TableCellBar {
@@ -119,6 +121,8 @@ export interface TableCell {
   readonly value: Value;
   readonly format?: ValueFormat;
   readonly subtext?: string;
+  readonly artTile?: boolean;
+  readonly glyph?: 'helmet' | 'place' | 'loss' | 'transfer';
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
   readonly unitSuffix?: string;
@@ -176,6 +180,8 @@ export interface TableRow {
   readonly rowHour?: number;
   readonly live?: boolean;
   readonly group?: TableGroupSpec;
+  readonly pageGroup?: { readonly members: number; readonly open: boolean };
+  readonly pageParent?: string;
   readonly children?: readonly TableRow[];
   readonly initiallyOpen?: boolean;
   readonly muted?: boolean;
@@ -224,6 +230,14 @@ export interface TableModel {
   readonly productTieBreak?: boolean;
   readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
+  readonly dayDividersOnly?: boolean;
+  readonly kindFilter?: {
+    readonly key: string;
+    readonly allLabel: string;
+    readonly noun: string;
+    readonly items: readonly { readonly value: string; readonly label: string; readonly checked: boolean }[];
+    readonly selected: readonly string[];
+  };
   readonly gaps?: readonly MissingSpan[];
   readonly rank?: boolean;
   readonly defaultRankShown?: boolean;
@@ -565,8 +579,8 @@ function resolveBodyRows(
       if (row.revealAt !== undefined && row.revealAt > hour) continue;
       validateRowCells(row);
       const children = row.children;
-      const isTreeGroup = children !== undefined;
-      const isOpen = isTreeGroup ? (expanded?.[row.key] ?? row.initiallyOpen ?? false) : false;
+      const isTreeGroup = row.pageGroup !== undefined || children !== undefined;
+      const isOpen = row.pageGroup ? row.pageGroup.open : isTreeGroup ? (expanded?.[row.key] ?? row.initiallyOpen ?? false) : false;
       rank++;
       flat.push({
         kind: 'data',
@@ -574,13 +588,13 @@ function resolveBodyRows(
         name: row.name,
         row,
         rank,
-        level: 1,
-        parent: null,
+        level: row.pageParent ? 2 : 1,
+        parent: row.pageParent ?? null,
         isTreeGroup,
         isOpen,
-        childCount: children?.length ?? 0,
+        childCount: row.pageGroup?.members ?? children?.length ?? 0,
       });
-      if (isTreeGroup && isOpen && children.length) {
+      if (isOpen && children?.length) {
         pushChildren(children, 2, row.key);
       }
     }
