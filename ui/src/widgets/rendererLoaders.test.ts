@@ -3,12 +3,12 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
-import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
+import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS, NATIVE_WIDGETS, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
 import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, setPlaybackActive } from './rendererLoaders.ts';
 import { viewKey, type FamilyViewEntry } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
-  const kinds = [...new Set([...buildRendererLoaders(LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI).values()].map(entry => entry.kind))];
+  const kinds = [...new Set([...buildRendererLoaders(NATIVE_WIDGETS, LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI).values()].map(entry => entry.kind))];
   assert.deepEqual(kinds.sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
@@ -148,7 +148,7 @@ test('two family views of one kind get their own loader, each loading its own de
   const declarationA = { name: 'A' };
   const declarationB = { name: 'B' };
   const spec = (view: string, declaration: object) => async () => ({ family: 'bars', kind: 'synthetic-two-views', view, projection: {} as never, declaration });
-  const loaders = buildRendererLoaders([], [
+  const loaders = buildRendererLoaders([], [], [
     { kind: 'synthetic-two-views', view: 'shares', family: 'bars', loadSpec: spec('shares', declarationA) },
     { kind: 'synthetic-two-views', view: 'race', family: 'bars', loadSpec: spec('race', declarationB) },
   ], {});

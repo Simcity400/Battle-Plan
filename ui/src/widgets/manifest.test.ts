@@ -35,7 +35,9 @@ import { FAMILY_MANIFESTS, FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 import { drawnViews } from '../draw/views/drawn.ts';
 import {
+  NATIVE_WIDGETS,
   isPlaybackDatedView,
+  manifestKinds,
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
@@ -47,11 +49,13 @@ import {
 import { viewSlotProps } from './viewProps.ts';
 import type { WidgetSpec } from '../dashboard/model';
 
-test('manifest accounts for every widget kind once across family views and legacy entries', () => {
+test('manifest accounts for every widget kind across family, native and legacy entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
   const legacyKinds = new Set(LEGACY_WIDGETS.map(entry => entry.kind));
-  for (const meta of widgetMetas) {
-    assert.ok(familyKinds.has(meta.kind) || legacyKinds.has(meta.kind), `${meta.kind} must appear in FAMILY_VIEWS or LEGACY_WIDGETS`);
+  assert.deepEqual([...manifestKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
+  assert.ok(NATIVE_WIDGETS.some(entry => entry.kind === 'map'));
+  for (const { kind } of NATIVE_WIDGETS) {
+    assert.ok(!familyKinds.has(kind) && !legacyKinds.has(kind), `${kind} has its own native renderer`);
   }
   const familyPairs = new Set(FAMILY_VIEWS.map(entry => `${entry.kind}:${normalizeView(entry.view)}`));
   for (const entry of LEGACY_WIDGETS) {
@@ -168,7 +172,7 @@ test('playback placeholder gate uses the manifest as its single switch', () => {
     assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
   }
   assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
-  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), false);
+  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });

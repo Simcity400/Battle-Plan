@@ -6,6 +6,7 @@ import { DEFAULT_VIEW, normalizeView, viewKey } from '../ui/src/families/manifes
 import { widgetMetas } from '../ui/src/widgets/definitions.ts';
 import { FAMILY_MANIFESTS, FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
 import { LEGACY_WIDGETS } from '../ui/src/widgets/legacyManifest.ts';
+import { NATIVE_WIDGETS } from '../ui/src/widgets/manifest.ts';
 import { walkImportGraph } from './ui-import-graph.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -94,11 +95,20 @@ for (const entry of LEGACY_WIDGETS) {
   list.push(entry);
 }
 
+const nativeKinds = new Set();
+for (const { kind, renderer, load } of NATIVE_WIDGETS) {
+  if (!metaByKind.has(kind)) errors.push(`NATIVE_WIDGETS references unknown kind: ${kind}`);
+  if (renderer !== 'native' || typeof load !== 'function') errors.push(`NATIVE_WIDGETS(${kind}) requires a native renderer and load function`);
+  if (nativeKinds.has(kind) || familyByKind.has(kind) || legacyByKind.has(kind)) errors.push(`native kind "${kind}" is registered more than once`);
+  nativeKinds.add(kind);
+}
+
 for (const meta of widgetMetas) {
+  if (nativeKinds.has(meta.kind)) continue;
   const familyEntries = familyByKind.get(meta.kind) ?? [];
   const legacyEntries = legacyByKind.get(meta.kind) ?? [];
   if (familyEntries.length === 0 && legacyEntries.length === 0) {
-    errors.push(`kind "${meta.kind}" is neither in FAMILY_VIEWS nor in LEGACY_WIDGETS`);
+    errors.push(`kind "${meta.kind}" is missing from FAMILY_VIEWS, NATIVE_WIDGETS and LEGACY_WIDGETS`);
     continue;
   }
   if (familyEntries.length > 0 && legacyEntries.length === 0 && meta.playsBackDated !== undefined) {

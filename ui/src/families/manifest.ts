@@ -50,6 +50,12 @@ export interface FamilyManifestModule {
   readonly hostAdapter?: FamilyHostAdapter<any, any, any, any>;
 }
 
+export interface NativeWidgetEntry {
+  readonly kind: string;
+  readonly renderer: 'native';
+  readonly load: () => Promise<{ default: WidgetRenderer }>;
+}
+
 export interface LegacyWidgetEntry {
   readonly kind: string;
   readonly view?: string;

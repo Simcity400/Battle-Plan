@@ -11,11 +11,16 @@ import {
   type FamilyViewEntry,
   type FamilyViewModule,
   type LegacyWidgetEntry,
+  type NativeWidgetEntry,
 } from '../families/manifest.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
 export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
+
+export const NATIVE_WIDGETS: readonly NativeWidgetEntry[] = [
+  { kind: 'map', renderer: 'native', load: () => import('./map') },
+];
 
 export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
 
@@ -210,6 +215,7 @@ export function isPlaybackDatedView(
   storedOptions?: WidgetOptions,
   definition?: Pick<WidgetMeta, 'playsBackDated' | 'viewSwitch' | 'options'>,
 ): boolean {
+  if (NATIVE_WIDGETS.some(entry => entry.kind === kind)) return true;
   const view = resolveWidgetActiveView(kind, storedOptions, definition);
   if (familyByPair.has(viewKey(kind, view))) return true;
   const legacy = legacyByPair.get(viewKey(kind, view)) ?? legacyByPair.get(viewKey(kind, DEFAULT_VIEW));
@@ -238,21 +244,7 @@ export function resolveWidgetViewSwitch(
 }
 
 export function manifestKinds(): readonly string[] {
-  const seen = new Set<string>();
-  const kinds: string[] = [];
-  for (const entry of FAMILY_VIEWS) {
-    if (!seen.has(entry.kind)) {
-      seen.add(entry.kind);
-      kinds.push(entry.kind);
-    }
-  }
-  for (const entry of LEGACY_WIDGETS) {
-    if (!seen.has(entry.kind)) {
-      seen.add(entry.kind);
-      kinds.push(entry.kind);
-    }
-  }
-  return kinds;
+  return [...new Set([...FAMILY_VIEWS, ...NATIVE_WIDGETS, ...LEGACY_WIDGETS].map(entry => entry.kind))];
 }
 
 export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
