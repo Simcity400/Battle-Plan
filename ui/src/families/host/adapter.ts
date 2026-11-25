@@ -334,18 +334,18 @@ export function requestedRowWindow<TSettings>(
 export interface ReportedRowWindow {
   readonly window: FamilyRowWindow;
   readonly hour: number;
-  readonly planSig: string;
+  readonly plan: SourcePlan | null;
 }
 
 export function nextReportedRowWindow(
   reported: ReportedRowWindow | null,
   requested: FamilyRowWindow | null,
   installedHour: number | null,
-  planSig: string,
+  plan: SourcePlan | null,
 ): ReportedRowWindow | null {
   if (!requested || installedHour === null) return null;
-  if (reported && reported.planSig === planSig && sameRowWindow(reported.window, requested) && installedHour >= reported.hour) return null;
-  return { window: requested, hour: installedHour, planSig };
+  if (reported && reported.plan === plan && sameRowWindow(reported.window, requested) && installedHour >= reported.hour) return null;
+  return { window: requested, hour: installedHour, plan };
 }
 
 export interface InstalledRowWindowUpdate {
@@ -363,12 +363,11 @@ export function reconcileInstalledRowWindow<TSettings>(
   settings: TSettings | undefined,
   fields: Readonly<Record<string, unknown>>,
   installedHour: number | null,
-  planSig: string,
 ): InstalledRowWindowUpdate {
   const asked = requestedRowWindow(adapter, plan, viewport, settings, fields);
   const changed = !sameRowWindow(held, asked);
   const requested = changed ? asked : held;
-  const report = nextReportedRowWindow(reported, requested, installedHour, planSig);
+  const report = nextReportedRowWindow(reported, requested, installedHour, plan);
   return { requested, report, changed };
 }
 
