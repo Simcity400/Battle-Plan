@@ -250,6 +250,7 @@ compared_tables!(
     InvasionPreparations,
     PartyLeaders,
     LandCombatResults,
+    LandCombatResultObservers,
     TaskForces,
     ResourceExchanges,
     CountryLeaderRoles,

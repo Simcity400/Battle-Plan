@@ -1173,19 +1173,22 @@ fn merge_supply(
         });
         match rows.next_if(|row| (row.country, row.region) == key) {
             Some(mut row) => {
-                row.supply = rows::Recorded::Value(summary);
+                row.set_supply(summary);
                 merged.push(row);
             }
-            None => merged.push(rows::AirGroundCrewRow {
-                country: sample.country,
-                region: sample.region,
-                enabled: if sample.region == u32::MAX {
-                    None
-                } else {
-                    flag(sample.country_pointer, sample.region_pointer).map(u32::from)
-                },
-                supply: rows::Recorded::Value(summary),
-            }),
+            None => {
+                let mut row = rows::AirGroundCrewRow::without_supply(
+                    sample.country,
+                    sample.region,
+                    if sample.region == u32::MAX {
+                        None
+                    } else {
+                        flag(sample.country_pointer, sample.region_pointer).map(u32::from)
+                    },
+                );
+                row.set_supply(summary);
+                merged.push(row);
+            }
         }
     }
     merged.extend(rows);

@@ -214,7 +214,7 @@ mod tests {
         use replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
         let format = CAPTURE_ADDITIONS_FORMAT - 1;
         let added: Vec<TableId> = TableId::ALL.into_iter().filter(|table| !table.last_change().present(format) && table.last_change().retired.is_none()).collect();
-        assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues]);
+        assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues, TableId::LandCombatResultObservers]);
         let bytes = crate::campaign::fixtures::encode_records_at(recorder_derive::writers_within, format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
         let replay = Replay::open(bytes).unwrap();
         assert_eq!((replay.sessions.len(), replay.branches.len()), (1, 1));

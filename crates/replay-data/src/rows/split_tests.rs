@@ -289,6 +289,9 @@ mod rows_retired_tests {
                     TableRows::InvasionPreparations(vec![Default::default()])
                 }
                 TableId::CountryMarket => TableRows::CountryMarket(vec![Default::default()]),
+                TableId::CountryPowerChanges => {
+                    TableRows::CountryPowerChanges(vec![Default::default()])
+                }
                 table => panic!("add a default row for {table:?}"),
             };
             let stored = stored(rows, field.index);

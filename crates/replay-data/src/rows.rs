@@ -34,11 +34,12 @@ use crate::{
     value::{EncodeValue, Value},
 };
 
-pub const LOGS: [TableId; 16] = [
+pub const LOGS: [TableId; 17] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
     TableId::PeaceSettlements,
     TableId::LandCombatResults,
+    TableId::LandCombatResultObservers,
     TableId::DestroyedDivisions,
     TableId::NavalResultSources,
     TableId::AirLossEvents,
@@ -995,6 +996,7 @@ LandCombatEdges = 520 => LandCombatEdge(LandCombatEdgesRow),
 FuelAwardRecipients = 521 => FuelAwardRecipient(FuelAwardRecipientRow),
 ScriptVariableNames = 522 => ScriptVariableName(ScriptVariableNameRow),
 ScriptVariableValues = 523 => ScriptVariableValue(ScriptVariableValueRow),
+LandCombatResultObservers = 524 => LandCombatResultObserver(CombatLogObserverRow),
 }
 }
 const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [

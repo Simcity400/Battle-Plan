@@ -180,6 +180,7 @@ const STATE: [TableId; 16] = [
 
 const MODIFIERS: &str = "combat-log-battle-modifiers";
 const RESULTS: &str = "land-combat-results";
+const RESULT_OBSERVERS: &str = "land-combat-result-observers";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
@@ -368,6 +369,88 @@ pub fn finalized(row: &log::Row, columns: &[usize; 3]) -> Option<Finalized> {
     })
 }
 
+pub fn finalized_split(row: &log::Row, columns: &[usize; 2], observers: Vec<LandTerminalObserver>) -> Option<Finalized> {
+    let combat = match row.cells.get(columns[0]) {
+        Some(log::Cell::Number(value)) => *value as u64,
+        _ => return None,
+    };
+    let losses = match row.cells.get(columns[1]) {
+        Some(log::Cell::List(bytes)) => <[LandSideLosses; 2]>::decode(&mut Decoder::new(bytes)).ok()?,
+        _ => return None,
+    };
+    Some(Finalized { combat, observers, losses })
+}
+
+pub fn result_observers(rows: &[log::Row], columns: &[usize; 11]) -> (BTreeMap<u64, Vec<LandTerminalObserver>>, BTreeSet<u64>) {
+    let mut grouped: BTreeMap<u64, Vec<(u64, LandTerminalObserver)>> = BTreeMap::new();
+    let mut incomplete = BTreeSet::new();
+    for row in rows {
+        let combat = (row.key >> 64) as u64;
+        let ordinal = (row.key as u64) >> 1;
+        let attacker = row.key & 1 != 0;
+        let number = |at: usize| match row.cells.get(columns[at]) {
+            Some(log::Cell::Number(value)) => Some(*value),
+            _ => None,
+        };
+        let (
+            Some(kind),
+            Some(item),
+            Some(index),
+            Some(identity),
+            Some(identity_2),
+            Some(identity_3),
+            Some(a),
+            Some(b),
+            Some(c),
+            Some(d),
+            Some(e),
+        ) = (
+            number(0),
+            number(1),
+            number(2),
+            number(3),
+            number(4),
+            number(5),
+            number(6),
+            number(7),
+            number(8),
+            number(9),
+            number(10),
+        )
+        else {
+            incomplete.insert(combat);
+            continue;
+        };
+        let obs = replay_data::rows::CombatLogObserverRow {
+            combat,
+            attacker,
+            ordinal,
+            kind: kind as u8,
+            item: item as u64,
+            index: index as u64,
+            identity: identity as u64,
+            identity_2: identity_2 as u64,
+            identity_3: identity_3 as u64,
+            a,
+            b,
+            c,
+            d,
+            e,
+        };
+        let (kind, item, values) = obs.fact();
+        grouped.entry(combat).or_default().push((ordinal, LandTerminalObserver { attacker, kind, item, values }));
+    }
+    let out = grouped
+        .into_iter()
+        .filter(|(combat, _)| !incomplete.contains(combat))
+        .map(|(combat, mut entries)| {
+            entries.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+            (combat, entries.into_iter().map(|(_, entry)| entry).collect())
+        })
+        .collect();
+    (out, incomplete)
+}
+
 pub fn modifiers_of(rows: &[log::Row], battles: &BTreeMap<u32, i32>, columns: &[usize; 2]) -> BTreeMap<u32, Vec<(u8, u32, i64, i64)>> {
     let mut newest: BTreeMap<u128, &log::Row> = BTreeMap::new();
     for row in rows {
@@ -452,6 +535,7 @@ impl Product for CombatLog {
         let available = |table: TableId| -> io::Result<Option<String>> {
             Ok(replay_lanes::lanes::available_reads(recording, run, table, hour, hour)?.is_empty().then(|| format!("{}: not recorded at this hour", table.words())))
         };
+        let split_observers = recording.predates(TableId::LandCombatResultObservers.index()).is_none();
         let mut availability = CombatLogAvailability {
             groups: unavailable(&frame, &[TableId::CombatLogGroups]),
             manpower: unavailable(&frame, &[TableId::CombatLogManpower]),
@@ -463,6 +547,9 @@ impl Product for CombatLog {
             active: unavailable(&frame, &[TableId::CombatLogObservers]),
             terminal: available(TableId::LandCombatResults)?,
         };
+        if split_observers && availability.terminal.is_none() {
+            availability.terminal = available(TableId::LandCombatResultObservers)?;
+        }
         if availability.battles.is_none() {
             availability.battles = available(TableId::CombatLogBattleModifiers)?;
         }
@@ -485,15 +572,51 @@ impl Product for CombatLog {
         let mut ended = Vec::new();
         let mut warnings = Vec::new();
         if availability.terminal.is_none() {
-            let columns = [
-                dashboard_declare::field(TableId::LandCombatResults, "combat")?,
-                dashboard_declare::field(TableId::LandCombatResults, "observers")?,
-                dashboard_declare::field(TableId::LandCombatResults, "losses")?,
-            ];
-            for row in logged(&query, RESULTS, &[], hour, hour)? {
-                match finalized(&row, &columns) {
-                    Some(result) => ended.push(result),
-                    None => warnings.push("A finalized combat's observers are not recorded in full; it is not shown.".to_owned()),
+            if split_observers {
+                let result_rows = logged(&query, RESULTS, &[], hour, hour)?;
+                if !result_rows.is_empty() {
+                    let result_columns = [
+                        dashboard_declare::field(TableId::LandCombatResults, "combat")?,
+                        dashboard_declare::field(TableId::LandCombatResults, "losses")?,
+                    ];
+                    let observer_columns = [
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "kind")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "item")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "index")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "identity")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "identity_2")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "identity_3")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "a")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "b")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "c")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "d")?,
+                        dashboard_declare::field(TableId::LandCombatResultObservers, "e")?,
+                    ];
+                    let observer_rows = logged(&query, RESULT_OBSERVERS, &[], hour, hour)?;
+                    let (mut by_combat, incomplete) = result_observers(&observer_rows, &observer_columns);
+                    for row in result_rows {
+                        let combat = match row.cells.get(result_columns[0]) {
+                            Some(log::Cell::Number(value)) => Some(*value as u64),
+                            _ => None,
+                        };
+                        let observers = combat.filter(|combat| !incomplete.contains(combat)).and_then(|combat| by_combat.remove(&combat));
+                        match observers.and_then(|observers| finalized_split(&row, &result_columns, observers)) {
+                            Some(result) => ended.push(result),
+                            None => warnings.push("A finalized combat's observers are not recorded in full; it is not shown.".to_owned()),
+                        }
+                    }
+                }
+            } else {
+                let columns = [
+                    dashboard_declare::field(TableId::LandCombatResults, "combat")?,
+                    dashboard_declare::field(TableId::LandCombatResults, "observers")?,
+                    dashboard_declare::field(TableId::LandCombatResults, "losses")?,
+                ];
+                for row in logged(&query, RESULTS, &[], hour, hour)? {
+                    match finalized(&row, &columns) {
+                        Some(result) => ended.push(result),
+                        None => warnings.push("A finalized combat's observers are not recorded in full; it is not shown.".to_owned()),
+                    }
                 }
             }
         }

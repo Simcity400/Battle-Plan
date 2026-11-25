@@ -440,6 +440,7 @@ fn baseline_retention(
         table,
         TableId::EventFeedHistory
             | TableId::LandCombatResults
+            | TableId::LandCombatResultObservers
             | TableId::NavalResults
             | TableId::AirLossEvents
             | TableId::BuildingBombingDamage

@@ -3852,6 +3852,7 @@ impl Captured {
         inputs
     }
 
+    #[cfg(any(test, feature = "conversion_check"))]
     fn complete_variable_views(&self, outcome: Outcome) -> [TableView; 3] {
         let mut fresh = VariableInterner::default();
         self.complete_variable_views_with(outcome, &mut fresh)

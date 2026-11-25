@@ -38,7 +38,12 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
         | Family::PlayerCommands
         | Family::Propaganda => &[],
         Family::EquipmentDestruction => &[EquipmentDestruction, DivisionEquipmentDeletions],
-        Family::Land => &[LandCombatResults, DestroyedDivisions, LandCombatEdges],
+        Family::Land => &[
+            LandCombatResults,
+            DestroyedDivisions,
+            LandCombatEdges,
+            LandCombatResultObservers,
+        ],
         Family::Construction => &[ConstructionLineOutput],
         Family::LineOutput => &[ProductionLineOutput, RocketProductionOutput],
         Family::WorldInputs => &[

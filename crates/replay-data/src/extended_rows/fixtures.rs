@@ -3015,7 +3015,7 @@ sample_struct!(AirSupplySummary {
     supplied: i64,
     deficit: i64
 });
-fixture!(AirGroundCrewRow, |key| {country: (key >> 32) as u32, region: key as u32}, {enabled: Option<u32>, supply: Recorded<Option<AirSupplySummary>>});
+fixture!(AirGroundCrewRow, |key| {country: (key >> 32) as u32, region: key as u32}, {enabled: Option<u32>, supply: Recorded<Option<AirSupplySummary>>, supply_severity: Recorded<Option<i32>>, supply_needed: Recorded<Option<i64>>, supply_supplied: Recorded<Option<i64>>, supply_deficit_extra: Recorded<Option<i64>>});
 fixture!(AirTransferInputRow, |key| {wing: key as u64}, {base: u64, ordinal: Option<u32>, progress_raw: Option<i64>, distance_raw: Option<i64>});
 fixture!(AirCountryRelationRow, |key| {country: (key >> 34) as u32, kind: ((key >> 32) & 3) as u8, ordinal: key as u32}, {other: u32});
 fixture!(AirReferenceWitnessRow, |key| {handle: key as u64}, {base_kind: Option<i32>, state: Option<u32>, province: Option<u32>, host: Option<u64>, host_owner: Option<u32>, host_without_task_force: bool});
@@ -4394,6 +4394,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
         }
         TableId::ScriptVariableValues => {
             TableRows::ScriptVariableValues(rows::<ScriptVariableValueRow>(tick))
+        }
+        TableId::LandCombatResultObservers => {
+            TableRows::LandCombatResultObservers(rows::<CombatLogObserverRow>(tick))
         }
         TableId::CombatEngagementRefreshes => {
             TableRows::CombatEngagementRefreshes(rows::<CombatEngagementRefreshRow>(tick))
@@ -6607,6 +6610,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<FuelAwardRecipientRow>(TableId::FuelAwardRecipients);
     check_table::<ScriptVariableNameRow>(TableId::ScriptVariableNames);
     check_table::<ScriptVariableValueRow>(TableId::ScriptVariableValues);
+    check_table::<CombatLogObserverRow>(TableId::LandCombatResultObservers);
     check_table::<ThreatSourceRow>(TableId::ThreatSources);
     check_table::<ThreatCountryAggregateRow>(TableId::ThreatCountryAggregates);
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);

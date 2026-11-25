@@ -532,7 +532,7 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     use replay_data::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT;
     let schema = schema().unwrap();
     let columns = columns_at(AIR_HISTORY_SLOTS_FORMAT).unwrap();
-    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues, TableId::VariantStats, TableId::VariantChanges, TableId::RaidSpeedInputs, TableId::RocketProductionOutput].map(TableId::index).to_vec();
+    let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers, TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues, TableId::LandCombatResultObservers, TableId::VariantStats, TableId::VariantChanges, TableId::RaidSpeedInputs, TableId::RocketProductionOutput].map(TableId::index).to_vec();
     changed.sort_unstable();
     let named = |format: u16| {
         withheld_at(format)
@@ -555,7 +555,7 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     assert_eq!(earlier[TableId::Cryptology.index()], 4);
     assert_eq!(earlier[TableId::RaidAirScores.index()], 6);
     for held in [&earlier, &columns] {
-        assert_eq!(held.len(), TABLE_COUNT - 9);
+        assert_eq!(held.len(), TABLE_COUNT - 10);
         assert_eq!(replay_columnar::envelope::schema_digest_prefix(&schema[..held.len()], held), None);
     }
     let current = columns_at(replay_data::FORMAT_VERSION).unwrap();
@@ -604,7 +604,7 @@ fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
     use replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
     let format = CAPTURE_ADDITIONS_FORMAT - 1;
     let added: Vec<TableId> = TableId::ALL.into_iter().filter(|table| table.last_change().introduced > format).collect();
-    assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues]);
+    assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs, TableId::PowerSpendDays, TableId::CombatEngagementRefreshes, TableId::LandCombatEdges, TableId::FuelAwardRecipients, TableId::ScriptVariableNames, TableId::ScriptVariableValues, TableId::LandCombatResultObservers]);
     assert!(LAST_COMPLETE.contains(&TableId::Divisions));
     let states = [StateRowAt141 { id: 4, owner: 7, controller: 9, custom_name: b"Bohemia".to_vec(), continent: Some(2).into(), ..Default::default() }];
     let countries = [CountryRow { id: 7, tag: b"GER".to_vec(), stability_raw: 5, ..Default::default() }];

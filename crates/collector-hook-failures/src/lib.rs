@@ -171,7 +171,13 @@ impl Family {
                 VariantUpgrades,
                 AvailableEquipmentVariants,
             ],
-            Self::Land => &[LandCombatResults, DestroyedDivisions, LandEventCoverage, LandCombatEdges],
+            Self::Land => &[
+                LandCombatResults,
+                DestroyedDivisions,
+                LandEventCoverage,
+                LandCombatEdges,
+                LandCombatResultObservers,
+            ],
             Self::Portrait => &[CharacterPortraits, LeaderPortraits, LeaderPortraitPaths],
             Self::Opinion => &[
                 RelationOpinions,

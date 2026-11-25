@@ -1943,12 +1943,7 @@ mod tests {
         {
             *frame.tables[TableId::AirGroundCrews.index()] =
                 TableView::Complete(TableRows::AirGroundCrews(vec![
-                    replay_data::rows::AirGroundCrewRow {
-                        supply: Recorded::Value(None),
-                        country: 7,
-                        region: 9,
-                        enabled,
-                    },
+                    replay_data::rows::AirGroundCrewRow::without_supply(7, 9, enabled),
                 ]));
             let context = super::super::country_context(&frame).unwrap();
             let mut report = Report::default();

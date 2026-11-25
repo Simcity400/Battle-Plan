@@ -86,4 +86,5 @@ replay_rows::row_ops! {
     CombatLogBattleModifiers => CombatLogBattleModifierRow,
     CombatLogBattleCountries => CombatLogBattleCountryRow,
     CombatLogObservers => CombatLogObserverRow,
+    LandCombatResultObservers => CombatLogObserverRow,
 }

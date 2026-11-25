@@ -1905,12 +1905,7 @@ fn a_container_the_dense_list_lacks_is_missed_by_the_plan_alone() {
 #[test]
 fn supply_merges_into_sorted_ground_crews_and_adds_flagged_rows() {
     use engine_map_air::map_air_supply::Summary;
-    let crew = |country, region, enabled| rows::AirGroundCrewRow {
-        supply: rows::Recorded::Value(None),
-        country,
-        region,
-        enabled,
-    };
+    let crew = |country, region, enabled| rows::AirGroundCrewRow::without_supply(country, region, enabled);
     let sample = |country, region, needed| Summary {
         country_pointer: 0x100 * country as usize,
         region_pointer: if region == u32::MAX { 0 } else { 0x10 * region as usize },
@@ -1948,11 +1943,20 @@ fn supply_merges_into_sorted_ground_crews_and_adds_flagged_rows() {
         ]
     );
     assert_eq!(asked, [(0x100, 0x60)]);
-    let supply = |at: usize| match &ground[at].supply {
-        rows::Recorded::Value(supply) => supply.as_ref().map(|supply| supply.needed),
+    let supply = |at: usize| match ground[at].supply_summary() {
+        rows::Recorded::Value(supply) => supply,
         rows::Recorded::NotRecorded => panic!("a captured row records its supply"),
     };
-    assert_eq!(supply(0), Some(10));
+    assert_eq!(
+        supply(0),
+        Some(rows::AirSupplySummary {
+            severity: 1,
+            needed: 10,
+            supplied: 2,
+            deficit: 3,
+        })
+    );
+    assert_eq!(ground[0].supply, rows::Recorded::Value(None));
     assert_eq!(supply(2), None);
     assert_eq!(supply(5), None);
 }

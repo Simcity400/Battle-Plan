@@ -30,6 +30,53 @@ fn a_finalized_combat_is_its_log_rows_observers_and_losses_and_a_cell_not_record
 }
 
 #[test]
+fn split_result_observers_reconstruct_ordered_facts_and_withhold_incomplete_combats() {
+    use replay_data::rows::{CombatLogObserverRow, RowCodec as _};
+    let observer_columns = ["kind", "item", "index", "identity", "identity_2", "identity_3", "a", "b", "c", "d", "e"]
+        .map(|name| dashboard_declare::field(TableId::LandCombatResultObservers, name).expect("an observer column"));
+    let width = observer_columns.iter().max().unwrap() + 1;
+    let to_log = |obs: &CombatLogObserverRow| {
+        number_row(
+            40,
+            obs.key(),
+            &[
+                (observer_columns[0], log::Cell::Number(i64::from(obs.kind))),
+                (observer_columns[1], log::Cell::Number(obs.item as i64)),
+                (observer_columns[2], log::Cell::Number(obs.index as i64)),
+                (observer_columns[3], log::Cell::Number(obs.identity as i64)),
+                (observer_columns[4], log::Cell::Number(obs.identity_2 as i64)),
+                (observer_columns[5], log::Cell::Number(obs.identity_3 as i64)),
+                (observer_columns[6], log::Cell::Number(obs.a)),
+                (observer_columns[7], log::Cell::Number(obs.b)),
+                (observer_columns[8], log::Cell::Number(obs.c)),
+                (observer_columns[9], log::Cell::Number(obs.d)),
+                (observer_columns[10], log::Cell::Number(obs.e)),
+            ],
+            width,
+        )
+    };
+    let mut state = CombatLogObserverRow::from_fact(9, true, CombatLogObserverKind::State as u8, 0, [5, 6, 3, 0, 0]).unwrap();
+    state.ordinal = 0;
+    let mut equip = CombatLogObserverRow::from_fact(9, true, CombatLogObserverKind::ActivityEquipment as u8, 2, [1, u64::MAX - 5, 100_000, 0, 0]).unwrap();
+    equip.ordinal = 1;
+    let mut def = CombatLogObserverRow::from_fact(9, false, CombatLogObserverKind::State as u8, 0, [7, 8, 0, 0, 0]).unwrap();
+    def.ordinal = 2;
+    let mut damaged = to_log(&CombatLogObserverRow::from_fact(10, true, CombatLogObserverKind::State as u8, 0, [1, 2, 0, 0, 0]).unwrap());
+    damaged.cells[observer_columns[6]] = log::Cell::Unrecorded;
+    let (by_combat, incomplete) = result_observers(&[to_log(&def), to_log(&equip), to_log(&state), damaged], &observer_columns);
+    assert_eq!(incomplete, BTreeSet::from([10]));
+    assert!(!by_combat.contains_key(&10));
+    assert_eq!(
+        by_combat[&9],
+        vec![
+            LandTerminalObserver { attacker: true, kind: CombatLogObserverKind::State as u8, item: 0, values: [5, 6, 3, 0, 0] },
+            LandTerminalObserver { attacker: true, kind: CombatLogObserverKind::ActivityEquipment as u8, item: 2, values: [1, u64::MAX - 5, 100_000, 0, 0] },
+            LandTerminalObserver { attacker: false, kind: CombatLogObserverKind::State as u8, item: 0, values: [7, 8, 0, 0, 0] },
+        ]
+    );
+}
+
+#[test]
 fn a_battle_records_modifiers_are_the_newest_rows_its_record_inserted_never_an_earlier_battle_of_its_slot() {
     let columns = [0, 1];
     let key = |battle: u32, side: u8, ordinal: u32| u128::from(battle) << 40 | u128::from(side) << 32 | u128::from(ordinal);
