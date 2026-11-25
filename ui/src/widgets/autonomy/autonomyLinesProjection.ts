@@ -280,6 +280,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
 
     const seriesList: TimeChartSeriesModel[] = [];
     const auditRows: FamilyAuditRow[] = [];
+    let maxSeen = 100;
     for (let i = 0; i < orderedKeys.length; i++) {
       const key = orderedKeys[i]!;
       const item = itemByKey.get(key)!;
@@ -292,6 +293,14 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       const color = isTail ? TAIL_COLOUR : look.color;
       const known = item.progressMilli !== null;
       const headValue = known ? item.progressMilli! / 1000 : null;
+      if (headValue !== null && headValue > maxSeen) maxSeen = headValue;
+      if (tile) {
+        for (const bucket of tile.buckets) {
+          if (!bucket) continue;
+          const scaled = bucket.maxValue * 100;
+          if (Number.isFinite(scaled) && scaled > maxSeen) maxSeen = scaled;
+        }
+      }
       const absentReason = known ? null : (item.progressUnknown ?? notRecordedLabel());
       const levelName = levelTitle(reply.levels, item.level);
 
@@ -326,6 +335,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       ));
     }
 
+    const yTop = maxSeen > 100 ? Math.ceil(maxSeen / 25) * 25 : 100;
     const hoverDetail = buildHoverDetail(readView, options, looks);
     return {
       kind: 'autonomy',
@@ -334,7 +344,10 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       hour,
       extent: options.extent,
       ...(view ? { view } : {}),
-      yAxis,
+      yAxis: {
+        ...yAxis,
+        fixed: [0, yTop],
+      },
       series: seriesList,
       gaps,
       note: 'Progress within each subject’s current autonomy level',

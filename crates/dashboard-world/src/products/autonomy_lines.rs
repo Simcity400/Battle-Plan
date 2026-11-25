@@ -8,7 +8,7 @@ use dashboard_base::{
 use dashboard_query::{
     Query,
     identity::Holder,
-    series::{Ask, Line, Span, hour_of},
+    series::{Ask, Line, MissingSpan, Span, hour_of},
     tile::{self, SeriesTileReply, TileRanking},
     timeline::Stretch,
 };
@@ -83,6 +83,20 @@ fn intersect_spans(left: &[Span], right: &[Span]) -> Vec<Span> {
         }
     }
     merge_spans(out)
+}
+
+fn clip_missing(missing: &[MissingSpan], spans: &[Span]) -> Vec<MissingSpan> {
+    let mut out: Vec<MissingSpan> = Vec::new();
+    for gap in missing {
+        for span in spans {
+            let first_hour = gap.first_hour.max(span.first_hour);
+            let last_hour = gap.last_hour.min(span.last_hour);
+            if first_hour <= last_hour {
+                out.push(MissingSpan { first_hour, last_hour, reason: gap.reason.clone() });
+            }
+        }
+    }
+    out
 }
 
 fn subject_spans_from_held(
@@ -294,6 +308,9 @@ pub fn tile(
     };
 
     let mut reply = tile::tile(&line, &ask.branch_id, &asks, Some(&within), ask.bin_hours, ask.index, false)?;
+    for (tile_line, (_, spans)) in reply.lines.iter_mut().zip(&within) {
+        tile_line.missing = clip_missing(&tile_line.missing, spans);
+    }
     reply.ranking = ranking;
     Ok(reply)
 }
@@ -346,6 +363,11 @@ mod tests {
         assert_eq!(
             active_subjects_and_window(&spans, |_| true, 100, 199, &[(160, 165)], 150, 1500),
             (vec![20, 30], 120, 159),
+        );
+        let missing = vec![MissingSpan { first_hour: 100, last_hour: 130, reason: "Not recorded".to_owned() }];
+        assert_eq!(
+            clip_missing(&missing, &spans[&30]),
+            vec![MissingSpan { first_hour: 120, last_hour: 130, reason: "Not recorded".to_owned() }],
         );
     }
 }
