@@ -11,7 +11,7 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
-import { familyBinding, lazyActionKeys, nextReportedRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
+import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
 import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { readPlanExact } from '../broker.ts';
@@ -19,7 +19,7 @@ import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
 import { pagedTailEntry } from '../table/logHelpers.ts';
-import { DEFAULT_TAIL_PAGE_SIZE } from '../table/rowSource.ts';
+import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager } from '../table/rowSource.ts';
 import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
 import type { TableModel } from '../table/model.ts';
 import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './auditBinding.ts';
@@ -1267,6 +1267,66 @@ test('rv18 S18: a changed source-plan signature replays the current row window t
     'changing the plan signature replays the unchanged window even when the installed hour moved forward',
   );
   assert.equal(nextReportedRowWindow(first, null, 205, 'plan:filtered'), null, 'no requested window reports nothing');
+});
+
+test('rv21 S2: a new installed head that pushes a gap below a stationary viewport reports the updated data window past the head', () => {
+  const source = { id: 'log-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 5000 }] } } as unknown as DashboardSource;
+  const HEAD = 256;
+  const entry = pagedTailEntry('main', source, '1', 0, { product: 'event-choices-tail', branchId: '1', facets: [], from: null, limit: HEAD }, true);
+  const plan: SourcePlan = { owner: 'log', entries: [entry] };
+  const columns = [{ key: 'event', label: 'Event', as: 'plain', offered: ['plain'], priority: 0 }] as never;
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'event', direction: 'descending' } });
+  const rowHeight = ROW_HEIGHT.normal;
+  const viewport = { width: 600, height: 6 * rowHeight, dpr: 1, scrollLeft: 0, scrollTop: 247 * rowHeight, zoomWindow: null };
+
+  const fieldsBefore = { table: { count: 301, totalHeight: 301 * rowHeight, gapBefore: [255] }, meta: {} };
+  const firstUpdate = reconcileInstalledRowWindow(null, null, tableHostAdapter, plan, viewport, settings, fieldsBefore, 100, 'plan:all');
+  assert.deepEqual(firstUpdate.requested, { first: 243, count: 14, dataFirst: 243, dataCount: 13 });
+  assert.ok(firstUpdate.report);
+
+  const pager = new SnapshotPager(HEAD, DEFAULT_TAIL_PAGE_SIZE);
+  const initialStep = pager.window(firstUpdate.report.window, firstUpdate.report.hour);
+  assert.deepEqual(initialStep.fetch, [], 'with the gap inside display rows 243..256, data ordinals 243..255 stay inside the 256-row head');
+
+  const fieldsAfter = { table: { count: 303, totalHeight: 303 * rowHeight, gapBefore: [257] }, meta: {} };
+  const nextUpdate = reconcileInstalledRowWindow(
+    firstUpdate.report,
+    firstUpdate.requested,
+    tableHostAdapter,
+    plan,
+    viewport,
+    settings,
+    fieldsAfter,
+    105,
+    'plan:all',
+  );
+  assert.equal(nextUpdate.changed, true, 'gap pushed below viewport changes dataCount from 13 to 14');
+  assert.deepEqual(nextUpdate.requested, { first: 243, count: 14, dataFirst: 243, dataCount: 14 });
+  assert.deepEqual(nextUpdate.report, { window: { first: 243, count: 14, dataFirst: 243, dataCount: 14 }, hour: 105, planSig: 'plan:all' });
+
+  const afterStep = pager.window(nextUpdate.report!.window, nextUpdate.report!.hour);
+  assert.deepEqual(
+    afterStep.fetch,
+    [
+      { offset: 0, limit: DEFAULT_TAIL_PAGE_SIZE, hour: 105 },
+      { offset: 256, limit: DEFAULT_TAIL_PAGE_SIZE, hour: 105 },
+    ],
+    'pager now snapshots the window crossing past the 256-row head, including data ordinal 256',
+  );
+
+  const quietUpdate = reconcileInstalledRowWindow(
+    nextUpdate.report,
+    nextUpdate.requested,
+    tableHostAdapter,
+    plan,
+    viewport,
+    settings,
+    fieldsAfter,
+    106,
+    'plan:all',
+  );
+  assert.equal(quietUpdate.changed, false);
+  assert.equal(quietUpdate.report, null, 'unchanged installed window on a forward step stays deduplicated');
 });
 
 test('rv19 S2: a selected Range reaches source planning and plan signature for cumulative Lines declarations', () => {
