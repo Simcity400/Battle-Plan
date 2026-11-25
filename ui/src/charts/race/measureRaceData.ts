@@ -29,11 +29,6 @@ export function validateRankReply(value: unknown): SeriesRankReply {
   return reply as SeriesRankReply;
 }
 
-export function rankProvenInterval(data: unknown, hour: number): readonly [number, number] {
-  const reply = data as SeriesRankReply;
-  return reply.from <= hour && hour <= reply.until ? [reply.from, reply.until] : [hour, hour];
-}
-
 export function rankReading(reply: SeriesRankReply, row: SeriesRankRow, measure: string): SeriesState | null {
   const at = reply.measures.findIndex(held => held.name === measure);
   return at < 0 ? null : row.readings[at] ?? null;

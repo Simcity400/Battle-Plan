@@ -122,10 +122,10 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
         offset: ctx.track.axisOffset,
         read: {
           shape: 'point',
-          channel: 'followed',
+          channel: 'panel',
           coverage: group ? { mode: 'population', form: 'all' } : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit },
           product: 'diplomatic-relations',
-          followQuery: null,
+          followQuery: { panel: 'diplomatic-relations', ...params },
           params,
           dynamicKeys: ['hour'],
         },

@@ -126,8 +126,8 @@ test('territoryRaceProjection sends group to series-rank, keys by slot, preserve
     settings: {},
     countries: { tags: [], every: [], top: null, all: false, holders: null, membership: null, unobserved: [], reason: null },
   } as never, { following: true, staticSpan: null });
-  const read = plan.entries[0]!.read as unknown as { params: Record<string, unknown>; buildExactParams: (base: Record<string, unknown>, hour: number) => Record<string, unknown> | null };
-  const exact = read.buildExactParams(read.params, 300);
+  const read = plan.entries[0]!.read;
+  const exact = read.shape === 'point' ? read.followQuery : null;
   assert.deepEqual(exact?.group, { type: 'war', tag: 'GER', membership: 'ever' }, 'group selection sent to series-rank');
 });
 

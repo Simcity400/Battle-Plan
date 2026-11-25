@@ -77,7 +77,7 @@ test('the race asks the one rank reply, with the split parts only when splitting
   const asked = (options: Record<string, unknown>, countries: unknown) => {
     const read = gameScoreRaceDeclaration.sources(ctx(options, countries), { following: true, staticSpan: null }).entries[0]!.read;
     assert.ok(read.shape === 'point' && read.product === 'series-rank');
-    return read.shape === 'point' ? read.buildExactParams?.(read.params!, 500 as never, 'static') as Record<string, unknown> : {};
+    return read.shape === 'point' ? read.followQuery as Record<string, unknown> : {};
   };
   const tags = { kind: 'tags', tags: ['GER'] };
   assert.deepEqual(asked({ topMeasure: 'total' }, tags).measures, ['army', 'navy', 'air']);

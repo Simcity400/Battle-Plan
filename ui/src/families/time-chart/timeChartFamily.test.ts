@@ -1152,8 +1152,9 @@ describe('multi-country order from the product', () => {
     const VIEW = { width: 800, height: 300 } as Parameters<typeof politicalPowerDeclaration.sources>[1];
     for (const following of [false, true]) {
       const plan = politicalPowerDeclaration.sources(ctx(following), VIEW);
-      const rank = plan.entries.find(entry => entry.name === 'rank')!.read as { product: string; followQuery: unknown };
-      assert.deepEqual([rank.product, rank.followQuery], ['series-rank', null], 'one rank product, whether following or not');
+      const rank = plan.entries.find(entry => entry.name === 'rank')!.read;
+      assert.ok(rank.shape === 'point' && rank.product === 'series-rank');
+      assert.deepEqual(rank.followQuery, { panel: 'series-rank', ...rank.params });
       const head = (plan.entries.find(entry => entry.name === 'main')!.read as { headQuery: { coverage?: string } }).headQuery;
       assert.equal(head.coverage, 'row', 'one unread country never hides a witnessed one');
     }
