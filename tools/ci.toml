@@ -133,7 +133,6 @@ tier = "check"
 toolchain = "tools"
 inputs = ["tools/**", ".github/workflows/**"]
 ci-only = true
-unset = ["WARM_TARGET_END_TO_END"]
 command = ["{python}", "tools/test-python.py"]
 
 [[job]]
@@ -199,7 +198,7 @@ command = ["{npm}", "run", "test:parity"]
 [[job]]
 name = "ui-browser-tests"
 group = "windows"
-tier = "main"
+tier = "check"
 toolchain = "node"
 ci-only = true
 inputs = ["ui/**", "tools/**/*.ts", "tools/**/*.mjs", "tools/**/*.js", "crates/**/*.json", "crates/**/*.golden"]
@@ -238,8 +237,9 @@ toolchain = "rust"
 inputs = ["ui/src/generated/dashboard.ts"]
 package = "dashboard"
 ci-only = true
-command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
-warm = ["cargo", "build", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--lib"]
+command = ["cargo", "nextest", "run", "--cargo-profile", "ci", "-p", "dashboard", "--lib", "--no-tests=fail", "the_ui_holds_the_current_contract"]
+warm = ["cargo", "test", "--profile", "ci", "-p", "dashboard", "--lib", "--no-run"]
+widen = [".config/nextest.toml"]
 
 [[job]]
 name = "dashboard-shipped"

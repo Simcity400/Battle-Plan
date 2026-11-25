@@ -108,7 +108,6 @@ class Job:
     group: str
     whole: tuple
     base: bool
-    unset: tuple
     widen: tuple
     report: str
     not_run: tuple
@@ -143,7 +142,7 @@ def load_pipeline(text):
             shared=tuple(table.get("shared", ())), command=tuple(table.get("command", ())),
             ci_only=table.get("ci-only", False),
             group=table.get("group", ""), whole=tuple(table.get("whole", ())), base=table.get("base", False),
-            unset=tuple(table.get("unset", ())), widen=tuple(table.get("widen", ())),
+            widen=tuple(table.get("widen", ())),
             report=table.get("report", ""),
             not_run=tuple((reason, rule.get("panic", ""), tuple(rule.get("crates", ()))) for reason, rule in table.get("not-run", {}).items()),
             shards=table.get("shards", 0), warm=tuple(table.get("warm", ())), dependents=table.get("dependents", True),
@@ -661,8 +660,8 @@ class Runner:
     def __init__(self, folder, values, local=False):
         self.folder, self.values, self.local = folder, values, local
 
-    def execute(self, command, log, unset=()):
-        env = {name: value for name, value in os.environ.items() if name not in unset}
+    def execute(self, command, log):
+        env = dict(os.environ)
         env["PYTHONUTF8"] = "1"
         with open(log, "ab") as out:
             out.write(f"$ {' '.join(command)}\n".encode())
@@ -681,9 +680,9 @@ class Runner:
         command = job.command
         report = ROOT / job.report if job.report and not self.local else None
         if job.kind == "files" and decision.whole and job.whole:
-            code = self.execute(expand(job.whole, values), log, job.unset)
+            code = self.execute(expand(job.whole, values), log)
         elif job.kind == "files":
-            codes = [self.execute(part, log, job.unset) for part in batches(command, values, decision.arguments)]
+            codes = [self.execute(part, log) for part in batches(command, values, decision.arguments)]
             code = next((code for code in codes if code), 0)
         else:
             if report:
@@ -692,7 +691,7 @@ class Runner:
                 stage_code = stage_shader_compiler(command, log)
                 if stage_code != 0:
                     return Outcome(job.name, "fail", f"staging pinned shader compiler failed, exit {stage_code}", time.monotonic() - started, str(log))
-            code = self.execute(expand(command, values), log, job.unset)
+            code = self.execute(expand(command, values), log)
             if report and report.is_file() and code in (0, NEXTEST_TESTS_FAILED):
                 found = sorted_failures(report.read_text(encoding="utf-8", errors="replace"), job.not_run)
                 if found is not None:
