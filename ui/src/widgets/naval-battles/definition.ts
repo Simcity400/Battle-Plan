@@ -5,13 +5,13 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const NAVAL_BATTLES_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ sortable: true }),
-  logKindColumn({ minWidth: 26 }),
-  logCountryColumn({ label: '', grow: 0 }),
-  logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary', grow: 6 }),
-  { ...logPairColumn('shipsSunk', 'Ships sunk', 'total'), minWidth: 88 },
-  logPairColumn('ships', 'Ships', 'hide'),
-  logStatusColumn({ label: 'Result', widest: ['Defender won'], narrow: 'hide' }),
+  logDateColumn({ sortable: true, minWidth: 70, maxWidth: 70 }),
+  logKindColumn({ minWidth: 52, maxWidth: 52 }),
+  logCountryColumn({ label: '', minWidth: 68, grow: 0 }),
+  logItemColumn({ label: 'Battle', minWidth: 42, narrow: 'primary' }),
+  { ...logPairColumn('shipsSunk', 'Ships sunk', 'total', 68), minWidth: 88, grow: 0, partialReason: 'Sinkings seen during the battle: a lower bound until its result is recorded' },
+  { ...logPairColumn('ships', 'Ships', 'hide', 57), grow: 0 },
+  logStatusColumn({ label: 'Result', widest: ['Defender won'], minWidth: 136, maxWidth: 136, narrow: 'hide' }),
 ];
 
 export const definition = {

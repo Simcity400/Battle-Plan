@@ -25,6 +25,7 @@ export interface FamilyColumnLayout extends TableColumnLayout {
   readonly text?: boolean;
   readonly hideable?: boolean;
   readonly hint?: string;
+  readonly partialReason?: string;
   readonly cellKind?: TableCellKind;
   readonly skillIcon?: string;
   readonly trackTone?: 'accent' | 'red' | 'grey';
@@ -53,6 +54,7 @@ export const SHARE_TRACK_HEIGHT = 4;
 export const SHARE_TRACK_GAP = 10;
 export const SHARE_FIGURE_SLOT = 52;
 const SHARE_PARTIAL_TAB = 11;
+const HEADER_PARTIAL_TAB = 10;
 const SORT_ARROW_WIDTH = 16;
 const KIND_COLUMN_ART = 32;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
@@ -100,6 +102,7 @@ export function buildColumnLayouts(
       pinned: spec.pinned,
       barEligible: spec.barEligible,
       notRecordedReason: spec.notRecordedReason,
+      partialReason: spec.partialReason,
       cellKind: spec.cellKind,
       skillIcon: spec.skillIcon,
       trackTone: spec.trackTone,
@@ -195,7 +198,7 @@ export function measureFixedColumnWidths(
       out[column.key] = Math.max(column.minWidth ?? 68, Math.ceil(hw));
       continue;
     }
-    const labelW = hideHeader ? 0 : measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);
+    const labelW = hideHeader ? 0 : measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0) + (column.partialReason ? HEADER_PARTIAL_TAB : 0);
     const unitW = hideHeader || !column.unit ? 0 : measure(column.unit, unitFont);
     const headerWidth = hideHeader ? 0 : Math.max(labelW, unitW) + (column.sortable === false ? 0 : SORT_ARROW_WIDTH) + CELL_INSET * 2;
     if (column.cellKind === 'date') {
@@ -318,7 +321,7 @@ export function layoutFamilyTable(
     const inlineFlags: string[] = [];
     for (let i = primary + 1; primary >= 0 && visible[i]?.narrow === 'flag'; i++) inlineFlags.push(visible[i]!.key);
     visible = visible.map(col => {
-      if (col.narrow === 'primary') return { ...col, inlineFlags, narrowed: true };
+      if (col.narrow === 'primary') return { ...col, inlineFlags, width: Math.min(col.width, col.minWidth ?? col.width), narrowed: true };
       if (col.narrow === 'total') return { ...col, headerGroup: undefined, width: col.minWidth ?? col.width, narrowed: true };
       if (col.narrow === 'flag') return { ...col, display: 'flag', width: inlineFlags.includes(col.key) ? 0 : col.narrowWidth ?? col.minWidth ?? 40, grow: 0, narrowed: true };
       return col.narrowWidth === undefined ? { ...col, narrowed: true } : { ...col, width: col.narrowWidth, narrowed: true };

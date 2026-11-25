@@ -92,6 +92,7 @@ export interface TableHeaderColumn extends TableColumnLayout {
   hideable?: boolean;
   sortable?: boolean;
   hint?: string;
+  partialReason?: string;
   headerGroup?: TableHeaderGroup;
   cellKind?: TableCellKind;
 }
@@ -176,6 +177,7 @@ export function FamilyTableHeader({
 
   const renderLabel = (item: TableHeaderColumn, active: boolean, end: boolean, index: number) => {
     if (item.cellKind === 'kind') return <span className="sr-only">{item.label}</span>;
+    const partial = item.partialReason && <span className="tf-th-partial" role="img" aria-label={item.partialReason} title={item.partialReason} />;
     const arrow = active ? (sort.direction === 'descending' ? SORT_ARROW_DOWN : SORT_ARROW_UP) : null;
     if (identity && index === 0) {
       return <>
@@ -189,6 +191,7 @@ export function FamilyTableHeader({
         <span className="tf-th-group">
           {icon ? <GroupIcon src={icon} /> : iconMissing ? <i className="tf-th-hatch" title={iconMissing} /> : null}
           <span>{item.label}</span>
+          {partial}
           {arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
         </span>
         <span className="tf-th-sides">{item.headerGroup.labels.map(label => <span key={label}>{label}</span>)}</span>
@@ -220,6 +223,7 @@ export function FamilyTableHeader({
       <span className="tf-th-main">
         {item.notRecordedReason && <span className="tf-th-hatch" aria-hidden="true" />}
         <span>{item.label}</span>
+        {partial}
       </span>
       {item.unit && <span className="tf-th-unit">{item.unit}</span>}
     </span>;

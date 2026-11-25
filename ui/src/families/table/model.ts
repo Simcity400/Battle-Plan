@@ -98,6 +98,7 @@ export interface TableColumnSpec extends TableColumnDefaults {
   readonly barEligible?: boolean;
   readonly pinned?: boolean;
   readonly notRecordedReason?: string;
+  readonly partialReason?: string;
   readonly skillIcon?: string;
   readonly trackTone?: 'accent' | 'red' | 'grey';
   readonly headerGroup?: TableHeaderGroup;

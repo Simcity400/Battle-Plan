@@ -19,7 +19,7 @@ interface Options {
   readonly selected: readonly string[];
 }
 
-const base = { columns: SHIPS_SUNK_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false } as const;
+const base = { columns: SHIPS_SUNK_COLUMNS, unsorted: true, dateGrouped: true, hideHeader: true, rowTimeBoundaries: false, rhythm: 'log' } as const;
 
 function killerBeside(cause: ShipSinkingAttribution): string | undefined {
   if (cause.kind === 'ship') return `by ${cause.className ?? cause.classKey ?? cause.name}`;
@@ -44,8 +44,8 @@ function sunkBy(cause: ShipSinkingAttribution): readonly TooltipExtraRow[] {
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
   const name = row.name ?? 'Ship name not recorded';
   const className = shipClass?.name ?? row.recordedClass;
-  const victim = { tag: row.victim, dimmed: true, missingLabel: 'Victim not recorded' };
-  const attacker = { tag: row.attacker, missingLabel: 'Killer not recorded' };
+  const victim = { tag: row.victim, dimmed: true, missingLabel: 'Victim not recorded', role: 'Victim' };
+  const attacker = { tag: row.attacker, missingLabel: 'Killer not recorded', role: 'Killer' };
   const cause = row.sinkingCause;
   const country = logCountryCell(view, row.attacker === null && cause.kind === 'cause' ? [victim] : [attacker, victim], row.hour, boundary);
   const place = row.seaZone ? knownValue(row.seaZone) : notRecorded('Sea zone not recorded');
@@ -66,15 +66,11 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
       date: logDateCell(row.hour),
       kind: artKindCell(view, urlArtHandle(drawableIcon(shipClass?.icon)), 'equipment', className, 'Ship class artwork not recorded'),
       country,
-      item: { value: row.name ? knownValue(row.name) : notRecorded(name), missingFigure: 'Ship name', inlineSubtext: className ?? 'Class not recorded' },
+      item: { value: row.name ? knownValue(row.name) : notRecorded(name), missingFigure: 'Ship name', inlineSubtext: className ?? 'Class not recorded',
+        tooltipRows: [{ label: 'Class', value: className ? knownValue(className) : notRecorded('Ship class not recorded') }] },
       place: { value: place, missingFigure: 'Sea zone' }, cause: loss,
     },
-    tooltipExtra: () => [
-      { label: 'Class', value: className ? knownValue(className) : notRecorded('Ship class not recorded') },
-      { label: 'Killer', value: row.attacker ? logCountryCell(view, [attacker], row.hour).value : notRecorded('Killer not recorded') },
-      { label: 'Victim', value: row.victim ? logCountryCell(view, [victim], row.hour).value : notRecorded('Victim not recorded') },
-      { label: 'First recorded', value: knownValue(formatDateTime(row.observed)) },
-    ],
+    tooltipExtra: () => [{ label: 'First recorded', value: knownValue(formatDateTime(row.observed)) }],
   };
 }
 
@@ -110,7 +106,7 @@ export const shipsSunkProjection: TableProjection<Options> = registerFamilyProje
 const prefixOf = (campaign: string, branch: string) => setToken(`${campaign}:${branch}:`);
 
 export const shipsSunkDeclaration: TableWidgetDeclaration<Options> = {
-  family: 'table', kind: 'ships-sunk', label: 'Ships sunk', subject: 'ships', icon: 'anchor',
+  family: 'table', kind: 'ships-sunk', label: 'Ships sunk', subject: 'ships', icon: 'ship',
   emptyCampaign: 'Load a campaign to see its ships sunk log.', countries: { mode: 'filter' }, columns: SHIPS_SUNK_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx) {
