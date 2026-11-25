@@ -786,7 +786,7 @@ pub struct ProductionLineBreakdownReply {
 
 dashboard_base::reply_warnings!(ProductionLineBreakdownReply);
 
-type LineAt = (RawRun, Option<ProductionLineModifiersRow>, Option<CountryProductionModifiersRow>, Option<u32>);
+type LineAt = (RawRun, Result<ProductionLineModifiersRow, String>, Result<CountryProductionModifiersRow, String>, Option<u32>);
 
 fn witnessed(run: &RawRun, id: &str, reason: &str) -> Option<ProductionModifierGroup> {
     let (total, unit, note) = match id {
@@ -846,22 +846,28 @@ impl Product for ProductionLineBreakdown {
         let key = u128::from(handle);
         let tables = [(TableId::ProductionLines, None), (TableId::ProductionLineModifiers, None), (TableId::CountryProductionModifiers, None), (TableId::CountryLinks, None)];
         let mut read: Option<LineAt> = None;
-        let mut unread: Option<&str> = None;
+        let mut unread: Option<String> = None;
         dashboard_query::read::walk(recording, stretch.run, &tables, hour, hour, |_, readers| {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            if !readers[0].available() {
-                unread = Some("Production lines were not recorded at this hour");
-                return Ok(());
-            }
-            let Some(line) = row::<tables::ProductionLines>(&readers[0], key, format) else { return Ok(()) };
-            if !readers[3].available() {
-                unread = Some("Country links were not recorded at this hour, so the line's country is not known");
-                return Ok(());
-            }
-            let linked = row::<tables::CountryLinks>(&readers[3], u128::from(line.country), format)
-                .and_then(|link| dashboard_text::metadata::link_slot(std::slice::from_ref(&link), line.country));
-            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format);
-            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format);
+            let line = match row::<tables::ProductionLines>(&readers[0], key, format) {
+                Ok(Some(line)) => line,
+                Ok(None) => return Ok(()),
+                Err(reason) => {
+                    unread = Some(reason);
+                    return Ok(());
+                }
+            };
+            let linked = match row::<tables::CountryLinks>(&readers[3], u128::from(line.country), format) {
+                Ok(link) => link.and_then(|link| dashboard_text::metadata::link_slot(std::slice::from_ref(&link), line.country)),
+                Err(reason) => {
+                    unread = Some(format!("{reason}, so the line's country is not known"));
+                    return Ok(());
+                }
+            };
+            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format)
+                .and_then(|row| row.ok_or_else(|| "This line's production modifiers were not recorded at this hour".to_owned()));
+            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format)
+                .and_then(|row| row.ok_or_else(|| "The country's production modifiers were not recorded at this hour".to_owned()));
             read = Some((line, modifiers, country, linked));
             Ok(())
         })?;
@@ -874,7 +880,7 @@ impl Product for ProductionLineBreakdown {
         }
         let mut warnings = BTreeSet::new();
         let (group, missing) = match (modifiers, country) {
-            (Some(modifiers), Some(country)) => {
+            (Ok(modifiers), Ok(country)) => {
                 let content = names::context(source, context)?;
                 let mut named = Named::default();
                 if line.mio != 0 {
@@ -893,13 +899,15 @@ impl Product for ProductionLineBreakdown {
                 warnings.extend(run.warnings);
                 (run.groups.pop(), None)
             }
-            (modifiers, _) => {
-                let reason = if modifiers.is_none() { "This line's production modifiers were not recorded at this hour" } else { "The country's production modifiers were not recorded at this hour" };
-                let kept = witnessed(&line, &params.group, reason);
-                if kept.is_some() {
-                    warnings.insert(reason.to_owned());
-                }
-                let missing = kept.is_none().then(|| reason.to_owned());
+            (Err(reason), _) | (Ok(_), Err(reason)) => {
+                let kept = witnessed(&line, &params.group, &reason);
+                let missing = match kept {
+                    Some(_) => {
+                        warnings.insert(reason);
+                        None
+                    }
+                    None => Some(reason),
+                };
                 (kept, missing)
             }
         };

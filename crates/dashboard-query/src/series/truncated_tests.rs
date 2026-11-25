@@ -734,6 +734,27 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
 }
 
 #[test]
+fn a_row_read_at_a_truncated_hour_is_served_only_where_that_hour_witnessed_it() {
+    use replay_data::rows::tables::CountryExperience;
+    let fixture = TruncatedFixture::new();
+    let recording = fixture.replay.recording();
+    let format = recording.format();
+    let army = dashboard_declare::field(TableId::CountryExperience, "army_raw").unwrap();
+    let mut walked = 0;
+    crate::read::walk(recording, 0, &[(TableId::CountryExperience, None)], T1, T1, |_, readers| {
+        let reader = &readers[0];
+        assert_eq!(crate::read::row::<CountryExperience>(reader, 9001, format).map(|row| row.map(|row| row.army_raw)), Ok(Some(100)), "GER is witnessed at T1");
+        assert_eq!(crate::read::row::<CountryExperience>(reader, 9002, format).map(|row| row.is_some()), Err(EXP_TRUNC.to_owned()), "ITA is held from an earlier hour, not read at T1");
+        assert_eq!(crate::read::number(reader, 9001, army), Some(100));
+        assert_eq!(crate::read::number(reader, 9002, army), None, "an unwitnessed row's held cell is never served as the hour's");
+        walked += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(walked, 1);
+}
+
+#[test]
 fn scoreboard_applies_witness_rule_for_countries_and_top_ranking() {
     let fixture = TruncatedFixture::new();
     let query = fixture.query();
