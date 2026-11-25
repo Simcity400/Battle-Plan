@@ -1494,4 +1494,62 @@ fn empty_convoy_lists_defer_vtable_resolution_and_batch_faults_never_retry() {
         }
     );
     assert_eq!(mkt_fault.hits.get(), 1);
+
+    let mut rights_bad = world();
+    rights_bad.bytes.retain(|&address, _| {
+        !(0x20000 + ORIGIN_RIGHTS..0x20000 + ORIGIN_RIGHTS + 16).contains(&address)
+    });
+    let (outcomes, _) = walk(&rights_bad);
+    assert_eq!(outcomes.origins, Outcome::Rows { len: 1 });
+    assert_eq!(
+        outcomes.rights,
+        Outcome::Unavailable {
+            reason: "origin rights unreadable"
+        }
+    );
+
+    let mut country_mod = world();
+    let bucket_table = 0x38000;
+    country_mod.put(0x30000 + cstate::COUNTRY_MODIFIERS, &[0; 17]);
+    country_mod.u64(0x30000 + cstate::COUNTRY_MODIFIERS, bucket_table as u64);
+    country_mod.u32(0x30000 + cstate::COUNTRY_MODIFIERS + 12, 0);
+    country_mod.u8(0x30000 + cstate::COUNTRY_MODIFIERS + 16, 1);
+    country_mod.put(bucket_table, &[0; cstate::COUNTRY_MODIFIER_STRIDE]);
+    country_mod.u8(bucket_table + 4, 1);
+    country_mod.u32(bucket_table + 8, 1);
+    country_mod.array(bucket_table + 0x20, 0, 0);
+    country_mod.bytes.retain(|&address, _| {
+        !(0x30000 + cstate::BASE_MODIFIERS..0x30000 + cstate::BASE_MODIFIERS + 16)
+            .contains(&address)
+    });
+    let (outcomes, rows) = walk(&country_mod);
+    assert_eq!(outcomes.origins, Outcome::Rows { len: 1 });
+    assert_eq!(rows.origins[0].local_resources_factor, 0);
+
+    let mut two_origins = world();
+    two_origins.array(0x6000 + ccountry_resources::RESOURCE_ORIGINS, 0x20800, 2);
+    two_origins.u64(0x20800, 0x20000);
+    two_origins.u64(0x20808, 0x20000);
+    two_origins.bytes.retain(|&address, _| {
+        !(0x20000 + ORIGIN_EFFICIENCY..0x20008 + ORIGIN_EFFICIENCY).contains(&address)
+    });
+    let ptr_fault = OneShot {
+        inner: &two_origins,
+        fail: 0x20808,
+        hits: std::cell::Cell::new(0),
+    };
+    let (outcomes, _) = walk(&ptr_fault);
+    assert_eq!(
+        outcomes.origins,
+        Outcome::Unavailable {
+            reason: "origin efficiency unreadable"
+        }
+    );
+    assert_eq!(
+        outcomes.rights,
+        Outcome::Unavailable {
+            reason: "origin unreadable"
+        }
+    );
+    assert_eq!(ptr_fault.hits.get(), 1);
 }

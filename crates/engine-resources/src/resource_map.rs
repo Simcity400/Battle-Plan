@@ -564,6 +564,13 @@ const RIGHTS_RECORD_FIELDS: [RecordField; 3] = [
 const RIGHTS_RECORD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&RIGHTS_RECORD_FIELDS, RIGHTS_RECORD_STRIDE)
         .expect("valid origin rights record layout");
+const RIGHTS_HEADER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ORIGIN_RIGHTS,
+    destination_offset: 0,
+    len: 16,
+}];
+const RIGHTS_HEADER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&RIGHTS_HEADER_FIELDS, 16).expect("valid origin rights header layout");
 const STATE_ID_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: cstate::ID,
     destination_offset: 0,
@@ -571,8 +578,15 @@ const STATE_ID_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const STATE_ID_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_ID_FIELDS, 4).expect("valid state id layout");
-const ORIGIN_RECORD_STRIDE: usize = 84;
-const ORIGIN_RECORD_FIELDS: [RecordField; 9] = [
+const BASE_MOD_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: cstate::BASE_MODIFIERS,
+    destination_offset: 0,
+    len: 16,
+}];
+const BASE_MOD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&BASE_MOD_FIELDS, 16).expect("valid state base modifier layout");
+const ORIGIN_RECORD_STRIDE: usize = 68;
+const ORIGIN_RECORD_FIELDS: [RecordField; 8] = [
     RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -584,46 +598,41 @@ const ORIGIN_RECORD_FIELDS: [RecordField; 9] = [
         len: 8,
     },
     RecordField {
-        source_offset: ORIGIN_RIGHTS,
-        destination_offset: 16,
-        len: 16,
-    },
-    RecordField {
         source_offset: ORIGIN_EFFICIENCY,
-        destination_offset: 32,
+        destination_offset: 16,
         len: 8,
     },
     RecordField {
         source_offset: ORIGIN_ROUTE_FACTOR,
-        destination_offset: 40,
+        destination_offset: 24,
         len: 8,
     },
     RecordField {
         source_offset: ORIGIN_ROUTE,
-        destination_offset: 48,
+        destination_offset: 32,
         len: 8,
     },
     RecordField {
         source_offset: CLIENT_EFFICIENCY_A,
-        destination_offset: 56,
+        destination_offset: 40,
         len: 16,
     },
     RecordField {
         source_offset: CLIENT_CONVOYS,
-        destination_offset: 72,
+        destination_offset: 56,
         len: 8,
     },
     RecordField {
         source_offset: CLIENT_CONVOYS_BASE,
-        destination_offset: 80,
+        destination_offset: 64,
         len: 4,
     },
 ];
 const ORIGIN_RECORD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ORIGIN_RECORD_FIELDS, ORIGIN_RECORD_STRIDE)
         .expect("valid origin record layout");
-const STATE_RECORD_STRIDE: usize = 40;
-const STATE_RECORD_FIELDS: [RecordField; 3] = [
+const STATE_RECORD_STRIDE: usize = 21;
+const STATE_RECORD_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: cstate::ID,
         destination_offset: 0,
@@ -633,11 +642,6 @@ const STATE_RECORD_FIELDS: [RecordField; 3] = [
         source_offset: cstate::COUNTRY_MODIFIERS,
         destination_offset: 4,
         len: 17,
-    },
-    RecordField {
-        source_offset: cstate::BASE_MODIFIERS,
-        destination_offset: 24,
-        len: 16,
     },
 ];
 const STATE_RECORD_LAYOUT: RecordLayout<'static> =
@@ -948,6 +952,122 @@ impl<M: Memory> Walk<'_, M> {
         Ok(())
     }
 
+    fn read_rights_ptrs(
+        &self,
+        origin_ptrs: &[usize],
+        expected_vtable: &mut Option<u64>,
+        table: &mut Table,
+        output: &mut Buffer<'_, RightsRow>,
+    ) -> Result<(), &'static str> {
+        if origin_ptrs.is_empty() {
+            return Ok(());
+        }
+        let mut checked_ptrs = [0_usize; ORIGIN_BATCH];
+        let mut live = 0;
+        let mut overflow_stop = None;
+        for &origin in origin_ptrs {
+            if origin.checked_add(ORIGIN_RIGHTS + 16).is_none() {
+                overflow_stop = Some("resources map address overflow");
+                break;
+            }
+            checked_ptrs[live] = origin;
+            live += 1;
+        }
+        let mut records = [0_u8; ORIGIN_BATCH * RIGHTS_RECORD_STRIDE];
+        let mut state_ptrs = [0_usize; ORIGIN_BATCH];
+        let mut state_ids = [0_u8; ORIGIN_BATCH * 4];
+        let copied_fields = if live != 0 {
+            self.memory.copy_records(
+                RecordSources::Pointers(&checked_ptrs[..live]),
+                &RIGHTS_RECORD_LAYOUT,
+                &mut records[..live * RIGHTS_RECORD_STRIDE],
+            )
+        } else {
+            0
+        };
+        let complete = copied_fields / RIGHTS_RECORD_FIELDS.len();
+        let partial = copied_fields % RIGHTS_RECORD_FIELDS.len();
+        let mut state_live = 0;
+        let mut state_stop = None;
+        for i in 0..complete {
+            let rec = &records[i * RIGHTS_RECORD_STRIDE..(i + 1) * RIGHTS_RECORD_STRIDE];
+            match lazy_vtable(expected_vtable, self.base, ORIGIN_VTABLE_RVA) {
+                Ok(expected) if u64::from_le_bytes(rec[0..8].try_into().unwrap()) == expected => {}
+                Ok(_) => {
+                    state_stop = Some("origin vtable mismatch");
+                    break;
+                }
+                Err(reason) => {
+                    state_stop = Some(reason);
+                    break;
+                }
+            }
+            let Ok(state) = usize::try_from(u64::from_le_bytes(rec[8..16].try_into().unwrap()))
+            else {
+                state_stop = Some("origin without a state");
+                break;
+            };
+            if state == 0 {
+                state_stop = Some("origin without a state");
+                break;
+            }
+            if state.checked_add(cstate::ID + 4).is_none() {
+                state_stop = Some("resources map address overflow");
+                break;
+            }
+            state_ptrs[state_live] = state;
+            state_live += 1;
+        }
+        let copied_states = if state_live != 0 {
+            self.memory.copy_records(
+                RecordSources::Pointers(&state_ptrs[..state_live]),
+                &STATE_ID_LAYOUT,
+                &mut state_ids[..state_live * 4],
+            )
+        } else {
+            0
+        };
+        for i in 0..copied_states {
+            let rec = &records[i * RIGHTS_RECORD_STRIDE..(i + 1) * RIGHTS_RECORD_STRIDE];
+            let state = u32::from_le_bytes(state_ids[i * 4..(i + 1) * 4].try_into().unwrap());
+            let rights = Array::from_header(rec[16..32].try_into().unwrap(), RIGHTS_STRIDE)
+                .ok_or("origin rights unreadable")?;
+            self.rights_from_array(rights, state, table, output)?;
+        }
+        if copied_states < state_live {
+            return Err("origin state id unreadable");
+        }
+        if let Some(reason) = state_stop {
+            return Err(reason);
+        }
+        if complete < live {
+            let rec =
+                &records[complete * RIGHTS_RECORD_STRIDE..(complete + 1) * RIGHTS_RECORD_STRIDE];
+            if partial == 0 {
+                return Err("origin vtable unreadable");
+            }
+            if u64::from_le_bytes(rec[0..8].try_into().unwrap())
+                != lazy_vtable(expected_vtable, self.base, ORIGIN_VTABLE_RVA)?
+            {
+                return Err("origin vtable mismatch");
+            }
+            if partial == 1 {
+                return Err("origin state unreadable");
+            }
+            let state = usize::try_from(u64::from_le_bytes(rec[8..16].try_into().unwrap()))
+                .ok()
+                .filter(|&p| p != 0)
+                .ok_or("origin without a state")?;
+            let _ = read::<u32>(self.memory, at(state, cstate::ID)?)
+                .ok_or("origin state id unreadable")?;
+            return Err("origin rights unreadable");
+        }
+        if let Some(reason) = overflow_stop {
+            return Err(reason);
+        }
+        Ok(())
+    }
+
     fn read_rights_only(
         &self,
         origins: Array,
@@ -958,9 +1078,6 @@ impl<M: Memory> Walk<'_, M> {
     ) -> Result<(), &'static str> {
         let mut ptr_bytes = [0_u8; ORIGIN_BATCH * 8];
         let mut origin_ptrs = [0_usize; ORIGIN_BATCH];
-        let mut records = [0_u8; ORIGIN_BATCH * RIGHTS_RECORD_STRIDE];
-        let mut state_ptrs = [0_usize; ORIGIN_BATCH];
-        let mut state_ids = [0_u8; ORIGIN_BATCH * 4];
         while first < origins.count {
             let count = ((origins.count - first) as usize).min(ORIGIN_BATCH);
             let start = origins.element(first, 8).ok_or("origin unreadable")?;
@@ -986,101 +1103,13 @@ impl<M: Memory> Walk<'_, M> {
                     ptr_stop = Some("null origin in a live list");
                     break;
                 }
-                if origin.checked_add(ORIGIN_RIGHTS + 16).is_none() {
-                    ptr_stop = Some("resources map address overflow");
-                    break;
-                }
                 origin_ptrs[live] = origin;
                 live += 1;
             }
             if ptr_stop.is_none() && copied_ptrs < count {
                 ptr_stop = Some("origin unreadable");
             }
-            let copied_fields = if live != 0 {
-                self.memory.copy_records(
-                    RecordSources::Pointers(&origin_ptrs[..live]),
-                    &RIGHTS_RECORD_LAYOUT,
-                    &mut records[..live * RIGHTS_RECORD_STRIDE],
-                )
-            } else {
-                0
-            };
-            let complete = copied_fields / RIGHTS_RECORD_FIELDS.len();
-            let partial = copied_fields % RIGHTS_RECORD_FIELDS.len();
-            let mut state_live = 0;
-            let mut state_stop = None;
-            for i in 0..complete {
-                let rec = &records[i * RIGHTS_RECORD_STRIDE..(i + 1) * RIGHTS_RECORD_STRIDE];
-                match lazy_vtable(expected_vtable, self.base, ORIGIN_VTABLE_RVA) {
-                    Ok(expected) if u64::from_le_bytes(rec[0..8].try_into().unwrap()) == expected => {}
-                    Ok(_) => {
-                        state_stop = Some("origin vtable mismatch");
-                        break;
-                    }
-                    Err(reason) => {
-                        state_stop = Some(reason);
-                        break;
-                    }
-                }
-                let Ok(state) = usize::try_from(u64::from_le_bytes(rec[8..16].try_into().unwrap()))
-                else {
-                    state_stop = Some("origin without a state");
-                    break;
-                };
-                if state == 0 {
-                    state_stop = Some("origin without a state");
-                    break;
-                }
-                if state.checked_add(cstate::ID + 4).is_none() {
-                    state_stop = Some("resources map address overflow");
-                    break;
-                }
-                state_ptrs[state_live] = state;
-                state_live += 1;
-            }
-            let copied_states = if state_live != 0 {
-                self.memory.copy_records(
-                    RecordSources::Pointers(&state_ptrs[..state_live]),
-                    &STATE_ID_LAYOUT,
-                    &mut state_ids[..state_live * 4],
-                )
-            } else {
-                0
-            };
-            for i in 0..copied_states {
-                let rec = &records[i * RIGHTS_RECORD_STRIDE..(i + 1) * RIGHTS_RECORD_STRIDE];
-                let state = u32::from_le_bytes(state_ids[i * 4..(i + 1) * 4].try_into().unwrap());
-                let rights = Array::from_header(rec[16..32].try_into().unwrap(), RIGHTS_STRIDE)
-                    .ok_or("origin rights unreadable")?;
-                self.rights_from_array(rights, state, table, output)?;
-            }
-            if copied_states < state_live {
-                return Err("origin state id unreadable");
-            }
-            if let Some(reason) = state_stop {
-                return Err(reason);
-            }
-            if complete < live {
-                let rec = &records[complete * RIGHTS_RECORD_STRIDE..(complete + 1) * RIGHTS_RECORD_STRIDE];
-                if partial == 0 {
-                    return Err("origin vtable unreadable");
-                }
-                if u64::from_le_bytes(rec[0..8].try_into().unwrap())
-                    != lazy_vtable(expected_vtable, self.base, ORIGIN_VTABLE_RVA)?
-                {
-                    return Err("origin vtable mismatch");
-                }
-                if partial == 1 {
-                    return Err("origin state unreadable");
-                }
-                let state = usize::try_from(u64::from_le_bytes(rec[8..16].try_into().unwrap()))
-                    .ok()
-                    .filter(|&p| p != 0)
-                    .ok_or("origin without a state")?;
-                let _ = read::<u32>(self.memory, at(state, cstate::ID)?)
-                    .ok_or("origin state id unreadable")?;
-                return Err("origin rights unreadable");
-            }
+            self.read_rights_ptrs(&origin_ptrs[..live], expected_vtable, table, output)?;
             if let Some(reason) = ptr_stop {
                 return Err(reason);
             }
@@ -1127,7 +1156,7 @@ impl<M: Memory> Walk<'_, M> {
                 status.ptr_stop = Some("null origin in a live list");
                 break;
             }
-            if origin.checked_add(ORIGIN_RIGHTS + 16).is_none() {
+            if origin.checked_add(ORIGIN_ROUTE_FACTOR + 8).is_none() {
                 status.ptr_stop = Some("resources map address overflow");
                 break;
             }
@@ -1173,7 +1202,6 @@ impl<M: Memory> Walk<'_, M> {
             }
             if state.checked_add(cstate::ID + 4).is_none()
                 || state.checked_add(cstate::COUNTRY_MODIFIERS + 17).is_none()
-                || state.checked_add(cstate::BASE_MODIFIERS + 16).is_none()
             {
                 status.state_stop = Some("resources map address overflow");
                 break;
@@ -1326,22 +1354,61 @@ impl<M: Memory> Walk<'_, M> {
                 *acc_len = 0;
                 *acc_used = 0;
             };
+            let mut base_rows = [0_usize; ORIGIN_BATCH];
+            let mut base_ptrs = [0_usize; ORIGIN_BATCH];
+            let mut base_count = 0_usize;
             for k in 0..copied {
                 if dist[k] != 0 {
                     continue;
                 }
                 let i = bucket_rows[k];
-                let acc_addr = batch.state_ptrs[i] + cstate::BASE_MODIFIERS;
-                if self
+                let Some(acc_addr) = batch.state_ptrs[i]
+                    .checked_add(cstate::BASE_MODIFIERS)
+                    .filter(|addr| addr.checked_add(16).is_some())
+                else {
+                    batch.local_factors[i] =
+                        Some(Err("state movement modifier address overflow"));
+                    continue;
+                };
+                if let Some(cached) = self
                     .memory
                     .modifier_accumulator_value(acc_addr, LOCAL_RESOURCES_FACTOR)
-                    .is_some()
                 {
+                    batch.local_factors[i] = Some(if cached.present {
+                        effective_raw(
+                            self.memory,
+                            self.base,
+                            LOCAL_RESOURCES_FACTOR,
+                            cached.raw,
+                            &self.local_resources,
+                        )
+                    } else {
+                        Ok(0)
+                    });
                     continue;
                 }
-                let state_record = batch.state_record(i);
+                base_rows[base_count] = i;
+                base_ptrs[base_count] = batch.state_ptrs[i];
+                base_count += 1;
+            }
+            let mut base_hdrs = [0_u8; ORIGIN_BATCH * 16];
+            let copied_base = if base_count != 0 {
+                self.memory.copy_records(
+                    RecordSources::Pointers(&base_ptrs[..base_count]),
+                    &BASE_MOD_LAYOUT,
+                    &mut base_hdrs[..base_count * 16],
+                )
+            } else {
+                0
+            };
+            if copied_base < base_count {
+                batch.local_factors[base_rows[copied_base]] =
+                    Some(Err("modifier accumulator header unreadable or invalid"));
+            }
+            for b in 0..copied_base {
+                let i = base_rows[b];
                 let Some(arr) = Array::from_header(
-                    state_record[24..40].try_into().unwrap(),
+                    base_hdrs[b * 16..(b + 1) * 16].try_into().unwrap(),
                     modifier_entry::STRIDE,
                 ) else {
                     batch.local_factors[i] =
@@ -1353,10 +1420,34 @@ impl<M: Memory> Walk<'_, M> {
                     continue;
                 }
                 if arr.count > 64 {
+                    let mut val = [engine_native_memory::modifier_cache::Value::default()];
+                    batch.local_factors[i] = Some(
+                        modifier_accumulator::lookup_many_in(
+                            self.memory,
+                            arr,
+                            &[LOCAL_RESOURCES_FACTOR],
+                            &mut val,
+                        )
+                        .and_then(|()| {
+                            if val[0].present {
+                                effective_raw(
+                                    self.memory,
+                                    self.base,
+                                    LOCAL_RESOURCES_FACTOR,
+                                    val[0].raw,
+                                    &self.local_resources,
+                                )
+                            } else {
+                                Ok(0)
+                            }
+                        }),
+                    );
                     continue;
                 }
                 let byte_len = arr.count as usize * modifier_entry::STRIDE;
                 if arr.data == 0 || arr.data.checked_add(byte_len).is_none() {
+                    batch.local_factors[i] =
+                        Some(Err("modifier accumulator entry address overflow"));
                     continue;
                 }
                 if acc_len == ACC_GATHER || acc_used + byte_len > ACC_BUF_BYTES {
@@ -1447,8 +1538,8 @@ impl<M: Memory> Walk<'_, M> {
         let state_record = batch.state_record(index);
         let state = u32::from_le_bytes(state_record[0..4].try_into().unwrap());
         let modifiers: [u8; 17] = state_record[4..21].try_into().unwrap();
-        let efficiency = i64::from_le_bytes(record[32..40].try_into().unwrap());
-        let route_factor = i64::from_le_bytes(record[40..48].try_into().unwrap());
+        let efficiency = i64::from_le_bytes(record[16..24].try_into().unwrap());
+        let route_factor = i64::from_le_bytes(record[24..32].try_into().unwrap());
         let local_resources_factor = match batch.local_factors[index] {
             Some(result) => result?,
             None => {
@@ -1468,21 +1559,21 @@ impl<M: Memory> Walk<'_, M> {
             }
         };
         let route_address = at(origin, ORIGIN_ROUTE)?;
-        if u64::from_le_bytes(record[48..56].try_into().unwrap())
+        if u64::from_le_bytes(record[32..40].try_into().unwrap())
             != lazy_vtable(expected_route, self.base, ROUTE_VTABLE_RVA)?
         {
             return Err("route vtable mismatch");
         }
         let status = ClientStatus::new(
             [
-                i64::from_le_bytes(record[56..64].try_into().unwrap()),
-                i64::from_le_bytes(record[64..72].try_into().unwrap()),
+                i64::from_le_bytes(record[40..48].try_into().unwrap()),
+                i64::from_le_bytes(record[48..56].try_into().unwrap()),
             ],
             [
-                i32::from_le_bytes(record[72..76].try_into().unwrap()),
-                i32::from_le_bytes(record[76..80].try_into().unwrap()),
+                i32::from_le_bytes(record[56..60].try_into().unwrap()),
+                i32::from_le_bytes(record[60..64].try_into().unwrap()),
             ],
-            i32::from_le_bytes(record[80..84].try_into().unwrap()),
+            i32::from_le_bytes(record[64..68].try_into().unwrap()),
             self.threshold,
         );
         Ok(OriginRow {
@@ -1532,8 +1623,7 @@ impl<M: Memory> Walk<'_, M> {
         if read.complete_states < read.state_live {
             return Err(match read.partial_state {
                 0 => "origin state id unreadable",
-                1 => "state country modifiers unreadable",
-                _ => "modifier accumulator header unreadable or invalid",
+                _ => "state country modifiers unreadable",
             });
         }
         if let Some(reason) = read.state_stop {
@@ -1555,19 +1645,18 @@ impl<M: Memory> Walk<'_, M> {
             if u64::from_le_bytes(record[8..16].try_into().unwrap()) == 0 {
                 return Err("origin without a state");
             }
-            if read.partial_origin >= 6
-                && u64::from_le_bytes(record[48..56].try_into().unwrap())
+            if read.partial_origin >= 5
+                && u64::from_le_bytes(record[32..40].try_into().unwrap())
                     != lazy_vtable(expected_route, self.base, ROUTE_VTABLE_RVA)?
             {
                 return Err("route vtable mismatch");
             }
             return Err(match read.partial_origin {
-                2 => "origin rights unreadable",
-                3 => "origin efficiency unreadable",
-                4 => "origin route factor unreadable",
-                5 => "route vtable unreadable",
-                6 => "convoy client efficiency unreadable",
-                7 => "convoy client convoys unreadable",
+                2 => "origin efficiency unreadable",
+                3 => "origin route factor unreadable",
+                4 => "route vtable unreadable",
+                5 => "convoy client efficiency unreadable",
+                6 => "convoy client convoys unreadable",
                 _ => "convoy client base convoys unreadable",
             });
         }
@@ -2613,25 +2702,39 @@ pub fn walk_buffer(
                             &mut expected_origin_vtable,
                             &mut batch,
                         );
-                        let mut rights_resume = None;
                         rights_table.run(|table| {
+                            let mut rights_ptrs = [0_usize; ORIGIN_BATCH];
+                            let mut rights_states = [0_u32; ORIGIN_BATCH];
+                            let mut rights_count = 0_usize;
+                            let mut early_stop = None;
                             for index in 0..read_batch.complete_origins {
                                 let record = batch.origin_record(index);
-                                if u64::from_le_bytes(record[0..8].try_into().unwrap())
-                                    != lazy_vtable(
-                                        &mut expected_origin_vtable,
-                                        base,
-                                        ORIGIN_VTABLE_RVA,
-                                    )?
-                                {
-                                    return Err("origin vtable mismatch");
+                                match lazy_vtable(
+                                    &mut expected_origin_vtable,
+                                    base,
+                                    ORIGIN_VTABLE_RVA,
+                                ) {
+                                    Ok(expected)
+                                        if u64::from_le_bytes(record[0..8].try_into().unwrap())
+                                            == expected => {}
+                                    Ok(_) => {
+                                        early_stop = Some("origin vtable mismatch");
+                                        break;
+                                    }
+                                    Err(reason) => {
+                                        early_stop = Some(reason);
+                                        break;
+                                    }
                                 }
-                                let state_ptr = usize::try_from(u64::from_le_bytes(
+                                let Ok(state_ptr) = usize::try_from(u64::from_le_bytes(
                                     record[8..16].try_into().unwrap(),
                                 ))
                                 .ok()
                                 .filter(|&p| p != 0)
-                                .ok_or("origin without a state")?;
+                                .ok_or("origin without a state") else {
+                                    early_stop = Some("origin without a state");
+                                    break;
+                                };
                                 let state = if index < read_batch.complete_states
                                     || (index == read_batch.complete_states
                                         && index < read_batch.state_live
@@ -2643,55 +2746,123 @@ pub fn walk_buffer(
                                 } else if index == read_batch.complete_states
                                     && index < read_batch.state_live
                                 {
-                                    return Err("origin state id unreadable");
+                                    early_stop = Some("origin state id unreadable");
+                                    break;
                                 } else {
-                                    read::<u32>(memory, at(state_ptr, cstate::ID)?)
-                                        .ok_or("origin state id unreadable")?
+                                    match at(state_ptr, cstate::ID)
+                                        .and_then(|addr| {
+                                            read::<u32>(memory, addr)
+                                                .ok_or("origin state id unreadable")
+                                        }) {
+                                        Ok(state) => state,
+                                        Err(reason) => {
+                                            early_stop = Some(reason);
+                                            break;
+                                        }
+                                    }
                                 };
-                                let rights = Array::from_header(
-                                    record[16..32].try_into().unwrap(),
-                                    RIGHTS_STRIDE,
-                                )
-                                .ok_or("origin rights unreadable")?;
-                                walk.rights_from_array(rights, state, table, &mut outputs.rights)?;
+                                let origin = batch.origin_ptrs[index];
+                                if origin.checked_add(ORIGIN_RIGHTS + 16).is_none() {
+                                    early_stop = Some("resources map address overflow");
+                                    break;
+                                }
+                                rights_ptrs[rights_count] = origin;
+                                rights_states[rights_count] = state;
+                                rights_count += 1;
                             }
-                            if read_batch.complete_origins < read_batch.live {
+                            let mut tail_start = read_batch.live;
+                            if early_stop.is_none() && read_batch.complete_origins < read_batch.live
+                            {
                                 let record = batch.origin_record(read_batch.complete_origins);
                                 if read_batch.partial_origin == 0 {
-                                    return Err("origin vtable unreadable");
-                                }
-                                if u64::from_le_bytes(record[0..8].try_into().unwrap())
-                                    != lazy_vtable(
+                                    early_stop = Some("origin vtable unreadable");
+                                } else {
+                                    match lazy_vtable(
                                         &mut expected_origin_vtable,
                                         base,
                                         ORIGIN_VTABLE_RVA,
-                                    )?
-                                {
-                                    return Err("origin vtable mismatch");
+                                    ) {
+                                        Ok(expected)
+                                            if u64::from_le_bytes(record[0..8].try_into().unwrap())
+                                                == expected =>
+                                        {
+                                            if read_batch.partial_origin == 1 {
+                                                early_stop = Some("origin state unreadable");
+                                            } else {
+                                                match usize::try_from(u64::from_le_bytes(
+                                                    record[8..16].try_into().unwrap(),
+                                                ))
+                                                .ok()
+                                                .filter(|&p| p != 0)
+                                                .ok_or("origin without a state")
+                                                .and_then(|state_ptr| {
+                                                    let addr = at(state_ptr, cstate::ID)?;
+                                                    read::<u32>(memory, addr)
+                                                        .ok_or("origin state id unreadable")
+                                                }) {
+                                                    Ok(state) => {
+                                                        let origin = batch.origin_ptrs
+                                                            [read_batch.complete_origins];
+                                                        if origin
+                                                            .checked_add(ORIGIN_RIGHTS + 16)
+                                                            .is_none()
+                                                        {
+                                                            early_stop = Some(
+                                                                "resources map address overflow",
+                                                            );
+                                                        } else {
+                                                            rights_ptrs[rights_count] = origin;
+                                                            rights_states[rights_count] = state;
+                                                            rights_count += 1;
+                                                            tail_start =
+                                                                read_batch.complete_origins + 1;
+                                                        }
+                                                    }
+                                                    Err(reason) => early_stop = Some(reason),
+                                                }
+                                            }
+                                        }
+                                        Ok(_) => early_stop = Some("origin vtable mismatch"),
+                                        Err(reason) => early_stop = Some(reason),
+                                    }
                                 }
-                                if read_batch.partial_origin == 1 {
-                                    return Err("origin state unreadable");
-                                }
-                                let state_ptr = usize::try_from(u64::from_le_bytes(
-                                    record[8..16].try_into().unwrap(),
-                                ))
-                                .ok()
-                                .filter(|&p| p != 0)
-                                .ok_or("origin without a state")?;
-                                let state = read::<u32>(memory, at(state_ptr, cstate::ID)?)
-                                    .ok_or("origin state id unreadable")?;
-                                if read_batch.partial_origin == 2 {
-                                    return Err("origin rights unreadable");
-                                }
+                            }
+                            let mut rights_hdrs = [0_u8; ORIGIN_BATCH * 16];
+                            let copied_rights = if rights_count != 0 {
+                                memory.copy_records(
+                                    RecordSources::Pointers(&rights_ptrs[..rights_count]),
+                                    &RIGHTS_HEADER_LAYOUT,
+                                    &mut rights_hdrs[..rights_count * 16],
+                                )
+                            } else {
+                                0
+                            };
+                            for i in 0..copied_rights {
                                 let rights = Array::from_header(
-                                    record[16..32].try_into().unwrap(),
+                                    rights_hdrs[i * 16..(i + 1) * 16].try_into().unwrap(),
                                     RIGHTS_STRIDE,
                                 )
                                 .ok_or("origin rights unreadable")?;
-                                walk.rights_from_array(rights, state, table, &mut outputs.rights)?;
-                                rights_resume =
-                                    Some(first + read_batch.complete_origins as u32 + 1);
-                                return Ok(());
+                                walk.rights_from_array(
+                                    rights,
+                                    rights_states[i],
+                                    table,
+                                    &mut outputs.rights,
+                                )?;
+                            }
+                            if copied_rights < rights_count {
+                                return Err("origin rights unreadable");
+                            }
+                            if let Some(reason) = early_stop {
+                                return Err(reason);
+                            }
+                            if tail_start < read_batch.live {
+                                walk.read_rights_ptrs(
+                                    &batch.origin_ptrs[tail_start..read_batch.live],
+                                    &mut expected_origin_vtable,
+                                    table,
+                                    &mut outputs.rights,
+                                )?;
                             }
                             if let Some(reason) = read_batch.ptr_stop {
                                 return Err(reason);
@@ -2715,7 +2886,7 @@ pub fn walk_buffer(
                         if rights_table.failed.is_some() && origins_table.failed.is_some() {
                             break;
                         }
-                        first = rights_resume.unwrap_or(first + count as u32);
+                        first += count as u32;
                     }
                 }
                 Err(reason) => {
