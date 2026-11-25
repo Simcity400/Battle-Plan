@@ -454,7 +454,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &PeaceDealsTailParams, 
         prepared.expanded.iter().filter_map(|group| Some((group.as_str(), lines(prepared.tail.treaties.get(group)?, per_line)))).collect();
     let capped = |line: &Line| open.get(group(line)).is_some_and(|lines| lines.shown < lines.starts.len());
     let full = |line: &Line| prepared.full.contains(group(line));
-    let within = |line: &Line| full(line) || open.get(group(line)).is_none_or(|lines| line.ordinal < lines.shown);
+    let within = |line: &Line| full(line) || !capped(line) || line.ordinal < open[group(line)].shown;
     let starts = |line: &Line| match line.row.detail {
         PeaceLine::Treaty { .. } => true,
         PeaceLine::Recipient { .. } => within(line),
@@ -656,5 +656,20 @@ mod tests {
         let whole = reply(&prepared, &holders, &params, 43).unwrap();
         assert_eq!(whole.rows.len(), 8, "a treaty within eight lines shows everything and no row to open the rest");
         assert_eq!(terms(&whole.rows[5]), ["10", "CCC"]);
+    }
+
+    #[test]
+    fn an_open_white_peace_shows_its_winner_and_no_row_to_open_the_rest() {
+        let row = PeaceSettlementRow { sequence: 4, conference: Some(8), hour: Some(40), winners: vec![22], losers: vec![11], ..Default::default() };
+        let joins = Joins { raw: HashMap::from([((22, 40), ((2, 22), "BBB".into())), ((11, 40), ((1, 11), "AAA".into()))]), ..Default::default() };
+        let (deals, warnings) = fold(&[], &[], &[Settled { publication_hour: 41, row }], &joins);
+        let holders = Holders::new(BTreeMap::new(), vec![]);
+        let tail = Arc::new(Tail::new(Assembled { deals, warnings, unobserved: PeaceUnobserved::default() }, &holders).unwrap());
+        let prepared = Prepared { tail, selection: None, expanded: BTreeSet::from(["group:captured:8:4".to_owned()]), full: BTreeSet::new() };
+        let params: PeaceDealsTailParams = serde_json::from_value(serde_json::json!({"branchId":"1","limit":64})).unwrap();
+        let open = reply(&prepared, &holders, &params, 41).unwrap();
+        assert_eq!(open.total, "2");
+        assert!(matches!(&open.rows[0].detail, PeaceLine::Treaty { white_peace: true, .. }));
+        assert!(matches!(&open.rows[1].detail, PeaceLine::Recipient { tag: Some(tag), terms } if tag == "BBB" && terms.is_empty()));
     }
 }
