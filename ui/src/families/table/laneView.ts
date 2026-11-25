@@ -330,6 +330,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       summaryPartial: model.titleSummaryPartial ?? null,
       hideHeader: model.hideHeader === true,
       kindFilter: model.kindFilter,
+      subjectSummary: model.subjectSummary,
       rowHeightMode: shape.rowHeightMode,
       notes: [],
       warnings: model.warnings ?? [],

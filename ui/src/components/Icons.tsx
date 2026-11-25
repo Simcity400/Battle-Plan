@@ -29,6 +29,7 @@ const paths = {
   alert: <><path d="M10.3 4.4 3 17.4a2 2 0 0 0 1.7 3h14.6a2 2 0 0 0 1.7-3L13.7 4.4a2 2 0 0 0-3.4 0Z" /><path d="M12 9.5V14M12 17.2v.1" /></>,
   close: <path d="m6.5 6.5 11 11m0-11-11 11" />,
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  medal: <><path d="m6.5 3.5 3.7 6.1m7.3-6.1-4 6.4" /><circle cx="12" cy="15.5" r="5.2" /></>,
   crown: <path d="m3 8 4.5 4L12 5l4.5 7L21 8l-2 11H5L3 8Z" />,
   trash: <><path d="M4 6.5h16" /><path d="M9.5 6.5V4.8a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1.7" /><path d="m6 6.5.8 12.2a2 2 0 0 0 2 1.8h6.4a2 2 0 0 0 2-1.8L18 6.5" /><path d="M10 10.5v6m4-6v6" /></>,
   calendar: <><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" /><path d="M3.5 10h17M8 3v4m8-4v4" /></>,

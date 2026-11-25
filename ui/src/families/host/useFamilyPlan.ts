@@ -179,6 +179,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly owner: string;
   readonly ctx: FamilyPlanContext<TAux> | null;
   readonly displayedCtx: FamilyPlanContext<TAux> | null;
+  readonly recorded: ReturnType<typeof useGate>['recorded'];
   readonly displayedExtra: TExtra | undefined;
   readonly plan: SourcePlan | null;
   readonly subscriptions: readonly CompiledFollowSubscription[];
@@ -1187,6 +1188,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     owner,
     ctx: ctxWithStaticSpan,
     displayedCtx,
+    recorded: gate.recorded,
     displayedExtra,
     plan: displayedPlan,
     subscriptions: compiledFollow.subscriptions,

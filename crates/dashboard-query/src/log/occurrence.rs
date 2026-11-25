@@ -219,6 +219,7 @@ struct Filtered {
 pub struct Index<P> {
     entries: Vec<Occurrence<P>>,
     by_subject: HashMap<u128, Vec<u32>>,
+    subject_gaps: HashMap<u128, Vec<MissingSpan>>,
     gaps: Vec<MissingSpan>,
     live: u64,
     filtered: Mutex<VecDeque<(Signature, Arc<Filtered>)>>,
@@ -378,7 +379,12 @@ impl<P> Index<P> {
         gaps.retain(|gap| gap.first_hour <= gap.last_hour);
         gaps.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
         let live = live.iter().fold(0u64, |mask, &state| mask | 1 << state);
-        Ok(Self { entries, by_subject, gaps, live, filtered: Mutex::default() })
+        Ok(Self { entries, by_subject, subject_gaps: HashMap::new(), gaps, live, filtered: Mutex::default() })
+    }
+
+    pub fn with_subject_gaps(mut self, gaps: HashMap<u128, Vec<MissingSpan>>) -> Self {
+        self.subject_gaps = gaps.into_iter().map(|(subject, spans)| (subject, merge_missing_spans(spans))).collect();
+        self
     }
 
     pub fn len(&self) -> usize {
@@ -463,7 +469,10 @@ impl<P> Index<P> {
         let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
         changes.sort_unstable();
         unattributed.sort_unstable();
-        let unknown = members.map_or_else(Vec::new, |members| members.unknown);
+        let mut unknown = members.map_or_else(Vec::new, |members| members.unknown);
+        if let Some(spans) = signature.subject.and_then(|id| self.subject_gaps.get(&id)) {
+            unknown.extend_from_slice(spans);
+        }
         let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown });
         let mut kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
         kept.push_back((signature, Arc::clone(&made)));
@@ -491,11 +500,13 @@ impl<P> Index<P> {
         out
     }
 
-    fn next_change(&self, filtered: &Filtered, hour: i32) -> Option<i32> {
+    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32) -> Option<i32> {
         let after = |hours: &[i32]| hours.get(hours.partition_point(|&at| at <= hour)).copied();
         let mut next = [after(&filtered.observed), after(&filtered.changes), after(&filtered.unattributed)].into_iter().flatten().min();
         let spans = self.gaps.iter().chain(&filtered.unknown).map(|gap| (gap.first_hour, gap.last_hour));
         for (first, last) in spans {
+            let (first, last) = (first.max(from), last.min(gap_end));
+            if first > last { continue; }
             let boundary = if first <= hour && hour < last { hour + 1 } else if first > hour { first } else { continue };
             next = Some(next.map_or(boundary, |held| held.min(boundary)));
         }
@@ -503,6 +514,10 @@ impl<P> Index<P> {
     }
 
     pub fn ask(&self, holders: &Holders, ask: &Ask<'_>) -> io::Result<Answer> {
+        self.ask_with_gap_end(holders, ask, i32::MAX)
+    }
+
+    pub fn ask_with_gap_end(&self, holders: &Holders, ask: &Ask<'_>, gap_end: i32) -> io::Result<Answer> {
         if ask.limit == 0 {
             return Err(invalid("An occurrence window holds one row or more"));
         }
@@ -514,7 +529,7 @@ impl<P> Index<P> {
         let hour = ask.hour;
         let filtered = self.filtered(holders, ask);
         let from = ask.from.unwrap_or(i32::MIN);
-        let mut gaps = self.visible_gaps(&filtered, from, hour);
+        let mut gaps = self.visible_gaps(&filtered, from, hour.min(gap_end));
         let state_ok = |state: Option<u8>| ask.states.is_none_or(|states| state.is_some_and(|state| states.contains(&state)));
         let mut chips = vec![0u64; ask.chips.len()];
         let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
@@ -627,7 +642,7 @@ impl<P> Index<P> {
             ordinal += 1;
         }
         let unattributed = filtered.unattributed.partition_point(|&observed| observed <= hour) as u64;
-        let next_change = [self.next_change(&filtered, hour), next_sort_change].into_iter().flatten().min();
+        let next_change = [self.next_change(&filtered, hour, from, gap_end), next_sort_change].into_iter().flatten().min();
         Ok(Answer { hour, total, live: live_total, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
     }
 

@@ -15,7 +15,7 @@ use replay_data::{
 #[cfg(test)]
 mod tests;
 
-mod column {
+pub(super) mod column {
     pub const DISPOSITION: usize = 0;
     pub const CAUSE: usize = 1;
     pub const SLOT: usize = 3;
@@ -38,7 +38,7 @@ mod column {
     pub const TEMPLATE_COUNTRY: usize = 25;
 }
 
-fn number(cells: &[Cell], column: usize) -> Option<i64> {
+pub(super) fn number(cells: &[Cell], column: usize) -> Option<i64> {
     match cells.get(column) {
         Some(Cell::Number(value)) => Some(*value),
         _ => None,
@@ -78,7 +78,7 @@ pub fn status(kind: u8, disposition: Option<i64>, cause: Option<i64>) -> String 
     disposition.as_str().into()
 }
 
-fn slot(value: Option<i64>) -> Option<u32> {
+pub(super) fn slot(value: Option<i64>) -> Option<u32> {
     value.map(|slot| slot as u32).filter(|&slot| slot != TagHolderRow::NONE)
 }
 

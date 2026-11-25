@@ -205,34 +205,56 @@ fn a_tie_at_the_cut_or_between_shown_divisions_decided_by_an_unread_measure_is_n
 }
 
 #[test]
-fn the_selected_division_s_witnessed_rows_give_its_record_though_the_reads_were_truncated_elsewhere() {
-    use super::careers::{DivisionRecord, DivisionRecordParams};
-    use dashboard_base::products::{LoadContext, at_hour::{At, AtHour}};
-    use dashboard_follow::live::Cells;
-    use dashboard_query::identity::Holders;
-    use replay_data::rows::{TableId, TableRows};
+fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_gaps() {
+    use super::careers::service_record::{DivisionServiceRecordChoices, DivisionServiceRecordTail};
+    use dashboard_base::products::{LoadContext, Product};
+    use replay_data::rows::{DivisionHistoryRow, LandCombatRow, TableId, TableRows};
     use replay_frame::frame::TableView;
-    let mut frame = decorated_world(1_000, |id| 30 * id as i64);
-    let truncate = |view: &TableView| match view {
-        TableView::Complete(TableRows::Divisions(rows)) => TableView::Truncated { rows: TableRows::Divisions(rows.iter().filter(|row| row.id == 2).cloned().collect()), missing: 2 },
-        TableView::Complete(TableRows::DivisionStatus(rows)) => TableView::Truncated { rows: TableRows::DivisionStatus(rows.iter().filter(|row| row.division == 2).cloned().collect()), missing: 2 },
-        TableView::Complete(TableRows::DivisionLandInputs(rows)) => TableView::Truncated { rows: TableRows::DivisionLandInputs(rows.iter().filter(|row| row.division == 2).cloned().collect()), missing: 2 },
-        _ => unreachable!(),
-    };
-    for table in [TableId::Divisions, TableId::DivisionStatus, TableId::DivisionLandInputs] {
-        let truncated = truncate(&frame.tables[table.index()]);
-        *frame.tables[table.index()] = truncated;
-    }
-    let source = decorated_source(vec![decorated_world(1_000, |id| 30 * id as i64)]);
-    let content = DivisionRecord::context(&source, &LoadContext { content: None }).unwrap();
-    let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
-    let at = At { owner: None, holders: &holders, hour: 1_000, context: &content, cancelled: &cancelled, live: &live };
-    let asked = |division: &str| DivisionRecordParams { branch_id: "1".into(), division: division.into() };
-    let reply = DivisionRecord::reply(&frame, &asked("2"), &at).unwrap();
-    assert!(!reply.absent);
-    let facts = reply.facts.expect("the witnessed division has its facts");
-    assert_eq!((facts.casualties_taken, facts.experience_raw.as_deref()), (Some(10), Some("6")), "its status and manpower rows were read");
-    assert!(DivisionRecord::reply(&frame, &asked("3"), &at).is_err(), "an unwitnessed division is not said to be absent");
+    use serde_json::json;
+    let source = decorated_source((100..=104).map(|hour| {
+        let mut frame = decorated_world(hour, |id| 20 * id as i64);
+        frame.metrics.table_ns[TableId::Divisions.index()] = 1;
+        frame.metrics.table_ns[TableId::DivisionHistory.index()] = 1;
+        if hour < 102 && let TableView::Complete(TableRows::Divisions(rows)) = &mut *frame.tables[TableId::Divisions.index()] {
+            rows.retain(|row| row.id != 3);
+        }
+        frame.metrics.table_ns[TableId::LandCombats.index()] = 1;
+        *frame.tables[TableId::LandCombats.index()] = TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
+            id: 4, province: 9, attackers: vec![1], defenders: vec![2], ..Default::default()
+        }]));
+        let mut history = Vec::new();
+        for &id in &DECORATED {
+            history.push(DivisionHistoryRow { division: id, available: u8::from(hour != 102 || id != 1), amount: id as i32, ..Default::default() }.into());
+            history.push(DivisionHistoryRow { division: id, list: DivisionHistoryRow::CAREER, hour: 90 + id as i32, ..Default::default() }.into());
+        }
+        *frame.tables[TableId::DivisionHistory.index()] = if hour == 103 {
+            TableView::Unavailable { reason: "history unread".into() }
+        } else {
+            TableView::Complete(TableRows::DivisionHistory(history))
+        };
+        frame
+    }).collect());
+    let ask = |hour, division: Option<&str>| DivisionServiceRecordTail::load(&source,
+        &serde_json::from_value(json!({"branchId": "1", "hour": hour, "division": division, "limit": 12})).unwrap(),
+        &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+    let choices = |hour| DivisionServiceRecordChoices::load(&source,
+        &serde_json::from_value(json!({"branchId": "1", "hour": hour})).unwrap(),
+        &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap().choices;
+    let early = ask(101, None);
+    assert_eq!(early.selected.as_ref().map(|d| d.division.as_str()), Some("2"));
+    assert_eq!(choices(101).len(), 2);
+    assert_eq!(early.next_change, Some(102));
+    assert_eq!(ask(102, None).selected.as_ref().map(|d| d.division.as_str()), Some("3"));
+    assert!(ask(103, Some("1")).rows.iter().any(|row| row.kind == "career" && row.hour == 91));
+    let pinned = ask(104, Some("1"));
+    assert_eq!(choices(104).len(), 3);
+    assert_eq!(pinned.rows.iter().filter(|row| row.kind == "battle").map(|row| (row.hour, row.province)).collect::<Vec<_>>(), [(100, Some(9))]);
+    assert!(ask(104, Some("3")).rows.iter().all(|row| row.kind != "battle"));
+    assert!(pinned.missing.iter().any(|gap| gap.first_hour == 102 && gap.reason.contains("division's history")));
+    assert!(ask(104, Some("2")).missing.iter().all(|gap| !gap.reason.contains("division's history")));
+    let career: Vec<_> = pinned.rows.iter().filter(|row| row.kind == "career").map(|row| row.hour).collect();
+    assert_eq!(career, [91]);
+    assert!(pinned.missing.iter().any(|gap| gap.first_hour == 103 && gap.last_hour == 103 && gap.reason.contains("history")), "{:?}", pinned.missing);
 }
 
 #[test]

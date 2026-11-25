@@ -122,7 +122,7 @@ export interface TableCell {
   readonly format?: ValueFormat;
   readonly subtext?: string;
   readonly artTile?: boolean;
-  readonly glyph?: 'helmet' | 'place' | 'loss' | 'transfer';
+  readonly glyph?: 'award' | 'battle' | 'helmet' | 'place' | 'loss' | 'transfer';
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
   readonly unitSuffix?: string;
@@ -231,11 +231,22 @@ export interface TableModel {
   readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
   readonly dayDividersOnly?: boolean;
+  readonly subjectSummary?: {
+    readonly name: string;
+    readonly icon?: string;
+    readonly flag?: string;
+    readonly country: string;
+    readonly detail: string;
+    readonly level: string;
+    readonly insignia?: string;
+    readonly metrics: readonly { readonly label: string; readonly value: string; readonly icons?: readonly string[] }[];
+  };
   readonly kindFilter?: {
+    readonly single?: import('./LogKindFilter').LogKindFilterProps['single'];
     readonly key: string;
     readonly allLabel: string;
     readonly noun: string;
-    readonly items: readonly { readonly value: string; readonly label: string; readonly checked: boolean }[];
+    readonly items: readonly import('./LogKindFilter').LogKindFilterItem[];
     readonly selected: readonly string[];
   };
   readonly gaps?: readonly MissingSpan[];
