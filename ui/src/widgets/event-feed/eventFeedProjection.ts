@@ -532,6 +532,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
       ...(paged.gapBefore?.length ? { gapBefore: paged.gapBefore } : {}),
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
+      rhythm: 'log',
       ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}),
       ...(folded.slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
     };

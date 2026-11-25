@@ -194,7 +194,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     ? prev.fixedWidths
     : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true });
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
-  const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
+  const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth, rhythm: model.rhythm });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
   const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode,
     { width, columns: columns.columns, theme, measure: canvasMeasureText(measure) }) : null;
@@ -331,6 +331,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       summaryText: model.titleSummary ?? null,
       summaryPartial: model.titleSummaryPartial ?? null,
       hideHeader: model.hideHeader === true,
+      rhythm: model.rhythm,
       kindFilter: model.kindFilter,
       subjectSummary: model.subjectSummary,
       rowHeightMode: shape.rowHeightMode,
@@ -396,6 +397,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       precomputedMaxima: shape.maxima,
       staticRowLooks: model.rowTimeBoundaries === false,
       rowHeightMode: shape.rowHeightMode,
+      rhythm: model.rhythm,
     };
     let drew = false;
     if (shape.panes && shape.paneGeom) {

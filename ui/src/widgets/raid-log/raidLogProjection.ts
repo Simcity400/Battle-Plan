@@ -360,6 +360,7 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
       hideHeader: true,
       unsorted: true,
       dateGrouped: true,
+      rhythm: 'log',
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),

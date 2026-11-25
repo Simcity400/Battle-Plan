@@ -20,7 +20,7 @@ import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
-import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry, type TableRhythm } from './layout.ts';
 import { computeColumnMaxima, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import { PANE_FADE_WIDTH, PANE_INDICATOR_HEIGHT, type PaneGeometry, type PaneScroll, type ResolvedPane } from './panes.ts';
 import {
@@ -118,6 +118,7 @@ export interface DrawFamilyTableInput {
   readonly hasGroupHeaders?: boolean;
   readonly dateGrouped?: boolean;
   readonly dayDividersOnly?: boolean;
+  readonly rhythm?: TableRhythm;
   readonly precomputedMaxima?: Map<string, number>;
   readonly staticRowLooks?: boolean;
   readonly rowHeightMode?: 'standard' | 'media';
@@ -182,19 +183,23 @@ function paintRowBackground(
   focused: boolean,
   hairlineKind: 'normal' | 'strong' | 'band',
   hairlineLeft: number,
+  fullPlate: boolean,
 ): void {
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, y, rowWidth, rowH);
   if (isChild) drawChildRowTint(ctx, 0, y, rowWidth, contentH, theme);
   const plateX = ROW_MARGIN_X;
   const plateW = Math.max(1, rowWidth - ROW_MARGIN_X * 2);
+  const plateY = fullPlate ? y - 1 : y + 1;
+  const plateH = Math.max(1, fullPlate ? contentH + 2 : contentH - 2);
+  const inset = fullPlate ? 0 : undefined;
   if (selected) {
-    drawRowSelected(ctx, plateX, y + 1, plateW, Math.max(1, contentH - 2), theme);
+    drawRowSelected(ctx, plateX, plateY, plateW, plateH, theme, inset);
   } else if (inspected) {
-    drawRowHover(ctx, plateX, y + 1, plateW, Math.max(1, contentH - 2), theme);
+    drawRowHover(ctx, plateX, plateY, plateW, plateH, theme, inset);
   }
   if (focused) {
-    drawRowFocusRing(ctx, plateX, y + 1, plateW, Math.max(1, contentH - 2), theme);
+    drawRowFocusRing(ctx, plateX, plateY, plateW, plateH, theme, inset);
   }
   if (hairlineKind === 'band') {
     const bandY = y + contentH + Math.floor((rowH - contentH) / 2);
@@ -263,6 +268,7 @@ export function drawFamilyTable(
     staticRowLooks,
     dateGrouped = false,
     dayDividersOnly = false,
+    rhythm,
     rowHeightMode = 'standard',
     rowGeom = null,
     clockSummary,
@@ -376,17 +382,19 @@ export function drawFamilyTable(
       const col = layout.columns[c]!;
       colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
     }
-    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${dateGrouped ? 1 : 0}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
+    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${rhythm ?? ''}|${dateGrouped ? 1 : 0}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
   }
 
-  const intraDayLeftBase = dateGrouped && layout.columns[0]?.cellKind === 'date'
-    ? rank + layout.columns[0].width
+  const logRows = rhythm === 'log';
+  const afterDate = layout.columns[0]?.cellKind === 'date' && (dateGrouped || logRows);
+  const intraDayLeftBase = afterDate
+    ? rank + layout.columns[0]!.width + (logRows ? CELL_INSET + (layout.columns[1]?.leadInset ?? 0) : 0)
     : HAIRLINE_INSET;
   const hairlineSpec = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, pinned: boolean) => {
     if (item.isLiveEnd) return { kind: 'band' as const, left: HAIRLINE_INSET };
     if (item.isDayEnd || item.isTotal || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
     if (dayDividersOnly) return { kind: 'normal' as const, left: rowWidth };
-    if (dateGrouped && intraDayLeftBase > HAIRLINE_INSET) {
+    if (afterDate && intraDayLeftBase > HAIRLINE_INSET) {
       const shifted = pinned ? intraDayLeftBase : Math.max(HAIRLINE_INSET, intraDayLeftBase - bounds.left);
       return { kind: 'normal' as const, left: shifted };
     }
@@ -400,6 +408,7 @@ export function drawFamilyTable(
     density: settings.density,
     barsMode: settings.barsBehind ?? 'all',
     sortedColumn: settings.sort.column,
+    rhythm,
     treeColumn: treeColumnOf(layout.columns),
     treeLevels,
     hasActionColumn: layout.columns.some(col => col.cellKind === 'action'),
@@ -463,7 +472,7 @@ export function drawFamilyTable(
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
     const pair = cell?.pair?.map(value => formatValueState(value, paintModel.format).spoken).join('|') ?? '';
     const unitArt = artStateOf(cell?.unitArt);
-    const splitSig = cell?.splitBar ? cell.splitBar.map(s => `${s.fraction}:${s.fill}:${s.hatched ? 1 : 0}`).join(',') : '';
+    const splitSig = cell?.splitBar ? `[${cell.splitBar.map(s => `${s.fraction}:${s.fill}:${s.hatched ? 1 : 0}`).join(',')}]` : '';
     const flags = column.inlineFlags?.map(key => {
       const tail = item.row.cells[key];
       return tail && !tail.blank ? `${tail.glyph ?? ''}:${tail.value.kind}:${cellListSignature(tail)}` : '';
@@ -567,7 +576,7 @@ export function drawFamilyTable(
     ctx.beginPath();
     ctx.rect(0, y, layout.pinnedWidth, rowH);
     ctx.clip();
-    paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, isChild, inspected, selected, focused, hl.kind, hl.left);
+    paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, isChild, inspected, selected, focused, hl.kind, hl.left, logRows);
     if (rank > 0) drawRankContent(item, 0, y, contentH);
     let px = rank;
     const limit = Math.min(layout.pinnedCount, layout.columns.length);
@@ -654,7 +663,7 @@ export function drawFamilyTable(
       const focused = focusedKey === item.key;
       const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
       const hl = hairlineSpec(item, index, false);
-      paintRowBackground(ctx, theme, rowWidth, y, uniformRowHeight, uniformRowHeight, item.level > 1, inspected, selected, focused, hl.kind, hl.left);
+      paintRowBackground(ctx, theme, rowWidth, y, uniformRowHeight, uniformRowHeight, item.level > 1, inspected, selected, focused, hl.kind, hl.left, logRows);
       let x = rank - bounds.left;
       for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
         const column = layout.columns[colIndex]!;
@@ -845,7 +854,7 @@ export function drawFamilyTable(
       const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
       const contentH = item.isLiveEnd ? rowH - LIVE_END_GAP : rowH;
       const hl = hairlineSpec(item, index, pinnedOnly);
-      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1 && !item.row.detailColumn, inspected || !!item.row.pageGroup?.open, selected, focused, hl.kind, hl.left);
+      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1 && !item.row.detailColumn, inspected || !!item.row.pageGroup?.open, selected, focused, hl.kind, hl.left, logRows);
       if (rank > 0) {
         drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, contentH);
         if (picture && !pinnedOnly) picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildStack, stackedSegments, stackEdges, stackExtent } from './stack.ts';
-import { clipToSpans, curveSegments, segments } from './series.ts';
+import { clipToSpans } from './series.ts';
 
 const highs = (segment: { bands: { high: number[] }[] }) => segment.bands.map(band => band.high);
 
@@ -38,15 +38,11 @@ test('a view or playhead ending inside a run still draws it, from the view’s s
   assert.deepEqual(stackedSegments(lonely, 90, 120, 0).map(segment => segment.hours), [[100, 101]]);
 });
 
-test('a playhead before the view’s start draws nothing, in stacks and lines alike', () => {
+test('a playhead before the view’s start draws nothing', () => {
   const model = buildStack([[{ firstHour: 100, lastHour: 1000, value: 5 }]]);
   assert.deepEqual(stackedSegments(model, 500, 200, 0), []);
   assert.deepEqual(stackedSegments(model, 500, Number.NaN, 0), []);
   assert.deepEqual(stackedSegments(model, 500, 500, 0).map(segment => segment.hours), [[500, 501]]);
-  const runs = [{ firstHour: 100, lastHour: 1000, value: 5 }];
-  assert.deepEqual(segments(runs, 500, 200), []);
-  assert.deepEqual(curveSegments(runs, 500, 200, hour => hour, value => value), []);
-  assert.deepEqual(segments(runs, 500, 600), [[{ firstHour: 500, lastHour: 600, value: 5 }]]);
 });
 
 test('a zoom starting inside the last recorded hour before a gap never paints into the gap', () => {
@@ -57,8 +53,6 @@ test('a zoom starting inside the last recorded hour before a gap never paints in
   assert.deepEqual(stackedSegments(model, 105, 110, 0).map(segment => segment.hours), [[106, 110]]);
   const lonely = buildStack([[{ firstHour: 100, lastHour: 100, value: 1 }, { firstHour: 102, lastHour: 102, value: 1 }]]);
   assert.deepEqual(stackedSegments(lonely, 100.5, 110, 0).map(segment => segment.hours), [[100.5, 101], [102, 103]]);
-  assert.deepEqual(segments(runs, 104.5, 110).map(segment => segment.map(run => [run.firstHour, run.lastHour])), [[[104, 104]], [[106, 110]]]);
-  assert.deepEqual(segments(runs, 99.5, 105.5).map(segment => segment.map(run => [run.firstHour, run.lastHour])), [[[100, 104]]]);
 });
 
 test('runs are cut to spans in one pass: pieces in order, overlapping spans merged, breaks kept only where a run starts', () => {

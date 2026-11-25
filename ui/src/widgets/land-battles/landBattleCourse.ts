@@ -2,6 +2,7 @@ import { isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import type { Run } from '../../charts/series';
+import type { ChartInlinePoint } from '../../families/time-chart/model.ts';
 
 export interface LandDesign { name: string | null; variant: string }
 export interface CourseSide { manpower: number | string; equipment: Map<number, bigint> | string }
@@ -63,10 +64,42 @@ export function validateLandBattleTerrain(v: unknown): { provinces: LandTerrain[
   return v as { provinces: LandTerrain[]; warnings: string[] };
 }
 
-export function courseExtent(runs: readonly (readonly Run[])[]): [number, number] | null {
-  let most = 1, any = false;
-  for (const side of runs) for (const run of side) { any = true; if (run.value > most) most = run.value; }
-  return any ? [0, most] : null;
+export interface CourseSpan { readonly firstHour: number; readonly lastHour: number }
+
+export function coursePoints(runs: readonly Run[], until: number): ChartInlinePoint[] {
+  const points: ChartInlinePoint[] = [];
+  runs.forEach((run, index) => {
+    const previous = runs[index - 1];
+    if (previous && run.breakBefore) points.push({ hour: previous.lastHour + 1, value: previous.value }, { hour: previous.lastHour + 1, value: null });
+    points.push({ hour: run.firstHour, value: run.value });
+  });
+  const last = runs.at(-1);
+  if (last) points.push({ hour: Math.min(last.lastHour + 1, until), value: last.value });
+  return points;
+}
+
+export function courseMissing(runs: readonly Run[], from: number, until: number): CourseSpan[] {
+  const missing: CourseSpan[] = [];
+  let at = from;
+  for (const run of runs) {
+    if (run.firstHour > at) missing.push({ firstHour: at, lastHour: Math.min(run.firstHour, until) });
+    at = Math.max(at, run.lastHour + 1);
+    if (at >= until) return missing;
+  }
+  if (at < until) missing.push({ firstHour: at, lastHour: until });
+  return missing;
+}
+
+export function sharedSpans(first: readonly CourseSpan[], second: readonly CourseSpan[]): CourseSpan[] {
+  const shared: CourseSpan[] = [];
+  let i = 0, j = 0;
+  while (i < first.length && j < second.length) {
+    const a = first[i]!, b = second[j]!;
+    const firstHour = Math.max(a.firstHour, b.firstHour), lastHour = Math.min(a.lastHour, b.lastHour);
+    if (firstHour < lastHour) shared.push({ firstHour, lastHour });
+    if (a.lastHour < b.lastHour) i++; else j++;
+  }
+  return shared;
 }
 
 export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {

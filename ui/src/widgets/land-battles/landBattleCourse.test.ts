@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { courseDivisions, courseEquipment, courseExtent, courseManpower, validateLandBattleCourse, validateLandBattleTerrain } from './landBattleCourse.ts';
+import { courseDivisions, courseEquipment, courseManpower, courseMissing, coursePoints, sharedSpans, validateLandBattleCourse, validateLandBattleTerrain } from './landBattleCourse.ts';
 
 const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
   ({ firstHour, lastHour, counts, rosterUnknown, countries: [['A'], ['B']] as [string[], string[]], countriesUnknown: [false, false] as [boolean, boolean], duration: 0 });
@@ -59,11 +59,18 @@ test('manpower and divisions are held steps to the shown hour, broken at unread 
     { firstHour: 18, lastHour: 19, value: 6, breakBefore: true }]);
 });
 
-test('a course chart spans zero to its largest value, however long the battle', () => {
-  assert.equal(courseExtent([[], []]), null);
-  assert.deepEqual(courseExtent([[{ firstHour: 0, lastHour: 0, value: 0 }], []]), [0, 1], 'an all-zero course still has a range');
-  const long = Array.from({ length: 300_000 }, (_, hour) => ({ firstHour: hour, lastHour: hour, value: hour % 1000 }));
-  assert.deepEqual(courseExtent([long, [...long, { firstHour: 300_000, lastHour: 300_000, value: 4321 }]]), [0, 4321]);
+test('a course chart holds each step to its end, breaks at unread spans and marks what neither side recorded', () => {
+  const attacker = [{ firstHour: 10, lastHour: 11, value: 5 }, { firstHour: 14, lastHour: 16, value: 9, breakBefore: true }];
+  const defender = [{ firstHour: 12, lastHour: 13, value: 1 }];
+  assert.deepEqual(coursePoints(attacker, 16), [
+    { hour: 10, value: 5 }, { hour: 12, value: 5 }, { hour: 12, value: null }, { hour: 14, value: 9 }, { hour: 16, value: 9 },
+  ]);
+  assert.deepEqual(coursePoints([], 16), []);
+  assert.deepEqual(courseMissing(attacker, 10, 16), [{ firstHour: 12, lastHour: 14 }]);
+  assert.deepEqual(courseMissing(defender, 10, 16), [{ firstHour: 10, lastHour: 12 }, { firstHour: 14, lastHour: 16 }]);
+  assert.deepEqual(courseMissing([], 10, 16), [{ firstHour: 10, lastHour: 16 }]);
+  assert.deepEqual(sharedSpans(courseMissing(attacker, 10, 16), courseMissing(defender, 10, 16)), []);
+  assert.deepEqual(sharedSpans(courseMissing(attacker, 10, 16), courseMissing([], 10, 16)), [{ firstHour: 12, lastHour: 14 }]);
 });
 
 

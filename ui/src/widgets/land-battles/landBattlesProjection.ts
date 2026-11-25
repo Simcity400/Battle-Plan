@@ -12,12 +12,16 @@ import { knownValue, notRecorded } from '../../families/value.ts';
 import type { LandBattleLogRow, LandBattlesTailReply } from '../../generated/dashboard';
 import { LAND_BATTLES_COLUMNS } from './definition.ts';
 
+const LEAST_SHARE = 0.03;
+
 function figures([a, b]: [number | null, number | null], label: string, colors?: readonly (string | undefined)[]): TableCell {
   const value = (n: number | null) => n === null ? notRecorded(label + ' not recorded') : knownValue(n);
   const total = a === null || b === null ? null : a + b;
-  const fraction = a !== null && total !== null && total > 0 ? a / total : null;
+  const share = a !== null && total !== null && total > 0 ? a / total : null;
+  const fraction = share !== null && share > 0 && share < 1 ? Math.min(1 - LEAST_SHARE, Math.max(LEAST_SHARE, share)) : share;
   const cell: TableCell = { value: value(total), pair: [value(a), value(b)] };
-  if (!colors || total === 0) return cell;
+  if (!colors) return cell;
+  if (total === 0) return { ...cell, splitBar: [] };
   if (fraction === null || fraction < 0 || fraction > 1) {
     return { ...cell, splitBar: [{ fraction: 1, fill: '', hatched: true }] };
   }
@@ -59,10 +63,10 @@ export interface BattleDetailSubject {
 const sprites: Readonly<Record<string, string>> = {
   casualties: 'GFX_manpower_icon',
   icLost: 'GFX_industrial_capacity_icon',
-  divisions: 'GFX_unit_infantry_icon_small',
+  divisions: 'GFX_unit_infantry_icon_medium',
 };
 
-const base = { columns: LAND_BATTLES_COLUMNS, dayDividersOnly: true, rowTimeBoundaries: false } as const;
+const base = { columns: LAND_BATTLES_COLUMNS, rowTimeBoundaries: false, rhythm: 'log' } as const;
 export const landBattlesProjection: TableProjection<{ byDate: boolean }> = registerFamilyProjection({
   kind: 'land-battles', family: 'table',
   project(view, options): TableModel {
@@ -79,7 +83,7 @@ export const landBattlesProjection: TableProjection<{ byDate: boolean }> = regis
       const icon = art.status === 'ready' ? { icon: art.url } : { iconMissing: artHoverText(art) ?? undefined };
       return { ...column, headerGroup: { ...column.headerGroup, ...icon } };
     });
-    return { ...base, columns, ...page, dateGrouped: options.byDate, dayDividersOnly: options.byDate, hour, nextChangeAt: boundary.next,
+    return { ...base, columns, ...page, dateGrouped: options.byDate, hour, nextChangeAt: boundary.next,
       warnings: (source.rawHead as LandBattlesTailReply | undefined)?.warnings,
       ...(page.slots.length ? {} : { empty: 'No recorded battles match these settings.' }) };
   },

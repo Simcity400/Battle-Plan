@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import type { FamilyChromeProps } from '../host/FamilyHost.tsx';
 import { syncTableEdges } from './edges.ts';
 import type { TableChromeState } from './hostAdapter.ts';
-import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
+import { buildColumnLayouts, columnInset, layoutFamilyTable, type TableRhythm } from './layout.ts';
 import LogKindFilter from './LogKindFilter.tsx';
 import type { TableColumnSpec, TableModel } from './model.ts';
 import { updateTableSettings, type TableSettings } from './settings.ts';
@@ -19,6 +19,7 @@ interface ChromeMeta {
   readonly subjectSummary?: TableModel['subjectSummary'];
   readonly kindFilter?: TableModel['kindFilter'];
   readonly hideHeader?: boolean;
+  readonly rhythm?: TableRhythm;
   readonly unsorted?: boolean;
   readonly rankShown?: boolean;
   readonly rankWidth?: number;
@@ -87,10 +88,12 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
     return layoutFamilyTable(base, Math.max(1, panes?.width ?? (viewportWidth || 320)), {
       rankShown: meta.rankShown === true,
       rankWidth: meta.rankWidth || 36,
+      rhythm: meta.rhythm,
     });
-  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, viewportWidth, panes?.width]);
+  }, [columns, settings, measured, resizing, meta.rankShown, meta.rankWidth, meta.rhythm, viewportWidth, panes?.width]);
 
   const specMap = useMemo(() => new Map(columns.map(col => [col.key, col])), [columns]);
+  const grouped = useMemo(() => columns.some(col => col.headerGroup?.kind === 'pair'), [columns]);
   const headerColumns = useMemo<TableHeaderColumn[]>(() => (layout?.columns ?? []).map(col => {
     const spec = specMap.get(col.key);
     return {
@@ -161,6 +164,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       unsorted={meta.unsorted}
       treeLane={meta.hasTree === true}
       editableColumns={editable}
+      inset={columnInset(meta.rhythm)}
       rankWidth={meta.rankShown ? meta.rankWidth : 0}
       pinnedCount={layout.pinnedCount}
       pinned={layout.scrollable}
@@ -218,7 +222,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
           {panes.xs.slice(1).map(x => <i key={x} className="tf-pane-rule" style={{ left: Math.round(x - panes.gutter / 2) }} aria-hidden="true" />)}
         </div>
       ) : !meta.hideHeader ? (
-        <div className="tf-head-clip" style={bodyBlocked ? { ...widthVars, display: 'none' } : widthVars}>
+        <div className={`tf-head-clip${grouped ? ' is-grouped' : ''}`} style={bodyBlocked ? { ...widthVars, display: 'none' } : widthVars}>
           {header()}
         </div>
       ) : null}

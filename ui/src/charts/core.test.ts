@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, fitLine, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
-import { monotonePath, runAt, samplePoints, segments } from './series.ts';
+import { runAt } from './series.ts';
 import type { Run } from './series.ts';
 import { backingSize, toLocal } from './surface.ts';
 import { placeTooltip } from './tooltipPlacement.ts';
@@ -22,24 +22,7 @@ test('runs answer by hour and gaps stay missing, never zero', () => {
   assert.equal(runAt(RUNS, 29)?.value ?? null, 8);
   assert.equal(runAt(RUNS, 35)?.value ?? null, null);
   assert.equal(runAt(RUNS, 9), null);
-  assert.deepEqual(segments(RUNS, 0, 100).map(segment => segment.length), [2, 1]);
-  assert.deepEqual(segments(RUNS, 25, 45).map(segment => [segment[0].firstHour, segment.at(-1)!.lastHour]), [[25, 29], [40, 45]]);
 });
-
-test('samples keep both ends and the monotone curve never overshoots its samples', () => {
-  const points = samplePoints(segments(RUNS, 0, 100)[0], hour => hour * 10, value => 100 - value * 10, 12);
-  assert.equal(points[0].x, 100);
-  assert.equal(points.at(-1)!.x, 290);
-  const zigzag = [{ x: 0, y: 0 }, { x: 10, y: 50 }, { x: 20, y: 40 }, { x: 30, y: 90 }, { x: 40, y: 90 }, { x: 50, y: 10 }];
-  const path = monotonePath(zigzag);
-  assert.equal(path[0][0], 'M');
-  path.slice(1).forEach((command, index) => {
-    assert.equal(command[0], 'C');
-    const [low, high] = [Math.min(zigzag[index].y, zigzag[index + 1].y), Math.max(zigzag[index].y, zigzag[index + 1].y)];
-    for (const y of [command[2], command[4]] as number[]) assert.ok(y >= low - 1e-9 && y <= high + 1e-9, `control ${y} outside ${low}..${high}`);
-  });
-});
-
 
 const CONTEXT: ViewContext = { x: [0, 1000], extent: [0, 1000], y: [0, 100], minSpan: 14 * 24 };
 

@@ -363,6 +363,7 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
       hideHeader: true,
       unsorted: true,
       dateGrouped: true,
+      rhythm: 'log',
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),

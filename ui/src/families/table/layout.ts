@@ -3,6 +3,7 @@ import { DATE_COLUMN_WIDTH, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
 import {
   CELL_INSET,
   CHILD_ROW_HEIGHT,
+  COL_GAP,
   displayExtra,
   MEDIA_ROW_HEIGHT,
   ROW_HEIGHT,
@@ -127,7 +128,7 @@ const SHORT_OVER_GAP = 8;
 function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, headFont: string, unitFont: string): number {
   const group = column.headerGroup;
   if (!group) return 0;
-  if (group.kind === 'pair') return 2 * (Math.max(...group.labels.map(label => measure(label, headFont))) + CELL_INSET);
+  if (group.kind === 'pair') return 2 * Math.max(group.slot ?? 0, ...group.labels.map(label => measure(label, headFont))) + COL_GAP + CELL_INSET * 2;
   const unit = column.unit ? measure(column.unit, unitFont) : 0;
   if (group.kind === 'shortOver') return measure('Short', headFont) + measure('Over', headFont) + SHORT_OVER_GAP * 2 + 1 + CELL_INSET * 2;
   let slot = 0;
@@ -242,12 +243,18 @@ export function measureFixedColumnWidths(
   return out;
 }
 
-function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayout[] {
+export type TableRhythm = 'log';
+
+export function columnInset(rhythm: TableRhythm | undefined): number {
+  return rhythm === 'log' ? (COL_GAP - CELL_INSET * 2) / 2 : 0;
+}
+
+function withEdgeInsets(shown: readonly FamilyColumnLayout[], inner: number): FamilyColumnLayout[] {
   const last = shown.length - 1;
   return shown.map((col, idx) => {
-    if (idx !== 0 && idx !== last) return col;
-    const lead = idx === 0 ? ROW_MARGIN_X : 0;
-    const trail = idx === last ? ROW_MARGIN_X : 0;
+    const lead = idx === 0 ? ROW_MARGIN_X : col.width > 0 ? inner : 0;
+    const trail = idx === last ? ROW_MARGIN_X : col.width > 0 ? inner : 0;
+    if (!lead && !trail) return col;
     return { ...col, width: col.width + lead + trail, ...(lead ? { leadInset: lead } : {}), ...(trail ? { trailInset: trail } : {}) };
   });
 }
@@ -291,11 +298,14 @@ export function layoutFamilyTable(
   options: {
     readonly rankShown?: boolean;
     readonly rankWidth?: number;
+    readonly rhythm?: TableRhythm;
   } = {},
 ): FamilyTableLayout {
   const rank = options.rankShown ? (options.rankWidth ?? 36) : 0;
+  const inner = columnInset(options.rhythm);
   let visible = columns.filter(col => col.shown);
-  if (visible.some(col => col.narrow) && rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) > available) {
+  const wanted = rank + 2 * ROW_MARGIN_X + visible.reduce((sum, col) => sum + col.width, 0) + 2 * inner * Math.max(0, visible.length - 1);
+  if (visible.some(col => col.narrow) && wanted > available) {
     visible = visible.filter(col => col.narrow !== 'hide');
     const primary = visible.findIndex(col => col.narrow === 'primary');
     const inlineFlags: string[] = [];
@@ -307,7 +317,7 @@ export function layoutFamilyTable(
       return col;
     });
   }
-  const shown = withEdgeInsets(visible);
+  const shown = withEdgeInsets(visible, inner);
   let pinnedCount = 0;
   for (let i = 0; i < shown.length; i++) {
     if (shown[i]!.pinned === true) pinnedCount = i + 1;

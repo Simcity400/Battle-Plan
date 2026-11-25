@@ -12,7 +12,7 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import type { PeaceDealsRow, PeaceDealsTailReply, PeaceTermCount, PeaceTermKind } from '../../generated/dashboard';
 import { PEACE_DEALS_COLUMNS } from './definition.ts';
 
-const base = { columns: PEACE_DEALS_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false } as const;
+const base = { columns: PEACE_DEALS_COLUMNS, unsorted: true, dateGrouped: true, dayDividersOnly: true, hideHeader: true, rowTimeBoundaries: false, rhythm: 'log' } as const;
 const blank: TableCell = { value: notApplicable('No detail for this row'), blank: true };
 const labels: Record<PeaceTermKind, readonly [string, string]> = {
   state: ['state', 'states'], puppet: ['puppet', 'puppets'], government: ['new government', 'new governments'],

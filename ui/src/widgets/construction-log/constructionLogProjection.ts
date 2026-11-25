@@ -372,6 +372,7 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
       hideHeader: true,
       unsorted: true,
       dateGrouped: true,
+      rhythm: 'log',
       windowOffset,
       totalRows,
       ...(gapBefore?.length ? { gapBefore } : {}),

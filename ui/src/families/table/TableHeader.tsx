@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   CELL_INSET,
   endAligned,
@@ -45,6 +45,45 @@ const GRIP_DOTS = <svg className="tf-th-grip" viewBox="0 0 8 12" width="7" heigh
   <circle cx="6" cy="9.5" r="1" fill="currentColor" />
 </svg>;
 
+const visibleBoxes = new Map<string, string | null>();
+
+function visibleBox(image: HTMLImageElement): string | null {
+  const { naturalWidth: width, naturalHeight: height } = image;
+  const context = Object.assign(document.createElement('canvas'), { width, height }).getContext('2d', { willReadFrequently: true });
+  if (!context || !width || !height) return null;
+  context.drawImage(image, 0, 0);
+  const alpha = context.getImageData(0, 0, width, height).data;
+  let top = height, left = width, bottom = -1, right = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (alpha[(y * width + x) * 4 + 3]! < 8) continue;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+      if (x < left) left = x;
+      if (x > right) right = x;
+    }
+  }
+  return bottom < 0 ? null : `inset(${top}px ${width - 1 - right}px ${height - 1 - bottom}px ${left}px)`;
+}
+
+function GroupIcon({ src }: { readonly src: string }) {
+  const [box, setBox] = useState(() => visibleBoxes.get(src));
+  useEffect(() => {
+    if (visibleBoxes.has(src)) { setBox(visibleBoxes.get(src)); return; }
+    let live = true;
+    const image = new Image();
+    image.src = src;
+    image.decode().then(() => {
+      let found: string | null = null;
+      try { found = visibleBox(image); } catch { found = null; }
+      visibleBoxes.set(src, found);
+      if (live) setBox(found);
+    }, () => {});
+    return () => { live = false; };
+  }, [src]);
+  return <img src={src} alt="" style={box ? { objectViewBox: box } as CSSProperties : undefined} />;
+}
+
 export interface TableHeaderColumn extends TableColumnLayout {
   displays: readonly (readonly [TableDisplay, string])[];
   text?: boolean;
@@ -80,6 +119,7 @@ export interface FamilyTableHeaderProps {
   unsorted?: boolean;
   treeLane?: boolean;
   editableColumns?: boolean;
+  inset?: number;
   rankWidth?: number;
   pinnedCount?: number;
   pinned: boolean;
@@ -97,6 +137,7 @@ export function FamilyTableHeader({
   unsorted = false,
   treeLane = false,
   editableColumns = true,
+  inset = 0,
   rankWidth = 0,
   pinnedCount = 1,
   pinned,
@@ -143,8 +184,12 @@ export function FamilyTableHeader({
     if (item.headerGroup?.kind === 'pair') {
       const { icon, iconMissing } = item.headerGroup;
       return <span className="tf-th-pair">
-        <span>{icon ? <img src={icon} alt="" /> : iconMissing ? <i className="tf-th-hatch" title={iconMissing} /> : null}{item.label} {arrow}</span>
-        <span>{item.headerGroup.labels.map(label => <span key={label}>{label}</span>)}</span>
+        <span className="tf-th-group">
+          {icon ? <GroupIcon src={icon} /> : iconMissing ? <i className="tf-th-hatch" title={iconMissing} /> : null}
+          <span>{item.label}</span>
+          {arrow && <span className="tf-sort-mark" aria-hidden="true">{arrow}</span>}
+        </span>
+        <span className="tf-th-sides">{item.headerGroup.labels.map(label => <span key={label}>{label}</span>)}</span>
       </span>;
     }
     if (item.headerGroup?.kind === 'shortOver') {
@@ -201,6 +246,10 @@ export function FamilyTableHeader({
         const canDrag = editableColumns && !unsorted && index >= pinnedCount;
         const dropClass = dropTarget?.key === item.key ? ` is-drop-${dropTarget.side}` : '';
         const title = identity && index === 0 ? identity.name : (item.notRecordedReason ?? item.hint);
+        const lead = index === 0 ? ROW_MARGIN_X : inset;
+        const trail = index === columns.length - 1 ? ROW_MARGIN_X : inset;
+        const padLeft = CELL_INSET + lead + (treeLane && index === treeColumn ? TREE_CHEVRON_LANE : 0);
+        const padRight = CELL_INSET + trail;
         return <div
           key={item.key}
           role="columnheader"
@@ -208,10 +257,11 @@ export function FamilyTableHeader({
           className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${isPinned ? ' pinned' : ''}${isLastPinned && showPinShadow ? ' pinned-shadow' : ''}${item.notRecordedReason ? ' is-unrecorded' : ''}${dropClass}`}
           style={{
             width: `var(${columnWidthVar(item.key)}, ${item.width}px)`,
-            ...((index === 0 || (treeLane && index === treeColumn)) && { paddingLeft: CELL_INSET + (index === 0 ? ROW_MARGIN_X : 0) + (treeLane && index === treeColumn ? TREE_CHEVRON_LANE : 0) }),
-            ...(index === columns.length - 1 && { paddingRight: CELL_INSET + ROW_MARGIN_X }),
+            ...(padLeft !== CELL_INSET && { paddingLeft: padLeft }),
+            ...(padRight !== CELL_INSET && { paddingRight: padRight }),
+            ...(item.headerGroup?.kind === 'pair' && { '--tf-pad-l': `${padLeft}px`, '--tf-pad-r': `${padRight}px` }),
             ...(isPinned && { transform: `translateX(${scrollLeft}px)` }),
-          }}
+          } as CSSProperties}
           draggable={canDrag}
           onDragStart={canDrag ? event => {
             dragCol.current = item.key;
@@ -279,8 +329,7 @@ export function FamilyTableHeader({
               const now = dragResize.current;
               dragResize.current = null;
               onResizing(item.key, now?.current ?? item.width, null);
-              const insets = (index === 0 ? ROW_MARGIN_X : 0) + (index === columns.length - 1 ? ROW_MARGIN_X : 0);
-              if (now && now.current !== now.width) onResize(now.key, Math.max(40, now.current - insets));
+              if (now && now.current !== now.width) onResize(now.key, Math.max(40, now.current - lead - trail));
             }}
             onPointerCancel={() => {
               dragResize.current = null;
