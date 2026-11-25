@@ -671,6 +671,9 @@ impl<'q, 'a> Line<'q, 'a> {
         let drop_zero = !least && self.measure.drops_zeros_in_top();
         for slot in view.rows() {
             let Some(key) = view.key(slot) else { continue };
+            if self.series.skips_row(key) {
+                continue;
+            }
             held.insert(key);
             let country = match (tag_of(key), self.unnamed_slot(key)) {
                 (Some(tag), _) => Country::from(tag),

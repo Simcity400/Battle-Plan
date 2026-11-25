@@ -163,7 +163,6 @@ test('only checked hours leave for the native side: each field’s role comes fr
   assert.match(refusedHours('equipment-produced', { windowHour: 95 }, GAPPED) ?? '', /params\.windowHour is not a field the request type has/,
     'a name ending in Hour is not an hour unless the contract says so: a field the contract does not name is refused for its name, never read as an hour');
   assert.match(refusedHours('production-line-breakdown', { hour: 105 }, GAPPED) ?? '', /not recorded/, 'a detail read at one hour asks a recorded hour');
-  assert.match(refusedHours('faction-lines', { from: 100, to: 109, members: [{ tag: 'GER', spans: [[90, 104]] }] }, GAPPED) ?? '', /members\[0\]\.spans\[0\]\[0\] names hour 90/);
   assert.match(refusedHours('series-tiles', { within: [[1, [{ firstHour: 100, lastHour: 120 }]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\]\.lastHour names hour 120/);
   assert.match(refusedHours('series-tiles', { within: [[1, [[100, 120]]]] }, GAPPED) ?? '', /within\[0\]\[1\]\[0\] is not an object naming its fields/,
     'a positional span is refused, never passed unchecked');

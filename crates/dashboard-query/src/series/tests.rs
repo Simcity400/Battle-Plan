@@ -1962,3 +1962,19 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
     let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 2, "hour": hour })).unwrap();
     assert!(tiles.lines.is_empty() && tiles.ranking.unwrap().refused.is_some_and(|reason| reason.ends_with("so its line cannot be drawn")), "a line of an unnamed row is refused by name");
 }
+
+#[test]
+fn territory_ranking_skips_world_summary_row() {
+    let fixture = Fixture::new(Data::Faction, FIRST..=ITA_FROM + 10);
+    let query = fixture.query();
+    let hour = ITA_FROM + 10;
+    let series = dashboard_declare::series("territory").unwrap();
+    let measure = series.measure("controlledStates").unwrap();
+    let line = Line::new(&query, series, measure).unwrap();
+    let ranked = line.rank_at(hour, 10, false).unwrap().unwrap();
+    assert!(!ranked.contains(&Country::Slot(replay_data::rows::TerritoryTotalRow::WORLD)));
+    assert_eq!(ranked, vec![Country::from("GER"), Country::from("ITA")]);
+    let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour })).unwrap();
+    assert_eq!(tiles.ranking.as_ref().and_then(|r| r.refused.as_deref()), None);
+    assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), vec![Country::from("GER"), Country::from("ITA")]);
+}

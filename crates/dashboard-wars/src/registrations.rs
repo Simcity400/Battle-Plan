@@ -1,5 +1,4 @@
 dashboard_base::register_products! {
-    FACTIONS_FACTIONLINES => crate::products::factions::FactionLines,
     DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts,
     CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown,
     PEACE_PEACEDEALS => crate::products::peace::PeaceDeals,
@@ -13,7 +12,6 @@ dashboard_base::register_products! {
 }
 
 dashboard_base::register_hourly_products! {
-    FACTIONS_FACTIONROSTERS => crate::products::factions::FactionRosters,
     FACTIONS_FACTIONTOTALSAT => crate::products::factions::FactionTotalsAt,
     DIPLOMACY_DIPLOMATICRELATIONS => crate::products::diplomacy::DiplomaticRelations,
     VOLUNTEERS_VOLUNTEERFLOW => crate::products::volunteers::VolunteerFlow,
