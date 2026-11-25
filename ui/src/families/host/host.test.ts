@@ -47,6 +47,10 @@ import {
   type FamilyTooltipEntry,
 } from './tooltips.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
+import { planFamilySources } from './planSources.ts';
+import { airKillsLossesLinesDeclaration } from '../../widgets/air-kills-losses/airKillsLossesLinesProjection.ts';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import { countryKey } from '../../dashboard/countryKey.ts';
 
 const mkEvent = (key: string, extra: Partial<KeyboardEvent> = {}) => {
   let prevented = false;
@@ -1262,4 +1266,102 @@ test('rv18 S18: a changed source-plan signature replays the current row window t
     'changing the plan signature replays the unchanged window even when the installed hour moved forward',
   );
   assert.equal(nextReportedRowWindow(first, null, 205, 'plan:filtered'), null, 'no requested window reports nothing');
+});
+
+test('rv19 S2: a selected Range reaches source planning and plan signature for cumulative Lines declarations', () => {
+  const track = {
+    id: 't1',
+    label: 'Campaign',
+    source: { id: 's1', revision: 'r1' },
+    branch: { id: '1', firstHour: 100, lastHour: 600, gaps: [] },
+    axisOffset: 0,
+  } as unknown as BoundTrack;
+  const countries = {
+    all: false,
+    tags: [countryKey(7)],
+    holders: null,
+    every: [countryKey(7)],
+    top: null,
+    membership: null,
+    membershipRuns: null,
+    unobserved: [],
+    filter: { passing: null, unrecorded: [], bounds: [] },
+    factions: null,
+    factionUnobserved: [],
+    factionIncomplete: [],
+    rankedAt: () => [countryKey(7)],
+    reason: null,
+    known: () => true,
+    unobservedIn: () => false,
+  };
+  const makeBaseCtx = (time: WidgetSpec['time']) => ({
+    track,
+    branch: track.branch,
+    lastRecordedHour: 600,
+    widget: {
+      id: 'w1',
+      kind: 'air-kills-losses',
+      view: 'lines',
+      trackIds: ['t1'],
+      time,
+      countries: { kind: 'selected', countries: [countryKey(7)] },
+      options: { measure: 'lost' },
+    } as unknown as WidgetSpec,
+    options: { measure: 'lost' },
+    following: time.mode === 'follow',
+    aux: undefined,
+    countryTag: null,
+    countrySubject: null,
+    countryName: '',
+    countries,
+    gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b } as never),
+  });
+
+  const rangeA = planFamilySources(
+    makeBaseCtx({ mode: 'range', firstOffset: 120, lastOffset: 240 }),
+    { firstHour: 220, lastHour: 340 },
+    true,
+    airKillsLossesLinesDeclaration.sources,
+    { following: false },
+  );
+  assert.deepEqual(rangeA.ctx.staticSpan, [220, 340]);
+  const dealtA = rangeA.plan?.entries.find(e => e.name === 'dealt')?.read;
+  const takenA = rangeA.plan?.entries.find(e => e.name === 'taken')?.read;
+  const headA = rangeA.plan?.entries.find(e => e.name === 'head')?.read;
+  const hoverA = rangeA.plan?.entries.find(e => e.name === 'hover')?.read;
+  assert.equal(dealtA?.shape === 'pixel-binned' ? dealtA.family.fromHour : undefined, 220);
+  assert.equal(takenA?.shape === 'pixel-binned' ? takenA.family.fromHour : undefined, 220);
+  assert.equal(headA?.shape === 'point' ? headA.params?.fromHour : undefined, 220);
+  assert.equal(hoverA?.shape === 'exact-hover' ? hoverA.params?.fromHour : undefined, 220);
+
+  const rangeB = planFamilySources(
+    makeBaseCtx({ mode: 'range', firstOffset: 180, lastOffset: 240 }),
+    { firstHour: 280, lastHour: 340 },
+    true,
+    airKillsLossesLinesDeclaration.sources,
+    { following: false },
+  );
+  assert.deepEqual(rangeB.ctx.staticSpan, [280, 340]);
+  const headB = rangeB.plan?.entries.find(e => e.name === 'head')?.read;
+  assert.equal(headB?.shape === 'point' ? headB.params?.fromHour : undefined, 280);
+  assert.notEqual(rangeA.sig, rangeB.sig, 'changing the selected range changes the plan signature');
+
+  const unchangedOwnerBuilder = (ctx: Parameters<typeof airKillsLossesLinesDeclaration.sources>[0]) => ({
+    owner: `fixed:${ctx.branch.id}`,
+    entries: [],
+  });
+  const sig1 = planFamilySources(makeBaseCtx({ mode: 'range', firstOffset: 120, lastOffset: 240 }), { firstHour: 220, lastHour: 340 }, true, unchangedOwnerBuilder, { following: false }).sig;
+  const sig2 = planFamilySources(makeBaseCtx({ mode: 'range', firstOffset: 180, lastOffset: 240 }), { firstHour: 280, lastHour: 340 }, true, unchangedOwnerBuilder, { following: false }).sig;
+  assert.notEqual(sig1, sig2, 'the resolved range is part of the plan signature even when owner ignores it');
+
+  const followPlan = planFamilySources(
+    makeBaseCtx({ mode: 'follow' }),
+    null,
+    true,
+    airKillsLossesLinesDeclaration.sources,
+    { following: true },
+  );
+  assert.equal(followPlan.ctx.staticSpan, null);
+  const followHead = followPlan.plan?.entries.find(e => e.name === 'head')?.read;
+  assert.equal(followHead?.shape === 'point' ? followHead.params?.fromHour : 'missing', undefined);
 });
