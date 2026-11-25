@@ -465,6 +465,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.constructionLogProjection, declaration: mod.constructionLogDeclaration }),
     ),
   },
+  {
+    kind: 'espionage-log',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'espionage-log',
+      DEFAULT_VIEW,
+      () => import('../espionage-log/espionageLogProjection.ts'),
+      mod => ({ projection: mod.espionageLogProjection, declaration: mod.espionageLogDeclaration }),
+    ),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {

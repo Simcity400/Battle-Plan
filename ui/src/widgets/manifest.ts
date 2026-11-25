@@ -50,6 +50,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'construction-log': { load: () => import('./construction-log') },
   'equipment-designs': { load: () => import('./equipment-designs') },
   'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
+  'espionage-log': { load: () => import('./espionage-log') },
   'event-choices': { load: () => import('./event-choices') },
   'event-feed': { load: () => import('./event-feed') },
   'factions': { load: () => import('./factions') },

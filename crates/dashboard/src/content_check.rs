@@ -295,7 +295,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "agency names, defence and upgrades", findings);
             Ok(format!("The default agency name, the defence line and every acquired upgrade's name checked ({} refused); agencies and their levels need a recording.", refused.len()))
         }
-        intelligence::espionage::EspionageTypes::KEY => {
+        intelligence::espionage_tail::EspionageLogTail::KEY => {
             let catalogue = content.catalogue()?;
             let politics = std::sync::Arc::new(dashboard_base::products::politics_content::PoliticsContent::load(std::sync::Arc::clone(catalogue)).map_err(|error| error.to_string())?);
             let operatives = intelligence::operative_content::OperativeContent::load(politics).map_err(|error| error.to_string())?;

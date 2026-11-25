@@ -24,7 +24,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_intelligence::registrations::INTELLIGENCE_OPERATIVE_MATRIX_OPERATIVEMATRIX,
     dashboard_intelligence::registrations::INTELLIGENCE_AGENCIES_AGENCYCOMPARISON,
     dashboard_intelligence::registrations::INTELLIGENCE_ROSTER_OPERATIVESROSTER,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGEOPERATIONS,
     dashboard_wars::registrations::OCCUPATION_RESERVE_OCCUPATIONRESERVE,
     dashboard_intelligence::registrations::INTEL_COVERAGE_INTELNETWORKCOVERAGE,
     dashboard_economy::registrations::ECONOMY_FUEL_BRANCHES_FUELBRANCHES,
@@ -103,10 +102,7 @@ const OWN: &[Registered] = &[
     dashboard_world::registrations::HISTORY_AT_COUNTRYGROUPSAT,
     dashboard_world::registrations::HISTORY_AT_SUBJECTSAT,
     dashboard_wars::registrations::DIPLOMACY_DIPLOMATICPACTS,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGELOG,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGEOPERATION,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGEENDED,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPES,
+    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_TAIL_ESPIONAGELOGTAIL,
     dashboard_intelligence::registrations::RAIDS_RAIDLOG,
     dashboard_intelligence::registrations::RAIDS_TAIL_RAIDLOGTAIL,
     dashboard_intelligence::registrations::RAIDS_RAIDTALLY,
@@ -180,7 +176,6 @@ const OWN: &[Registered] = &[
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN,
     dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS,
 ];
 
 const ALL: [Registered; OWN.len() + AT_HOUR.len()] = at_hour::joined(OWN, AT_HOUR);
@@ -207,10 +202,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_world::registrations::HISTORY_AT_COUNTRYGROUPSAT.key,
     dashboard_world::registrations::HISTORY_AT_SUBJECTSAT.key,
     dashboard_wars::registrations::DIPLOMACY_DIPLOMATICPACTS.key,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGELOG.key,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGEOPERATION.key,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGEENDED.key,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPES.key,
+    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_TAIL_ESPIONAGELOGTAIL.key,
     dashboard_intelligence::registrations::RAIDS_RAIDLOG.key,
     dashboard_intelligence::registrations::RAIDS_TAIL_RAIDLOGTAIL.key,
     dashboard_intelligence::registrations::RAIDS_RAIDTALLY.key,
@@ -284,7 +276,6 @@ const MOVED_OWN: &[&str] = &[
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN.key,
     dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.key,
-    dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS.key,
 ];
 
 const MOVED_ALL: [&str; MOVED_OWN.len() + AT_HOUR.len()] = at_hour::keys(MOVED_OWN, AT_HOUR);
