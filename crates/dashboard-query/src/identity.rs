@@ -139,15 +139,25 @@ impl Holders {
         Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new(), unlinked: OnceLock::new() }
     }
 
-    pub fn next_change(&self, hour: i32) -> Option<i32> {
-        let edges = self.edges.get_or_init(|| {
+    fn edges(&self) -> &[i32] {
+        self.edges.get_or_init(|| {
             let runs = self.tags.values().flatten().map(|run| (run.first, run.last));
             let unknown = self.unknown.iter().map(|(first, last, _)| (*first, *last));
             let mut edges: Vec<i32> = runs.chain(unknown).flat_map(|(first, last)| [first, last.saturating_add(1)]).collect();
             edges.sort_unstable();
             edges.dedup();
             edges
-        });
+        })
+    }
+
+    pub fn interval(&self, hour: i32) -> (i32, i32) {
+        let edges = self.edges();
+        let at = edges.partition_point(|&edge| edge <= hour);
+        (edges[..at].last().copied().unwrap_or(i32::MIN), edges.get(at).map_or(i32::MAX, |edge| edge - 1))
+    }
+
+    pub fn next_change(&self, hour: i32) -> Option<i32> {
+        let edges = self.edges();
         edges.get(edges.partition_point(|&edge| edge <= hour)).copied()
     }
 

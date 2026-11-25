@@ -1,13 +1,13 @@
-import { rankProvenInterval, rankReading, validateRankReply } from '../../charts/race/measureRaceData.ts';
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import type { GatedHour } from '../../dashboard/regionTime';
+import { rankSource } from '../../families/seriesRank.ts';
+import { rankReading, validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsValueField } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import type { GroupSelection, SeriesState } from '../../generated/dashboard';
+import type { SeriesState } from '../../generated/dashboard';
 
 export const FAMILY = 'casualty-totals';
 const RANK = 'dealtAndTaken';
@@ -22,23 +22,6 @@ export interface CasualtiesOptions {
   readonly group: boolean;
 }
 
-interface Base {
-  readonly branchId: string;
-  readonly measure: string;
-  readonly measures: readonly string[];
-  readonly top: number | null;
-  readonly countries: readonly string[];
-  readonly group: GroupSelection | null;
-}
-
-function exactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
-  const cfg = base as unknown as Base;
-  const asked = { branchId: cfg.branchId, family: { kind: FAMILY, measure: cfg.measure }, measures: cfg.measures, hour };
-  if (cfg.top != null) return { ...asked, top: cfg.top };
-  if (cfg.group) return { ...asked, group: cfg.group };
-  return cfg.countries.length ? { ...asked, countries: cfg.countries.map(countryFromKey) } : null;
-}
-
 function viewMeasures(view: 'butterfly' | 'race'): readonly Measure[] {
   return view === 'race' ? ['unknown', 'partial'] : MEASURES;
 }
@@ -47,35 +30,11 @@ function casualtySources(ctx: FamilyPlanContext, view: 'butterfly' | 'race'): So
   const top = ctx.countries.top;
   const keyed = !ctx.countries.all && top == null;
   const group = keyed ? groupSelection(ctx.widget.countries) : null;
-  const base: Base = {
-    branchId: ctx.branch.id,
-    measure: view === 'race' ? 'taken' : RANK,
-    measures: viewMeasures(view),
-    top: keyed ? null : top ?? MOST,
-    countries: keyed && !group ? ctx.countries.tags : [],
-    group,
-  };
+  const coverage: SourceCoverage = top != null ? { mode: 'population', form: 'top', limit: top }
+    : ctx.countries.all || group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags };
   return {
     owner: `casualties:${view}:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'rank',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage: top != null ? { mode: 'population', form: 'top', limit: top } : ctx.countries.all || group ? { mode: 'population', form: 'all' } : { mode: 'keyed', keys: ctx.countries.tags },
-        product: 'series-rank',
-        exactProduct: 'series-rank',
-        followQuery: null,
-        params: base as unknown as Readonly<Record<string, unknown>>,
-        buildExactParams: exactParams,
-        dynamicKeys: ['hour', 'countries'],
-        provenInterval: rankProvenInterval,
-        validate: validateRankReply,
-      },
-    }],
+    entries: rankSource(ctx, 'rank', { kind: FAMILY, measure: view === 'race' ? 'taken' : RANK }, coverage, ctx.countries.tags, keyed ? null : top ?? MOST, group, viewMeasures(view)),
   };
 }
 

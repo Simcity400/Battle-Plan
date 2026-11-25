@@ -110,6 +110,8 @@ fn a_walk_carries_a_war_through_a_join_and_a_capitulation_and_a_gap_starts_anoth
         (WarRelationKey::new((1, 1), (2, 2), 90), true, 100, 104),
         (WarRelationKey::new((1, 1), (3, 3), 90), true, 103, 104),
     ]);
+    assert_eq!(contributions::contribution_hours(&reply, "auto"), [(105, Some(104)), (107, None), (109, Some(108))]);
+    assert_eq!(contributions::contribution_hours(&reply, &war.id), [(105, Some(104))]);
     let after = &reply.wars[1];
     assert_eq!((after.first_hour, after.last_hour, after.started_by), (107, 108, true));
     assert_eq!(reply.viewpoints.iter().map(|run| (run.tag.as_str(), run.first_hour, run.last_hour)).collect::<Vec<_>>(), vec![("ONE", 100, 104), ("ONE", 107, 108)]);

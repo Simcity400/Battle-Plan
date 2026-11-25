@@ -312,10 +312,10 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
         offset: ctx.track.axisOffset,
         read: {
           shape: 'point',
-          channel: 'followed',
+          channel: 'panel',
           coverage: { mode: 'population', form: 'top', limit: WEATHER_TOP },
           product: 'regional-weather',
-          followQuery: null,
+          followQuery: { panel: 'regional-weather', ...params },
           params,
           dynamicKeys: ['firstHour', 'lastHour'],
           buildExactParams: (base, hour) => ({ ...base, firstHour: Math.max(firstHour, hour - WEATHER_WINDOW_HOURS + 1), lastHour: hour }),

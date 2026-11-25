@@ -103,11 +103,12 @@ pub(crate) fn card_at(fold: &Fold, hour: i32) -> CardShape {
         _ => None,
     };
     let at = fold.progress.partition_point(|run| run.last < hour);
-    let run_last = fold.progress.get(at).filter(|run| run.first <= hour).map(|run| run.last);
-    let progress = if current.as_ref().is_some_and(|(_, continuous, _)| !continuous) { fold.progress(hour) } else { None };
-    let valid_through = match (progress.is_some(), run_last) {
-        (true, Some(last)) => last.min(segment.last),
-        _ => segment.last,
+    let ordinary = current.as_ref().is_some_and(|(_, continuous, _)| !continuous);
+    let progress = if ordinary { fold.progress(hour) } else { None };
+    let valid_through = if ordinary && let Some(run) = fold.progress.get(at) {
+        segment.last.min(if run.first <= hour { run.last } else { run.first - 1 })
+    } else {
+        segment.last
     };
     CardShape { valid_through, missing: None, current, progress, completed: dated, undated: undated_count, segment_first: Some(segment.first) }
 }
@@ -134,10 +135,9 @@ pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days:
 }
 
 type Shown = BTreeMap<String, DatedFocusArtwork>;
-type Resolved = Arc<(Shown, Vec<String>)>;
+type Resolved = Arc<(Shown, Vec<String>, i32)>;
 type ArtKey = (FocusDatabase, i32, Vec<String>);
 
-const DAY: i32 = 24;
 const KEPT_LIMIT: usize = 512;
 
 #[derive(Default)]
@@ -185,9 +185,9 @@ pub(crate) fn observed_hours(shape: &CardShape) -> BTreeMap<i32, Vec<String>> {
     by_hour
 }
 
-fn shown(source: &Source, context: &LoadContext, params: &FocusHourParams, at: i32, database: FocusDatabase, tokens: Vec<String>, cancelled: &AtomicBool) -> io::Result<(Shown, Vec<String>)> {
+fn shown(source: &Source, context: &LoadContext, params: &FocusHourParams, at: i32, database: FocusDatabase, tokens: Vec<String>, cancelled: &AtomicBool) -> io::Result<(Shown, Vec<String>, i32)> {
     if tokens.is_empty() {
-        return Ok((Shown::new(), Vec::new()));
+        return Ok((Shown::new(), Vec::new(), at));
     }
     let asked = FocusArtworkParams {
         branch_id: params.branch_id.clone(),
@@ -200,9 +200,9 @@ fn shown(source: &Source, context: &LoadContext, params: &FocusHourParams, at: i
         icons_only: None,
     };
     match focus_artwork::load(source, &asked, context, cancelled) {
-        Ok(reply) => Ok((reply.items.into_iter().map(|item| (item.artwork.token.clone(), item)).collect(), reply.warnings)),
+        Ok(reply) => Ok((reply.items.into_iter().map(|item| (item.artwork.token.clone(), item)).collect(), reply.warnings, reply.valid_through)),
         Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
-        Err(error) => Ok((Shown::new(), vec![format!("Focus names and icons refused: {error}")])),
+        Err(error) => Ok((Shown::new(), vec![format!("Focus names and icons refused: {error}")], at)),
     }
 }
 
@@ -265,12 +265,14 @@ impl Product for FocusCard {
                 FocusCardCompleted { art, completed_by_hour: *when, date_missing: when.is_none().then(|| UNDATED.to_owned()) }
             })
             .collect();
+        let mut valid_through = shape.valid_through;
         let current = match shape.current.as_ref() {
             None => None,
             Some((token, is_continuous, paused)) => {
             let database = if *is_continuous { FocusDatabase::Continuous } else { FocusDatabase::National };
             let held = resolved_at(source, context, params, branch, (database, params.hour, vec![token.clone()]), cancelled)?;
             warnings.extend(held.1.iter().cloned());
+            valid_through = valid_through.min(held.2);
             let total_days = held.0.get(token).and_then(|item| item.artwork.base_duration_days);
             let (elapsed_days, permyriad, days_left, progress_missing) =
                 if *is_continuous { (None, None, None, None) } else { progress_figures(shape.progress, total_days) };
@@ -279,8 +281,6 @@ impl Product for FocusCard {
         };
         warnings.sort_unstable();
         warnings.dedup();
-        let day_end = (params.hour.div_euclid(DAY) + 1) * DAY - 1;
-        let valid_through = if current.is_some() { shape.valid_through.min(day_end) } else { shape.valid_through };
         let reply = FocusCardReply {
             hour: params.hour,
             valid_through: valid_through.max(params.hour),

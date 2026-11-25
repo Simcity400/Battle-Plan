@@ -28,3 +28,4 @@ use serde_json::Value;
 type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
 
 pub const EXACT_AGENCYCOMPARISON: ExactPanel = exact_panel::<crate::products::intelligence::agencies::AgencyComparison>;
+pub const EXACT_INTELNETWORKCOVERAGE: ExactPanel = exact_panel::<crate::products::intel_coverage::IntelNetworkCoverage>;

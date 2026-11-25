@@ -1,8 +1,8 @@
+import { rankSource } from '../../families/seriesRank.ts';
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
-import type { GatedHour } from '../../dashboard/regionTime';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
@@ -12,7 +12,7 @@ import { holderTagAt, nextHoldersChange, type HolderRun } from '../../families/h
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { FactoryGroupsReply, GroupSelection, SeriesRankReply, SeriesState } from '../../generated/dashboard';
+import type { FactoryGroupsReply, SeriesRankReply, SeriesState } from '../../generated/dashboard';
 import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -41,15 +41,6 @@ export interface FactoriesRowMeta {
   readonly key: string;
 }
 
-interface FactoriesExactBase {
-  readonly branchId: string;
-  readonly measure: string;
-  readonly measures: readonly string[];
-  readonly top: number | null;
-  readonly tags: readonly string[];
-  readonly group: GroupSelection | null;
-}
-
 function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGroupsReply | undefined): FactoryPartSpec[] {
   return chosenGroups(types).map(group => ({
     id: group.value,
@@ -58,14 +49,6 @@ function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGro
     ...(mode === 'built' ? { damagedSource: `damaged${group.bit}` } : {}),
     color: colour(PART_SURFACE, FACTORY_GROUPS.indexOf(group)),
   }));
-}
-
-function buildFactoriesExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
-  const cfg = base as unknown as FactoriesExactBase;
-  const asked = { branchId: cfg.branchId, family: { kind: 'country-factories', measure: cfg.measure }, measures: cfg.measures, hour };
-  if (cfg.top != null) return { ...asked, top: cfg.top };
-  if (cfg.group) return { ...asked, group: cfg.group };
-  return cfg.tags.length ? { ...asked, countries: cfg.tags.map(countryFromKey) } : null;
 }
 
 const PART_NOT_READ = 'Not recorded at this hour';
@@ -277,28 +260,9 @@ function factoriesSources(ctx: FamilyPlanContext<FactoryGroupsReply>): SourcePla
   const measures = split
     ? chosenGroups(types).flatMap(group => [`${mode}${group.bit}`, ...(mode === 'built' ? [`damaged${group.bit}`] : [])])
     : mode === 'built' ? [damagedMeasure(types)] : [];
-  const base: FactoriesExactBase = { branchId: ctx.branch.id, measure: measureName, measures, top, tags: top != null || group ? [] : ctx.countries.tags, group };
   return {
     owner,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-rank',
-        exactProduct: 'series-rank',
-        followQuery: null,
-        params: base as unknown as Readonly<Record<string, unknown>>,
-        buildExactParams: buildFactoriesExactParams,
-        dynamicKeys: ['hour', 'countries'],
-        provenInterval: rankProvenInterval,
-        validate: validateRankReply,
-      },
-    }],
+    entries: rankSource(ctx, 'main', { kind: 'country-factories', measure: measureName }, coverage, ctx.countries.tags, top, group, measures),
   };
 }
 

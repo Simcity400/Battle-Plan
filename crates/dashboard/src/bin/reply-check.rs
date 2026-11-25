@@ -90,7 +90,7 @@ fn run() -> io::Result<bool> {
             dashboard_base::SourceKey { source_id: "reply-check".into(), revision: dashboard_core::protocol::replay_revision(&recording)? },
             recording.clone(),
             &cancelled,
-        )
+        ).map(std::sync::Arc::new)
     };
     let source = std::cell::RefCell::new(open()?);
     let source_ref = source.borrow();

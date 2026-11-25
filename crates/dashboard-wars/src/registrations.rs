@@ -37,3 +37,5 @@ pub const EXACT_OCCUPATIONRESERVE: ExactPanel = exact_panel::<crate::products::o
 pub const EXACT_OCCUPIEDSTATES: ExactPanel = exact_panel::<crate::products::occupation::states::OccupiedStates>;
 pub const EXACT_FACTIONTOTALSAT: ExactPanel = exact_panel::<crate::products::factions::FactionTotalsAt>;
 pub const EXACT_FACTIONPOOLS: ExactPanel = exact_panel::<crate::products::faction_state::pools::FactionPools>;
+pub const EXACT_DIPLOMATICRELATIONS: ExactPanel = exact_panel::<crate::products::diplomacy::DiplomaticRelations>;
+pub const EXACT_WARCONTRIBUTIONS: ExactPanel = exact_panel::<crate::products::wars::contributions::WarContributions>;

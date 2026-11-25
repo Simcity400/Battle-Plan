@@ -111,6 +111,8 @@ pub trait AtHour: 'static {
         vec![Self::Params::decl(), Self::Reply::decl()]
     }
 
+    fn read_hour(_context: &Self::Context, hour: i32) -> i32 { hour }
+
     fn owner(_params: &Self::Params) -> Option<&Country> {
         None
     }
@@ -259,10 +261,14 @@ fn covers(read: &Read, group: &Group) -> bool {
 }
 
 fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, pool: &Arc<placed::Pool>, params: &P::Params, hour: i32, context: impl FnOnce() -> io::Result<C>, cancelled: &AtomicBool) -> io::Result<(P::Reply, Option<Value>)> {
-    let run = query.timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
-    let owner = holder::<P>(&query.holders, params, hour)?;
+    let recorded = |hour| query.timeline.at(hour).map(|at| at.run).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)));
+    let run = recorded(hour)?;
     let held = context()?;
     let context = held.borrow();
+    let target = P::read_hour(context, hour);
+    let run = if target == hour { run } else { recorded(target)? };
+    let hour = target;
+    let owner = holder::<P>(&query.holders, params, hour)?;
     let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
     let mut count = 0;
     let mut input = incremental::Input { pool, run: read_run, hour, mode: incremental::capture_mode(&pool.pages)?, count: &mut count, step: None, placed: None };
@@ -398,6 +404,67 @@ where P::Params: Sync, P::Context: Sync {
         serde_json::to_value(WithLive { reply, live }).map_err(|e| e.to_string())
     });
     Ok(product_panel(advance, cold))
+}
+
+pub fn interval_panel(
+    executable: Option<engine_executable::executable_tables::Tables>,
+    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
+) -> Box<dyn Panel> {
+    use dashboard_follow::panel::{ExactReader, ProductRead, ProductReader};
+    let read = Arc::new(move |hour, cancelled: &AtomicBool| {
+        engine_executable::executable_tables::scope(executable, || read(hour, cancelled))
+            .map_err(|error| error.to_string())
+    });
+    let cold_read = Arc::clone(&read);
+    let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled).map(|(data, _, _)| data));
+    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>, u64)>);
+    let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
+        let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !seed && let Some((interval, value, rows)) = &*held && interval.contains(&hour) {
+            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+        }
+        let (value, rows) = match read(hour, cancelled) {
+            Ok((reply, through, rows)) => {
+                let value = Arc::new(Ok(reply));
+                *held = Some((hour..=through, value.clone(), rows));
+                (value, rows)
+            }
+            Err(error) => {
+                *held = None;
+                (Arc::new(Err(error)), 0)
+            }
+        };
+        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new() }
+    });
+    product_panel(advance, cold)
+}
+
+pub fn product_interval_panel<P: super::Product>(
+    source: &Arc<Source>, load: &LoadContext, asked: &Value,
+    date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
+    valid_through: fn(&P::Reply) -> i32,
+) -> Result<Box<dyn Panel>, String> {
+    let mut params = asked.clone();
+    params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    let mut warnings = Vec::new();
+    if P::CONTENT_DEPENDENT {
+        source.append_changed_warnings(&mut warnings, load.content.as_ref());
+    }
+    source.append_presentation_warnings(&mut warnings, load.content.as_ref());
+    Ok(interval_panel(source.tables(), move |hour, cancelled| {
+        let mut request = params.clone();
+        date(&mut request, hour);
+        let params = dashboard_query::named::named::<P::Params>(&request)?;
+        P::validate(&params).map_err(dashboard_core::invalid)?;
+        let mut own = OwnRefusals::default();
+        let (reply, rows) = counted(|| own_refusals(&mut own, || P::load(&source, &params, &load, cancelled)));
+        let mut reply = reply?;
+        finish(reply.warnings_mut(), &own, &warnings);
+        let through = valid_through(&reply);
+        Ok((serde_json::to_value(reply)?, through, rows))
+    }))
 }
 
 pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader) -> Box<dyn Panel> {

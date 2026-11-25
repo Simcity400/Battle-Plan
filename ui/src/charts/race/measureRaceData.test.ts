@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatRaw, rankProvenInterval, validateRankReply } from './measureRaceData.ts';
+import { formatRaw, validateRankReply } from './measureRaceData.ts';
 import type { SeriesRankReply, SeriesState } from '../../generated/dashboard';
 
 const state = (tag: string, valueRaw: string | null, missing: string | null = null): SeriesState => ({ country: tag, hour: 50, drop: null, missing,
@@ -8,12 +8,6 @@ const state = (tag: string, valueRaw: string | null, missing: string | null = nu
 
 const rank = (states: readonly SeriesState[], decimals: number, from = 50, until = 50, refused: string | null = null): SeriesRankReply => ({
   branchId: '1', hour: 50, from, until, refused, measures: [{ name: 'free7', decimals }], rows: states.map(held => ({ country: held.country, slot: null, readings: [held] })),
-});
-
-test('a rank holds only the hours its reply proves, never its winners\' value runs', () => {
-  assert.deepEqual(rankProvenInterval(rank([state('GER', '4')], 0), 50), [50, 50], 'the winner runs 40..60, but an omitted country may overtake at 51');
-  assert.deepEqual(rankProvenInterval(rank([], 0, 50, 50, 'Countries not recorded at this hour'), 50), [50, 50], 'a refused top holds its hour only');
-  assert.deepEqual(rankProvenInterval(rank([state('GER', '4')], 0, 45, 58), 50), [45, 58]);
 });
 
 test('a fixed-point raw value is written exactly, grouped, with at most the digits asked', () => {

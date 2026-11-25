@@ -1,7 +1,7 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
-import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
+import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
 import { chosenWar, readHourFor } from './warContributionData.ts';
@@ -42,11 +42,12 @@ export function leadOf(group: WarContributionGroup, side: WarSide): string {
 }
 
 function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): WarContributionsReply | undefined {
-  const going = observationAt(war, hour) !== null;
-  const raw = readView.panel(going ? 'live' : 'ended');
-  if (raw === undefined) return undefined;
+  const raw = readView.panel('live');
+  if (raw === undefined || hour < war.firstHour) return undefined;
   const reply = validateWarContributions(raw);
-  return reply.hour >= war.firstHour && reply.hour <= war.lastHour && reply.hour <= hour ? reply : undefined;
+  const at = observationAt(war, hour) || hour > war.lastHour ? readHourFor(war, hour) : war.firstHour;
+  if (reply.hour > at) return undefined;
+  return reply.hour === at ? reply : { ...reply, hour: at };
 }
 
 export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions): ChosenGroup {
@@ -63,32 +64,18 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   return { kind: 'shown', war, reply, observation, group, sides: attackersFirst(group) };
 }
 
-function endedHour(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number; readonly until: number } {
-  const war = wars ? chosenWar(wars, saved, hour) : null;
-  if (!war) return { at: hour, until: hour };
-  if (hour <= war.lastHour) return { at: war.firstHour, until: war.lastHour };
-  const next = wars!.wars.reduce((soonest, other) => (other.firstHour > hour && other.firstHour < soonest ? other.firstHour : soonest), Infinity);
-  return { at: readHourFor(war, hour), until: next - 1 };
-}
-
 export function warContributionSources(ctx: FamilyPlanContext<WarsReply>): SourcePlan {
   const viewpoint = ctx.countryTag;
-  const params = { branchId: ctx.branch.id, viewpoint: viewpoint === null ? null : countryFromKey(viewpoint) };
-  const saved = savedWar(ctx.options);
-  const entry = (name: string, read: SourceEntry['read']): SourceEntry => ({ name, source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read });
+  const war = savedWar(ctx.options) ?? 'auto';
+  const params = { branchId: ctx.branch.id, viewpoint: viewpoint === null ? null : countryFromKey(viewpoint), war };
   return {
-    owner: `war-contribution:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${viewpoint ?? ''}:${saved ?? ''}`,
-    entries: [
-      entry('live', {
+    owner: `war-contribution:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${viewpoint ?? ''}:${war}`,
+    entries: [{
+      name: 'live', source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset,
+      read: {
         shape: 'point', channel: 'panel', coverage: { mode: 'population', form: 'all' }, product: 'war-contributions',
         followQuery: { panel: 'war-contributions', ...params }, params, validate: validateWarContributions,
-      }),
-      entry('ended', {
-        shape: 'point', channel: 'followed', coverage: { mode: 'population', form: 'all' }, product: 'war-contributions', followQuery: null, params,
-        buildExactParams: (base, hour) => ({ ...base, hour: endedHour(ctx.aux, saved, hour).at }),
-        provenInterval: (_data, hour) => [hour, endedHour(ctx.aux, saved, hour).until],
-        validate: validateWarContributions,
-      }),
-    ],
+      },
+    }],
   };
 }

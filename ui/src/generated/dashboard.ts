@@ -6239,7 +6239,7 @@ export type WarContributionsParams = { branchId: string,
 /**
  * None follows the recording client's playing or observer country.
  */
-viewpoint: CountryRef | null, };
+viewpoint: CountryRef | null, war?: string, };
 export type WarContributionCountry = { tag: string, side: WarSide,
 /**
  * All quantities are exact signed fixed5 words.
@@ -6920,7 +6920,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
   "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
-  "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
+  "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any", "war": "leaf" },
   "war-timeline": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "wargoals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "wars": { "branchId": "leaf", "viewpoint": "any" },

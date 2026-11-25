@@ -128,7 +128,7 @@ pub fn answers(product: &str, params: &Value) -> bool {
     crate::products::MOVED.contains(&product)
 }
 
-pub fn panel(source: &Source, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
+pub fn panel(source: &Arc<Source>, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
     use crate::panel::{dated_panel_of, panel_of};
     dated_panel_of(source, context, query).or_else(|| panel_of(source, context, query))
 }
@@ -137,7 +137,7 @@ pub fn follows(product: &str) -> bool {
     dashboard_follow::registry::PRODUCTS.contains(&product)
 }
 
-pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
+pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     if follows(product) {
         return dashboard_follow::registry::registry().answer_heads(
@@ -270,6 +270,7 @@ mod tests {
             Arc::new(replay),
             &cancelled,
         ).unwrap();
+        let source = Arc::new(source);
         let run = query(&source, branch).unwrap().timeline.stretches[0].run;
         let load = LoadContext { content: None };
         let leaders = LeadersContext::load(&source, &load).unwrap();

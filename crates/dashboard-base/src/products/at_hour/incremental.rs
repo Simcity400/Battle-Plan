@@ -397,7 +397,13 @@ where P::Context: Sync, P::Params: Sync {
     Arc::new(move |hour, values, cancelled, step| {
         let mut held = stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut count = 0;
+        let target = P::read_hour(&context, hour);
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
+            if target != hour && timeline.at(hour).is_none() {
+                return Err(dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)));
+            }
+            let step = step.filter(|_| target == hour);
+            let hour = target;
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
             let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None };
@@ -511,7 +517,7 @@ where P::Context: Sync, P::Params: Sync {
             }
             Err(e) => { *held = None; Arc::new(Err(e.to_string())) }
         };
-        let fresh = !pending && held.as_ref().is_some_and(|s| s.values_at == Some(hour));
+        let fresh = !pending && held.as_ref().is_some_and(|s| s.values_at == Some(target));
         let live = held.as_ref().map(|s| s.live.clone()).filter(|live| !live.is_empty());
         let lanes = held.as_ref().map_or_else(Vec::new, |s| s.tables.iter().chain(&s.extra.tables)
             .filter_map(|(table, projection)| Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false }))

@@ -147,10 +147,10 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
         offset: ctx.track.axisOffset,
         read: {
           shape: 'point',
-          channel: 'followed',
+          channel: 'panel',
           coverage: group ? { mode: 'population', form: 'all' } : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'top', limit: top ?? shown },
           product: 'intel-network-coverage',
-          followQuery: null,
+          followQuery: { panel: 'intel-network-coverage', ...params },
           params,
           dynamicKeys: ['hour'],
         },
