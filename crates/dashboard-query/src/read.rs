@@ -186,12 +186,16 @@ fn explanation_changes(
     (start, from, to): (i32, i32, i32),
 ) -> io::Result<Vec<i32>> {
     let summary::Source::Computed { value, .. } = source else { return Ok(Vec::new()) };
+    let empty = Vec::new();
+    let keys: Vec<u128> = keys.iter().copied().filter(|key| computed.get(key).unwrap_or(&empty).iter().any(|run| run.2.is_none() && run.0.max(start) < run.1.min(to))).collect();
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
     let columns = columns_of(&source);
-    let inputs: Vec<HashMap<u128, Runs>> = columns.iter().map(|&column| runs(recording, run, table, summary::Source::Cell(column), Some(keys), start, to)).collect::<io::Result<_>>()?;
+    let inputs: Vec<HashMap<u128, Runs>> = columns.iter().map(|&column| witnessed_runs(recording, run, table, summary::Source::Cell(column), Some(&keys), start, to)).collect::<io::Result<_>>()?;
     let state = |key: u128, hour: i32| value(&InputCells { columns: &columns, values: inputs.iter().map(|held| held.get(&key).and_then(|runs| value_at(runs, hour))).collect() }, 0);
     let mut out = Vec::new();
-    for &key in keys {
-        let empty = Vec::new();
+    for &key in &keys {
         let numbers = computed.get(&key).unwrap_or(&empty);
         let mut hours: Vec<i32> = inputs.iter().filter_map(|held| held.get(&key)).flatten().map(|run| run.0).filter(|&hour| from <= hour && hour <= to).collect();
         hours.sort_unstable();
@@ -305,7 +309,7 @@ fn nearest_change_counted(
     };
     let exact = |from: i32, to: i32| -> io::Result<Option<i32>> {
         let start = (from - 1).max(run_first);
-        let found = runs(recording, run, table, source, Some(keys), start, to)?;
+        let found = witnessed_runs(recording, run, table, source, Some(keys), start, to)?;
         let mut best: Option<i32> = None;
         let mut offer = |hour: i32| best = Some(best.map_or(hour, |best| if forward { best.min(hour) } else { best.max(hour) }));
         for runs in found.values() {

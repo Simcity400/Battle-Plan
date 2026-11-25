@@ -786,7 +786,7 @@ pub struct ProductionLineBreakdownReply {
 
 dashboard_base::reply_warnings!(ProductionLineBreakdownReply);
 
-type LineAt = (RawRun, Option<ProductionLineModifiersRow>, Option<CountryProductionModifiersRow>, Option<u32>);
+type LineAt = (RawRun, Result<ProductionLineModifiersRow, String>, Result<CountryProductionModifiersRow, String>, Option<u32>);
 
 fn witnessed(run: &RawRun, id: &str, reason: &str) -> Option<ProductionModifierGroup> {
     let (total, unit, note) = match id {
@@ -864,8 +864,10 @@ impl Product for ProductionLineBreakdown {
                     return Ok(());
                 }
             };
-            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format).ok().flatten();
-            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format).ok().flatten();
+            let modifiers = row::<tables::ProductionLineModifiers>(&readers[1], key, format)
+                .and_then(|row| row.ok_or_else(|| "This line's production modifiers were not recorded at this hour".to_owned()));
+            let country = row::<tables::CountryProductionModifiers>(&readers[2], u128::from(line.country), format)
+                .and_then(|row| row.ok_or_else(|| "The country's production modifiers were not recorded at this hour".to_owned()));
             read = Some((line, modifiers, country, linked));
             Ok(())
         })?;
@@ -878,7 +880,7 @@ impl Product for ProductionLineBreakdown {
         }
         let mut warnings = BTreeSet::new();
         let (group, missing) = match (modifiers, country) {
-            (Some(modifiers), Some(country)) => {
+            (Ok(modifiers), Ok(country)) => {
                 let content = names::context(source, context)?;
                 let mut named = Named::default();
                 if line.mio != 0 {
@@ -897,13 +899,15 @@ impl Product for ProductionLineBreakdown {
                 warnings.extend(run.warnings);
                 (run.groups.pop(), None)
             }
-            (modifiers, _) => {
-                let reason = if modifiers.is_none() { "This line's production modifiers were not recorded at this hour" } else { "The country's production modifiers were not recorded at this hour" };
-                let kept = witnessed(&line, &params.group, reason);
-                if kept.is_some() {
-                    warnings.insert(reason.to_owned());
-                }
-                let missing = kept.is_none().then(|| reason.to_owned());
+            (Err(reason), _) | (Ok(_), Err(reason)) => {
+                let kept = witnessed(&line, &params.group, &reason);
+                let missing = match kept {
+                    Some(_) => {
+                        warnings.insert(reason);
+                        None
+                    }
+                    None => Some(reason),
+                };
                 (kept, missing)
             }
         };

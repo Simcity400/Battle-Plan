@@ -506,10 +506,13 @@ fn a_step_stops_where_an_empty_measure_changes_its_explanation() {
         frame.table(TableId::Campaign, read(std::slice::from_ref(&campaign)))?;
         frame.table(TableId::Countries, read(&[CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }]))?;
         frame.table(TableId::CountryLinks, read(&[CountryLinkRow { id: 9001, canonical_slot: 7 }]))?;
+        let consumer = [CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 0, received_raw: 0 }];
         if unread.contains(&hour) {
             frame.table::<CountryFuelConsumerRow>(TableId::CountryFuelConsumers, Input::Unavailable { reason: "reader fault", read: false, sample: Sample::FromReadBit })
+        } else if hour == first {
+            frame.table(TableId::CountryFuelConsumers, Input::Snapshot { rows: &consumer, partial: Some(1), read: true, sample: Sample::Reset })
         } else {
-            frame.table(TableId::CountryFuelConsumers, read(&[CountryFuelConsumerRow { country: 9001, index: 0, priority: 1, requested_raw: 0, received_raw: 0 }]))
+            frame.table(TableId::CountryFuelConsumers, read(&consumer))
         }
     })
     .unwrap();
@@ -522,6 +525,7 @@ fn a_step_stops_where_an_empty_measure_changes_its_explanation() {
     let ask = Ask { country: Country::from("GER"), part: 0 };
     let step = |origin: i32, key| line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), key, (first, last), &Within::new()).unwrap();
     assert_eq!(step(first + 1, NavigationKey::ArrowRight), Some(*unread.start()), "no fuel requested, then not recorded: a step forward stops where the reason changes");
+    assert_eq!(step(first, NavigationKey::ArrowRight), Some(*unread.start()), "a row witnessed on a truncated opening hour keeps its reason, so nothing changes after it until the unread hours");
     assert_eq!(step(last - 1, NavigationKey::ArrowLeft), Some(*unread.end() + 1), "and a step back stops where it changes back");
 }
 
