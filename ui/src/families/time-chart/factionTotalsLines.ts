@@ -1,5 +1,6 @@
 import { CATEGORY_LIMIT, CHART_MEASURE_COLOURS, colour } from '../../charts/palette.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
+import { factionIdentity, type FactionStyle } from '../../dashboard/campaignSettings.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
 import { validateFactionLines, type FactionLines } from '../../dashboard/territoryReplies.ts';
@@ -24,6 +25,7 @@ import type { TooltipListItem } from '../host/tooltips.ts';
 import { resolveName } from '../table/identityCell.ts';
 import { formatScalar } from '../valueFormat.ts';
 import type { FactionTotalRow, FactionTotalsAtReply } from '../../generated/dashboard';
+import type { TimeChartWidgetDeclaration } from './declaration.ts';
 import type {
   ChartGap,
   ChartHoverDetail,
@@ -40,6 +42,7 @@ const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 
 export interface FactionSpanSummary {
   readonly id: string;
+  readonly founder: string | null;
   readonly firstHour: number;
   readonly spans: readonly (readonly [number, number])[];
 }
@@ -60,6 +63,8 @@ export interface FactionTotalsLinesOptions {
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
+  readonly styles?: Readonly<Record<string, FactionStyle>>;
+  readonly shared?: Readonly<Record<string, { readonly colour: string }>>;
 }
 
 function stableColourIndex(key: string): number {
@@ -81,11 +86,15 @@ function membershipOf(ctx: FamilyPlanContext): 'hour' | 'ever' {
 
 function factionSpansFor(ctx: FamilyPlanContext): readonly FactionSpanSummary[] {
   const selection = ctx.widget.countries;
-  const byId = new Map<string, [number, number][]>();
+  const byId = new Map<string, { spans: [number, number][]; founder: string | null; founderHour: number }>();
   for (const run of ctx.countries.factions ?? []) {
-    const list = byId.get(run.id) ?? [];
-    list.push([run.firstHour, run.lastHour]);
-    byId.set(run.id, list);
+    const entry = byId.get(run.id) ?? { spans: [], founder: null, founderHour: Infinity };
+    entry.spans.push([run.firstHour, run.lastHour]);
+    if (run.tag && run.firstHour < entry.founderHour) {
+      entry.founder = run.tag;
+      entry.founderHour = run.firstHour;
+    }
+    byId.set(run.id, entry);
   }
   const merge = (raw: readonly [number, number][]): readonly (readonly [number, number])[] => {
     const sorted = [...raw].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -99,14 +108,15 @@ function factionSpansFor(ctx: FamilyPlanContext): readonly FactionSpanSummary[] 
   };
   if (selection.kind === 'group' && selection.aggregate && selection.group.type === 'faction') {
     const id = selection.group.id;
-    const merged = merge(byId.get(id) ?? []);
-    return [{ id, firstHour: merged[0]?.[0] ?? ctx.branch.firstHour, spans: merged }];
+    const hit = byId.get(id);
+    const merged = merge(hit?.spans ?? []);
+    return [{ id, founder: hit?.founder ?? null, firstHour: merged[0]?.[0] ?? ctx.branch.firstHour, spans: merged }];
   }
   return [...byId.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([id, raw]) => {
-      const merged = merge(raw);
-      return { id, firstHour: merged[0]?.[0] ?? ctx.branch.firstHour, spans: merged };
+    .map(([id, entry]) => {
+      const merged = merge(entry.spans);
+      return { id, founder: entry.founder, firstHour: merged[0]?.[0] ?? ctx.branch.firstHour, spans: merged };
     });
 }
 
@@ -187,23 +197,39 @@ function latestPointValue(points: readonly ChartInlinePoint[]): number | null {
   return null;
 }
 
+function sharedFactionColour(
+  shared: FactionTotalsLinesOptions['shared'],
+  resolvedName: string | null,
+  founder: string | null,
+): string | undefined {
+  if (!shared) return undefined;
+  const byName = resolvedName ? factionIdentity(resolvedName, null) : null;
+  if (byName && shared[byName]?.colour) return shared[byName].colour;
+  const byFounder = founder ? factionIdentity(null, founder) : null;
+  return byFounder ? shared[byFounder]?.colour : undefined;
+}
+
 function factionPresentation(
   readView: BoundedReadView,
   id: string,
-  aggregated: boolean,
-  groupLabel: string,
-  surface: string,
+  options: Pick<FactionTotalsLinesOptions, 'aggregated' | 'groupLabel' | 'surface' | 'styles' | 'shared' | 'factions'>,
   atHour: number,
-): { readonly name: string; readonly color: string } {
-  if (aggregated) {
-    return { name: groupLabel, color: colour(surface, 0) };
+  founder?: string | null,
+): { readonly name: string; readonly color: string; readonly customColour: boolean } {
+  if (options.aggregated) {
+    return { name: options.groupLabel, color: colour(options.surface, 0), customColour: false };
   }
   const resolved = resolveName(readView, 'faction', id, { atHour });
-  const name = resolved.value.kind === 'known' || resolved.loading ? resolved.name : `Faction ${id}`;
-  const color = resolved.who.colour?.status === 'ready'
-    ? resolved.who.colour.value
-    : colour(surface, stableColourIndex(id));
-  return { name, color };
+  const style = options.styles?.[id];
+  const recordedName = resolved.value.kind === 'known' ? resolved.name : null;
+  const name = style?.name ?? (resolved.value.kind === 'known' || resolved.loading ? resolved.name : `Faction ${id}`);
+  const founderTag = founder ?? options.factions.find(item => item.id === id)?.founder ?? null;
+  const ownColour = style?.colour ?? sharedFactionColour(options.shared, recordedName, founderTag);
+  const color = ownColour
+    ?? (resolved.who.colour?.status === 'ready'
+      ? resolved.who.colour.value
+      : colour(options.surface, stableColourIndex(id)));
+  return { name, color, customColour: ownColour !== undefined };
 }
 
 function memberNames(readView: BoundedReadView, row: FactionTotalRow, atHour: number): string {
@@ -245,7 +271,7 @@ function buildHoverDetail(
   }
   const items: TooltipListItem[] = [];
   for (const row of reply.rows) {
-    const pres = factionPresentation(readView, row.id, options.aggregated, options.groupLabel, options.surface, hover.hour);
+    const pres = factionPresentation(readView, row.id, options, hover.hour);
     items.push(
       row.total === null
         ? { label: pres.name, swatch: pres.color, missingReason: row.missing ?? 'Not recorded at this hour', tone: 'muted', divider: items.length > 0 }
@@ -411,6 +437,17 @@ export function factionTotalsLinesOptions(
   };
 }
 
+export function withFactionTotalsStyles(
+  declaration: TimeChartWidgetDeclaration<FactionTotalsLinesOptions>,
+  styles: FactionTotalsLinesOptions['styles'],
+  shared: FactionTotalsLinesOptions['shared'],
+): TimeChartWidgetDeclaration<FactionTotalsLinesOptions> {
+  return {
+    ...declaration,
+    projectionOptions: (ctx, extra) => ({ ...declaration.projectionOptions(ctx, extra), styles, shared }),
+  };
+}
+
 function projectDirectTiles(
   readView: BoundedReadView,
   options: FactionTotalsLinesOptions,
@@ -484,8 +521,8 @@ function projectDirectTiles(
   const auditRows: FamilyAuditRow[] = [];
   const series: TimeChartSeriesModel[] = shown.map((item, rank) => {
     const isTail = rank >= COLOURED;
-    const pres = factionPresentation(readView, item.faction.id, options.aggregated, options.groupLabel, options.surface, hour);
-    const color = isTail ? TAIL_COLOUR : pres.color;
+    const pres = factionPresentation(readView, item.faction.id, options, hour, item.faction.founder);
+    const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
     const headValue = item.active ? item.known : null;
     const absentReason = item.active ? item.missing : null;
     if (item.active) {
@@ -617,8 +654,8 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
   const auditRows: FamilyAuditRow[] = [];
   const series: TimeChartSeriesModel[] = shown.map((item, rank) => {
     const isTail = rank >= COLOURED;
-    const pres = factionPresentation(readView, item.line.id, options.aggregated, options.groupLabel, options.surface, hour);
-    const color = isTail ? TAIL_COLOUR : pres.color;
+    const pres = factionPresentation(readView, item.line.id, options, hour);
+    const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
     auditRows.push(
       auditRow(
         item.line.id,
