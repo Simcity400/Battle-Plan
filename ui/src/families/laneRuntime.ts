@@ -88,13 +88,12 @@ export type LaneTooltip = Undated<FamilyTooltipEntry>;
 
 export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly family: FamilyId;
-  readonly incremental?: boolean;
   boundary(model: TModel, hour: number): number;
   redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
   readonly view: readonly (keyof TBinding & string)[];
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
-  paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number;
+  paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number | { drew: boolean; next: boolean | number };
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): LaneTooltip | null;
   structure(frame: LaneFrame<TBinding, TModel, TLayout>): Readonly<Record<string, unknown>>;
@@ -630,12 +629,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           return result;
         };
         const painted = drawCanvas();
-        if (!family.incremental) markCanvasPainted(keep.canvas, drawCanvas);
-        keep.motion = painted === true;
-        keep.expiry = typeof painted === 'number' ? painted : Infinity;
+        const incremental = typeof painted === 'object';
+        if (!incremental) markCanvasPainted(keep.canvas, drawCanvas);
+        const next = incremental ? painted.next : painted;
+        keep.motion = next === true;
+        keep.expiry = typeof next === 'number' ? next : Infinity;
         keep.drawn = { binding, model, layout, hour: drawn };
         keep.drawKey = drawKey;
-        keep.content = content();
+        if (!incremental || painted.drew || !keep.content) keep.content = content();
       }
 
       const tPaint = timed ? performance.now() : 0;

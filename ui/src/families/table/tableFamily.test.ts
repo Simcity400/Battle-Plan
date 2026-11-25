@@ -1892,7 +1892,9 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     const descending = settingsFor('descending');
     const ascending = settingsFor('ascending');
     const played = lane();
-    played.paint(atOne, 1, descending);
+    const first = played.paint(atOne, 1, descending);
+    const same = played.paint([...atOne], 1, descending);
+    assert.equal(same.surfaces[0]?.content, first.surfaces[0]?.content, 'unchanged visible cells keep their bitmap');
     played.paint(atTwo, 2, descending);
     assert.ok([...played.marks().values()].some(text => text.includes('▲')), 'a forward step marks the rank change');
 

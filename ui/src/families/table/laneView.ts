@@ -364,7 +364,6 @@ const inspectedRow = (inspect: string | null): string | null => (inspect?.starts
 
 export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
-  incremental: true,
   boundary: nextTableChange,
   redraw: () => Infinity,
   status(model) {
@@ -397,9 +396,9 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       staticRowLooks: model.rowTimeBoundaries === false,
       rowHeightMode: shape.rowHeightMode,
     };
+    let drew = false;
     if (shape.panes && shape.paneGeom) {
       const scroll = paneScroll(shape.columns, shape.paneGeom, binding.scrollLeft);
-      let drew = false;
       for (let p = 0; p < shape.panes.length; p++) {
         const pane = shape.panes[p]!;
         const picture = list[p] ?? (list[p] = createTablePicture());
@@ -427,7 +426,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       if (drew) drawPaneFrame(ctx, shape.paneGeom, shape.columns, scroll, layout.height, theme);
     } else {
       const picture = list[0] ?? (list[0] = createTablePicture());
-      drawFamilyTable(ctx, {
+      drew = drawFamilyTable(ctx, {
         ...common,
         rows: shape.flatRows,
         width: frame.surface.width,
@@ -444,11 +443,11 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         dayDividersOnly: model.dayDividersOnly,
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
-      }, picture);
+      }, picture).drew;
     }
-    if (glide.offsets.size > 0) return true;
+    if (glide.offsets.size > 0) return { drew, next: true };
     const until = nextExpiry(motion, frame.now);
-    return Number.isFinite(until) ? until : false;
+    return { drew, next: Number.isFinite(until) ? until : false };
   },
   hit(frame, point) {
     const { model, layout, binding } = frame;

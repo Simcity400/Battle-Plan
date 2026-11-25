@@ -678,8 +678,9 @@ window.tableFamilyDom = {
       totalInstallReads = 0;
       installs = 0;
       for (let i = 0; i < 4; i++) {
-        sendHour(settledHour, [20n, 90n, 80n, -1n], [casVal, casVal2, 3n, 4n]);
-        await nextPoll();
+        const before = installs;
+        sendHour(settledHour, [21n + BigInt(i), 90n, 80n, -1n], [casVal, casVal2, 3n, 4n]);
+        if (!await until(() => installs > before)) throw new Error('The changed Germany row did not install');
       }
       return {
         tipOverflowed: true,
