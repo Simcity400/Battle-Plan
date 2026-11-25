@@ -24,6 +24,7 @@ dashboard_base::register_hourly_products! {
     OCCUPATION_DETAIL_OCCUPATIONDETAIL => crate::products::occupation::detail::OccupationDetail,
     FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => crate::products::faction_state::country_goals::CountryFactionGoals,
     FACTION_STATE_DETAILS_FACTIONDETAILS => crate::products::faction_state::details::FactionDetails,
+    FACTION_STATE_POOLS_FACTIONPOOLS => crate::products::faction_state::pools::FactionPools,
     WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => crate::products::wars::contributions::WarContributions,
 }
 
@@ -37,3 +38,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 pub const EXACT_OCCUPATIONRESERVE: ExactPanel = exact_panel::<crate::products::occupation_reserve::OccupationReserve>;
 pub const EXACT_OCCUPIEDSTATES: ExactPanel = exact_panel::<crate::products::occupation::states::OccupiedStates>;
 pub const EXACT_FACTIONTOTALSAT: ExactPanel = exact_panel::<crate::products::factions::FactionTotalsAt>;
+pub const EXACT_FACTIONPOOLS: ExactPanel = exact_panel::<crate::products::faction_state::pools::FactionPools>;

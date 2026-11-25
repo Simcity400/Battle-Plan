@@ -220,6 +220,50 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'faction-pooled-strength',
+    view: 'doctrine',
+    label: 'Doctrine',
+    family: 'bars',
+    viewOption: 'pool',
+    loadSpec: () => import('../faction-pooled-strength/factionPooledStrengthProjection.ts').then(mod => ({
+      family: 'bars', kind: 'faction-pooled-strength', view: 'doctrine',
+      projection: mod.factionPooledDoctrineProjection, declaration: mod.factionPooledDoctrineDeclaration,
+    })),
+  },
+  {
+    kind: 'faction-pooled-strength',
+    view: 'manpower',
+    label: 'Manpower',
+    family: 'bars',
+    viewOption: 'pool',
+    loadSpec: () => import('../faction-pooled-strength/factionPooledStrengthProjection.ts').then(mod => ({
+      family: 'bars', kind: 'faction-pooled-strength', view: 'manpower',
+      projection: mod.factionPooledManpowerProjection, declaration: mod.factionPooledManpowerDeclaration,
+    })),
+  },
+  {
+    kind: 'faction-pooled-strength',
+    view: 'research',
+    label: 'Research',
+    family: 'bars',
+    viewOption: 'pool',
+    loadSpec: () => import('../faction-pooled-strength/factionPooledStrengthProjection.ts').then(mod => ({
+      family: 'bars', kind: 'faction-pooled-strength', view: 'research',
+      projection: mod.factionPooledResearchProjection, declaration: mod.factionPooledResearchDeclaration,
+    })),
+  },
+  {
+    kind: 'faction-pooled-strength',
+    view: 'resources',
+    label: 'Resources',
+    family: 'bars',
+    viewOption: 'pool',
+    loadSpec: () => import('../faction-pooled-strength/factionPooledStrengthProjection.ts').then(mod => ({
+      family: 'bars', kind: 'faction-pooled-strength', view: 'resources',
+      projection: mod.factionPooledResourcesProjection, declaration: mod.factionPooledResourcesDeclaration,
+    })),
+  },
+  {
     kind: 'faction-strength',
     view: 'race',
     label: 'Race',

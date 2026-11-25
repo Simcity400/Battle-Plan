@@ -633,7 +633,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         cursorRight -= textWidth(ctx, row.readout.shortfall) + 8;
       }
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
-      ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : theme.text;
+      ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : row.readout.tone === 'muted' ? theme.muted : theme.text;
       ctx.fillText(ellipsise(row.readout.primary, Math.max(12, cursorRight - layout.readoutX), s => textWidth(ctx, s)), cursorRight, middleY);
       ctx.restore();
     } else if (formatted) {

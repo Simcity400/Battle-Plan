@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { WidgetDefinition, WidgetMeta, WidgetSkeletonKind } from './definitions';
@@ -72,24 +72,6 @@ export function useWidgetSkeleton(skeleton: WidgetSkeletonKind | (() => ReactNod
     frame.setSkeleton(owner, skeleton);
     return () => frame.setSkeleton(owner, null);
   }, [frame, owner, skeleton]);
-}
-
-export function useWidgetViewSwitch(spec: DynamicViewSwitch | null): void {
-  const frame = useContext(WidgetFrameContext);
-  const [owner] = useState(() => ({}));
-  const onChangeRef = useRef(spec?.onChange);
-  onChangeRef.current = spec?.onChange;
-  const signature = spec ? JSON.stringify([spec.label, spec.value, spec.options]) : '';
-  useEffect(() => {
-    if (!frame) return;
-    frame.setDynamicViewSwitch(owner, spec ? {
-      label: spec.label,
-      value: spec.value,
-      options: spec.options,
-      onChange: value => onChangeRef.current?.(value),
-    } : null);
-    return () => frame.setDynamicViewSwitch(owner, null);
-  }, [frame, owner, signature]);
 }
 
 export function resolveDeclaredViewSwitch(

@@ -60,6 +60,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_production::registrations::STOCKPILE_STOCKPILEARTWORK,
     dashboard_wars::registrations::FACTION_STATE_DETAILS_FACTIONDETAILS,
     dashboard_wars::registrations::FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS,
+    dashboard_wars::registrations::FACTION_STATE_POOLS_FACTIONPOOLS,
     dashboard_wars::registrations::WARS_CONTRIBUTIONS_WARCONTRIBUTIONS,
     dashboard_research::registrations::SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTDETAILSAT,
     dashboard_research::registrations::SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTEFFECTSAT,

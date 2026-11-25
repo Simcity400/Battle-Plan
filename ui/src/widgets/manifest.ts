@@ -23,6 +23,7 @@ export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoices
   'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
   'equipment-produced': () => import('./equipment-produced/useProduced').then(module => module.useProducedTypeChoices),
   'equipment-stockpile': () => import('./equipment-stockpile/useStockpileChoices').then(module => module.useStockpileChoices),
+  'faction-pooled-strength': () => import('../dashboard/factionChoice').then(module => module.useFactionChoices),
 };
 
 export interface FamilyViewUiLoader {
