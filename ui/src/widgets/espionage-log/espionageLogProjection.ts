@@ -1,5 +1,5 @@
 import { drawableIcon } from '../../dashboard/artwork.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
+import { formatDateTime, HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
@@ -33,7 +33,6 @@ export interface EspionageLogProjectionOptions {
 }
 
 const HEAD_LIMIT = 256;
-const HOUR_EPOCH = 0;
 
 function gameDay(hour: number): number {
   return Math.floor((hour - HOUR_EPOCH) / 24);

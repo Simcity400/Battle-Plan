@@ -100,9 +100,9 @@ fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
     let end = project.end.as_ref().unwrap();
     assert_eq!((end.kind, end.hour, end.known_at, end.unknown), (EndKind::Finished, Some(189), 192, None));
     assert_eq!(project.outputs.len(), 3);
-    assert_eq!((project.outputs[0].from, project.outputs[0].to, project.outputs[0].construction_raw.as_deref()), (120, 167, Some("500")));
+    assert_eq!((project.outputs[0].from, project.outputs[0].to, project.outputs[0].construction_raw), (120, 167, Some(500)));
     assert!(project.outputs[0].before_observation);
-    assert_eq!((project.outputs[1].from, project.outputs[1].to, project.outputs[1].reason, project.outputs[1].construction_raw.clone()), (168, 169, Some(SpendingGap::LinkedOutput), None));
+    assert_eq!((project.outputs[1].from, project.outputs[1].to, project.outputs[1].reason, project.outputs[1].construction_raw), (168, 169, Some(SpendingGap::LinkedOutput), None));
     assert_eq!((project.outputs[2].from, project.outputs[2].to), (180, 199));
 }
 

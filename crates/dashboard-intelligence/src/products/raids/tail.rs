@@ -143,32 +143,17 @@ pub struct RaidPreparationAt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct RaidPhaseAt {
-    pub first_hour: i32,
-    pub first_exact: bool,
-    pub after_hour: Option<i32>,
-    pub phase: i32,
-    pub phase_name: Option<String>,
-    pub outcome: i32,
-    pub outcome_name: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
 pub struct RaidLogRow {
     #[doc = " The raid episode's id: the row key and what a click hands to the detail."]
     pub key: String,
-    #[doc = " The episode's start: its first read, `exact` when the read before it proves it, else after `afterHour`."]
+    #[doc = " The episode's start: its first read."]
     pub hour: i32,
     pub exact: bool,
-    pub after_hour: Option<i32>,
     pub observed: i32,
     pub ordinal: String,
     pub live: bool,
     pub status: RaidStatus,
     pub phase_name: Option<String>,
-    pub outcome_name: Option<String>,
     pub outcome_missing: Option<String>,
     pub raider: RaidRaider,
     #[doc = " The victim as last read by the hour asked, named at that read."]
@@ -182,13 +167,10 @@ pub struct RaidLogRow {
     pub place: Option<RaidPlaceAt>,
     pub place_missing: Option<String>,
     pub preparation: Option<RaidPreparationAt>,
-    pub phases: Vec<RaidPhaseAt>,
     pub launched_hour: Option<i32>,
-    pub launched_exact: bool,
     #[doc = " The end read by the hour asked, naming the raider at that end."]
     pub end: Option<RaidEndAt>,
     pub disappeared_hour: Option<i32>,
-    pub disappeared_exact: bool,
     #[doc = " The raid's last read, once the hour asked is after it with no end or disappearance read."]
     pub last_seen: Option<i32>,
 }
@@ -462,13 +444,11 @@ fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bo
         key: at.id.clone(),
         hour: date,
         exact: at.first_hour_exact,
-        after_hour: at.runs.first().and_then(|run| run.after_hour),
         observed: date,
         ordinal: shown_ordinal.to_string(),
         live,
         status,
         phase_name: at.phase_name.clone(),
-        outcome_name: at.outcome_name.clone(),
         outcome_missing: at.outcome_missing.clone(),
         raider,
         victim,
@@ -480,24 +460,9 @@ fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bo
         place_missing: place.is_none().then(|| "The raid's target place is not recorded".to_owned()),
         place,
         preparation: matches!(status, RaidStatus::Preparing | RaidStatus::Prepared).then(|| preparation_at(&at, hour)).flatten(),
-        phases: at
-            .runs
-            .iter()
-            .map(|run| RaidPhaseAt {
-                first_hour: run.first_hour,
-                first_exact: run.first_exact,
-                after_hour: run.after_hour,
-                phase: run.phase,
-                phase_name: run.phase_name.clone(),
-                outcome: run.outcome,
-                outcome_name: run.outcome_name.clone(),
-            })
-            .collect(),
         launched_hour: at.launched_hour,
-        launched_exact: at.launched_exact,
         end: at.ends.last().cloned(),
         disappeared_hour: at.disappeared_hour,
-        disappeared_exact: at.disappeared_exact,
         last_seen: (status == RaidStatus::NotRead).then_some(at.last_hour),
     })
 }
@@ -581,7 +546,6 @@ impl Product for RaidLogTail {
             RaidRaider::decl(),
             RaidPlaceAt::decl(),
             RaidPreparationAt::decl(),
-            RaidPhaseAt::decl(),
             RaidLogRow::decl(),
             RaidTypeChip::decl(),
             RaidLogTailReply::decl(),

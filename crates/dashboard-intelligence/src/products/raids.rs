@@ -585,6 +585,56 @@ fn step_hours_in(steps: Option<&Vec<lanes::Step>>, first: i32, last: i32, out: &
     }
 }
 
+fn spelled_at(recording: &replay_recording::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<u128, String>> {
+    let mut found = HashMap::new();
+    dashboard_query::cost::storage(|| {
+        lanes::at_each(recording, run, TableId::LexicalTokens, Some(&[0][..]), asks, &mut |_, key, row| {
+            if let Some((view, slot)) = row
+                && let Some(text) = read::text(&view, 0, slot).filter(|text| !text.is_empty())
+            {
+                found.insert(key, String::from_utf8_lossy(text).into_owned());
+            }
+            Ok(())
+        })
+    })?;
+    Ok(found)
+}
+
+fn first_spelled(recording: &replay_recording::columnar_frames::Recording, run: u32, tokens: &BTreeSet<u128>, from: i32, to: i32) -> io::Result<HashMap<u128, (i32, String)>> {
+    let mut out: HashMap<u128, (i32, String)> = HashMap::new();
+    let read = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::LexicalTokens, from, to))?;
+    let Some(to) = read.last().map(|&(_, last)| last) else { return Ok(out) };
+    let at_end = spelled_at(recording, run, &tokens.iter().map(|&token| (to, token)).collect::<Vec<_>>())?;
+    let mut open: Vec<(u128, i32, i32)> = Vec::new();
+    for (token, literal) in at_end {
+        open.push((token, from, to));
+        out.insert(token, (to, literal));
+    }
+    while !open.is_empty() {
+        let mut asks: Vec<(i32, u128)> = open.iter().map(|&(token, low, high)| (low + (high - low) / 2, token)).collect();
+        asks.sort_unstable();
+        let read = spelled_at(recording, run, &asks)?;
+        for (token, low, high) in &mut open {
+            let middle = *low + (*high - *low) / 2;
+            if read.contains_key(token) {
+                *high = middle;
+            } else {
+                *low = middle + 1;
+            }
+        }
+        open.retain(|&(token, low, high)| {
+            if low < high {
+                return true;
+            }
+            if let Some(held) = out.get_mut(&token) {
+                held.0 = high;
+            }
+            false
+        });
+    }
+    Ok(out)
+}
+
 fn push_victim(list: &mut Vec<RaidVictimAt>, item: RaidVictimAt) {
     if let Some(prev) = list.last()
         && prev.tag == item.tag
@@ -704,12 +754,10 @@ fn episodes(
         };
         let province_history = places(TableId::Provinces, &province_columns, &provinces)?;
         let state_history = places(TableId::States, &[state_controller], &states)?;
-        let lexical = places(TableId::LexicalTokens, &[0], &tokens)?;
-        let spelled: Vec<i32> = lexical.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).collect();
+        let lexicon = first_spelled(recording, run, &tokens, start, end)?;
+        let spelled: Vec<i32> = lexicon.values().map(|&(hour, _)| hour).collect();
         let literal_at = |token: u32, hour: i32| -> Option<String> {
-            let cell = cell_at(&lexical, steps_of(&lexical, u128::from(token)), 0, hour)?;
-            let literal = String::from_utf8_lossy(lexical.text(cell)?).into_owned();
-            (!literal.is_empty()).then_some(literal)
+            lexicon.get(&u128::from(token)).filter(|&&(first, _)| first <= hour).map(|(_, literal)| literal.clone())
         };
         let place = |history: &lanes::History, column: usize, id: u32, hour: i32| -> Result<u32, ()> {
             match cell_at(history, steps_of(history, u128::from(id)), column, hour) {

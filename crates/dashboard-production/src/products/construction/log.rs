@@ -9,6 +9,8 @@ use replay_data::{
 use replay_lanes::lanes::{Cell, Keys, Step};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io};
+
+const KEYS_PER_READ: usize = 1024;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -65,8 +67,8 @@ pub(crate) struct ProjectRun {
 pub(crate) struct ConstructionOutputRun {
     pub from: i32,
     pub to: i32,
-    pub construction_raw: Option<String>,
-    pub repair_raw: Option<String>,
+    pub construction_raw: Option<i64>,
+    pub repair_raw: Option<i64>,
     pub reason: Option<SpendingGap>,
     pub before_observation: bool,
 }
@@ -110,7 +112,7 @@ pub(crate) struct ConstructionProject {
     pub route_provinces: Option<u32>,
     pub base_level: Option<i32>,
     pub target_level: Option<i32>,
-    pub cost_raw: Option<String>,
+    pub cost_raw: Option<i64>,
     pub created_hour: Option<i32>,
     pub first_read: i32,
     pub earlier_unknown: bool,
@@ -233,44 +235,46 @@ pub(crate) fn window_projects(
         return Ok(Vec::new());
     }
     keys.sort_unstable();
-    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(&keys), from, to))?;
     let statuses = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, run, TableId::ConstructionProjects, from, to))?;
     let truncated: Vec<(i32, i32)> = statuses
         .into_iter()
         .filter(|span| matches!(span.status, replay_columnar::manifest::Status::Truncated { .. }))
         .map(|span| (span.first, span.last))
         .collect();
-    let mut asks = Vec::new();
-    for (key, steps) in &history.keys {
-        asks.extend(rise_hours(steps).into_iter().map(|hour| (hour, *key)));
-    }
-    let mut rises: HashMap<(u128, i32), Rises> = HashMap::new();
-    if !asks.is_empty() {
-        dashboard_query::cost::storage(|| {
-            replay_lanes::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&[col::BUILT_RISES, col::REPAIRED_RISES][..]), &asks, &mut |hour, key, row| {
-                if let Some((view, slot)) = row {
-                    let list = |column: usize| -> io::Result<Vec<ConstructionRise>> {
-                        let Some(bytes) = view.list(column, slot) else { return Ok(Vec::new()) };
-                        let mut input = Decoder::new(bytes);
-                        let rises = <Vec<ConstructionRise> as Value>::decode(&mut input)?;
-                        input.finish()?;
-                        Ok(rises)
-                    };
-                    rises.insert((key, hour), Rises { built: list(col::BUILT_RISES)?, repaired: list(col::REPAIRED_RISES)? });
-                }
-                Ok(())
-            })
-        })?;
-    }
-    let mut out = Vec::new();
-    for (key, steps) in &history.keys {
-        let resolve = |country: u32, at: i32| {
-            let slot = links.slot_at(country, at);
-            let tag = slot.and_then(|s| holders.slot_tag(s, at)).map(str::to_owned);
-            (slot, tag)
-        };
-        if let Some(project) = assemble_inner(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &resolve, false) {
-            out.push(*project);
+    let resolve = |country: u32, at: i32| {
+        let slot = links.slot_at(country, at);
+        let tag = slot.and_then(|s| holders.slot_tag(s, at)).map(str::to_owned);
+        (slot, tag)
+    };
+    let mut out = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(KEYS_PER_READ) {
+        let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(chunk), from, to))?;
+        let mut asks = Vec::new();
+        for (key, steps) in &history.keys {
+            asks.extend(rise_hours(steps).into_iter().map(|hour| (hour, *key)));
+        }
+        let mut rises: HashMap<(u128, i32), Rises> = HashMap::new();
+        if !asks.is_empty() {
+            dashboard_query::cost::storage(|| {
+                replay_lanes::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&[col::BUILT_RISES, col::REPAIRED_RISES][..]), &asks, &mut |hour, key, row| {
+                    if let Some((view, slot)) = row {
+                        let list = |column: usize| -> io::Result<Vec<ConstructionRise>> {
+                            let Some(bytes) = view.list(column, slot) else { return Ok(Vec::new()) };
+                            let mut input = Decoder::new(bytes);
+                            let rises = <Vec<ConstructionRise> as Value>::decode(&mut input)?;
+                            input.finish()?;
+                            Ok(rises)
+                        };
+                        rises.insert((key, hour), Rises { built: list(col::BUILT_RISES)?, repaired: list(col::REPAIRED_RISES)? });
+                    }
+                    Ok(())
+                })
+            })?;
+        }
+        for (key, steps) in &history.keys {
+            if let Some(project) = assemble_inner(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &resolve, false) {
+                out.push(*project);
+            }
         }
     }
     out.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
@@ -495,7 +499,7 @@ fn assemble_inner<'r>(
         if since.is_none() && reason.is_some_and(|reason| reason == SpendingGap::NotRecorded) {
             continue;
         }
-        let raw = |column: usize| if reason.is_none() { number(cells, column).map(|value| value.to_string()) } else { None };
+        let raw = |column: usize| if reason.is_none() { number(cells, column) } else { None };
         let run = ConstructionOutputRun {
             from: at,
             to: through,
@@ -565,7 +569,7 @@ fn assemble_inner<'r>(
         route_provinces: id32(last, col::ROUTE_PROVINCES),
         base_level: hour(last, col::BASE_LEVEL),
         target_level: hour(last, col::TARGET_LEVEL),
-        cost_raw: number(last, col::COST).map(|cost| cost.to_string()),
+        cost_raw: number(last, col::COST),
         created_hour: hour(last, col::CREATED_HOUR),
         first_read,
         earlier_unknown: number(last, col::EARLIER_UNKNOWN) == Some(1),

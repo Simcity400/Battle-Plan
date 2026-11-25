@@ -344,8 +344,13 @@ impl Renderer<'_, '_, '_> {
             .defines()
             .int32("NProject", "DEFAULT_COMPLEXITY")
             .map_err(|why| why.to_string())?;
-        let constants = None;
-        let (min, max) = definition.complexity(constants, default)?;
+        let catalogue = world.script_constants();
+        let unread = |why: String| match catalogue {
+            Ok(_) => why,
+            Err(reason) => format!("{why}: {reason}"),
+        };
+        let constants = catalogue.ok();
+        let (min, max) = definition.complexity(constants, default).map_err(unread)?;
         let denominator = i64::from(min.wrapping_add(max)).wrapping_mul(10_000_000_000) / 200_000;
         let operand = scalar_operand(item)?;
         let amount = self.scoped_value(operand, scopes)?;
@@ -357,7 +362,7 @@ impl Renderer<'_, '_, '_> {
             0xffff_ffff
         };
         let days = crate::triggers::fixed_round(
-            i64::from(definition.prototype_time(constants)?)
+            i64::from(definition.prototype_time(constants).map_err(unread)?)
                 .wrapping_mul(ratio)
                 .wrapping_mul(100),
         ) as i32;

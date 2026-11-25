@@ -46,7 +46,7 @@ const RAID_STATUS_INFO: Readonly<Record<RaidStatus, { readonly mark?: StatusMark
   cancelled: { mark: 'ended', label: 'Cancelled', muted: true },
   outcomeNotRecorded: { label: 'Outcome not recorded', muted: true, notRecorded: true },
   phaseNotRecorded: { label: 'Phase not recorded', muted: true, notRecorded: true },
-  notRead: { mark: 'ended', label: 'Not read', muted: true },
+  notRead: { label: 'Not recorded', muted: true, notRecorded: true },
 };
 
 function isSuccessStatus(status: RaidStatus): boolean {
@@ -176,8 +176,10 @@ function buildStatusCell(row: RaidLogRow): { readonly cell: TableCell; readonly 
   if (info.notRecorded) {
     const reason = row.status === 'outcomeNotRecorded'
       ? (row.outcomeMissing ?? 'Raid outcome was not recorded')
-      : (row.phaseName ?? 'Raid phase was not recorded');
-    const missingFigure = row.status === 'outcomeNotRecorded' ? 'Outcome' : 'Phase';
+      : row.status === 'notRead'
+        ? 'Raids were not recorded at this hour'
+        : (row.phaseName ?? 'Raid phase was not recorded');
+    const missingFigure = row.status === 'outcomeNotRecorded' ? 'Outcome' : row.status === 'notRead' ? 'Status' : 'Phase';
     return {
       cell: { value: notRecorded(reason), missingFigure },
       label: info.label,

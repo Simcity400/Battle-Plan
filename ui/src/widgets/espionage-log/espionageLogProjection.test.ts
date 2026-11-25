@@ -19,8 +19,8 @@ function sampleRow(overrides: Partial<EspionageLogRow> = {}): EspionageLogRow {
     ordinal: '0',
     live: true,
     status: 'running',
-    owner: { tag: 'SOV', slot: 2, rawId: 2, missing: null },
-    target: { tag: 'GER', slot: 1, rawId: 1, missing: null },
+    owner: { tag: 'SOV', slot: 2, missing: null },
+    target: { tag: 'GER', slot: 1, missing: null },
     operationToken: 'operation_make_resistance_contacts',
     operationName: 'Make Resistance Contacts',
     operationMissing: null,
@@ -128,7 +128,7 @@ test('espionage projection renders running countdown track, preparing percent, c
     rows: new Map([['main', source]]),
     identity: makeIdentity(),
   });
-  const model = espionageLogProjection.project(readView, { artwork: false });
+  const model = espionageLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.titleSummary, '2 under way');
   assert.equal(model.rows.length, 4);
   assert.equal(model.nextChangeAt, 24 * 42);

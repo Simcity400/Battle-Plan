@@ -354,10 +354,6 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
       readView.rowWindow,
       rawRow => buildConstructionRow(readView, rawRow, options.artwork, costScale, boundary),
     );
-    const activeCount = source.facetTotals?.get('active') ?? null;
-    const titleSummary = activeCount !== null && activeCount > 0
-      ? `${formatScalar(activeCount, 'integer')} building`
-      : null;
     const warnings = rawHead?.warnings?.length ? [...rawHead.warnings] : undefined;
     const unavailable = typeof rawHead?.unavailable === 'string' && rawHead.unavailable.length > 0
       ? rawHead.unavailable
@@ -377,8 +373,6 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       kindFilter: { key: 'types', noun: 'buildings', allLabel: 'All buildings', items, selected: options.selected },
-      titleSummary,
-      ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings ? { warnings } : {}),
       ...(slots.length === 0
         ? unavailable

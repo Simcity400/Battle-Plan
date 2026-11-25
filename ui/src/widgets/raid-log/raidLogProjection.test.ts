@@ -12,13 +12,11 @@ function sampleRow(overrides: Partial<RaidLogRow> = {}): RaidLogRow {
     key: '1',
     hour,
     exact: true,
-    afterHour: null,
     observed: hour,
     ordinal: '0',
     live: true,
     status: 'preparing',
     phaseName: 'Preparing',
-    outcomeName: null,
     outcomeMissing: null,
     raider: { tag: 'ENG', slot: 1, missing: null },
     victim: { hour, tag: 'GER', missing: null, source: 'fixedTarget' },
@@ -30,12 +28,9 @@ function sampleRow(overrides: Partial<RaidLogRow> = {}): RaidLogRow {
     place: { province: 6521, provinceHour: hour, state: 64, stateHour: hour },
     placeMissing: null,
     preparation: { since: hour, hours: 96, perHour: 1, through: null },
-    phases: [{ firstHour: hour, firstExact: true, afterHour: null, phase: 2, phaseName: 'Preparing', outcome: 0, outcomeName: null }],
     launchedHour: null,
-    launchedExact: false,
     end: null,
     disappearedHour: null,
-    disappearedExact: false,
     lastSeen: null,
     ...overrides,
   };
@@ -122,11 +117,18 @@ test('a later place or country rename never reaches an earlier raid row', () => 
       return key;
     }),
   });
-  const model = raidLogProjection.project(readView, { artwork: false });
+  const model = raidLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.rows.length, 1);
   const projected = model.rows[0]!;
   assert.deepEqual(projected.cells.place?.value, { kind: 'known', value: 'Brandenburg' });
   assert.deepEqual(projected.cells.country?.value, { kind: 'known', value: 'German Reich · Poland' });
+});
+
+test('a raid not read at the hour shown is not recorded, never ended', () => {
+  const row = sampleRow({ key: 'r-unread', hour: 10, live: false, status: 'notRead', lastSeen: 20 });
+  const source = buildRowSourceFromHead('test:raids:unread', sampleReply([row]), undefined, 50)!;
+  const model = raidLogProjection.project(createBoundedReadView({ hour: 50, rows: new Map([['main', source]]), identity: makeIdentity((_, key) => key) }), { artwork: false, selected: [] });
+  assert.deepEqual(model.rows[0]!.cells.status?.value, { kind: 'notRecorded', reason: 'Raids were not recorded at this hour' });
 });
 
 test('a selected slot untagged raid is listed instead of dropped on the client', () => {
@@ -143,7 +145,7 @@ test('a selected slot untagged raid is listed instead of dropped on the client',
     rows: new Map([['main', source]]),
     identity: makeIdentity((_kind, key) => (key === 'ENG' ? 'United Kingdom' : key)),
   });
-  const model = raidLogProjection.project(readView, { artwork: false });
+  const model = raidLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.rows.length, 1);
   const projected = model.rows[0]!;
   assert.equal(projected.key, 'r-untagged');
@@ -189,7 +191,7 @@ test('an end-dated row shows endedHour and names the end observation raider, nev
       return key;
     }),
   });
-  const model = raidLogProjection.project(readView, { artwork: false });
+  const model = raidLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.rows.length, 2);
 
   const first = model.rows[0]!;
@@ -238,7 +240,7 @@ test('raid projection formats preparation days, nextChangeAt, active count summa
   });
   const source = buildRowSourceFromHead('test:raids:prep', reply, undefined, 104)!;
   const readView = createBoundedReadView({ hour: 104, rows: new Map([['main', source]]) });
-  const model = raidLogProjection.project(readView, { artwork: false });
+  const model = raidLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.titleSummary, '3 in preparation');
   assert.equal(model.titleSummaryPartial, 'Count from recorded hours');
   assert.deepEqual(model.rows[0]?.cells.preparation?.value, { kind: 'known', value: '4' });
@@ -254,7 +256,7 @@ test('raid projection formats preparation days, nextChangeAt, active count summa
   const unavailableSource = buildRowSourceFromHead('test:raids:unavailable', unavailableReply, undefined, 104)!;
   const unavailableModel = raidLogProjection.project(
     createBoundedReadView({ hour: 104, rows: new Map([['main', unavailableSource]]) }),
-    { artwork: false },
+    { artwork: false, selected: [] },
   );
   assert.equal(unavailableModel.emptyKind, 'unavailable');
   assert.equal(unavailableModel.emptyDetail, 'The content declares no raid type.');

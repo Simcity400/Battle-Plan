@@ -101,7 +101,6 @@ pub enum EspionageRunningOrder {
 pub struct EspionageCountry {
     pub tag: Option<String>,
     pub slot: Option<u32>,
-    pub raw_id: Option<u32>,
     pub missing: Option<String>,
 }
 
@@ -224,9 +223,7 @@ impl OccurrenceReply for EspionageLogTailReply {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CensusStep {
     hour: i32,
-    owner_raw: u32,
     owner_slot: Option<u32>,
-    target_raw: u32,
     target_slot: Option<u32>,
     token: Option<String>,
     start_hour: Option<i32>,
@@ -243,9 +240,7 @@ struct CensusStep {
 struct CompletionRecord {
     observed_hour: i32,
     completion_hour: Option<i32>,
-    owner_raw: u32,
     owner_slot: Option<u32>,
-    target_raw: Option<u32>,
     target_slot: Option<u32>,
     token: Option<String>,
     bonus: Option<bool>,
@@ -461,21 +456,19 @@ fn point_num(cells: &[points::Cell], at: Option<usize>) -> Option<i64> {
     }
 }
 
-fn resolve_country(holders: &Holders, slot: Option<u32>, raw_id: Option<u32>, hour: i32, role_name: &str) -> EspionageCountry {
+fn resolve_country(holders: &Holders, slot: Option<u32>, hour: i32, role_name: &str) -> EspionageCountry {
     match slot {
         Some(slot) => match holders.slot_tag(slot, hour) {
-            Some(tag) => EspionageCountry { tag: Some(tag.to_owned()), slot: Some(slot), raw_id, missing: None },
+            Some(tag) => EspionageCountry { tag: Some(tag.to_owned()), slot: Some(slot), missing: None },
             None => EspionageCountry {
                 tag: None,
                 slot: Some(slot),
-                raw_id,
                 missing: Some(format!("The operation's {role_name} tag is not recorded at this hour")),
             },
         },
         None => EspionageCountry {
             tag: None,
             slot: None,
-            raw_id,
             missing: Some(format!("The operation's {role_name} is not recorded")),
         },
     }
@@ -507,9 +500,7 @@ fn census_step_from_cells(
     };
     Some(CensusStep {
         hour,
-        owner_raw,
         owner_slot: links.slot_at(owner_raw, hour),
-        target_raw,
         target_slot: links.slot_at(target_raw, hour),
         token: token_names.get(&def_token).cloned(),
         start_hour: (duration_days != 0).then_some(start_hour_raw),
@@ -646,9 +637,7 @@ fn scan(
             let rec = CompletionRecord {
                 observed_hour: row.hour,
                 completion_hour,
-                owner_raw,
                 owner_slot: links.slot_at(owner_raw, row.hour),
-                target_raw,
                 target_slot: target_raw.and_then(|raw| links.slot_at(raw, row.hour)),
                 token,
                 bonus,
@@ -1029,13 +1018,13 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
     let comp = ep.completion_at(hour);
     let (date, exact) = ep.display_date_at(hour, status);
 
-    let (owner_slot, owner_raw, target_slot, target_raw, identity_hour) = match (comp, step) {
-        (Some(comp), _) => (comp.owner_slot, Some(comp.owner_raw), comp.target_slot, comp.target_raw, comp.observed_hour),
-        (None, Some(step)) => (step.owner_slot, Some(step.owner_raw), step.target_slot, Some(step.target_raw), hour.min(ep.last_seen.unwrap_or(hour))),
-        (None, None) => (ep.owner_role.slot, None, ep.target_role.slot, None, ep.appear_hour),
+    let (owner_slot, target_slot, identity_hour) = match (comp, step) {
+        (Some(comp), _) => (comp.owner_slot, comp.target_slot, comp.observed_hour),
+        (None, Some(step)) => (step.owner_slot, step.target_slot, hour.min(ep.last_seen.unwrap_or(hour))),
+        (None, None) => (ep.owner_role.slot, ep.target_role.slot, ep.appear_hour),
     };
-    let owner = resolve_country(holders, owner_slot, owner_raw, identity_hour, "owner");
-    let target = resolve_country(holders, target_slot, target_raw, identity_hour, "target");
+    let owner = resolve_country(holders, owner_slot, identity_hour, "owner");
+    let target = resolve_country(holders, target_slot, identity_hour, "target");
 
     let token = step.and_then(|s| s.token.clone()).or_else(|| comp.and_then(|c| c.token.clone())).or_else(|| ep.token.clone());
     let (operation_name, operation_missing, icon, icon_missing) = match &token {
@@ -1483,9 +1472,7 @@ mod tests {
         let start = HOUR_EPOCH + 24 * 10 + 5;
         let step = CensusStep {
             hour: start,
-            owner_raw: 1,
             owner_slot: Some(1),
-            target_raw: 2,
             target_slot: Some(2),
             token: None,
             start_hour: Some(start),
