@@ -96,7 +96,7 @@ impl Viewer {
         ui: &egui::Ui,
         document: &Document,
         extent: [f32; 2],
-        free_mode: bool,
+        filter: super::CameraKeyFilter,
     ) {
         if !self.air_orders.open {
             return;
@@ -113,7 +113,7 @@ impl Viewer {
                     repeat: false,
                     modifiers,
                 } => {
-                    !(free_mode && super::is_free_camera_key(physical_key.unwrap_or(*key)))
+                    !filter.blocks(physical_key.unwrap_or(*key))
                         && shortcuts.iter().any(|(_, text)| {
                             super::picker::parse_shortcut(text).is_some_and(|(wanted, wanted_key)| {
                                 wanted_key == *key && modifiers.matches_exact(wanted)

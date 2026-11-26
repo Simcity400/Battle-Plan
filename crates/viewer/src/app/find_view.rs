@@ -327,7 +327,7 @@ impl Viewer {
         document: &Document,
         extent: [f32; 2],
         now: f32,
-        free_mode: bool,
+        filter: super::CameraKeyFilter,
     ) -> bool {
         if !self.picker.find.open {
             return false;
@@ -372,7 +372,7 @@ impl Viewer {
                     if repeat || (find.field.focused && types) {
                         continue;
                     }
-                    if free_mode && super::is_free_camera_key(physical_key.unwrap_or(key)) {
+                    if filter.blocks(physical_key.unwrap_or(key)) {
                         continue;
                     }
                     if let Some((control, _)) = shortcuts

@@ -712,9 +712,9 @@ impl Viewer {
         ui: &egui::Ui,
         document: &Document,
         extent: [f32; 2],
-        free_mode: bool,
+        filter: super::CameraKeyFilter,
     ) {
-        if self.find_view_keys(ui, document, extent, self.picker_now(), free_mode) {
+        if self.find_view_keys(ui, document, extent, self.picker_now(), filter) {
             return;
         }
         let minimap = viewer_combat::minimap::handle_shortcut(&document.combat, extent)
@@ -731,7 +731,7 @@ impl Viewer {
                         pressed: true,
                         repeat: false,
                         modifiers,
-                    } if !(free_mode && super::is_free_camera_key(physical_key.unwrap_or(*key)))
+                    } if !filter.blocks(physical_key.unwrap_or(*key))
                         && minimap.is_some_and(|(wanted, wanted_key)| {
                             wanted_key == *key && modifiers.matches_exact(wanted)
                         })
@@ -757,9 +757,7 @@ impl Viewer {
                         pressed: true,
                         repeat: false,
                         modifiers,
-                    } if !(free_mode
-                        && super::is_free_camera_key(physical_key.unwrap_or(*key))) =>
-                    {
+                    } if !filter.blocks(physical_key.unwrap_or(*key)) => {
                         shortcuts.iter().find_map(|(control, text)| {
                             let (wanted, wanted_key) = parse_shortcut(text)?;
                             (wanted_key == *key && modifiers.matches_exact(wanted))

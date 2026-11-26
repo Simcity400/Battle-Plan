@@ -120,7 +120,27 @@ fn escape_and_focus_loss_release_the_pointer_and_held_input() {
     assert!(frame.pad.active());
     input.capture();
     let frame = input.frame(window(&[key(egui::Key::D, true)], false, now));
-    assert!(!frame.captured && frame.held.is_empty() && frame.pad.active());
+    assert!(
+        !frame.captured
+            && frame.held.is_empty()
+            && frame.pressed.is_empty()
+            && frame.double_tapped.is_empty()
+            && frame.pad.active()
+    );
+    let tap_unfocused = input.frame(window(
+        &[
+            key(egui::Key::Space, true),
+            key(egui::Key::Space, false),
+            key(egui::Key::Space, true),
+        ],
+        false,
+        now,
+    ));
+    assert!(
+        tap_unfocused.pressed.is_empty()
+            && tap_unfocused.double_tapped.is_empty()
+            && tap_unfocused.pad.active()
+    );
     update(
         &mut input,
         OWNER,

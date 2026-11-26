@@ -409,15 +409,18 @@ fn the_scale_grows_and_shrinks_the_figure_its_pace_and_its_view() {
     let hill = |x: f32, _: f32| if x > 20.0 { 2500.0 } else { 20.0 };
     let hill_world = World::of(&base(), &hill);
     let mut uphill = Walker::standing([18.0, 100.0], std::f32::consts::FRAC_PI_2, largest, &hill_world);
-    run(&mut uphill, &frame(&[egui::Key::W]), 0.5, &hill_world);
+    let ahead = frame(&[egui::Key::W]);
+    for _ in 0..30 {
+        uphill.update(&ahead, 0.0, FIGURE, &hill_world);
+        assert!(
+            uphill.feet[1] + uphill.scale * FIGURE <= hill_world.ceiling + 1e-2,
+            "feet {} + height {} > ceiling {}",
+            uphill.feet[1],
+            uphill.scale * FIGURE,
+            hill_world.ceiling
+        );
+    }
     assert!(uphill.feet[0] > 20.0);
-    assert!(
-        uphill.feet[1] + uphill.scale * FIGURE <= hill_world.ceiling + 1e-2,
-        "feet {} + height {} > ceiling {}",
-        uphill.feet[1],
-        uphill.scale * FIGURE,
-        hill_world.ceiling
-    );
 }
 
 #[test]

@@ -75,24 +75,48 @@ struct KeyNames {
 }
 
 impl KeyNames {
-    fn detect() -> Self {
+    fn detect(layout: isize) -> Self {
         Self {
-            w: scan_label(0x11, "W"),
-            a: scan_label(0x1e, "A"),
-            s: scan_label(0x1f, "S"),
-            d: scan_label(0x20, "D"),
-            equals: scan_label(0x0d, "="),
-            minus: scan_label(0x0c, "−"),
-            zero: scan_label(0x0b, "0"),
-            v: scan_label(0x2f, "V"),
-            c: scan_label(0x2e, "C"),
+            w: scan_label(0x11, layout, "W"),
+            a: scan_label(0x1e, layout, "A"),
+            s: scan_label(0x1f, layout, "S"),
+            d: scan_label(0x20, layout, "D"),
+            equals: scan_label(0x0d, layout, "="),
+            minus: scan_label(0x0c, layout, "−"),
+            zero: scan_label(0x0b, layout, "0"),
+            v: scan_label(0x2f, layout, "V"),
+            c: scan_label(0x2e, layout, "C"),
         }
     }
 }
 
 #[cfg(windows)]
-fn scan_label(scan: u32, fallback: &str) -> String {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyNameTextW;
+fn scan_label(scan: u32, layout: isize, fallback: &str) -> String {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyNameTextW, HKL, MAPVK_VSC_TO_VK_EX, MapVirtualKeyExW, ToUnicodeEx,
+    };
+    let hkl = layout as HKL;
+    if !hkl.is_null() {
+        // SAFETY: `MapVirtualKeyExW` and `ToUnicodeEx` take valid buffers, a zeroed 256-byte key
+        // state array, flag `4` so kernel dead-key state is untouched, and a valid HKL handle.
+        let vk = unsafe { MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, hkl) };
+        if vk != 0 {
+            let state = [0u8; 256];
+            let mut out = [0u16; 8];
+            // SAFETY: `state` has 256 bytes and `out` is a valid writable UTF-16 slice.
+            let written = unsafe {
+                ToUnicodeEx(vk, scan, state.as_ptr(), out.as_mut_ptr(), out.len() as i32, 4, hkl)
+            };
+            if written > 0 && (written as usize) <= out.len() {
+                let text = String::from_utf16_lossy(&out[..written as usize])
+                    .trim()
+                    .to_uppercase();
+                if !text.is_empty() && text.chars().count() <= 4 && !text.chars().any(char::is_control) {
+                    return if text == "-" { "−".to_owned() } else { text };
+                }
+            }
+        }
+    }
     let mut buffer = [0u16; 32];
     let lparam = (scan << 16) as i32;
     // SAFETY: `buffer` is a valid writable UTF-16 slice and its length fits in `i32`.
@@ -113,15 +137,26 @@ fn scan_label(scan: u32, fallback: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn scan_label(_scan: u32, fallback: &str) -> String {
+fn scan_label(_scan: u32, _layout: isize, fallback: &str) -> String {
     fallback.to_owned()
 }
 
 #[cfg(windows)]
 fn current_layout() -> isize {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-    // SAFETY: `GetKeyboardLayout(0)` queries the calling thread's current keyboard layout handle.
-    unsafe { GetKeyboardLayout(0) as isize }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+    // SAFETY: Win32 window and layout queries accept null or a foreground HWND and return thread/HKL handles.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        let thread = if hwnd.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(hwnd, std::ptr::null_mut())
+        };
+        GetKeyboardLayout(thread) as isize
+    }
 }
 
 #[cfg(not(windows))]
@@ -150,7 +185,7 @@ impl Hud {
         match &self.key_names {
             Some((cached, names)) if *cached == layout => names.clone(),
             _ => {
-                let names = KeyNames::detect();
+                let names = KeyNames::detect(layout);
                 self.key_names = Some((layout, names.clone()));
                 names
             }
@@ -956,12 +991,33 @@ mod tests {
             figure_missing: false,
         };
         hud.observe(&toggled, &Frame::default(), 10.0);
-        let pill = hud.pill.as_ref().expect("view change creates a pill");
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let paint_at = |hud: &mut Hud, now: f64| {
+            let state = HudState::Active {
+                active: toggled.clone(),
+                captured: true,
+                device: Device::Keyboard,
+            };
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ui| hud.paint(ui, rect, 1.0, &state, now),
+            );
+        };
+        paint_at(&mut hud, 10.0);
+        let pill = hud
+            .pill
+            .as_ref()
+            .expect("pill survives its zero-opacity initial paint frame");
         assert_eq!(pill.text, "Third person");
-        assert!(!pill_expired(pill, 10.0));
         assert_eq!(pill_alpha(pill, 10.0), 0.0);
-        assert!(pill_alpha(pill, 10.06) > 0.0);
-        assert!(!pill_expired(pill, 10.0 + PILL_HOLD));
-        assert!(pill_expired(pill, 10.0 + PILL_HOLD + FADE_OUT));
+        paint_at(&mut hud, 10.06);
+        assert!(hud.pill.is_some());
+        assert!(pill_alpha(hud.pill.as_ref().unwrap(), 10.06) > 0.0);
+        paint_at(&mut hud, 10.0 + PILL_HOLD + FADE_OUT);
+        assert!(hud.pill.is_none());
     }
 }

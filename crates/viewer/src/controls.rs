@@ -291,6 +291,8 @@ impl Input {
         }
         if lost || !self.focused {
             self.release();
+            frame.pressed.clear();
+            frame.double_tapped.clear();
             frame.look = [0.0; 2];
         }
         self.taps

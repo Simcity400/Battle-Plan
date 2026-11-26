@@ -405,26 +405,61 @@ pub(crate) fn map_overlay(
         });
 }
 
-pub(super) fn is_free_camera_key(key: egui::Key) -> bool {
-    matches!(
-        key,
-        egui::Key::W
-            | egui::Key::A
-            | egui::Key::S
-            | egui::Key::D
-            | egui::Key::Space
-            | egui::Key::Equals
-            | egui::Key::Plus
-            | egui::Key::Minus
-            | egui::Key::Num0
-            | egui::Key::V
-            | egui::Key::C
-            | egui::Key::ArrowLeft
-            | egui::Key::ArrowRight
-            | egui::Key::ArrowUp
-            | egui::Key::ArrowDown
-            | egui::Key::Escape
-    )
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CameraKeyFilter {
+    None,
+    Walk,
+    FlyFree,
+    FlyAircraft,
+}
+
+impl CameraKeyFilter {
+    pub(super) fn blocks(self, key: egui::Key) -> bool {
+        match self {
+            Self::None => false,
+            Self::Walk => matches!(
+                key,
+                egui::Key::W
+                    | egui::Key::A
+                    | egui::Key::S
+                    | egui::Key::D
+                    | egui::Key::Space
+                    | egui::Key::Equals
+                    | egui::Key::Plus
+                    | egui::Key::Minus
+                    | egui::Key::Num0
+                    | egui::Key::V
+                    | egui::Key::Escape
+            ),
+            Self::FlyFree => matches!(
+                key,
+                egui::Key::W
+                    | egui::Key::A
+                    | egui::Key::S
+                    | egui::Key::D
+                    | egui::Key::Space
+                    | egui::Key::Equals
+                    | egui::Key::Plus
+                    | egui::Key::Minus
+                    | egui::Key::Num0
+                    | egui::Key::Escape
+            ),
+            Self::FlyAircraft => matches!(
+                key,
+                egui::Key::W
+                    | egui::Key::A
+                    | egui::Key::S
+                    | egui::Key::D
+                    | egui::Key::V
+                    | egui::Key::C
+                    | egui::Key::ArrowLeft
+                    | egui::Key::ArrowRight
+                    | egui::Key::ArrowUp
+                    | egui::Key::ArrowDown
+                    | egui::Key::Escape
+            ),
+        }
+    }
 }
 
 pub(crate) fn capture_mode_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
@@ -4218,6 +4253,11 @@ impl Viewer {
         let camera = &mut camera;
         let held_pointer = self.input.captured();
         let placed_walk = pinned.is_some() && self.walk.placed();
+        let interface_visible = pinned.is_none()
+            && (self.camera_mode == CameraMode::Map
+                || self.start_pick.choosing()
+                || self.free_overlays);
+        let find_typing = interface_visible && self.picker.find.typing();
         let controls = if pinned.is_some() {
             let time = self.capture.as_ref().and_then(|capture| capture.time);
             self.walk
@@ -4228,7 +4268,7 @@ impl Viewer {
                 ui.input(|input| (input.events.clone(), input.focused, input.modifiers));
             self.input.frame(crate::controls::Window {
                 events: &events,
-                focused: focused && !self.picker.find.typing(),
+                focused: focused && !find_typing,
                 modifiers,
                 now: Instant::now(),
             })
@@ -4345,9 +4385,18 @@ impl Viewer {
                 held,
             }
         }).unwrap_or_default());
-        if takes_keys && (!free_mode || !self.input.captured()) {
-            self.confirmation_keys(ui, document, extent, free_mode);
-            self.picker_keys(ui, document, extent, free_mode);
+        if takes_keys && reaches {
+            let filter = if !free_mode {
+                CameraKeyFilter::None
+            } else if self.camera_mode == CameraMode::Walk {
+                CameraKeyFilter::Walk
+            } else if self.fly_aircraft(document).is_some() {
+                CameraKeyFilter::FlyAircraft
+            } else {
+                CameraKeyFilter::FlyFree
+            };
+            self.confirmation_keys(ui, document, extent, filter);
+            self.picker_keys(ui, document, extent, filter);
         }
         let picker_controls = match &self.picker_controls {
             Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => {
@@ -6665,6 +6714,7 @@ impl Viewer {
     ) {
         if mode != CameraMode::Map && !overlays {
             self.combat.close();
+            self.picker.find.field.focused = false;
         }
         if (mode, overlays) != (self.camera_mode, self.free_overlays)
             && let Some(embedded) = &self.embedded
