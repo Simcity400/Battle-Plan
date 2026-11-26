@@ -37,7 +37,16 @@ fn text(key: &str, args: &[(&str, Arg<'_>)]) -> Result<String, String> {
 
 #[test]
 fn each_resource_writes_its_delivery_buildings_route_damage_and_refused_explanations() {
-    let lines = hover(&fixture::frame(), MIXED);
+    let content = fixture::content();
+    let mut frame = fixture::frame();
+    let lines = hover(&frame, MIXED);
+    let icon = Hour::new(&frame, &content).unwrap().icon(MIXED).unwrap();
+    assert!(resource_origins::state_amounts(&frame, &content, MIXED).is_ok());
+    frame.hour += 1;
+    assert_eq!(hover(&frame, MIXED), lines);
+    assert_eq!(Hour::new(&frame, &content).unwrap().icon(MIXED).unwrap(), icon);
+    let why = resource_origins::state_amounts(&frame, &content, MIXED).unwrap_err();
+    assert!(why.contains("supply route was not recorded for hour 1"), "{why}");
     let rights = text(
         "TRADEVIEW_RES_PRODUCED_RIGHTHOLDER",
         &[("COUNTRY", Arg::Text(&format!("country {AFG}")))],

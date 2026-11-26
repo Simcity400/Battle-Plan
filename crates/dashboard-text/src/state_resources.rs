@@ -6,20 +6,24 @@ use content_reader_defines::defines::Defines;
 use content_reader_parser::parser::Operator;
 use replay_data::{
     rows::BuildingRow, rows::CountryBuildingResourceRow, rows::ResourceDefinitionRow,
-    rows::StateBaseResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
+    rows::SliceReadRow, rows::StateBaseResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
     rows::TableSchema, rows::mask, rows::tables,
 };
 use replay_frame::frame::{HourFrame, Rowset};
 
 const ACTIVE: u64 = mask::<ResourceDefinitionRow>(&["token", "active"]);
-const INPUT: u64 = mask::<StateResourceInputRow>(&[
-    "gate",
-    "global_factor",
+const BASE_INPUT: u64 = mask::<StateResourceInputRow>(&["gate", "global_factor"]);
+const ORIGIN_INPUT: u64 = mask::<StateResourceInputRow>(&[
     "origin",
     "infrastructure_level",
     "infrastructure_modifier",
     "supply_route",
 ]);
+const SAMPLE: u64 = mask::<SliceReadRow>(&["sample_hour"]);
+
+pub(crate) fn supply_read_key(state: u32) -> u128 {
+    ((tables::StateResourceInputs::ID.index() as u128) << 32) | u128::from(state)
+}
 const STORED: u64 = mask::<StateResourceRow>(&["pool", "additive", "factor", "cost"]);
 const BASE: u64 = mask::<StateBaseResourceRow>(&["amount"]);
 const HEALTHY: u64 = mask::<BuildingRow>(&["healthy_level"]);
@@ -236,19 +240,31 @@ impl<'a> StateResources<'a> {
         links: &impl Links,
     ) -> Result<i64, crate::triggers::Failure> {
         Ok(state_resource_amount(
-            &self.operands(state, resource, controller, links)?,
+            &self.operands(state, resource, controller, links, true)?,
         ))
     }
 
-    pub fn operands(
+    pub fn base_operands(
         &self,
         state: u32,
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
     ) -> Result<ResourceOperands, crate::triggers::Failure> {
+        self.operands(state, resource, controller, links, false)
+    }
+
+    fn operands(
+        &self,
+        state: u32,
+        resource: u32,
+        controller: Option<u32>,
+        links: &impl Links,
+        with_origin: bool,
+    ) -> Result<ResourceOperands, crate::triggers::Failure> {
         let key = (u128::from(state) << 32) | u128::from(resource);
-        let input = table::<tables::StateResourceInputs>(self.frame, INPUT)?
+        let fields = if with_origin { BASE_INPUT | ORIGIN_INPUT } else { BASE_INPUT };
+        let input = table::<tables::StateResourceInputs>(self.frame, fields)?
             .get(u128::from(state))
             .map_err(walked::<tables::StateResourceInputs>)?
             .ok_or_else(|| {
@@ -259,6 +275,14 @@ impl<'a> StateResources<'a> {
                 format!("state {state} has no recorded resource inputs"),
             )
         })?;
+        let origin = if with_origin && input.origin != 0 {
+            Some((
+                input.infrastructure_level.map(|level| (level, input.infrastructure_modifier)),
+                self.resource_bonuses[1] != 0 && self.supply_route(&input)?,
+            ))
+        } else {
+            None
+        };
         let stored = table::<tables::StateResources>(self.frame, STORED)?
             .get(key)
             .map_err(walked::<tables::StateResources>)?;
@@ -272,14 +296,28 @@ impl<'a> StateResources<'a> {
                 .map(|row| [row.pool, row.additive, row.factor, row.cost]),
             input.gate != 0,
             input.global_factor,
-            (input.origin != 0).then_some((
-                input
-                    .infrastructure_level
-                    .map(|level| (level, input.infrastructure_modifier)),
-                input.supply_route != 0,
-            )),
+            origin,
             self.resource_bonuses,
             self.building_grants(state, resource, controller, links)?,
+        ))
+    }
+
+    fn supply_route(&self, input: &StateResourceInputRow) -> Result<bool, crate::triggers::Failure> {
+        let state = input.state;
+        let hour = self.frame.hour();
+        let sample = self.frame.complete::<tables::SliceReads>(SAMPLE)
+            .and_then(|rows| rows.get(supply_read_key(state)));
+        let why = match sample {
+            Ok(Some(row)) if row.sample_hour == hour => return Ok(input.supply_route != 0),
+            Ok(Some(row)) => format!("read at hour {}", row.sample_hour),
+            Ok(None) => "no slice read was recorded".into(),
+            Err(error) => error.to_string(),
+        };
+        Err(crate::triggers::Failure::input(
+            tables::StateResourceInputs::ID,
+            "supply_route",
+            Some(crate::triggers::Store::State(state)),
+            format!("state {state}'s supply route was not recorded for hour {hour} ({why})"),
         ))
     }
 
@@ -442,6 +480,64 @@ pub fn resource_operands(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_bonus_requires_the_states_read_at_the_requested_hour() {
+        use replay_data::rows::{SliceReadRow, TableId, TableRows};
+        use replay_frame::frame::TableView;
+
+        struct NoLinks;
+        impl Links for NoLinks {
+            fn slot(&self, _: u32) -> Option<u32> { None }
+            fn token_of(&self, _: &[u8]) -> Result<Option<u32>, String> { Ok(None) }
+        }
+
+        let mut frame = replay_frame::frame::DecodedFrame {
+            branch: 1,
+            hour: 10,
+            metrics: Default::default(),
+            tables: TableId::ALL.map(|id| TableView::Complete(TableRows::empty(id)).into()),
+        };
+        *frame.tables[TableId::StateBaseResources.index()] =
+            TableView::Complete(TableRows::StateBaseResources(vec![StateBaseResourceRow {
+                state: 3,
+                resource: 7,
+                amount: ONE,
+                ..Default::default()
+            }]));
+        let buildings = Buildings::default();
+        for table in [TableId::StateBaseResources, TableId::StateBuildings,
+            TableId::CountryBuildingResources, TableId::ResourceDefinitions] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        *frame.tables[TableId::StateResources.index()] =
+            TableView::Complete(TableRows::StateResources(vec![StateResourceRow {
+                state: 3, resource: 7, pool: ONE, ..Default::default()
+            }]));
+        let inputs = |origin, supply_route| TableView::Complete(TableRows::StateResourceInputs(vec![
+            StateResourceInputRow { state: 3, origin, supply_route, ..Default::default() }
+        ]));
+        let reads = |sample_hour| TableView::Complete(TableRows::SliceReads(vec![
+            SliceReadRow { table: TableId::StateResourceInputs.index() as u32, owner: 3, sample_hour },
+            SliceReadRow { table: TableId::StateResourceInputs.index() as u32, owner: 4, sample_hour: 11 },
+        ]));
+        let amount = |frame: &replay_frame::frame::DecodedFrame, bonus| {
+            StateResources::new(frame, &buildings, [0, bonus]).amount(3, 7, None, &NoLinks)
+        };
+        *frame.tables[TableId::StateResourceInputs.index()] = inputs(1, 0);
+        *frame.tables[TableId::SliceReads.index()] = reads(10);
+        assert_eq!(amount(&frame, ONE).unwrap(), ONE);
+        frame.hour = 11;
+        assert!(amount(&frame, ONE).unwrap_err().names("StateResourceInputs.supply_route (State(3))"));
+        assert_eq!(amount(&frame, 0).unwrap(), ONE);
+        *frame.tables[TableId::StateResourceInputs.index()] = inputs(0, 0);
+        assert_eq!(amount(&frame, ONE).unwrap(), ONE);
+        *frame.tables[TableId::StateResourceInputs.index()] = inputs(1, 1);
+        *frame.tables[TableId::SliceReads.index()] = reads(11);
+        assert_eq!(amount(&frame, ONE).unwrap(), 2 * ONE);
+        frame.hour = 12;
+        assert!(amount(&frame, ONE).unwrap_err().names("StateResourceInputs.supply_route (State(3))"));
+    }
 
     #[test]
     fn state_resource_amounts_preserve_order_and_truncation() {

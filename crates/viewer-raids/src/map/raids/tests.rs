@@ -1199,6 +1199,12 @@ fn resource_frame() -> DecodedFrame {
             supply_route: 1,
         }],
     );
+    let sample_hour = frame.hour;
+    put::<tables::SliceReads>(&mut frame, vec![replay_data::rows::SliceReadRow {
+        table: TableId::StateResourceInputs.index() as u32,
+        owner: 10,
+        sample_hour,
+    }]);
     put::<tables::StateResources>(
         &mut frame,
         vec![StateResourceRow {

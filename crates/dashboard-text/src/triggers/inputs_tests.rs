@@ -1497,6 +1497,10 @@ fn richer_frame() -> DecodedFrame {
             definitions: vec![1],
         }],
     );
+    let sample_hour = frame.hour;
+    set::<tables::SliceReads>(&mut frame, vec![replay_data::rows::SliceReadRow {
+        table: TableId::StateResourceInputs.index() as u32, owner: 1, sample_hour,
+    }]);
     set::<tables::StateResourceInputs>(
         &mut frame,
         vec![StateResourceInputRow {
@@ -1574,6 +1578,35 @@ fn richer_frame() -> DecodedFrame {
         *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
     }
     frame
+}
+
+#[test]
+fn a_cached_state_resource_amount_expires_after_its_route_read() {
+    let dlcs = BTreeSet::new();
+    let triggers = Default::default();
+    let aliases = Default::default();
+    let facts = || ContentFacts {
+        resource_bonuses: Ok([0, 20_000]),
+        ..ContentFacts::content_only(&dlcs, &triggers, &aliases)
+    };
+    let mut frame = richer_frame();
+    let clock = |hour| vec![replay_data::rows::ClockRow { hour, ..Default::default() }];
+    let hour = frame.hour;
+    set::<tables::Clock>(&mut frame, clock(hour));
+    let world = World::read(&frame, facts());
+    let (amount, mut inputs) = capture(&frame, || world.state_resource(1, 900));
+    assert_eq!(amount.unwrap(), 500_000);
+    let mut next = frame.clone();
+    next.hour += 1;
+    set::<tables::Clock>(&mut next, clock(hour + 1));
+    let changes = Differing { before: &frame, after: &next };
+    let since = Since::hour_before(&next, &changes).unwrap();
+    let next_world = World::read(&next, facts());
+    assert!(!inputs.confirm_since(&next, Some(&since), |key| match key {
+        Key::World(query) => Some(next_world.reread(query)),
+        _ => None,
+    }));
+    assert!(next_world.state_resource(1, 900).unwrap_err().names("StateResourceInputs.supply_route (State(1))"));
 }
 
 fn other_world_queries() -> Vec<Query> {
