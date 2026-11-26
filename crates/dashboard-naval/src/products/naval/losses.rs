@@ -32,6 +32,7 @@ const COUNTED_FROM: usize = 2;
 const KNOWN: usize = 3;
 const LOST_FROM: usize = 4;
 const TABLE: TableId = TableId::NavalLossTotals;
+pub(super) const MISSING_BASELINE: &str = "Naval losses are not known at this hour: their tables were not read whole after the counting began.";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -322,7 +323,8 @@ fn validate_at(params: &NavalLossesAtParams) -> Result<(), &'static str> {
     params.countries.iter().try_for_each(dashboard_base::products::validate_country)
 }
 
-fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, stretch_last: i32, period: NavalPeriod, keys: Option<&[u128]>, kinds: &[u8]) -> io::Result<(i32, i32)> {
+#[expect(clippy::too_many_arguments, reason = "the hour, its stretch and the selection the bounds prove")]
+fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, stretch_last: i32, period: NavalPeriod, attribution: u8, kinds: &[u8]) -> io::Result<(i32, i32)> {
     let recording = query.replay.recording();
     let mut lo = stretch_first;
     let mut hi = stretch_last;
@@ -347,13 +349,28 @@ fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, str
         }
     };
     let run_keys: Vec<u128> = kinds.iter().map(|&kind| Row::run_key(kind)).collect();
-    for column in [KNOWN, COUNTED_FROM] {
+    for column in [KNOWN, COUNTED_FROM, LOST_FROM] {
         for runs in read::runs(recording, run, TABLE, summary::Source::Cell(column), Some(&run_keys), lo, hi)?.values() {
             clamp(runs, &mut lo, &mut hi);
         }
     }
-    for runs in read::runs(recording, run, TABLE, summary::Source::Cell(TOTAL), keys, lo, hi)?.values() {
-        clamp(runs, &mut lo, &mut hi);
+    let owners: BTreeSet<u128> = query
+        .holders
+        .tags
+        .values()
+        .flatten()
+        .filter_map(|held| match held.holder {
+            Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
+            Holder::Unresolved => None,
+        })
+        .collect();
+    let mut keys: Vec<u128> = owners.iter().flat_map(|&owner| kinds.iter().map(move |&kind| Row::holder_key(owner, attribution, kind))).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    for column in [TOTAL, UNKNOWN] {
+        for runs in read::runs(recording, run, TABLE, summary::Source::Cell(column), Some(&keys), lo, hi)?.values() {
+            clamp(runs, &mut lo, &mut hi);
+        }
     }
     for runs in query.holders.tags.values() {
         let index = runs.partition_point(|run| run.last < hour);
@@ -407,7 +424,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
     };
     let counts = Counts::read(recording, stretch.run, kinds, &[], from, hour)?;
     let missing_baseline = kinds.iter().any(|&kind| counts.baseline(kind, hour).is_none());
-    let (mut first_hour, mut last_hour) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, None, kinds)?;
+    let (mut first_hour, mut last_hour) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, attribution, kinds)?;
     let mut warnings = Vec::new();
     let countries: Vec<Country> = match &params.group {
         None => params.countries.clone(),
@@ -421,15 +438,8 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             members.tags.into_iter().map(Country::from).collect()
         }
     };
-    if missing_baseline {
-        return Ok(NavalLossesAtReply {
-            first_hour,
-            last_hour,
-            parts: reply_parts,
-            rows: Vec::new(),
-            missing: Some("Naval losses are not known at this hour: their tables were not read whole after the counting began.".into()),
-            warnings,
-        });
+    if missing_baseline && (params.top.is_some() || (countries.is_empty() && params.group.is_none())) {
+        return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(MISSING_BASELINE.into()), warnings });
     }
     let at_hour = |at: i32| -> io::Result<HashMap<u128, i64>> {
         let snapshots = read::at(recording, stretch.run, &[read::Read { table: TABLE, columns: Some(&[TOTAL][..]), keys: read::Keys::All }], at)?;
@@ -517,6 +527,16 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             }
             let tag = query.holders.name(country, hour);
             match run.holder {
+                Holder::Found { slot, .. } if missing_baseline => rows.push(ForceAtRow {
+                    country: country.clone(),
+                    slot: Some(slot),
+                    tag,
+                    total: None,
+                    reference_total: None,
+                    missing: Some(MISSING_BASELINE.into()),
+                    values: vec![None; kinds.len()],
+                    parts_missing: None,
+                }),
                 Holder::Found { slot, id } => {
                     let owner = Key::Holder.of(slot, id);
                     let (total, values) = part_values(owner);
