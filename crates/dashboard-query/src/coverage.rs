@@ -116,20 +116,23 @@ pub struct WitnessedRows<'a, R> {
 }
 
 pub fn witnessed_rows<T: TableSchema>(frame: &DecodedFrame) -> WitnessedRows<'_, T::Row> {
-    witnessed_selection::<T>(frame, &Keys::All)
+    let mut result = witnessed_selection::<T>(frame);
+    if result.missing.is_none() && *frame.tables[T::ID.index()].keys() != Keys::All {
+        result.missing = Some(format!("{} read only for chosen rows at this hour", table_title(T::ID)));
+    }
+    result
 }
 
-pub fn witnessed_selection<'f, T: TableSchema>(frame: &'f DecodedFrame, asked: &Keys) -> WitnessedRows<'f, T::Row> {
+pub fn witnessed_selection<T: TableSchema>(frame: &DecodedFrame) -> WitnessedRows<'_, T::Row> {
     let shared = &frame.tables[T::ID.index()];
     let view: &TableView = shared;
     let (rows, complete) = match view {
-        TableView::Complete(rows) => (rows, shared.keys() == asked),
+        TableView::Complete(rows) => (rows, true),
         TableView::Truncated { rows, .. } => (rows, false),
         TableView::Unavailable { .. } | TableView::NotRecorded { .. } => return WitnessedRows { rows: &[], missing: Some(refusal(T::ID, view)) },
     };
     match typed::<T>(rows) {
         Ok(rows) if complete => WitnessedRows { rows, missing: None },
-        Ok(rows) if matches!(view, TableView::Complete(_)) => WitnessedRows { rows, missing: Some(format!("{} read only for chosen rows at this hour", table_title(T::ID))) },
         Ok(rows) => WitnessedRows { rows, missing: Some(refusal(T::ID, view)) },
         Err(reason) => WitnessedRows { rows: &[], missing: Some(reason) },
     }

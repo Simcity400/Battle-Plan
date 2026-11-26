@@ -460,6 +460,11 @@ pub fn at_hour(params: &mut Value, hour: i32) {
     params["hour"] = hour.into();
 }
 
+pub fn warnings_through<'a>(hour: i32, reasons: impl IntoIterator<Item = &'a str>) -> i32 {
+    let stamp = format!("hour {hour} ");
+    if reasons.into_iter().any(|reason| reason.contains(&stamp)) { hour } else { i32::MAX }
+}
+
 pub fn before(next: Option<i32>) -> i32 {
     next.map_or(i32::MAX, |n| n.saturating_sub(1))
 }

@@ -24,6 +24,15 @@ pub struct Edits {
 }
 
 impl Edits {
+    fn record(&mut self, table: TableId, keys: BTreeMap<u128, u64>) {
+        match self.tables.entry(table) {
+            std::collections::btree_map::Entry::Vacant(entry) => { entry.insert(keys); }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                for (key, fields) in keys { *entry.get_mut().entry(key).or_default() |= fields; }
+            }
+        }
+    }
+
     pub fn fields(&self, table: TableId, mask: u64) -> bool {
         self.replaced.contains(&table) || self.tables.get(&table).is_some_and(|keys| keys.values().any(|fields| mask & fields != 0))
     }
@@ -184,7 +193,7 @@ impl Projection {
             *old = previous.apply_changes(RowChanges::new(fresh, deleted))?;
         }
         *view = view.clone().with_sampled_at(sampled);
-        edits.tables.insert(table, dirty);
+        edits.record(table, dirty);
         Ok(())
     }
 
@@ -224,7 +233,7 @@ fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sam
             return Ok(());
         }
         *view = SharedView::from(made).with_sampled_at(sampled);
-        edits.tables.insert(table, keys);
+        edits.record(table, keys);
         return Ok(());
     }
     if matches!(made, TableView::Truncated { .. }) && view.held() == &made { return Ok(()); }
@@ -503,7 +512,11 @@ where P::Context: Sync, P::Params: Sync {
             state.repeated.stages.retain(|stage, (projections, views)| {
                 let asked = |table: &TableId| state.plans.get(*stage).is_some_and(|(reads, _)| reads.iter().any(|read| read.table == *table));
                 projections.retain(|table, _| asked(table));
-                views.retain(|table, _| asked(table));
+                views.retain(|table, _| {
+                    let kept = asked(table);
+                    if !kept { edits.replaced.insert(*table); }
+                    kept
+                });
                 !views.is_empty()
             });
             state.tables.retain(|table, _| {
@@ -544,6 +557,7 @@ where P::Context: Sync, P::Params: Sync {
                     state.extra = Supplemental::default();
                     state.reply = None;
                     state.reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_through(&state.frame, &params, &at));
+                    state.context_revision = revision;
                     state.rebuild = false;
                     state.values_at = Some(hour);
                     return Ok(state.data.clone());

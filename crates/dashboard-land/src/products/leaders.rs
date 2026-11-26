@@ -993,7 +993,7 @@ fn unselected_leader_edits(frame: &DecodedFrame, edits: &dashboard_base::product
 }
 
 fn reply_through(context: &LeadersContext, frame: &DecodedFrame, missing: Option<&str>, warnings: &[String]) -> i32 {
-    context.through(frame.hour).min(super::warnings_through(frame.hour, missing.into_iter().chain(warnings.iter().map(String::as_str))))
+    context.through(frame.hour).min(dashboard_base::products::at_hour::warnings_through(frame.hour, missing.into_iter().chain(warnings.iter().map(String::as_str))))
 }
 
 impl AtHour for UnitLeaders {

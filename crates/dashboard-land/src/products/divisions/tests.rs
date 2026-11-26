@@ -93,7 +93,7 @@ fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_t
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, false, 3)), [4, 1, 6], "ascending keeps the unread last too");
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::CasualtiesTaken, true, 2)), [2, 5]);
     let named = |at: usize, name: Option<&str>| Measures { name: name.map(super::careers::name_key), ..world[at].clone() };
-    let by_name = vec![named(0, Some("bravo")), named(1, None), named(2, Some("Alpha")), named(3, Some("Bravo")), named(4, Some("Ã‰chelon"))];
+    let by_name = vec![named(0, Some("bravo")), named(1, None), named(2, Some("Alpha")), named(3, Some("Bravo")), named(4, Some("Échelon"))];
     assert_eq!(ids(first_in_order(by_name.clone(), DecoratedRank::DivisionName, false, 10)), [3, 4, 1, 5, 2], "names fold case first; a division without a name follows the named ones");
     assert_eq!(ids(first_in_order(by_name, DecoratedRank::CountryName, true, 10)), [5, 1, 4, 3, 2], "descending keeps the unnamed last too");
 }

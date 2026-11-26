@@ -173,3 +173,34 @@ fn roster_and_rewards_follow_the_selected_template_settings_and_doctrine_track()
     played_replies::<crate::products::doctrine_mastery::rewards::DoctrineRewards>(DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS, &source, &load,
         &json!({"branchId":"1", "country":"GER", "folder":0, "track":0}));
 }
+
+#[test]
+fn training_locations_follow_only_the_state_of_each_queued_province() {
+    use dashboard_base::test_fixtures::{source_with_content, visual_mods::Machine};
+    let machine = Machine::new("land_queue_locations");
+    machine.write("common/defines/test.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    let frames = (100..=120).map(|hour| {
+        let mut frame = frame(1, hour);
+        if let TableView::Complete(TableRows::DeploymentConveyors(orders)) = &mut *frame.tables[TableId::DeploymentConveyors.index()] {
+            orders[0].location = if hour < 108 { 1 } else { 3 };
+        }
+        *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+            ProvinceRow { id: 1, state: 1, controller: hour as u32, ..Default::default() },
+            ProvinceRow { id: 2, state: hour as u32, controller: hour as u32, ..Default::default() },
+            ProvinceRow { id: 3, state: if hour < 110 { 2 } else { 1 }, ..Default::default() },
+        ]));
+        *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+            StateRow { id: 1, custom_name: b"First camp".to_vec(), ..Default::default() },
+            StateRow { id: 2, custom_name: b"Second camp".to_vec(), ..Default::default() },
+        ]));
+        frame
+    }).collect();
+    let (source, load) = source_with_content(frames, &machine.root);
+    let source = Arc::new(source);
+    let request = json!({"branchId":"1", "country":"GER"});
+    let panel = (TRAINING_QUEUE_TRAININGQUEUE.panel.unwrap().open)(&source, &load, &request).unwrap();
+    for (hour, name) in [(100, "First camp"), (108, "Second camp"), (110, "First camp")] {
+        assert_eq!((panel.exact().unwrap().cold)(hour, &false.into()).unwrap()["orders"][0]["locationName"], name);
+    }
+    played_replies::<crate::products::training_queue::TrainingQueue>(TRAINING_QUEUE_TRAININGQUEUE, &source, &load, &request);
+}

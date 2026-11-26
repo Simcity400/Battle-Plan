@@ -155,7 +155,7 @@ impl AtHour for TemplateRoster {
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
         let icons = frame.complete::<tables::DivisionTemplateIcons>().unwrap_or(&[]);
         crate::products::divisions::template_names_through(frame, icons.iter().map(|icon| icon.template))
-            .min(crate::products::warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
+            .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

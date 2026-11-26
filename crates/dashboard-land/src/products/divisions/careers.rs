@@ -276,7 +276,7 @@ impl AtHour for DecoratedDivisions {
     fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
         Self::valid_through(frame, params, at)
             .min(super::names_through(frame, reply.templates.iter().map(|t| t.template.as_str()), &at.context.content))
-            .min(crate::products::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
+            .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
     }
 
     fn columns(table: TableId) -> Option<Vec<usize>> {

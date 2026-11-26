@@ -199,7 +199,7 @@ impl AtHour for DivisionTemplates {
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
         super::names_through(frame, reply.templates.iter().map(|t| t.template.as_str()), at.context)
-            .min(crate::products::warnings_through(frame.hour, reply.fielded_missing.iter().chain(&reply.warnings).map(String::as_str)))
+            .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.fielded_missing.iter().chain(&reply.warnings).map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
