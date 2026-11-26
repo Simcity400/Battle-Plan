@@ -137,6 +137,36 @@ test('a followed reply delivered again with the same bytes costs no projection, 
   }
 });
 
+test('a held model ends where a bounded series it was given ends, even while its panel is unchanged', () => {
+  let projected = 0;
+  let seriesEnd = -Infinity;
+  registerFamilyProjection<FamilyProjection<Model, Options>>({
+    kind: 'fixture-series',
+    family: 'test-lane',
+    project(view: BoundedReadView): Model {
+      projected++;
+      seriesEnd = view.series('main')?.get('GER')?.validInterval[1] ?? -Infinity;
+      return { hour: view.hour, bucket: seriesEnd, rows: [], name: '' };
+    },
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    const bucket = (first: number, last: number, value: number) => ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last,
+      minHour: first, minValue: value, maxHour: last, maxValue: value, firstBreak: false, hasBreak: false });
+    const line = { source: 'main', tag: 'GER', head: 'h', decimals: 0, binHours: 96, from: 0, to: 191, width: 2, buckets: [bucket(0, 95, 1), bucket(96, 191, 2)], missing: [], parts: [], marks: null };
+    const bound = binding(rowsAt([]), DOWN, { kind: 'fixture-series', tiledBySource: { main: { GER: line } } } as Partial<Binding>);
+    const first = lane.paint({ label: 'in the first bucket', binding: bound, hour: 50, speed: 24 });
+    assert.ok(Number.isFinite(seriesEnd), 'the projection read the series');
+    assert.equal(first.nextChangeAt, seriesEnd + 1, 'the held model stands no longer than its series');
+    const before = projected;
+    lane.paint({ label: 'past the series interval', binding: bound, hour: seriesEnd + 1, speed: 24 });
+    assert.equal(projected, before + 1, 'the next hour of the series projects again');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('a dirty mirror or tooltip arms one wake per boundary, never one per hour', () => {
   reset();
   const set: number[] = [];

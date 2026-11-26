@@ -289,13 +289,13 @@ function sameFact(a: Fact<LaneValue>, b: Fact<LaneValue>): boolean {
   return a === b || (a.refused === b.refused && a.cells.length === b.cells.length && a.cells.every((cell, at) => cell === b.cells[at]) && sameValue(a.value, b.value));
 }
 
-export function samePictures(prev: readonly (readonly Fact<LaneValue>[])[], pictures: readonly Picture<LaneValue>[]): boolean {
+export function samePictures(prev: readonly (readonly Fact<LaneValue>[])[], pictures: readonly Picture<LaneValue>[], identical = false): boolean {
   if (prev.length !== pictures.length) return false;
   for (let i = 0; i < pictures.length; i++) {
     const a = prev[i]!;
     const b = pictures[i]!.parts;
     if (a.length !== b.length) return false;
-    for (let j = 0; j < b.length; j++) if (!sameFact(a[j]!, b[j]!)) return false;
+    for (let j = 0; j < b.length; j++) if (identical ? a[j] !== b[j] : !sameFact(a[j]!, b[j]!)) return false;
   }
   return true;
 }
