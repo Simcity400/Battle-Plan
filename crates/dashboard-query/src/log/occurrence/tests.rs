@@ -69,6 +69,11 @@ fn a_state_belongs_to_the_hour_asked_and_its_change_is_the_next_change() {
     let running = [RUNNING];
     let at_20 = index.ask(&holders(), &Ask { states: Some(&running), ..ask(20) }).unwrap();
     assert_eq!((at_20.total, at_20.live, at_20.next_change), (1, 1, Some(30)), "one running row is one live row in any order");
+    let newer = Occurrence { states: Box::new([(15, DONE)]), ..occurrence(2, 15, 15) };
+    let both = Index::new(vec![Occurrence { states: Box::new([(10, RUNNING), (30, DONE)]), ..occurrence(1, 10, 10) }, newer], Vec::new(), &[RUNNING]).unwrap();
+    let page = both.ask(&holders(), &Ask { limit: 1, ..ask(20) }).unwrap();
+    assert_eq!(ids(&both, &page), [2], "the running row is off the page");
+    assert_eq!((page.live, page.next_change), (1, Some(30)), "its end changes the live count, so the reply changes then");
     let at_30 = index.ask(&holders(), &Ask { states: Some(&running), ..ask(30) }).unwrap();
     assert_eq!(at_30.total, 0, "it ended at 30");
     assert!(Index::new(vec![Occurrence { states: Box::new([(11, RUNNING)]), ..occurrence(1, 10, 10) }], Vec::new(), &[]).is_err(), "a first state is the observation");
