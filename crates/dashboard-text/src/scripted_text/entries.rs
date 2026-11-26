@@ -150,7 +150,7 @@ pub struct Environment {
     ideologies: Database<content_reader_key_names::ideologies::Ideologies>,
     terrain_definitions: Database<content_reader_key_names::terrain::TerrainDefinitions>,
     leader_traits: Database<content_reader_military::leader_traits::LeaderTraits>,
-    ideas: Database<content_reader_politics::ideas::IdeaContent>,
+    ideas: Database<std::sync::Arc<content_reader_politics::ideas::IdeaContent>>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) inputs: std::sync::OnceLock<Result<EnvironmentInputs, String>>,
 }
@@ -191,17 +191,18 @@ impl Environment {
                     let officers = self
                         .defines
                         .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-                    content_reader_politics::ideas::read(&self.layers, &officers)
+                    content_reader_politics::ideas::catalogue(&self.layers, &officers)
                 })();
                 match loaded {
-                    Ok((ideas, _, notes)) => {
-                        (Ok(ideas), notes.into_iter().map(|(_, why)| why).collect())
-                    }
+                    Ok(catalogue) => (
+                        Ok(std::sync::Arc::clone(&catalogue.ideas)),
+                        catalogue.warnings.iter().map(|(_, why)| why.clone()).collect(),
+                    ),
                     Err(error) => (Err(error.to_string()), Vec::new()),
                 }
             })
             .0
-            .as_ref()
+            .as_deref()
             .map_err(String::as_str)
     }
 
