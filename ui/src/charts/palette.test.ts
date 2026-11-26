@@ -252,11 +252,13 @@ test('authored colours stay byte-exact', () => {
 test('warm palette lookups perform no hex conversions or array joins', () => {
   const surface = '#171a21';
   const options = { contrastSurfaces: [surface], avoid: [colour(surface, 1)] };
+  const customBase = { base: ['#4f86f7'], contrastSurfaces: options.contrastSurfaces };
   const paint = () => {
     authoredHex([79, 134, 247]);
     authoredHex({ r: 79, g: 134, b: 247 });
     readableForGrey([79, 134, 247], surface, 4.5);
     colour(surface, 1, options);
+    colour(surface, 1, customBase);
     identityColour(surface, 'weather', 'new', 0);
     reservedGrey(surface);
     commandTermColour(surface, 3);

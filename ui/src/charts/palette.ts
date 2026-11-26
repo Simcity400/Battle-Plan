@@ -146,7 +146,7 @@ class SurfacePalette {
   custom?: { ratio: number; colours: ReadableColours };
   categories?: string[];
   variables?: Readonly<Record<string, string>>;
-  readonly pools = new WeakMap<readonly string[], GeneratedPool>();
+  readonly pools = new WeakMap<readonly string[], WeakMap<readonly string[], GeneratedPool>>();
   lastPool?: GeneratedPool;
   readonly identities = new Map<keyof typeof IDENTITY_COLOURS, ColourOptions>();
   reservedLightness?: number;
@@ -233,8 +233,8 @@ function poolFor(surface: string, options?: ColourOptions): GeneratedPool {
   const palette = forSurface(surface);
   const base = options?.base ?? categoricalPalette(surface);
   const extraSurfaces = options?.contrastSurfaces ?? EMPTY;
-  const owner = extraSurfaces.length ? extraSurfaces : base;
-  const existing = palette.pools.get(owner) ?? palette.lastPool;
+  let byExtras = palette.pools.get(base);
+  const existing = byExtras?.get(extraSurfaces) ?? palette.lastPool;
   if (existing && sameStrings(existing.sourceBase, base) && sameStrings(existing.sourceExtras, extraSurfaces)) return existing;
   const { background, dark: darkSurface } = palette;
   const extreme: Rgb = darkSurface ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 };
@@ -275,7 +275,8 @@ function poolFor(surface: string, options?: ColourOptions): GeneratedPool {
     used,
     cursor: 0,
   };
-  palette.pools.set(owner, pool);
+  if (!byExtras) palette.pools.set(base, byExtras = new WeakMap());
+  byExtras.set(extraSurfaces, pool);
   palette.lastPool = pool;
   return pool;
 }
@@ -327,7 +328,8 @@ function generatedAt(pool: GeneratedPool, index: number): string {
 }
 
 function channelByte(channel: number): number {
-  return Number.isNaN(channel) ? 256 : Math.round(Math.min(255, Math.max(0, channel)));
+  const byte = Math.round(Math.min(255, Math.max(0, channel)));
+  return Number.isNaN(byte) ? 256 : byte;
 }
 
 function cachedHex(red: number, green: number, blue: number): string {
