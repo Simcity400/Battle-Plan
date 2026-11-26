@@ -21,7 +21,7 @@ use replay_data::Hour;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, PoisonError,
+        Arc, Condvar, Mutex, OnceLock, PoisonError, mpsc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -110,13 +110,13 @@ struct Shown {
     frame: Option<Arc<DecodedFrame>>,
     data: Option<PanelData>,
     pushed: Option<Hour>,
-    cells: Vec<(Group, u32)>,
+    version: (u64, u32),
     class: (u32, u32),
 }
 
 impl Shown {
     fn new(panel: Box<dyn Panel>, reader: Box<dyn PanelReader>, class: (u32, u32)) -> Self {
-        Self { panel, reader, frame: None, data: None, pushed: None, cells: Vec::new(), class }
+        Self { panel, reader, frame: None, data: None, pushed: None, version: (0, 0), class }
     }
 }
 
@@ -129,6 +129,7 @@ fn release(ids: &mut Vec<(Group, u32)>, cells: Option<&HostCells>) {
     ids.clear();
 }
 
+#[derive(Clone)]
 struct HostCells {
     follow: Follow,
     held: Vec<bool>,
@@ -182,17 +183,58 @@ fn with_cells(frame: &DecodedFrame, data: &PanelData, live: Option<&Live>, ids: 
     Ok(reply)
 }
 
+fn run_panel(job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static JOBS: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+    let jobs = JOBS.get_or_init(|| {
+        let (send, receive) = mpsc::channel::<Job>();
+        let receive = Arc::new(Mutex::new(receive));
+        let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(4));
+        for i in 0..threads {
+            let receive = receive.clone();
+            std::thread::Builder::new().name(format!("follow panel {i}")).spawn(move || loop {
+                let job = receive.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                match job { Ok(job) => job(), Err(_) => break }
+            }).expect("a follow panel worker");
+        }
+        send
+    });
+    jobs.send(Box::new(job)).expect("follow panel workers");
+}
+
+struct Work<T> {
+    state: Mutex<(Option<T>, bool)>,
+}
+
+impl<T> Work<T> {
+    fn new(value: Option<T>) -> Self { Self { state: Mutex::new((value, false)) } }
+
+    fn take(&self) -> Option<T> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let value = state.0.take();
+        if value.is_none() { state.1 = true; }
+        value
+    }
+
+    fn put(&self, value: T) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.0 = Some(value);
+        std::mem::take(&mut state.1)
+    }
+}
+
 #[derive(Default)]
 struct Panels {
     stamp: (i32, u32, u32, u32),
-    products: BTreeMap<u32, StepProduct>,
+    products: BTreeMap<u32, Arc<Work<StepProduct>>>,
     due: BTreeSet<(Hour, u32)>,
     stream: Option<(u64, u32, u64, Option<usize>)>,
     resend: Option<Hour>,
     pace: Option<(bool, f64)>,
     rows: Option<Arc<dyn PanelRows>>,
     push: Option<Arc<Push>>,
-    shown: BTreeMap<u32, Shown>,
+    shown: BTreeMap<u32, Arc<Work<Shown>>>,
+    frame_version: u64,
     thread: Option<JoinHandle<()>>,
     cells: Option<HostCells>,
     session: u64,
@@ -203,6 +245,8 @@ struct ProductReads {
     epoch: u64,
     seek: u32,
     tokens: BTreeMap<u32, Arc<AtomicBool>>,
+    cells: BTreeMap<u32, Vec<(Group, u32)>>,
+    host: Option<HostCells>,
 }
 
 impl ProductReads {
@@ -216,7 +260,10 @@ impl ProductReads {
     }
 
     fn remove(&mut self, id: u32) {
-        if let Some(token) = self.tokens.remove(&id) { token.store(true, Ordering::Release); }
+        if let Some(token) = self.tokens.remove(&id) {
+            token.store(true, Ordering::Release);
+            if let Some(mut cells) = self.cells.remove(&id) { release(&mut cells, self.host.as_ref()); }
+        }
     }
 
     fn register(&mut self, id: u32) {
@@ -227,14 +274,13 @@ impl ProductReads {
 
 struct StepProduct {
     id: u32,
-    seed: Option<(u64, Hour)>,
     pending_seed: Option<(u64, u32, Hour)>,
+    started_on: Option<(u64, u32)>,
     read: panel::ProductReader,
     lanes: Vec<Declared>,
     wire: panel::product::Delivery,
     last: Option<(u64, u32, Hour)>,
     joined: bool,
-    next: Option<Hour>,
     cells: Vec<(Group, u32)>,
     class: (u32, u32),
     host: Option<HostCells>,
@@ -243,22 +289,105 @@ struct StepProduct {
     resend: bool,
 }
 
+struct Seed {
+    hour: Hour,
+    stamp: (i32, u32, u32),
+    session: u64,
+    epoch: u64,
+    token: Arc<AtomicBool>,
+    reads: Arc<Mutex<ProductReads>>,
+    push: Arc<Push>,
+    wake: panel::Wake,
+}
+
+impl Seed {
+    fn start<E: Send + Sync + 'static>(self, mut product: StepProduct, work: Arc<Work<StepProduct>>, owner: Arc<E>, get: fn(&E) -> &Playhead) {
+        run_panel(move || {
+            let product_id = product.id;
+            product.publish_seed(self.stamp, self.session, self.hour, self.epoch, &self.token, &self.reads, &self.push, || get(&owner).epoch());
+            work.put(product);
+            if !self.token.load(Ordering::Acquire) || self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&product_id) {
+                (self.wake)();
+            }
+        });
+    }
+}
+
 impl StepProduct {
-    fn publish_seed(&mut self, stamp: (i32, u32, u32), session: u64, id: u32, epoch: u64, token: &AtomicBool,
+    fn publish_seed(&mut self, stamp: (i32, u32, u32), session: u64, head: Hour, epoch: u64, token: &AtomicBool,
         reads: &Mutex<ProductReads>, push: &Push, current_epoch: impl Fn() -> u64) {
-        let Some((registered, head)) = self.seed.take() else { return };
-        if epoch != registered || token.load(Ordering::Acquire) { return; }
+        let id = self.id;
+        if token.load(Ordering::Acquire) || current_epoch() != epoch { return; }
         let (clock, route, seek) = stamp;
-        let change = self.read_at(seek, epoch, head, true, token, None).flatten();
+        self.started_on = Some((epoch, seek));
+        self.joined = false;
+        self.pending_seed = None;
+        let Some(change) = self.read_at(seek, epoch, head, true, token, None, reads) else {
+            self.pending_seed = Some((epoch, seek, head));
+            return;
+        };
+        let packet = change.map(|(kind, body)| panel::dated::encoded(clock, route, seek, id, head, kind, body));
         let reads = reads.lock().unwrap_or_else(PoisonError::into_inner);
         if reads.current(epoch, seek) && !token.load(Ordering::Acquire) && current_epoch() == epoch
-            && let Some((kind, body)) = change {
-            push.offer_from(session, PANEL, panel::dated::encoded(clock, route, seek, id, head, kind, body));
+            && let Some(packet) = packet {
+            push.offer_from(session, PANEL, packet);
             self.wire.commit();
         }
     }
 
-    fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>) -> Option<Option<(u8, &[u8])>> {
+    fn step(&mut self, input: panel::ProductStep<'_>, (clock, route, seek): (i32, u32, u32), session: u64, token: &AtomicBool,
+        active: &Mutex<ProductReads>, push: &Push, playhead: &Playhead) -> (Hour, Option<(u8, Vec<u8>)>) {
+        let step = input.step;
+        let (epoch, hour, id) = (step.epoch(), step.last(), self.id);
+        let current = || !token.load(Ordering::Acquire) && playhead.epoch() == epoch;
+        if !self.joined && self.last == Some((epoch, seek, hour)) {
+            self.joined = true;
+            return (hour.saturating_add(1), Some((panel::dated::STANDS, Vec::new())));
+        }
+        if let Some((e, g, at)) = self.pending_seed {
+            if (e, g) == (epoch, seek) && at < hour && self.last.is_none_or(|(le, lg, _)| (le, lg) != (e, g)) {
+                let head = playhead.head(Instant::now()).clamp(at, hour);
+                if head < hour {
+                    let Some(change) = self.read_at(seek, epoch, head, true, token, Some(input), active) else {
+                        self.resend = true;
+                        return (hour, Some((panel::dated::WAITING, Vec::new())));
+                    };
+                    let guard = active.lock().unwrap_or_else(PoisonError::into_inner);
+                    if guard.current(epoch, seek) && current() && let Some((kind, body)) = change {
+                        push.offer_from(session, PANEL, panel::dated::encoded(clock, route, seek, id, head, kind, body));
+                        self.wire.commit();
+                    }
+                }
+            }
+            self.pending_seed = None;
+        }
+        if !self.joined && let Some((e, g, mut h)) = self.last && (e, g) == (epoch, seek) && !step.reset() {
+            let quantum = playhead.step_hours();
+            while h.saturating_add(quantum) < step.first() && current() {
+                h += quantum;
+                let (kind, body) = self.read_at(seek, epoch, h, false, token, None, active).flatten().unwrap_or((panel::dated::STANDS, &[]));
+                let guard = active.lock().unwrap_or_else(PoisonError::into_inner);
+                if !guard.current(epoch, seek) || !current() { break; }
+                push.offer_from(session, PANEL, panel::dated::encoded(clock, route, seek, id, h, kind, body));
+                self.wire.commit();
+            }
+        }
+        let joining = !self.joined;
+        let Some(change) = self.read_at(seek, epoch, hour, step.reset(), token, Some(input), active) else {
+            if self.last.is_none_or(|(e, g, _)| (e, g) != (epoch, seek)) && self.pending_seed.is_none() {
+                self.pending_seed = Some((epoch, seek, hour));
+                self.joined = false;
+            }
+            self.resend = true;
+            return (hour, Some((panel::dated::WAITING, Vec::new())));
+        };
+        let change = change.map(|(kind, body)| (kind, body.to_vec())).or_else(|| joining.then(|| (panel::dated::STANDS, Vec::new())));
+        self.wire.commit();
+        self.joined = true;
+        (hour.saturating_add(1), change)
+    }
+
+    fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>, bindings: &Mutex<ProductReads>) -> Option<Option<(u8, &[u8])>> {
         let seed = reset || self.last.is_none_or(|(e, g, h)| e != epoch || g != page_seek || h > hour);
         let send = seed || std::mem::take(&mut self.resend);
         let held = self.host.as_ref().map(|host| host.held.clone());
@@ -266,11 +395,22 @@ impl StepProduct {
         let read = catch_unwind(AssertUnwindSafe(|| (self.read)(hour, send, cancelled, step)))
             .unwrap_or_else(|p| panel::ProductRead { value: Arc::new(Err(format!("Panel read at hour {hour} failed: {}", panicked(&*p)))),
                 rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() });
-        self.read_lanes(&read.lanes);
+        let mut active = bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        if cancelled.load(Ordering::Acquire) || !active.current(epoch, page_seek) { return None; }
+        if !read.lanes.is_empty() { self.read_lanes(&read.lanes); }
         if read.pending { return None; }
         self.last = Some((epoch, page_seek, hour));
-        self.next = hour.checked_add(1);
+        self.cells = active.cells.remove(&self.id).unwrap_or_default();
+        drop(active);
         let value = self.follow_cells(&read.value, read.live.as_deref(), hour, send, read.fresh);
+        let mut current = bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        if cancelled.load(Ordering::Acquire) || !current.current(epoch, page_seek) {
+            drop(current);
+            release(&mut self.cells, self.host.as_ref());
+            return None;
+        }
+        if !self.cells.is_empty() { current.cells.insert(self.id, std::mem::take(&mut self.cells)); }
+        drop(current);
         Some(self.wire.update(send, &value))
     }
 
@@ -337,14 +477,11 @@ impl StepProduct {
 
 impl Panels {
     fn remove(&mut self, id: u32) {
-        if let Some(mut product) = self.products.remove(&id) {
-            if let Some(hour) = product.next { self.due.remove(&(hour, id)); }
-            release(&mut product.cells, product.host.as_ref());
+        if self.products.remove(&id).is_some() {
+            self.due.retain(|&(_, due)| due != id);
             if let Some(cells) = &self.cells { let _ = cells.follow.product_lanes(id, Vec::new()); }
         }
-        if let Some(mut shown) = self.shown.remove(&id) {
-            release(&mut shown.cells, self.cells.as_ref());
-        }
+        self.shown.remove(&id);
     }
 }
 
@@ -352,43 +489,64 @@ fn panicked(payload: &(dyn std::any::Any + Send)) -> String {
     payload.downcast_ref::<&str>().map(|text| (*text).to_owned()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_else(|| "a panic with no message".to_owned())
 }
 
-fn evaluate(panels: &mut Panels) {
-    let (clock, route, epoch, page_seek) = panels.stamp;
-    let session = panels.session;
+fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32, u32), version: u64, token: &AtomicBool,
+    active: &Mutex<ProductReads>, push: &Push, session: u64, playhead: &Playhead) {
     use panel::dated::{self, Update};
-    let Some(push) = &panels.push else { return };
-    for (&id, shown) in &mut panels.shown {
-        if let Some((hour, reason)) = shown.reader.stopped() {
-            let data = Err(reason);
-            if shown.data.as_ref() != Some(&data) {
-                release(&mut shown.cells, panels.cells.as_ref());
-                push.offer_from(session, PANEL, dated::message(clock, route, page_seek, &[Update::Data(id, hour, &data)]));
-                shown.data = Some(data);
-            }
-            continue;
+    let (clock, route, epoch, seek) = stamp;
+    let current = || !token.load(Ordering::Acquire) && playhead.epoch() as u32 == epoch;
+    if shown.version != (version, epoch) {
+        shown.frame = None;
+        shown.data = None;
+        shown.pushed = None;
+        shown.version = (version, epoch);
+    }
+    if let Some((hour, reason)) = shown.reader.stopped() {
+        let data = Err(reason);
+        if shown.data.as_ref() != Some(&data) {
+            let packet = dated::message(clock, route, seek, &[Update::Data(id, hour, &data)]);
+            let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
+            if !current() || reads.seek != seek { return; }
+            if let Some(mut cells) = reads.cells.remove(&id) { release(&mut cells, reads.host.as_ref()); }
+            push.offer_from(session, PANEL, packet);
+            shown.data = Some(data);
         }
-        let Some(frame) = shown.reader.frame() else { continue };
-        let Some((through, frame_epoch)) = shown.reader.through_seek(&frame) else { continue };
-        if frame_epoch as u32 != epoch { continue; }
-        let same = shown.frame.as_ref().is_some_and(|f| Arc::ptr_eq(f, &frame));
-        let data;
-        let mut updates = Vec::new();
-        if !same && shown.data.is_some() && shown.panel.unchanged(&frame) {
-            shown.frame = Some(Arc::clone(&frame));
-        } else if !same {
+        return;
+    }
+    let Some(frame) = shown.reader.frame() else { return };
+    let Some((through, _)) = shown.reader.through_seek(&frame).filter(|&(_, at)| at as u32 == epoch) else { return };
+    let mut updates = Vec::new();
+    let data;
+    if !shown.frame.as_ref().is_some_and(|last| Arc::ptr_eq(last, &frame)) {
+        if shown.data.is_none() || !shown.panel.unchanged(&frame) {
             let made = catch_unwind(AssertUnwindSafe(|| shown.panel.data(&frame)))
                 .unwrap_or_else(|p| Err(format!("This panel could not be made at hour {} ({})", frame.hour, panicked(&*p))));
-            data = with_cells(&frame, &made, shown.panel.live(), &mut shown.cells, panels.cells.as_ref(), shown.class);
+            let (mut bound, host) = {
+                let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
+                if !current() || reads.seek != seek { return; }
+                (reads.cells.remove(&id).unwrap_or_default(), reads.host.clone())
+            };
+            data = with_cells(&frame, &made, shown.panel.live(), &mut bound, host.as_ref(), shown.class);
+            let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
+            if !current() || reads.seek != seek {
+                drop(reads);
+                release(&mut bound, host.as_ref());
+                return;
+            }
+            if !bound.is_empty() { reads.cells.insert(id, bound); }
             updates.push(Update::Data(id, frame.hour, &data));
-            shown.frame = Some(Arc::clone(&frame));
             shown.data = Some(made);
             shown.pushed = Some(frame.hour);
         }
-        if shown.pushed.is_some_and(|last| through > last) {
-            updates.push(Update::Stands(id, through));
-            shown.pushed = Some(through);
-        }
-        if !updates.is_empty() { push.offer_from(session, PANEL, dated::message(clock, route, page_seek, &updates)); }
+        shown.frame = Some(frame);
+    }
+    if shown.pushed.is_some_and(|last| through > last) {
+        updates.push(Update::Stands(id, through));
+        shown.pushed = Some(through);
+    }
+    if !updates.is_empty() {
+        let packet = dated::message(clock, route, seek, &updates);
+        let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
+        if current() && reads.seek == seek { push.offer_from(session, PANEL, packet); }
     }
 }
 
@@ -396,7 +554,6 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     owner: Arc<E>,
     panels: Arc<Mutex<Panels>>,
     reads: Arc<Mutex<ProductReads>>,
-    needs_seed: Arc<AtomicBool>,
     get: fn(&E) -> &Playhead,
     anchored: fn(&E, Anchor),
     follow: Follow,
@@ -428,128 +585,69 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         let (driven, stopping) = (Arc::clone(&owner), Arc::clone(&stop));
         let panels = Arc::new(Mutex::new(Panels { stamp: (follow.clock(), follow.route(), playhead.epoch() as u32, 0), cells: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Panels::default() }));
         let weak = Arc::downgrade(&panels);
-        let reads = Arc::new(Mutex::new(ProductReads::default()));
+        let reads = Arc::new(Mutex::new(ProductReads { host: Some(HostCells { follow: follow.clone(), held: held.clone() }), ..Default::default() }));
         let active = reads.clone();
         let product_owner = Arc::downgrade(&owner);
         let wake = follow.rehooker();
         follow.product_hook(Arc::new(move |step, lanes| {
             let (Some(panels), Some(owner)) = (weak.upgrade(), product_owner.upgrade()) else { return };
-            let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-            if panels.products.is_empty() || get(&owner).epoch() != step.epoch() { return; }
-            let (clock, route, _, _) = panels.stamp;
-            let session = panels.session;
-            let page_seek = active.lock().unwrap_or_else(PoisonError::into_inner).seek;
-            let Some(push) = panels.push.clone() else { return };
-            let stamp = (clock, route, page_seek);
-            let quantum = get(&owner).step_hours();
-            let mut batch = panel::dated::ProductBatch::new(stamp);
-            let mut delivered = Vec::new();
-            let mut held_over = Vec::new();
-            let mut pending = Vec::new();
-            let stream = (step.epoch(), page_seek, step.restep(), step.piece());
-            if panels.stream.replace(stream) != Some(stream) || step.reset() {
-                let Panels { due, products, resend, .. } = &mut *panels;
-                due.clear();
-                due.extend(products.keys().map(|&id| (step.last(), id)));
-                *resend = Some(step.last());
-                if step.reset() {
-                    for product in products.values_mut() { product.pending_seed = None; }
+            let epoch = step.epoch();
+            let (stamp, session, push, due, resend) = {
+                let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
+                if panels.products.is_empty() || get(&owner).epoch() != epoch { return; }
+                let Some(push) = panels.push.clone() else { return };
+                let active = active.lock().unwrap_or_else(PoisonError::into_inner);
+                let (clock, route, _, _) = panels.stamp;
+                let stream = (epoch, active.seek, step.restep(), step.piece());
+                let changed = panels.stream.replace(stream) != Some(stream) || step.reset();
+                let resend = !changed && panels.resend.is_some_and(|reset| step.last() > reset);
+                if changed || resend {
+                    panels.resend = changed.then_some(step.last());
+                    let Panels { due, products, .. } = &mut *panels;
+                    due.clear();
+                    due.extend(products.keys().map(|&id| (step.last(), id)));
                 }
-            } else if panels.resend.is_some_and(|reset| step.last() > reset) {
-                panels.resend = None;
-                let Panels { due, products, .. } = &mut *panels;
-                due.clear();
-                due.extend(products.keys().map(|&id| (step.last(), id)));
-                for product in products.values_mut() { product.resend = true; }
-            }
-            while let Some(id) = panel::product::take_due(&mut panels.due, step.last()) {
-                let Some(product) = panels.products.get_mut(&id) else { continue };
-                let Some(cancelled) = active.lock().unwrap_or_else(PoisonError::into_inner).tokens.get(&id).cloned() else { continue };
-                let current = || !cancelled.load(Ordering::Acquire) && get(&owner).epoch() == step.epoch();
-                if !current() { held_over.push(id); continue; }
-                if !step.reset() && product.seed.is_some_and(|(_, head)| head < step.last()) {
-                    product.publish_seed(stamp, session, id, step.epoch(), &cancelled, &active, &push, || get(&owner).epoch());
-                } else {
-                    product.seed = None;
-                }
-                if let Some((e, g, at)) = product.pending_seed {
-                    if (e, g) != (step.epoch(), page_seek) || at >= step.last() || product.last.is_some_and(|(le, lg, _)| (le, lg) == (e, g)) {
-                        product.pending_seed = None;
-                    } else {
-                        let head = get(&owner).head(Instant::now()).clamp(at, step.last());
-                        if head < step.last() {
-                            let Some(change) = product.read_at(page_seek, step.epoch(), head, true, &cancelled, Some(panel::ProductStep { step, lanes, held: None, wake: Some(&wake) })) else {
-                                pending.push(id);
-                                continue;
-                            };
-                            if !current() { held_over.push(id); continue; }
-                            let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
-                            if reads.current(step.epoch(), page_seek) && current()
-                                && let Some((kind, body)) = change {
-                                push.offer_from(session, PANEL, panel::dated::encoded(clock, route, page_seek, id, head, kind, body));
-                                product.wire.commit();
-                            }
-                            product.pending_seed = None;
-                        } else {
-                            product.pending_seed = None;
-                        }
+                let mut due = Vec::new();
+                while let Some(id) = panel::product::take_due(&mut panels.due, step.last()) {
+                    if let (Some(work), Some(token)) = (panels.products.get(&id), active.tokens.get(&id)) {
+                        due.push((id, work.clone(), token.clone()));
                     }
                 }
-                if !product.joined && let Some((epoch, g, mut h)) = product.last && (epoch, g) == (step.epoch(), page_seek) && !step.reset() {
-                    while h.saturating_add(quantum) < step.first() {
-                        h += quantum;
-                        let (kind, body) = product.read_at(page_seek, epoch, h, false, &cancelled, None).flatten().unwrap_or((panel::dated::STANDS, &[]));
-                        let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
-                        if !reads.current(epoch, page_seek) || !current() { break; }
-                        push.offer_from(session, PANEL, panel::dated::encoded(clock, route, page_seek, id, h, kind, body));
-                        product.wire.commit();
-                    }
-                }
-                if !current() { held_over.push(id); continue; }
-                let joining = !product.joined;
-                let Some(change) = product.read_at(page_seek, step.epoch(), step.last(), step.reset(), &cancelled, Some(panel::ProductStep { step, lanes, held: None, wake: Some(&wake) })) else {
-                    if product.last.is_none_or(|(e, g, _)| (e, g) != (step.epoch(), page_seek))
-                        && !product.pending_seed.is_some_and(|(e, g, _)| (e, g) == (step.epoch(), page_seek))
-                    {
-                        product.pending_seed = Some((step.epoch(), page_seek, step.last()));
-                        product.joined = false;
-                    }
-                    pending.push(id);
+                ((clock, route, active.seek), panels.session, push, due, resend)
+            };
+            let mut replies = Vec::with_capacity(due.len());
+            for (id, work, token) in due {
+                if token.load(Ordering::Acquire) || get(&owner).epoch() != epoch { continue; }
+                let Some(mut product) = work.take() else {
+                    replies.push((id, token, step.last(), Some((panel::dated::WAITING, Vec::new()))));
                     continue;
                 };
-                if !current() { held_over.push(id); continue; }
-                delivered.push(id);
-                if let Some((kind, body)) = change {
-                    batch.changed(id, step.last(), kind, body);
-                } else if joining {
-                    batch.changed(id, step.last(), panel::dated::STANDS, &[]);
+                if product.started_on != Some((epoch, stamp.2)) {
+                    let hour = get(&owner).head(Instant::now()).min(step.last());
+                    let task = Seed { hour, stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone() };
+                    task.start(product, work, owner.clone(), get);
+                    replies.push((id, token, step.last(), Some((panel::dated::WAITING, Vec::new()))));
+                    continue;
                 }
-                product.joined = true;
-                if let Some(next) = product.next { panels.due.insert((next, id)); }
+                product.resend |= resend;
+                let input = panel::ProductStep { step, lanes, held: None, wake: Some(&wake) };
+                let (next, change) = product.step(input, stamp, session, &token, &active, &push, get(&owner));
+                work.put(product);
+                replies.push((id, token, next, change));
             }
-            for id in held_over {
-                if let Some(product) = panels.products.get_mut(&id) { product.resend = true; }
-                panels.due.insert((step.last().saturating_add(1), id));
+            let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
+            let active = active.lock().unwrap_or_else(PoisonError::into_inner);
+            if !active.current(epoch, stamp.2) || get(&owner).epoch() != epoch { return; }
+            let mut batch = panel::dated::ProductBatch::new(stamp);
+            for (id, token, next, change) in replies {
+                if token.load(Ordering::Acquire) { continue; }
+                panels.due.insert((next, id));
+                if let Some((kind, body)) = change { batch.changed(id, step.last(), kind, &body); }
             }
-            for &id in &pending { batch.changed(id, step.last(), panel::dated::WAITING, &[]); }
-            for id in pending {
-                if let Some(product) = panels.products.get_mut(&id) { product.resend = true; }
-                panels.due.insert((step.last(), id));
-            }
-            let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
-            if reads.current(step.epoch(), page_seek) && get(&owner).epoch() == step.epoch() {
-                push.offer_from(session, PANEL, batch.finish(Some(step.last())));
-                for id in delivered { if let Some(product) = panels.products.get_mut(&id) { product.wire.commit(); } }
-            } else {
-                for id in delivered {
-                    if let Some(product) = panels.products.get_mut(&id) { product.resend = true; }
-                    panels.due.insert((step.last().saturating_add(1), id));
-                }
-            }
+            push.offer_from(session, PANEL, batch.finish(Some(step.last())));
         }));
         playhead.share_budget(crate::lead::budget())?;
         playhead.lead(crate::lead::LEAD);
-        let needs_seed = Arc::new(AtomicBool::new(false));
         let driver_gate = Arc::new(WaitGate::new());
         let panel_gate = Arc::new(WaitGate::new());
         let panel_work = Arc::new(AtomicU64::new(0));
@@ -569,28 +667,13 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 panel_gate.wake();
             })
         });
-        let (seeds, waiting, tokens, gate, follow_ref) = (needs_seed.clone(), panels.clone(), reads.clone(), Arc::clone(&driver_gate), follow.clone());
+        let (waiting, gate, follow_ref) = (panels.clone(), Arc::clone(&driver_gate), follow.clone());
         let driver = std::thread::Builder::new().name("follow driver".into()).spawn(move || {
             let mut taken = Vec::new();
             let mut next = Instant::now();
             while !stopping.load(Ordering::Acquire) {
                 let seen = gate.stamp();
                 let playhead = get(&driven);
-                if seeds.swap(false, Ordering::AcqRel) {
-                    let mut held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
-                    let (clock, route, _, _) = held.stamp;
-                    let session = held.session;
-                    if let Some(push) = held.push.clone() {
-                        for (&id, product) in &mut held.products {
-                            if product.seed.is_none() { continue; }
-                            let reads = tokens.lock().unwrap_or_else(PoisonError::into_inner);
-                            let Some(token) = reads.tokens.get(&id).cloned() else { continue };
-                            let seek = reads.seek;
-                            drop(reads);
-                            product.publish_seed((clock, route, seek), session, id, playhead.epoch(), &token, &tokens, &push, || playhead.epoch());
-                        }
-                    }
-                }
                 let playing = playhead.playing();
                 let (has_work, told) = {
                     let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
@@ -621,7 +704,108 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             }
         })?;
 
-        Ok(Arc::new(Self { owner, panels, reads, needs_seed, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
+        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
+    }
+
+    fn install_panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32, reader: Option<Box<dyn PanelReader>>) -> Result<(), String> {
+        let class = (id % lanes.max(1), lanes.max(1));
+        if let Some(exact) = panel.exact() {
+            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            let push = panels.push.clone().ok_or("This playhead has no panel transport")?;
+            let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            reads.register(id);
+            panels.remove(id);
+            let epoch = self.playhead().epoch();
+            let hour = self.playhead().head(Instant::now());
+            let host = panels.cells.clone();
+            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), lanes: Vec::new(), wire: Default::default(), last: None, joined: false, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
+            let task = Seed { hour, stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker() };
+            let work = Arc::new(Work::new(None));
+            panels.due.insert((Hour::MIN, id));
+            panels.products.insert(id, work.clone());
+            drop(reads);
+            drop(panels);
+            task.start(product, work, self.owner.clone(), self.get);
+            self.driver_gate.wake();
+            return Ok(());
+        }
+        let reader = reader.expect("a prepared row reader");
+        {
+            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
+            panels.remove(id);
+            panels.shown.insert(id, Arc::new(Work::new(Some(Shown::new(panel, reader, class)))));
+            if panels.thread.is_none() {
+                let (held, stopping, gate, work_seq) = (Arc::downgrade(&self.panels), Arc::clone(&self.stop), Arc::clone(&self.panel_gate), Arc::clone(&self.panel_work));
+                let (owner, get, tokens) = (self.owner.clone(), self.get, self.reads.clone());
+                let thread = std::thread::Builder::new()
+                    .name("follow panels".into())
+                    .spawn(move || {
+                        let mut next: Option<Instant> = None;
+                        let mut seen_work = u64::MAX;
+                        while !stopping.load(Ordering::Acquire) {
+                            let seen = gate.stamp();
+                            let work = work_seq.load(Ordering::Acquire);
+                            let now = Instant::now();
+                            let Some(panels) = held.upgrade() else { return };
+                            let playhead = get(&owner);
+                            let playing = playhead.playing();
+                            let poll = (playhead.frame_period() / 2).clamp(Duration::from_millis(4), PANEL_POLL);
+                            let due = work != seen_work || next.is_some_and(|deadline| now >= deadline);
+                            let active = if due {
+                                let (jobs, stamp, version, session, push) = {
+                                    let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
+                                    panels.stamp.2 = playhead.epoch() as u32;
+                                    let reads = tokens.lock().unwrap_or_else(PoisonError::into_inner);
+                                    let jobs = panels.shown.iter().filter_map(|(&id, work)| Some((id, work.clone(), reads.tokens.get(&id)?.clone()))).collect::<Vec<_>>();
+                                    (jobs, panels.stamp, panels.frame_version, panels.session, panels.push.clone())
+                                };
+                                let active = !jobs.is_empty() && playing;
+                                if let Some(push) = push {
+                                    for (id, work, token) in jobs {
+                                        let Some(mut shown) = work.take() else { continue };
+                                        let (push, tokens, gate, sequence, owner) = (push.clone(), tokens.clone(), gate.clone(), work_seq.clone(), owner.clone());
+                                        run_panel(move || {
+                                            if !token.load(Ordering::Acquire) { evaluate(id, &mut shown, stamp, version, &token, &tokens, &push, session, get(&owner)); }
+                                            if work.put(shown) {
+                                                sequence.fetch_add(1, Ordering::Release);
+                                                gate.wake();
+                                            }
+                                        });
+                                    }
+                                }
+                                seen_work = work;
+                                active
+                            } else {
+                                !panels.lock().unwrap_or_else(PoisonError::into_inner).shown.is_empty() && playing
+                            };
+                            drop(panels);
+                            let timeout = if active {
+                                let deadline = match next {
+                                    Some(deadline) if deadline > now => deadline,
+                                    _ => {
+                                        let deadline = now + poll;
+                                        next = Some(deadline);
+                                        deadline
+                                    }
+                                };
+                                Some(deadline.saturating_duration_since(Instant::now()))
+                            } else {
+                                next = None;
+                                None
+                            };
+                            if gate.wait(seen, timeout) {
+                                return;
+                            }
+                        }
+                    })
+                    .map_err(|error| error.to_string())?;
+                panels.thread = Some(thread);
+            }
+        }
+        self.driver_gate.wake();
+        self.wake_panels();
+        Ok(())
     }
 
     pub fn playhead(&self) -> &Playhead {
@@ -661,82 +845,14 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
         lacking(table, self.held.get(table).copied().unwrap_or(false))
     }
 
-    fn panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32) -> Result<(), String> {
-        let class = (id % lanes.max(1), lanes.max(1));
-        {
-            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(exact) = panel.exact() {
-                let read = exact.advance.clone();
-                if panels.push.is_none() { return Err("This playhead has no panel transport".into()); }
-                panels.remove(id);
-                self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
-                let seed = Some((self.playhead().epoch(), self.playhead().head(Instant::now())));
-                let host = Some(HostCells { follow: self.follow.clone(), held: self.held.clone() });
-                let product = StepProduct { id, seed, pending_seed: None, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), class, host, followed: None, input: None, resend: false };
-                panels.due.insert((Hour::MIN, id));
-                panels.products.insert(id, product);
-                self.needs_seed.store(true, Ordering::Release);
-                drop(panels);
-                self.driver_gate.wake();
-                return Ok(());
-            }
-            let rows = panels.rows.clone().ok_or("This playhead's host gives panels no rows at the head")?;
-            let reader = rows.reader(panel.tables()).map_err(|error| format!("Rows at the head are refused: {error}"))?;
-            panels.remove(id);
-            panels.shown.insert(id, Shown::new(panel, reader, class));
-            if panels.thread.is_none() {
-                let (held, stopping, gate, work_seq) = (Arc::downgrade(&self.panels), Arc::clone(&self.stop), Arc::clone(&self.panel_gate), Arc::clone(&self.panel_work));
-                let (owner, get) = (self.owner.clone(), self.get);
-                let thread = std::thread::Builder::new()
-                    .name("follow panels".into())
-                    .spawn(move || {
-                        let mut next: Option<Instant> = None;
-                        let mut seen_work = u64::MAX;
-                        while !stopping.load(Ordering::Acquire) {
-                            let seen = gate.stamp();
-                            let work = work_seq.load(Ordering::Acquire);
-                            let now = Instant::now();
-                            let Some(panels) = held.upgrade() else { return };
-                            let playhead = get(&owner);
-                            let playing = playhead.playing();
-                            let poll = (playhead.frame_period() / 2).clamp(Duration::from_millis(4), PANEL_POLL);
-                            let due = work != seen_work || next.is_some_and(|deadline| now >= deadline);
-                            let active = if due {
-                                let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-                                panels.stamp.2 = playhead.epoch() as u32;
-                                evaluate(&mut panels);
-                                seen_work = work;
-                                !panels.shown.is_empty() && playing
-                            } else {
-                                !panels.lock().unwrap_or_else(PoisonError::into_inner).shown.is_empty() && playing
-                            };
-                            drop(panels);
-                            let timeout = if active {
-                                let deadline = match next {
-                                    Some(deadline) if deadline > now => deadline,
-                                    _ => {
-                                        let deadline = now + poll;
-                                        next = Some(deadline);
-                                        deadline
-                                    }
-                                };
-                                Some(deadline.saturating_duration_since(Instant::now()))
-                            } else {
-                                next = None;
-                                None
-                            };
-                            if gate.wait(seen, timeout) {
-                                return;
-                            }
-                        }
-                    })
-                    .map_err(|error| error.to_string())?;
-                panels.thread = Some(thread);
-            }
-        }
-        self.driver_gate.wake();
-        self.wake_panels();
-        Ok(())
+    fn prepare_panel(&self, panel: Box<dyn Panel>) -> Result<crate::registry::PreparedPanel<'_>, String> {
+        let reader = if panel.exact().is_some() {
+            None
+        } else {
+            let rows = self.panels.lock().unwrap_or_else(PoisonError::into_inner).rows.clone().ok_or("This playhead's host gives panels no rows at the head")?;
+            Some(rows.reader(panel.tables()).map_err(|error| format!("Rows at the head are refused: {error}"))?)
+        };
+        Ok(Box::new(move |id, lanes| self.install_panel(id, panel, lanes, reader)))
     }
 
     fn serve(&self, session: u64) {
@@ -771,10 +887,10 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
             let different_seek = panels.stamp.3 != anchor.seek;
             panels.stamp.3 = anchor.seek;
             if different_seek || anchor.sought || previous.is_some_and(|(playing, _)| playing && !anchor.playing) {
-                for shown in panels.shown.values_mut() {
-                    shown.frame = None;
-                    shown.data = None;
-                    shown.pushed = None;
+                panels.frame_version = panels.frame_version.wrapping_add(1);
+                let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+                for id in panels.shown.keys() {
+                    if let Some(token) = reads.tokens.get_mut(id) { std::mem::take(token).store(true, Ordering::Release); }
                 }
             }
         }
@@ -810,7 +926,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let (release, wait_release) = std::sync::mpsc::channel();
     let wait_release = Mutex::new(wait_release);
     let mut product = StepProduct {
-        id: 4, lanes: Vec::new(), seed: Some((1, 12)), pending_seed: None, last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, lanes: Vec::new(), pending_seed: None, started_on: None, last: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
@@ -819,7 +935,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     };
     let push = Push::default();
     std::thread::scope(|threads| {
-        threads.spawn(|| product.publish_seed((0, 1, 0), 0, 4, 1, &token, &reads, &push, || 1));
+        threads.spawn(|| product.publish_seed((0, 1, 0), 0, 12, 1, &token, &reads, &push, || 1));
         wait_started.recv().unwrap();
         reads.lock().unwrap().anchor(2, 9);
         release.send(()).unwrap();
@@ -837,7 +953,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
 fn a_product_lane_redeclared_on_its_table_keeps_every_flag_it_asked_for() {
     let follow = Follow::new(0);
     let mut product = StepProduct {
-        id: 4, lanes: Vec::new(), seed: None, pending_seed: None, last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1),
+        id: 4, lanes: Vec::new(), pending_seed: None, started_on: None, last: None, joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1),
         host: Some(HostCells { follow: follow.clone(), held: vec![true; 4] }), followed: None, input: None, resend: false,
         read: Arc::new(|_, _, _, _| panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }),
     };
