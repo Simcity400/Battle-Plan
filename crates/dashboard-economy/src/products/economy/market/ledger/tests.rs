@@ -9,7 +9,7 @@ fn opened(id: &str, frames: Vec<DecodedFrame>) -> Source {
 }
 
 fn ask(hour: i32) -> MarketLedgerTailParams {
-    MarketLedgerTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, statuses: None }
+    MarketLedgerTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, statuses: None, expanded: None }
 }
 
 fn event(id: u64, hour: i32, kind: u8, more: MarketEventRow) -> MarketEventRow {
@@ -72,7 +72,13 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     assert_eq!(contract.paid_raw.as_deref(), Some("48000"));
     assert_eq!(contract.quotes, [MarketQuote { variant: "6".into(), name: Some("Copperline Field Kit".into()), name_missing: None, price_raw: "96000".into() }], "a quote is labelled with its variant, never summed");
     assert_eq!((contract.items[0].delivered_raw.as_deref(), contract.items[0].contracted_raw.as_deref()), (Some("250000"), Some("500000")));
-    assert_eq!(contract.events.iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(), [(104, MarketContractEventKind::Delivery), (102, MarketContractEventKind::Payment), (100, MarketContractEventKind::ContractStarted)]);
+    assert_eq!((contract.events.len(), contract.events_total.as_str()), (0, "3"), "a collapsed contract counts its events and lists none");
+    let opened = MarketLedgerTailParams { expanded: Some(vec![contract.key.clone()]), ..ask(105) };
+    let open = load_tail_at(&prepared, &query, &opened, 105, &AtomicBool::new(false)).unwrap();
+    let listed = &open.rows[0];
+    assert_eq!(listed.events.iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(), [(104, MarketContractEventKind::Delivery), (102, MarketContractEventKind::Payment), (100, MarketContractEventKind::ContractStarted)]);
+    assert_eq!(listed.events[0].equipment.as_deref(), Some("Infantry Equipment I"), "an expanded contract's delivery names its design at its own hour");
+    assert_eq!((&listed.items, &listed.quotes, &listed.paid_raw), (&contract.items, &contract.quotes, &contract.paid_raw), "expanding a contract changes none of its row's measures");
     assert_eq!(mid.next_change, Some(106), "the next payment is the next change");
     let done = load_tail_at(&prepared, &query, &ask(110), 110, &AtomicBool::new(false)).unwrap();
     assert_eq!((done.rows[0].status, done.rows[0].ended_hour, done.rows[0].paid_raw.as_deref()), (MarketContractStatus::Ended, Some(108), Some("96000")));

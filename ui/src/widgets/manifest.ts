@@ -54,6 +54,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'land-battles': { load: () => import('./land-battles') },
   'ships-sunk': { load: () => import('./ships-sunk') },
   'peace-deals': { load: () => import('./peace-deals') },
+  'market-ledger': { load: () => import('./market-ledger') },
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'construction-log': { load: () => import('./construction-log') },
