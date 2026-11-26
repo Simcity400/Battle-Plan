@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-const held = { pattern: null as RegExp | null, requests: [] as (() => void)[] };
+let seen = () => {};
+const held = { pattern: null as RegExp | null, requests: [] as (() => void)[], seen: new Promise<void>(resolve => { seen = resolve; }) };
 const HOLD = { name: 'hold-modules', configureServer(server: { middlewares: { use(handle: (request: { url?: string }, response: unknown, next: () => void) => void): void } }) {
-  server.middlewares.use((request, _response, next) => { if (held.pattern?.test(request.url ?? '')) held.requests.push(next); else next(); });
+  server.middlewares.use((request, _response, next) => { if (held.pattern?.test(request.url ?? '')) { held.requests.push(next); seen(); } else next(); });
 } };
 
 type Mode = 'follow' | 'pin inside' | 'pin gap' | 'pin outside' | 'range';
@@ -76,10 +77,11 @@ test('a lane worker still loading the code two widgets need keeps the pipeline u
     await act('preload()');
     held.pattern = /\/ui\/src\/widgets\/(faction-upgrades\/factionUpgradesProjection|occupation-reserve-manpower\/occupationReserveBreakdownProjection)\.ts/;
     const ids = ['faction-upgrades|follow|main', 'occupation-reserve-manpower|follow|breakdown'];
-    const before = await act<Record<string, Read>>(`mount(${JSON.stringify(ids)}, 'failing', 100, false)`);
+    await act(`mount(${JSON.stringify(ids)}, 'failing', 100, false)`);
+    await held.seen;
+    const before = await act<Record<string, Read>>('states()');
     assert.equal(await act<boolean>('prepared()'), false, 'the workers have not loaded the projections they were asked for');
     assert.deepEqual(ids.map(id => before[id]!.main.map(state => state.split(':')[0])), [['loading'], ['loading']]);
-    assert.ok(held.requests.length > 0, 'a worker asked for a held module');
     held.pattern = null;
     for (const next of held.requests.splice(0)) next();
     const after = await act<Record<string, Read>>('whenPrepared()');

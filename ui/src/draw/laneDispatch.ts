@@ -182,9 +182,8 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
     if (m.type === 'init') { rate = m.rate; index = m.lane; lane = start(m.lane, m.lanes, m.port); return; }
     if (m.type === 'options') { rate = m.rate; return; }
     if (m.type === 'prepare') {
-      const ask = m.ask;
-      void Promise.all([...m.families.map(kind => viewOf(kind).prepare?.()), side.prepare?.(m.projections)])
-        .then(() => post({ type: 'prepared', lane: index, ask }));
+      const answer = () => post({ type: 'prepared', lane: index, ask: m.ask });
+      void Promise.resolve().then(() => Promise.all([...m.families.map(kind => viewOf(kind).prepare?.()), side.prepare?.(m.projections)])).then(answer, answer);
       return;
     }
     if (!lane) return;

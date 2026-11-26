@@ -100,6 +100,7 @@ export class Pipeline {
   private prepareAsk = 0;
   private preparedAt: number[];
   private heard: boolean[];
+  private down: (string | null)[];
   private readonly preparedWaiters = new Set<() => void>();
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
@@ -109,6 +110,7 @@ export class Pipeline {
     this.loads = Array.from({ length: count }, () => 0);
     this.preparedAt = Array.from({ length: count }, () => 0);
     this.heard = Array.from({ length: count }, () => false);
+    this.down = Array.from({ length: count }, () => null);
     this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
     this.payloads = host.lanes.map(lane => new PayloadSender(message => lane.postMessage(message)));
@@ -291,8 +293,10 @@ export class Pipeline {
   private unstarted(lane: number, event: ErrorEvent) {
     if (this.closed || this.heard[lane]) return;
     const reason = `Lane ${lane} did not start: ${event.message || 'its script did not load'}`;
+    this.heard[lane] = true;
+    this.down[lane] = reason;
     this.preparedAt[lane] = Infinity;
-    this.receive(lane, { type: 'failure', lane, reason });
+    for (const widget of [...this.widgets.values()]) if (widget.lane === lane) this.receive(lane, { type: 'widget-failed', lane, widget: widget.id, reason });
     this.settlePrepared();
   }
 
@@ -395,11 +399,12 @@ export class Pipeline {
     const cost = (kind !== undefined ? this.kindCost.get(kind) : undefined) ?? DEFAULT_COST;
     const average = this.costLoads.reduce((sum, load) => sum + load, 0) / this.costLoads.length;
     const held = key === undefined ? undefined : this.placed.get(key);
-    if (held !== undefined && this.costLoads[held]! + cost <= average + Math.max(cost, 1)) return { lane: held, cost };
+    if (held !== undefined && this.down[held] === null && this.costLoads[held]! + cost <= average + Math.max(cost, 1)) return { lane: held, cost };
+    const load = (at: number) => (this.down[at] === null ? this.costLoads[at]! : Infinity);
     let lane = 0;
     for (let at = 1; at < this.costLoads.length; at++) {
-      if (this.costLoads[at]! < this.costLoads[lane]! - 1e-6
-        || (Math.abs(this.costLoads[at]! - this.costLoads[lane]!) <= 1e-6 && this.loads[at]! < this.loads[lane]!)) lane = at;
+      if (load(at) < load(lane) - 1e-6
+        || (Math.abs(load(at) - load(lane)) <= 1e-6 && this.loads[at]! < this.loads[lane]!)) lane = at;
     }
     if (key !== undefined) this.placed.set(key, lane);
     return { lane, cost };
@@ -418,6 +423,8 @@ export class Pipeline {
     this.widgets.set(id, widget);
     this.page.mount(id, { route: 0, lane, ...(options.owner !== undefined ? { owner: options.owner } : {}), offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
       dated: () => this.redated.add(widget) });
+    const down = this.down[lane];
+    if (down !== null) queueMicrotask(() => this.receive(lane, { type: 'widget-failed', lane, widget: id, reason: down }));
     return id;
   }
 
@@ -855,8 +862,7 @@ const laneNeeds = new WeakMap<PlaybackController, LaneNeeds>();
 
 export function prepareLanes(clock: PlaybackController, needs: LaneNeeds) {
   laneNeeds.set(clock, needs);
-  const current = byClock.get(clock)?.pipeline;
-  if (current) prepareFrom(clock, current);
+  byClock.get(clock)?.pipeline.prepare(needs.families, needs.projections);
 }
 
 function prepareFrom(clock: PlaybackController, pipeline: Pipeline) {

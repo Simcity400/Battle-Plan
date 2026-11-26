@@ -156,6 +156,7 @@ Object.assign(window, { timeSweep: {
   cases: () => cases(),
   requests: () => requests.splice(0),
   prepared: () => pipeline?.prepared() ?? false,
+  states: () => Object.fromEntries(mounted.map(item => [item.id, read(item)])),
   async whenPrepared() { await pipeline?.whenPrepared(); await settle(); return Object.fromEntries(mounted.map(item => [item.id, read(item)])); },
   asked: () => asked.splice(0),
   preload: () => loadEveryWidgetModule(),
