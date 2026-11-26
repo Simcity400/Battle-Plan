@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import { registerWidgets } from '../../dashboard/definitions.ts';
 import { addGridItemBelow, seekPositionFor } from '../../dashboard/model.ts';
 import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model';
-import { resolveOptions, setOption, validOption } from '../../dashboard/options.ts';
+import { resolveOptions, setOption } from '../../dashboard/options.ts';
+import { parseTemplate } from '../../dashboard/storage.ts';
+import { OPTIONS as MINEFIELD_OPTIONS } from '../../widgets/minefields/definition.ts';
+import { factionMemberOptions } from '../race/factionMembersOptions.ts';
+import { partsRaceOptions } from '../race/partsRaceOptions.ts';
 import { jumpItem } from '../jump.ts';
-import { breakdownOption, CLOSED, DRILL_OPTION, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, reduceDrill, savedDrill } from './drillState.ts';
+import { breakdownOption, CLOSED, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, reduceDrill, savedDrill } from './drillState.ts';
 import type { DrillState } from './drillState';
 import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
 
@@ -47,11 +51,28 @@ test('a drill opens following playback only under a following widget, when playi
 registerWidgets([{ kind: 'drill-test', version: 1, title: 'Drill test', icon: 'grid', timeModes: ['follow', 'campaign'], defaultTime: 'campaign',
   scope: 'history', data: true, history: true, minSize: { w: 3, h: 4 }, defaultSize: { w: 6, h: 8 } }]);
 
-test('the drill settings are ordinary options', () => {
+test('the drill settings are ordinary options and a saved dashboard holding a removed drill key loads cleanly', () => {
   const show = breakdownOption([{ id: 'income', label: 'Daily income' }], 'Balance');
-  assert.ok(validOption(DRILL_OPTION, 'popout'));
-  assert.equal(resolveOptions([DRILL_OPTION, show], undefined).drill, 'inline');
   assert.deepEqual(setOption([show], undefined, 'show', 'income'), { show: 'income' });
+
+  const saved = parseTemplate({
+    version: 1,
+    name: 'Saved layout',
+    alignment: 'calendar',
+    roles: [{ id: 'primary', label: 'Primary recording', selectedTag: null }],
+    tracks: [{ id: 'main', roleId: 'primary', label: 'Main campaign', branchIndex: 0, anchorOffset: null }],
+    widgets: [{
+      id: 'w1', kind: 'minefields', configVersion: 1, title: 'Minefields', trackIds: ['main'],
+      countries: { kind: 'all' }, time: { mode: 'follow' }, options: { drill: 'popout', order: 'name' },
+    }],
+    layouts: { lg: [{ i: 'w1', x: 0, y: 0, w: 6, h: 8 }] },
+  });
+  assert.ok(saved, 'a saved dashboard with legacy { drill: "popout" } parses cleanly');
+  const stored = saved.widgets[0]!.options;
+  assert.deepEqual(resolveOptions(MINEFIELD_OPTIONS, stored), { regions: '', order: 'name' });
+  assert.equal('drill' in resolveOptions(MINEFIELD_OPTIONS, stored), false);
+  assert.equal('drill' in resolveOptions(factionMemberOptions, { drill: 'popout' }), false);
+  assert.equal('drill' in resolveOptions(partsRaceOptions('type'), { drill: 'popout' }), false);
 });
 
 test('a pinned widget goes directly below its source, as wide as it', () => {
