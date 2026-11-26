@@ -378,13 +378,15 @@ export interface Placement {
   readonly origin: readonly [number, number];
 }
 
+const specified = (canvas: HTMLCanvasElement, property: 'width' | 'height') => (canvas.attributeStyleMap.get(property) as CSSUnitValue).value;
+
 async function placements(): Promise<Placement[]> {
   const boxes = await deviceBoxes();
   return canvases().map(canvas => {
     const rect = canvas.getBoundingClientRect();
     return {
       id: familyOf(canvas), backing: [shown.get(canvas)?.width ?? 0, shown.get(canvas)?.height ?? 0], box: boxes.get(canvas) ?? [0, 0],
-      css: [parseFloat(canvas.style.width), parseFloat(canvas.style.height)], dpr: devicePixelRatio * canvas.currentCSSZoom,
+      css: [specified(canvas, 'width'), specified(canvas, 'height')], dpr: devicePixelRatio * canvas.currentCSSZoom,
       origin: [rect.left * devicePixelRatio, rect.top * devicePixelRatio],
     };
   });

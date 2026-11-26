@@ -32,7 +32,7 @@ async function exactOnScreen(page: NativePage, cdp: Cdp, label: string, settle =
     assert.ok(row.compared > 0, `${label}, ${row.id}: some of the canvas is on screen to compare`);
     assert.deepEqual(row.backing, row.box, `${label}, ${row.id}: the backing ${row.backing.join('×')} is the canvas's device-pixel box ${row.box.join('×')}`);
     assert.deepEqual(row.backing, row.css.map(css => Math.round(css * row.dpr)), `${label}, ${row.id}: the backing is the CSS size × ${row.dpr}`);
-    assert.ok(row.css.every((css, axis) => Math.abs(css * row.dpr - row.backing[axis]!) < 1e-3), `${label}, ${row.id}: the CSS size is whole device pixels`);
+    assert.ok(row.css.every((css, axis) => Math.abs(css * row.dpr - row.backing[axis]!) < 1e-5), `${label}, ${row.id}: the CSS size ${row.css.join('×')} is whole device pixels at ${row.dpr}`);
     assert.equal(row.differing, 0, `${label}, ${row.id}: ${row.differing} of ${row.compared} pixels on screen differ from the painter's bitmap by more than 1 level (worst ${row.worst}); canvas at device ${row.origin.map(v => v.toFixed(3)).join(', ')}; ${row.samples.join('; ')}`);
   }
   return rows;
