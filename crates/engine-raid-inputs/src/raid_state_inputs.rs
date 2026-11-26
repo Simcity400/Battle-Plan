@@ -343,6 +343,7 @@ struct Scratch {
     controller: u32,
     slot: u32,
     fields: [u8; STATE_RECORD],
+    details: bool,
     origin: bool,
     level: Option<i32>,
     supply: bool,
@@ -357,6 +358,7 @@ impl Default for Scratch {
             controller: 0,
             slot: 0,
             fields: [0; STATE_RECORD],
+            details: false,
             origin: false,
             level: None,
             supply: false,
@@ -380,6 +382,7 @@ struct Nation {
     end: usize,
     origins: Array,
     any_origin: bool,
+    overrides: bool,
     companion: usize,
     routes: Array,
     nodes: Array,
@@ -398,6 +401,7 @@ impl Default for Nation {
             end: 0,
             origins: NO_ARRAY,
             any_origin: false,
+            overrides: false,
             companion: 0,
             routes: NO_ARRAY,
             nodes: NO_ARRAY,
@@ -559,6 +563,7 @@ impl Buffers {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
+    pub detail_ticks: [u64; 3],
     pub outcomes: [Outcome; 4],
     pub token_bytes: usize,
     pub required: Capacity,
@@ -566,6 +571,7 @@ pub struct Walk {
 
 #[derive(Default)]
 struct Totals {
+    detail_ticks: [u64; 3],
     lens: [usize; 4],
     token_bytes: usize,
     unread_states: u32,
@@ -575,7 +581,8 @@ struct Totals {
 
 #[derive(Clone, Copy)]
 pub struct Selection<'a> {
-    pub states: &'a dyn Fn(u32) -> bool,
+    pub states: Option<&'a dyn Fn(u32) -> bool>,
+    pub extra_inputs: &'a dyn Fn(u32) -> bool,
     pub countries: &'a dyn Fn(u32) -> bool,
     pub any_country: bool,
 }
@@ -586,7 +593,8 @@ fn every(_: u32) -> bool {
 
 impl Selection<'static> {
     pub const ALL: Self = Self {
-        states: &every,
+        states: Some(&every),
+        extra_inputs: &|_| false,
         countries: &every,
         any_country: true,
     };
@@ -634,8 +642,9 @@ fn walk_with(
             }
         }
     };
-    match result {
+    let mut walk = match result {
         Ok(()) => Walk {
+            detail_ticks: totals.detail_ticks,
             outcomes: [
                 outcome(totals.lens[0], totals.unread_states),
                 outcome(totals.lens[1], totals.unread_states),
@@ -646,6 +655,7 @@ fn walk_with(
             required,
         },
         Err(reason) => Walk {
+            detail_ticks: totals.detail_ticks,
             outcomes: {
                 buffers.read_countries.clear();
                 [Outcome::Unavailable { reason }; 4]
@@ -653,6 +663,22 @@ fn walk_with(
             token_bytes: 0,
             required,
         },
+    };
+    if select.states.is_none() {
+        walk.outcomes[1..3].fill(Outcome::Rows { len: 0 });
+        if !select.any_country {
+            walk.outcomes[3] = Outcome::Rows { len: 0 };
+        }
+    }
+    walk
+}
+
+#[inline]
+fn profile_time() -> u64 {
+    if cfg!(feature = "phase_cpu") {
+        engine_native_memory::clock::qpc() as u64
+    } else {
+        0
     }
 }
 
@@ -731,6 +757,12 @@ const STATE_FIELDS: [RecordField; 11] = [
     field(cstate::DYNAMIC_MODIFIERS, STATE_CONTAINER, 0x38),
     field(cstate::COUNTRY_MODIFIERS, STATE_HASH, 17),
 ];
+const INPUT_FIELDS: [RecordField; 9] = [
+    STATE_FIELDS[0], STATE_FIELDS[1], STATE_FIELDS[2], STATE_FIELDS[3], STATE_FIELDS[4],
+    STATE_FIELDS[5], STATE_FIELDS[6], STATE_FIELDS[8], STATE_FIELDS[10],
+];
+const INPUT_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&INPUT_FIELDS, STATE_RECORD).expect("valid input layout");
 const STATE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_FIELDS, STATE_RECORD).expect("valid record layout");
 const STATE_HEAD_RECORD: usize = 16;
@@ -746,14 +778,17 @@ const COUNTRY_FIELDS: [RecordField; 1] = [field(ccountry::RESOURCES, 0, 8)];
 const COUNTRY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COUNTRY_FIELDS, 8).expect("valid record layout");
 
-const RESOURCES_FIELDS: [RecordField; 4] = [
+const RESOURCES_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(ccountry_resources::OWNER, 8, 4),
     field(ccountry_resources::RESOURCE_ORIGINS, 16, 16),
-    field(ccountry_resources::BUILDING_RESOURCE_OVERRIDES, 32, 16),
 ];
 const RESOURCES_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&RESOURCES_FIELDS, 48).expect("valid record layout");
+    RecordLayout::new(&RESOURCES_FIELDS, 32).expect("valid record layout");
+const OVERRIDE_FIELD: [RecordField; 1] =
+    [field(ccountry_resources::BUILDING_RESOURCE_OVERRIDES, 0, 16)];
+const OVERRIDE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&OVERRIDE_FIELD, 16).expect("valid override layout");
 
 const SYSTEM_FIELDS: [RecordField; 2] = [
     field(0, 0, 16),
@@ -1073,7 +1108,7 @@ fn walk_inner(
         memo,
     } = buffers;
 
-    let resources =
+    let resources = if select.states.is_some() || select.any_country {
         match resource_database(memory, base, descriptors, resource_keys, bytes)? {
             Ok(len) => len,
             Err(demand) => {
@@ -1082,7 +1117,10 @@ fn walk_inner(
                 totals.unread_countries = 1;
                 return Ok(());
             }
-        };
+        }
+    } else {
+        0
+    };
     need(&mut required.resources, resources);
     let key_capacity = resources
         .checked_mul(3)
@@ -1155,6 +1193,7 @@ fn walk_inner(
         let mut sel_ids = [0_u32; BATCH];
         let mut sel_ptrs = [0_usize; BATCH];
         let mut sel_len = 0;
+        let mut details = false;
         let mut head_ids = [0_u32; BATCH];
         let mut head_ptrs = [0_usize; BATCH];
         let mut head_len = 0;
@@ -1163,7 +1202,12 @@ fn walk_inner(
             if pointer != 0 {
                 present = true;
                 let id = next as u32;
-                if (select.states)(id) {
+                let scheduled = select.states.is_some_and(|states| states(id));
+                if scheduled || (select.extra_inputs)(id) {
+                    if sel_len != 0 && scheduled != details {
+                        break;
+                    }
+                    details = scheduled;
                     sel_ptrs[sel_len] = pointer;
                     sel_ids[sel_len] = id;
                     sel_len += 1;
@@ -1180,7 +1224,7 @@ fn walk_inner(
             records(
                 memory,
                 &sel_ptrs[..sel_len],
-                &STATE_LAYOUT,
+                if details { &STATE_LAYOUT } else { &INPUT_LAYOUT },
                 record,
                 "state resource fields unreadable",
             )?;
@@ -1198,6 +1242,7 @@ fn walk_inner(
                 }
                 states[count] = Scratch {
                     pointer: sel_ptrs[row],
+                    details,
                     id,
                     controller: u32_at(&fields, STATE_CONTROLLER),
                     fields,
@@ -1308,6 +1353,9 @@ fn walk_inner(
         if slot != 0 {
             nations[slot as usize].first = first;
             nations[slot as usize].end = end;
+            nations[slot as usize].overrides = order[first..end]
+                .iter()
+                .any(|&(_, index)| states[index as usize].details);
         }
         first = end;
     }
@@ -1358,9 +1406,8 @@ fn walk_inner(
             bytes,
             "country resources fields unreadable",
         )?;
-        let mut entries = [NO_ARRAY; BATCH];
         for (index, &slot) in chunk.iter().enumerate() {
-            let at = index * 48;
+            let at = index * RESOURCES_LAYOUT.stride();
             if u64_at(bytes, at) != resources_vtable {
                 return Err("country resources vtable mismatch");
             }
@@ -1375,35 +1422,56 @@ fn walk_inner(
             } else {
                 NO_ARRAY
             };
-            entries[index] = Array::from_header(
-                header16(bytes, at + 32),
-                ccountry_resources::OVERRIDE_STRIDE,
-            )
-            .ok_or("building resource overrides invalid")?;
         }
-        for (index, &slot) in chunk.iter().enumerate() {
-            let nation = nations[slot as usize];
-            if !(select.countries)(nation.id) && nation.first == nation.end {
-                continue;
+        let override_started = profile_time();
+        let mut override_slots = [0_u32; BATCH];
+        let mut override_count = 0;
+        for &slot in chunk {
+            let nation = &nations[slot as usize];
+            if nation.overrides || (select.countries)(nation.id) {
+                addresses[override_count] = nation.resources;
+                override_slots[override_count] = slot;
+                override_count += 1;
             }
-            let written = overrides_of(
+        }
+        if override_count != 0 {
+            records(
                 memory,
-                entries[index],
-                nation.id,
-                descriptors,
+                &addresses[..override_count],
+                &OVERRIDE_LAYOUT,
                 bytes,
-                Buffer::GrowingFrom(overrides, totals.lens[3]),
-                required,
-                &mut totals.demand[3],
+                "building resource overrides unreadable",
             )?;
-            match written {
-                Some(rows) => {
-                    totals.lens[3] += rows;
-                    read_countries.push(nation.id);
+            let mut entries = [NO_ARRAY; BATCH];
+            for (index, entry) in entries[..override_count].iter_mut().enumerate() {
+                *entry = Array::from_header(
+                    header16(bytes, index * OVERRIDE_LAYOUT.stride()),
+                    ccountry_resources::OVERRIDE_STRIDE,
+                )
+                .ok_or("building resource overrides invalid")?;
+            }
+            for (&slot, entry) in override_slots[..override_count].iter().zip(entries) {
+                let nation = &nations[slot as usize];
+                let written = overrides_of(
+                    memory,
+                    entry,
+                    nation.id,
+                    descriptors,
+                    bytes,
+                    Buffer::GrowingFrom(overrides, totals.lens[3]),
+                    required,
+                    &mut totals.demand[3],
+                )?;
+                match written {
+                    Some(rows) => {
+                        totals.lens[3] += rows;
+                        read_countries.push(nation.id);
+                    }
+                    None => totals.unread_countries += 1,
                 }
-                None => totals.unread_countries += 1,
             }
         }
+        totals.detail_ticks[2] += profile_time().saturating_sub(override_started);
         let mut start = 0;
         while start < chunk.len() {
             let mut end = start;
@@ -1675,6 +1743,8 @@ fn walk_inner(
     names.table.fill((0, 0, 0));
     let mut next = 0;
     while next < count {
+        let details = states[next].details;
+        let pool_len = if details { pool_len } else { 0 };
         let mut members = [0_usize; BATCH];
         let mut accumulator_spans = [(0, 0); BATCH];
         let mut container_spans = [(0, 0); BATCH];
@@ -1682,6 +1752,9 @@ fn walk_inner(
         let mut used = 0;
         while next < count && len < BATCH {
             let state = &states[next];
+            if state.details != details {
+                break;
+            }
             if state.skipped {
                 next += 1;
                 continue;
@@ -1689,7 +1762,11 @@ fn walk_inner(
             let accumulator =
                 Array::from_header(state.header(STATE_ACCUMULATOR), modifier_entry::STRIDE)
                     .ok_or("modifier accumulator header unreadable or invalid")?;
-            let container = container_array(base, state)?;
+            let container = if details {
+                container_array(base, state)?
+            } else {
+                NO_ARRAY
+            };
             let size = pool_len
                 + accumulator.count as usize * modifier_entry::STRIDE
                 + container.count as usize * dynamic_modifier_entry::STRIDE;
@@ -1721,37 +1798,46 @@ fn walk_inner(
             continue;
         }
         let members = &members[..len];
+        let pool_started = profile_time();
         let mut pools = [0_usize; BATCH];
-        for (pool, &member) in pools.iter_mut().zip(members) {
-            let header: [u8; 24] = states[member].fields[STATE_POOL..STATE_POOL + 24]
-                .try_into()
-                .unwrap();
-            *pool = cstrategic_resource_pool::from_header(base, header, resources as u32 + 1)?.data;
+        if details {
+            for (pool, &member) in pools.iter_mut().zip(members) {
+                let header: [u8; 24] = states[member].fields[STATE_POOL..STATE_POOL + 24]
+                    .try_into()
+                    .unwrap();
+                *pool = cstrategic_resource_pool::from_header(base, header, resources as u32 + 1)?.data;
+            }
         }
         let pool_bytes = len * pool_len;
         let accumulator_bytes: usize = accumulator_spans[..len].iter().map(|span| span.1).sum();
         let (pool_region, rest) = batch[..used].split_at_mut(pool_bytes);
         let (accumulator_region, container_region) = rest.split_at_mut(accumulator_bytes);
-        if memory.copy_records(
-            RecordSources::Pointers(&pools[..len]),
-            &pool_layout,
-            pool_region,
-        ) != len
+        if details
+            && memory.copy_records(
+                RecordSources::Pointers(&pools[..len]),
+                &pool_layout,
+                pool_region,
+            ) != len
         {
             return Err("state resource pool unreadable");
         }
+        totals.detail_ticks[0] += profile_time().saturating_sub(pool_started);
         gather(
             memory,
             &accumulator_spans[..len],
             accumulator_region,
             "modifier accumulator entry unreadable",
         )?;
-        gather(
-            memory,
-            &container_spans[..len],
-            container_region,
-            "dynamic modifier entry unreadable",
-        )?;
+        if details {
+            let modifier_started = profile_time();
+            gather(
+                memory,
+                &container_spans[..len],
+                container_region,
+                "dynamic modifier entry unreadable",
+            )?;
+            totals.detail_ticks[1] += profile_time().saturating_sub(modifier_started);
+        }
         let mut buckets = [0_usize; BATCH];
         let mut probed = [usize::MAX; BATCH];
         let mut probes = 0;
@@ -1798,8 +1884,10 @@ fn walk_inner(
                     Ok(0)
                 }
             };
+            let resource_started = profile_time();
             let first_row = totals.lens[1];
-            grow(resource_rows, first_row + resources)?;
+            let descriptors = if details { descriptors } else { &[] };
+            grow(resource_rows, first_row + descriptors.len())?;
             let mut rows = 0;
             for (slot, (descriptor, key_slots)) in
                 descriptors.iter().zip(resource_key_slots).enumerate()
@@ -1825,6 +1913,7 @@ fn walk_inner(
             }
             totals.demand[0] += rows;
             need(&mut required.resource_rows, totals.demand[0]);
+            totals.detail_ticks[0] += profile_time().saturating_sub(resource_started);
             let entries = container.len() / dynamic_modifier_entry::STRIDE;
             totals.demand[1] += entries;
             need(&mut required.modifier_rows, totals.demand[1]);
@@ -1901,6 +1990,7 @@ fn walk_inner(
             let fits = totals.lens[0] < inputs.len()
                 && first_row + rows <= resource_rows.len()
                 && totals.lens[2] + entries <= modifiers.len();
+            let modifier_started = profile_time();
             let mut token_end = totals.token_bytes;
             for ordinal in 0..entries {
                 let entry = &container[ordinal * dynamic_modifier_entry::STRIDE..];
@@ -1933,6 +2023,7 @@ fn walk_inner(
                     token_len: len,
                 };
             }
+            totals.detail_ticks[1] += profile_time().saturating_sub(modifier_started);
             need(&mut required.token_bytes, totals.demand[2]);
             if !fits || token_end > tokens.len() {
                 totals.unread_states += 1;

@@ -3644,6 +3644,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 let projects = queue!(acquisition::Job::GatedProjects(projects));
                 (queue!(acquisition::Job::Gated(request)), projects, rest)
             });
+            #[cfg(feature = "phase_cpu")]
+            let raid_dispatch = qpc();
             let (launch_store, state_stores) = unsafe {
                 (
                     take_slice_store(shared, collector_certificates::slicing::RAID_LAUNCH),
@@ -3678,6 +3680,12 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     queue!(acquisition::Job::RaidStateInputs(inputs)),
                 )
             });
+            #[cfg(feature = "phase_cpu")]
+            collector_workers::hour_stages::record_part(
+                collector_workers::hour_stages::Part::RaidStateDispatch,
+                raid_dispatch,
+                qpc(),
+            );
             let countries_pending = queue!(acquisition::Job::Countries(
                 frame.extended.take_countries_request(
                     &country_snapshot,
@@ -5988,8 +5996,18 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             }
             let (mut raid_state_request, _, raid_state_failure) =
                 completed!(raid_state_pending, RaidState);
+            #[cfg(feature = "phase_cpu")]
+            let raid_join = qpc();
             let (raid_state_inputs_request, _, raid_state_inputs_failure) =
                 completed!(raid_state_inputs_pending, RaidStateInputs);
+            #[cfg(feature = "phase_cpu")]
+            let raid_return = qpc();
+            #[cfg(feature = "phase_cpu")]
+            collector_workers::hour_stages::record_part(
+                collector_workers::hour_stages::Part::RaidStateWait,
+                raid_join,
+                raid_return,
+            );
             raid_state_request.restore_inputs(
                 raid_state_inputs_request,
                 raid_state_inputs_failure.is_none(),
@@ -5997,6 +6015,12 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let state_stores = frame
                 .extended
                 .restore_raid_state_request(raid_state_request, raid_state_failure.is_none());
+            #[cfg(feature = "phase_cpu")]
+            collector_workers::hour_stages::record_part(
+                collector_workers::hour_stages::Part::RaidStateHandoff,
+                raid_return,
+                qpc(),
+            );
             if let Some(pending) = raid_targets_pending {
                 let (raid_targets_request, _, raid_targets_failure) =
                     completed!(pending, RaidTargets);

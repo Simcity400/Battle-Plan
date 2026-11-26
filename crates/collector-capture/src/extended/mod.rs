@@ -2279,8 +2279,13 @@ impl Captured {
         &self,
         table: TableId,
     ) -> Option<&collector_certificates::slicing::SliceSelection> {
-        collector_certificates::slicing::family_of(table)
-            .map(|family| self.family_selection(family))
+        collector_certificates::slicing::family_of(table).map(|family| {
+            if family == collector_certificates::slicing::RAID_STATE {
+                self.raid_state_inputs.table_selection(table)
+            } else {
+                self.family_selection(family)
+            }
+        })
     }
 
     pub fn research_carried_owners(&self) -> Option<&[u32]> {
