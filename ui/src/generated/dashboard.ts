@@ -463,7 +463,7 @@ part?: string,
 /**
  * The tile's hours the tag holds no value in, with why.
  */
-missing: Array<MissingSpan>, parts: Array<TilePart>,
+missing: Array<MissingSpan>, partial: Array<MissingSpan>, parts: Array<TilePart>,
 /**
  * Asked with marks, for a series with drops.
  */
@@ -4965,11 +4965,11 @@ export type RaidTallyParams = { branchId: string, countries: Array<CountryRef>, 
 export type RaidTallySpan = { firstHour: number, lastHour: number, };
 export type RaidTallySlotRun = { firstHour: number, lastHour: number, launched: number, succeeded: number, };
 export type RaidTallySlotSeries = { slot: number, runs: Array<RaidTallySlotRun>, membership: Array<RaidTallySpan> | null, };
-export type RaidTallyReply = { hour: number, nextChange: number | null, available: boolean | null, unavailable: string | null, unattributed: number, series: Array<RaidTallySlotSeries>, missing: Array<MissingSpan>, warnings: Array<string>, };
+export type RaidTallyReply = { hour: number, nextChange: number | null, available: boolean | null, unavailable: string | null, rankMissing?: string, unattributed: number, series: Array<RaidTallySlotSeries>, missing: Array<MissingSpan>, partial: Array<MissingSpan>, warnings: Array<string>, };
 export type RaidTallyMetric = "both" | "launched" | "succeeded";
 export type RaidTallyAtParams = { branchId: string, hour: number, countries: Array<CountryRef>, group?: GroupSelection, top?: number, metric: RaidTallyMetric, };
 export type RaidTallyAtRow = { country: CountryRef, tag: string, launched: number, succeeded: number, missing: string | null, };
-export type RaidTallyAtReply = { branchId: string, hour: number, firstHour: number, lastHour: number, metric: RaidTallyMetric, available: boolean | null, unavailable: string | null, rows: Array<RaidTallyAtRow>, unattributed: number, unattributedLaunched: number, unattributedSucceeded: number, missing: string | null, warnings: Array<string>, };
+export type RaidTallyAtReply = { branchId: string, hour: number, firstHour: number, lastHour: number, metric: RaidTallyMetric, available: boolean | null, unavailable: string | null, rows: Array<RaidTallyAtRow>, unattributed: number, unattributedLaunched: number, unattributedSucceeded: number, missing: string | null, partial?: string, warnings: Array<string>, };
 export type RegionalWeatherParams = { branchId: string,
 /**
  * The window's first hour; with `windowDays`, left out: the window is that many days ending with the last hour's day.
