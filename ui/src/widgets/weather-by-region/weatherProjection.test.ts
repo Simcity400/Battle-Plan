@@ -4,7 +4,7 @@ import { createBoundedReadView } from '../../families/boundedView.ts';
 import { projectLaneRunsToPixels } from '../../families/heat/lanesLayout.ts';
 import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { RegionalWeatherReply } from '../../generated/dashboard';
-import { projectWeather } from './weatherProjection.ts';
+import { projectWeather, weatherProjection } from './weatherProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -175,4 +175,10 @@ test('a reply held through its last unchanged hour draws to the displayed hour, 
   assert.ok(held.inspect?.(0, 54), 'the drawn hours inspect');
   const unread = projectWeather(view(50, reply(50, { columns: { ...reply(50).columns, regions: [] }, rankMissing: 'Weather was not recorded at this hour, so the most active regions are not known', empty: { kind: 'unread', reason: 'Weather was not recorded at this hour, so the most active regions are not known' } })), OPTIONS);
   assert.equal(unread.emptyKind, 'unavailable', 'an unknown rank is never "no weather"');
+});
+
+test('a held weather reply asks to project again each hour until its last unchanged hour', () => {
+  const held = reply(50, { validThrough: 59 });
+  assert.equal(weatherProjection.nextChange?.(view(55, held), OPTIONS), 56);
+  assert.equal(weatherProjection.nextChange?.(view(59, held), OPTIONS), Infinity);
 });

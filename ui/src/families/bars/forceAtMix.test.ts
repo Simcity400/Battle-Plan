@@ -82,6 +82,8 @@ test('a part keeps its colour when the parts beside it change (convoys alone or 
   const both = colours(project([{ key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }], [2, 3]));
   const alone = colours(project([{ key: 'convoys', name: 'Convoys', unresolved: false }], [3]));
   const added = colours(project([{ key: 'aaa', name: 'Earlier kind', unresolved: false }, { key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }], [1, 2, 3]));
+  const reversed = colours(project([{ key: 'convoys', name: 'Convoys', unresolved: false }, { key: 'ships', name: 'Ships', unresolved: false }], [3, 2]));
+  assert.deepEqual([reversed.get('ships'), reversed.get('convoys')], [both.get('ships'), both.get('convoys')], 'the order a reply lists its parts in, or a view met them in, never changes a colour');
   assert.equal(alone.get('convoys'), both.get('convoys'));
   assert.equal(added.get('ships'), both.get('ships'), 'an earlier-sorting part added later does not recolour one on screen');
   assert.notEqual(added.get('aaa'), added.get('ships'));

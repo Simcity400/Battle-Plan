@@ -190,6 +190,7 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
     }
 
     const scale = 10 ** reply.decimals;
+    const measureLabel = options.measure === 'total' && reply.observationHour !== null ? `Since ${formatDateOnly(reply.observationHour)}` : options.measureLabel;
     const rows: BarsDataRow[] = [];
     for (const item of reply.rows as readonly EquipmentProducedRaceRow[]) {
       const key = countryKey(item.country);
@@ -204,8 +205,8 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
       const numeric = item.value === null ? null : (reply.decimals === 0 ? item.value : item.value / scale);
       const tooltipItems: TooltipListItem[] = [
         value.kind === 'notRecorded'
-          ? { label: options.measureLabel, missingReason: value.reason }
-          : { label: options.measureLabel, value: formatScalar(numeric ?? 0, valueFormat) },
+          ? { label: measureLabel, missingReason: value.reason }
+          : { label: measureLabel, value: formatScalar(numeric ?? 0, valueFormat) },
       ];
       if (reply.readHour !== null) {
         tooltipItems.push({ label: 'Read on', value: formatDateOnly(reply.readHour) });
@@ -221,7 +222,7 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
         labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         ...(pres.color ? { color: pres.color } : {}),
-        value: { value, format: valueFormat, label: options.measureLabel },
+        value: { value, format: valueFormat, label: measureLabel },
         numeric,
         tooltip: {
           title: pres.labelMissing ? 'Name not recorded' : pres.label,

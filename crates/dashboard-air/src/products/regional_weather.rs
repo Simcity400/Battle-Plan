@@ -450,29 +450,34 @@ pub(crate) fn region_readout(
 
 const NOT_RECORDED_AT_HOUR: &str = "Weather was not recorded at this hour, so the most active regions are not known";
 const REGION_NOT_RECORDED: &str = "A region's weather was not recorded at this hour, so the most active regions are not known";
+const READ_IN_PART: &str = "Weather was read only in part at this hour, so the most active regions are not known";
 
-pub(crate) fn rank_at_hour(candidates: &[u32], days: &[Day], measures: &[(String, Daily)], show: Show) -> Result<Vec<u32>, String> {
-    let Some(last) = days.len().checked_sub(1).filter(|&last| days[last].at.is_some()) else {
-        return Err(NOT_RECORDED_AT_HOUR.to_owned());
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct HourRank {
+    pub ranked: Vec<u32>,
+    pub missing: Option<String>,
+}
+
+pub(crate) fn rank_at_hour(candidates: &[u32], days: &[Day], measures: &[(String, Daily)], show: Show, whole: bool) -> HourRank {
+    let Some(last) = days.len().checked_sub(1).filter(|&last| days[last].at.is_some_and(|(_, at)| at == days[last].last)) else {
+        return HourRank { ranked: Vec::new(), missing: Some(NOT_RECORDED_AT_HOUR.to_owned()) };
     };
     let mut scored: Vec<(u32, u128)> = Vec::new();
+    let mut unknown = false;
     for &region in candidates {
         let score = match show {
-            Show::Conditions => match region_condition_on_day(region, last, measures) {
-                None => return Err(REGION_NOT_RECORDED.to_owned()),
-                Some(condition) => CONDITION_PRIORITY.iter().position(|flag| *flag == condition).map_or(0, |at| (CONDITION_PRIORITY.len() - at) as u128),
-            },
-            Show::Temperature | Show::Modifier => match measures.first().and_then(|(_, daily)| daily.get(&region)).and_then(|values| values.get(last)).copied().flatten() {
-                None => return Err(REGION_NOT_RECORDED.to_owned()),
-                Some(value) => value.unsigned_abs(),
-            },
+            Show::Conditions => region_condition_on_day(region, last, measures).map(|condition| CONDITION_PRIORITY.iter().position(|flag| *flag == condition).map_or(0, |at| (CONDITION_PRIORITY.len() - at) as u128)),
+            Show::Temperature | Show::Modifier => measures.first().and_then(|(_, daily)| daily.get(&region)).and_then(|values| values.get(last)).copied().flatten().map(i128::unsigned_abs),
         };
-        if score > 0 {
-            scored.push((region, score));
+        match score {
+            None => unknown = true,
+            Some(score) if score > 0 => scored.push((region, score)),
+            Some(_) => {}
         }
     }
     scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    Ok(scored.into_iter().map(|(region, _)| region).collect())
+    let missing = if !whole { Some(READ_IN_PART) } else if unknown { Some(REGION_NOT_RECORDED) } else { None };
+    HourRank { ranked: scored.into_iter().map(|(region, _)| region).collect(), missing: missing.map(str::to_owned) }
 }
 
 pub(crate) fn visible_extrema(displayed: &[u32], measures: &[(String, Daily)], show: Show) -> Option<[String; 2]> {
@@ -608,13 +613,16 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let (first, last) = (params.first_hour.max(query.timeline.first), params.last_hour.min(query.timeline.last));
     let mut warnings = weather.warnings.clone();
     let mut known: Vec<(u32, i32, i32)> = Vec::new();
+    let mut complete: Vec<(i32, i32)> = Vec::new();
     let mut reads: Vec<(i32, i32)> = Vec::new();
     let mut rows: BTreeSet<u32> = BTreeSet::new();
     let sampled = if params.show == Show::Temperature { TableId::WeatherProvinces } else { TableId::WeatherRegions };
     for stretch in query.timeline.within(first, last) {
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
         let whole = |status| if params.show == Show::Temperature { replay_recording::columnar_frames::complete(status) } else { replay_recording::columnar_frames::available(status) };
-        known.extend(read::statuses(recording, stretch.run, sampled, from, to)?.into_iter().filter(|run| whole(run.status)).map(|run| (stretch.run, run.first, run.last)));
+        let statuses = read::statuses(recording, stretch.run, sampled, from, to)?;
+        complete.extend(statuses.iter().filter(|run| replay_recording::columnar_frames::complete(run.status)).map(|run| (run.first, run.last)));
+        known.extend(statuses.into_iter().filter(|run| whole(run.status)).map(|run| (stretch.run, run.first, run.last)));
         reads.extend(dashboard_query::cost::storage(|| replay_lanes::lanes::reads(recording, stretch.run, sampled, from, to))?);
     }
     let days = days(first, last, &known, &reads);
@@ -732,11 +740,11 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         let pinned: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
         let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
         let candidates: Vec<u32> = all_candidates.iter().copied().filter(|id| !seen.contains(id)).collect();
-        let ranked = rank_at_hour(&candidates, &days, &measures, params.show).unwrap_or_else(|reason| {
-            rank_missing = Some(reason);
-            Vec::new()
-        });
-        let chosen = automatic(ranked, &hidden, params.top.unwrap_or(usize::MAX), rank_missing.clone());
+        let whole = days.last().is_some_and(|day| complete.iter().any(|&(first, end)| first <= day.last && day.last <= end));
+        let HourRank { ranked, missing } = rank_at_hour(&candidates, &days, &measures, params.show, whole);
+        rank_missing = missing;
+        let top = if rank_missing.is_some() { 0 } else { params.top.unwrap_or(usize::MAX) };
+        let chosen = automatic(ranked, &hidden, top, rank_missing.clone());
         hidden_active = chosen.hidden;
         active_unlisted = chosen.active_unlisted;
         pinned.into_iter().map(|id| (id, true)).chain(chosen.listed.into_iter().map(|id| (id, false))).collect()

@@ -273,10 +273,16 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
   };
 }
 
+function nextWeatherChange(readView: BoundedReadView): number {
+  const reply = readView.panel<RegionalWeatherReply>('weather');
+  return reply && readView.hour < reply.validThrough ? readView.hour + 1 : Infinity;
+}
+
 export const weatherProjection: HeatLanesProjection<WeatherProjectionOptions> = {
   kind: 'weather-by-region',
   family: 'heat-lanes',
   project: projectWeather,
+  nextChange: nextWeatherChange,
 };
 
 export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOptions> = {
