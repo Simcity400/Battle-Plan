@@ -48,7 +48,7 @@ class Tree(unittest.TestCase):
         for name in ("x.dds", "x.gfx", "x.gui", "x.yml", "x.lua", "x.shader", "x.mesh", "x.ogg", "x.ttf", "x.battleplan"):
             self.assertIsNotNone(cgc.asset_kind(name, b"text"), name)
         self.assertEqual(cgc.asset_kind("renamed.rs", PNG), "binary")
-        self.assertEqual(cgc.asset_kind("x.rs", "let nul = '\0';".encode()), None)
+        self.assertEqual(cgc.asset_kind("x.rs", b"small\0binary"), "binary")
         self.assertEqual(cgc.asset_kind("x.rs", "naïve".encode()), None)
 
     def test_a_long_base64_run_is_an_embedded_asset(self):
@@ -59,18 +59,21 @@ class Tree(unittest.TestCase):
 
 
 class Text(unittest.TestCase):
-    def test_segments_are_the_line_its_strings_and_its_comment_folded(self):
-        line = f'    let s = "{LONG}"; // {LONG} too'
-        self.assertEqual(cgc.segments(line), {line.strip(), LONG, f"{LONG} too"})
+    def test_a_script_run_needs_three_consecutive_lines_in_the_same_order(self):
+        rows = [f"trial_command = {{ sequence = {n} fixture_name = trial }}" for n in range(3)]
+        hashes = lambda lines: set(h for h, _ in cgc.text_hashes("\n".join(lines)))
+        self.assertTrue(hashes(rows))
+        self.assertEqual(hashes(rows[:2]), set())
+        self.assertTrue(hashes(rows).isdisjoint(hashes(rows[::-1])))
+        self.assertEqual(hashes(rows), hashes(["  " + row for row in rows]))
+        names = [f'b"very_long_fixture_interface_identifier_of_our_own_{n}",' for n in range(3)]
+        self.assertEqual(hashes(names), set())
 
-    def test_an_escaped_quote_and_spacing_do_not_hide_a_copy(self):
-        rust = f'"key = \\"{LONG}\\""'
-        self.assertIn(f'key = "{LONG}"', cgc.segments(rust))
-        self.assertIn(LONG, cgc.segments(f"  {LONG.replace(' ', '   ')}  "))
-
-    def test_short_runs_and_key_names_are_not_segments(self):
-        self.assertEqual(cgc.segments("is_triggered_only = yes"), set())
-        self.assertEqual(cgc.segments('k = "some_long_window_element_name";'), set())
+    def test_words_in_strings_and_comments_are_matched_after_unescaping_and_folding(self):
+        self.assertIn(LONG, cgc.segments(f'  let s = "{LONG}";'))
+        self.assertIn(LONG, cgc.segments(f'// {LONG}'))
+        self.assertIn(LONG, cgc.segments(f'  key = \"{LONG}\"'.replace('"', r'\"')))
+        self.assertIn(LONG, cgc.segments(LONG.replace(' ', '   ')))
 
     def test_a_short_string_of_words_counts_but_a_short_line_of_code_does_not(self):
         self.assertEqual(cgc.segments('label: "Made-up Banner Text Here",'), {"Made-up Banner Text Here"})

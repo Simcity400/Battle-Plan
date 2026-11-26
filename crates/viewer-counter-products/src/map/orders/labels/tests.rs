@@ -94,7 +94,7 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
     let empty_group = compose(super::super::TYPE_MOVE, "Army Group 11", true, 0);
     assert_eq!(
         empty_group.text(Variant::Full).as_deref(),
-        Ok("South Sudetenland Fixture Push Order of Army Group 11")
+        Ok("South Sudetenland Fixture Push Order - Army Group 11")
     );
     assert_eq!(
         empty_group.text(Variant::Middle).as_deref(),

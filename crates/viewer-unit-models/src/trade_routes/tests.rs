@@ -289,7 +289,7 @@ fn defines() -> TradeRouteDefines {
                 TRADE_ROUTE_CONVOY_SPEED = 2,
                 TRADE_ROUTE_CONVOY_SLEEP_TIME = 1,
                 TRADE_ROUTE_CONVOY_ROUTE_OFFSET = 0.4,
-                UNITS_DISTANCE_CUTOFF = 100,
+                UNITS_DISTANCE_CUTOFF = 143,
             } }",
         )
         .unwrap();

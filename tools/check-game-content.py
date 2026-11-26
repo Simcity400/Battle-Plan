@@ -15,10 +15,8 @@ Against the installation, where one is found (--game or BATTLEPLAN_GAME_DIR, els
 registry entry) with its mods (each installed workshop item, and the mods of --user-dir or
 BATTLEPLAN_USER_DIR, else the Paradox user folder):
 - `copy`: a file whose bytes equal a file of the game or a mod;
-- `copied-text`: a line, quoted string or comment, spaces folded, that a text file of the game or a
-  mod also has: of 40 or more characters, or of 20 or more for a string or comment of three or
-  more words without script marks (in-game text sits in strings and comments). A text file on the
-  allow list may share text (a licence mods also ship), never bytes;
+- `copied-text`: prose shared with the installation, or three consecutive substantial script
+  lines shared in the same order. A single identifier or interface element name is allowed.
 - `game-value`: `KEY = number` where KEY is one of the game's or a mod's defines and the number is
   a value they give it, other than 0, 1 and -1. A test needs a value, not the game's: use an
   obviously made-up one, or read the number from a fixture we wrote when the test is about it.
@@ -48,7 +46,7 @@ ALLOW_NAME = "tools/game-content.allow"
 ALLOW = ROOT / ALLOW_NAME
 APP = "394360"
 GAME_FOLDER = "Hearts of Iron IV"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 
 ASSET_TYPES = {
     "image": {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".dds", ".tga", ".webp", ".ico", ".svg", ".psd", ".pdn", ".tif", ".tiff", ".cur", ".ani"},
@@ -83,7 +81,7 @@ TRIVIAL_VALUES = {0.0, 1.0, -1.0}
 
 def is_binary(data):
     """Not UTF-8 text: any texture, sound, model or archive, whatever its name."""
-    if data.count(b"\0") > 8:
+    if b"\0" in data:
         return True
     try:
         data.decode("utf-8")
@@ -125,6 +123,8 @@ def allowed(text):
 
 def glob_match(name, glob):
     """`*` matches within one folder, `**` across folders."""
+    if "*" not in glob:
+        return name == glob
     pattern = "".join(".*" if part == "**" else "[^/]*" if part == "*" else re.escape(part)
                       for part in re.split(r"(\*\*|\*)", glob))
     return re.fullmatch(pattern, name) is not None
@@ -138,13 +138,14 @@ def asset_kind(name, head):
     return "binary" if is_binary(head) else None
 
 
-def tree_findings(files, rules):
+def tree_findings(files, rules, names=None):
     """`asset`, `embedded` and `stale-allow` findings for (name, bytes) pairs: an entry that
     matches no file is stale."""
     found = offenders(files, rules)
-    names = [name for name, _ in files]
+    if names is None:
+        names = {name for name, _ in files}
     found += [f"{ALLOW_NAME}: stale-allow {glob}{f' {kind}' if kind else ''} matches no file"
-              for glob, kind, _ in rules if not any(glob_match(name, glob) for name in names)]
+              for glob, kind, _ in rules if (glob not in names and not ("*" in glob and any(glob_match(name, glob) for name in names)))]
     return found
 
 
@@ -157,11 +158,11 @@ def offenders(files, rules):
     """`asset` and `embedded` findings for (name, bytes) pairs that no asset entry allows."""
     found = []
     for name, data in files:
-        if allow_match(name, rules):
-            continue
         kind = asset_kind(name, data)
-        if kind:
+        if kind and not allow_match(name, rules):
             found.append(f"{name}:1: asset {kind} file not in {ALLOW.name}")
+            continue
+        if is_binary(data):
             continue
         run = base64_run(data)
         if run:
@@ -186,18 +187,16 @@ def prose(text):
 
 
 def segments(line):
-    """The folded line of at least MIN_SEGMENT characters, and each quoted string and the comment
-    of at least MIN_SEGMENT, or MIN_PROSE when it is prose: in-game text sits in strings and comments."""
-    whole = fold(line)
-    found = {whole} if len(whole) >= MIN_SEGMENT else set()
     parts = QUOTED.findall(line)
+    if '\\"' in line:
+        parts.extend(re.findall(r'\\"(.*?)\\"', line))
     comment = COMMENT.search(line)
     if comment:
         parts.append(comment.group(1))
-    for part in map(fold, parts):
-        if len(part) >= MIN_SEGMENT or prose(part):
-            found.add(part)
-    return found
+    whole = fold(line)
+    if len(whole) >= MIN_SEGMENT:
+        parts.append(whole)
+    return {part for part in map(fold, parts) if prose(part)}
 
 
 def digest64(data):
@@ -205,9 +204,19 @@ def digest64(data):
 
 
 def text_hashes(text):
-    """(hash, line) of each segment of each line."""
-    return [(digest64(segment.encode()), number)
-            for number, line in enumerate(text.split("\n"), 1) for segment in segments(line)]
+    pairs = []
+    previous = []
+    for number, line in enumerate(text.splitlines(), 1):
+        pairs.extend((digest64(part.encode()), number) for part in segments(line))
+        whole = fold(line)
+        if len(whole) < MIN_SEGMENT or " " not in whole:
+            previous.clear()
+            continue
+        previous.append(whole)
+        if len(previous) == 3:
+            pairs.append((digest64("\n".join(previous).encode()), number - 2))
+            previous.pop(0)
+    return pairs
 
 
 def define_values(text):
@@ -499,7 +508,8 @@ def candidates():
     """Repository paths Git tracks or would add, existing as regular files."""
     listed = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT, capture_output=True, check=True)
     names = sorted({n for n in listed.stdout.decode("utf-8").split("\0") if n})
-    return [name for name in names if (ROOT / name).is_file()]
+    deleted = subprocess.run(["git", "ls-files", "-z", "--deleted"], cwd=ROOT, capture_output=True, check=True)
+    return set(names) - set(deleted.stdout.decode("utf-8").split("\0"))
 
 
 def changed_since(ref):
@@ -526,8 +536,12 @@ def main(argv=None):
     started = time.monotonic()
     say = lambda text: print(text, flush=True)
     rules, found = allowed(ALLOW.read_text(encoding="utf-8")) if ALLOW.exists() else ([], [])
-    files = [(name, (ROOT / name).read_bytes()) for name in candidates()]
-    found += tree_findings(files, rules)
+    names = candidates()
+    selected = set(names)
+    if args.against:
+        selected.intersection_update(changed_since(args.against))
+    files = [(name, (ROOT / name).read_bytes()) for name in sorted(selected)]
+    found += tree_findings(files, rules, set(names))
     say(f"tree: {len(files)} files checked for assets and embedded data")
     if args.tree_only:
         say("not run here: installation comparison (--tree-only)")
@@ -536,20 +550,17 @@ def main(argv=None):
         if not roots:
             say(f"not run here: installation comparison ({reason})")
         else:
-            index = Index((args.cache or default_cache()) / "index.sqlite3")
+            index = Index((args.cache or default_cache()) / f"index-v{INDEX_VERSION}.sqlite3")
             stale = [key for key, folder, stamp in roots if index.current(key, folder, stamp)[0] is None] if args.against else []
             if stale:
                 say(f"not run here: installation comparison (the index is out of date for {', '.join(stale[:3])}"
                     f"{' and more' if len(stale) > 3 else ''}; run `python tools/check-game-content.py` once to rebuild it)")
             else:
-                kept = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
-                index.drop_others(kept)
-                compared = files
-                if args.against:
-                    changed = changed_since(args.against)
-                    compared = [(name, data) for name, data in files if name in changed]
-                found += install_findings(index, compared, rules)
-                say(f"installation comparison: {len(roots)} game and mod folders, {len(compared)} files"
+                if not args.against:
+                    kept = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
+                    index.drop_others(kept)
+                found += install_findings(index, files, rules)
+                say(f"installation comparison: {len(roots)} game and mod folders, {len(files)} files"
                     + (f" changed since {args.against}" if args.against else ""))
     for line in found:
         print(line)

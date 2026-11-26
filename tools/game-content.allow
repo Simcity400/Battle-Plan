@@ -1,26 +1,33 @@
-.github/*.yml our GitHub configuration
-.github/*.yaml our GitHub configuration
-.github/workflows/*.yml our CI workflows
-crates/content-reader-image/src/native/testdata/*.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
-crates/content-reader-layers/src/content/testdata/zipcrypto_*.zip archives we wrote whose members hold made-up bytes, for the encrypted-archive tests (#136)
+.github/dependabot.yml our GitHub configuration
+.github/actionlint.yaml our GitHub configuration
+.github/workflows/ci.yml our CI workflows
+.github/workflows/release-candidate.yml our CI workflows
+.github/workflows/release.yml our CI workflows
+.github/workflows/rust-cache.yml our CI workflows
+crates/content-reader-image/src/native/testdata/adobe_cmyk.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
+crates/content-reader-image/src/native/testdata/arithmetic.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
+crates/content-reader-image/src/native/testdata/baseline_420.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
+crates/content-reader-image/src/native/testdata/progressive.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
+crates/content-reader-image/src/native/testdata/smartscale_4.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
+crates/content-reader-layers/src/content/testdata/zipcrypto_deflated.zip archives we wrote whose members hold made-up bytes, for the encrypted-archive tests (#136)
+crates/content-reader-layers/src/content/testdata/zipcrypto_mixed.zip archives we wrote whose members hold made-up bytes, for the encrypted-archive tests (#136)
+crates/content-reader-layers/src/content/testdata/zipcrypto_stored.zip archives we wrote whose members hold made-up bytes, for the encrypted-archive tests (#136)
 crates/content-reader-sound/src/fixtures/synthetic-tone.ogg a sine tone we generated for the music reader test (#156)
-crates/dashboard-follow/fixtures/series_slot_tag_*.bin our follow protocol's answers over the synthetic recording (#281)
-crates/desktop/icons/* the desktop app's icons, drawn for BattlePlan (#9)
-crates/recorder-app/icons/* the recorder tray app's icons, drawn for BattlePlan
+crates/dashboard-follow/fixtures/series_slot_tag_525.bin our follow protocol's answers over the synthetic recording (#281)
+crates/dashboard-follow/fixtures/series_slot_tag_800.bin our follow protocol's answers over the synthetic recording (#281)
+crates/desktop/icons/icon.ico the desktop app's icons, drawn for BattlePlan (#9)
+crates/desktop/icons/icon.png the desktop app's icons, drawn for BattlePlan (#9)
+crates/desktop/icons/icon.svg the desktop app's icons, drawn for BattlePlan (#9)
+crates/desktop/icons/nightly.ico the desktop app's icons, drawn for BattlePlan (#9)
+crates/desktop/icons/nightly.png the desktop app's icons, drawn for BattlePlan (#9)
+crates/desktop/icons/nightly.svg the desktop app's icons, drawn for BattlePlan (#9)
+crates/recorder-app/icons/icon.ico the recorder tray app's icons, drawn for BattlePlan
+crates/recorder-app/icons/icon.png the recorder tray app's icons, drawn for BattlePlan
+crates/recorder-app/icons/icon.svg the recorder tray app's icons, drawn for BattlePlan
 ui/public/favicon.svg the UI's icon, drawn for BattlePlan (#9)
 vendor/eframe/data/icon.png the eframe crate's own icon, vendored with its MIT licence
 LICENSE copied-text our MIT licence; mods ship the same standard text
 crates/engine-dlc/src/dlc_feature_state.rs copied-text DLC names the reader matches against the installed DLC files: identifiers, allowed (owner, 26 Nov)
-crates/dashboard-base/src/products/artwork.rs game-value routed to the last test-conversion pull request, after #961 and #967 (lead, 26 Nov)
-crates/dashboard-wars/src/products/wargoals.rs game-value routed to the last test-conversion pull request, after #961 and #967 (lead, 26 Nov)
-crates/dashboard-politics/src/products/focus_artwork.rs game-value routed to the last test-conversion pull request, after #961 and #967 (lead, 26 Nov)
-crates/viewer-raids/src/map/raids/tests.rs game-value routed to #994 (lead, 26 Nov)
-crates/dashboard-base/src/catalogue/parity_tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-base/src/presentation/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-base/src/products/read_ahead.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-land/src/products/doctrine_mastery/rewards/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-land/src/products/doctrines.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-politics/src/products/politics/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-research/src/products/special_projects/details/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-text/src/catalogue.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
-crates/dashboard-world/src/products/place_names/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+LICENSES/*.txt copied-text notices for our dependencies use the same standard licences as upstream projects
+vendor/eframe/LICENSE-* copied-text upstream eframe licences shared with other open source projects
+vendor/tao/LICENSE copied-text upstream tao licence shared with other open source projects

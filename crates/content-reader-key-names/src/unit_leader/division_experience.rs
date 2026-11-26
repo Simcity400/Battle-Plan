@@ -76,14 +76,14 @@ mod tests {
     #[test]
     fn division_experience_uses_mod_threshold_order_boundaries_and_final_progress() {
         let defines = Defines::new().unwrap();
-        defines.load("synthetic.lua", b"NDefines={NMilitary={UNIT_EXP_LEVELS={0.2,0.2,0.15,0.8},ARMY_EXP_BASE_LEVEL=2,EXPERIENCE_COMBAT_FACTOR=0.4}}").unwrap();
+        defines.load("synthetic.lua", b"NDefines={NMilitary={UNIT_EXP_LEVELS={0.2,0.2,0.15,0.8},ARMY_EXP_BASE_LEVEL=1,EXPERIENCE_COMBAT_FACTOR=0.4}}").unwrap();
         let content = DivisionExperience::read(&defines).unwrap();
         assert_eq!(
             content.progress(19_999),
             DivisionExperienceProgress {
                 level: 0,
                 next_level_fraction: 99_995,
-                combat_bonus: -80_000
+                combat_bonus: -40_000
             }
         );
         assert_eq!(
@@ -91,7 +91,7 @@ mod tests {
             DivisionExperienceProgress {
                 level: 3,
                 next_level_fraction: 7_692,
-                combat_bonus: 40_000
+                combat_bonus: 80_000
             }
         );
         assert_eq!(content.progress(80_000).next_level_fraction, 0);

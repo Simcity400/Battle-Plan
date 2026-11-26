@@ -717,7 +717,7 @@ mod tests {
             if literal {
                 values.extend([
                     (SOURCE_CUSTOM_NAME, u32::MAX, 4),
-                    (SOURCE_CUSTOM_NAME, 0, i64::from_le_bytes(*b"Hood    ")),
+                    (SOURCE_CUSTOM_NAME, 0, i64::from_le_bytes(*b"Hood\0\0\0\0")),
                 ]);
             }
             put::<tables::RaidTooltipOperands>(

@@ -2173,11 +2173,11 @@ pub mod tests {
 
     #[test]
     fn the_catalogues_defines_do_not_wait_on_scripted_localisation_reading() {
-        let (catalogue, _folder) = folder_catalogue(&[("common/defines/00_defines.lua", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }")]);
+        let (catalogue, _folder) = folder_catalogue(&[("common/defines/00_defines.lua", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 37 } }")]);
         let refused = catalogue.scripted_content().err().expect("scripted localisation needs a define these defines lack");
         assert!(refused.contains("MAX_SCRIPTED_LOC_RECURSION"), "{refused}");
         let defines = catalogue.defines().expect("the defines are their own read");
-        assert_eq!(defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").unwrap(), 20.0);
+        assert_eq!(defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").unwrap(), 37.0);
     }
 
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
@@ -2242,7 +2242,7 @@ pub mod tests {
         game::enter();
         let (_, base) = folder_catalogue(&[(
             "common/defines/00_base.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NMilitary={
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NMilitary={
                 WAR_SCORE_LEND_LEASE_GIVEN_IC_FACTOR=1.25,
                 WAR_SCORE_LEND_LEASE_GIVEN_FUEL_FACTOR=0.5,
                 WAR_SCORE_LEND_LEASE_RECEIVED_IC_FACTOR=2.5,
@@ -2278,7 +2278,7 @@ pub mod tests {
             ),
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
         ]);
         assert!(catalogue.refusal_lines().is_empty());
@@ -2393,7 +2393,7 @@ pub mod tests {
             ),
             (
                 "common/defines/mod.lua",
-                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
             ),
         ]);
         let frame = crate::scope::tests::positive_frame();

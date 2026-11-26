@@ -247,7 +247,7 @@ pub async fn set_content_folders(
     user: String,
 ) -> Result<ContentFolders, String> {
     for folder in [&game, &user] {
-        if folder.trim().is_empty() || folder.len() > 32_000 || folder.contains(' ') {
+        if folder.trim().is_empty() || folder.len() > 32_000 || folder.contains('\0') {
             return Err("Choose the game and user folders.".into());
         }
     }

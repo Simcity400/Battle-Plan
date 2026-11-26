@@ -4194,7 +4194,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 DEFAULT_PRIORITY_NAVAL_MISSION = 12,
                 DEFAULT_PRIORITY_AIR_MISSION = 14.8,
                 DEFAULT_PRIORITY_VICTORY_POINTS = 15,
-                DEFAULT_PRIORITY_CAPITAL = 6,
+                DEFAULT_PRIORITY_CAPITAL = 23,
                 DEFAULT_PRIORITY_ROCKET_SITE = 7,
                 DEFAULT_PRIORITY_GUN_EMPLACEMENT = 8,
                 DEFAULT_PRIORITY_STRATEGIC_LOCATION = 9,

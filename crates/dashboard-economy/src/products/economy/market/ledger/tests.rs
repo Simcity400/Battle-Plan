@@ -35,7 +35,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
             let mut frame = ownership_frame(1, hour, 9001);
             *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 1, literal: b"rifle_0".to_vec() }]));
             *frame.tables[TableId::VariantDefinitions.index()] =
-                TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Infantry Equipment I".to_vec(), ..Default::default() }]));
+                TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Copperline Field Kit".to_vec(), ..Default::default() }]));
             if (100..=108).contains(&hour) {
                 *frame.tables[TableId::MarketContractTerms.index()] = TableView::Complete(TableRows::MarketContractTerms(vec![MarketContractTermsRow {
                     country: 9001,
@@ -70,7 +70,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     assert_eq!((contract.status, contract.live, contract.started_hour, contract.request), (MarketContractStatus::Active, true, Some(100), false));
     assert_eq!(mid.counts[0].total, "1", "the active chip counts the matching population");
     assert_eq!(contract.paid_raw.as_deref(), Some("48000"));
-    assert_eq!(contract.quotes, [MarketQuote { variant: "6".into(), name: Some("Infantry Equipment I".into()), name_missing: None, price_raw: "96000".into() }], "a quote is labelled with its variant, never summed");
+    assert_eq!(contract.quotes, [MarketQuote { variant: "6".into(), name: Some("Copperline Field Kit".into()), name_missing: None, price_raw: "96000".into() }], "a quote is labelled with its variant, never summed");
     assert_eq!((contract.items[0].delivered_raw.as_deref(), contract.items[0].contracted_raw.as_deref()), (Some("250000"), Some("500000")));
     assert_eq!(contract.events.iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(), [(104, MarketContractEventKind::Delivery), (102, MarketContractEventKind::Payment), (100, MarketContractEventKind::ContractStarted)]);
     assert_eq!(mid.next_change, Some(106), "the next payment is the next change");
