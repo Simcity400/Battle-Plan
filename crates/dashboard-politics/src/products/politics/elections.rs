@@ -3,7 +3,7 @@ use dashboard_base::{
     Source,
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Owner, Read, ReadsAt},
+        at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt, before, field_columns},
         check_reply_budget, validate_country,
     },
 };
@@ -13,8 +13,8 @@ use dashboard_query::{
     series::ranked::GroupSelection,
 };
 use dashboard_world::products::group_members::GroupsAt;
-use replay_data::rows::{CountryCounterInputRow, PoliticsRow, Recorded, TableId, tables};
-use replay_frame::frame::{DecodedFrame, Keys, TableView};
+use replay_data::rows::{CountryCounterInputRow, PoliticsRow, Recorded, TableId, TableRows, tables};
+use replay_frame::frame::{DecodedFrame, Keys, SharedView, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -101,12 +101,18 @@ impl AtHour for NextElections {
         vec![TableId::Politics, TableId::CountryCounterInputs]
     }
 
-    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if step == 1 {
+            let politics = &held.tables[TableId::Politics.index()];
+            let witnessed = matches!(politics.held(), TableView::Complete(_))
+                || (politics.keys() != &Keys::All && matches!(politics.held(), TableView::Truncated { .. }));
+            return witnessed.then(|| Read { table: TableId::CountryCounterInputs, keys: politics.keys().clone() }).into_iter().collect();
+        }
         if step != 0 {
             return Vec::new();
         }
         match asked(params, at.context, at.hour) {
-            Ok(Ok(None)) => vec![Read::all(TableId::Politics), Read::all(TableId::CountryCounterInputs)],
+            Ok(Ok(None)) => vec![Read::all(TableId::Politics)],
             Err(_) | Ok(Err(_)) => Vec::new(),
             Ok(Ok(Some(countries))) => {
                 let keys: Vec<u128> = countries
@@ -116,7 +122,7 @@ impl AtHour for NextElections {
                         _ => None,
                     })
                     .collect();
-                vec![Read::these(TableId::Politics, keys.clone()), Read::these(TableId::CountryCounterInputs, keys)]
+                vec![Read::these(TableId::Politics, keys)]
             }
         }
     }
@@ -125,13 +131,46 @@ impl AtHour for NextElections {
         Ok(GroupsAt::default())
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::Politics => &["last_election", "has_elections", "election_interval", "next_election_cache"],
+            TableId::CountryCounterInputs => &["owned_state_count"],
+            _ => return None,
+        };
+        Some(field_columns(table, fields))
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage <= 1 { at.context.valid_through(params.group.as_ref(), at.hour).min(before(at.holders.next_change(at.hour))) } else { i32::MAX };
+        (Self::reads_in(params, owner, stage, frame, at), through)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _: &DecodedFrame, _: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1 && edits.replaced.contains(&TableId::Politics)
+    }
+
+    fn compares_previous(table: TableId) -> bool { matches!(table, TableId::Politics | TableId::CountryCounterInputs) }
+
+    fn advance(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, Self::Context>, edits: &Edits, _: &dashboard_follow::live::Live, _: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() { return Ok(false); }
+        let prior = |id: TableId| &edits.previous[&id];
+        let now = |id: TableId| &frame.tables[id.index()];
+        Ok(edits.tables.values().flat_map(|keys| keys.keys().copied()).all(|id| {
+            schedule_at(prior(TableId::Politics), prior(TableId::CountryCounterInputs), id as u32)
+                == schedule_at(now(TableId::Politics), now(TableId::CountryCounterInputs), id as u32)
+        }))
+    }
+
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
         GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
     }
 
     fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        let holders = at.holders.next_change(frame.hour).map_or(i32::MAX, |change| change - 1);
-        holders.min(at.context.valid_through(params.group.as_ref(), at.hour))
+        before(at.holders.next_change(frame.hour)).min(at.context.valid_through(params.group.as_ref(), at.hour))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _: &Self::Reply, _: bool) -> i32 {
+        Self::valid_through(frame, params, at)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -155,6 +194,35 @@ fn asked(params: &NextElectionsParams, groups: &GroupsAt, hour: i32) -> io::Resu
 
 fn recorded<T: Copy>(value: &Recorded<T>) -> Option<T> {
     value.require("election operand").ok().copied()
+}
+
+#[derive(PartialEq)]
+enum Schedule {
+    Ineligible,
+    Unknown,
+    Election { interval: Option<i32>, next: Option<i32>, last: Option<i32> },
+}
+
+fn schedule(row: &PoliticsRow, owned: Option<bool>) -> Schedule {
+    match (recorded(&row.has_elections), owned) {
+        (Some(false), _) | (Some(true), Some(false)) => Schedule::Ineligible,
+        (Some(true), None) | (None, _) => Schedule::Unknown,
+        (Some(true), Some(true)) => Schedule::Election {
+            interval: recorded(&row.election_interval),
+            next: country_people::next_election_date(row),
+            last: (!engine_native_politics::cpolitical_status::needs_election_cache(row.last_election)).then_some(row.last_election),
+        },
+    }
+}
+
+fn schedule_at(politics: &SharedView, counters: &SharedView, id: u32) -> Option<Schedule> {
+    let TableView::Complete(TableRows::Politics(rows)) = politics.held() else { return None };
+    let row = &rows[rows.binary_search_by_key(&id, |row| row.country).ok()?];
+    let owned = match counters.held() {
+        TableView::Complete(TableRows::CountryCounterInputs(rows)) => rows.binary_search_by_key(&id, |row| row.country).ok().map(|at| rows[at].owned_state_count > 0),
+        _ => None,
+    };
+    Some(schedule(row, owned))
 }
 
 fn read(frame: &DecodedFrame, branch_id: &str, asked: Option<&[Country]>, holders: &dashboard_query::identity::Holders, hour: i32) -> io::Result<NextElectionsReply> {
@@ -196,20 +264,10 @@ fn read(frame: &DecodedFrame, branch_id: &str, asked: Option<&[Country]>, holder
     let mut holder_unknown = None;
     let mut unwitnessed = 0_u32;
     let mut inspect = |slot: u32, tag: &str, row: &PoliticsRow| {
-        let has = recorded(&row.has_elections);
-        let exists = owned_of(row.country);
-        let eligible = match (has, exists) {
-            (Some(false), _) | (Some(true), Some(false)) => Some(false),
-            (Some(true), Some(true)) => Some(true),
-            (Some(true), None) | (None, _) => None,
-        };
-        match eligible {
-            Some(false) => {}
-            None => reply.unknown = reply.unknown.saturating_add(1),
-            Some(true) => {
-                let interval = recorded(&row.election_interval);
-                let next = country_people::next_election_date(row);
-                let last = (!engine_native_politics::cpolitical_status::needs_election_cache(row.last_election)).then_some(row.last_election);
+        match schedule(row, owned_of(row.country)) {
+            Schedule::Ineligible => {}
+            Schedule::Unknown => reply.unknown = reply.unknown.saturating_add(1),
+            Schedule::Election { interval, next, last } => {
                 reply.rows.push(ElectionEntry { key: slot.to_string(), tag: tag.to_owned(), interval, next, last });
             }
         }

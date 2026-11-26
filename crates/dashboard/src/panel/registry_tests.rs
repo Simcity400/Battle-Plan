@@ -153,12 +153,12 @@ fn each_ui_panel_key_has_one_registered_reader() {
 fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
         "autonomy-levels", "casualty-matrix",
-        "country-faction-goals", "country-fuel", "country-stability-breakdown",
+        "country-faction-goals", "country-fuel",
         "decryption",
         "faction-details", "factory-parts",
-        "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
+        "occupation-at", "operative-matrix", "operatives-roster",
         "production-licences", "resource-balance",
-        "stability-part-names", "stockpile-artwork",
+        "stockpile-artwork",
         "territory-breakdown", "trade-flow",
         "volunteer-flow", "war-contributions",
         "wargoals", "world-tension",
