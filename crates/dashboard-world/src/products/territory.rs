@@ -430,6 +430,7 @@ fn territory_breakdown(
     let mut witnessed: HashMap<u32, Option<Exact>> = HashMap::new();
     let totalled = |slot: u32| unread.is_some_and(|(_, totals, _)| totals.countries.get(&slot).is_some_and(Option::is_some));
     let mut unread_holders: HashSet<u32> = HashSet::new();
+    let mut unread_unheld = false;
     for row in rows {
         let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
         if let Some(chosen) = chosen
@@ -458,8 +459,13 @@ fn territory_breakdown(
             let entry = witnessed.entry(slot).or_insert(Some(Exact::ZERO));
             *entry = entry.and_then(|sum| sum.plus(*known));
         }
-        if let (Some(slot), Amount::NotRecorded(_)) = (held, &amount) {
-            unread_holders.insert(slot);
+        if matches!(amount, Amount::NotRecorded(_)) {
+            match held {
+                Some(slot) => {
+                    unread_holders.insert(slot);
+                }
+                None => unread_unheld = true,
+            }
         }
         if matches!(amount, Amount::Known(known) if known.numerator() == 0) || (matches!(amount, Amount::NotRecorded(_)) && held.is_some_and(totalled)) {
             continue;
@@ -468,7 +474,7 @@ fn territory_breakdown(
     }
     let Some((reason, totals, truncated)) = unread else { return breakdown::breakdown(&leaves, &Unrecorded::default()) };
     let overflowed: HashSet<u32> = witnessed.iter().filter(|(_, sum)| sum.is_none()).map(|(&slot, _)| slot).collect();
-    if !truncated && unread_holders.is_empty() && overflowed.is_empty() {
+    if !truncated && !unread_unheld && unread_holders.is_empty() && overflowed.is_empty() {
         return breakdown::breakdown(&leaves, &Unrecorded::default());
     }
     let rest = || Node::new(UNREAD_ROWS, "Regions not read", u32::MAX).other().name_missing(Some(reason.to_owned()));
@@ -759,6 +765,10 @@ mod tests {
         let huge: Vec<TerritoryRegionTotalRow> = primes.iter().enumerate().map(|(at, &of)| held(1, 7 + at as u32, Recorded::Value(1), of)).collect();
         let five = CountryTotals { countries: [(1, Some(5))].into(), world: None, missing: None };
         let summed = territory_breakdown(&huge, &tags, &params, None, Ok(&regions), Some(("", &five, false)));
+        let unheld = [held(1, 7, Recorded::Value(8), 1), held(NO_COUNTRY, 8, Recorded::NotRecorded, 1)];
+        let ten = CountryTotals { countries: [(1, Some(8))].into(), world: Some(10), missing: None };
+        let world = territory_breakdown(&unheld, &tags, &params, None, Ok(&regions), Some(("cells not read", &ten, false)));
+        assert_eq!(world.total.amount, Some(BreakdownAmount { numerator: "10".into(), denominator: "1".into() }), "an unread cell no country holds keeps the recorded world as the whole");
         assert_eq!(summed.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "a country whose regions cannot be added exactly keeps its recorded total");
         assert_eq!(filled.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "an unread cell in a complete table takes the country's recorded total");
         assert!(filled.parts[0].children.iter().any(|child| child.key == UNREAD_ROWS && child.amount == Some(BreakdownAmount { numerator: "3".into(), denominator: "1".into() })), "its unread regions are one known remainder");

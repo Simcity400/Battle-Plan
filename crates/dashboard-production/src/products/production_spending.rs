@@ -5,7 +5,7 @@ use dashboard_base::catalogue::{self, Catalogue};
 use dashboard_query::{Query, cost, identity::Holder};
 use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_lanes::lanes::{self, Cell, History, Keys, Step};
-use replay_data::rows::{DockyardRepairRateRow, OutputPurpose, ProductionCoverageRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables};
+use replay_data::rows::{DockyardRepairRateRow, LexicalTokenRow, OutputPurpose, ProductionCoverageRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables};
 use replay_frame::frame::{DecodedFrame, HourFrame};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -470,18 +470,6 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     tokens.extend(upgrades.iter().flatten().filter_map(|row| u32::try_from(row.definition_token).ok()).filter(|&token| token > 0).map(u128::from));
     tokens.extend(dated.values().flat_map(|dates| dates.names.iter().filter_map(|(_, fields)| fields.as_ref())).map(|fields| u128::from(fields.equipment_token)).filter(|&token| token > 0));
     let tokens: Vec<u128> = tokens.into_iter().collect();
-    let earlier: BTreeSet<i32> = dated.values().flat_map(|dates| dates.names.iter().filter(|(_, fields)| fields.is_some()).map(|(hour, _)| *hour)).filter(|&hour| hour < span.last).collect();
-    let mut naming_frames: HashMap<i32, DecodedFrame> = HashMap::new();
-    for hour in earlier {
-        let read = [
-            replay_lanes::at::Read { table: TableId::Countries, columns: None, keys: Keys::All },
-            replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: Keys::All },
-            replay_lanes::at::Read { table: TableId::CountryAppearance, columns: None, keys: Keys::All },
-        ];
-        if let Ok(frame) = cost::storage(|| replay_lanes::at::frame(recording, span.run, hour, &read)) {
-            naming_frames.insert(hour, frame);
-        }
-    }
     let named = cost::storage(|| {
         replay_lanes::at::frame(
             recording,
@@ -516,6 +504,88 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     }
     let empty = Tags::new(&[], &[], None);
     let texts = content.catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
+    let base = |variant: u64| definitions.get(&variant).cloned().unwrap_or_else(|| VariantDefinitionRow { id: variant, ..VariantDefinitionRow::default() });
+    let links: HashMap<u32, u32> = frame.complete::<tables::CountryLinks>().map(|rows| rows.iter().map(|row| (row.id, row.canonical_slot)).collect()).unwrap_or_default();
+    let mut entries: HashMap<u64, Vec<(i32, Option<NameFields>)>> = HashMap::new();
+    for &variant in variants.keys() {
+        let mut held: Vec<(i32, Option<NameFields>)> = match (dated.get(&variant).filter(|dates| !dates.names.is_empty()), definitions.get(&variant)) {
+            (Some(dates), _) => dates.names.clone(),
+            (None, Some(definition)) => vec![(span.last, Some(NameFields::from(definition)))],
+            (None, None) => continue,
+        };
+        let mut retagged: Vec<(i32, Option<NameFields>)> = Vec::new();
+        for (at, (hour, fields)) in held.iter().enumerate() {
+            let Some(fields) = fields.as_ref().filter(|fields| fields.display_name.is_empty()) else { continue };
+            let until = held.get(at + 1).map_or(span.last, |next| next.0 - 1);
+            let link = if (fields.origin_link as i32) >= 1 { fields.origin_link } else { fields.creator_link };
+            let Some(&slot) = links.get(&link) else { continue };
+            for run in query.holders.runs(&Country::Slot(slot)) {
+                if run.first > *hour && run.first <= until {
+                    retagged.push((run.first, Some(fields.clone())));
+                }
+            }
+        }
+        held.extend(retagged);
+        held.sort_by_key(|entry| entry.0);
+        held.dedup_by_key(|entry| entry.0);
+        entries.insert(variant, held);
+    }
+    let mut by_hour: BTreeMap<i32, Vec<(u64, usize)>> = BTreeMap::new();
+    for (&variant, held) in &entries {
+        for (at, (hour, fields)) in held.iter().enumerate() {
+            if fields.is_some() {
+                by_hour.entry(*hour).or_default().push((variant, at));
+            }
+        }
+    }
+    let mut dated_names: HashMap<(u64, usize), StockVariantName> = HashMap::new();
+    for (hour, asked) in by_hour {
+        let resolve = |row: &VariantDefinitionRow, shown: &Tags, lexical: &[LexicalTokenRow]| {
+            let mut raw = variant_names::raw_variant(row, hour, shown, lexical);
+            let own = of_variant(modules.as_deref(), row.id, |row: &VariantModuleRow| row.variant);
+            let upgraded = of_variant(upgrades.as_deref(), row.id, |row: &VariantUpgradeRow| row.variant);
+            if let (Some(own), Some(upgraded)) = (own, upgraded) {
+                let own: Vec<&VariantModuleRow> = own.iter().collect();
+                let upgraded: Vec<&VariantUpgradeRow> = upgraded.iter().collect();
+                variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
+            }
+            let (name, _) = variant_names::variant_names(&raw, texts);
+            StockVariantName { first_hour: hour, name, known: true, design: raw.design }
+        };
+        let unknown = StockVariantName { first_hour: hour, name: None, known: false, design: None };
+        let fields_of = |variant: u64, at: usize| entries[&variant][at].1.clone().unwrap_or_default();
+        if hour == span.last {
+            for (variant, at) in asked {
+                let fields = fields_of(variant, at);
+                let name = match &tags {
+                    Ok(tags) => resolve(&fields.applied(&base(variant)), tags, lexical),
+                    Err(_) if !fields.display_name.is_empty() => resolve(&fields.applied(&base(variant)), &empty, lexical),
+                    Err(_) => unknown.clone(),
+                };
+                dated_names.insert((variant, at), name);
+            }
+            continue;
+        }
+        let wanted: Vec<u128> = asked.iter().map(|&(variant, at)| u128::from(fields_of(variant, at).equipment_token)).filter(|&token| token > 0).collect::<BTreeSet<_>>().into_iter().collect();
+        let read = [
+            replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&wanted) },
+            replay_lanes::at::Read { table: TableId::Countries, columns: None, keys: Keys::All },
+            replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: Keys::All },
+            replay_lanes::at::Read { table: TableId::CountryAppearance, columns: None, keys: Keys::All },
+        ];
+        let then = cost::storage(|| replay_lanes::at::frame(recording, span.run, hour, &read)).ok();
+        let then_tags = then.as_ref().map(|frame| Tags::from_tables(HourFrame::from(frame), true).or_else(|_| Tags::from_tables(HourFrame::from(frame), false)));
+        let then_lexical = then.as_ref().and_then(|frame| frame.complete::<tables::LexicalTokens>().ok()).unwrap_or(&[]);
+        for (variant, at) in asked {
+            let fields = fields_of(variant, at);
+            let name = match &then_tags {
+                Some(Ok(tags)) => resolve(&fields.applied(&base(variant)), tags, then_lexical),
+                _ if !fields.display_name.is_empty() => resolve(&fields.applied(&base(variant)), &empty, then_lexical),
+                _ => unknown.clone(),
+            };
+            dated_names.insert((variant, at), name);
+        }
+    }
     let mut out = HashMap::new();
     for (&variant, &archetype) in variants {
         let definition = definitions.get(&variant);
@@ -535,41 +605,13 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                 (format!("{UNRESOLVED_MARK}variant/{variant}"), None, None)
             }
         };
-        let base = definition.cloned().unwrap_or_else(|| VariantDefinitionRow { id: variant, ..VariantDefinitionRow::default() });
-        let dates = dated.get(&variant).filter(|dates| !dates.names.is_empty());
-        let names = match (definition, dates) {
-            (None, None) => vec![StockVariantName { first_hour: span.first, name: None, known: false, design: None }],
-            (_, dates) => {
-                let named = |row: &VariantDefinitionRow, first_hour: i32| {
-                    let then = naming_frames.get(&first_hour).map(|frame| Tags::from_tables(HourFrame::from(frame), true).or_else(|_| Tags::from_tables(HourFrame::from(frame), false)));
-                    let shown = match (&then, &tags) {
-                        (Some(Ok(then)), _) => then,
-                        (_, Ok(tags)) => tags,
-                        _ => &empty,
-                    };
-                    let mut raw = variant_names::raw_variant(row, first_hour, shown, lexical);
-                    let own = of_variant(modules.as_deref(), variant, |row: &VariantModuleRow| row.variant);
-                    let upgraded = of_variant(upgrades.as_deref(), variant, |row: &VariantUpgradeRow| row.variant);
-                    if let (Some(own), Some(upgraded)) = (own, upgraded) {
-                        let own: Vec<&VariantModuleRow> = own.iter().collect();
-                        let upgraded: Vec<&VariantUpgradeRow> = upgraded.iter().collect();
-                        variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
-                    }
-                    let (name, _) = variant_names::variant_names(&raw, texts);
-                    StockVariantName { first_hour, name, known: true, design: raw.design }
-                };
-                match dates {
-                    Some(dates) => dates
-                        .names
-                        .iter()
-                        .map(|(hour, fields)| match fields {
-                            Some(fields) => named(&fields.applied(&base), *hour),
-                            None => StockVariantName { first_hour: *hour, name: None, known: false, design: None },
-                        })
-                        .collect(),
-                    None => vec![named(&base, span.last)],
-                }
-            }
+        let names = match entries.get(&variant) {
+            None => vec![StockVariantName { first_hour: span.first, name: None, known: false, design: None }],
+            Some(held) => held
+                .iter()
+                .enumerate()
+                .map(|(at, (hour, _))| dated_names.remove(&(variant, at)).unwrap_or(StockVariantName { first_hour: *hour, name: None, known: false, design: None }))
+                .collect(),
         };
         let typed_since = definition.filter(|definition| definition.archetype_token > 0).and_then(|_| dated.get(&variant)).and_then(|dates| dates.typed);
         out.insert(variant, Design { type_key, name, domain, names, typed_since });
@@ -596,6 +638,20 @@ pub(crate) struct NameFields {
     pub(crate) display_name: Vec<u8>,
     pub(crate) variant_name: Vec<u8>,
     pub(crate) explicit_entity: Vec<u8>,
+}
+
+impl From<&VariantDefinitionRow> for NameFields {
+    fn from(row: &VariantDefinitionRow) -> Self {
+        Self {
+            equipment_token: row.equipment_token,
+            creator_link: row.creator_link,
+            origin_link: row.origin_link,
+            append_variant_name: row.append_variant_name,
+            display_name: row.display_name.clone(),
+            variant_name: row.variant_name.clone(),
+            explicit_entity: row.explicit_entity.clone(),
+        }
+    }
 }
 
 impl NameFields {

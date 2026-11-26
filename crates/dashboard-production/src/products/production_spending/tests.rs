@@ -284,6 +284,38 @@ fn a_design_is_typed_from_its_first_archetype_and_named_only_from_its_last_renam
 }
 
 #[test]
+fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_its_row_is_gone() {
+    use dashboard_base::{Source, test_fixtures::{CAMPAIGN, records, source as base_frame}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{TableId, TableRows, VariantDefinitionRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    const VARIANT: u64 = 77;
+    let frames: Vec<_> = (100..=110)
+        .map(|hour| {
+            let mut frame = base_frame(1, hour, Some(1));
+            let rows = if hour >= 109 {
+                Vec::new()
+            } else {
+                vec![VariantDefinitionRow { id: VARIANT, creator_link: 9001, display_name: if hour < 105 { b"Old".to_vec() } else { b"New".to_vec() }, ..VariantDefinitionRow::default() }]
+            };
+            *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(rows));
+            frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "design-names".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = query.timeline.stretches[0].run;
+    let content = super::Content { catalogue: None, units: None };
+    let mut notes = BTreeSet::new();
+    let named = super::designs(&query, &Span { run, first: 100, last: 110, id: 9001, breaks: false }, &BTreeMap::from([(VARIANT, 0)]), &content, &mut notes).unwrap();
+    let names: Vec<(i32, bool)> = named[&VARIANT].names.iter().map(|entry| (entry.first_hour, entry.known)).collect();
+    assert_eq!(names, [(100, true), (105, true), (109, false)], "a name per recorded change, not known once the definition is gone");
+}
+
+#[test]
 fn repairs_are_summed_from_indexed_rate_segments_clipped_to_the_asked_hours() {
     let repairs = RepairRead::new(
         vec![(0, 9, Some((Some(100), true))), (10, 19, Some((Some(50), false))), (20, 24, Some((None, false))), (25, 29, Some((Some(10), true)))],
