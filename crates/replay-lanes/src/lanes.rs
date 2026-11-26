@@ -1568,8 +1568,7 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
             (None, Some((lo, hi))) => Keys::Range(lo, hi),
             (None, None) => Keys::All,
         };
-        let read = if before.is_some() { crate::points::points } else { crate::points::witnessed_points };
-        read(recording, run, table, columns, walk.source, keys, from, to, &mut |point| {
+        crate::points::witnessed_points(recording, run, table, columns, walk.source, keys, from, to, &mut |point| {
             if before.is_some() && point.hour == from {
                 walk.begin(point.key, point.covered, point.value, start);
             } else {

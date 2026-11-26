@@ -39,13 +39,19 @@ const whole = (raw: bigint, denominator: bigint): Value => {
 
 const dateCell = (hour: number | null, none: Value): TableCell => (hour === null ? { value: none } : { value: knownValue(hour) });
 
-export function fuelDelivered(terms: Pick<LeaseTerms, 'lastFuelDeliveredRaw'>, fuelSent: Value): boolean {
-  return BigInt(terms.lastFuelDeliveredRaw) !== 0n || fuelSent.kind === 'known' || fuelSent.kind === 'partial';
+export function fuelDelivered(terms: Pick<LeaseTerms, 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): boolean {
+  const moved = (value: Value) => value.kind === 'known' || value.kind === 'partial';
+  return BigInt(terms.lastFuelDeliveredRaw) !== 0n || moved(fuelSent) || moved(fuelLost);
 }
 
-export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'lastFuelDeliveredRaw'>, fuelSent: Value): Value {
+export function fuelUnits(value: Value): Value {
+  if (value.kind !== 'known') return value;
+  return whole(typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(Number(value.value))), FUEL_QUANTITY);
+}
+
+export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): Value {
   if (terms.lastDelivery > 0) return knownValue(terms.lastDelivery);
-  if (fuelDelivered(terms, fuelSent) || terms.delivered.some(item => BigInt(item.amountRaw) !== 0n)) return notRecorded('The last delivery date was not recorded, though deliveries were');
+  if (fuelDelivered(terms, fuelSent, fuelLost) || terms.delivered.some(item => BigInt(item.amountRaw) !== 0n)) return notRecorded('The last delivery date was not recorded, though deliveries were');
   if (fuelSent.kind === 'notRecorded') return notRecorded(`The last delivery date was not recorded, and whether fuel was sent is not known: ${fuelSent.reason}`);
   return notApplicable('No delivery yet');
 }
@@ -97,7 +103,8 @@ function agreementRows(
   const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
   const country: TableCell = { value: knownValue(pair), flags };
   const sent = valueFromLive(live, liveKey(terms.key, 'fuelSent'));
-  const last: TableCell = { value: lastDelivery(terms, sent) };
+  const fuelLost = valueFromLive(live, liveKey(terms.key, 'fuelLost'));
+  const last: TableCell = { value: lastDelivery(terms, sent, fuelLost) };
   const since = dateCell(terms.activeSince, notRecorded('Start date not recorded'));
   const unnamed: TooltipExtraRow[] = [
     ...(terms.giverMissing !== null ? [{ label: 'Giver', value: notRecorded(terms.giverMissing) }] : []),
@@ -135,10 +142,8 @@ function agreementRows(
   }
   const daily = BigInt(terms.fuelDailyRaw);
   const share = BigInt(terms.fuelPercentageRaw);
-  if (daily !== 0n || share !== 0n || fuelDelivered(terms, sent) || (rows.length === 0 && sent.kind === 'notRecorded')) {
+  if (daily !== 0n || share !== 0n || fuelDelivered(terms, sent, fuelLost) || (rows.length === 0 && sent.kind === 'notRecorded')) {
     const schedule = [daily !== 0n ? `Daily ${fixedText(daily, FUEL_QUANTITY)}` : '', share !== 0n ? `Production share ${fixedText(share, SHARE)}%` : ''].filter(Boolean).join(' · ') || 'No fuel schedule';
-    const lost = valueFromLive(live, liveKey(terms.key, 'fuelLost'));
-    const scaled = (value: Value): Value => value.kind === 'known' ? whole(BigInt(Math.trunc(Number(value.value))), FUEL_QUANTITY) : value;
     const meta: AgreementMeta = { terms, variant: null };
     rows.push({
       key: `${terms.key}:fuel`,
@@ -147,12 +152,12 @@ function agreementRows(
         country,
         equipment: { value: knownValue('Fuel') },
         monthly: { value: notApplicable(schedule) },
-        delivered: { value: scaled(sent), format: 'integer' },
+        delivered: { value: fuelUnits(sent), format: 'integer' },
         last,
         since,
       },
       tooltipTitle: pair,
-      tooltipExtra: () => extra(scaled(lost), schedule),
+      tooltipExtra: () => extra(fuelUnits(fuelLost), schedule),
       meta,
     });
   }

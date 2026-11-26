@@ -1042,7 +1042,7 @@ fn format_143_recording_opens_withholds_variant_tables_and_unverified_required_t
 fn power_recording(summarized: bool) -> (Recording, usize) {
     use replay_journal::synthetic::{Input, Sample};
     use replay_data::rows::CountryRow;
-    const RUNS: [(u64, i32, u32); 1] = [(1, 103, 6)];
+    const RUNS: [(u64, i32, u32); 1] = [(1, 119, 6)];
     let column = field(TableId::Countries, "political_power_raw");
     let mut registry = replay_recording::summaries::registry().unwrap();
     if !summarized {
@@ -1052,7 +1052,7 @@ fn power_recording(summarized: bool) -> (Recording, usize) {
     }
     let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"power synthetic", &RUNS, &[TableId::Countries], registry, |synthetic, _, ordinal| {
         let rows: Vec<CountryRow> = (1..=8_u32)
-            .filter(|&id| ordinal == 0 || (ordinal / (29 + id * 13)) % 5 != 0)
+            .filter(|&id| (ordinal / (29 + id * 13)) % 5 != 4)
             .map(|id| CountryRow { id, political_power_raw: Some(if ordinal == 0 { 100 } else { i64::from((ordinal / 24 + id * 5) % 11) * 3 }), ..Default::default() })
             .collect();
         let input = if ordinal == 0 {
@@ -1073,6 +1073,11 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
     let held = bare.run(0).unwrap();
     let (from, to) = (held.first_hour, held.last_hour());
     let shown = |chart: &Chart| chart.values.iter().map(|bin| (bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>();
+    for after in [from + 1, from + 7] {
+        let chart = chart_at(&bare, 0, TableId::Countries, source, None, after, to, 0, 6).unwrap();
+        let summed = chart_at(&summarized, 0, TableId::Countries, source, None, after, to, 0, 6).unwrap();
+        assert_eq!((&chart.keys, shown(&chart), &chart.totals), (&summed.keys, shown(&summed), &summed.totals), "from {after}: a walk seeded by a truncated hour counts the change from what that hour read");
+    }
     for (level, bin_hours) in [(1, summary::bucket_hours(1) * 4), (2, summary::bucket_hours(2))] {
         let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
         let summed = chart_at(&summarized, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
