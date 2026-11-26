@@ -1007,7 +1007,7 @@ impl Captured {
                     let held = &store.held[at];
                     held.army == seed.pointer
                         && Some(held.stat_block) == seed.stat_block
-                        && self.touched.binary_search(&seed.pointer).is_err()
+                        && !store.observations.armies.touched(seed.pointer)
                 });
             let maxima = held.and_then(|at| store.held[at].maxima);
             self.held_index.push(held.map(|at| at as u32));

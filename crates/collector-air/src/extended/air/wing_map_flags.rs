@@ -92,11 +92,14 @@ impl Store {
         let held = found.filter(|entry| entry.wing == wing && entry.certificate == before);
         let value = match held {
             Some(entry) => entry.value,
-            None => read(address),
+            None => {
+                let value = read(address);
+                if certificate(address) != Some(before) {
+                    return None;
+                }
+                value
+            }
         };
-        if certificate(address) != Some(before) {
-            return None;
-        }
         if self.current.len() < self.current.capacity() {
             self.current.push(Entry {
                 address,

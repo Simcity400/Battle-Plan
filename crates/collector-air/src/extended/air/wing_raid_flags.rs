@@ -20,6 +20,7 @@ struct Entry {
 pub struct Store {
     previous: Vec<Entry>,
     current: Vec<Entry>,
+    cursor: usize,
 }
 impl Store {
     pub fn reference(
@@ -42,6 +43,7 @@ impl Store {
         }
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.clear();
+        self.cursor = 0;
         self.ensure_capacity(wings);
     }
     pub fn ensure_capacity(&mut self, wings: usize) -> bool {
@@ -131,18 +133,28 @@ impl Store {
         let receiver = pointer.checked_add(sites::RAID_REFERENCE)?;
         let certificate = sequence(receiver);
         let held = certificate.and_then(|certificate| {
-            self.previous
-                .binary_search_by_key(&pointer, |row| row.pointer)
-                .ok()
-                .map(|at| self.previous[at])
-                .filter(|row| row.wing == wing && row.certificate == Some(certificate))
+            let found = if let Some(entry) = self.previous.get(self.cursor)
+                && entry.pointer == pointer
+            {
+                self.cursor += 1;
+                Some(*entry)
+            } else {
+                self.previous
+                    .binary_search_by_key(&pointer, |row| row.pointer)
+                    .ok()
+                    .map(|at| {
+                        self.cursor = at + 1;
+                        self.previous[at]
+                    })
+            };
+            found.filter(|row| row.wing == wing && row.certificate == Some(certificate))
         });
         if let Some(held) = held {
             let same = match held.lifetime {
                 None => true,
-                Some((key, held)) => sequence(key).map(|now| now == held)?,
+                Some((key, held)) => sequence(key).map(|now| now == held)? && sequence(receiver) == certificate,
             };
-            if same && sequence(receiver) == certificate {
+            if same {
                 self.current.push(held);
                 return held.value;
             }

@@ -580,8 +580,8 @@ impl VariableInterner {
 }
 
 const SCOPE_CACHE_MIN_ENTRIES: usize = 16;
-const SCOPE_CACHE_MAX_SCOPES: usize = 512;
-const SCOPE_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const SCOPE_CACHE_MAX_SCOPES: usize = 2048;
+const SCOPE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 struct CachedScope {
     names: Vec<u8>,

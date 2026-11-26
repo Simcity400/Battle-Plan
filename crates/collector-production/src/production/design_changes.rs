@@ -1846,7 +1846,7 @@ fn drain_speculating(
         let stage = std::time::Instant::now();
         drain_profile_mut().boundary_ns[0] = elapsed_ns(start);
         let witnesses = witness::take(&repairs.watches, &removed);
-        let mut reads = snapshots::speculative::read_marked(
+        let reads = snapshots::speculative::read_marked(
             speculation,
             base,
             hour,
@@ -1856,24 +1856,43 @@ fn drain_speculating(
         )?;
         let walked = repairs.watches.len()
             - reads
-                .values()
+                .iter()
                 .filter(|read| matches!(read, snapshots::speculative::Read::Unchanged(_)))
                 .count();
         if walked != 0 {
             collector_observers::world_input_changes::prepare_design_mios(walked, true);
         }
         drain_profile_mut().stages_ns[0] = elapsed_ns(stage);
-        sources::suspend_all(&repairs.watches)?;
-        let begin = std::time::Instant::now();
-        decode_events(&batch, base, output)?;
-        drain_profile_mut().events_ns = elapsed_ns(begin);
-        sources::resume_all(repairs.watches.iter().filter_map(|watch| {
+        let has_source_events = batch.events.iter().any(|event| {
             matches!(
-                reads.get(&watch.pointer),
-                Some(snapshots::speculative::Read::Unchanged(_))
+                event.kind,
+                Kind::Source | Kind::SourceRemoved | Kind::Provider(_) | Kind::ProviderReset(_)
             )
-            .then_some(watch.id)
-        }))?;
+        });
+        if has_source_events {
+            sources::suspend_all(&repairs.watches)?;
+            let begin = std::time::Instant::now();
+            decode_events(&batch, base, output)?;
+            drain_profile_mut().events_ns = elapsed_ns(begin);
+            sources::resume_all(repairs.watches.iter().zip(&reads).filter_map(
+                |(watch, read)| {
+                    matches!(read, snapshots::speculative::Read::Unchanged(_)).then_some(watch.id)
+                },
+            ))?;
+        } else {
+            if walked != 0 {
+                sources::suspend_ids(
+                    repairs.watches.iter().zip(&reads).filter_map(|(watch, read)| {
+                        (!matches!(read, snapshots::speculative::Read::Unchanged(_)))
+                            .then_some(watch.id)
+                    }),
+                    walked,
+                )?;
+            }
+            let begin = std::time::Instant::now();
+            decode_events(&batch, base, output)?;
+            drain_profile_mut().events_ns = elapsed_ns(begin);
+        }
         liveness::refresh_context(memory, base, &batch.events)?;
         let stage = std::time::Instant::now();
         engine_allocation::reserve(output, repairs.watches.len())
@@ -1888,10 +1907,10 @@ fn drain_speculating(
         let mut flag_updates = engine_allocation::vec(walked)
             .map_err(|_| "variant repair allocation failed")?;
         let (mut unchanged, mut lane_walks) = (0, 0);
-        for watch in &repairs.watches {
+        for (watch, read) in repairs.watches.iter().zip(reads) {
             use snapshots::speculative::Read;
-            let (walk, recorded) = match reads.remove(&watch.pointer) {
-                Some(Read::Unchanged(witness)) => {
+            let (walk, recorded) = match read {
+                Read::Unchanged(witness) => {
                     if witness.team.0 != 0 {
                         teams.push(witness.team);
                     }
@@ -1918,7 +1937,7 @@ fn drain_speculating(
                     });
                     continue;
                 }
-                Some(Read::Walked(walk, decoded, recorded)) => (Some((walk, decoded)), recorded),
+                Read::Walked(walk, decoded, recorded) => (Some((walk, decoded)), recorded),
                 _ => (None, None),
             };
             lane_walks += u32::from(walk.is_some());

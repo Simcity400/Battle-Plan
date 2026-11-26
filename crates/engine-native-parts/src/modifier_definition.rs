@@ -53,15 +53,24 @@ impl DefinitionMemo {
         base: usize,
         key: u32,
     ) -> Result<Option<u32>, &'static str> {
-        if let Some((_, flags)) = self.entries.borrow().iter().find(|(k, _)| *k == key) {
-            return Ok(*flags);
+        if let Ok(index) = self
+            .entries
+            .borrow()
+            .binary_search_by_key(&key, |&(k, _)| k)
+        {
+            return Ok(self.entries.borrow()[index].1);
         }
         let flags = read_flags(memory, base, key)?;
         let mut entries = self.entries.borrow_mut();
-        engine_allocation::reserve(&mut entries, 1)
-            .map_err(|_| "modifier definition memo allocation failed")?;
-        entries.push((key, flags));
-        Ok(flags)
+        match entries.binary_search_by_key(&key, |&(k, _)| k) {
+            Ok(index) => Ok(entries[index].1),
+            Err(index) => {
+                engine_allocation::reserve(&mut entries, 1)
+                    .map_err(|_| "modifier definition memo allocation failed")?;
+                entries.insert(index, (key, flags));
+                Ok(flags)
+            }
+        }
     }
 }
 

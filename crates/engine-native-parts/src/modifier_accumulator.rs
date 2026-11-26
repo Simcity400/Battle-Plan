@@ -767,6 +767,121 @@ pub fn requested_effective_memo(
 ) -> Result<i64, &'static str> {
     requested_operand(memory, base, address, key, Some(memo)).map(|operand| operand.effective)
 }
+
+const REQUESTED_EFFECTIVE_BULK_MAX: usize = 1024;
+
+pub fn requested_effective_many_memo(
+    memory: &impl Memory,
+    base: usize,
+    address: usize,
+    keys: &[u32],
+    scratch: &mut Vec<u8>,
+    memo: &crate::modifier_definition::DefinitionMemo,
+    mut visit: impl FnMut(u32, Result<i64, &'static str>),
+) {
+    if keys.is_empty() {
+        return;
+    }
+    let header = match read::<[u8; 16]>(memory, address) {
+        Some(bytes) => {
+            let data = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+            let count = i32::from_le_bytes(bytes[COUNT..COUNT + 4].try_into().unwrap());
+            Ok((data, count))
+        }
+        None => read::<u64>(memory, address)
+            .ok_or("strategic action modifier data unreadable")
+            .and_then(|data| {
+                let count = address
+                    .checked_add(COUNT)
+                    .and_then(|p| read::<i32>(memory, p))
+                    .ok_or("strategic action modifier count unreadable")?;
+                Ok((data as usize, count))
+            }),
+    };
+    let (data, count) = match header {
+        Ok((data, count)) if count >= 0 => (data, count as usize),
+        Ok(_) => {
+            for &key in keys {
+                visit(key, Err("strategic action modifier count negative"));
+            }
+            return;
+        }
+        Err(reason) => {
+            for &key in keys {
+                visit(key, Err(reason));
+            }
+            return;
+        }
+    };
+    if count == 0 {
+        for &key in keys {
+            visit(key, Ok(0));
+        }
+        return;
+    }
+    if data.checked_add(count * modifier_entry::STRIDE).is_none() {
+        for &key in keys {
+            visit(key, Err("strategic action modifier extent overflow"));
+        }
+        return;
+    }
+    if count <= REQUESTED_EFFECTIVE_BULK_MAX && data != 0 {
+        let byte_len = count * modifier_entry::STRIDE;
+        let reserved = engine_allocation::advisory(|| {
+            engine_allocation::reserve(scratch, byte_len.saturating_sub(scratch.len()))
+        })
+        .is_ok();
+        if reserved {
+            scratch.resize(byte_len, 0);
+            if engine_native_memory::read_slice(memory, data, &mut scratch[..byte_len]) {
+                let entries = &scratch[..byte_len];
+                for &key in keys {
+                    let mut first = 0usize;
+                    let mut remaining = count;
+                    while remaining != 0 {
+                        let old = remaining;
+                        remaining >>= 1;
+                        let candidate = first + remaining;
+                        let offset = candidate * modifier_entry::STRIDE;
+                        let candidate_key =
+                            u32::from_le_bytes(entries[offset..offset + 4].try_into().unwrap());
+                        if candidate_key < key {
+                            first = candidate + (old & 1);
+                        }
+                    }
+                    if first == count {
+                        visit(key, Ok(0));
+                        continue;
+                    }
+                    let offset = first * modifier_entry::STRIDE;
+                    let found =
+                        u32::from_le_bytes(entries[offset..offset + 4].try_into().unwrap());
+                    if key < found {
+                        visit(key, Ok(0));
+                        continue;
+                    }
+                    let raw = i64::from_le_bytes(
+                        entries[offset + modifier_entry::VALUE..offset + modifier_entry::VALUE + 8]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let effective = crate::modifier_definition::effective_lazy_memo(
+                        memory,
+                        base,
+                        key,
+                        || Ok(raw),
+                        memo,
+                    );
+                    visit(key, effective);
+                }
+                return;
+            }
+        }
+    }
+    for &key in keys {
+        visit(key, requested_effective_memo(memory, base, address, key, memo));
+    }
+}
 fn requested_operand(
     memory: &impl Memory,
     base: usize,

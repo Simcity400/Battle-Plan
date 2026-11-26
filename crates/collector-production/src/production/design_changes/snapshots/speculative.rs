@@ -123,7 +123,7 @@ pub(in super::super) fn read_marked(
     watches: &[Watch],
     witnesses: Vec<Option<Witness>>,
     removed: &[usize],
-) -> Result<HashMap<usize, Read>, &'static str> {
+) -> Result<Vec<Read>, &'static str> {
     let mut witnesses = witnesses.into_iter();
     let mut marked = engine_allocation::vec(watches.len())
         .map_err(|_| "variant boundary read allocation failed")?;
@@ -160,7 +160,12 @@ pub(in super::super) fn read_marked(
                 });
             }
             let Ok(parts) = (speculation.run)(parts) else {
-                return Ok(HashMap::new());
+                let mut fallback = engine_allocation::vec(watches.len())
+                    .map_err(|_| "variant boundary read allocation failed")?;
+                for _ in 0..watches.len() {
+                    fallback.push(Read::Refused);
+                }
+                return Ok(fallback);
             };
             parts
         }
@@ -180,8 +185,7 @@ pub(in super::super) fn read_marked(
             parts
         }
     };
-    let mut reads = HashMap::new();
-    engine_allocation::reserve_map(&mut reads, watches.len())
+    let mut reads = engine_allocation::vec(watches.len())
         .map_err(|_| "variant boundary read allocation failed")?;
     {
         let mut profile = super::super::drain_profile_mut();
@@ -192,8 +196,8 @@ pub(in super::super) fn read_marked(
         ];
     }
     for part in &mut parts {
-        for (pointer, _, read) in part.marked.drain(..) {
-            reads.insert(pointer, read);
+        for (_, _, read) in part.marked.drain(..) {
+            reads.push(read);
         }
     }
     Ok(reads)

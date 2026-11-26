@@ -53,6 +53,9 @@ fn same_hq_source(held: HqSource, current: HqSource) -> bool {
 const SITES: usize = MUTATIONS.len();
 const UNIT_TYPE_SITE: usize = 23;
 const AI_ROLE_SITE: usize = 25;
+const fn is_hq_site(site: usize) -> bool {
+    matches!(site, 43..=54)
+}
 static WATCHES: Watches = Watches::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
@@ -65,6 +68,7 @@ static HQ_GROUPS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Watches {
     registry: WatchRegistry,
+    hq_registry: WatchRegistry,
     calls: collector_timing::hook_timing::CallCounters<SITES>,
     unchanged_unit_type_writes: AtomicU64,
     unchanged_ai_role_rebuilds: AtomicU64,
@@ -74,6 +78,7 @@ impl Watches {
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::new().with_synchronous(),
+            hq_registry: WatchRegistry::new().with_synchronous(),
             calls: collector_timing::hook_timing::CallCounters::new(),
             unchanged_unit_type_writes: AtomicU64::new(0),
             unchanged_ai_role_rebuilds: AtomicU64::new(0),
@@ -82,7 +87,11 @@ impl Watches {
 
     pub fn notify(&self, template: usize, site: usize) -> Notification<'_> {
         self.calls.increment(site);
-        self.registry.notify(template)
+        if is_hq_site(site) {
+            self.hq_registry.notify(template)
+        } else {
+            self.registry.notify(template)
+        }
     }
 
     fn unit_type_notification(
@@ -118,12 +127,15 @@ impl Watches {
         watches.registry.offer(objects);
         watches.registry.boundary(false);
         watches.registry.set_enabled(true);
+        watches.hq_registry.offer(objects);
+        watches.hq_registry.boundary(false);
+        watches.hq_registry.set_enabled(true);
         watches
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn poisoned(&self) -> bool {
-        self.registry.poisoned()
+        self.registry.poisoned() || self.hq_registry.poisoned()
     }
 }
 
@@ -133,6 +145,9 @@ pub trait Changes: Sync {
     }
     fn quiet(&self) -> Option<(u64, u64)>;
     fn sequence(&self, template: usize) -> Option<(u64, u64)>;
+    fn hq_sequence(&self, object: usize) -> Option<(u64, u64)> {
+        self.sequence(object)
+    }
     fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
         self.sequence(status)
     }
@@ -148,12 +163,16 @@ impl Changes for Watches {
     fn sequence(&self, template: usize) -> Option<(u64, u64)> {
         self.registry.sequence(template)
     }
+    fn hq_sequence(&self, object: usize) -> Option<(u64, u64)> {
+        self.hq_registry.sequence(object)
+    }
 }
 
 pub struct Observer;
 #[cfg(any(test, feature = "test-support"))]
 pub fn unsized_observer_for_tests() -> Observer {
     WATCHES.registry.set_enabled(true);
+    WATCHES.hq_registry.set_enabled(true);
     Observer
 }
 impl Changes for Observer {
@@ -171,6 +190,11 @@ impl Changes for Observer {
             .then(|| WATCHES.sequence(template))
             .flatten()
     }
+    fn hq_sequence(&self, object: usize) -> Option<(u64, u64)> {
+        (!collector_hook_failures::failed(collector_hook_failures::Family::Templates))
+            .then(|| WATCHES.hq_sequence(object))
+            .flatten()
+    }
     fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
         collector_model_inputs::local_subunit_changes::Changes::sequence(
             &collector_model_inputs::local_subunit_changes::Observer,
@@ -185,19 +209,25 @@ impl Changes for Observer {
 }
 
 pub fn active() -> usize {
-    WATCHES.registry.active()
+    WATCHES
+        .registry
+        .active()
+        .saturating_add(WATCHES.hq_registry.active())
 }
 
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
+    WATCHES.hq_registry.boundary(invalidate);
 }
 
 fn offer(templates: usize, countries: usize, hq_groups: usize) {
-    let receivers = templates
-        .saturating_add(countries.saturating_mul(3))
-        .saturating_add(hq_groups.saturating_mul(2));
-    if receivers != 0 {
-        WATCHES.registry.offer(receivers);
+    let template_receivers = templates.saturating_add(countries.saturating_mul(3));
+    if template_receivers != 0 {
+        WATCHES.registry.offer(template_receivers);
+    }
+    let hq_receivers = hq_groups.saturating_mul(2);
+    if hq_receivers != 0 {
+        WATCHES.hq_registry.offer(hq_receivers);
     }
 }
 
@@ -234,6 +264,7 @@ pub(crate) fn record_hq_groups(groups: usize) {
 
 pub fn collect() {
     WATCHES.registry.collect();
+    WATCHES.hq_registry.collect();
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -350,6 +381,7 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             WATCHES.registry.set_enabled(false);
+            WATCHES.hq_registry.set_enabled(false);
             collector_observers::occupation_changes::forwarder(
                 collector_observers::occupation_changes::Forwarder::Templates,
                 false,
@@ -363,6 +395,9 @@ impl Hooks {
         }
         WATCHES
             .registry
+            .set_enabled(enabled && !self.hooks.is_empty());
+        WATCHES
+            .hq_registry
             .set_enabled(enabled && !self.hooks.is_empty());
         collector_observers::occupation_changes::forwarder(
             collector_observers::occupation_changes::Forwarder::Templates,
@@ -385,7 +420,10 @@ impl Drop for Hooks {
         // SAFETY: like each Hook's relay, the watch tables are dropped only
         // once the hooks were never enabled, or were removed and drained
         // after the last capture.
-        unsafe { WATCHES.registry.release() };
+        unsafe {
+            WATCHES.registry.release();
+            WATCHES.hq_registry.release();
+        }
     }
 }
 
@@ -463,7 +501,11 @@ fn notification<'a>(
         Some(at) => watches.notify(at, site),
         None => {
             watches.calls.increment(site);
-            watches.registry.notify_every()
+            if is_hq_site(site) {
+                watches.hq_registry.notify_every()
+            } else {
+                watches.registry.notify_every()
+            }
         }
     };
     (template, occupation)
@@ -655,7 +697,7 @@ unsafe extern "system-unwind" fn requisition_hq_from_army(
             }
         })
     };
-    let running = ManuallyDrop::new(WATCHES.registry.running());
+    let running = ManuallyDrop::new(WATCHES.hq_registry.running());
     let before = state();
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[47].load(Ordering::Acquire)) };
@@ -677,12 +719,13 @@ unsafe extern "system-unwind" fn rebuild_hq_requirements(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
     let template = second.wrapping_sub(engine_native_land::template_hq_context::TEMPLATE_REQUIREMENTS);
-    let running = ManuallyDrop::new(WATCHES.registry.running());
+    let running_templates = ManuallyDrop::new(WATCHES.registry.running());
+    let running_hq = ManuallyDrop::new(WATCHES.hq_registry.running());
     let before = HqSource {
         source: second,
         requested: third as u32,
-        template: running.dependency_stamp(template),
-        holder: running.dependency_stamp(first),
+        template: running_templates.dependency_stamp(template),
+        holder: running_hq.dependency_stamp(first),
     };
     let unchanged = HQ_SOURCES
         .try_lock()
@@ -699,12 +742,12 @@ unsafe extern "system-unwind" fn rebuild_hq_requirements(
         unsafe { std::mem::transmute(ORIGINAL[48].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
     drop(ManuallyDrop::into_inner(notification));
-    let after_template = running.dependency_stamp(template);
+    let after_template = running_templates.dependency_stamp(template);
     let dirty = !unchanged || before.template.is_none() || before.template != after_template;
     if unchanged && dirty {
         drop(WATCHES.notify(first, 48));
     }
-    let after_holder = running.dependency_stamp(first);
+    let after_holder = running_hq.dependency_stamp(first);
     let expected_holder = before.holder.and_then(|(epoch, sequence)| {
         sequence
             .checked_add(u64::from(dirty))
@@ -722,7 +765,8 @@ unsafe extern "system-unwind" fn rebuild_hq_requirements(
             ..before
         };
     }
-    drop(ManuallyDrop::into_inner(running));
+    drop(ManuallyDrop::into_inner(running_hq));
+    drop(ManuallyDrop::into_inner(running_templates));
     result
 }
 fn equipment_delivered(available: i64, remaining: Option<i64>) -> bool {
@@ -738,7 +782,7 @@ unsafe extern "system-unwind" fn distribute_hq_equipment(
     let timing = collector_timing::hook_timing::enter(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
-    let running = ManuallyDrop::new(WATCHES.registry.running());
+    let running = ManuallyDrop::new(WATCHES.hq_registry.running());
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[49].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
@@ -776,7 +820,7 @@ unsafe extern "system-unwind" fn accept_hq_manpower(
     let timing = collector_timing::hook_timing::enter(
         collector_timing::hook_timing::Family::TemplateChanges,
     );
-    let running = ManuallyDrop::new(WATCHES.registry.running());
+    let running = ManuallyDrop::new(WATCHES.hq_registry.running());
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[51].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
@@ -1285,5 +1329,27 @@ mod tests {
             );
             assert!(!watches.poisoned());
         }
+    }
+
+    #[test]
+    fn hq_sites_advance_only_hq_sequences_and_preserve_template_quiet() {
+        let watches = Watches::enabled(16);
+        let template_quiet = Changes::quiet(&watches).unwrap();
+        let template_seq = Changes::sequence(&watches, 0x1000).unwrap();
+        for site in 43..=54 {
+            let hq_before = Changes::hq_sequence(&watches, 0x1000).unwrap();
+            let hq_other = Changes::hq_sequence(&watches, 0x2000).unwrap();
+            drop(watches.notify(0x1000, site));
+            assert_eq!(Changes::quiet(&watches), Some(template_quiet));
+            assert_eq!(Changes::sequence(&watches, 0x1000), Some(template_seq));
+            assert_ne!(Changes::hq_sequence(&watches, 0x1000), Some(hq_before));
+            assert_eq!(Changes::hq_sequence(&watches, 0x2000), Some(hq_other));
+        }
+        let hq_before = Changes::hq_sequence(&watches, 0x1000).unwrap();
+        drop(watches.notify(0x1000, 42));
+        assert_ne!(Changes::quiet(&watches), Some(template_quiet));
+        assert_ne!(Changes::sequence(&watches, 0x1000), Some(template_seq));
+        assert_eq!(Changes::hq_sequence(&watches, 0x1000), Some(hq_before));
+        assert!(!watches.poisoned());
     }
 }

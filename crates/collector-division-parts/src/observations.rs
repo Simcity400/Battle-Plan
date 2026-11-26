@@ -5,11 +5,21 @@ use collector_observers::unit_history_changes;
 pub struct Taken {
     epoch: Option<u64>,
     touched: Vec<usize>,
+    filter: [u64; 8],
+}
+
+#[inline]
+fn bloom_bits(receiver: usize) -> (usize, u64, usize, u64) {
+    let hash = (receiver >> 3).wrapping_mul(0x9e37_79b9_7f4a_7c15_u64 as usize);
+    let b1 = (hash >> 23) & 511;
+    let b2 = (hash >> 14) & 511;
+    (b1 >> 6, 1_u64 << (b1 & 63), b2 >> 6, 1_u64 << (b2 & 63))
 }
 
 impl Taken {
     pub(crate) fn take(&mut self, take: impl FnOnce(&mut dyn FnMut(usize)) -> Option<u64>) {
         self.touched.clear();
+        self.filter = [0; 8];
         let touched = &mut self.touched;
         let mut kept = true;
         let epoch = take(&mut |receiver| {
@@ -21,12 +31,18 @@ impl Taken {
         });
         self.touched.sort_unstable();
         self.touched.dedup();
+        for &receiver in &self.touched {
+            let (w1, m1, w2, m2) = bloom_bits(receiver);
+            self.filter[w1] |= m1;
+            self.filter[w2] |= m2;
+        }
         self.epoch = epoch.filter(|_| kept);
     }
 
     fn clear(&mut self) {
         self.epoch = None;
         self.touched.clear();
+        self.filter = [0; 8];
     }
 
     #[inline]
@@ -46,7 +62,13 @@ impl Taken {
 
     #[inline]
     pub fn touched(&self, receiver: usize) -> bool {
-        !self.touched.is_empty() && self.touched.binary_search(&receiver).is_ok()
+        if self.touched.is_empty() {
+            return false;
+        }
+        let (w1, m1, w2, m2) = bloom_bits(receiver);
+        (self.filter[w1] & m1) != 0
+            && (self.filter[w2] & m2) != 0
+            && self.touched.binary_search(&receiver).is_ok()
     }
 
     #[inline]

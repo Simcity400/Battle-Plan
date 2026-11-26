@@ -404,6 +404,9 @@ impl Cache {
             return self.publish();
         }
         let reader = country_reader(memory, base);
+        let memo = engine_native_parts::modifier_definition::DefinitionMemo::default();
+        let mut accumulator_bytes = Vec::new();
+        let mut demanded_keys = Vec::new();
         for (country, all) in self.dirty.drain() {
             let Some(keys) = self.countries.get(&country) else {
                 continue;
@@ -428,22 +431,31 @@ impl Cache {
                     row,
                 )?;
             }
-            for key in keys.keys() {
-                if !all && self.values.contains_key(&(country, *key)) {
-                    continue;
+            demanded_keys.clear();
+            engine_allocation::reserve(&mut demanded_keys, keys.len())
+                .map_err(|_| "design context allocation failed")?;
+            for &key in keys.keys() {
+                if all || !self.values.contains_key(&(country, key)) {
+                    demanded_keys.push(key);
                 }
-                let value = owner.as_ref().map_err(|e| *e).and_then(|owner| {
-                    let address = owner
-                        .pointer
-                        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
-                        .ok_or("design country accumulator address overflow")?;
-                    engine_native_parts::modifier_accumulator::requested_effective_at(
-                        memory, base, address, *key,
-                    )
-                });
+            }
+            if demanded_keys.is_empty() {
+                continue;
+            }
+            let address = owner.as_ref().map_err(|e| *e).and_then(|owner| {
+                owner
+                    .pointer
+                    .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
+                    .ok_or("design country accumulator address overflow")
+            });
+            let mut insert_failure = None;
+            let mut record_row = |key: u32, value: Result<i64, &'static str>| {
+                if insert_failure.is_some() {
+                    return;
+                }
                 let row = rows::DesignCountryModifierRow {
                     country,
-                    modifier: *key,
+                    modifier: key,
                     value: value.as_ref().ok().copied(),
                     failure: if value.is_ok() {
                         0
@@ -454,11 +466,35 @@ impl Cache {
                     },
                 };
                 self.failures = self.failures.saturating_add(u64::from(value.is_err()));
-                if self.values.get(&(country, *key)) != Some(&row) {
-                    reserve(&mut self.values)?;
-                    self.values.insert((country, *key), row);
+                if self.values.get(&(country, key)) != Some(&row) {
+                    if let Err(reason) = reserve(&mut self.values) {
+                        insert_failure = Some(reason);
+                        return;
+                    }
+                    self.values.insert((country, key), row);
                     self.changed = true;
                 }
+            };
+            match address {
+                Ok(address) => {
+                    engine_native_parts::modifier_accumulator::requested_effective_many_memo(
+                        memory,
+                        base,
+                        address,
+                        &demanded_keys,
+                        &mut accumulator_bytes,
+                        &memo,
+                        record_row,
+                    );
+                }
+                Err(reason) => {
+                    for &key in &demanded_keys {
+                        record_row(key, Err(reason));
+                    }
+                }
+            }
+            if let Some(reason) = insert_failure {
+                return Err(reason);
             }
         }
         if self.template_admitted {
@@ -1951,6 +1987,8 @@ impl CountryPart {
         )
         .map_err(|_| "design context partition allocation failed")?;
         let reader = country_reader(memory, base);
+        let memo = engine_native_parts::modifier_definition::DefinitionMemo::default();
+        let mut accumulator_bytes = Vec::new();
         for demand in &self.demands {
             let owner = reader
                 .as_ref()
@@ -1970,19 +2008,19 @@ impl CountryPart {
                     owner.as_ref().map_err(|e| *e),
                 ));
             }
-            for key in &demand.keys {
-                let value = owner.as_ref().map_err(|e| *e).and_then(|owner| {
-                    let address = owner
-                        .pointer
-                        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
-                        .ok_or("design country accumulator address overflow")?;
-                    engine_native_parts::modifier_accumulator::requested_effective_at(
-                        memory, base, address, *key,
-                    )
-                });
+            if demand.keys.is_empty() {
+                continue;
+            }
+            let address = owner.as_ref().map_err(|e| *e).and_then(|owner| {
+                owner
+                    .pointer
+                    .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
+                    .ok_or("design country accumulator address overflow")
+            });
+            let mut push_row = |key: u32, value: Result<i64, &'static str>| {
                 self.modifiers.push(rows::DesignCountryModifierRow {
                     country: demand.country,
-                    modifier: *key,
+                    modifier: key,
                     value: value.as_ref().ok().copied(),
                     failure: if value.is_ok() {
                         0
@@ -1992,6 +2030,24 @@ impl CountryPart {
                         2
                     },
                 });
+            };
+            match address {
+                Ok(address) => {
+                    engine_native_parts::modifier_accumulator::requested_effective_many_memo(
+                        memory,
+                        base,
+                        address,
+                        &demand.keys,
+                        &mut accumulator_bytes,
+                        &memo,
+                        push_row,
+                    );
+                }
+                Err(reason) => {
+                    for &key in &demand.keys {
+                        push_row(key, Err(reason));
+                    }
+                }
             }
         }
         Ok(())

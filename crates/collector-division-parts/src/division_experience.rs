@@ -169,7 +169,11 @@ impl<T: Clone> Store<T> {
             .map(|at| &self.held[at])
             .filter(|held| held.army == seed.pointer && self.matches(held, certificate));
         let (value, current, certificate) = match held {
-            Some(held) => (held.value.clone(), held.certificate == certificate, held.certificate),
+            Some(held) => (
+                held.value.clone(),
+                held.current && held.certificate == certificate,
+                held.certificate,
+            ),
             None => (read()?, true, certificate),
         };
         self.push(seed, certificate, value.clone(), current)?;
@@ -412,10 +416,14 @@ impl<T: Clone> Store<T> {
         taken: &crate::observations::Taken,
         order: &mut Order,
     ) -> Option<((u64, u64), T)> {
-        taken.epoch()?;
+        let epoch = taken.epoch()?;
         let held = self.prefetch_held_any(index, seed, order)?;
-        (held.current && taken.quiet(receiver, held.certificate.0))
-            .then(|| (held.certificate, held.value.clone()))
+        let quiet = if held.current {
+            taken.quiet(receiver, held.certificate.0)
+        } else {
+            self.daily && epoch == held.certificate.0
+        };
+        quiet.then(|| (held.certificate, held.value.clone()))
     }
 
     fn prefetch_held_any(

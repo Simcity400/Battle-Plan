@@ -1837,18 +1837,6 @@ impl StabilityPacks {
         scatter(&country_stability::TABLES, cost, &mut ticks);
         self.ticks = ticks;
     }
-
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-        store: Option<&mut collector_certificates::slicing::SliceFingerprints>,
-    ) {
-        self.capture_partitioned(memory, base, game_state, hour, force_full, store, None);
-    }
 }
 
 pub(crate) struct WarOverviewPacks {

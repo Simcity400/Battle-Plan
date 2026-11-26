@@ -24,21 +24,84 @@ pub fn capture(
     row: &Row,
     references: &mut ScopedResolver,
 ) -> Inputs {
+    let expected_vtable = engine_sites::at(base, air_mission::VTABLE_RVA).map(|at| at as u64);
+    let (base_fuel, vtable, current_type) = match (
+        wing.checked_add(BASE_FUEL),
+        wing.checked_add(MISSION),
+        wing.checked_add(MISSION + air_mission::CURRENT_TYPE),
+    ) {
+        (Some(fuel_at), Some(vtable_at), Some(type_at)) => {
+            let mut fuel_buf = [0_u8; 8];
+            let mut vtable_buf = [0_u8; 8];
+            let mut type_buf = [0_u8; 4];
+            let mut destinations: [&mut [u8]; 3] = [&mut fuel_buf, &mut vtable_buf, &mut type_buf];
+            if memory.copy_scattered([fuel_at, vtable_at, type_at], &mut destinations) == 3 {
+                let vtable = u64::from_le_bytes(vtable_buf);
+                (
+                    Some(i64::from_le_bytes(fuel_buf)),
+                    Some(vtable),
+                    if expected_vtable == Some(vtable) {
+                        Some(i32::from_le_bytes(type_buf))
+                    } else {
+                        None
+                    },
+                )
+            } else {
+                let base_fuel = field(memory, wing, BASE_FUEL);
+                let vtable = field(memory, wing, MISSION);
+                let current_type = if expected_vtable == vtable {
+                    field(memory, wing, MISSION + air_mission::CURRENT_TYPE)
+                } else {
+                    None
+                };
+                (base_fuel, vtable, current_type)
+            }
+        }
+        _ => {
+            let base_fuel = field(memory, wing, BASE_FUEL);
+            let vtable = field(memory, wing, MISSION);
+            let current_type = if expected_vtable == vtable {
+                field(memory, wing, MISSION + air_mission::CURRENT_TYPE)
+            } else {
+                None
+            };
+            (base_fuel, vtable, current_type)
+        }
+    };
     let mut out = Inputs {
-        base_fuel: field(memory, wing, BASE_FUEL),
+        base_fuel,
         ..Default::default()
     };
-    if engine_sites::at(base, air_mission::VTABLE_RVA).map(|at| at as u64)
-        != field(memory, wing, MISSION)
-    {
+    if expected_vtable != vtable {
         return out;
     }
-    out.current_type = field(memory, wing, MISSION + air_mission::CURRENT_TYPE);
+    out.current_type = current_type;
     match out.current_type {
         Some(current) if current != 0 => {
-            out.effective_aircraft =
-                field(memory, wing, MISSION + air_mission::EFFECTIVE_AIRCRAFTS);
-            out.context_mode = field(memory, wing, MISSION + air_mission::CONTEXT_MODE);
+            match (
+                wing.checked_add(MISSION + air_mission::EFFECTIVE_AIRCRAFTS),
+                wing.checked_add(MISSION + air_mission::CONTEXT_MODE),
+            ) {
+                (Some(eff_at), Some(mode_at)) => {
+                    let mut eff_buf = [0_u8; 4];
+                    let mut mode_buf = [0_u8; 1];
+                    let mut destinations: [&mut [u8]; 2] = [&mut eff_buf, &mut mode_buf];
+                    if memory.copy_scattered([eff_at, mode_at], &mut destinations) == 2 {
+                        out.effective_aircraft = Some(i32::from_le_bytes(eff_buf));
+                        out.context_mode = Some(mode_buf[0]);
+                    } else {
+                        out.effective_aircraft =
+                            field(memory, wing, MISSION + air_mission::EFFECTIVE_AIRCRAFTS);
+                        out.context_mode =
+                            field(memory, wing, MISSION + air_mission::CONTEXT_MODE);
+                    }
+                }
+                _ => {
+                    out.effective_aircraft =
+                        field(memory, wing, MISSION + air_mission::EFFECTIVE_AIRCRAFTS);
+                    out.context_mode = field(memory, wing, MISSION + air_mission::CONTEXT_MODE);
+                }
+            }
         }
         Some(0)
             if row.mission_mask & air_mission::TRAINING_MASK != 0
@@ -54,11 +117,44 @@ pub fn capture(
                     .ok()
                     .map(|value| value.is_some())
             };
-            if out.override_resolved == Some(false)
-                && field::<u64>(memory, wing, MISSION + air_mission::WING) == Some(wing as u64)
-            {
-                out.capacity_class = field(memory, wing, MISSION + air_mission::CAPACITY_CLASS);
-                out.context_mode = field(memory, wing, MISSION + air_mission::CONTEXT_MODE);
+            if out.override_resolved == Some(false) {
+                match (
+                    wing.checked_add(MISSION + air_mission::WING),
+                    wing.checked_add(MISSION + air_mission::CAPACITY_CLASS),
+                    wing.checked_add(MISSION + air_mission::CONTEXT_MODE),
+                ) {
+                    (Some(wing_at), Some(cap_at), Some(mode_at)) => {
+                        let mut wing_buf = [0_u8; 8];
+                        let mut cap_buf = [0_u8; 4];
+                        let mut mode_buf = [0_u8; 1];
+                        let mut destinations: [&mut [u8]; 3] =
+                            [&mut wing_buf, &mut cap_buf, &mut mode_buf];
+                        if memory.copy_scattered([wing_at, cap_at, mode_at], &mut destinations) == 3
+                        {
+                            if u64::from_le_bytes(wing_buf) == wing as u64 {
+                                out.capacity_class = Some(i32::from_le_bytes(cap_buf));
+                                out.context_mode = Some(mode_buf[0]);
+                            }
+                        } else if field::<u64>(memory, wing, MISSION + air_mission::WING)
+                            == Some(wing as u64)
+                        {
+                            out.capacity_class =
+                                field(memory, wing, MISSION + air_mission::CAPACITY_CLASS);
+                            out.context_mode =
+                                field(memory, wing, MISSION + air_mission::CONTEXT_MODE);
+                        }
+                    }
+                    _ => {
+                        if field::<u64>(memory, wing, MISSION + air_mission::WING)
+                            == Some(wing as u64)
+                        {
+                            out.capacity_class =
+                                field(memory, wing, MISSION + air_mission::CAPACITY_CLASS);
+                            out.context_mode =
+                                field(memory, wing, MISSION + air_mission::CONTEXT_MODE);
+                        }
+                    }
+                }
             }
         }
         _ => {}
