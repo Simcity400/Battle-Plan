@@ -35,6 +35,7 @@ import {
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { keepEqual } from './stableValue.ts';
+import { rowHoverPublisher } from './hoverRow.ts';
 import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
@@ -43,6 +44,7 @@ import { reducedMotionEnabled, sameFamilyTheme } from './theme.ts';
 import {
   buildTooltipContent,
   FamilyTooltipController,
+  HOVER_CLOSE_MS,
   resolveTooltipEntryContent,
   type FamilyActionPayload,
   type FamilyTooltipEntry,
@@ -1708,4 +1710,66 @@ test('a war group chosen by recorded slot matches that slot under every tag it h
     { tag: 'POL', firstHour: 10, lastHour: 60 },
     { tag: 'ITA', firstHour: 70, lastHour: 80 },
   ], 'a war group chosen by tag keeps matching the tag');
+});
+
+test('the hovered row is reported when the row under the pointer changes, never while it rests there or while playback advances under it, and cleared on leaving', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  type Listener = (event: unknown) => void;
+  const listeners = new Map<string, Set<Listener>>();
+  const body = {
+    addEventListener(type: string, fn: Listener) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: Listener) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    contains: (node: unknown) => node === body,
+  };
+  const picture = (id: number, keys: readonly string[]): InstalledPicture => ({
+    id, owner: 'owner-A', generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100 + id),
+    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
+    actionKeys: lazyActionKeys(keys.map((key, i) => [key, key, i, -1, '', null] as FamilyNavTuple), displayedHour(100 + id)), accessibleDescription: null,
+  });
+  let installed = picture(7, ['GER', 'FRA']);
+  const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const fakePipeline = {
+    pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
+    inspect() {},
+    view() { return null; },
+  } as unknown as Pipeline;
+  const reply = (key: string | null) => { while (pending.length) pending.shift()!(key, { installedId: installed.id, owner: installed.owner }); };
+  const rows: (string | null)[] = [];
+  let hoverChanges = 0;
+  const publish = rowHoverPublisher(() => subject => rows.push(subject));
+  const stop = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement, pictureNode: body as unknown as HTMLElement, menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline, pipe: 1, tooltips: new FamilyTooltipController('delayed-worker'), inspectedKeyRef: { current: null }, inspectedHitRef: { current: null },
+    lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
+    parseHit: hit => { const row = parseDefaultRowHit(hit); return row ? { ...row, hour: 100 + installed.id } : null; },
+    onHoverChange: hit => { hoverChanges++; publish(hit?.subject ?? null); },
+    onActivate: () => {},
+  });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  reply('row:GER');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 10 });
+  reply('row:GER');
+  for (const id of [8, 9, 10]) {
+    installed = picture(id, ['GER', 'FRA']);
+    body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 10 });
+    reply('row:GER');
+  }
+  assert.deepEqual(rows, ['GER'], 'one report while the pointer rests on GER and playback advances under it');
+  for (const id of [11, 12, 13]) {
+    installed = picture(id, ['GER', 'FRA']);
+    body.dispatch('pointermove', { isTrusted: true, clientX: 10 + id, clientY: 10 });
+    reply('row:GER');
+  }
+  assert.deepEqual(rows, ['GER'], 'moving within GER as playback advances reports nothing new');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 30 });
+  reply('row:FRA');
+  assert.deepEqual(rows, ['GER', 'FRA'], 'a new row under the pointer is reported once');
+  body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
+  t.mock.timers.tick(HOVER_CLOSE_MS);
+  assert.deepEqual(rows, ['GER', 'FRA', null], 'leaving clears the hovered row');
+  assert.ok(hoverChanges > rows.length, 'the pointer reported hover changes, such as a new hour, that were not row changes');
+  stop();
 });
