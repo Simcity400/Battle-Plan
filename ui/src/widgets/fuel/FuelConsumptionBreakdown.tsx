@@ -48,12 +48,13 @@ function familyRows(reply: CountryFuelReply | undefined, digits: number): DrillP
 
 const familyStructure = (reply: CountryFuelReply) => JSON.stringify([reply.consumptionMissing, reply.consumption?.reasons ?? null, reply.consumerNames]);
 
-export default function FuelConsumptionBreakdown({ runtime, gate, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, digits, campaign,
+export default function FuelConsumptionBreakdown({ runtime, gate, widget, track, tag, hour, follows, within, selection, onSelection, level, onLevel, initialLevel, digits, campaign,
   aliases, detailHours, history, ...chart }: {
   runtime: WidgetRuntime; gate: Gate; widget: WidgetBase; track: BoundTrack; tag: string; hour: number | null; follows: boolean; digits: number; campaign: string;
   aliases?: ReadonlyMap<string, readonly Span[]>; history: CountryAt['history'];
   selection: FuelConsumptionSelection | null; onSelection: (selection: FuelConsumptionSelection | null) => void;
   level: FuelConsumptionLevel | null; onLevel: (level: FuelConsumptionLevel | null) => void;
+  initialLevel?: string | null;
 } & DrillChart) {
   const tokens = useChartTokens();
   const shown = useShownHour();
@@ -68,7 +69,7 @@ export default function FuelConsumptionBreakdown({ runtime, gate, widget, track,
     product: 'country-fuel-demand', params: { branchId: track.branch.id, country: countryFromKey(demandTag), hour: demandHour } }) : null, chart.active, validateFuelDemand, track.source);
   const data = demand.data && answersKey(demand.data.asked, demandTag) ? demand.data : undefined;
   const basis = data ? demandBasis(track.branch.id, data) : null;
-  const levelName = level && data && level.basis.country === data.country && level.basis.countryInstance === data.countryInstance ? level.level : level ? null : 'all';
+  const levelName = level && data && level.basis.country === data.country && level.basis.countryInstance === data.countryInstance ? level.level : level ? null : (initialLevel ?? 'all');
   const available = levelName !== null && (!data || consumptionLevelAvailable(data, levelName));
   const displayed = useMemo(() => data && available && levelName ? consumptionParts(data, levelName) : [], [data, available, levelName]);
   const inventory = useMemo(() => displayed.map(part => partRow(part, tokens.categories[part.kind % tokens.categories.length])), [displayed, tokens.categories]);
