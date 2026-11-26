@@ -107,3 +107,23 @@ fn a_transfer_counts_once_published_and_its_victory_points_once_read_with_nothin
     keys.sort_unstable();
     assert_eq!(gap.countries.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), keys, "unranked, in key order");
 }
+
+#[test]
+fn a_country_is_named_by_its_latest_read_tag_through_the_hour_and_a_later_transfer_read_earlier_does_not_rename_it() {
+    let giver = |tag: &str, hour: i32| country(5, tag, hour);
+    let taker = country(6, "TAK", 0);
+    let peace = index(vec![
+        deal("first", Some((10, 10)), vec![state(1, giver("NEW", 100), taker.clone(), 10, None, None)]),
+        deal("second", Some((20, 20)), vec![state(2, giver("OLD", 50), taker.clone(), 20, None, None)]),
+        deal("third", Some((30, 30)), vec![state(3, giver("TIE", 100), taker, 30, None, None)]),
+    ]);
+    let name = |through: i32| {
+        let reply = peace.answer(through);
+        let row = reply.countries.iter().find(|row| row.key == "5:105").cloned();
+        row.map(|row| (row.tag, row.hour, row.lost))
+    };
+    assert_eq!(name(9), None, "nothing is known before the first transfer");
+    assert_eq!(name(10), Some(("NEW".to_owned(), 100, 1)));
+    assert_eq!(name(20), Some(("NEW".to_owned(), 100, 2)), "a tag read at hour 50 does not replace one read at 100");
+    assert_eq!(name(30), Some(("TIE".to_owned(), 100, 3)), "of two tags read at the same hour, the later transfer's is kept");
+}
