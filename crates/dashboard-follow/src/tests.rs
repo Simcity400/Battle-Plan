@@ -2226,7 +2226,10 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let gate = Mutex::new(gate);
     let (reader, catching_up) = mpsc::channel();
     let first = AtomicBool::new(true);
+    let worker = Arc::new(Mutex::new(None));
+    let reading_on = worker.clone();
     host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+        if step.is_none() { *reading_on.lock().unwrap() = Some(std::thread::current().id()); }
         if first.swap(false, Ordering::Relaxed) {
             started.send(hour).unwrap();
             gate.lock().unwrap().recv().unwrap();
@@ -2242,15 +2245,15 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     host.playhead().pace(60.0 * f64::from(quantum));
     host.playhead().anchor(f64::from(start + 6 * quantum), true, 0.0, std::time::Instant::now(), false);
     let (_, through, advance) = steps.recv().unwrap();
-    let (done, finished) = mpsc::channel();
+    let (returned, handoffs) = mpsc::channel();
     let _watch = host.playhead().watch_control(Arc::new(move || {
-        if std::thread::current().name().is_some_and(|name| name.starts_with("follow panel ")) { let _ = done.send(()); }
+        if worker.lock().unwrap().take_if(|id| *id == std::thread::current().id()).is_some() { let _ = returned.send(()); }
     }));
     resume.send(()).unwrap();
-    finished.recv().unwrap();
+    handoffs.recv().unwrap();
     advance.send(()).unwrap();
     let (next, last, advance) = steps.recv().unwrap();
-    finished.recv().unwrap();
+    handoffs.recv().unwrap();
     let cold: Vec<_> = catching_up.try_iter().collect();
     assert_eq!(cold.first().map(|r| r.0), Some(start + quantum));
     assert_eq!(cold.last().map(|r| r.0), Some(through), "catch-up covers the scheduling step");
