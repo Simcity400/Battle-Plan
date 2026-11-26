@@ -9,7 +9,7 @@ use dashboard_base::Source;
 use dashboard_declare::Key;
 use dashboard_query::{
     Query,
-    identity::Holder,
+    identity::{Holder, Holders, TAG_UNLINKED},
     read,
     series::{Part, ranked::GroupSelection},
 };
@@ -269,6 +269,24 @@ fn warn(recording: &Recording, run: u32, kinds: &[u8], keys: &[u128], first: i32
     Ok(())
 }
 
+fn unlinked_tag_at(holders: &Holders, hour: i32) -> bool {
+    holders.tags.values().any(|runs| {
+        let at = runs.partition_point(|run| run.last < hour);
+        runs.get(at).is_some_and(|run| run.first <= hour && run.holder == Holder::Unresolved)
+    })
+}
+
+fn missing_holder<'a>(holders: &'a Holders, country: &Country, hour: i32, holder: Option<Holder>, unlinked: impl FnOnce() -> bool) -> Option<&'a str> {
+    match holder {
+        Some(Holder::Unresolved) => {
+            let at = holders.unknown.partition_point(|&(_, last, _)| last < hour);
+            Some(holders.unknown.get(at).filter(|(first, ..)| *first <= hour).map_or(TAG_UNLINKED, |(_, _, reason)| reason))
+        }
+        None if matches!(country, Country::Slot(_)) && unlinked() => Some(TAG_UNLINKED),
+        _ => None,
+    }
+}
+
 pub struct NavalLossesAt;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -376,7 +394,7 @@ fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, str
         let mut slots = BTreeSet::new();
         for country in countries {
             let held = query.holders.at(country, hour);
-            let (first, last) = held.map_or((hour, hour), |run| (run.first, run.last));
+            let (first, last) = held.map_or_else(|| query.holders.interval(hour), |run| (run.first, run.last));
             lo = lo.max(first);
             hi = hi.min(last);
             if let Some(Holder::Found { slot, .. }) = held.map(|run| run.holder) {
@@ -484,15 +502,15 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
     if missing_baseline && ranked {
         return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(MISSING_BASELINE.into()), warnings });
     }
+    let loss_keys = |country: &Country| {
+        let owner = query.holders.at(country, hour).and_then(|run| match run.holder {
+            Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
+            Holder::Unresolved => None,
+        });
+        owner.into_iter().flat_map(move |owner| kinds.iter().map(move |&kind| Row::holder_key(owner, attribution, kind)))
+    };
     let chosen: Option<Vec<u128>> = (!ranked).then(|| {
-        let mut keys: Vec<u128> = countries
-            .iter()
-            .filter_map(|country| match query.holders.at(country, hour)?.holder {
-                Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
-                Holder::Unresolved => None,
-            })
-            .flat_map(|owner| kinds.iter().map(move |&kind| Row::holder_key(owner, attribution, kind)))
-            .collect();
+        let mut keys: Vec<u128> = countries.iter().flat_map(loss_keys).collect();
         keys.sort_unstable();
         keys.dedup();
         keys
@@ -552,20 +570,17 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
         let total = values.iter().try_fold(0i64, |sum, value| sum.checked_add((*value)?));
         (total, values, why)
     };
-    let mut used_keys = Vec::new();
+    let unlinked = std::cell::LazyCell::new(|| unlinked_tag_at(&query.holders, hour));
     let mut rows: Vec<ForceAtRow> = Vec::new();
     if countries.is_empty() && params.group.is_none() {
         let unresolved = query.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last)
-            || query.holders.tags.values().flatten().any(|run| run.first <= hour && hour <= run.last && run.holder == Holder::Unresolved);
+            || *unlinked;
         for (tag, runs) in &query.holders.tags {
             if let Some(Holder::Found { slot, id }) = runs.iter().find(|held| held.first <= hour && hour <= held.last).map(|held| held.holder) {
                 let owner = Key::Holder.of(slot, id);
                 let (total, values, why) = part_values(owner);
                 if params.top.is_some() && total.is_some_and(|value| value <= 0) {
                     continue;
-                }
-                for &kind in kinds {
-                    used_keys.push(Row::holder_key(owner, attribution, kind));
                 }
                 rows.push(ForceAtRow {
                     country: Country::from(tag.as_str()),
@@ -613,38 +628,18 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             if !seen.insert(country.clone()) {
                 continue;
             }
-            let Some(run) = query.holders.at(country, hour) else {
-                if query.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last) {
-                    rows.push(ForceAtRow {
-                        country: country.clone(),
-                        slot: None,
-                        tag: query.holders.name(country, hour),
-                        total: None,
-                        reference_total: None,
-                        missing: Some(query.holders.unnamed(country, hour)),
-                        values: vec![None; kinds.len()],
-                        parts_missing: None,
-                    });
-                }
-                continue;
-            };
-            if let Holder::Found { slot, .. } = run.holder
-                && !held_slots.insert(slot)
-            {
-                continue;
-            }
-            let tag = query.holders.name(country, hour);
-            match run.holder {
-                Holder::Found { slot, id } => {
+            let holder = query.holders.at(country, hour).map(|run| run.holder);
+            match holder {
+                Some(Holder::Found { slot, id }) => {
+                    if !held_slots.insert(slot) {
+                        continue;
+                    }
                     let owner = Key::Holder.of(slot, id);
                     let (total, values, why) = part_values(owner);
-                    for &kind in kinds {
-                        used_keys.push(Row::holder_key(owner, attribution, kind));
-                    }
                     rows.push(ForceAtRow {
                         country: country.clone(),
                         slot: Some(slot),
-                        tag,
+                        tag: query.holders.name(country, hour),
                         total,
                         reference_total: None,
                         missing: total.is_none().then(|| why.unwrap_or_else(|| "Naval losses could not be computed at this hour".into())),
@@ -652,16 +647,20 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                         parts_missing: None,
                     });
                 }
-                Holder::Unresolved => rows.push(ForceAtRow {
-                    country: country.clone(),
-                    slot: None,
-                    tag,
-                    total: None,
-                    reference_total: None,
-                    missing: Some(query.holders.not_known(country, hour).unwrap_or_else(|| "Country holder could not be resolved at this hour".into())),
-                    values: vec![None; kinds.len()],
-                    parts_missing: None,
-                }),
+                _ => {
+                    if let Some(reason) = missing_holder(&query.holders, country, hour, holder, || *unlinked) {
+                        rows.push(ForceAtRow {
+                            country: country.clone(),
+                            slot: None,
+                            tag: country.to_string(),
+                            total: None,
+                            reference_total: None,
+                            missing: Some(format!("Who holds {country} is not known: {reason}")),
+                            values: vec![None; kinds.len()],
+                            parts_missing: None,
+                        });
+                    }
+                }
             }
         }
         rows.sort_unstable_by(|a, b| match (a.total, b.total) {
@@ -671,6 +670,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             (None, None) => a.tag.cmp(&b.tag),
         });
     }
+    let mut used_keys: Vec<_> = rows.iter().filter(|row| row.slot.is_some()).flat_map(|row| loss_keys(&row.country)).collect();
     used_keys.sort_unstable();
     used_keys.dedup();
     warn(recording, stretch.run, kinds, &used_keys, hour, hour, &mut warnings)?;
