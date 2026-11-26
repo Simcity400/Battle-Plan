@@ -356,6 +356,33 @@ fn a_service_record_reads_a_status_read_in_part_at_a_run_s_first_hour_as_its_cha
 }
 
 #[test]
+fn a_service_record_of_chosen_countries_names_the_hours_whose_holders_are_not_known_and_changes_at_both_ends() {
+    use super::careers::service_record::DivisionServiceRecordTail;
+    use dashboard_base::products::{LoadContext, Product};
+    use replay_data::rows::TableId;
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    let source = decorated_source((100..=107).map(|hour| {
+        let mut frame = decorated_world(hour, |id| 20 * id as i64);
+        if (103..=104).contains(&hour) {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries unread".into() };
+        }
+        frame
+    }).collect());
+    let ask = |hour| DivisionServiceRecordTail::load(&source,
+        &serde_json::from_value(json!({"branchId": "1", "hour": hour, "countries": ["GER"], "limit": 12})).unwrap(),
+        &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+    let named = |reply: &super::careers::service_record::ServiceRecordTailReply| reply.warnings.iter().any(|warning| warning.contains("is not known"));
+    let before = ask(102);
+    assert!(!named(&before), "{:?}", before.warnings);
+    assert!(before.next_change.is_some_and(|at| at <= 103), "playback re-reads where the holders stop being known: {:?}", before.next_change);
+    let during = ask(103);
+    assert!(named(&during), "{:?}", during.warnings);
+    assert!(during.next_change.is_some_and(|at| at <= 105), "and where they are known again: {:?}", during.next_change);
+    assert!(!named(&ask(105)), "the reason does not outlive the gap");
+}
+
+#[test]
 fn the_type_view_keeps_its_rows_when_the_designs_behind_its_tooltip_are_unread() {
     use super::equipment::{DivisionEquipment, DivisionEquipmentParams, DivisionEquipmentView};
     use crate::products::army::ArmyAttribution;

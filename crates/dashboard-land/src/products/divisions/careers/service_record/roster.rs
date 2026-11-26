@@ -319,16 +319,14 @@ impl Scope {
                 not_known = not_known.or_else(|| Some(gap.reason.clone()));
             }
         }
-        if set.membership.iter().any(|member| !matches!(member.country, Country::Slot(_))) {
-            for &(first, last, _) in &query.holders.unknown {
-                span(first, last);
-            }
-        }
         for gap in &set.unobserved {
             if span(gap.first_hour, gap.last_hour) {
                 unknown = true;
                 not_known = not_known.or_else(|| query.holders.chosen_not_known(hour, hour).into_iter().next().map(|(_, _, reason)| reason));
             }
+        }
+        for &(first, last, _) in &query.holders.unknown {
+            span(first, last);
         }
         Self { slots: Some(slots), unknown, not_known, next }
     }
