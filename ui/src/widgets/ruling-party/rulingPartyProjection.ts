@@ -35,6 +35,7 @@ import {
   POPULARITY_PART_BITS,
   rulingAt,
   validatePartyHistoryReply,
+  within,
   type Band,
 } from './partyData.ts';
 
@@ -60,6 +61,14 @@ interface HoverState {
 }
 
 const partKey = (subject: string, part: number): SeriesKey => ({ tag: subject, part: String(part) });
+
+const GOVERNMENT_UNRECORDED = 'Government changes were not recorded';
+
+function governmentGaps(history: PartyHistoryReply, hour: number): ChartGap[] {
+  return history.governmentUnobserved
+    .filter(span => span.firstHour < hour)
+    .map(span => ({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, hour - 1), reason: GOVERNMENT_UNRECORDED }));
+}
 
 function stackParts(band: Band, subject: string, readView: BoundedReadView): StackPart[] {
   const byPart = new Map<number, [number, number][]>();
@@ -88,7 +97,7 @@ function bandHead(band: Band, subject: string, readView: BoundedReadView, hour: 
   return headReading(readView, 'popularity', { tag: subject, part: String(part), partBits: POPULARITY_PART_BITS }, decimals);
 }
 
-function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply, list: readonly Band[], subject: string): ChartHoverDetail | null {
+function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply, list: readonly Band[], subject: string, hour: number): ChartHoverDetail | null {
   let hover;
   try {
     hover = readView.hover<{ readonly states?: readonly HoverState[]; readonly decimals?: number }>('popularityHover');
@@ -109,6 +118,11 @@ function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply
   ];
   if (shown.ideology || partyLabel) {
     items.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', partyLabel ?? 'Not recorded'].join(' · ') });
+  }
+  if (at >= hour) {
+    items.push({ label: 'Government changes', missingReason: 'Not recorded yet', tone: 'muted' });
+  } else if (within(at, history.governmentUnobserved)) {
+    items.push({ label: 'Government changes', missingReason: 'Not recorded', tone: 'muted' });
   }
   let first = true;
   for (const band of list) {
@@ -136,9 +150,10 @@ function buildRulingMarkers(history: PartyHistoryReply, list: readonly Band[], o
   const byHour = new Map<number, ChartMarkerItem[]>();
   for (const badge of kept) {
     if (badge.hour < options.extent[0] || badge.hour > hour) continue;
+    const item: ChartMarkerItem = badge.detail === undefined ? { title: badge.label } : { title: badge.label, detail: badge.detail };
     const items = byHour.get(badge.hour);
-    if (items) items.push({ title: badge.label });
-    else byHour.set(badge.hour, [{ title: badge.label }]);
+    if (items) items.push(item);
+    else byHour.set(badge.hour, [item]);
   }
   return [...byHour].map(([at, items]) => ({ id: `rp-m:${at}`, hour: at, title: items[0]!.title, items }));
 }
@@ -165,9 +180,15 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
     if (!list.length) {
       const witnessed = buildRulingMarkers(history, list, options, hour);
       const message = history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.';
+      const government = governmentGaps(history, hour);
+      const unrecorded: ChartGap[] = [
+        ...options.gaps,
+        ...government,
+        { firstHour: hour, lastHour: hour, reason: 'Government changes for this hour are not recorded yet' },
+      ];
       return witnessed.length
-        ? { ...base, summaryText, markers: witnessed, warnings: [...history.warnings, message], empty: null }
-        : { ...base, summaryText, warnings: history.warnings, empty: { message, kind: 'unavailable' } };
+        ? { ...base, summaryText, markers: witnessed, gaps: unrecorded, warnings: [...history.warnings, message], empty: null }
+        : { ...base, summaryText, warnings: history.warnings, empty: { message, kind: 'unavailable', ...(government.length ? { detail: GOVERNMENT_UNRECORDED } : {}) } };
     }
 
     const heads = list.map(band => bandHead(band, subject, readView, hour, history.decimals));
@@ -207,7 +228,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       markers: markers.length > 0 ? markers : undefined,
       gaps: gaps.length > 0 ? gaps : undefined,
       summaryText,
-      hoverDetail: rulingHoverDetail(readView, history, list, subject),
+      hoverDetail: rulingHoverDetail(readView, history, list, subject, hour),
       warnings: history.warnings,
       auditRows,
     };

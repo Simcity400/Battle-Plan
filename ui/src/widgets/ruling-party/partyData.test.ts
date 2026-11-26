@@ -15,6 +15,8 @@ const REPLY: PartyHistoryReply = {
   ruling: [{ token: 'fascism', firstHour: 100, lastHour: 102, startsSegment: true }, { token: 'democratic', firstHour: 104, lastHour: 106, startsSegment: true },
     { token: 'fascism', firstHour: 107, lastHour: 110, startsSegment: false }],
   elections: [{ hour: 104, witnessed: 104 }, { hour: 108, witnessed: 109 }],
+  governmentChanges: [{ hour: 107, witnessed: 107, before: 'democratic', after: 'fascism', cause: 'coup' }, { hour: 108, witnessed: 110, before: null, after: 'fascism', cause: null }],
+  governmentUnobserved: [{ firstHour: 103, lastHour: 103 }],
   leaders: [], people: [], ideologyTypes: [],
   partyNames: ['NSDAP', null], partyNameRuns: [{ name: 0, firstHour: 100, lastHour: 102 }, { name: 1, firstHour: 104, lastHour: 106 }],
 };
@@ -30,18 +32,22 @@ test('bands keep the product order and take their colours; unknown ideologies us
     'a reused part belongs to each party only over its own hours');
 });
 
-test('a change of government next to a gap is not a badge; elections are', () => {
+test('changes of government are the recorded ones, at their hour once read, with a cause only when recorded', () => {
   const badges = partyBadges(REPLY, token => token, 108);
-  assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph]), [[104, '✓'], [107, '⇆']], 'an election read at 109 is not shown at 108');
-  assert.deepEqual(partyBadges(REPLY, token => token, 109).map(badge => [badge.hour, badge.glyph]), [[104, '✓'], [107, '⇆'], [108, '✓']],
-    'an election shows at its recorded date once it was read');
-  const replaced = { ...REPLY, ruling: REPLY.ruling.map((item, index) => index === 2 ? { ...item, startsSegment: true } : item) };
-  assert.deepEqual(partyBadges(replaced, token => token, 108).map(badge => badge.glyph), ['✓']);
-  assert.equal(badges[1]!.label, 'fascism took power from democratic');
+  assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph]), [[104, '✓'], [107, '⇆']], 'an election read at 109 and a change read at 110 are not shown at 108');
+  assert.deepEqual(partyBadges(REPLY, token => token, 110).map(badge => [badge.hour, badge.glyph]), [[104, '✓'], [107, '⇆'], [108, '⇆'], [108, '✓']],
+    'an election and a change show at their recorded hours once read');
+  assert.deepEqual([badges[1]!.label, badges[1]!.detail], ['fascism took power from democratic', 'Coup']);
+  const unnamed = partyBadges(REPLY, token => token, 110)[2]!;
+  assert.deepEqual([unnamed.label, unnamed.detail], ['The government changed', undefined], 'an unrecorded side or cause is not guessed');
+  assert.deepEqual(partyBadges({ ...REPLY, governmentChanges: [] }, token => token, 110).map(badge => badge.glyph), ['✓', '✓'],
+    'a change of ruling party read without a recorded change of government is no badge');
   assert.equal(rulingAt(REPLY, 105), 'democratic');
   assert.equal(rulingAt(REPLY, 103), null);
   assert.throws(() => validatePartyHistoryReply({ ...REPLY, parties: [{ token: 'x', parts: [{ part: -1, firstHour: 100, lastHour: 100 }] }] }));
   assert.throws(() => validatePartyHistoryReply({ ...REPLY, elections: [{ hour: 105, witnessed: 104 }] }));
+  assert.throws(() => validatePartyHistoryReply({ ...REPLY, governmentChanges: [{ ...REPLY.governmentChanges[0]!, witnessed: 106 }] }));
+  assert.throws(() => validatePartyHistoryReply({ ...REPLY, governmentChanges: [{ ...REPLY.governmentChanges[0]!, cause: 'unheard' as never }] }));
 });
 
 test('the leader is named as recorded, and every gap in what is known is said', () => {

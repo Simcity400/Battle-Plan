@@ -1,14 +1,28 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
-import type { HourSpan, LeaderRun, PartOwnership, PartyHistoryReply } from '../../generated/dashboard';
+import type { GovernmentCauseKind, HourSpan, LeaderRun, PartOwnership, PartyHistoryReply } from '../../generated/dashboard';
 import type { SeriesKey } from '../../dashboard/keyedSeriesData';
 
 export interface EventBadge {
   hour: number;
   glyph: string;
   label: string;
+  detail?: string;
 }
+
+const GOVERNMENT_CAUSES: Record<GovernmentCauseKind, string> = {
+  election: 'Election',
+  coup: 'Coup',
+  civilWar: 'Civil war',
+  effect: 'Scripted effect',
+  peaceConference: 'Peace conference',
+  overlord: 'Set by the overlord',
+  console: 'Console command',
+  reset: 'Politics reset',
+};
+
+export const within = (hour: number, spans: readonly HourSpan[]) => spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
 export const POPULARITY_FAMILY = { kind: 'party-popularity', measure: 'popularity' } as const;
 export const POPULARITY_PART_BITS = 32;
@@ -22,6 +36,9 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
       && party.parts.every(owned => Number.isInteger(owned.part) && owned.part >= 0 && owned.firstHour <= owned.lastHour))
     && Array.isArray(reply.ruling) && Array.isArray(reply.elections)
     && reply.elections.every(election => Number.isInteger(election.hour) && election.hour <= election.witnessed) && Array.isArray(reply.ideologies) && Array.isArray(reply.warnings)
+    && Array.isArray(reply.governmentChanges) && Array.isArray(reply.governmentUnobserved)
+    && reply.governmentChanges.every(change => Number.isInteger(change.hour) && change.hour <= change.witnessed
+      && (change.cause === null || change.cause in GOVERNMENT_CAUSES))
     && Array.isArray(reply.people) && Array.isArray(reply.ideologyTypes) && Array.isArray(reply.leaders)
     && reply.leaders.every((run, index) => typeof run.ideology === 'string' && run.firstHour <= run.lastHour
       && (run.person == null || (Number.isInteger(run.person) && run.person >= 0 && run.person < reply.people.length))
@@ -78,14 +95,13 @@ export function rulingAt(reply: PartyHistoryReply, hour: number): string | null 
 }
 
 export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, hour: number, leaders = false): EventBadge[] {
-  const hidden = (hour: number, unobserved: readonly HourSpan[]) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const badges: EventBadge[] = [];
-  reply.ruling.forEach((run, index) => {
-    const previous = reply.ruling[index - 1];
-    if (previous && !run.startsSegment && previous.lastHour + 1 === run.firstHour && previous.token !== run.token && !hidden(run.firstHour - 1, reply.unobserved)) {
-      badges.push({ hour: run.firstHour, glyph: '⇆', label: `${name(run.token)} took power from ${name(previous.token)}` });
-    }
-  });
+  for (const change of reply.governmentChanges) {
+    if (change.witnessed > hour) continue;
+    const { before, after } = change;
+    const label = before !== null && after !== null && before !== after ? `${name(after)} took power from ${name(before)}` : 'The government changed';
+    badges.push({ hour: change.hour, glyph: '⇆', label, ...(change.cause === null ? {} : { detail: GOVERNMENT_CAUSES[change.cause] }) });
+  }
   for (const election of reply.elections) if (election.witnessed <= hour) badges.push({ hour: election.hour, glyph: '✓', label: 'Election held' });
   if (leaders) {
     reply.leaders.forEach((run, index) => {
