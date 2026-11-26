@@ -29,7 +29,8 @@ import { paletteCache, readableColour } from '../charts/palette.ts';
 import { markColours } from '../shell/appearance/themes.ts';
 import { niceStep } from '../charts/valueAxis.ts';
 import { colorCache, contrast, extendColor, isDark, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
-import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
+import { engineHour, gameDate, gameYear, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
+import { timeChartCacheState } from '../families/time-chart/cacheControl.ts';
 
 export type RowDensity = 'compact' | 'normal' | 'comfortable';
 
@@ -129,6 +130,8 @@ interface CachedTokens {
 
 const kitTokenCache = new WeakMap<object, CachedTokens>();
 let activeTheme: ThemeSnapshot | null = null;
+let activeThemeRef: KitTokenInput | null = null;
+let activeThemeTokens: KitTokens | null = null;
 
 function themeSnapshot(theme: KitTokenInput): ThemeSnapshot {
   return [
@@ -164,12 +167,53 @@ function themeSnapshot(theme: KitTokenInput): ThemeSnapshot {
   ];
 }
 
+function matchesSnapshot(s: ThemeSnapshot, theme: KitTokenInput): boolean {
+  return Object.is(s[0], theme.surface)
+    && Object.is(s[1], theme.text)
+    && Object.is(s[2], theme.muted)
+    && Object.is(s[3], theme.accent)
+    && Object.is(s[4], theme.red)
+    && Object.is(s[5], theme.green)
+    && Object.is(s[6], theme.raised)
+    && Object.is(s[7], theme.dark)
+    && Object.is(s[8], theme.font)
+    && Object.is(s[9], theme.fontSize?.small)
+    && Object.is(s[10], theme.fontSize?.body)
+    && Object.is(s[11], theme.hairline)
+    && Object.is(s[12], theme.hairlineStrong)
+    && Object.is(s[13], theme.bandDivider)
+    && Object.is(s[14], theme.headerBand)
+    && Object.is(s[15], theme.rowHover)
+    && Object.is(s[16], theme.rowSelected)
+    && Object.is(s[17], theme.childTint)
+    && Object.is(s[18], theme.shortage)
+    && Object.is(s[19], theme.barMuted)
+    && Object.is(s[20], theme.barTrack)
+    && Object.is(s[21], theme.gridLine)
+    && Object.is(s[22], theme.zeroLine)
+    && Object.is(s[23], theme.playhead)
+    && Object.is(s[24], theme.crosshair)
+    && Object.is(s[25], theme.dateTabBg)
+    && Object.is(s[26], theme.dateTabText)
+    && Object.is(s[27], theme.hoverTabBg)
+    && Object.is(s[28], theme.hoverTabText);
+}
+
 function sameSnapshot(a: ThemeSnapshot, b: ThemeSnapshot): boolean {
   for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
   return true;
 }
 
 export function resolveKitTokens(theme: KitTokenInput): KitTokens {
+  if (activeTheme !== null && matchesSnapshot(activeTheme, theme)) {
+    if (theme === activeThemeRef && activeThemeTokens !== null) return activeThemeTokens;
+    const cached = kitTokenCache.get(theme);
+    if (cached && matchesSnapshot(cached.snapshot, theme)) {
+      activeThemeRef = theme;
+      activeThemeTokens = cached.tokens;
+      return cached.tokens;
+    }
+  }
   const snapshot = themeSnapshot(theme);
   if (activeTheme !== null && !sameSnapshot(activeTheme, snapshot)) {
     colorCache.clear();
@@ -178,9 +222,15 @@ export function resolveKitTokens(theme: KitTokenInput): KitTokens {
   }
   activeTheme = snapshot;
   const cached = kitTokenCache.get(theme);
-  if (cached && sameSnapshot(cached.snapshot, snapshot)) return cached.tokens;
+  if (cached && sameSnapshot(cached.snapshot, snapshot)) {
+    activeThemeRef = theme;
+    activeThemeTokens = cached.tokens;
+    return cached.tokens;
+  }
   const tokens = buildKitTokens(theme);
   kitTokenCache.set(theme, { snapshot, tokens });
+  activeThemeRef = theme;
+  activeThemeTokens = tokens;
   return tokens;
 }
 
@@ -1209,8 +1259,9 @@ export function drawDateTab(
   const padX = 7;
   const height = 19;
   ctx.save();
-  ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-  const textW = textWidth(ctx, text);
+  const tabFont = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = tabFont;
+  const textW = measureCanvasText(ctx, text, tabFont);
   const width = Math.ceil(textW + padX * 2);
   let x = Math.round(cx - width / 2);
   if (bounds) {
@@ -1430,15 +1481,51 @@ function dayTicks(startHour: number, endHour: number, plotWidth: number, hoursPe
   return ticks;
 }
 
+interface CachedTimeAxisTicks {
+  readonly kind: 'month' | 'year';
+  readonly validFromEnd: number;
+  readonly validBeforeEnd: number;
+  readonly ticks: readonly TimeAxisTick[];
+}
+
+const TIME_AXIS_CACHE_MAX = 64;
+const TIME_AXIS_MAX_HOUR = 2_147_483_647;
+const timeAxisTickCache = new Map<string, CachedTimeAxisTicks>();
+
+function storeTimeAxisTicks(key: string, entry: CachedTimeAxisTicks): TimeAxisTick[] {
+  if (timeAxisTickCache.size >= TIME_AXIS_CACHE_MAX) {
+    const oldest = timeAxisTickCache.keys().next().value;
+    if (oldest !== undefined) timeAxisTickCache.delete(oldest);
+  }
+  timeAxisTickCache.set(key, entry);
+  return entry.ticks.slice();
+}
+
 export function computeTimeAxisTicks(startHour: number, endHour: number, plotWidth: number, dayHours = 24): TimeAxisTick[] {
   if (plotWidth <= 20 || endHour <= startHour) return [];
   const hoursPerDay = Math.max(1, dayHours);
+  const useCache = timeChartCacheState.enabled;
+  const cacheKey = useCache ? `${startHour}\u0000${hoursPerDay}\u0000${plotWidth}` : '';
+  const span = endHour - startHour;
+  if (useCache && Math.floor(endHour) <= TIME_AXIS_MAX_HOUR) {
+    const cached = timeAxisTickCache.get(cacheKey);
+    if (
+      cached
+      && endHour >= cached.validFromEnd
+      && endHour < cached.validBeforeEnd
+      && (cached.kind === 'month'
+        ? span > 62 * hoursPerDay && span < 2 * 365 * hoursPerDay
+        : span >= 2 * 365 * hoursPerDay)
+    ) {
+      return cached.ticks.slice();
+    }
+  }
   const start = gameDate(Math.floor(startHour));
   const end = gameDate(Math.floor(endHour));
   if (!start || !end) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 5, 10]);
-  if (endHour - startHour <= 62 * hoursPerDay) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 3, 5, 7, 14]);
+  if (span <= 62 * hoursPerDay) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 3, 5, 7, 14]);
   const ticks: TimeAxisTick[] = [];
-  if (endHour - startHour < 2 * 365 * hoursPerDay) {
+  if (span < 2 * 365 * hoursPerDay) {
     let shownYear: number | null = null;
     for (let year = start.year, month = start.month; year < end.year || (year === end.year && month <= end.month);) {
       const hour = boundaryInView(engineHour({ year, month, day: 1, hour: 1 }), startHour, endHour);
@@ -1456,6 +1543,18 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
       const date = gameDate(ticks[0]!.hour)!;
       ticks[0] = { ...ticks[0]!, label: `${shortMonth(date.month)} ${date.year}` };
     }
+    if (useCache) {
+      const curStart = engineHour({ year: end.year, month: end.month, day: 1, hour: 1 }) ?? endHour;
+      const nextY = end.month === 12 ? end.year + 1 : end.year;
+      const nextM = end.month === 12 ? 1 : end.month + 1;
+      const nextStart = engineHour({ year: nextY, month: nextM, day: 1, hour: 1 }) ?? (TIME_AXIS_MAX_HOUR + 1);
+      return storeTimeAxisTicks(cacheKey, {
+        kind: 'month',
+        validFromEnd: curStart,
+        validBeforeEnd: nextStart,
+        ticks,
+      });
+    }
     return ticks;
   }
   const years = end.year - start.year + 1;
@@ -1468,6 +1567,16 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   for (let year = Math.ceil(start.year / markStep) * markStep; year <= end.year && ticks.length < 512; year += markStep) {
     const hour = boundaryInView(engineHour({ year, month: 1, day: 1, hour: 1 }), startHour, endHour);
     if (hour !== null) ticks.push({ hour, label: year % labelStep === 0 ? String(year) : '', major: true });
+  }
+  if (useCache) {
+    const curStart = engineHour({ year: end.year, month: 1, day: 1, hour: 1 }) ?? endHour;
+    const nextStart = engineHour({ year: end.year + 1, month: 1, day: 1, hour: 1 }) ?? (TIME_AXIS_MAX_HOUR + 1);
+    return storeTimeAxisTicks(cacheKey, {
+      kind: 'year',
+      validFromEnd: curStart,
+      validBeforeEnd: nextStart,
+      ticks,
+    });
   }
   return ticks;
 }
@@ -1553,9 +1662,9 @@ export function timeAxisLabels(
   let placedYear: number | null = null;
   for (const tick of ticks) {
     if (!tick.label || (options.firstLabelOnly && placed.length > 0)) continue;
-    const date = gameDate(tick.hour);
-    const label = date !== null && placedYear !== date.year && !tick.label.includes(String(date.year))
-      ? `${tick.label} ${date.year}`
+    const year = gameYear(tick.hour);
+    const label = year !== null && placedYear !== year && !tick.label.includes(String(year))
+      ? `${tick.label} ${year}`
       : tick.label;
     const x = timeAxisX(options, tick.hour);
     const half = measure(label) / 2;
@@ -1563,7 +1672,7 @@ export function timeAxisLabels(
     if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
     if (x - half < lastRight + 8) continue;
     placed.push({ hour: tick.hour, x, label, major: tick.major !== false });
-    if (date !== null) placedYear = date.year;
+    if (year !== null) placedYear = year;
     lastRight = x + half;
   }
   if (placed.length === 0 && ticks.length > 0) {

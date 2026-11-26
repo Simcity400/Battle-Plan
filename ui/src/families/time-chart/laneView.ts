@@ -7,7 +7,8 @@ import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './h
 import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart, fitTimeChartLegend } from './painter.ts';
-import type { LegendFit } from '../../draw/kit.ts';
+import type { LegendFit, TimeAxisTick } from '../../draw/kit.ts';
+import { timeChartCacheState } from './cacheControl.ts';
 
 interface ChartLayout {
   readonly model: TimeChartModel;
@@ -57,6 +58,28 @@ function collectChangeHours(model: TimeChartModel, layout: TimeChartLayout): num
   return [...hours].sort((a, b) => a - b);
 }
 
+interface CachedNavPrefix {
+  readonly rawHours: readonly number[];
+  readonly maxTickHour: number;
+  readonly prefix: readonly FamilyNavTuple[];
+}
+
+const NAV_PREFIX_CACHE_MAX = 16;
+const navPrefixCache: CachedNavPrefix[] = [];
+
+function sameTickHours(ticks: readonly TimeAxisTick[], hours: readonly number[]): boolean {
+  if (ticks.length !== hours.length) return false;
+  for (let i = 0; i < ticks.length; i++) if (ticks[i]!.hour !== hours[i]) return false;
+  return true;
+}
+
+function hasPointSeries(model: TimeChartModel): boolean {
+  for (let i = 0; i < model.series.length; i++) {
+    if (model.series[i]!.points?.length) return true;
+  }
+  return false;
+}
+
 export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
   if (model.mode === 'columns') {
     return layout.columns.map((col, index) => {
@@ -70,6 +93,40 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
       const name = formatDateOnly(m.firstHour).replace(/^\d+\s+/, '');
       return [key, name, index, 0, ''] as const;
     });
+  }
+  if (timeChartCacheState.enabled && model.mode === 'lines' && layout.markers.length === 0 && !hasPointSeries(model)) {
+    const ticks = layout.rawAxisTicks;
+    for (let i = navPrefixCache.length - 1; i >= 0; i--) {
+      const entry = navPrefixCache[i]!;
+      if (entry.maxTickHour < model.hour && sameTickHours(ticks, entry.rawHours)) {
+        const out = entry.prefix.slice();
+        out.push([`plot:${model.hour}`, layout.dateTabText || formatDateOnly(model.hour), out.length, 0, ''] as const);
+        return out;
+      }
+    }
+    if (ticks.length === 0 || ticks[ticks.length - 1]!.hour < model.hour) {
+      const seen = new Set<number>();
+      const prefixHours: number[] = [];
+      const rawHours: number[] = new Array(ticks.length);
+      for (let i = 0; i < ticks.length; i++) {
+        const h = ticks[i]!.hour;
+        rawHours[i] = h;
+        if (h < model.hour && !seen.has(h)) {
+          seen.add(h);
+          prefixHours.push(h);
+        }
+      }
+      prefixHours.sort((a, b) => a - b);
+      const prefix: FamilyNavTuple[] = prefixHours.map((h, index) => [`plot:${h}`, formatDateOnly(h), index, 0, ''] as const);
+      const maxTickHour = prefixHours.length > 0 ? prefixHours[prefixHours.length - 1]! : -Infinity;
+      if (ticks.length > 0) {
+        if (navPrefixCache.length >= NAV_PREFIX_CACHE_MAX) navPrefixCache.shift();
+        navPrefixCache.push({ rawHours, maxTickHour, prefix });
+      }
+      const out = prefix.slice();
+      out.push([`plot:${model.hour}`, layout.dateTabText || formatDateOnly(model.hour), out.length, 0, ''] as const);
+      return out;
+    }
   }
   const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
   const plotHours = new Set<number>();

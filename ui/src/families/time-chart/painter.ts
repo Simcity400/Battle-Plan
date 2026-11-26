@@ -1,4 +1,5 @@
-import { measureCanvasText, textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { measureCanvasText, textWidthRevision, type Canvas2D } from '../../charts/textWidth.ts';
+import { timeChartCacheState } from './cacheControl.ts';
 import {
   drawArtSlot,
   drawCrosshairLine,
@@ -57,8 +58,54 @@ export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCac
   };
 }
 
+interface CachedLegendFit {
+  readonly key: string;
+  readonly fit: LegendFit;
+}
+
+const legendFitCache = new WeakMap<LegendMeasure, { revision: number; map: Map<string, CachedLegendFit> }>();
+const LEGEND_FIT_CACHE_MAX = 64;
+const LEGEND_FIT_MAX_ENTRIES = 32;
+
+function legendFitKey(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, ink: string): string | null {
+  const legend = model.legend;
+  if (!legend || legend.length === 0 || legend.length > LEGEND_FIT_MAX_ENTRIES || layout.legendTop === null) return null;
+  let key = `${model.mode}\u0000${layout.left}\u0000${layout.width - layout.left}\u0000${theme.font}\u0000${theme.fontSize.small}\u0000${ink}`;
+  for (let i = 0; i < legend.length; i++) {
+    const item = legend[i]!;
+    const dash = item.dash?.length ? item.dash.join(',') : '';
+    const flag = item.flag
+      ? (item.flag.art.status === 'noArtExpected' ? '0' : `${item.flag.art.status}:${item.flag.tag ?? item.flag.label ?? ''}`)
+      : '';
+    key += `\u0001${item.label}\u0002${item.color ?? ink}\u0002${dash}\u0002${item.hatch ? 1 : 0}\u0002${flag}`;
+  }
+  return key;
+}
+
 export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, measure: LegendMeasure): LegendFit | null {
-  const spec = layout.legendTop === null ? null : timeChartLegendSpec(model, undefined, resolveKitTokens(theme).textSecondary);
+  if (layout.legendTop === null || !model.legend?.length) return null;
+  const ink = resolveKitTokens(theme).textSecondary;
+  const key = timeChartCacheState.enabled ? legendFitKey(model, layout, theme, ink) : null;
+  if (key !== null) {
+    const rev = textWidthRevision();
+    let bucket = legendFitCache.get(measure);
+    if (!bucket) {
+      bucket = { revision: rev, map: new Map() };
+      legendFitCache.set(measure, bucket);
+    } else if (bucket.revision !== rev) {
+      bucket.revision = rev;
+      bucket.map.clear();
+    }
+    const hit = bucket.map.get(key);
+    if (hit !== undefined) return hit.fit;
+    const spec = timeChartLegendSpec(model, undefined, ink);
+    if (!spec) return null;
+    const fit = fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure);
+    if (bucket.map.size >= LEGEND_FIT_CACHE_MAX) bucket.map.clear();
+    bucket.map.set(key, { key, fit });
+    return fit;
+  }
+  const spec = timeChartLegendSpec(model, undefined, ink);
   return spec ? fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure) : null;
 }
 
@@ -302,19 +349,22 @@ export function drawTimeChart(
       legendFit ?? fitLegendStrip(layout.left, width, legendSpec, theme, (text, font) => measureCanvasText(ctx, text, font)));
   }
 
-  const visibleYTicks: { readonly value: number; readonly y: number }[] = [];
-  for (const v of layout.yTicks) {
-    const y = Math.round(layout.toY(v)) + 0.5;
-    if (y < layout.top - 2 || y > layout.baseY + 2) continue;
-    visibleYTicks.push({ value: v, y });
-    const isZeroCrossing = v === 0 && layout.yDomain[0] < 0;
+  const visibleYTicks: { readonly index: number; readonly value: number; readonly y: number }[] = [];
+  if (layout.yTicks.length > 0) {
     ctx.save();
-    ctx.strokeStyle = isZeroCrossing ? tokens.zeroLine : tokens.gridLine;
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(layout.left, y);
-    ctx.lineTo(layout.left + layout.plotWidth, y);
-    ctx.stroke();
+    for (let i = 0; i < layout.yTicks.length; i++) {
+      const v = layout.yTicks[i]!;
+      const y = Math.round(layout.toY(v)) + 0.5;
+      if (y < layout.top - 2 || y > layout.baseY + 2) continue;
+      visibleYTicks.push({ index: i, value: v, y });
+      const isZeroCrossing = v === 0 && layout.yDomain[0] < 0;
+      ctx.strokeStyle = isZeroCrossing ? tokens.zeroLine : tokens.gridLine;
+      ctx.beginPath();
+      ctx.moveTo(layout.left, y);
+      ctx.lineTo(layout.left + layout.plotWidth, y);
+      ctx.stroke();
+    }
     ctx.restore();
   }
   if (visibleYTicks.length > 0) {
@@ -333,7 +383,8 @@ export function drawTimeChart(
       const tick = visibleYTicks[idx]!;
       if (placedY.some(prev => Math.abs(prev - tick.y) < minGap)) continue;
       placedY.push(tick.y);
-      ctx.fillText(formatChartAxisValue(tick.value, model.yAxis.format, layout.yTicks), layout.left - 8, tick.y);
+      const label = layout.yTickLabels?.[tick.index] ?? formatChartAxisValue(tick.value, model.yAxis.format, layout.yTicks);
+      ctx.fillText(label, layout.left - 8, tick.y);
     }
     ctx.restore();
   }
@@ -793,7 +844,7 @@ export function drawTimeChart(
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(label.name, cursorX, label.y + 0.5);
-      cursorX += textWidth(ctx, label.name) + 6;
+      cursorX += (label.nameWidth !== undefined && label.nameFont === labelNameFont ? label.nameWidth : measureCanvasText(ctx, label.name, labelNameFont)) + 6;
     }
     ctx.font = labelValueFont;
     ctx.fillStyle = label.valueMuted ? theme.muted : label.negative ? tokens.shortage : (label.valueColor ?? theme.text);
@@ -807,7 +858,7 @@ export function drawTimeChart(
     for (const ov of model.overlays) {
       ctx.save();
       ctx.font = overlayFont;
-      const tw = textWidth(ctx, ov.text);
+      const tw = measureCanvasText(ctx, ov.text, overlayFont);
       const ox = layout.left + layout.plotWidth - 8 - tw;
       const oy = ov.position === 'top-right' ? layout.top + 12 : layout.baseY - 12;
       const arrowW = ov.arrow ? 12 : 0;

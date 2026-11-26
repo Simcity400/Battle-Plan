@@ -28,6 +28,27 @@ export interface SceneReaders {
   readonly art?: ArtProvider;
   readonly index?: IdentityIndex | null;
   readonly artResolutions?: ArtResolutions;
+  readonly artRevision?: number;
+}
+
+export interface CapturedSceneReads {
+  readonly whoReads: readonly [EntityKind, string, DisplayedHour, IdentityResult][];
+  readonly artReads: readonly [ArtHandle, ArtResult, string | null][];
+  readonly identityDemands: readonly [string, SceneIdentityDemand][];
+  readonly urls: readonly string[];
+  readonly asks: readonly [string, ArtHandle][];
+}
+
+export interface SceneReadRecorder {
+  readonly readers: SceneReaders;
+  capture<T>(fn: () => T): { readonly value: T; readonly reads: CapturedSceneReads };
+  replay(captured: CapturedSceneReads): void;
+}
+
+const sceneRecorders = new WeakMap<BoundedReadView, SceneReadRecorder>();
+
+export function sceneReadRecorder(view: BoundedReadView): SceneReadRecorder | undefined {
+  return sceneRecorders.get(view);
 }
 
 export type SceneIdentityDemand = readonly [kind: EntityKind, key: string, hour: number];
@@ -51,13 +72,20 @@ export interface SceneReads {
 
 type Live = LiveValues<number | bigint | string>;
 
+interface DemandSink {
+  readonly identity: Map<string, SceneIdentityDemand>;
+  readonly urls: Set<string>;
+  readonly asks: Map<string, ArtHandle>;
+}
+
 function readScene(
   scene: Scene,
   sources: SceneSources,
   hour: number,
   readers: SceneReaders | undefined,
-  demands: { readonly identity: Map<string, SceneIdentityDemand>; readonly urls: Set<string>; readonly asks: Map<string, ArtHandle> } | null,
+  demands: DemandSink | null,
   noteWindow?: () => void,
+  captureSinks?: readonly DemandSink[],
 ): BoundedReadView {
   let byName: Map<string, Picture<LaneValue>> | null = null;
   const pictureOf = (name: string): Picture<LaneValue> | undefined => {
@@ -91,14 +119,28 @@ function readScene(
       ? {
           onIdentityDemand: (kind: EntityKind, key: string, atHour: number) => {
             const demandKey = `${kind}\u0000${key}\u0000${atHour}`;
-            if (!demands.identity.has(demandKey)) demands.identity.set(demandKey, [kind, key, atHour]);
+            const entry: SceneIdentityDemand = [kind, key, atHour];
+            if (!demands.identity.has(demandKey)) demands.identity.set(demandKey, entry);
+            if (captureSinks) {
+              for (let i = 0; i < captureSinks.length; i++) {
+                const sink = captureSinks[i]!;
+                if (!sink.identity.has(demandKey)) sink.identity.set(demandKey, entry);
+              }
+            }
           },
           onArtDemand: (handle: ArtHandle, result?: ArtResult) => {
             if (result?.status === 'ready' && result.url) {
               demands.urls.add(result.url);
+              if (captureSinks) for (let i = 0; i < captureSinks.length; i++) captureSinks[i]!.urls.add(result.url);
               return;
             }
             laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks);
+            if (captureSinks) {
+              for (let i = 0; i < captureSinks.length; i++) {
+                const sink = captureSinks[i]!;
+                laneArtDemand(handle, readers?.index, readers?.artResolutions, sink.urls, sink.asks);
+              }
+            }
           },
         }
       : {}),
@@ -200,7 +242,55 @@ export function projectScene<TModel>(
       : {}),
   };
   let windowRead = false;
-  const view = readScene(scene, sources, hour, recorded, demands, () => { windowRead = true; });
+  const captureStack: DemandSink[] = [];
+  const view = readScene(scene, sources, hour, recorded, demands, () => { windowRead = true; }, captureStack);
+  sceneRecorders.set(view, {
+    readers,
+    capture<T>(fn: () => T) {
+      const whoStart = whoReads.length;
+      const artStart = artReads.length;
+      const sink: DemandSink = { identity: new Map(), urls: new Set(), asks: new Map() };
+      captureStack.push(sink);
+      try {
+        const value = fn();
+        return {
+          value,
+          reads: {
+            whoReads: whoReads.slice(whoStart),
+            artReads: artReads.slice(artStart),
+            identityDemands: [...sink.identity.entries()],
+            urls: [...sink.urls],
+            asks: [...sink.asks.entries()],
+          },
+        };
+      } finally {
+        captureStack.pop();
+      }
+    },
+    replay(captured: CapturedSceneReads) {
+      if (!recording) return;
+      for (let i = 0; i < captured.whoReads.length; i++) whoReads.push(captured.whoReads[i]!);
+      for (let i = 0; i < captured.artReads.length; i++) artReads.push(captured.artReads[i]!);
+      for (let i = 0; i < captured.identityDemands.length; i++) {
+        const [idKey, entry] = captured.identityDemands[i]!;
+        if (!demands.identity.has(idKey)) demands.identity.set(idKey, entry);
+        for (let s = 0; s < captureStack.length; s++) {
+          const sink = captureStack[s]!;
+          if (!sink.identity.has(idKey)) sink.identity.set(idKey, entry);
+        }
+      }
+      for (let i = 0; i < captured.urls.length; i++) {
+        const url = captured.urls[i]!;
+        demands.urls.add(url);
+        for (let s = 0; s < captureStack.length; s++) captureStack[s]!.urls.add(url);
+      }
+      for (let i = 0; i < captured.asks.length; i++) {
+        const [askKey, handle] = captured.asks[i]!;
+        demands.asks.set(askKey, handle);
+        for (let s = 0; s < captureStack.length; s++) captureStack[s]!.asks.set(askKey, handle);
+      }
+    },
+  });
   const model = project(view);
   recording = false;
   for (const [handle] of artReads) if (needsArtResolution(handle)) demands.asks.set(artHandleKey(handle), handle);

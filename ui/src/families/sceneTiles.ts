@@ -169,44 +169,102 @@ function headRow(answer: FollowedAnswer, head: SeriesHeadSource, tag: string): n
   return head.tags.length ? rowIndexOf(head.tags).get(tag) ?? -1 : answerRowOf(answer, tag);
 }
 
+interface CursorSlot {
+  readonly cursor: BoundedSeriesCursor;
+  gen: number;
+}
+
 export class SceneTiles {
-  private readonly cursors = new Map<string, BoundedSeriesCursor>();
+  private readonly cursors = new Map<string, Map<string, CursorSlot>>();
+  private gen = 0;
+  private lastBySource: Map<string, ReadonlyMap<string, BoundedSeries>> | null = null;
 
   series(scene: Scene, sources: SceneSources, binding: TiledSources, hour: number): ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>> | undefined {
-    if (!binding.tiledBySource) {
+    const tiledBySource = binding.tiledBySource;
+    if (!tiledBySource) {
       this.cursors.clear();
+      this.lastBySource = null;
       return undefined;
     }
-    const active = new Set<string>();
+    const gen = ++this.gen;
     let answers: BoundedReadView | null = null;
-    const bySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
-    for (const [source, lines] of Object.entries(binding.tiledBySource)) {
+    let allSourcesSame = this.lastBySource !== null;
+    const prevSourceKeys = this.lastBySource ? this.lastBySource.keys() : null;
+    let sourceCount = 0;
+    const nextBySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
+    for (const source in tiledBySource) {
+      if (!Object.hasOwn(tiledBySource, source)) continue;
+      sourceCount++;
+      if (allSourcesSame && prevSourceKeys!.next().value !== source) allSourcesSame = false;
+      const lines = tiledBySource[source]!;
+      let sourceSlots = this.cursors.get(source);
+      if (!sourceSlots) this.cursors.set(source, sourceSlots = new Map());
       const head = binding.headSourceBySeries?.[source];
       const answer = head ? (answers ??= sceneReadView(scene, sources, hour)).answer(head.answerName) : undefined;
-      const byTag = new Map<string, BoundedSeries>();
-      for (const [tag, raw] of Object.entries(lines)) {
+      const prevByTag = this.lastBySource?.get(source);
+      let allTagsSame = prevByTag !== undefined;
+      const prevTagKeys = prevByTag ? prevByTag.keys() : null;
+      let tagCount = 0;
+      let byTag: Map<string, BoundedSeries> | null = null;
+      const floorHour = Math.floor(hour);
+      for (const tag in lines) {
+        if (!Object.hasOwn(lines, tag)) continue;
+        tagCount++;
+        const raw = lines[tag]!;
         const line = hydrateTiledLine(raw);
-        const key = `${source}\u0000${tag}`;
-        active.add(key);
-        let cursor = this.cursors.get(key);
-        if (!cursor) this.cursors.set(key, cursor = new BoundedSeriesCursor());
+        let slot = sourceSlots.get(tag);
+        if (!slot) sourceSlots.set(tag, slot = { cursor: new BoundedSeriesCursor(), gen });
+        else slot.gen = gen;
         let headPoint: WitnessedPoint | null = null;
         let headValue: Value | undefined;
         if (answer && head) {
           const row = headRow(answer, head, tag);
           const value = row >= 0 ? rowAmount(answer, row, head.decimals ?? line.decimals) : null;
           if (value !== undefined && value !== null && Number.isFinite(value)) {
-            headPoint = { hour: Math.floor(hour), value };
+            headPoint = { hour: floorHour, value };
             headValue = knownValue(value);
           } else {
             headValue = valueFromWireCell(answer, row, 0);
           }
         }
-        byTag.set(tag, cursor.advance(line, hour, { headPoint, headValue }));
+        const bounded = slot.cursor.advance(line, hour, { headPoint, headValue });
+        if (allTagsSame && prevTagKeys!.next().value === tag && prevByTag!.get(tag) === bounded) continue;
+        if (allTagsSame) {
+          allTagsSame = false;
+          byTag = new Map();
+          for (const prevTag in lines) {
+            if (prevTag === tag) break;
+            if (!Object.hasOwn(lines, prevTag)) continue;
+            byTag.set(prevTag, prevByTag!.get(prevTag)!);
+          }
+        }
+        (byTag ??= new Map()).set(tag, bounded);
       }
-      bySource.set(source, byTag);
+      if (allTagsSame && prevByTag!.size !== tagCount) {
+        allTagsSame = false;
+        byTag = new Map();
+        for (const tag in lines) {
+          if (!Object.hasOwn(lines, tag)) continue;
+          byTag.set(tag, prevByTag!.get(tag)!);
+        }
+      }
+      const resolvedByTag: ReadonlyMap<string, BoundedSeries> = allTagsSame ? prevByTag! : (byTag ?? new Map());
+      if (!allTagsSame) allSourcesSame = false;
+      nextBySource.set(source, resolvedByTag);
+      for (const [tag, slot] of sourceSlots) {
+        if (slot.gen !== gen) sourceSlots.delete(tag);
+      }
+      if (sourceSlots.size === 0) this.cursors.delete(source);
     }
-    for (const key of this.cursors.keys()) if (!active.has(key)) this.cursors.delete(key);
-    return bySource;
+    for (const [source, sourceSlots] of this.cursors) {
+      if (!Object.hasOwn(tiledBySource, source)) {
+        this.cursors.delete(source);
+      } else if (sourceSlots.size === 0) {
+        this.cursors.delete(source);
+      }
+    }
+    if (allSourcesSame && this.lastBySource!.size === sourceCount) return this.lastBySource!;
+    this.lastBySource = nextBySource;
+    return nextBySource;
   }
 }

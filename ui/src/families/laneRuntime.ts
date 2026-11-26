@@ -204,6 +204,7 @@ const PROJECTION_INPUTS = ['options', 'sources', 'staticPanels', 'staticAnswers'
 
 function sameInputRevisions(a: Revisions | undefined, b: Revisions | undefined): boolean {
   if (!a || !b) return false;
+  if (a === b) return true;
   for (const field of PROJECTION_INPUTS) if (!sameRevision(a[field], b[field])) return false;
   return true;
 }
@@ -414,6 +415,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     art: held.artProvider,
     index: held.index,
     ...(held.artResolutions ? { artResolutions: held.artResolutions } : {}),
+    artRevision: held.artRevision,
   });
 
   function create(surface: Surface, widget: number): Held<TBinding, TModel, TLayout> {
