@@ -405,7 +405,6 @@ fn merge_intervals<T: Ord + Copy>(intervals: &mut Vec<(T, T)>) {
 
 struct Coverage {
     covered: Vec<(i32, i32)>,
-    seams: Vec<i32>,
 }
 
 impl Coverage {
@@ -432,9 +431,17 @@ impl Coverage {
                     .map(|span| span.hour),
             );
         }
+        edges.sort_unstable();
+        let mut seams = edges.get(1..edges.len().saturating_sub(1)).unwrap_or_default();
         hours.sort_unstable();
         let mut covered: Vec<(i32, i32)> = Vec::new();
         for hour in hours {
+            while seams.first().is_some_and(|&seam| seam < hour) {
+                seams = &seams[1..];
+            }
+            if seams.first() == Some(&hour) {
+                continue;
+            }
             match covered.last_mut() {
                 Some((_, end)) if i64::from(hour) <= i64::from(*end) + 1 => *end = (*end).max(hour),
                 _ => {
@@ -443,22 +450,14 @@ impl Coverage {
                 }
             }
         }
-        edges.sort_unstable();
-        let seams = if edges.len() > 2 {
-            edges.drain(1..edges.len() - 1).collect()
-        } else {
-            Vec::new()
-        };
-        Ok(Self { covered, seams })
+        Ok(Self { covered })
     }
 
     fn observed(&self, from: i32, to: i32) -> bool {
         let at = self.covered.partition_point(|&(_, end)| end < from);
-        let seam = self.seams.partition_point(|&hour| hour < from);
         self.covered
             .get(at)
             .is_some_and(|&(start, end)| start <= from && to <= end)
-            && self.seams.get(seam).is_none_or(|&hour| hour > to)
     }
 
     pub(super) fn missing_spans(&self, from: i32, to: i32) -> Vec<(i32, i32)> {

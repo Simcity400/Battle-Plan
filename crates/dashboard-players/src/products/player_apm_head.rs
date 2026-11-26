@@ -672,10 +672,13 @@ fn tile_from_index(
         BTreeMap::new()
     };
     let coverage = Coverage::new(held, first, clipped_end.max(first))?;
+    let gaps: Vec<_> = coverage.missing_spans(first, clipped_end).into_iter()
+        .map(|(first_hour, last_hour)| MissingSpan { first_hour, last_hour, reason: GAP_REASON.into() })
+        .collect();
     let mut buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
     let mut lines = Vec::with_capacity(ask.countries.len());
     for (at, id) in ask.countries.iter().enumerate() {
-        let mut missing = Vec::new();
+        let mut missing = gaps.clone();
         if let Some(hours_map) = per_series.get(id) {
             let mut before = false;
             for bin in 0..tile::BINS {
@@ -685,15 +688,8 @@ fn tile_from_index(
                 }
                 let bin_last = (i64::from(first) + (bin as i64 + 1) * ask.bin_hours - 1).min(i64::from(clipped_end)) as i32;
                 let mut agg: Option<(i32, f64, i32, f64, i32, f64, i32, f64)> = None;
-                let mut paused_span: Option<(i32, i32)> = None;
-                let mut any_error_missing = false;
-                let mut has_break = false;
-                let mut prev_hour: Option<i32> = None;
+                let mut has_break = !coverage.observed(bin_first, bin_last);
                 for (&h, amount) in hours_map.range(bin_first..=bin_last) {
-                    if prev_hour.is_some_and(|p| i64::from(h) > i64::from(p) + 1 && !coverage.observed(p + 1, h - 1)) {
-                        has_break = true;
-                    }
-                    prev_hour = Some(h);
                     let val = amount.value();
                     let shown = if family.value == "apm" {
                         val.apm
@@ -709,25 +705,13 @@ fn tile_from_index(
                                 (fh, fv, h, rate, minh, minv, maxh, maxv)
                             }
                         });
-                    } else if val.complete && (val.unpaused_minutes_num.as_deref() == Some("0") || val.unpaused_minutes == Some(0.0)) {
-                        paused_span = Some(match paused_span {
-                            None => (h, h),
-                            Some((lo, hi)) => (lo.min(h), hi.max(h)),
-                        });
-                    } else {
-                        any_error_missing = true;
+                    } else if coverage.observed(h, h) {
                         has_break = true;
-                        missing.push(MissingSpan { first_hour: h, last_hour: h, reason: unknown_rate(&val) });
+                        let reason = if family.value == "apm" { unknown_rate(&val) } else { "Paused orders were not fully recorded for this period.".into() };
+                        missing.push(MissingSpan { first_hour: h, last_hour: h, reason });
                     }
                 }
-                let gap_spans = coverage.missing_spans(bin_first, bin_last);
                 if let Some((fh, fv, lh, lv, minh, minv, maxh, maxv)) = agg {
-                    if !gap_spans.is_empty() {
-                        has_break = true;
-                        for (g_lo, g_hi) in gap_spans {
-                            missing.push(MissingSpan { first_hour: g_lo, last_hour: g_hi, reason: GAP_REASON.into() });
-                        }
-                    }
                     buckets[at * tile::BINS + bin] = Some(ChartBucket {
                         absolute_total: 0,
                         first_hour: fh,
@@ -744,13 +728,6 @@ fn tile_from_index(
                     });
                     before = true;
                 } else {
-                    if !any_error_missing && let Some((p_lo, p_hi)) = paused_span {
-                        missing.push(MissingSpan {
-                            first_hour: p_lo,
-                            last_hour: p_hi,
-                            reason: "No unpaused time was observed in this period.".into(),
-                        });
-                    }
                     before = false;
                 }
             }
