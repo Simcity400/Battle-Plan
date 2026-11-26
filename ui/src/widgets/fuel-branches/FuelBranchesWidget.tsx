@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel } from '../../charts/draw';
-import DrillHost from '../../charts/drill/DrillHost';
+import FollowControl, { DrawerDayLabel } from '../../charts/drill/FollowControl.tsx';
 import { CLOSED } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
-import { motionOf } from '../../charts/easing.ts';
-import { jumpItem } from '../../charts/jump';
-import type { PlaybackMode } from '../../charts/view';
 import { isSlotKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { readDatedCountry } from '../../dashboard/datedCountry.ts';
@@ -22,8 +18,11 @@ import { coverageOf, useRegion, useRegionOutside } from '../../dashboard/widgetT
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { FamilyWidget } from '../../families/host/registry.tsx';
+import { lineChartSettings } from '../../families/time-chart/settings.ts';
 import FuelConsumptionBreakdown from '../fuel/FuelConsumptionBreakdown';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from '../fuel/fuelConsumption';
+import { pausedChartCutoff } from '../fuel/fuelDrill';
+import '../fuel/fuel.css';
 import { fuelDecimals } from './fuelBranchesData';
 import {
   branchDrillCanFollow,
@@ -55,12 +54,11 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const playbackOutside = useRegionOutside(runtime, followRegion, active && drillOpen);
   const playbackCovered = !!track && playbackOutside === null;
   const playing = usePlaybackMotion(runtime.clock, active && drillOpen) !== undefined;
-  const clockHour = usePlaybackHour(runtime.clock, active && drillOpen && drillControl.following);
+  const clockHour = usePlaybackHour(runtime.clock, active && drillOpen && drillControl.following && !playing);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const branchExtent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : branchExtent) : [0, 1];
-  const menu = useContextMenu('Fuel by branch actions');
   const anchor = useRef<HTMLDivElement>(null);
 
   const chosen = selectedCountryKeys(widget.countries, track)[0] ?? null;
@@ -116,7 +114,6 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   };
 
   if (!track) return <WidgetState kind="empty" icon="droplet" message="Load a campaign to see fuel." />;
-  const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const drillStage = drillControl.gate.stage.stage;
   const actorState = drillCountry && drillStage !== 'open' && drillStage !== 'outside' && drillStage !== 'unbound'
     ? <GateState gate={drillControl.gate} loading="Loading country…" />
@@ -124,21 +121,18 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const drillExtent: [number, number] = drillFollows || (at !== null && (at < extent[0] || at > extent[1]))
     ? branchExtent
     : extent;
-  const chart = {
+  const parentPlayhead = window ? window.lastHour : null;
+  const pausedPlayhead = pausedChartCutoff(track, parentPlayhead, at, extent);
+  const shared = {
     active: active && drill.breakdown !== null,
     pickOwner,
     extent: drillExtent,
-    branchStart: track.branch.firstHour,
-    playhead: drillFollows ? actualHour : at,
-    playback,
-    liveHead: drillFollows ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
-    afterPlayhead: options.afterPlayhead === true,
-    windowHours: Number(options.windowDays ?? 365) * 24,
-    hoursPerSecond: motionOf(runtime.clock.getSnapshot()),
+    playhead: drillFollows ? actualHour : pausedPlayhead,
     within: drillCountry?.history?.spans ?? null,
+    windowHours: lineChartSettings(options, drillFollows).windowHours,
     detailHours: DETAIL_HOURS,
+    region: drillControl.region,
     onPick: (hour: number) => { setDrillOwner(pickOwner); drillControl.pick(hour); },
-    onContextMenu: (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]),
   };
   const breakdown = at === null
     ? drillStage === 'open' || drillStage === 'outside'
@@ -162,20 +156,34 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
           level={level}
           onLevel={next => { setInitialLevel(null); setLevel(next); }}
           initialLevel={initialLevel}
-          {...chart}
+          {...shared}
         />
       : <p className="drill-empty">Country unavailable at this time.</p>);
 
-  const detailDay = drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at);
+  const detailDay = drillFollows
+    ? (playing ? 'Following playback' : <DrawerDayLabel runtime={runtime} region={drillControl.region} active={active && drill.breakdown !== null} />)
+    : at === null ? '' : dayLabel(at);
   const closeDetail = () => { setInitialLevel(null); dispatch({ type: 'close' }); };
-  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>
+  return <div ref={anchor} className="fh-frame">
     {props.manifestDeclaration
       ? <FamilyWidget {...props} family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} onActivate={open} onCountryHolder={handleCountryHolder} />
       : null}
-    <DetailWindowHost open={drill.breakdown !== null} subject={detailSubject} hour={at} title={DETAIL_TITLE} day={detailDay} anchor={anchor} onClose={closeDetail}>
-      <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} title={DETAIL_TITLE}
-        day={detailDay} canFollow={canFollow} onClose={closeDetail}>
+    <DetailWindowHost
+      open={drill.breakdown !== null}
+      subject={detailSubject}
+      hour={at}
+      title={DETAIL_TITLE}
+      day={detailDay}
+      anchor={anchor}
+      placement="beside"
+      returnFocus=".fh-body"
+      className="fuel-detail-window"
+      headerActions={canFollow ? <FollowControl following={drillControl.following} onFollow={drillControl.follow} onPause={drillControl.pause} /> : undefined}
+      onClose={closeDetail}
+    >
+      <div className="fuel-detail-body">
         {breakdown}
-      </DrillHost>
-    </DetailWindowHost>{menu.menu}</div>;
+      </div>
+    </DetailWindowHost>
+  </div>;
 }

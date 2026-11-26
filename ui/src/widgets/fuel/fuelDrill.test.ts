@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { consumptionLevelAvailable, consumptionParts, demandGeometry, levelComplete, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption.ts';
+import { consumptionLevelAvailable, consumptionParts, levelComplete, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption.ts';
 import { detailWindows, fuelRecipientFor, joinedRuns, readBasis } from './fuelDrill.ts';
 import type { FuelDemandPart, FuelDemandReply } from '../../generated/dashboard';
 
@@ -48,11 +48,11 @@ test("a level shows the consumers the pack's own links put under it, and its sum
   assert.equal(levelComplete(reply, 'all', consumptionParts(reply, 'all')), false);
 });
 
-test("a consumer's history is drawn only where a read held it, a new line after each gap", () => {
+test('a consumer history reply validates run ordering and missing reasons', () => {
   const history = { tag: 'ONE', country: 7, window: 0, firstHour: 0, lastHour: 719, warnings: [], parts: [{ key: 'd1', runs: [
     { firstHour: 0, lastHour: 23, startsSegment: true, amountRaw: '200000', reason: null },
     { firstHour: 24, lastHour: 47, startsSegment: false, amountRaw: null, reason: 'not in the pack' },
     { firstHour: 48, lastHour: 71, startsSegment: false, amountRaw: '100000', reason: null }] }] };
-  const runs = validateFuelDemandHistory(history).parts[0].runs;
-  assert.deepEqual(demandGeometry(runs, 100000), [{ firstHour: 0, lastHour: 23, value: 2, breakBefore: true }, { firstHour: 48, lastHour: 71, value: 1, breakBefore: true }]);
+  assert.equal(validateFuelDemandHistory(history).parts[0].runs.length, 3);
+  assert.throws(() => validateFuelDemandHistory({ ...history, parts: [{ key: 'd1', runs: [{ firstHour: 0, lastHour: 23, startsSegment: true, amountRaw: null, reason: null }] }] }), /malformed/);
 });

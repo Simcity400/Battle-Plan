@@ -74,10 +74,6 @@ export function validateSeriesParts(value: unknown, tag: string): SeriesParts {
   return { tag, parts, missing: owner.missing as SeriesParts['missing'], partBits: value.partBits as number };
 }
 
-export const withinParams = (tags: readonly string[], within: ReadonlyMap<string, readonly HourSpan[]> | undefined,
-  span: (firstHour: number, lastHour: number) => BoundWindow | null) => within
-  ? { within: tags.map(tag => [countryFromKey(tag), (within.get(tag) ?? []).flatMap(held => span(held.firstHour, held.lastHour) ?? [])] as const) } : {};
-
 export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Record<string, readonly HourSpan[]>> | undefined,
   span: (firstHour: number, lastHour: number) => BoundWindow | null) {
   const lines = keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part }));

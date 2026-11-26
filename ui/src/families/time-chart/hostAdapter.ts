@@ -22,6 +22,7 @@ function headSourcesOf(plan: SourcePlan): HeadSources | null {
         ...(entry.read.top ? { rankedSlots: true } : {}),
         ...(entry.read.keys ? { keys: entry.read.keys } : {}),
         ...(entry.read.partBits !== undefined ? { partBits: entry.read.partBits } : {}),
+        ...(entry.read.within ? { within: Object.fromEntries(entry.read.within.entries()) } : {}),
       };
     }
   }

@@ -1,5 +1,6 @@
 import ProductPicker from '../table/ProductPicker.tsx';
 import { PickerContext } from '../table/picker.ts';
+import { lineChartSettings } from '../time-chart/settings.ts';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
@@ -201,18 +202,25 @@ export default function DeclaredFamilyWidget<
     () => !!plan.plan?.entries.some(e => e.read.shape === 'pixel-binned'),
     [plan.plan],
   );
+  const rawWindowHours = typeof (plan.options as { windowHours?: unknown }).windowHours === 'number'
+    ? (plan.options as { windowHours: number }).windowHours
+    : lineChartSettings(plan.options, plan.following).windowHours;
   const pushSeriesViewport = useCallback((vp: FamilyViewportChange) => {
     if (!hasPixelBinned || !plan.track || vp.width <= 0) return;
     const scale = Math.min(2, Math.max(1, vp.dpr));
-    const from = vp.window ? vp.window[0] : extent[0];
-    const to = vp.window ? vp.window[1] : extent[1];
+    let from = vp.window ? vp.window[0] : extent[0];
+    let to = vp.window ? vp.window[1] : extent[1];
+    if (!vp.window && plan.following && rawWindowHours != null) {
+      to = Math.min(extent[1], Math.max(extent[0], Math.floor(runtime.clock.getHour()) + plan.track.axisOffset));
+      from = Math.max(extent[0], to - rawWindowHours);
+    }
     plan.onSeriesViewport({
       from,
       to,
-      end: extent[1],
+      end: to,
       width: Math.max(1, Math.round((vp.width - SERIES_PLOT_INSET_PX) * scale)),
     });
-  }, [hasPixelBinned, plan.track, extent, plan.onSeriesViewport]);
+  }, [hasPixelBinned, plan.track, plan.following, extent, rawWindowHours, runtime.clock, plan.onSeriesViewport]);
 
   const measureViewport = plan.measureViewport;
   const handleViewportChange = useCallback((vp: FamilyViewportChange) => {
@@ -225,6 +233,14 @@ export default function DeclaredFamilyWidget<
   useEffect(() => {
     if (lastViewportRef.current) pushSeriesViewport(lastViewportRef.current);
   }, [pushSeriesViewport]);
+
+  useEffect(() => {
+    if (!hasPixelBinned || !plan.track || !plan.following || rawWindowHours == null) return;
+    return runtime.clock.onPublish(() => {
+      const vp = lastViewportRef.current;
+      if (vp && !vp.window) pushSeriesViewport(vp);
+    });
+  }, [hasPixelBinned, plan.track, plan.following, rawWindowHours, runtime.clock, pushSeriesViewport]);
 
   const liveSettings = useMemo(
     () => settingsPolicy?.resolve(declaration, plan.ctx as FamilyPlanContext<unknown> | null, plan.options),

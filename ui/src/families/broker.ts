@@ -387,6 +387,29 @@ export function buildStaticRequest(
     };
   }
 
+  if (read.shape === 'pixel-binned' && read.exactProduct === 'series-state' && read.headQuery?.product === 'series-state') {
+    const targetHour = options.timeMode === 'pin'
+      ? options.pinHour
+      : options.window
+        ? options.gate.recorded(Math.floor(options.window.lastHour))
+        : null;
+    if (targetHour === null) return null;
+    const base = read.params ?? (read.headQuery.params as Readonly<Record<string, unknown>> | undefined) ?? null;
+    if (!base) return null;
+    const reads = (base as { reads?: unknown }).reads;
+    const params = Array.isArray(reads)
+      ? { ...base, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), hour: targetHour })) }
+      : { ...base, hour: targetHour };
+    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.exactProduct, params });
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, read.exactProduct, params),
+      request,
+      dynamicKeys: ['hour'],
+      entry,
+      span: null,
+    };
+  }
+
   return null;
 }
 
@@ -851,6 +874,10 @@ function resolveHoverParams(
     );
     if (!eligible.length) return null;
     return { ...read.params, countries: eligible, [hourParam]: hour };
+  }
+  const singleCountry = (read.params as { country?: unknown }).country;
+  if (read.membership && (typeof singleCountry === 'string' || typeof singleCountry === 'number')) {
+    if (!hoverEligible(read.membership, countryKey(singleCountry), hour)) return null;
   }
   return { ...read.params, [hourParam]: hour };
 }
