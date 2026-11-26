@@ -1,3 +1,4 @@
+import { emptyPagers, pagerFor, replacePagers, type PagerSet } from './pagers.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
@@ -91,9 +92,7 @@ import {
 } from '../sources.ts';
 import { resolveSelectedCountryRefs } from '../table/logHelpers.ts';
 import {
-  DEFAULT_TAIL_PAGE_SIZE,
   validateGenericTailReply,
-  SnapshotPager,
   type PagedRows,
 } from '../table/rowSource.ts';
 import type { FamilyRowWindow } from './adapter.ts';
@@ -736,7 +735,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const pageBrokerRef = useRef<FamilySourceBroker | null>(null);
-  const pagersRef = useRef<{ sig: string; pagers: Map<string, SnapshotPager> }>({ sig: '', pagers: new Map() });
+  const pagersRef = useRef<PagerSet>(emptyPagers(''));
   const [pagedRowsState, setPagedRowsState] = useState<{ readonly sig: string; readonly map: PagedRows }>({ sig: '', map: {} });
   const pagedPlanRef = useRef<{ plan: SourcePlan | null; sig: string; active: boolean }>({ plan, sig, active });
   pagedPlanRef.current = { plan, sig, active };
@@ -759,7 +758,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (pagersRef.current.sig === sig) return;
     pageBrokerRef.current?.dispose();
     pageBrokerRef.current = null;
-    pagersRef.current = { sig, pagers: new Map() };
+    pagersRef.current = replacePagers(pagersRef.current, sig);
     setPagedRowsState({ sig, map: {} });
   }, [sig]);
 
@@ -778,15 +777,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (pagersRef.current.sig !== curSig) {
       pageBrokerRef.current?.dispose();
       pageBrokerRef.current = null;
-      pagersRef.current = { sig: curSig, pagers: new Map() };
+      pagersRef.current = replacePagers(pagersRef.current, curSig);
     }
     if (!pageBrokerRef.current) pageBrokerRef.current = new FamilySourceBroker();
     const pageBroker = pageBrokerRef.current;
     const held = pagersRef.current;
     for (const entry of pagedEntries) {
-      let pager = held.pagers.get(entry.name);
-      if (!pager) held.pagers.set(entry.name, pager = new SnapshotPager(entry.read.tailQuery.limit, entry.read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE));
-      const step = pager.window(rowWindow, installedHour);
+      const { pager, frozenAt } = pagerFor(held, entry);
+      const step = pager.window(rowWindow, frozenAt ?? installedHour);
       for (const offset of step.cancel) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
       const validate = entry.read.validate ?? validateGenericTailReply;
       const owner = pager;

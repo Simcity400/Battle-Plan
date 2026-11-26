@@ -42,6 +42,7 @@ import {
 } from './keyboard.ts';
 import { keepEqual } from './stableValue.ts';
 import { rowHoverPublisher } from './hoverRow.ts';
+import { emptyPagers, pagerFor, replacePagers } from './pagers.ts';
 import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
@@ -2018,4 +2019,26 @@ test('a focused row is the subject the installed picture holds for it, a grid ce
   assert.equal(focusedSubject(tableHostAdapter, null, 'GER', noGrid), null, 'and nor is any key before a picture is installed');
   const grid = shown({ extent: { rows: [{ label: 'Germany' }, { label: 'France' }], columns: [{ label: '1936' }], margin: 'Total', cellSize: 10, gridLeft: 0, gridTop: 0 } });
   assert.deepEqual(['0:0', '1:1', '2:0'].map(key => focusedSubject(heatMatrixHostAdapter, grid, key, noGrid)), ['0:0', '1:1', null], 'a margin cell is focused by its own key; a cell outside the grid is none');
+});
+
+test('a scrolled log keeps its frozen hour when its plan changes, as expanding a row in peace deals, the division log or the market ledger does', () => {
+  const source = { id: 'log-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 5000 }] } } as unknown as DashboardSource;
+  const entry = pagedTailEntry('main', source, '1', 0, { product: 'market-ledger-tail', branchId: '1', facets: [], from: null, limit: 64 }, true);
+  if (entry.read.shape !== 'paged-rows') throw new Error('a paged entry');
+  const paged = entry as typeof entry & { readonly read: Extract<typeof entry.read, { shape: 'paged-rows' }> };
+  const scrolled = { first: 200, count: 20, dataFirst: 200, dataCount: 20 };
+  const before = emptyPagers('closed');
+  const frozen = pagerFor(before, paged);
+  assert.equal(frozen.frozenAt, null);
+  assert.ok(frozen.pager.window(scrolled, 100).fetch.every(ask => ask.hour === 100), 'the scrolled page froze at hour 100');
+  const after = replacePagers(before, 'opened');
+  const reopened = pagerFor(after, paged);
+  assert.equal(reopened.frozenAt, 100);
+  const asks = reopened.pager.window(scrolled, reopened.frozenAt ?? 124).fetch;
+  assert.ok(asks.length > 0 && asks.every(ask => ask.hour === 100), 'the new plan asks the frozen hour, not the displayed 124');
+  const atHead = emptyPagers('head');
+  pagerFor(atHead, paged).pager.window({ first: 0, count: 20, dataFirst: 0, dataCount: 20 }, 124);
+  assert.equal(pagerFor(replacePagers(atHead, 'next'), paged).frozenAt, null, 'a page at its head carries no frozen hour');
+  const other = { ...paged, source: { ...source, id: 'other-src' } as DashboardSource };
+  assert.equal(pagerFor(replacePagers(after, 'moved'), other).frozenAt, null, 'another source does not inherit the frozen hour');
 });
