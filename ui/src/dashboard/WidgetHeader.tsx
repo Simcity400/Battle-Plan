@@ -89,6 +89,7 @@ export default function WidgetHeader({
   const measuredHeader = useRef({
     measuredOnce: false,
     lastHeaderWidth: 0,
+    timeMode: '',
     probeKey: '',
     pillKey: '', pill: 0,
     viewFullKey: '', viewFull: 0,
@@ -196,7 +197,8 @@ export default function WidgetHeader({
     const playing = !readOnly && (runtime.clock.getSnapshot?.().playing ?? false);
     const cache = measuredHeader.current;
     const headerResized = cache.measuredOnce && header.clientWidth !== cache.lastHeaderWidth;
-    if (playing && cache.measuredOnce && !headerResized) {
+    const timeModeChanged = cache.measuredOnce && cache.timeMode !== widget.time.mode;
+    if (playing && cache.measuredOnce && !headerResized && !timeModeChanged) {
       pendingMeasure.current = true;
       return;
     }
@@ -264,6 +266,10 @@ export default function WidgetHeader({
     const probeKey = `${summaryKey}\u0000${viewKey}\u0000${subjectKey}\u0000${filterKey}\u0000${timeKey}`;
     const needsFullMeasure = rawNeedsFull && cache.probeKey !== probeKey;
     if (needsFullMeasure) cache.probeKey = probeKey;
+    else {
+      cache.timeMode = widget.time.mode;
+      if (!rawNeedsFull) cache.probeKey = '';
+    }
 
     const subjectPresent = hasSubject && (effectiveDrop.compactSubject ? !!subjectEl : cache.subjectFull > 0);
     const timePresent = showTime && (effectiveDrop.compactTime ? !!timeEl : cache.timeFull > 0);
@@ -339,7 +345,7 @@ export default function WidgetHeader({
             {timeInfo.mode === 'follow' ? <span className="dash-time-dot" aria-hidden="true" />
               : timeInfo.mode === 'pin' ? <span className="dash-time-dot is-pinned" aria-hidden="true" />
               : <Icon name="clock" className="dash-time-icon" />}
-            {!effectiveDrop.compactTime && <span className="dash-time-label">{timeInfo.label}</span>}
+            {effectiveDrop.compactTime ? <span className="sr-only">{timeInfo.label}</span> : <span className="dash-time-label">{timeInfo.label}</span>}
           </span>
         : <WidgetTimeChip widget={widget} effective={effective} reference={campaignTrack} runtime={runtime}
             modes={definition!.timeModes} compact={effectiveDrop.compactTime}

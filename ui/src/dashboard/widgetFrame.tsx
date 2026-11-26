@@ -153,6 +153,7 @@ export function headerDropStage(available: number | null, measured: HeaderMeasur
   const subjectFull = (measured.hasSubject ? Math.max(0, measured.subjectFull) : 0) + filterFull;
   const subjectCompact = (measured.hasSubject ? Math.max(0, measured.subjectCompact) : 0) + filterCompact;
   const timeFull = measured.hasTime ? Math.max(0, measured.timeFull) : 0;
+  const liveCompact = !!measured.timeLive && measured.hasTime;
 
   const base = measured.fixed + baseGaps;
   const stage0 = base + (measured.hasSummary ? hGap + pill : 0) + titleFull + viewFull + subjectFull + timeFull;
@@ -161,13 +162,12 @@ export function headerDropStage(available: number | null, measured: HeaderMeasur
   }
   const stage1 = base + titleFull + viewFull + subjectFull + timeFull;
   if (measured.hasSummary && stage1 <= available) {
-    return { stage: 1, dropPill: true, collapseView: menuOnly, compactSubject: false, compactTime: false };
+    return { stage: 1, dropPill: true, collapseView: menuOnly, compactSubject: false, compactTime: liveCompact };
   }
   const stage2 = base + titleFull + viewMenu + subjectFull + timeFull;
   if (measured.hasViewSwitch && !menuOnly && stage2 <= available) {
-    return { stage: 2, dropPill: true, collapseView: true, compactSubject: false, compactTime: false };
+    return { stage: 2, dropPill: true, collapseView: true, compactSubject: false, compactTime: liveCompact };
   }
-  const liveCompact = !!measured.timeLive && measured.hasTime;
   const stage3 = base + titleFull + viewMenu + subjectCompact + (liveCompact ? Math.max(0, measured.timeCompact) : timeFull);
   if (stage3 <= available) {
     return { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: liveCompact };

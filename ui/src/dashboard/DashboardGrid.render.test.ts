@@ -192,6 +192,13 @@ test('header order, view switch slot, narrow drop order, and settings section or
     assert.equal(headerDropStage(520, { ...measured, filterFull: 110, filterCompact: 46 }).stage, 3, 'a header filter collapses with the subject chip');
     assert.deepEqual(headerDropStage(470, { ...measured, timeLive: true }), { stage: 3, dropPill: true, collapseView: true, compactSubject: true, compactTime: true },
       'a live time chip collapses to its dot with the subject chip');
+    assert.deepEqual(headerDropStage(300, {
+      fixed: 44, titleFull: 84, hasSummary: true, pill: 95,
+      hasViewSwitch: false, viewFull: 0, viewMenu: 0,
+      hasSubject: false, subjectFull: 0, subjectCompact: 0,
+      hasTime: true, timeLive: true, timeFull: 70, timeCompact: 44,
+    }), { stage: 1, dropPill: true, collapseView: false, compactSubject: false, compactTime: true },
+      'a live time chip collapses to its dot when the count is dropped, as at the minimum size');
 
     const { timeChipSummary } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetTimeChip.tsx') as typeof import('./WidgetTimeChip');
     const { engineHour } = await vite.ssrLoadModule('/ui/src/dashboard/calendar.ts') as typeof import('./calendar');
