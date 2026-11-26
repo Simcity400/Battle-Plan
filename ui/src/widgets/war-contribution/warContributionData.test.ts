@@ -525,24 +525,35 @@ test('warContributionSources plans no contribution reads when no eligible war ex
 
   const { warContributionNextChange } = await import('./warContributionPlan.ts');
   let nextReads = 0;
+  let warArrayReads = 0;
+  const rawActiveThousand = Array.from({ length: 1000 }, (_, i) => ({
+    ...war(String(i + 1), 0, 500, [['AAA'], [`B${i}`]]),
+    observations: new Proxy([observation(0, 500, ['AAA'], [`B${i}`])], {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) nextReads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    }),
+  } as unknown as WarTimeline));
   const activeThousand = {
     available: true,
-    wars: Array.from({ length: 1000 }, (_, i) => ({
-      ...war(String(i + 1), 0, 500, [['AAA'], [`B${i}`]]),
-      observations: new Proxy([observation(0, 500, ['AAA'], [`B${i}`])], {
-        get(target, prop, receiver) {
-          if (typeof prop === 'string' && /^\d+$/.test(prop)) nextReads++;
-          return Reflect.get(target, prop, receiver);
-        },
-      }),
-    } as unknown as WarTimeline)),
+    wars: new Proxy(rawActiveThousand, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) warArrayReads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    }),
   } as unknown as WarsReply;
-  assert.equal(warContributionNextChange(10, { wars: activeThousand, saved: null }), 501);
-  nextReads = 0;
-  for (let h = 11; h <= 110; h++) {
-    assert.equal(warContributionNextChange(h, { wars: activeThousand, saved: null }), 501);
+  for (const savedId of [null, '1000', 'missing'] as const) {
+    assert.equal(warContributionNextChange(10, { wars: activeThousand, saved: savedId }), 501);
+    nextReads = 0;
+    warArrayReads = 0;
+    for (let h = 11; h <= 110; h++) {
+      assert.equal(warContributionNextChange(h, { wars: activeThousand, saved: savedId }), 501);
+    }
+    assert.equal(nextReads, 0, `warm warContributionNextChange (${savedId ?? 'auto'}) reads zero observations`);
+    assert.equal(warArrayReads, 0, `warm warContributionNextChange (${savedId ?? 'auto'}) reads zero war-array entries`);
   }
-  assert.equal(nextReads, 0, 'warm warContributionNextChange reads the edge index without rescanning wars');
 
   const { createLaneView } = await import('../../families/laneRuntime.ts');
   const { barsLane } = await import('../../families/bars/laneView.ts');

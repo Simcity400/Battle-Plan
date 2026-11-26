@@ -14,11 +14,23 @@ export interface WarChipState {
   readonly valid: readonly [number, number];
 }
 
-export function chosenWar(reply: WarsReply, saved: string | null, at: number): WarTimeline | null {
-  if (saved) {
-    const war = reply.wars.find(item => item.id === saved);
-    if (war) return war.firstHour <= at ? war : null;
+const warsByIdCache = new WeakMap<WarsReply, ReadonlyMap<string, WarTimeline>>();
+
+export function warById(wars: WarsReply, saved: string | null): WarTimeline | null {
+  if (!saved) return null;
+  let byId = warsByIdCache.get(wars);
+  if (!byId) {
+    const map = new Map<string, WarTimeline>();
+    for (const war of wars.wars) map.set(war.id, war);
+    byId = map;
+    warsByIdCache.set(wars, byId);
   }
+  return byId.get(saved) ?? null;
+}
+
+export function chosenWar(reply: WarsReply, saved: string | null, at: number): WarTimeline | null {
+  const explicit = warById(reply, saved);
+  if (explicit) return explicit.firstHour <= at ? explicit : null;
   let best: { war: WarTimeline; active: boolean; count: number; last: number } | null = null;
   for (const war of reply.wars) {
     const observation = entryAt(war.observations, at);
@@ -148,7 +160,7 @@ function menuStartsOf(wars: WarsReply): readonly number[] {
 export function warChipStateAt(wars: WarsReply | undefined, saved: string | null, at: number | null): WarChipState {
   if (!wars || at === null || !Number.isFinite(at)) return PENDING_CHIP;
   const hour = Math.floor(at);
-  const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
+  const explicit = warById(wars, saved);
   if (explicit) {
     const valid = spanFromEdges(warEdgesOf(explicit, wars), hour);
     if (unobservedAt(wars, hour)) {
@@ -245,7 +257,7 @@ interface SweepEvent {
 }
 
 function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly EligibilitySegment[] {
-  const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
+  const explicit = warById(wars, saved);
   const cacheKey = explicit ? explicit.id : '';
   let byKey = eligibilityCache.get(wars);
   if (!byKey) {
@@ -335,7 +347,7 @@ function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly 
 export function warNextChangeAt(wars: WarsReply | undefined, saved: string | null, at: number): number {
   if (!wars || !wars.available || !Number.isFinite(at)) return Infinity;
   const hour = Math.floor(at);
-  const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
+  const explicit = warById(wars, saved);
   const until = spanFromEdges(explicit ? warEdgesOf(explicit, wars) : chipEdgesOf(wars), hour)[1];
   return Number.isFinite(until) ? until + 1 : Infinity;
 }

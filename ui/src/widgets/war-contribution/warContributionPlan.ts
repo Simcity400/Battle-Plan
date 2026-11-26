@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
-import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warChipStateAt, warEligibilityAt, warNextChangeAt } from './warContributionData.ts';
+import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warById, warChipStateAt, warEligibilityAt, warNextChangeAt } from './warContributionData.ts';
 
 export type WarSide = 'viewpoint' | 'opposing';
 
@@ -65,7 +65,7 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   }
   const war = chosenWar(options.wars, options.saved, hour);
   if (!war) {
-    const saved = options.wars.wars.find(item => item.id === options.saved);
+    const saved = warById(options.wars, options.saved);
     return { kind: 'blank', empty: saved ? WAR_NOT_STARTED : NO_WAR, emptyKind: 'empty' };
   }
   if (!observationAt(war, readHourFor(war, hour))) {
