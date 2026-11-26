@@ -179,7 +179,7 @@ export interface FactoryCap {
   readonly missing: string | null;
 }
 
-const LINE_CAP_UNKNOWN = 'A railway line takes no factories in some states the recording does not tell apart, so its most is not known while it has none';
+const LINE_CAP_UNKNOWN = 'The recording does not establish the most factories this line takes while it has none';
 
 function lineCap(row: ConstructionLogRow, cap: FactoryCap): FactoryCap {
   return row.kind !== 'building' && row.factories === 0 && cap.cap !== null ? { cap: null, missing: LINE_CAP_UNKNOWN } : cap;

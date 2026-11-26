@@ -740,6 +740,7 @@ pub struct Catalogue {
     findings: Option<Mutex<BTreeSet<Finding>>>,
     effect_describer: Option<EffectDescriberFactory>,
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
+    defines: Once<Result<content_reader_defines::defines::Defines, String>>,
     war_names: Once<Result<content_reader_wargoals::wargoals::Names, String>>,
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
     recorded: Once<Arc<Catalogue>>,
@@ -883,6 +884,7 @@ impl Catalogue {
             findings: None,
             effect_describer,
             scripted: Once::new(),
+            defines: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),
@@ -1047,7 +1049,10 @@ impl Catalogue {
     }
 
     pub fn defines(&self) -> Result<&content_reader_defines::defines::Defines, String> {
-        Ok(self.scripted_content()?.environment()?.defines())
+        self.defines
+            .get_or_init(|| content_reader_defines::defines::read(&self.content.layers).map_err(|why| why.to_string()))
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     pub fn war_participation_factors(
@@ -1075,6 +1080,7 @@ impl Catalogue {
     }
 
     pub fn read_readers(&self) {
+        drop(self.defines());
         if let Ok(scripted) = self.scripted_content() {
             drop(scripted.environment());
         }
@@ -2172,6 +2178,17 @@ pub mod tests {
         (layers, folder)
     }
 
+    #[test]
+    fn the_catalogues_defines_do_not_wait_on_scripted_localisation_reading() {
+        let (catalogue, _folder) = folder_catalogue(&[
+            ("common/defines/00_defines.lua", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }"),
+            ("common/country_tag_aliases/broken.txt", "alias = {"),
+        ]);
+        assert!(catalogue.scripted_content().is_err(), "the alias file is unreadable");
+        let defines = catalogue.defines().expect("the defines are their own read");
+        assert_eq!(defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").unwrap(), 20.0);
+    }
+
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
         let (layers, folder) = write_folder(files);
         (layers_catalogue(layers), folder)
@@ -2221,6 +2238,7 @@ pub mod tests {
             findings: None,
             effect_describer: None,
             scripted: Once::new(),
+            defines: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),
