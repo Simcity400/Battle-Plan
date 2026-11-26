@@ -1312,35 +1312,11 @@ pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::
     )
 }
 
-pub(crate) fn check_unmounted_texture(layers: &ResolvedLayers, name: &[u8]) -> io::Result<()> {
-    for candidate in content_reader_layers::textures::texture_candidates(name) {
-        let vfs: Vec<u8> = candidate
-            .split(|byte| *byte == b'/')
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(&b'/');
-        match layers.art_file_source(&vfs)? {
-            content_reader_layers::content::ArtFileSource::Mounted { .. } => return Ok(()),
-            content_reader_layers::content::ArtFileSource::Unmounted { layer, reason } => {
-                let owner = &layers.layers[layer];
-                let name = owner.display_name().unwrap_or(&owner.id);
-                return Err(invalid(format!(
-                    "{name} is not mounted ({reason}); {} cannot be resolved without risking a substitute",
-                    String::from_utf8_lossy(&vfs)
-                )));
-            }
-            content_reader_layers::content::ArtFileSource::Missing => continue,
-        }
-    }
-    Ok(())
-}
-
 fn stack_gui_texture(
     layers: &ResolvedLayers,
     name: &[u8],
     decode: Decode,
 ) -> io::Result<Rgba8Image> {
-    check_unmounted_texture(layers, name)?;
     let texture = resources::stack_texture(layers, name, decode)?.map_err(|why| {
         let extra = if why.native_failure() {
             "; the game draws no texture either"

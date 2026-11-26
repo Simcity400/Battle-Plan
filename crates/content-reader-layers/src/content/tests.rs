@@ -4158,8 +4158,8 @@ fn uncovered_art_lookup_scans_each_layer_once() {
             (2, 1, 1),
             (0, 0, 0),
             (1, 1, 1),
-            (2, 0, 0),
-            (1, 1, 0),
+            (2, 1, 1),
+            (1, 1, 1),
         ),
         "after counts (folder_opens, archive_opens, archive_mounts)"
     );

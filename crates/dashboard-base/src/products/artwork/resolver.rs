@@ -507,7 +507,7 @@ fn resolve_texture_candidate(
         match art_file(stack, &vfs) {
             Ok(ArtFile::Mounted { layer, path, bytes }) => {
                 let winning = String::from_utf8_lossy(&path).into_owned();
-                return Ok((layer, path, winning, bytes));
+                return Ok((layer, vfs, winning, bytes));
             }
             Ok(ArtFile::Unmounted { layer, reason }) => {
                 return Err(Box::new(unmounted_refusal(&stack.layers[layer], &reason, display_path)));
@@ -537,12 +537,12 @@ fn decode_texture_checked(
     raw_name: &[u8],
     decode: Decode,
     origin: ArtOrigin,
-    winning_path: &[u8],
+    winning_candidate: &[u8],
     winning_bytes: &content_reader_layers::content::Bytes,
     display_file: &str,
 ) -> Result<content_reader_layers::textures::Texture, Box<ArtResolution>> {
     let read = |path: &[u8]| {
-        if path.eq_ignore_ascii_case(winning_path) {
+        if path == winning_candidate {
             Ok(winning_bytes.clone())
         } else {
             Err(io::Error::from(io::ErrorKind::NotFound))

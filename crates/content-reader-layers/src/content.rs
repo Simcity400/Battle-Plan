@@ -2152,43 +2152,11 @@ impl ResolvedLayer {
         }))
     }
 
-    fn unchanged_archive_index(&self, path: &Path) -> Option<&physfs_zip::Index> {
-        if self.verifies() || self.archive_stamp.is_none() {
-            return None;
-        }
-        let index = self.lookup.archive.as_ref()?;
-        (Stamp::read(path).ok().as_ref() == self.archive_stamp.as_ref()).then_some(index)
-    }
-
     fn archive_scan_entry(
         &self,
         request: &[u8],
         observed: &ReadObservation,
     ) -> ObservedResult<Option<OpenedArchive>> {
-        let LayerSource::Archive(path) = &self.source else {
-            return Err(invalid(format!("layer {} is not an archive", self.id)).into());
-        };
-        if let Some(index) = self.unchanged_archive_index(path) {
-            return match index.mounted.lookup(request) {
-                Some((entry, _)) if entry.symlink => Err(unfollowed_link(request).into()),
-                Some((entry, _)) if self.fact_path(&entry.name) => {
-                    Err(fact_alias(request, &entry.name).into())
-                }
-                Some((entry, password))
-                    if index
-                        .opening(&entry.name)
-                        .is_some_and(|opening| opening.opens(password)) =>
-                {
-                    let archive = physfs_zip::Archive::open(path)?;
-                    Ok(Some(OpenedArchive {
-                        archive,
-                        entry: entry.clone(),
-                        password: password.map(<[u8]>::to_vec),
-                    }))
-                }
-                _ => Ok(None),
-            };
-        }
         let (mut archive, mounted) = self.verified_archive()?;
         match mounted.lookup(request) {
             Some((entry, _)) if entry.symlink => Err(unfollowed_link(request).into()),
@@ -2226,25 +2194,6 @@ impl ResolvedLayer {
             }
             None => Ok(None),
         }
-    }
-
-    fn archive_probe_exists(&self, request: &[u8]) -> io::Result<bool> {
-        let LayerSource::Archive(path) = &self.source else {
-            return Err(invalid(format!("layer {} is not an archive", self.id)));
-        };
-        if let Some(index) = self.unchanged_archive_index(path) {
-            return match index.mounted.lookup(request) {
-                Some((entry, _)) if entry.symlink => Err(unfollowed_link(request)),
-                Some((entry, _)) if self.fact_path(&entry.name) => {
-                    Err(fact_alias(request, &entry.name))
-                }
-                Some((entry, password)) => Ok(index
-                    .opening(&entry.name)
-                    .is_some_and(|opening| opening.opens(password))),
-                None => Ok(false),
-            };
-        }
-        self.archive_exists(request)
     }
 
     fn archive_exists(&self, request: &[u8]) -> io::Result<bool> {
@@ -2560,6 +2509,7 @@ impl ResolvedLayers {
             self.trace_read(path, None, ReadFailure::from(io::Error::new(error.kind(), error.to_string())).outcome());
             return Err(error);
         };
+        let _release = ReleaseHandles(file);
         let mut key_parameters = (file.path.len() as u64).to_le_bytes().to_vec();
         key_parameters.extend_from_slice(&file.path);
         key_parameters.push(u8::from(file.fact.is_some()));
@@ -2567,7 +2517,7 @@ impl ResolvedLayers {
             key_parameters.extend_from_slice(&fact.to_le_bytes());
         }
         key_parameters.extend_from_slice(parameters);
-        let product = self.product_at(
+        self.product_at(
             graph::Key {
                 context: self.layer_context(file.layer),
                 parser,
@@ -2576,12 +2526,7 @@ impl ResolvedLayers {
             },
             Some(file.layer),
             |reader| build(&reader.shared_read_in(path, true, Some(file))?),
-        );
-        file.folder
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
-        product
+        )
     }
 
     fn product_at<T: Send + Sync + 'static>(
@@ -3948,50 +3893,25 @@ impl ResolvedLayers {
                         )?
                     }
                     None => {
-                        if let Some(index) = layer.unchanged_archive_index(path) {
-                            match index.mounted.lookup(&file.path) {
-                                Some((entry, _)) if entry.symlink => {
-                                    return Err(unfollowed_link(&file.path).into());
-                                }
-                                Some((entry, _)) if layer.fact_path(&entry.name) => {
-                                    return Err(fact_alias(&file.path, &entry.name).into());
-                                }
-                                Some((entry, password)) => {
-                                    let mut archive = physfs_zip::Archive::open(path)?;
-                                    self.generation
-                                        .witnesses
-                                        .record_file(path, archive.file())?;
-                                    layer.read_archive_entry(
-                                        &mut archive,
-                                        entry,
-                                        password,
-                                        &file.path,
-                                        observed,
-                                    )?
-                                }
-                                None => None,
+                        let (mut archive, mounted) = layer.verified_archive()?;
+                        self.generation
+                            .witnesses
+                            .record_file(path, archive.file())?;
+                        match mounted.lookup(&file.path) {
+                            Some((entry, _)) if entry.symlink => {
+                                return Err(unfollowed_link(&file.path).into());
                             }
-                        } else {
-                            let (mut archive, mounted) = layer.verified_archive()?;
-                            self.generation
-                                .witnesses
-                                .record_file(path, archive.file())?;
-                            match mounted.lookup(&file.path) {
-                                Some((entry, _)) if entry.symlink => {
-                                    return Err(unfollowed_link(&file.path).into());
-                                }
-                                Some((entry, _)) if layer.fact_path(&entry.name) => {
-                                    return Err(fact_alias(&file.path, &entry.name).into());
-                                }
-                                Some((entry, password)) => layer.read_archive_entry(
-                                    &mut archive,
-                                    entry,
-                                    password,
-                                    &file.path,
-                                    observed,
-                                )?,
-                                None => None,
+                            Some((entry, _)) if layer.fact_path(&entry.name) => {
+                                return Err(fact_alias(&file.path, &entry.name).into());
                             }
+                            Some((entry, password)) => layer.read_archive_entry(
+                                &mut archive,
+                                entry,
+                                password,
+                                &file.path,
+                                observed,
+                            )?,
+                            None => None,
                         }
                     }
                 };
@@ -4465,7 +4385,7 @@ impl ResolvedLayers {
                         }));
                     }
                 }
-                LayerSource::Archive(_) if layer.archive_probe_exists(relative)? => {
+                LayerSource::Archive(_) if layer.archive_exists(relative)? => {
                     return Ok(Some(RecordedHit {
                         layer: index,
                         path: relative.to_vec(),
