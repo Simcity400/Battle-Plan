@@ -167,7 +167,7 @@ pub fn follow(source: &Source, branch: u64) -> io::Result<Arc<Incarnations>> {
         };
         let columns = [read(0)?, read(1)?, read(2)?, read(3)?];
         let first_read = cost::storage(|| lanes::reads(recording, stretch.run, table, stretch.first, stretch.last))?.first().map(|span| span.0);
-        all.extend(incarnations(&handles, &columns, first_read, (index == 0).then_some(stretch.first), stretch.last));
+        all.extend(incarnations(&handles, &columns, first_read, (index == 0).then_some(query.timeline.first), stretch.last));
     }
     let held = Arc::new(Incarnations::new(all));
     state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, Arc::clone(&held)));

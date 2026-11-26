@@ -5,9 +5,9 @@ use dashboard_base::products::{LoadContext, Product, check_reply_budget, validat
 use dashboard_core::dto::FocusDatabase;
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -15,6 +15,7 @@ use ts_rs::TS;
 pub(crate) const UNDATED: &str = "The focus was already complete when the list was first read";
 pub(crate) const NO_GAIN: &str = "Daily progress was not recorded";
 pub(crate) const NO_DURATION: &str = "The focus's duration was not recorded";
+const UNNAMED: &str = "The focus's name and icon were not recorded";
 const FIXED: i64 = 100_000;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -76,15 +77,25 @@ pub(crate) struct CardShape {
     pub undated: u32,
 }
 
-fn first_seen(fold: &Fold, at: usize, ordinal: u32, token: &str) -> i32 {
-    let held = |segment: &crate::products::focus::Segment| segment.order.completed.iter().any(|entry| entry.ordinal == ordinal && entry.token == token);
-    let mut first = fold.segments[at].first;
+fn first_seen(fold: &Fold, at: usize, tokens: &[&str]) -> HashMap<String, i32> {
+    let start = fold.segments[at].first;
+    let mut first: HashMap<String, i32> = tokens.iter().map(|token| ((*token).to_owned(), start)).collect();
+    let mut alive: HashSet<&str> = tokens.iter().copied().collect();
     for back in (0..at).rev() {
-        let (earlier, later) = (&fold.segments[back], &fold.segments[back + 1]);
-        if earlier.id != later.id || earlier.slot != later.slot || earlier.last.saturating_add(1) != later.first || !held(earlier) {
+        if alive.is_empty() {
             break;
         }
-        first = earlier.first;
+        let (earlier, later) = (&fold.segments[back], &fold.segments[back + 1]);
+        if earlier.id != later.id || earlier.slot != later.slot || earlier.last.saturating_add(1) != later.first {
+            break;
+        }
+        let held: HashSet<&str> = earlier.order.completed.iter().map(|entry| entry.token.as_str()).collect();
+        alive.retain(|token| held.contains(token));
+        for token in &alive {
+            if let Some(hour) = first.get_mut(*token) {
+                *hour = earlier.first;
+            }
+        }
     }
     first
 }
@@ -99,10 +110,12 @@ pub(crate) fn card_at(fold: &Fold, hour: i32) -> CardShape {
     };
     let mut dated: Vec<(String, Option<i32>, i32)> = Vec::new();
     let mut undated: Vec<(String, Option<i32>, i32)> = Vec::new();
+    let unknown: Vec<&str> = segment.order.completed.iter().filter(|entry| entry.completed_by_hour.is_none()).map(|entry| entry.token.as_str()).collect();
+    let seen = if unknown.is_empty() { HashMap::new() } else { first_seen(fold, index, &unknown) };
     for entry in segment.order.completed.iter().rev() {
         match entry.completed_by_hour {
             Some(when) => dated.push((entry.token.clone(), Some(when), when)),
-            None => undated.push((entry.token.clone(), None, first_seen(fold, index, entry.ordinal, &entry.token))),
+            None => undated.push((entry.token.clone(), None, seen.get(&entry.token).copied().unwrap_or(segment.first))),
         }
     }
     dated.sort_by_key(|(_, when, _)| std::cmp::Reverse(*when));
@@ -125,7 +138,7 @@ pub(crate) fn card_at(fold: &Fold, hour: i32) -> CardShape {
     CardShape { valid_through, missing: None, current, progress, completed: dated, undated: undated_count }
 }
 
-pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days: Option<f64>) -> (Option<u32>, Option<u32>, Option<u32>, Option<String>) {
+pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days: Option<f64>, paused: bool) -> (Option<u32>, Option<u32>, Option<u32>, Option<String>) {
     let Some((raw, gain)) = progress else {
         return (None, None, None, Some(NO_GAIN.into()));
     };
@@ -138,6 +151,7 @@ pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days:
     let permyriad = u32::try_from(done * 10_000 / total).unwrap_or(10_000);
     let elapsed = u32::try_from(done / FIXED).unwrap_or(0);
     match gain {
+        _ if paused => (Some(elapsed), Some(permyriad), None, None),
         Some(gain) if gain > 0 => {
             let left = u32::try_from((remaining + gain - 1) / gain).unwrap_or(u32::MAX);
             (Some(elapsed), Some(permyriad), Some(left), None)
@@ -149,6 +163,43 @@ pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days:
 type Shown = BTreeMap<String, DatedFocusArtwork>;
 type Resolved = Arc<(Shown, Vec<String>, i32)>;
 type ArtKey = (FocusDatabase, i32, Vec<String>);
+type Gallery = Mutex<HashMap<(i32, String), (FocusCardArt, Arc<[String]>)>>;
+
+fn gallery_art(source: &Source, context: &LoadContext, params: &FocusHourParams, branch: u64, shape: &CardShape, cancelled: &AtomicBool) -> io::Result<(HashMap<(i32, String), FocusCardArt>, Vec<String>)> {
+    let gallery = dashboard_base::products::breakdown::held(source, context, (branch, params.country.clone()), || Ok::<Gallery, io::Error>(Mutex::new(HashMap::new())))?;
+    let wanted = observed_hours(shape);
+    let missing: Vec<(i32, Vec<String>)> = {
+        let held = gallery.lock().unwrap_or_else(PoisonError::into_inner);
+        wanted
+            .iter()
+            .filter_map(|(hour, tokens)| {
+                let absent: Vec<String> = tokens.iter().filter(|token| !held.contains_key(&(*hour, (*token).clone()))).cloned().collect();
+                (!absent.is_empty()).then_some((*hour, absent))
+            })
+            .collect()
+    };
+    for (hour, tokens) in missing {
+        let (shown, warnings, _) = shown(source, context, params, hour, FocusDatabase::National, tokens.clone(), cancelled)?;
+        let warnings: Arc<[String]> = warnings.into();
+        let mut held = gallery.lock().unwrap_or_else(PoisonError::into_inner);
+        for token in tokens {
+            let art = art_of(&token, &shown, UNNAMED);
+            held.insert((hour, token), (art, Arc::clone(&warnings)));
+        }
+    }
+    let held = gallery.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut warnings: Vec<String> = Vec::new();
+    let mut found: HashMap<(i32, String), FocusCardArt> = HashMap::new();
+    for (hour, tokens) in wanted {
+        for token in tokens {
+            if let Some((art, said)) = held.get(&(hour, token.clone())) {
+                warnings.extend(said.iter().cloned());
+                found.insert((hour, token), art.clone());
+            }
+        }
+    }
+    Ok((found, warnings))
+}
 
 fn resolved_at(source: &Source, context: &LoadContext, params: &FocusHourParams, branch: u64, key: ArtKey, cancelled: &AtomicBool) -> io::Result<Resolved> {
     let (database, at, tokens) = key.clone();
@@ -225,17 +276,7 @@ impl Product for FocusCard {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let fold = focus::fold(source, branch, &params.country, cancelled)?;
         let shape = card_at(&fold, params.hour);
-        const UNNAMED: &str = "The focus's name and icon were not recorded";
-        let mut warnings: Vec<String> = Vec::new();
-        let mut completed_art: BTreeMap<(i32, String), FocusCardArt> = BTreeMap::new();
-        for (hour, tokens) in observed_hours(&shape) {
-            let held = resolved_at(source, context, params, branch, (FocusDatabase::National, hour, tokens.clone()), cancelled)?;
-            warnings.extend(held.1.iter().cloned());
-            for token in tokens {
-                let art = art_of(&token, &held.0, UNNAMED);
-                completed_art.insert((hour, token), art);
-            }
-        }
+        let (completed_art, mut warnings) = gallery_art(source, context, params, branch, &shape, cancelled)?;
         let completed = shape
             .completed
             .iter()
@@ -254,7 +295,7 @@ impl Product for FocusCard {
             valid_through = valid_through.min(held.2);
             let total_days = held.0.get(token).and_then(|item| item.artwork.base_duration_days);
             let (elapsed_days, permyriad, days_left, progress_missing) =
-                if *is_continuous { (None, None, None, None) } else { progress_figures(shape.progress, total_days) };
+                if *is_continuous { (None, None, None, None) } else { progress_figures(shape.progress, total_days, *paused) };
             Some(FocusCardCurrent { art: art_of(token, &held.0, UNNAMED), continuous: *is_continuous, paused: *paused, total_days, elapsed_days, permyriad, days_left, progress_missing })
             }
         };

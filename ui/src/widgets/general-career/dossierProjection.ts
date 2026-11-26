@@ -95,7 +95,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
     art: { kind: 'art', art: readView.art({ kind: 'portrait', leader: reference, hour }), ...(name ? { name } : {}) },
     title: name ? knownValue(name) : notRecorded('The name was not recorded'),
     subtitle: `${rank} · ${skill}`,
-    ...(owner ? { subtitleFlag: owner.media } : {}),
+    ...(owner ? { subtitleFlag: { ...owner.media, name: ownerName } } : {}),
     figure: { value: partial ? partialValue(record, PARTIAL) : knownValue(record), figure: 'Battles' },
     tooltip: { title: name ?? 'Name not recorded', subtitle: ownerName, items },
   };

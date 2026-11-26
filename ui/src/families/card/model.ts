@@ -212,6 +212,24 @@ function figureText(figure: CardFigure): string {
   return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? notRecordedLabel(figure.figure) : formatted.text;
 }
 
+function figureSpoken(figure: CardFigure): string {
+  const formatted = formatValueState(figure.value);
+  return formatted.kind === 'partial' ? formatted.spoken : figureText(figure);
+}
+
+function partialItem(value: Value | undefined): TooltipListItem[] {
+  return value?.kind === 'partial' ? [{ label: value.reason, tone: 'muted' }] : [];
+}
+
+function artAudit(art: ArtResult): string {
+  switch (art.status) {
+    case 'ready': return `ready:${art.assetId}`;
+    case 'noArtExpected':
+    case 'pending': return art.status;
+    default: return `${art.status}:${art.reason}`;
+  }
+}
+
 function rowByKey(model: CardModel, key: string): CardEntryRow | null {
   for (const row of model.rows) if (row.kind !== 'section' && row.key === key) return row;
   return null;
@@ -229,6 +247,7 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
     const missing = row.kind === 'list' ? row.missing : value && (value.kind === 'notRecorded' || value.kind === 'notApplicable') ? value.reason : undefined;
     if (missing !== undefined) items.push({ label: row.label ?? 'Value', missingReason: missing });
     else if (text) items.push({ label: row.label ?? 'Value', value: text });
+    items.push(...partialItem(value));
     return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
   }
   if (row.title.kind === 'notRecorded') items.push({ label: 'Name', missingReason: row.title.reason });
@@ -243,7 +262,7 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
       const formatted = formatValueState(row.figure.value);
       items.push(formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable'
         ? { label: row.figure.figure ?? 'Value', missingReason: formatted.reason }
-        : { label: row.figure.figure ?? 'Value', value: formatted.text });
+        : { label: row.figure.figure ?? 'Value', value: formatted.text }, ...partialItem(row.figure.value));
     }
     if (row.state) items.push({ label: 'State', value: row.state.label });
   }
@@ -259,20 +278,21 @@ function spokenRow(row: CardEntryRow): string[] {
   if (row.kind === 'list') return [cardListText(row)];
   if (row.kind === 'meter') {
     if (row.bar.kind === 'share') parts.push(...row.bar.segments.map(s => s.label));
-    if (row.figure) parts.push(figureText(row.figure));
+    if (row.figure) parts.push(figureSpoken(row.figure));
     return parts;
   }
   if (row.kind === 'hero') {
     parts.push(row.state.label);
     if (row.detail) parts.push(row.detail);
-    if (row.figure) parts.push(`${figureText({ value: row.figure.value })} ${row.figure.caption}`);
+    if (row.figure) parts.push(`${figureSpoken({ value: row.figure.value })} ${row.figure.caption}`);
     return parts;
   }
   if (row.date) parts.push(row.date.hour === null ? notRecordedLabel('Date') : formatDateOnly(row.date.hour));
+  if (row.subtitleFlag?.name) parts.push(row.subtitleFlag.name);
   if (row.subtitle) parts.push(row.subtitle);
   if (row.place) parts.push(row.place);
   if (row.meter?.text) parts.push(row.meter.text);
-  if (row.figure) parts.push(figureText(row.figure));
+  if (row.figure) parts.push(figureSpoken(row.figure));
   if (row.state) parts.push(row.state.label);
   return parts;
 }
@@ -314,7 +334,7 @@ export function deriveCardAudit(model: CardModel): FamilyAuditRow[] {
     rows.push(auditCell(row.key, 'title', canonicalAuditValue(row.title)));
     if (row.kind === 'item' && row.titleLoading) rows.push(auditCell(row.key, 'loading', 'title'));
     const media = row.kind === 'item' ? [['flag', row.flag], ['subtitleFlag', row.subtitleFlag], ['art', row.art]] as const : [['art', row.art]] as const;
-    for (const [cell, held] of media) if (held) rows.push(auditCell(row.key, cell, `${held.kind}:${held.tag ?? ''}:${held.name ?? ''}`));
+    for (const [cell, held] of media) if (held) rows.push(auditCell(row.key, cell, `${held.kind}:${held.tag ?? ''}:${held.name ?? ''}:${artAudit(held.art)}`));
     if (row.meter) {
       rows.push(auditCell(row.key, 'meter', canonicalAuditValue(row.meter.fraction)));
       if (row.meter.text !== undefined) rows.push(auditCell(row.key, 'meterText', row.meter.text));

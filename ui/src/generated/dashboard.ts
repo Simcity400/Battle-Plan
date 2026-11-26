@@ -3024,6 +3024,10 @@ export type FactionRulesReply = { rules: Array<FactionSelectionLane>, programmes
  */
 rulesUnread: Array<HourSpan>,
 /**
+ * Hours whose doctrine or programme tables were not read whole: no count of upgrades is known then.
+ */
+upgradesUnread: Array<HourSpan>,
+/**
  * Hours of the timeline the recording does not hold.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };

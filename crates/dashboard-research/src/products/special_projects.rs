@@ -1099,15 +1099,43 @@ fn spans(spans: &[(i32, i32)]) -> Vec<HourSpan> {
 pub(crate) fn shown_runs(runs: &[facts::Run], hour: i32) -> Option<std::ops::RangeInclusive<usize>> {
     let at = runs.partition_point(|run| run.last < hour);
     let run = runs.get(at).filter(|run| run.first <= hour)?;
-    (run.state != ProjectState::Cancelled).then(|| at.saturating_sub(1)..=at)
+    let mut first = at;
+    while run.state == ProjectState::Completed && first > 0 && runs[first - 1].state == ProjectState::Completed && runs[first - 1].last.saturating_add(1) == runs[first].first {
+        first -= 1;
+    }
+    (run.state != ProjectState::Cancelled).then(|| first.saturating_sub(1)..=at)
 }
 
 fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, follow: &incremental::Follow, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let facts = &follow.facts;
     let mut naming = Naming::new(content);
+    let current_at = match (params.current, follow.through()) {
+        (Some(true), Some(hour)) => Some(hour),
+        _ => None,
+    };
+    let chosen: Vec<(&facts::Project, std::ops::RangeInclusive<usize>, bool)> = match current_at {
+        Some(hour) => facts
+            .projects
+            .iter()
+            .filter_map(|project| shown_runs(&project.runs, hour).map(|shown| (project, shown.clone(), project.runs[*shown.end()].state == ProjectState::Completed)))
+            .collect(),
+        None => Vec::new(),
+    };
+    let none = facts::Evidence::default();
+    let marked = |kept: &&facts::Kept| kept.entry.completion() && kept.counted;
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
     let mut characters: BTreeMap<u32, i32> = BTreeMap::new();
-    for run in facts.projects.iter().flat_map(|project| &project.runs) {
+    let runs: Box<dyn Iterator<Item = &facts::Run>> = if current_at.is_some() {
+        Box::new(chosen.iter().flat_map(|(project, shown, _)| project.runs[shown.clone()].iter()))
+    } else {
+        Box::new(facts.projects.iter().flat_map(|project| project.runs.iter()))
+    };
+    let kept_entries: Box<dyn Iterator<Item = &facts::Kept>> = if current_at.is_some() {
+        Box::new(chosen.iter().filter(|(_, _, completed)| *completed).flat_map(|(project, _, _)| facts.evidence_of(project).unwrap_or(&none).entries.iter().filter(marked)))
+    } else {
+        Box::new(facts.evidence.values().flat_map(|evidence| evidence.entries.iter()))
+    };
+    for run in runs {
         let look = &facts.looks[run.look as usize];
         let first = definitions.entry(look.definition).or_insert(run.first);
         *first = (*first).min(run.first);
@@ -1116,7 +1144,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             *first = (*first).min(run.first);
         }
     }
-    for kept in facts.evidence.values().flat_map(|evidence| &evidence.entries) {
+    for kept in kept_entries {
         if let Some(definition) = kept.definition {
             let first = definitions.entry(definition).or_insert(kept.read);
             *first = (*first).min(kept.read);
@@ -1171,8 +1199,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             last_scientist,
         })
     };
-    let none = facts::Evidence::default();
-    let mut record = |country: (u32, u32), owner: u32, local: u32, first: (i32, ProjectState), runs: &[facts::Run], evidence: &facts::Evidence, naming: &mut Naming<'_>| {
+    let mut record = |country: (u32, u32), owner: u32, local: u32, first: (i32, ProjectState), runs: &[facts::Run], evidence: &facts::Evidence, markers_only: bool, naming: &mut Naming<'_>| {
         let statuses: Vec<ProjectStatus> = runs
             .iter()
             .map(|run| ProjectStatus {
@@ -1191,6 +1218,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         let entries = evidence
             .entries
             .iter()
+            .filter(|kept| !markers_only || marked(kept))
             .map(|kept| ProjectEntry {
                 ordinal: kept.entry.ordinal,
                 date: kept.entry.date,
@@ -1200,28 +1228,24 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
                 presentation: kept.definition.map(|definition| shown(&unnamed(definition), kept.read, naming)),
             })
             .collect();
-        let attempts = evidence.attempts.iter().map(|attempt| ProjectAttempt { ordinal: attempt.entry.ordinal, date: attempt.entry.date, read_hour: attempt.read, since_read: attempt.since }).collect();
+        let attempts = evidence.attempts.iter().filter(|_| !markers_only).map(|attempt| ProjectAttempt { ordinal: attempt.entry.ordinal, date: attempt.entry.date, read_hour: attempt.read, since_read: attempt.since }).collect();
         ProjectRecord { id: format!("{}:{}:{owner}:{local}", country.0, country.1), owner, local, first_read: first.0, first_state: first.1, statuses, entries, attempts }
     };
     let mut projects = Vec::with_capacity(facts.projects.len());
-    if let (Some(true), Some(hour)) = (params.current, follow.through()) {
-        for project in &facts.projects {
-            let Some(shown) = shown_runs(&project.runs, hour) else { continue };
-            let mut markers = facts::Evidence::default();
-            if project.runs[*shown.end()].state == ProjectState::Completed {
-                markers.entries = facts.evidence_of(project).unwrap_or(&none).entries.iter().filter(|kept| kept.entry.completion() && kept.counted).cloned().collect();
-            }
-            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs[shown], &markers, &mut naming));
+    if current_at.is_some() {
+        for (project, shown, completed) in &chosen {
+            let evidence = if *completed { facts.evidence_of(project).unwrap_or(&none) } else { &none };
+            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs[shown.clone()], evidence, true, &mut naming));
         }
     } else {
         for project in &facts.projects {
             let evidence = facts.evidence_of(project).unwrap_or(&none);
-            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, &mut naming));
+            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, false, &mut naming));
         }
-    }
-    for (&(slot, id, owner, local), evidence) in facts.unlisted().filter(|_| params.current != Some(true)) {
-        let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
-        projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], evidence, &mut naming));
+        for (&(slot, id, owner, local), evidence) in facts.unlisted() {
+            let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
+            projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], evidence, false, &mut naming));
+        }
     }
     let counts: BTreeSet<i32> = projects.iter().flat_map(|project| &project.statuses).filter_map(|status| status.iterations).collect();
     let iteration_texts: BTreeMap<i32, Option<String>> = counts.into_iter().map(|count| (count, naming.iterations(count))).collect();

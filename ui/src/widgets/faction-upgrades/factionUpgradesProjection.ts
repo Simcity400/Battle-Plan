@@ -9,7 +9,7 @@ import { wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { CountryGroupReply, FactionGroup, FactionRulesReply, FactionSelectionRun, HourSpan } from '../../generated/dashboard';
-import { identityName } from '../../families/table/identityCell.ts';
+import { identityNameOr } from '../../families/table/identityCell.ts';
 
 export interface FactionUpgradesOptions {
   readonly groups: CountryGroupReply | null;
@@ -42,6 +42,23 @@ function factionAt(groups: CountryGroupReply, subject: string | null, hour: numb
   return { faction: null, reason: 'This country is in no faction at this date.' };
 }
 
+type Span = readonly [number, number];
+
+function memberSpans(groups: CountryGroupReply, subject: string): (run: { readonly tag: string; readonly firstHour: number; readonly lastHour: number }) => readonly Span[] {
+  const slot = countryFromKey(subject);
+  if (typeof slot !== 'number') return run => (run.tag === subject ? [[run.firstHour, run.lastHour]] : []);
+  const held = new Map<string, Span[]>();
+  for (const history of groups.countryIdentities) {
+    const spans = history.identities.filter(identity => identity.slot === slot).map(identity => [identity.firstHour, identity.lastHour] as const);
+    if (spans.length) held.set(history.tag, spans);
+  }
+  return run => (held.get(run.tag) ?? []).flatMap(([first, last]) => {
+    const from = Math.max(first, run.firstHour);
+    const to = Math.min(last, run.lastHour);
+    return from <= to ? [[from, to] as const] : [];
+  });
+}
+
 function membershipChange(groups: CountryGroupReply, subject: string | null, hour: number): number {
   let next = Infinity;
   const edge = (span: { readonly firstHour: number; readonly lastHour: number }) => {
@@ -51,9 +68,9 @@ function membershipChange(groups: CountryGroupReply, subject: string | null, hou
   groups.unobserved.factions.forEach(edge);
   for (const faction of groups.factions) faction.incomplete.forEach(edge);
   if (subject) {
-    const tagsOf = tagsAt(groups, subject);
+    const spansOf = memberSpans(groups, subject);
     for (const faction of groups.factions) {
-      for (const run of faction.members) if (tagsOf(run.firstHour).has(run.tag) || tagsOf(run.lastHour).has(run.tag)) edge(run);
+      for (const run of faction.members) for (const [firstHour, lastHour] of spansOf(run)) edge({ firstHour, lastHour });
     }
   }
   return next;
@@ -61,8 +78,8 @@ function membershipChange(groups: CountryGroupReply, subject: string | null, hou
 
 function factionsEver(groups: CountryGroupReply | undefined, subject: string | null): string[] {
   if (!groups || !subject) return [];
-  const ever = tagsAt(groups, subject);
-  return groups.factions.filter(item => item.members.some(run => ever(run.firstHour).has(run.tag) || ever(run.lastHour).has(run.tag))).map(item => item.id);
+  const spansOf = memberSpans(groups, subject);
+  return groups.factions.filter(item => item.members.some(run => spansOf(run).length > 0)).map(item => item.id);
 }
 
 function since(run: FactionSelectionRun, gaps: readonly HourSpan[], branchFirst: number): Value<string> {
@@ -88,7 +105,7 @@ function row(key: string, run: FactionSelectionRun, subtitle: string | undefined
 
 function nextBoundary(reply: FactionRulesReply, hour: number): number {
   let next = Infinity;
-  for (const lane of [...reply.rules, ...reply.programmes, ...reply.minimums, ...reply.members, ...reply.doctrines, { runs: reply.rulesUnread }]) {
+  for (const lane of [...reply.rules, ...reply.programmes, ...reply.minimums, ...reply.members, ...reply.doctrines, { runs: reply.rulesUnread }, { runs: reply.upgradesUnread }]) {
     for (const run of lane.runs) {
       if (run.firstHour > hour && run.firstHour < next) next = run.firstHour;
       if (run.lastHour + 1 > hour && run.lastHour + 1 < next) next = run.lastHour + 1;
@@ -112,7 +129,7 @@ function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: 
   for (const lane of reply.members) {
     const run = runAtHour(lane.runs, hour);
     if (!run) continue;
-    const name = identityName(readView, 'country', countryKey(lane.slot), hour);
+    const name = identityNameOr(readView, 'country', countryKey(lane.slot), 'Member name not recorded', hour);
     out.push(row(`member:${lane.key}`, run, `${name} · ${groupName(lane.group)}`, gaps, branchFirst));
   }
   for (const lane of reply.doctrines) {
@@ -140,13 +157,15 @@ export const factionUpgradesProjection: CardProjection<FactionUpgradesOptions> =
       return run ? [row(`rule:${lane.slot}`, run, undefined, raw.unobserved, options.branchFirst)] : [];
     });
     const upgrades = upgradeRows(readView, raw, hour, options.branchFirst);
+    const warnings = [...new Set([...raw.warnings, ...[...rules, ...upgrades].flatMap(item => (item.title.kind === 'notRecorded' ? [item.title.reason] : []))])];
     const rulesUnread = raw.rulesUnread.some(span => covers(span, hour));
     const rows: CardRow[] = [
       ...(rulesUnread
         ? [{ kind: 'section', key: '__rules', label: 'Rules' } as const, { kind: 'list', key: '__rules-unread', items: [], missing: 'The faction’s rules were not read at this date', none: '' } as const]
         : [{ kind: 'section', key: '__rules', label: 'Rules', count: rules.length } as const, ...rules]),
-      { kind: 'section', key: '__upgrades', label: 'Upgrades', count: upgrades.length },
-      ...upgrades,
+      ...(raw.upgradesUnread.some(span => covers(span, hour))
+        ? [{ kind: 'section', key: '__upgrades', label: 'Upgrades' } as const, ...upgrades, { kind: 'list', key: '__upgrades-unread', items: [], missing: 'The faction’s upgrades were not read whole at this date', none: '' } as const]
+        : [{ kind: 'section', key: '__upgrades', label: 'Upgrades', count: upgrades.length } as const, ...upgrades]),
     ];
     return {
       hour,
@@ -154,7 +173,7 @@ export const factionUpgradesProjection: CardProjection<FactionUpgradesOptions> =
       columns: COLUMNS,
       rowHeight: 36,
       nextChangeAt: Math.min(nextBoundary(raw, hour), membershipNext),
-      ...(raw.warnings.length ? { warnings: raw.warnings } : {}),
+      ...(warnings.length ? { warnings } : {}),
     };
   },
 }) as CardProjection<FactionUpgradesOptions>;

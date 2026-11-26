@@ -1,4 +1,4 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
 import { cardMediaFromIcon, type CardItemRow, type CardModel, type CardProjection, type CardRow } from '../../families/card/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
@@ -46,6 +46,9 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
       return { hour, rows: [], columns: COLUMNS, rowHeight: 36, empty: 'Special projects were not recorded at this date.', emptyKind: 'unavailable', ...warnings };
     }
     const rows: CardRow[] = [];
+    const holder = reply.identities.find(run => run.firstHour <= hour && hour <= run.lastHour);
+    const country = holder ? countryKey(holder.slot) : reply.tag;
+    const subjectOf = (id: string) => projectSubject(country, id);
     const progressRows = (indexes: readonly number[], section: string, label: string, extraOf: (state: string) => string | undefined) => {
       if (indexes.length) rows.push({ kind: 'section', key: section, label, count: indexes.length });
       for (const index of indexes) {
@@ -57,7 +60,7 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
         rows.push({
           kind: 'item',
           key: `running:${project.id}`,
-          subject: project.id,
+          subject: subjectOf(project.id),
           ...base(readView, reply, info, extraOf(run.state)),
           meter: { fraction, text: formatRecordedPercent(run.progress) },
         });
@@ -78,7 +81,7 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
       rows.push({
         kind: 'item',
         key: `done:${project.id}`,
-        subject: project.id,
+        subject: subjectOf(project.id),
         date: item.date !== null ? { hour: item.date } : { hour: null, reason },
         ...base(readView, reply, info),
         tooltip: {
@@ -103,8 +106,17 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
   },
 }, 'live') as CardProjection<Record<string, never>>;
 
-export function plannedCountry(owner: string): string | null {
-  return owner.startsWith('special-projects:') ? owner.slice(owner.lastIndexOf(':') + 1) || null : null;
+export function projectSubject(country: string, id: string): string {
+  return JSON.stringify([country, id]);
+}
+
+export function openedProject(subject: string): { readonly country: string; readonly id: string } | null {
+  try {
+    const held: unknown = JSON.parse(subject);
+    return Array.isArray(held) && typeof held[0] === 'string' && typeof held[1] === 'string' ? { country: held[0], id: held[1] } : null;
+  } catch {
+    return null;
+  }
 }
 
 export const specialProjectsDeclaration: CardWidgetDeclaration<Record<string, never>> = {

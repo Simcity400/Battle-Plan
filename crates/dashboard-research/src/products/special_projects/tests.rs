@@ -1167,4 +1167,6 @@ fn the_current_view_carries_only_the_status_at_the_hour_and_the_one_before_it_wh
     assert_eq!(shown_runs(&history, 30_000), None, "not held at the hour is not shown");
     let cancelled = [run(0, 9, ProjectState::Running), run(10, 20, ProjectState::Cancelled)];
     assert_eq!(shown_runs(&cancelled, 15), None, "a cancelled project leaves Current");
+    let relooked = [run(0, 9, ProjectState::Running), run(10, 19, ProjectState::Completed), run(20, 40, ProjectState::Completed)];
+    assert_eq!(shown_runs(&relooked, 30), Some(0..=2), "completed statuses that follow each other keep the attempt before them");
 }

@@ -467,9 +467,10 @@ fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only
     assert!(gap.completed.is_empty() && gap.current.is_none());
     assert_eq!(gap.missing.as_ref().map(|missing| missing.reason.as_str()), Some(NO_ROW));
     assert_eq!(gap.valid_through, 111);
-    assert_eq!(progress_figures(Some((150_000, Some(50_000))), Some(70.0)), (Some(1), Some(214), Some(137), None));
-    assert_eq!(progress_figures(Some((150_000, None)), Some(70.0)), (Some(1), Some(214), None, Some(NO_GAIN.to_owned())));
-    assert_eq!(progress_figures(Some((9_000_000, Some(1))), Some(70.0)).1, Some(10_000), "progress past the duration is complete, not more");
+    assert_eq!(progress_figures(Some((150_000, Some(50_000))), Some(70.0), false), (Some(1), Some(214), Some(137), None));
+    assert_eq!(progress_figures(Some((150_000, None)), Some(70.0), false), (Some(1), Some(214), None, Some(NO_GAIN.to_owned())));
+    assert_eq!(progress_figures(Some((9_000_000, Some(1))), Some(70.0), false).1, Some(10_000), "progress past the duration is complete, not more");
+    assert_eq!(progress_figures(Some((150_000, Some(50_000))), Some(70.0), true), (Some(1), Some(214), None, None), "a paused focus keeps its progress and has no countdown");
 }
 
 #[test]
@@ -489,6 +490,14 @@ fn completions_are_ordered_by_their_dates_and_each_is_presented_at_the_hour_it_w
         ..Default::default()
     };
     assert_eq!(card_at(&split, 170).completed, [("early".to_owned(), None, 100)], "a new segment does not move an undated completion's artwork hour");
+    let reordered = Fold {
+        segments: vec![
+            Segment { first: 100, last: 149, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "early", None), entry(1, "other", None)], current: Some("now".into()), continuous: None, paused: false } },
+            Segment { first: 150, last: 200, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "other", None), entry(1, "early", None)], current: Some("next".into()), continuous: None, paused: false } },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(card_at(&reordered, 170).completed, [("other".to_owned(), None, 100), ("early".to_owned(), None, 100)], "a witnessed reorder keeps an undated completion's first-seen hour");
     let hours = observed_hours(&card);
     assert_eq!(hours.get(&110), Some(&vec!["later".to_owned()]));
     assert_eq!(hours.get(&105), Some(&vec!["middle".to_owned()]));

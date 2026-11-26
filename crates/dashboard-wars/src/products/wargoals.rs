@@ -178,12 +178,18 @@ struct RemovedName {
     recipient: Option<u32>,
 }
 
-fn removed_names(source: &Source, branch: u64, cat: &Catalogue, dates: &Incarnations, country: &Country) -> io::Result<HashMap<(u64, i32), RemovedName>> {
+fn removed_names(source: &Source, branch: u64, cat: Option<&Catalogue>, dates: &Incarnations, country: &Country) -> io::Result<HashMap<(u64, i32), RemovedName>> {
     let query = dashboard_base::queries::query(source, branch)?;
-    let held = cat.content.layers.derived::<content_reader_layers::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>();
-    let definitions = held.get_or_init(|| content_reader_wargoals::wargoals::read(&cat.content.layers).map_err(|why| why.to_string())).as_ref().ok();
-    let mut reads: Vec<dashboard_base::products::at_hour::Read> = [TableId::CountryLinks, TableId::LexicalTokens].into_iter().map(dashboard_base::products::at_hour::Read::all).collect();
-    reads.extend(content_reader_country_names::country_names::TABLES.iter().copied().map(dashboard_base::products::at_hour::Read::all));
+    let held = cat.map(|cat| cat.content.layers.derived::<content_reader_layers::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>());
+    let definitions = match (cat, held.as_ref()) {
+        (Some(cat), Some(held)) => held.get_or_init(|| content_reader_wargoals::wargoals::read(&cat.content.layers).map_err(|why| why.to_string())).as_ref().ok(),
+        _ => None,
+    };
+    let mut tables: Vec<TableId> = vec![TableId::CountryLinks, TableId::LexicalTokens];
+    tables.extend(content_reader_country_names::country_names::TABLES);
+    tables.sort_unstable();
+    tables.dedup();
+    let reads: Vec<dashboard_base::products::at_hour::Read> = tables.into_iter().map(dashboard_base::products::at_hour::Read::all).collect();
     let mut frames: HashMap<i32, Arc<DecodedFrame>> = HashMap::new();
     let mut out = HashMap::new();
     for incarnation in dates.removed() {
@@ -207,8 +213,8 @@ fn removed_names(source: &Source, branch: u64, cat: &Catalogue, dates: &Incarnat
         let recipient = raw(incarnation.recipient).and_then(|recipient| links.get(&recipient).copied());
         let actor = raw(incarnation.actor).and_then(|actor| links.get(&actor).copied());
         let literal = raw(incarnation.goal_type).and_then(|token| frame.complete::<tables::LexicalTokens>().ok()?.iter().find(|row| row.token == token).map(|row| row.literal.clone()));
-        let name = match (literal, actor, recipient) {
-            (Some(literal), Some(actor), Some(recipient)) => definitions
+        let name = match (literal, actor, recipient, cat) {
+            (Some(literal), Some(actor), Some(recipient), Some(cat)) => definitions
                 .and_then(|db| db.find(&literal).ok().flatten())
                 .and_then(|definition| localised_goal_name(&frame, &cat.localisation, definition, actor, recipient).ok()),
             _ => None,
@@ -266,8 +272,8 @@ impl AtHour for Wargoals {
         let catalogue = load.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string());
         let branch = params.branch_id.parse::<u64>().map_err(|_| "Invalid branch".to_owned());
         let dates = branch.clone().and_then(|branch| wargoal_dates::follow(source, branch).map_err(|why| format!("War-goal dates refused: {why}")));
-        let removed = match (&catalogue, &dates, branch) {
-            (Ok(cat), Ok(dates), Ok(branch)) => removed_names(source, branch, cat, dates, &params.country)?,
+        let removed = match (&dates, branch) {
+            (Ok(dates), Ok(branch)) => removed_names(source, branch, catalogue.as_deref().ok(), dates, &params.country)?,
             _ => HashMap::new(),
         };
         Ok(WargoalContent { catalogue, dates, removed })
@@ -337,9 +343,8 @@ fn reply(
         })
     };
     let mut reply = inventory(frame, p, &mut name_of)?;
-    let owners: Vec<u32> = links.iter().filter(|(_, held)| **held == slot).map(|(raw, _)| *raw).collect();
     match dates {
-        Ok(dates) => apply_dates(&mut reply, dates, p.hour, &owners, |incarnation| {
+        Ok(dates) => apply_dates(&mut reply, dates, p.hour, |incarnation| content.removed.contains_key(&(incarnation.handle, incarnation.last_seen)), |incarnation| {
             let held = content.removed.get(&(incarnation.handle, incarnation.last_seen)).cloned().unwrap_or_default();
             (held.name, held.recipient.and_then(|slot| tag_at(slot, incarnation.last_seen)))
         }),
@@ -380,7 +385,7 @@ pub(crate) fn apply_dates(
     reply: &mut WargoalsReply,
     dates: &Incarnations,
     hour: i32,
-    owners: &[u32],
+    owned: impl Fn(&Incarnation) -> bool,
     mut describe: impl FnMut(&Incarnation) -> (Option<String>, Option<String>),
 ) {
     let held_at = |incarnation: &Incarnation| incarnation.granted.is_none_or(|granted| granted <= hour) && incarnation.removed.is_none_or(|removed| removed > hour);
@@ -394,10 +399,9 @@ pub(crate) fn apply_dates(
             None => goal.granted_missing = Some(wargoal_dates::GRANT_NOT_READ.into()),
         }
     }
-    let mut removed: Vec<WargoalRemoved> = owners
-        .iter()
-        .flat_map(|owner| dates.of_country(*owner))
-        .filter(|incarnation| incarnation.removed.is_some_and(|removed| removed <= hour))
+    let mut removed: Vec<WargoalRemoved> = dates
+        .removed()
+        .filter(|incarnation| owned(incarnation) && incarnation.removed.is_some_and(|removed| removed <= hour))
         .map(|incarnation| {
             let (name, recipient) = describe(incarnation);
             WargoalRemoved {
@@ -906,10 +910,10 @@ mod tests {
             goals: vec![WargoalEntry { handle: "9".into(), name: "Conquer".into(), actor: "ONE".into(), recipient: "TWO".into(), available: true, expires: None, states: Vec::new(), liberate: Vec::new(), puppets: Vec::new(), state: WargoalState::Ready, granted: None, granted_missing: None }],
             justifications: Vec::new(), removed: Vec::new(), warnings: Vec::new(), state_names: Vec::new(),
         };
-        apply_dates(&mut reply, &found, 120, &[1], |_| (Some("Conquer".into()), Some("TWO".into())));
+        apply_dates(&mut reply, &found, 120, |incarnation| incarnation.country == 1, |_| (Some("Conquer".into()), Some("TWO".into())));
         assert_eq!(reply.goals[0].granted, Some(112));
         assert!(reply.removed.is_empty(), "a removal after the displayed hour is not shown");
-        apply_dates(&mut reply, &found, 125, &[1], |_| (Some("Conquer".into()), Some("TWO".into())));
+        apply_dates(&mut reply, &found, 125, |incarnation| incarnation.country == 1, |_| (Some("Conquer".into()), Some("TWO".into())));
         assert_eq!(reply.removed.len(), 1);
         assert_eq!((reply.removed[0].removed, reply.removed[0].granted_missing.as_deref()), (121, Some(wargoal_dates::HELD_AT_BRANCH_START)));
         assert_eq!(reply.removed[0].reason_missing, wargoal_dates::REMOVAL_REASON);
