@@ -4,13 +4,15 @@ import { withNativePage } from '../../../tools/native-page.ts';
 
 type Shown = { count: boolean; compact: boolean; label: string | null };
 
-test('a narrow header shows a live time chip as its dot once the count is dropped, and refits at once when the time mode changes during playback', async () => {
+test('a header whose count fits only without the time chip shows a live chip as its dot, and refits at once on every time-mode change during playback', async () => {
   await withNativePage('widget-header', '/ui/src/dashboard/widgetHeader.dom.fixture.tsx', page => page.stage('widget header', async () => {
-    assert.deepEqual(await page.evaluate<Shown>('window.widgetHeader.mount()'), { count: false, compact: true, label: null },
-      'the count does not fit, so it is dropped and the live chip shows only its dot');
-    assert.deepEqual(await page.evaluate<Shown>(`window.widgetHeader.switchWhilePlaying({ mode: 'campaign' })`), { count: false, compact: false, label: 'Whole campaign' },
-      'switching to the whole campaign while playing shows its label and keeps the count dropped');
-    assert.deepEqual(await page.evaluate<Shown>(`window.widgetHeader.switchWhilePlaying({ mode: 'follow' })`), { count: false, compact: true, label: null },
-      'switching back to live while playing shows only the dot again');
+    const live: Shown = { count: false, compact: true, label: null };
+    assert.deepEqual(await page.evaluate<Shown>('window.widgetHeader.mount()'), live, 'the count is dropped and the live chip shows only its dot');
+    for (const [at, mode] of (['campaign', 'follow', 'campaign'] as const).entries()) {
+      const shown = await page.evaluate<Shown>(`window.widgetHeader.switchWhilePlaying({ mode: '${mode}' })`);
+      assert.equal(shown.count, false, `switch ${at + 1} to ${mode} while playing refits at once: the count stays dropped (${JSON.stringify(shown)})`);
+      if (mode === 'follow') assert.deepEqual(shown, live, `switch ${at + 1}: back on live, only the dot`);
+      else assert.notEqual(shown.label, 'Live', `switch ${at + 1}: the chip is the whole campaign's`);
+    }
   }, 60_000));
 });

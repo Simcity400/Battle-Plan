@@ -266,7 +266,10 @@ export default function WidgetHeader({
     const probeKey = `${summaryKey}\u0000${viewKey}\u0000${subjectKey}\u0000${filterKey}\u0000${timeKey}`;
     const needsFullMeasure = rawNeedsFull && cache.probeKey !== probeKey;
     if (needsFullMeasure) cache.probeKey = probeKey;
-    else cache.timeMode = widget.time.mode;
+    else {
+      cache.timeMode = widget.time.mode;
+      if (!rawNeedsFull) cache.probeKey = '';
+    }
 
     const subjectPresent = hasSubject && (effectiveDrop.compactSubject ? !!subjectEl : cache.subjectFull > 0);
     const timePresent = showTime && (effectiveDrop.compactTime ? !!timeEl : cache.timeFull > 0);
