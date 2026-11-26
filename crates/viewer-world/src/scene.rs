@@ -636,6 +636,32 @@ impl TextureCache {
         }))
     }
 
+    pub fn uploaded_icons(&self, device: &wgpu::Device) -> Option<Arc<IconTextures>> {
+        let uploads = match self.0.try_lock() {
+            Ok(uploads) => uploads,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        match &uploads.icons {
+            Icons::Made(icons) if uploads.device.as_ref() == Some(device) => Some(Arc::clone(icons)),
+            _ => None,
+        }
+    }
+
+    pub fn icons(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Arc<IconTextures>> {
+        let mut uploads = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if uploads.device.as_ref().is_some_and(|owner| owner != device) {
+            return Err(invalid("this map content's art lives on another graphics device"));
+        }
+        let made = match &uploads.icons {
+            Icons::Made(icons) => return Ok(Arc::clone(icons)),
+            Icons::Pending(images) => Arc::new(IconTextures::new(device, queue, images)?),
+        };
+        uploads.icons = Icons::Made(Arc::clone(&made));
+        uploads.device = Some(device.clone());
+        Ok(made)
+    }
+
     pub fn warm(
         &self,
         device: &wgpu::Device,

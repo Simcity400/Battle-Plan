@@ -19,6 +19,7 @@ mod controls;
 mod corpus;
 #[cfg(test)]
 mod counter_integration_tests;
+mod battle_view;
 mod dashboard_maps;
 use viewer_playback::document;
 mod dump_head;

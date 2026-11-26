@@ -3303,11 +3303,12 @@ export type BattleBound = "exact" | "by";
 export type BattleMoment = { hour: number, bound: BattleBound, };
 export type BattleEnd = BattleMoment | { unknown: string, };
 export type BattleWinner = { side: number, } | { unknown: string, };
-export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], rosterUnknown: boolean, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean],
+export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], rosterUnknown: boolean, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], leads: [LandBattleLead | null, LandBattleLead | null],
 /**
  * The native counter at `first_hour`.
  */
 duration: number | null, };
+export type LandBattleLead = { slot: number, tag: string, };
 export type LandManpower = number | string;
 export type LandBattleResultRead = { hour: number | null, duration: number | null, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
 export type LandBattleCourseParams = { branchId: string,
@@ -3319,12 +3320,14 @@ export type LandEquipmentDesign = { name: string | null, variant: string, };
 export type LandLossSide = { manpower: LandManpower, variants: Array<[number, string]>, } | { manpower: LandManpower, changed: Array<[number, string]>, } | { manpower: LandManpower, unknown: string, };
 export type LandLossSides = [LandLossSide, LandLossSide] | string;
 export type LandBattleCourseRead = { hour: number, terminal: boolean, sides: LandLossSides, };
+export type LandIcRead = { hour: number, sides: [number | null, number | null], };
+export type LandMenRead = { hour: number, sides: [number | null, number | null], };
 export type LandEdgeMember = { division: string | null, side: number, manpower: number | null, casualties: number | null, missing: string | null, };
 export type LandBattleOpening = { hour: number, members: Array<LandEdgeMember>, };
 export type LandDivisionExit = { hour: number, division: string | null, side: number | null, losses: number | null, manpower: number | null, missing: string | null, };
 export type LandEdgeGap = { firstHour: number, lastHour: number, reason: string, };
 export type LandBattleEdges = { opening: LandBattleOpening | null, openingMissing: string | null, exits: Array<LandDivisionExit>, unrecorded: Array<LandEdgeGap>, };
-export type LandBattleCourse = { id: string, provinceId: number | null, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, result: LandBattleResultRead | null, edges: LandBattleEdges, };
+export type LandBattleCourse = { id: string, provinceId: number | null, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, runs: Array<LandBattleRun>, losses: Array<LandBattleCourseRead>, ic: Array<LandIcRead>, men: Array<LandMenRead>, menMissing: string | null, icMissing: string | null, result: LandBattleResultRead | null, edges: LandBattleEdges, };
 export type LandBattleCourseReply = { battle: LandBattleCourse,
 /**
  * The designs the course's reads name by index.

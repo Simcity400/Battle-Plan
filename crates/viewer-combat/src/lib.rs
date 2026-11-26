@@ -200,6 +200,7 @@ pub struct Window {
     rule_relations: Option<RuleRelations>,
     navy_sources_of: Option<NavySourcesOf>,
     settled: bool,
+    strict: bool,
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
     air_offset: [f32; 2],
@@ -371,6 +372,10 @@ impl Window {
         self.playing = playing;
     }
 
+    pub fn set_strict(&mut self, strict: bool) {
+        self.strict = strict;
+    }
+
     pub fn set_settled(&mut self, settled: bool) {
         self.settled = settled;
     }
@@ -383,8 +388,12 @@ impl Window {
         self.rule_relations.is_some() || self.navy_sources_of.is_some()
     }
 
-    fn kept(&mut self) -> (Option<RuleRelations>, Option<NavySourcesOf>, bool) {
-        (self.rule_relations.take(), self.navy_sources_of.take(), self.settled)
+    fn kept(&mut self) -> (Option<RuleRelations>, Option<NavySourcesOf>, bool, bool) {
+        (self.rule_relations.take(), self.navy_sources_of.take(), self.settled, self.strict)
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.selection.is_some()
     }
 
     pub fn is_loading(&self) -> bool {
@@ -457,7 +466,7 @@ impl Window {
         };
         let opened = self.opened.wrapping_add(1);
         let retired = self.let_go();
-        let (rule_relations, navy_sources_of, settled) = self.kept();
+        let (rule_relations, navy_sources_of, settled, strict) = self.kept();
         let mut air = std::mem::take(&mut self.air);
         air.initial_side = true;
         *self = Self {
@@ -469,6 +478,7 @@ impl Window {
             rule_relations,
             navy_sources_of,
             settled,
+            strict,
             selection: Some(selection),
             ..Self::default()
         };
@@ -479,7 +489,7 @@ impl Window {
         }
         let air_offset = self.air_offset;
         let retired = self.let_go();
-        let (rule_relations, navy_sources_of, settled) = self.kept();
+        let (rule_relations, navy_sources_of, settled, strict) = self.kept();
         let air = std::mem::take(&mut self.air);
         *self = Self {
             air,
@@ -489,6 +499,7 @@ impl Window {
             rule_relations,
             navy_sources_of,
             settled,
+            strict,
             ..Self::default()
         };
     }
@@ -593,6 +604,13 @@ impl Window {
         };
         for (position, movement) in target.iter_mut().zip(delta) {
             *position += movement;
+        }
+    }
+    pub fn shift(&mut self, delta: [f32; 2]) {
+        for position in std::iter::once(&mut self.offset).chain(self.tactics_position.as_mut()) {
+            for (value, movement) in position.iter_mut().zip(delta) {
+                *value += movement;
+            }
         }
     }
     pub fn scroll(&mut self, target: ScrollTarget, direction: i32, wheel: bool) {
@@ -782,7 +800,7 @@ impl Window {
     }
 
     fn asking_of(&self, document: &Arc<StaticContent>, rosters: &Arc<Sampler>, family: Family) -> Asking {
-        Asking { content: Arc::clone(document), family, air: self.air_asking(rosters), details: self.result_details_open, rule_relations: self.rule_relations.clone(), navy_sources_of: self.navy_sources_of.clone() }
+        Asking { content: Arc::clone(document), family, air: self.air_asking(rosters), details: self.result_details_open, rule_relations: self.rule_relations.clone(), navy_sources_of: self.navy_sources_of.clone(), strict: self.strict }
     }
 
     fn air_asking(&self, rosters: &Arc<Sampler>) -> AirAsking {
@@ -1006,6 +1024,7 @@ struct Request {
     details: bool,
     navy_sources_of: Option<NavySourcesOf>,
     rule_relations: Option<RuleRelations>,
+    strict: bool,
 }
 
 #[derive(Clone)]
@@ -1039,6 +1058,7 @@ pub struct Asking {
     details: bool,
     rule_relations: Option<RuleRelations>,
     navy_sources_of: Option<NavySourcesOf>,
+    strict: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1055,7 +1075,7 @@ impl Asking {
 
     fn request(&self, branch: replay_data::BranchId, hour: replay_data::Hour, frame: Result<Arc<replay_frame::frame::DecodedFrame>, String>, engaged: Option<Arc<History>>) -> Request {
         let Family { selection, perspective, playing, nato, .. } = &self.family;
-        Request { content: Arc::clone(&self.content), branch, hour, frame, selection: *selection, perspective: perspective.clone(), engaged, nato: *nato, playing: *playing, air: self.air.clone(), details: self.details, navy_sources_of: self.navy_sources_of.clone(), rule_relations: self.rule_relations.clone() }
+        Request { content: Arc::clone(&self.content), branch, hour, frame, selection: *selection, perspective: perspective.clone(), engaged, nato: *nato, playing: *playing, air: self.air.clone(), details: self.details, navy_sources_of: self.navy_sources_of.clone(), rule_relations: self.rule_relations.clone(), strict: self.strict }
     }
 }
 
@@ -1088,9 +1108,12 @@ enum Want {
 }
 
 fn read(request: &Request) -> io::Result<Fresh> {
-    let Request { content: document, branch, hour, frame, selection, perspective, engaged, nato, playing, air, details, navy_sources_of, rule_relations } = request;
+    let Request { content: document, branch, hour, frame, selection, perspective, engaged, nato, playing, air, details, navy_sources_of, rule_relations, strict } = request;
     let frame = frame.as_deref().map_err(|why| invalid(why.clone()))?;
     let vision = cached_vision(frame, perspective, FogContent::loaded(&document.fog), &document.vision_memo)?;
+    if *strict && let viewer_foundation::perspective::Resolution::Absent(country) = vision.resolution() {
+        return Err(invalid(format!("{country} is not in the recording at hour {hour}, so the game shows it no battle window")));
+    }
     let air = match *selection {
         Selection::AirRegion(region) => {
             let mut air = air.at(*branch, *hour, vision.ours());
@@ -1252,6 +1275,10 @@ impl Drawn {
             [] => "the window drew no quads".to_owned(),
             refused => format!("the window drew no quads: {}", refused.join("; ")),
         })
+    }
+
+    pub fn hovers(&self) -> impl Iterator<Item = ([f32; 4], Option<&str>, Option<&str>)> + '_ {
+        self.tooltips.iter().map(|hit| (hit.rect, hit.text.as_deref(), hit.description.as_deref()))
     }
 
     pub fn add_hovers(&mut self, other: &Drawn) {

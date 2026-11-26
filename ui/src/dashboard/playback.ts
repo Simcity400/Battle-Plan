@@ -40,6 +40,7 @@ export class PlaybackController {
   private publishListeners = new Set<(previous: PlaybackSnapshot, next: PlaybackSnapshot) => void>();
   private firstListeners = new Set<(previous: PlaybackSnapshot, next: PlaybackSnapshot) => void>();
   private discards = new Set<() => void>();
+  private halts = 0;
   private frameListeners = new Set<() => void>();
   private lastTime = 0;
   private framing = OUTSIDE;
@@ -77,6 +78,7 @@ export class PlaybackController {
     if (!reset && previous?.firstHour === bounds?.firstHour && previous?.lastHour === bounds?.lastHour) return;
     const position = !bounds ? 0 : reset || !previous ? bounds.firstHour
       : Math.max(bounds.firstHour, Math.min(bounds.lastHour, this.snapshot.position));
+    this.halts += 1;
     this.publish({ ...this.snapshot, bounds, position, playing: false, forwardSeek: false }, true);
     this.syncTimer();
   }
@@ -85,6 +87,7 @@ export class PlaybackController {
     const bounds = this.snapshot.bounds;
     if (!bounds || !Number.isFinite(position)) return;
     const target = Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(position)));
+    this.halts += 1;
     this.publish({ ...this.snapshot, position: target, playing: false, forwardSeek: target > this.positionAt() }, true);
     this.syncTimer();
   }
@@ -94,6 +97,7 @@ export class PlaybackController {
     if (!bounds) return;
     const current = this.bank();
     const position = Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(current) + direction));
+    this.halts += 1;
     this.publish({ ...this.snapshot, position, playing: false, forwardSeek: position > current }, position < current);
     this.syncTimer();
   }
@@ -101,6 +105,7 @@ export class PlaybackController {
   setPlaying(playing: boolean): void {
     if (!this.snapshot.bounds) return;
     const position = this.bank();
+    if (!playing) this.halts += 1;
     this.publish({ ...this.snapshot, position, playing: playing && position < this.snapshot.bounds.lastHour });
     this.syncTimer();
   }
@@ -110,7 +115,10 @@ export class PlaybackController {
     this.publish({ ...this.snapshot, position: this.bank(), hoursPerSecond });
   }
 
+  get halted(): number { return this.halts; }
+
   stop(): void {
+    this.halts += 1;
     this.cancelTimer();
     this.publish({ ...this.snapshot, position: this.bank(), playing: false });
   }

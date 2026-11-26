@@ -1847,6 +1847,8 @@ mod tests {
             bounds,
             clip: bounds,
             visible: true,
+            focus_province: None,
+            battle: None,
         };
 
         let mut pending = Pending::default();

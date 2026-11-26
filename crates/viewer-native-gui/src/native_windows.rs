@@ -66,6 +66,19 @@ impl WindowCache {
         layouts.push(Arc::downgrade(&windows.0));
         Ok(windows)
     }
+
+    pub fn largest(&self) -> Option<[u32; 2]> {
+        let held = self.by_viewport.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        held.keys().copied().max_by_key(|[width, height]| u64::from(*width) * u64::from(*height))
+    }
+
+    pub fn release(&self, viewport: [u32; 2]) {
+        let mut held = self.by_viewport.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let unshared = held.get(&viewport).is_some_and(|windows| Arc::strong_count(windows) == 1);
+        let released = unshared.then(|| held.remove(&viewport));
+        drop(held);
+        drop(released);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -4,6 +4,8 @@ import { LOG_TABLE_BASE, logActionColumn, logCountryColumn, logDateColumn, logIt
 import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
+export const IC_UNRECORDED = 'IC lost not recorded: a lost design has no recorded build cost, or the equipment lost was not read';
+
 export const LOSSES_SO_FAR = 'Losses counted so far; actual losses may be higher. The game counts a side’s losses only as its divisions leave the battle.';
 
 export const LAND_BATTLES_COLUMNS: readonly TableColumnSpec[] = [

@@ -139,6 +139,8 @@ fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapVi
         bounds,
         clip: bounds,
         visible: true,
+        focus_province: None,
+        battle: None,
     }
 }
 
