@@ -28,6 +28,7 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
 }
 
 pub struct Names {
+    pub clock: viewer_scene_base::shader_constants::SurfaceClock,
     retained: viewer_scene_base::shader_scene::Program,
     pass_name: &'static str,
     pipeline: Arc<gpu::Pipeline>,
@@ -164,6 +165,7 @@ impl Names {
             &effect.source.depth_stencil(technique),
         );
         Ok(Self {
+            clock: viewer_scene_base::shader_constants::SurfaceClock::scene(&compiled),
             retained,
             pass_name,
             pipeline,

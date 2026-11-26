@@ -2,6 +2,112 @@ use super::*;
 use content_reader_map::{adjacencies::SEA_CROSSING, map::{CountryColors, ProvinceDefinition}};
 
 #[test]
+fn a_covered_border_wakes_the_map_only_while_its_draw_pulses() {
+    use crate::border_shader::{Batch, Border, Inputs, Run};
+    use shader_pipeline::{Buffer, Compiled, Shader};
+    use viewer_gpu::gpu_contract::{SCENE_FORMAT, SeaBed};
+
+    viewer_scene_base::test_game::enter();
+    let (_guard, device, queue) = viewer_gpu::test_support::gpu::device();
+    let source = content_reader_gui::pdxshader::program::read_with(b"test.shader", &|path| {
+        Some(if path == b"test.shader" {
+            b"Effect border { }".to_vec()
+        } else {
+            Vec::new()
+        })
+    })
+    .unwrap();
+    let stage = |wgsl: &str, buffers| Shader {
+        wgsl: wgsl.into(),
+        buffers,
+        clock: Default::default(),
+        independent_draws: false,
+        textures: Vec::new(),
+        samplers: Vec::new(),
+        inputs: Vec::new(),
+        sampling_pairs: Vec::new(),
+    };
+    let vertex = stage(
+        "@vertex fn main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+        let xy = array(vec2f(-1,-1), vec2f(1,-1), vec2f(0,1));
+        return vec4f(xy[i],0,1); }",
+        vec![],
+    );
+    let pixel = stage(
+        "struct Inputs { selection: vec4f, clock: vec4f }
+        @group(0) @binding(5) var<uniform> paint: Inputs;
+        @fragment fn main() -> @location(0) vec4f {
+            return vec4f(clamp(sin(paint.clock.x), 0.0, 1.0) * paint.selection.x); }",
+        vec![Buffer {
+            binding: 5,
+            size: 32,
+            reads: vec![0..4, 16..20],
+        }],
+    );
+    let effect = shader_pipeline::library::Effect::from_compiled(
+        Arc::new(source),
+        vec![],
+        vec![Ok(Arc::new(Compiled { vertex, pixel }))],
+    );
+    let border = Border::new(&device, &effect, 1, SCENE_FORMAT, DEPTH_FORMAT).unwrap();
+    let mut targets = Targets::new(&device, [8, 8], [8, 8], 1, SeaBed::Full);
+    let arena = shader_pipeline::gpu::Arena::new(&device);
+    let vertices = buffer(
+        &device,
+        "fixture border vertices",
+        wgpu::BufferUsages::VERTEX,
+        &[0; 48],
+    )
+    .unwrap();
+    let indices = buffer(
+        &device,
+        "fixture border indices",
+        wgpu::BufferUsages::INDEX,
+        bytemuck::cast_slice(&[0u32, 1, 2, 2, 1, 0]),
+    )
+    .unwrap();
+    for (selection, live) in [([0.; 4], false), ([1.; 4], true), ([0.; 4], false)] {
+        targets.surface_motion.begin(&device, true, 1, true);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let texture = &targets.refraction_view;
+        border
+            .draw(
+                &arena,
+                &mut encoder,
+                &targets,
+                Inputs {
+                    fog: false,
+                    retained: None,
+                    frames: &[&[0; 416]],
+                    snow_mud: texture,
+                    intel: texture,
+                    shadow: texture,
+                    time: 1.25,
+                },
+                &[Batch {
+                    texture,
+                    alpha: 1.,
+                    selection,
+                    runs: vec![Run {
+                        vertices: &vertices,
+                        indices: &indices,
+                        range: 0..6,
+                    }],
+                }],
+                true,
+            )
+            .unwrap();
+        targets.surface_motion.finish(&mut encoder);
+        arena.flush(&queue);
+        queue.submit([encoder.finish()]);
+        targets.surface_motion.submitted();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        targets.surface_motion.begin(&device, false, 1, true);
+        assert_eq!(targets.surface_motion.live(), live);
+    }
+}
+
+#[test]
 fn faction_hover_color_uses_the_content_index_and_refuses_missing_quads() {
     let defines = content_reader_defines::defines::Defines::new().unwrap();
     defines

@@ -195,7 +195,73 @@ fn collides(convoys: &[SailingConvoy], index: usize) -> bool {
     })
 }
 
+impl SailingConvoy {
+    fn arrival(&self, along: &[f32], start: f32, end: f32, speed: f32) -> f32 {
+        if !self.active {
+            return self.sleep.max(0.);
+        }
+        let at = along[self.segment] + self.distance;
+        if speed > 0. {
+            let towards = if at > end {
+                along[along.len() - 1] - at
+            } else {
+                start - at
+            };
+            (towards / speed).max(0.)
+        } else {
+            f32::INFINITY
+        }
+    }
+}
+
 impl ConvoyFleet {
+    pub fn next_arrival(
+        &self,
+        lines: &[ConvoyLine],
+        assets: &UnitModelAssets,
+        defines: &ConvoyDefines,
+        view: &viewer_models::motion_view::MotionView,
+        height: &dyn Fn(f32, f32) -> f32,
+    ) -> f32 {
+        if defines.speed < 0. {
+            return self
+                .convoys
+                .iter()
+                .map(|convoy| if convoy.active { 0. } else { convoy.sleep.max(0.) })
+                .fold(f32::INFINITY, f32::min);
+        }
+        let mut next = f32::INFINITY;
+        for convoys in self.convoys.chunk_by(|a, b| a.line == b.line) {
+            let index = convoys[0].line;
+            let route = &self.lines[index];
+            let Some(slot) = assets.bake_slot(&lines[index].entity) else {
+                continue;
+            };
+            let library = assets.library();
+            let mesh = &library.meshes[slot];
+            let times: Vec<_> = std::iter::once(0.0)
+                .chain(route.lengths.iter().scan(0.0, |sum, length| {
+                    *sum += length;
+                    Some(*sum)
+                }))
+                .collect();
+            let path = times
+                .iter()
+                .zip(&route.points)
+                .map(|(&at, &[x, z])| (at, [x, height(x.rem_euclid(route.width), z), z]));
+            view.times(
+                path,
+                viewer_models::motion_view::Reach::of(mesh, 1., [0.; 3]),
+                |start, end| {
+                    for convoy in convoys {
+                        next = next.min(convoy.arrival(&times, start, end, defines.speed));
+                    }
+                },
+            );
+        }
+        next
+    }
+
     pub fn new(
         lines: &[ConvoyLine],
         defines: &ConvoyDefines,
@@ -398,6 +464,18 @@ mod tests {
             &|_| Some(1000.),
             &height,
         );
+        let mut moving = SailingConvoy {
+            segment: 0,
+            distance: 3.,
+            ..fleet.convoys[0]
+        };
+        let along = [0., 10., 110.];
+        assert_eq!(moving.arrival(&along, 5., 8., 2.), 1.);
+        moving.distance = 9.;
+        assert_eq!(moving.arrival(&along, 5., 8., 2.), 50.5);
+        moving.active = false;
+        moving.sleep = 2.5;
+        assert_eq!(moving.arrival(&along, 5., 8., 2.), 2.5);
         assert!(fleet.convoys[0].active);
         assert!(!fleet.convoys[1].active);
         assert!(fleet.convoys[0].distance > 0.);

@@ -447,6 +447,7 @@ impl State {
 }
 
 pub struct View {
+    pulses: std::cell::Cell<Option<bool>>,
     base: Arc<Static>,
     spare: Option<Arc<State>>,
     shown: Option<Arc<State>>,
@@ -457,6 +458,7 @@ impl View {
     pub fn new(base: Arc<Static>, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Self> {
         base.registry().views += 1;
         let mut view = Self {
+            pulses: std::cell::Cell::new(None),
             base,
             spare: None,
             shown: None,
@@ -476,6 +478,27 @@ impl View {
 
     pub fn textures(&self) -> Option<&[wgpu::Texture; 2]> {
         self.shown.as_ref().map(|state| &state.textures)
+    }
+
+    pub fn style_pulses(&self) -> bool {
+        if let Some(pulses) = self.pulses.get() {
+            return pulses;
+        }
+        let pulses = self.shown.as_ref().is_some_and(|state| {
+            let fill = state.lock();
+            holders(fill.channels).into_iter().any(|layer| {
+                let gpu = match layer {
+                    Held::Naval => &fill.naval,
+                    Held::Country => &fill.gpu,
+                    Held::Mode => &fill.mode,
+                };
+                gpu.keys
+                    .values()
+                    .any(|&index| gpu.regions[index].fx & 256 != 0)
+            })
+        });
+        self.pulses.set(Some(pulses));
+        pulses
     }
 
     pub fn set_strategic_styles(
@@ -514,6 +537,7 @@ impl View {
         let field = self.base.field;
         let layer = Layer::new(gradient::LayerKind::Country, region_of, color, &field);
         fill.gpu.update_changed(device, queue, &layer, provinces, keys)?;
+        self.pulses.set(None);
         fill.shown = None;
         Ok(true)
     }
@@ -545,6 +569,7 @@ impl View {
             layer.region_style = Some(&style);
         }
         fill.naval.update_changed(device, queue, &layer, &[], keys)?;
+        self.pulses.set(None);
         fill.shown = None;
         Ok(true)
     }
@@ -555,6 +580,7 @@ impl View {
         queue: &wgpu::Queue,
         regions: &Arc<Regions>,
     ) -> io::Result<bool> {
+        self.pulses.set(None);
         if let Some(state) = &self.shown
             && {
                 let fill = state.lock();

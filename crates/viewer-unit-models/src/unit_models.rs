@@ -2939,6 +2939,23 @@ impl PreparedModels {
         self.convoys.is_some()
     }
 
+    pub fn next_convoy_arrival(
+        &self,
+        assets: &UnitModelAssets,
+        view: &viewer_models::motion_view::MotionView,
+        height: &dyn Fn(f32, f32) -> f32,
+    ) -> f32 {
+        let Some((lines, defines, fleet)) = &self.convoys else {
+            return f32::INFINITY;
+        };
+        let held = fleet
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        held.as_ref().map_or(f32::INFINITY, |fleet| {
+            fleet.next_arrival(lines, assets, defines, view, height)
+        })
+    }
+
     pub fn convoy_units(
         &self,
         assets: &UnitModelAssets,

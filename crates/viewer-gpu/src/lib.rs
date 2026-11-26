@@ -23,6 +23,7 @@ pub mod ribbon_geometry;
 pub mod ribbon_mesh;
 pub mod ribbon_native;
 pub mod stack_anchors;
+pub mod surface_motion;
 pub mod terrain_content;
 pub mod terrain_sight;
 #[cfg(any(test, feature = "test-support"))]

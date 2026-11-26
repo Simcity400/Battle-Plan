@@ -912,6 +912,10 @@ impl History {
         &self.schedule
     }
 
+    pub fn carrying_figures(&self) -> bool {
+        self.held_slots != 0
+    }
+
     pub fn take_province_frame(&self, time: f32) -> Option<(ProvinceFrame, FrameRestore)> {
         if self.last.is_some_and(|previous| time < previous) {
             return None;
@@ -2254,13 +2258,17 @@ pub mod tests {
                 }
             }
             if frame == 0 {
+                assert!(h.carrying_figures());
                 assert!(placed.len() < whole.len(), "a frame with no room left holds some of the hour's figures back");
                 assert!(!placed.is_empty(), "and still advances what it can");
             }
         }
         assert_eq!(made.len(), whole.len(), "every figure is made");
         assert_eq!(made.iter().copied().collect::<BTreeSet<_>>(), whole);
-        assert_eq!(h.held_slots, 0, "and nothing is left pending at the bound");
+        assert!(
+            !h.carrying_figures(),
+            "and nothing is left pending at the bound"
+        );
         let mut budget = Budget::new(i32::MAX, false);
         let paused = h.step_held(0.4, gates, [true; 2], &mut budget);
         assert_eq!(paused.len(), whole.len(), "a paused frame shows every figure");

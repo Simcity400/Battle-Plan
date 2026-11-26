@@ -292,6 +292,18 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
         prepared
     };
     let fleet = || ConvoyFleet::new(&lines, &defines, &|| 7, &|_| Some(1.0), &height);
+    let mut reverse = fleet();
+    let negative = ConvoyDefines { speed: -2., ..defines };
+    let camera = viewer_gpu::camera::Placement::map([1500., 900.], 40.)
+        .on(viewer_gpu::camera::MapSize::TEST, viewer_gpu::camera::MapDefines::test());
+    let view = viewer_models::motion_view::MotionView::new(&camera, [800, 600]);
+    let wake = |fleet: &ConvoyFleet| fleet.next_arrival(&lines, &assets, &negative, &view, &height);
+    assert_eq!(wake(&reverse), 0.);
+    reverse.advance(&defines, 0., &height);
+    assert!(reverse.advance(&defines, 20_000., &height).is_empty());
+    let launch_in = wake(&reverse);
+    assert!(launch_in > 0. && launch_in <= defines.sleep);
+    assert_eq!(wake(&ConvoyFleet::default()), f32::INFINITY);
     let mut reference = fleet();
     let initial = reference.advance(&defines, 120.0, &height);
     let expected = reference.advance(&defines, 121.0, &height);

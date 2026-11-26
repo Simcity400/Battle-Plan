@@ -425,6 +425,7 @@ impl Buffers {
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
         load: wgpu::LoadOp<f32>,
+        query_set: Option<&'a wgpu::QuerySet>,
     ) -> wgpu::RenderPass<'a> {
         encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shadow buffer"),
@@ -450,7 +451,7 @@ impl Buffers {
                 stencil_ops: None,
             }),
             timestamp_writes: None,
-            occlusion_query_set: None,
+            occlusion_query_set: query_set,
             multiview_mask: None,
         })
     }
@@ -462,7 +463,7 @@ impl Buffers {
 
     fn clear_buffer(&self, encoder: &mut wgpu::CommandEncoder) {
         if !self.cleared.replace(true) {
-            drop(self.buffer_pass(encoder, wgpu::LoadOp::Clear(1.0)));
+            drop(self.buffer_pass(encoder, wgpu::LoadOp::Clear(1.0), None));
             self.content.set(Content::next());
         }
     }
@@ -605,8 +606,16 @@ impl ShadowPass {
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
         load: wgpu::LoadOp<f32>,
-    ) -> Option<wgpu::RenderPass<'a>> {
-        Some(self.buffers.as_ref()?.buffer_pass(encoder, load))
+        query: Option<(&'a wgpu::QuerySet, u32)>,
+    ) -> Option<crate::shader_scene::SurfacePass<'a>> {
+        let pass = self
+            .buffers
+            .as_ref()?
+            .buffer_pass(encoder, load, query.map(|(set, _)| set));
+        Some(crate::shader_scene::SurfacePass::new(
+            pass,
+            query.map(|(_, index)| index),
+        ))
     }
 
     pub fn blur(

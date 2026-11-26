@@ -4129,6 +4129,132 @@ impl AircraftPlan {
             .collect()
     }
 
+    pub fn next_launch_impact(
+        &self,
+        seconds: f32,
+        mut visible: impl FnMut([f32; 4]) -> bool,
+    ) -> f32 {
+        self.launches
+            .iter()
+            .filter_map(|launch| {
+                let places = launch.explosions.as_ref()?;
+                places
+                    .iter()
+                    .any(|(_, place)| place.is_some_and(|(_, bounds)| visible(bounds)))
+                    .then(|| {
+                        let period = launch.period();
+                        let end = launch.spawn + launch.length;
+                        let elapsed = seconds.rem_euclid(period);
+                        if elapsed < end {
+                            end - elapsed
+                        } else {
+                            period - elapsed + end
+                        }
+                    })
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    pub fn next_arrival(
+        &self,
+        assets: &AircraftAssets,
+        view: &viewer_models::motion_view::MotionView,
+        seconds: f32,
+        shown: impl Fn(AirMission) -> bool,
+    ) -> f32 {
+        use viewer_models::motion_view::Reach;
+        let until = |now: f32, start: f32, end: f32, period: f32| {
+            if now > end {
+                start + period - now
+            } else {
+                (start - now).max(0.0)
+            }
+        };
+        let library = assets.library();
+        let mut next = f32::INFINITY;
+        if shown(AirMission::Missile) {
+            for launch in &self.launches {
+                if view
+                    .passage(
+                        launch.position,
+                        launch.position,
+                        Reach::of(&library.meshes[launch.mesh], 1., [0.; 3]),
+                    )
+                    .is_some()
+                {
+                    let period = launch.period();
+                    let age = seconds.rem_euclid(period);
+                    let start = launch.spawn;
+                    next = next.min(until(age, start, start + launch.length, period));
+                }
+            }
+        }
+        let Ok(defines) = &assets.flight_defines else {
+            return next;
+        };
+        let rate = defines.clock_speed;
+        if rate <= 0.0 {
+            return next;
+        }
+        for run in &self.runs {
+            for flight in &self.flights[run.flights.clone()] {
+                if !shown(flight.mission) {
+                    continue;
+                }
+                let rig = &assets.rigs[&flight.rig];
+                let cycle = flight.cycle(rig.duration);
+                let age = seconds * rate + flight.phase * cycle - run.start;
+                let mesh = &library.meshes[flight.mesh];
+                let mut visit = |start, end| {
+                    next = next.min(until(age, start, end, cycle) / rate);
+                };
+                for (route, start) in [
+                    (&flight.outgoing, flight.delay),
+                    (&flight.incoming, flight.group_travel + rig.duration),
+                ] {
+                    if start >= flight.group_travel + rig.duration && !flight.lands {
+                        continue;
+                    }
+                    if route.length() <= 0.0 {
+                        continue;
+                    }
+                    view.times(
+                        route
+                            .arcs
+                            .iter()
+                            .zip(&route.points)
+                            .map(|(&arc, &position)| {
+                                (start + flight.travel * (arc / route.length()), position)
+                            }),
+                        Reach::of(mesh, defines.scale_min.max(1.0), [0.; 3]),
+                        &mut visit,
+                    );
+                }
+                let poses = &rig.tracks[flight.track];
+                view.times(
+                    poses
+                        .iter()
+                        .enumerate()
+                        .map(|(at, pose)| {
+                            (
+                                flight.group_travel + at as f32 / rig.fps,
+                                add(flight.origin, rotate(pose.translation, flight.yaw)),
+                            )
+                        })
+                        .chain(poses.last().map(|pose| {
+                            (
+                                flight.group_travel + rig.duration,
+                                add(flight.origin, rotate(pose.translation, flight.yaw)),
+                            )
+                        })),
+                    Reach::of(mesh, 1., [0.; 3]),
+                    visit,
+                );
+            }
+        }
+        next
+    }
+
     pub fn field(
         &mut self,
         assets: &AircraftAssets,

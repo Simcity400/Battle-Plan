@@ -37,6 +37,7 @@ struct Vertex {
 }
 
 struct Compiled {
+    clock: viewer_scene_base::shader_constants::SurfaceClock,
     retained: viewer_scene_base::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     stencil_reference: u32,
@@ -117,6 +118,7 @@ impl Compiled {
             &program.depth_stencil(technique),
         );
         Ok(Self {
+            clock: viewer_scene_base::shader_constants::SurfaceClock::scene(&compiled),
             retained,
             pipeline,
             stencil_reference,
@@ -252,7 +254,12 @@ impl Straits {
         if !visible {
             return Ok(());
         }
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled straits");
+        let mut pass = viewer_scene_base::shader_scene::surface_pass(
+            encoder,
+            targets,
+            "compiled straits",
+            compiled.clock.for_frames(frames),
+        );
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&compiled.pipeline.pipeline);

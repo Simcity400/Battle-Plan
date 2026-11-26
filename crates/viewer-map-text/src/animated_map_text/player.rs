@@ -416,6 +416,26 @@ impl Player {
     ) -> bool {
         let cutoff = self.cutoff.as_ref().copied().unwrap_or(f32::INFINITY);
         let camera_view = camera;
+        let size = targets.world_size();
+        let on_screen = |object: &Object| {
+            camera_view
+                .project(object.origin, size)
+                .is_some_and(|[x, y]| {
+                    x >= 0.0 && y >= 0.0 && x < size[0] as f32 && y < size[1] as f32
+                })
+        };
+        if self
+            .provinces
+            .values()
+            .flat_map(|province| &province.queue)
+            .any(|object| {
+                shown(object.event.family)
+                    && camera_view.icon_distance(object.origin) < cutoff
+                    && on_screen(object)
+            })
+        {
+            arena.request_frame();
+        }
         self.retained.inherit(caller);
         let retained = &mut self.retained;
         draw::bind_depth(retained);
@@ -493,6 +513,9 @@ impl Player {
                     depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
                     ..Default::default()
                 });
+                if definition.text.speed > 0.0 && mesh.vertices() != 0 && on_screen(object) {
+                    arena.request_frame();
+                }
                 draw::draw(&mut pass, &prepared, targets.world_size(), native_scissor)
                     .map_err(|error| error.to_string())?;
                 Ok::<_, String>(())

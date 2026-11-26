@@ -498,6 +498,10 @@ impl Presentation {
         ranges
     }
 
+    pub fn changing(&self) -> bool {
+        self.dirty && self.refresh.is_some() || self.fade < 1.0 && self.faded_unknown.is_some()
+    }
+
     pub fn fade(&self) -> f32 {
         self.fade
     }
@@ -1037,7 +1041,9 @@ mod tests {
         let mut player = Presentation::default();
         player.set_shared(&snapshot(10, 20, 1), Reset).unwrap();
         player.advance(32.0, delta.advance(32.0)).unwrap();
+        assert!(!player.changing());
         player.set_shared(&snapshot(90, 100, 2), Continue).unwrap();
+        assert!(player.changing());
         assert!(player.advance(32.25, delta.advance(32.25)).unwrap());
         assert_eq!(
             player.fade(),
@@ -1063,5 +1069,8 @@ mod tests {
             0.125,
             "frozen presentation retry preserves fade"
         );
+        assert!(player.changing());
+        player.advance(33.5, 1.0).unwrap();
+        assert!(!player.changing());
     }
 }

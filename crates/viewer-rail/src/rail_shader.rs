@@ -40,6 +40,7 @@ pub struct Geometry<'a> {
 pub const SHADOW_SLOT: u32 = 15;
 
 pub struct Rail {
+    clock: viewer_scene_base::shader_constants::SurfaceClock,
     retained: viewer_scene_base::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     stencil_reference: u32,
@@ -131,6 +132,7 @@ impl Rail {
             &program.depth_stencil(technique),
         );
         Ok(Self {
+            clock: viewer_scene_base::shader_constants::SurfaceClock::new(&compiled, 1, 64, &[]),
             retained,
             pipeline,
             stencil_reference,
@@ -194,7 +196,16 @@ impl Rail {
                     .map_err(refuse)?,
             );
         }
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled railways");
+        let animated = self.clock.for_frames(inputs.frames).max(
+            self.clock
+                .pixel_motion(inputs.retained_pixel_b2.time_read_by(&self.pipeline)),
+        );
+        let mut pass = viewer_scene_base::shader_scene::surface_pass(
+            encoder,
+            targets,
+            "compiled railways",
+            animated,
+        );
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);

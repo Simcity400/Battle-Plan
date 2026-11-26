@@ -31,6 +31,7 @@ fn playback_lighting_wraps_midnight_forward_and_resets_without_history() {
     let mut clock = DayNightPlayback::default();
     clock.update(23, DayNight::at_hour(23), 0.0, 1.0);
     let middle = clock.update(24, DayNight::at_hour(24), 0.25, 1.0);
+    assert!(middle.blending_to(DayNight::at_hour(24)));
     assert!(middle.hour_fraction > 23.0 / 24.0);
     assert_eq!(
         clock
@@ -47,6 +48,13 @@ fn playback_lighting_wraps_midnight_forward_and_resets_without_history() {
     let mut sought = DayNightPlayback::default();
     let target = DayNight::at_hour(4).with_cycle(false);
     assert_eq!(sought.update(4, target, 10.0, 1.0), target);
+    let lit = target.with_cycle(true);
+    let mut shown = sought.update(4, lit, 10.01, 1.0);
+    assert!(shown.blending_to(lit));
+    for frame in 2..=240 {
+        shown = sought.update(4, lit, 10.0 + f64::from(frame) / 120.0, 1.0);
+    }
+    assert!(!shown.blending_to(lit));
 }
 
 #[test]

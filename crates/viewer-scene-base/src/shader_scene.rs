@@ -384,12 +384,72 @@ pub fn world_pass<'a>(
     targets: &Targets,
     label: &str,
 ) -> wgpu::RenderPass<'a> {
+    world_pass_with_query(encoder, targets, label, None)
+}
+
+pub fn surface_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    targets: &Targets,
+    label: &str,
+    motion: viewer_gpu::surface_motion::Motion,
+) -> SurfacePass<'a> {
+    let query = targets.surface_motion.query(motion);
+    SurfacePass::new(
+        world_pass_with_query(encoder, targets, label, query.map(|(set, _)| set)),
+        query.map(|(_, index)| index),
+    )
+}
+
+pub struct SurfacePass<'a> {
+    pass: wgpu::RenderPass<'a>,
+    sampled: bool,
+}
+
+impl<'a> SurfacePass<'a> {
+    pub fn new(mut pass: wgpu::RenderPass<'a>, index: Option<u32>) -> Self {
+        if let Some(index) = index {
+            pass.begin_occlusion_query(index);
+        }
+        Self {
+            pass,
+            sampled: index.is_some(),
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for SurfacePass<'a> {
+    type Target = wgpu::RenderPass<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.pass
+    }
+}
+
+impl std::ops::DerefMut for SurfacePass<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pass
+    }
+}
+
+impl Drop for SurfacePass<'_> {
+    fn drop(&mut self) {
+        if self.sampled {
+            self.pass.end_occlusion_query();
+        }
+    }
+}
+
+pub fn world_pass_with_query<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    targets: &Targets,
+    label: &str,
+    query: Option<&wgpu::QuerySet>,
+) -> wgpu::RenderPass<'a> {
     encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
         depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: query,
         multiview_mask: None,
     })
 }

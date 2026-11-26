@@ -2122,7 +2122,7 @@ fn weather_packets(
     fades: &fade::Fades,
     simulations: &mut Simulations,
     packets: &mut Vec<native::DrawPacket>,
-) {
+) -> bool {
     let (camera, views, time) = frame;
     let rate = gates(camera.height, &assets.graphics).2;
     let visible_span = viewer_runtime::profiling::span("weather_visible");
@@ -2184,7 +2184,10 @@ fn weather_packets(
             .collect();
         advance_system(&mut members, time, rate);
     }
+    let mut moving = false;
     for (sim, mut visible) in tasks {
+        moving |= rate > 0.0 && visible.alpha > 0.0 && visible.emitter.max > 0
+            && (sim.waiting() || sim.emitting || !sim.particles.is_empty());
         if sim.waiting() {
             continue;
         }
@@ -2210,6 +2213,7 @@ fn weather_packets(
             packets.iter().filter(|packet| packet.instances.is_empty()).count() as u64,
         );
     }
+    moving
 }
 
 #[derive(Default)]
@@ -2239,12 +2243,13 @@ struct Advance {
     drawn: Drawn,
     frame: (Camera, Vec<ParentView>, f32),
     packets: Vec<native::DrawPacket>,
+    moving: bool,
 }
 
 impl Advance {
     fn run(mut self) -> Self {
         let (camera, views, time) = &self.frame;
-        weather_packets(
+        self.moving = weather_packets(
             &self.assets,
             &self.drawn.chosen,
             (*camera, views, *time),
@@ -2256,11 +2261,15 @@ impl Advance {
     }
 }
 
-pub struct Packets(Vec<native::DrawPacket>);
+#[derive(Default)]
+pub struct Packets {
+    draws: Vec<native::DrawPacket>,
+    pub moving: bool,
+}
 
 impl Packets {
     pub fn count(&self) -> usize {
-        self.0.len()
+        self.draws.len()
     }
 }
 
@@ -2504,18 +2513,22 @@ impl Pass {
             drawn: std::mem::take(&mut self.drawn),
             frame: (camera, views, time),
             packets: Vec::new(),
+            moving: false,
         };
         self.lane.start(move || advance.run());
     }
 
-    fn settle(&mut self) -> Vec<native::DrawPacket> {
+    fn settle(&mut self) -> Packets {
         let Some(advance) = self.lane.take() else {
-            return Vec::new();
+            return Packets::default();
         };
         self.simulations = advance.simulations;
         self.fades = advance.fades;
         self.drawn = advance.drawn;
-        advance.packets
+        Packets {
+            draws: advance.packets,
+            moving: advance.moving,
+        }
     }
 
     pub fn join_frame(&mut self) {
@@ -2524,11 +2537,17 @@ impl Pass {
 
     pub fn finish_frame(&mut self, camera: Camera) -> Packets {
         let _profile = viewer_runtime::profiling::thread_span("weather_packets");
-        let mut packets = self.settle();
+        let Packets {
+            draws: mut packets,
+            mut moving,
+        } = self.settle();
         let entity_span = viewer_runtime::profiling::span("weather_entity_packets");
         let before = packets.len();
         self.entity_simulations.sort(sort::Eye::of(camera));
         self.entity_simulations.packets(&self.assets.entities, &self.events, &mut packets);
+        moving |= packets[before..]
+            .iter()
+            .any(|packet| !packet.instances.is_empty());
         drop(entity_span);
         if viewer_runtime::view_record::on() {
             use viewer_runtime::view_record::add;
@@ -2551,7 +2570,10 @@ impl Pass {
         }
         let _order_span = viewer_runtime::profiling::span("weather_order");
         native::order(&mut packets);
-        Packets(packets)
+        Packets {
+            draws: packets,
+            moving,
+        }
     }
 
     pub fn warm(&mut self, device: &wgpu::Device) {
@@ -2586,7 +2608,7 @@ impl Pass {
                 camera.eye(),
                 view,
                 native_inputs,
-                &packets.0,
+                &packets.draws,
             )
             .map_err(|error| {
                 if error.to_string().starts_with("Map shader particles:") {

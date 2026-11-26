@@ -199,6 +199,7 @@ pub struct Player {
     kept: Vec<Kept>,
     event_refusals: BTreeMap<String, usize>,
     native_choice: bool,
+    pending_event: bool,
     scratch: EvaluationScratch,
     native_actors: std::cell::RefCell<Option<NativeActors>>,
 }
@@ -517,6 +518,7 @@ impl Player {
             kept: Vec::new(),
             event_refusals: BTreeMap::new(),
             native_choice: false,
+            pending_event: false,
             scratch: EvaluationScratch {
                 worlds: vec![Vec::new(); rig.nodes.len()],
                 nodes: rig
@@ -974,6 +976,7 @@ impl Player {
         events: &mut Vec<Event>,
         admitted: bool,
     ) {
+        self.pending_event = false;
         let event_start = events.len();
         self.kept.retain(|kept| !kept.life.finished());
         let pose_required =
@@ -1457,6 +1460,7 @@ impl Player {
                         event.time
                     };
                     if event_clock < event_time {
+                        self.pending_event = true;
                         continue;
                     }
                     let local = if node.native.is_some() {
@@ -1642,6 +1646,26 @@ pub fn stage_rig(dive_intro: bool) -> Rig {
 }
 
 impl Player {
+    pub fn animating(&self, rig: &Rig) -> bool {
+        self.pending_event
+            || self
+                .native_samples
+                .iter()
+                .zip(&rig.nodes)
+                .any(|(sample, node)| {
+                    sample.is_some_and(|sample| {
+                        let clip = &node.clips[sample.clip];
+                        let length = duration(clip);
+                        played_animation(node, sample.clip)
+                            && length > 0.0
+                            && clip.state.speed != 0.0
+                            && (clip.state.looping
+                                || sample.age < length
+                                || sample.previous.is_some())
+                    })
+                })
+    }
+
     pub fn root_play_position(&self, rig: &Rig) -> Option<(f32, f32)> {
         let node = rig.nodes.first()?;
         let playing = self.nodes.first()?.as_ref()?;
@@ -1924,7 +1948,9 @@ mod tests {
         instance.animation = BUILDING_DAMAGED;
         player.evaluate(&rig, instance, 60.0, &mut palette, &mut events);
         assert!(events.is_empty());
+        assert!(player.animating(&rig));
         player.evaluate(&rig, instance, 60.2, &mut palette, &mut events);
+        assert!(!player.animating(&rig));
         assert_eq!(events.len(), 1);
         assert!((events[0].age - 0.1).abs() < 0.00001);
 

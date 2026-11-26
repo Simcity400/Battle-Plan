@@ -511,6 +511,11 @@ impl Player {
                             ..Default::default()
                         });
                         draw::draw(&mut pass, &submission, arrow.count);
+                        if (self.speed > 0.0 && arrow.phase.draw_length < arrow.route.total_arc)
+                            || arrow.phase.fill != arrow.route.fill_target
+                        {
+                            arena.request_frame();
+                        }
                     }
                     Err(error) => {
                         *self.draw_refusals.entry(error.to_string()).or_default() += 1;

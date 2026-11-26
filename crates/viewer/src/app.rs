@@ -4530,7 +4530,9 @@ impl Viewer {
         let size = ui.available_size();
         if size.x <= 0.0 || size.y <= 0.0 {
             self.rendered = None;
-            ui.ctx().request_repaint();
+            if self.capture.is_some() {
+                ui.ctx().request_repaint();
+            }
             self.wait_to_draw(document.playback.hour(), || format!("its map had no area to draw in ({} by {} points)", size.x, size.y), ui.ctx())?;
             return Ok(());
         }
@@ -5114,7 +5116,7 @@ impl Viewer {
         let moved = self.zoom.ease(camera, law, frame_delta, pixels, &floor);
         if stepped || moved {
             self.camera_manual = true;
-            ui.ctx().request_repaint();
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
         }
         if !free_mode {
             let mut orbited = false;
@@ -5147,7 +5149,7 @@ impl Viewer {
             if orbited {
                 self.zoom.reset();
                 self.camera_manual = true;
-                ui.ctx().request_repaint();
+                request_animation_frame(ui.ctx(), map_timer.elapsed());
             }
         }
         let pending_camera = crate::suite_input::take_camera(view_id).filter(|command| !command.is_cancelled());
@@ -5216,9 +5218,19 @@ impl Viewer {
                         }
                         let world = crate::controls::walker::World::of(&map, &floor);
                         let start = self.start_pick.at().unwrap_or(camera.center);
-                        self.walk.camera(&controls, wheel, map, start, &world)
+                        let previous = self.walk.state().copied();
+                        let eye = self.walk.camera(&controls, wheel, map, start, &world);
+                        if self.walk.state() != previous.as_ref() || controls.moved_or_looked() {
+                            request_animation_frame(ui.ctx(), map_timer.elapsed());
+                        }
+                        eye
                     } else {
-                        self.fly(document, map, self.start_pick.at(), wheel, &controls)
+                        let previous = self.free_cam;
+                        let eye = self.fly(document, map, self.start_pick.at(), wheel, &controls);
+                        if self.flight.is_some() || self.free_cam != previous || controls.moved_or_looked() {
+                            request_animation_frame(ui.ctx(), map_timer.elapsed());
+                        }
+                        eye
                     };
                     (eye, if interface { eye } else { map })
                 } else {
@@ -5235,8 +5247,11 @@ impl Viewer {
             let chosen = self.map_cursor(document, point.filter(|_| !free_mode || interface), over_combat, shift);
             let cursors = &document.content.cursors;
             if let Ok(cursor) = cursors.get(chosen).or_else(|_| cursors.get(MapCursor::Normal)) {
-                let image = cursor.at(self.started.elapsed().as_secs_f64()).0.clone();
-                ui.ctx().output_mut(|output| output.cursor_image = Some(image));
+                let (image, next) = cursor.at(self.started.elapsed().as_secs_f64());
+                ui.ctx().output_mut(|output| output.cursor_image = Some(image.clone()));
+                if let Some(delay) = next {
+                    ui.ctx().request_repaint_after(Duration::from_secs_f64(delay));
+                }
             }
         }
         if self.selection_input.dragging()
@@ -5502,6 +5517,9 @@ impl Viewer {
             self.hovered_name_region,
         );
         self.fade = Some(name_fade);
+        if name_fade != LayerFade::instant(camera) {
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
+        }
         self.hovered_name_region = hovered_name_region;
         laps.lap("names_pick");
         drop(_other_cost);
@@ -6528,9 +6546,13 @@ impl Viewer {
             f64::from(animation_time),
             1.0 / self.speed,
         );
+        if day_night.blending_to(target_light) && self.capture.is_none() {
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
+        }
         let layered_radar = self.playhead_map.as_ref().and_then(|side| side.products().radar.clone());
         let layered = self.layered_orders();
         let scene = self.scene.as_mut().unwrap();
+        scene.track_paused_motion((!self.playing && self.capture.is_none()).then_some(shown_hour));
         let (device, queue) = (&state.device, &state.queue);
         if let Some(field) = layered_radar.as_deref().or(self.prepared_overlay.as_ref().map(|prepared| &*prepared.radar)) {
             scene
@@ -6687,6 +6709,26 @@ impl Viewer {
             crate::perf_log::gpu_times(scene.gpu_frame_times(&state.device));
         }
         rendered.map_err(|e| e.to_string())?;
+        if scene.needs_frame() {
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
+        } else if !self.playing && self.capture.is_none() {
+            let view = viewer_models::motion_view::MotionView::new(&camera, pixels);
+            let mut delay = scene.next_arrival(&camera, pixels, &view, animation_time);
+            if sailing
+                && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
+                && let Some(prepared) = &posed
+            {
+                let heights = document.content.heights();
+                delay = delay.min(prepared.next_convoy_arrival(
+                    &document.unit_models,
+                    &view,
+                    &|x, z| heights.surface_height(x, z),
+                ));
+            }
+            if let Ok(delay) = Duration::try_from_secs_f32(delay) {
+                request_frame_after(ui.ctx(), delay, map_timer.elapsed());
+            }
+        }
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
         let shown_stamp = presentation::shown_stamp(profiling(), || {
@@ -6703,6 +6745,7 @@ impl Viewer {
             let _other_cost = replay_frame::cpu::scope("frame.audio", Some("other"));
             present_audio(
                 &mut self.audio,
+                ui.ctx(),
                 document,
                 scene,
                 &camera,
@@ -7024,7 +7067,6 @@ impl Viewer {
             ui.painter().rect_filled(cover, 0.0, ui.visuals().panel_fill);
             ui.put(egui::Rect::from_center_size(cover.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new());
         }
-        ui.ctx().request_repaint();
         self.drew_frame = true;
         let overlay_fresh = match &now {
             Some(now) => self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(now)),
@@ -7223,6 +7265,17 @@ impl InterfaceSound {
     }
 }
 
+fn request_animation_frame(ctx: &egui::Context, elapsed: Duration) {
+    request_frame_after(ctx, Duration::ZERO, elapsed);
+}
+
+fn request_frame_after(ctx: &egui::Context, delay: Duration, elapsed: Duration) {
+    let interval = Duration::from_secs_f64(1.0 / viewer_runtime::display_refresh::rate());
+    let prediction =
+        ctx.input(|input| Duration::try_from_secs_f32(input.predicted_dt).unwrap_or_default());
+    ctx.request_repaint_after(delay.max(interval).saturating_sub(elapsed) + prediction);
+}
+
 fn build_audio_frame(
     document: &Document,
     scene: &Scene,
@@ -7304,6 +7357,7 @@ fn build_audio_frame(
 
 fn present_audio(
     audio: &mut Option<viewer_audio::Owner>,
+    ctx: &egui::Context,
     document: &Document,
     scene: &Scene,
     camera: &Camera,
@@ -7318,7 +7372,12 @@ fn present_audio(
     let Some(frame) = build_audio_frame(document, scene, camera, inputs) else {
         return;
     };
-    let owner = audio.get_or_insert_with(|| viewer_audio::System::shared().owner());
+    let owner = audio.get_or_insert_with(|| {
+        let mut owner = viewer_audio::System::shared().owner();
+        let ctx = ctx.clone();
+        owner.set_wake(move || request_animation_frame(&ctx, Duration::ZERO));
+        owner
+    });
     owner.claim();
     owner.frame(source, frame);
 }

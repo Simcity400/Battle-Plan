@@ -2163,6 +2163,7 @@ impl SpritePass {
         if !self.waited {
             return;
         }
+        arena.request_frame();
         let reason = if shader_pipeline::gpu::builds_under_way() == 0 {
             "a GUI draw waited for a pipeline no build was making"
         } else {
