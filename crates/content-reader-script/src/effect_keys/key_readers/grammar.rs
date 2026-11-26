@@ -1818,7 +1818,6 @@ impl crate::effect_keys::EffectShape {
     pub const CAPTURED_OPERATIVE: Self = Self(crate::effect_keys::READ_SCRIPT, FREE_RANDOM_OPERATIVE_KEYS);
     pub const CHARACTER_TRAIT: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_TRAIT_KEYS);
     pub const COMMANDER_ROLE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_CORPS_COMMANDER_ROLE_KEYS);
-    pub const CONDITIONAL: Self = Self(crate::effect_keys::READ_SCRIPT, IF_KEYS);
     pub const COUNTRY_LEADER: Self = Self(crate::effect_keys::READ_SCRIPT, CREATE_COUNTRY_LEADER_KEYS);
     pub const COUNTRY_LEADER_ROLE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_COUNTRY_LEADER_ROLE_KEYS);
     pub const DIVISION_HISTORY: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_HISTORY_ENTRY_KEYS);
@@ -1829,8 +1828,6 @@ impl crate::effect_keys::EffectShape {
     pub const UNIT_MEDAL: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_UNIT_MEDAL_TO_LATEST_ENTRY_KEYS);
     pub const UNIT_TRAIT_CHOICE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_RANDOM_VALID_TRAIT_FROM_UNIT_KEYS);
     pub const VARIABLE: Self = Self(crate::effect_keys::READ_SCRIPT, SET_VARIABLE_KEYS);
-    pub const VARIABLE_DIVISION: Self = Self(crate::effect_keys::READ_SCRIPT, DIVIDE_TEMP_VARIABLE_KEYS);
-    pub const VARIABLE_LIMITS: Self = Self(crate::effect_keys::READ_SCRIPT, CLAMP_TEMP_VARIABLE_KEYS);
 }
 
 #[cfg(any(test, feature = "test-support"))]
