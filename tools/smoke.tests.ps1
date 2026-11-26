@@ -10,6 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $Driver) { $Driver = Join-Path $PSScriptRoot 'smoke.ps1' }
+. (Join-Path (Split-Path -Parent $Driver) 'game-clock.ps1')
 $testScript = $PSCommandPath
 $tokens = $null; $errors = $null
 $driverAst = [Management.Automation.Language.Parser]::ParseFile($Driver, [ref]$tokens, [ref]$errors)

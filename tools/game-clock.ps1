@@ -47,13 +47,26 @@ function ConvertTo-GameClock($Value, $Withheld) {
     $clock
 }
 
-function Open-GameClock([int]$ProcessId, [string]$Recorder) {
+function Invoke-WithRecorderCache([string]$OutputDirectory, [scriptblock]$Command) {
+    $previousCache = $env:BATTLEPLAN_CACHE
+    try {
+        if (-not $previousCache) {
+            if (-not $OutputDirectory) { throw [ArgumentException]::new('Set BATTLEPLAN_CACHE or supply an output directory before starting the recorder so it cannot write to the user cache.') }
+            $env:BATTLEPLAN_CACHE = Join-Path ($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)) 'recorder-cache'
+        }
+        & $Command
+    } finally {
+        $env:BATTLEPLAN_CACHE = $previousCache
+    }
+}
+
+function Open-GameClock([int]$ProcessId, [string]$Recorder, [string]$OutputDirectory) {
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $Recorder; $info.Arguments = "clock --pid $ProcessId"
     $info.UseShellExecute = $false; $info.CreateNoWindow = $true
     $info.RedirectStandardInput = $true; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
     $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false); $info.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
-    $process = [Diagnostics.Process]::Start($info)
+    $process = Invoke-WithRecorderCache $OutputDirectory { [Diagnostics.Process]::Start($info) }
     $reader = [pscustomobject]@{
         Process = $process; Errors = $process.StandardError.ReadToEndAsync(); Broken = $false
         Frequency = [Diagnostics.Stopwatch]::Frequency; Withheld = $null
