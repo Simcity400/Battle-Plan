@@ -1,3 +1,6 @@
+#[path = "world_tension_playback.rs"]
+mod playback;
+use playback::{EventIndex, EventWindow, Ranking, SlotIndex, Window};
 use super::rows;
 use crate::products::{group_members, groups::{self, MembershipRun}};
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
@@ -372,6 +375,8 @@ struct BranchTension {
     slots: BTreeMap<u32, Vec<(i32, i32, Option<i64>)>>,
     aggregates_complete: Vec<(i32, i32)>,
     events: Vec<CachedEvent>,
+    event_index: EventIndex,
+    views: Mutex<HashMap<String, Arc<Mutex<Playback>>>>,
     listing_missing: Vec<MissingSpan>,
     tension_missing: Vec<MissingSpan>,
     aggregates_missing: Vec<MissingSpan>,
@@ -665,6 +670,8 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
     warnings.sort_by_key(|(hour, _)| *hour);
     let built = Arc::new(BranchTension {
         names: SlotNames::new(&query.holders),
+        event_index: EventIndex::new(&events),
+        views: Default::default(),
         tension,
         sum,
         slots,
@@ -711,15 +718,6 @@ fn lookup_slot(runs: Option<&[(i32, i32, Option<i64>)]>, complete: bool, hour: i
         }
     }
     complete.then_some(0)
-}
-
-fn next_opt_run_change(runs: &[(i32, i32, Option<i64>)], after: i32) -> Option<i32> {
-    let at = runs.partition_point(|run| run.1 < after);
-    match runs.get(at) {
-        Some(&(first, last, _)) if first <= after && after <= last => last.checked_add(1).filter(|&next| next > after),
-        Some(&(first, _, _)) => Some(first),
-        None => None,
-    }
 }
 
 fn next_span_change(spans: &[(i32, i32)], after: i32) -> Option<i32> {
@@ -788,7 +786,7 @@ const NOT_MEMBER: &str = "Not a member of the selected group at this hour.";
 const REST_UNKNOWN: &str = "A shown country's contribution was not recorded at this hour, so the rest is not known.";
 
 fn reason_at(spans: &[MissingSpan], hour: i32) -> Option<&str> {
-    spans.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.as_str())
+    spans.get(spans.partition_point(|span| span.last_hour < hour)).filter(|span| span.first_hour <= hour).map(|span| span.reason.as_str())
 }
 
 pub(super) struct DatedGroupFilter {
@@ -823,11 +821,29 @@ impl DatedGroupFilter {
         &runs[runs.partition_point(|span| span.1 < first)..runs.partition_point(|span| span.0 <= last)]
     }
 
-    fn collect_change_hours(&self, first: i32, last: i32, out: &mut Vec<i32>) {
-        for runs in self.runs_by_slot.values() {
-            collect_span_change_hours(runs, first, last, out);
-        }
-    }
+}
+
+#[derive(Clone)]
+struct Sample {
+    hour: i32,
+    total: Option<f64>,
+    total_raw: Option<i128>,
+    sum_raw: Option<i64>,
+    bands: Vec<Option<f64>>,
+    band_raws: Vec<Option<i64>>,
+    band_min: Vec<Option<f64>>,
+    band_max: Vec<Option<f64>>,
+    other: Option<f64>,
+    other_raw: Option<i128>,
+}
+
+#[derive(Default)]
+struct Playback {
+    index: Option<SlotIndex>,
+    ranking: Ranking,
+    plot: playback::Plot,
+    events: EventWindow,
+    group: Option<Arc<DatedGroupFilter>>,
 }
 
 #[derive(Default)]
@@ -850,6 +866,7 @@ pub(super) struct StackOutput {
     pub next_change_hour: Option<i32>,
 }
 
+#[cfg(test)]
 #[expect(clippy::too_many_arguments, reason = "world tension stack selection, bounds, and callbacks")]
 pub(super) fn compute_stack(
     input: &StackInput<'_>,
@@ -861,6 +878,30 @@ pub(super) fn compute_stack(
     group_filter: Option<&DatedGroupFilter>,
     top_limit: Option<usize>,
     max_points: impl Into<Option<usize>>,
+    slot_tag: impl Fn(u32, i32) -> Option<(String, bool)>,
+    mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
+) -> StackOutput {
+    let mut playback = Playback::default();
+    playback.index = Some(SlotIndex::new(input, group_filter, None));
+    let next_name = input.slots.keys().filter_map(|&slot| slot_next_change(slot, last)).min();
+    let mut out = compute_window(&mut playback, input, first, last, layers, mode, filter, group_filter, top_limit,
+        max_points.into(), slot_tag, slot_next_change);
+    if let Some(next) = next_name { out.next_change_hour = Some(out.next_change_hour.map_or(next, |hour| hour.min(next))); }
+    out
+}
+
+#[expect(clippy::too_many_arguments, reason = "world tension stack selection, bounds, and callbacks")]
+fn compute_window(
+    playback: &mut Playback,
+    input: &StackInput<'_>,
+    first: i32,
+    last: i32,
+    layers: usize,
+    mode: TensionValueMode,
+    filter: Option<&HashSet<&str>>,
+    group_filter: Option<&DatedGroupFilter>,
+    top_limit: Option<usize>,
+    max_points: Option<usize>,
     slot_tag: impl Fn(u32, i32) -> Option<(String, bool)>,
     mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
 ) -> StackOutput {
@@ -878,19 +919,12 @@ pub(super) fn compute_stack(
     };
     bump(&mut next_change, next_run_change(input.sum, last));
     bump(&mut next_change, next_span_change(input.aggregates_complete, last));
-    for (&slot, runs) in input.slots {
-        bump(&mut next_change, next_opt_run_change(runs, last));
-        bump(&mut next_change, slot_next_change(slot, last));
-    }
+    let index = playback.index.as_ref().unwrap();
+    bump(&mut next_change, index.next(last));
     let rank_missing = (top_limit.is_some() && mode == TensionValueMode::Share).then_some(input.aggregates_missing);
     for spans in Some(mode_missing).into_iter().chain(rank_missing) {
-        for span in spans {
-            if span.first_hour > last {
-                bump(&mut next_change, Some(span.first_hour));
-                break;
-            } else if span.last_hour >= last {
-                bump(&mut next_change, span.last_hour.checked_add(1));
-            }
+        if let Some(span) = spans.get(spans.partition_point(|span| span.last_hour < last)) {
+            bump(&mut next_change, if span.first_hour > last { Some(span.first_hour) } else { span.last_hour.checked_add(1) });
         }
     }
     let last_complete = is_complete(input.aggregates_complete, last);
@@ -906,114 +940,32 @@ pub(super) fn compute_stack(
     let capped_end_raw_val = lookup_run(input.tension, last);
     let capped_end_tension = capped_end_raw_val.map(|raw| raw as f64 / tension_scale);
     let capped_end_tension_raw = capped_end_raw_val.map(|raw| raw.to_string());
-    struct RankedSlot {
-        slot: u32,
-        end: Option<i64>,
-        peak_abs: u64,
-        resolved: Option<(String, bool)>,
-    }
-    let mut ranked: Vec<RankedSlot> = Vec::new();
-    let mut unknown = !last_complete;
-    for (&slot, runs) in input.slots {
-        let Some(rank_hour) = rank_hour else { break };
-        let resolved = slot_tag(slot, last);
-        if let Some(wanted) = filter
-            && !resolved.as_ref().is_some_and(|(tag, _)| wanted.contains(tag.as_str()))
-        {
-            continue;
-        }
-        let unrestricted = [(first, last)];
-        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, last));
-        let member_at_rank = is_complete(spans, rank_hour);
-        if spans.is_empty() || (top_limit.is_some() && !member_at_rank) {
-            continue;
-        }
-        let end = member_at_rank.then(|| lookup_slot(Some(runs), rank_complete, rank_hour)).flatten();
-        unknown |= end.is_none();
-        let mut peak_abs = 0;
-        let mut witnessed_nonzero = false;
-        for &(lo, hi) in spans {
-            let lo = lo.max(first);
-            let hi = hi.min(last);
-            let start = runs.partition_point(|run| run.1 < lo);
-            for &(since, _, val) in runs[start..].iter().take_while(|run| run.0 <= hi) {
-                if let Some(val) = val {
-                    witnessed_nonzero |= val != 0;
-                    if since.max(lo) <= rank_hour {
-                        peak_abs = peak_abs.max(val.unsigned_abs());
-                    }
-                }
-            }
-        }
-        if witnessed_nonzero {
-            let end = end.filter(|_| peak_abs > 0);
-            ranked.push(RankedSlot { slot, end, peak_abs, resolved });
-        }
-    }
-    if top_limit.is_some() && unknown {
+    playback.ranking.update(index, input, Window { first, last, rank: rank_hour, complete: rank_complete }, group_filter, filter, top_limit.is_some(), &slot_tag);
+    if top_limit.is_some() && (!last_complete || playback.ranking.unknown()) {
         let reason = reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN);
         return StackOutput { refused: Some(reason.to_owned()), next_change_hour: next_change, ..Default::default() };
     }
-    ranked.sort_unstable_by_key(|entry| (
-        std::cmp::Reverse(entry.end.map(i64::unsigned_abs)),
-        std::cmp::Reverse(entry.end),
-        std::cmp::Reverse(entry.peak_abs),
-        entry.slot,
-    ));
-    let kept_count = ranked.len().min(top_limit.unwrap_or(layers));
-    let (top, tail) = ranked.split_at(kept_count);
-    let top_slots = top_limit.map(|_| top.iter().map(|entry| entry.slot).collect());
-    let Some(max_points) = max_points.into() else {
+    let top = playback.ranking.top(top_limit.unwrap_or(layers));
+    let top_slots = top_limit.map(|_| top.iter().copied().collect());
+    let Some(max_points) = max_points else {
         return StackOutput { top_slots, next_change_hour: next_change, ..Default::default() };
     };
-    let restricted = filter.is_some() || group_filter.is_some() || top_limit.is_some();
-    let (has_other, other_count) = if filter.is_some() {
-        let shown: HashSet<u32> = top.iter().map(|entry| entry.slot).collect();
-        let mut present = false;
-        let mut count = 0;
-        for (&slot, runs) in input.slots {
-            if shown.contains(&slot) { continue; }
-            let start = runs.partition_point(|run| run.1 < first);
-            present |= runs[start..].iter().take_while(|run| run.0 <= last).any(|run| run.2.is_some_and(|value| value != 0));
-            count += u32::from(rank_hour.and_then(|hour| lookup_slot(Some(runs), rank_complete, hour)).is_some_and(|value| value != 0));
-        }
-        (present, count)
-    } else {
-        (!restricted && !tail.is_empty(), if restricted { 0 } else { tail.iter().filter(|entry| entry.end.is_some_and(|value| value != 0)).count() as u32 })
-    };
+    let (has_other, other_count) = if top_limit.is_some() || group_filter.is_some() { (false, 0) } else { playback.ranking.other(&top) };
+    let plot = &mut playback.plot;
     let mut raw_hours = Vec::new();
-    raw_hours.push(first);
-    collect_change_hours(input.tension, first, last, &mut raw_hours);
-    collect_change_hours(input.sum, first, last, &mut raw_hours);
-    collect_span_change_hours(input.aggregates_complete, first, last, &mut raw_hours);
-    for runs in input.slots.values() {
-        collect_opt_change_hours(runs, first, last, &mut raw_hours);
-    }
-    if let Some(gf) = group_filter {
-        gf.collect_change_hours(first, last, &mut raw_hours);
-    }
-    for span in mode_missing {
-        if span.last_hour < first || span.first_hour > last {
-            continue;
+    if let Some(start) = plot.extend(first, last, &top, has_other) {
+        raw_hours.push(start);
+        collect_change_hours(input.tension, start, last, &mut raw_hours);
+        collect_change_hours(input.sum, start, last, &mut raw_hours);
+        collect_span_change_hours(input.aggregates_complete, start, last, &mut raw_hours);
+        for &slot in &top {
+            collect_opt_change_hours(&input.slots[&slot], start, last, &mut raw_hours);
+            if let Some(group) = group_filter {
+                collect_span_change_hours(group.spans(slot, start, last), start, last, &mut raw_hours);
+            }
         }
-        raw_hours.push(span.first_hour.max(first));
-        if span.last_hour < last {
-            raw_hours.push(span.last_hour + 1);
-        }
-    }
-    raw_hours.sort_unstable();
-    raw_hours.dedup();
-    struct Sample {
-        hour: i32,
-        total: Option<f64>,
-        total_raw: Option<i128>,
-        sum_raw: Option<i64>,
-        bands: Vec<Option<f64>>,
-        band_raws: Vec<Option<i64>>,
-        band_min: Vec<Option<f64>>,
-        band_max: Vec<Option<f64>>,
-        other: Option<f64>,
-        other_raw: Option<i128>,
+        raw_hours.sort_unstable();
+        raw_hours.dedup();
     }
     let make_sample = |hour: i32,
                        total: Option<f64>,
@@ -1044,12 +996,12 @@ pub(super) fn compute_stack(
         let mut top_raws: Vec<Option<i64>> = Vec::with_capacity(top.len());
         let mut member_sum: i128 = 0;
         let mut any_member_missing = false;
-        for entry in top {
-            if !member_at(entry.slot, hour) {
+        for &slot in &top {
+            if !member_at(slot, hour) {
                 top_raws.push(None);
                 continue;
             }
-            let raw = lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), agg_complete, hour);
+            let raw = lookup_slot(input.slots.get(&slot).map(Vec::as_slice), agg_complete, hour);
             match raw {
                 Some(v) => member_sum += i128::from(v),
                 None => any_member_missing = true,
@@ -1097,53 +1049,8 @@ pub(super) fn compute_stack(
             }
         }
     };
-    let mut samples: Vec<Sample> = Vec::with_capacity(raw_hours.len());
-    for hour in raw_hours {
-        let sample = evaluate(hour);
-        let same = samples.last().is_some_and(|prev| {
-            prev.total == sample.total
-                && prev.total_raw == sample.total_raw
-                && prev.sum_raw == sample.sum_raw
-                && prev.other == sample.other
-                && prev.other_raw == sample.other_raw
-                && prev.bands == sample.bands
-                && prev.band_raws == sample.band_raws
-        });
-        if !same {
-            samples.push(sample);
-        }
-    }
-    let mut downsampled = false;
-    if samples.len() > max_points && max_points >= 4 {
-        downsampled = true;
-        let span = (i64::from(last) - i64::from(first)).max(1);
-        let step = (span / max_points as i64).max(1);
-        let mut reduced: Vec<Sample> = Vec::with_capacity(max_points + 2);
-        let total_len = samples.len();
-        let mut last_bucket = i64::MIN;
-        let mut prev_nulls: Vec<bool> = Vec::new();
-        for (idx, sample) in samples.into_iter().enumerate() {
-            let mut cur_nulls = Vec::with_capacity(sample.bands.len() + 2);
-            cur_nulls.push(sample.total.is_none());
-            cur_nulls.push(sample.other.is_none());
-            cur_nulls.extend(sample.bands.iter().map(Option::is_none));
-            let bucket = (i64::from(sample.hour) - i64::from(first)) / step;
-            let keep = idx == 0 || idx + 1 == total_len || cur_nulls != prev_nulls || bucket != last_bucket;
-            if keep {
-                reduced.push(sample);
-                last_bucket = bucket;
-            } else if let Some(last_kept) = reduced.last_mut() {
-                for i in 0..last_kept.bands.len() {
-                    if let Some(v) = sample.bands[i] {
-                        last_kept.band_min[i] = Some(last_kept.band_min[i].map_or(v, |m| m.min(v)));
-                        last_kept.band_max[i] = Some(last_kept.band_max[i].map_or(v, |m| m.max(v)));
-                    }
-                }
-            }
-            prev_nulls = cur_nulls;
-        }
-        samples = reduced;
-    }
+    for hour in raw_hours { plot.push(evaluate(hour)); }
+    let (samples, downsampled) = plot.samples(first, last, max_points);
     let end_sample = evaluate(last);
     let end_tension = lookup_run(input.tension, last);
     let end_sum = lookup_run(input.sum, last);
@@ -1159,12 +1066,12 @@ pub(super) fn compute_stack(
     let band_missing: Vec<Option<String>> = top
         .iter()
         .zip(&end_sample.bands)
-        .map(|(entry, value)| {
+        .map(|(&slot, value)| {
             if value.is_some() {
                 None
-            } else if !member_at(entry.slot, last) {
+            } else if !member_at(slot, last) {
                 Some(NOT_MEMBER.to_owned())
-            } else if lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), end_complete, last).is_none() {
+            } else if lookup_slot(input.slots.get(&slot).map(Vec::as_slice), end_complete, last).is_none() {
                 Some(reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN).to_owned())
             } else {
                 Some(share_reason().unwrap_or_else(|| NO_SHARE.to_owned()))
@@ -1219,7 +1126,8 @@ pub(super) fn compute_stack(
     let bands = top
         .iter()
         .enumerate()
-        .map(|(i, entry)| {
+        .map(|(i, &slot)| {
+            let resolved = slot_tag(slot, last);
             let end_raw = end_sample
                 .band_raws
                 .get(i)
@@ -1229,9 +1137,9 @@ pub(super) fn compute_stack(
             let mut holders = Vec::new();
             let mut first_hour = first;
             loop {
-                let next = slot_next_change(entry.slot, first_hour).filter(|&at| first_hour < at && at <= last);
+                let next = slot_next_change(slot, first_hour).filter(|&at| first_hour < at && at <= last);
                 let last_hour = next.map_or(last, |at| at - 1);
-                if let Some((tag, remembered)) = slot_tag(entry.slot, first_hour) {
+                if let Some((tag, remembered)) = slot_tag(slot, first_hour) {
                     holders.push(TensionHolder { first_hour, last_hour, tag, remembered });
                 }
                 let Some(at) = next else { break };
@@ -1239,9 +1147,9 @@ pub(super) fn compute_stack(
             }
             TensionStackBand {
                 holders,
-                slot: entry.slot,
-                tag: entry.resolved.as_ref().map(|(tag, _)| tag.clone()),
-                remembered: entry.resolved.as_ref().is_some_and(|(_, remembered)| *remembered),
+                slot,
+                tag: resolved.as_ref().map(|(tag, _)| tag.clone()),
+                remembered: resolved.as_ref().is_some_and(|(_, remembered)| *remembered),
                 values: std::mem::take(&mut band_series[i]),
                 values_raw: std::mem::take(&mut band_raw_series[i]),
                 min_values: std::mem::take(&mut band_mins[i]),
@@ -1424,7 +1332,10 @@ impl Product for WorldTensionStack {
                 *best = Some(best.map_or(hour, |held| held.min(hour)));
             }
         };
-        let group_filter: Option<DatedGroupFilter> = if let Some(group) = &params.group {
+        let shape = serde_json::to_string(&(params.values, &params.countries, &params.group, params.top, params.layers, params.include_stack, params.include_events))?;
+        let view = held.views.lock().unwrap_or_else(|error| error.into_inner()).entry(shape).or_default().clone();
+        let mut playback = view.lock().unwrap_or_else(|error| error.into_inner());
+        let group_filter: Option<Arc<DatedGroupFilter>> = if let Some(group) = &params.group {
             let groups_reply = groups::shared(source, &query, context, cancelled)?;
             let members = group_members::members_at(&groups_reply, group, last, first)?;
             if members.until < i32::MAX {
@@ -1459,8 +1370,11 @@ impl Product for WorldTensionStack {
                 check_reply_budget(&reply)?;
                 return Ok(reply);
             }
-            let runs = group_members::runs(&groups_reply, group)?.map_err(dashboard_core::refused)?;
-            Some(DatedGroupFilter::new(&runs.members, group.membership, &query.holders))
+            if playback.group.is_none() {
+                let runs = group_members::runs(&groups_reply, group)?.map_err(dashboard_core::refused)?;
+                playback.group = Some(Arc::new(DatedGroupFilter::new(&runs.members, group.membership, &query.holders)));
+            }
+            playback.group.clone()
         } else {
             None
         };
@@ -1487,14 +1401,17 @@ impl Product for WorldTensionStack {
                 tension_missing: &held.tension_missing,
                 aggregates_missing: &held.aggregates_missing,
             };
-            let out = compute_stack(
-                &input,
+            if playback.index.is_none() {
+                playback.index = Some(SlotIndex::new(&input, group_filter.as_deref(), Some(named)));
+            }
+            let out = compute_window(
+                &mut playback, &input,
                 first,
                 last,
                 params.layers as usize,
                 params.values,
                 filter.as_ref(),
-                group_filter.as_ref(),
+                group_filter.as_deref(),
                 top_limit,
                 include_stack.then_some(max_points),
                 |slot, hour| named.slot(slot, hour).map(|(tag, remembered)| (tag.to_owned(), remembered)),
@@ -1517,48 +1434,27 @@ impl Product for WorldTensionStack {
                     bump(&mut next_change_hour, Some(span.first_hour));
                 }
             }
-            let ev_end = held.events.partition_point(|event| event.first_read <= last);
-            if let Some(next_ev) = held.events.get(ev_end) {
-                bump(&mut next_change_hour, Some(next_ev.first_read));
-            }
-            for event in &held.events[..ev_end] {
-                dashboard_base::products::at_hour::count_rows(|| 1);
-                if let Some(&(later_hour, _)) = event.added.iter().find(|&&(h, _)| h > last) {
-                    bump(&mut next_change_hour, Some(later_hour));
-                }
-                if event.hour < first || event.hour > last {
-                    continue;
-                }
-                let Some(&(_, added_raw)) = event.added.iter().rev().find(|&&(h, _)| h <= last) else {
-                    continue;
-                };
+            bump(&mut next_change_hour, held.event_index.next(last));
+            let rows = playback.events.read(&held.event_index, &held.events, first, last, |event| {
+                let at = event.added.partition_point(|&(hour, _)| hour <= last);
+                let &(_, added_raw) = event.added[..at].last()?;
                 let ev_hour = event.first_read.min(last);
                 let resolved = event.slot.and_then(|slot| named.slot(slot, ev_hour));
-                if let Some(chosen) = &computed.top_slots
-                    && !event.slot.is_some_and(|slot| chosen.contains(&slot))
-                {
-                    continue;
-                }
                 if let Some(gf) = &group_filter {
                     if !event.slot.is_some_and(|slot| !gf.spans(slot, ev_hour, ev_hour).is_empty()) {
-                        continue;
+                        return None;
                     }
                 } else if let Some(wanted) = &filter
                     && !resolved.is_some_and(|(tag, _)| wanted.contains(tag))
                 {
-                    continue;
-                }
-                if let Some(removed_at) = event.removed_at
-                    && removed_at > last
-                {
-                    bump(&mut next_change_hour, Some(removed_at));
+                    return None;
                 }
                 let last_read = event
                     .removed_at
                     .is_some_and(|at| at <= last)
                     .then_some(event.last_read)
                     .flatten();
-                events.push(TensionStackEvent {
+                Some(TensionStackEvent {
                     hour: event.hour,
                     country: event.country,
                     slot: event.slot,
@@ -1571,12 +1467,12 @@ impl Product for WorldTensionStack {
                     marker_raw: event.added[..event.added.partition_point(|&(read, _)| read <= event.hour)].last().map(|(_, raw)| raw.to_string()),
                     first_read: event.first_read,
                     last_read,
-                });
-            }
-            events.sort_by(|a, b| a.hour.cmp(&b.hour).then_with(|| a.first_read.cmp(&b.first_read)));
+                })
+            });
+            events.extend(rows.filter(|row| computed.top_slots.as_ref().is_none_or(|chosen| row.slot.is_some_and(|slot| chosen.contains(&slot)))).cloned());
         }
         let missing: Vec<MissingSpan> = if include_stack {
-            mode_missing
+            mode_missing[mode_missing.partition_point(|span| span.last_hour < first)..mode_missing.partition_point(|span| span.first_hour <= last)]
                 .iter()
                 .filter_map(|span| {
                     let lo = span.first_hour.max(first);
