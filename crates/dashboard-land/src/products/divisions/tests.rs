@@ -383,6 +383,8 @@ fn a_service_record_of_chosen_countries_names_the_hours_whose_holders_are_not_kn
 
     let no_divisions = decorated_source((100..=107).map(|hour| {
         let mut frame = decorated_world(hour, |_| 0);
+        frame.metrics.table_ns[TableId::Divisions.index()] = 1;
+        frame.metrics.table_ns[TableId::DivisionHistory.index()] = 1;
         *frame.tables[TableId::Divisions.index()] = TableView::Complete(replay_data::rows::TableRows::Divisions(Vec::new()));
         if (103..=104).contains(&hour) {
             *frame.tables[TableId::DivisionHistory.index()] = TableView::Unavailable { reason: "history unread".into() };

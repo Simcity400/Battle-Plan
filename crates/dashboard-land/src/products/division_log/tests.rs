@@ -25,7 +25,7 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
             let mut divisions = vec![division(1, 1)];
             if hour >= 102 {
                 divisions.push(division(2, 2));
-                if hour < 105 {
+                if hour < 103 {
                     divisions.push(division(3, 2));
                 }
             }
@@ -90,6 +90,9 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
     assert_eq!(filtered.rows.len(), 1);
     assert_eq!(filtered.rows[0].event.as_ref().unwrap().division, (4u64 << 32 | 9).to_string());
     assert!(filtered.warnings.iter().all(|reason| !reason.contains("left the census")));
+    let vanished = |hour| ask(hour, json!({"events": "lost", "templates": [2]}));
+    assert_eq!(vanished(102).next_change, Some(103));
+    assert!(vanished(103).warnings.iter().any(|reason| reason.contains("left the census")));
     let lost = ask(107, json!({"events": "lost"}));
     assert!(lost.warnings.iter().any(|reason| reason.contains("left the census")));
     assert_eq!(lost.rows.len(), 1);
