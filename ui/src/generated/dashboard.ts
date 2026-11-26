@@ -2369,7 +2369,11 @@ export type ConstructionEndAt = { kind: EndKind, hour: number | null, knownAt: n
 export type ConstructionOutputAt = { constructionRaw: string | null, repairRaw: string | null, reason: SpendingGap | null, beforeObservation: boolean, };
 export type ConstructionTypeChip = { token: string, firstHour: number, name: string | null, icon: string | null, };
 export type ConstructionLogRow = { key: string, hour: number, exact: boolean, observed: number, ordinal: string, live: boolean, kind: ProjectKind, source: ProjectSource, status: ConstructionStatus, owner: ConstructionOwner, buildingToken: string | null, buildingName: string | null, buildingMissing: string | null, icon: string | null, place: ConstructionPlaceAt | null, placeMissing: string | null, levels: ConstructionLevelsAt | null, levelsMissing: string | null, factories: number | null, lastFactories: number | null, factoriesMissing: string | null, createdHour: number | null, firstRead: number, costRaw: string | null, baseLevel: number | null, targetLevel: number | null, routeProvinces: number | null, end: ConstructionEndAt | null, output: ConstructionOutputAt | null, };
-export type ConstructionLogTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, buildingTypes: Array<ConstructionTypeChip>, repairIcon: string | null, costScale: number, rows: Array<ConstructionLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
+export type ConstructionLogTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, buildingTypes: Array<ConstructionTypeChip>, repairIcon: string | null,
+/**
+ * The most civilian factories one construction line takes, from the recorded defines; null with `factory_cap_missing` when they cannot be read.
+ */
+factoryCap: number | null, factoryCapMissing: string | null, costScale: number, rows: Array<ConstructionLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
 export type ConstructionBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
 export type ConstructionBreakdownReply = {
 /**

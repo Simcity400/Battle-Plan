@@ -227,6 +227,9 @@ pub struct ConstructionLogTailReply {
     pub counts: Vec<OccurrenceCount>,
     pub building_types: Vec<ConstructionTypeChip>,
     pub repair_icon: Option<String>,
+    #[doc = " The most civilian factories one construction line takes, from the recorded defines; null with `factory_cap_missing` when they cannot be read."]
+    pub factory_cap: Option<i32>,
+    pub factory_cap_missing: Option<String>,
     pub cost_scale: u32,
     pub rows: Vec<ConstructionLogRow>,
     pub missing: Vec<PlacedGap>,
@@ -513,6 +516,7 @@ struct Tail {
     chips: Vec<ConstructionTypeChip>,
     types: HashMap<u32, TypeInfo>,
     repair_icon: Option<String>,
+    factory_cap: Result<i32, String>,
     unavailable: Option<String>,
     warnings: Vec<String>,
 }
@@ -694,9 +698,19 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         chips,
         types,
         repair_icon: named.repair_icon,
+        factory_cap: factory_cap(content.catalogue().map_err(str::to_owned).and_then(|catalogue| catalogue.defines())),
         unavailable: (!recorded).then(|| "Construction was not recorded.".to_owned()),
         warnings,
     })
+}
+
+fn factory_cap(defines: Result<&content_reader_defines::defines::Defines, String>) -> Result<i32, String> {
+    let missing = |why: String| format!("The most factories a construction line takes is not recorded: {why}");
+    let cap = defines.and_then(|defines| defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").map_err(|why| why.to_string())).map_err(missing)?;
+    if cap.fract() != 0.0 || cap < 1.0 || cap > f64::from(i32::MAX) {
+        return Err(missing(format!("NProduction.MAX_CIV_FACTORIES_PER_LINE is {cap}, not a whole number of factories")));
+    }
+    Ok(cap as i32)
 }
 
 fn tail(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Tail>> {
@@ -913,6 +927,8 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
         counts: Vec::new(),
         building_types: tail.chips.iter().filter(|chip| chip.first_hour <= hour).cloned().collect(),
         repair_icon: tail.repair_icon.clone(),
+        factory_cap: tail.factory_cap.as_ref().ok().copied(),
+        factory_cap_missing: tail.factory_cap.as_ref().err().cloned(),
         cost_scale: COST_SCALE,
         rows,
         missing: answer.gaps,
@@ -1017,6 +1033,21 @@ mod tests {
     use replay_data::rows::{BuildingConstructionRow, BuildingRow, CampaignRow, ClockRow, ConstructionCompletion, ConstructionLineOutputRow, CountryLinkRow, CountryRow, LexicalTokenRow, RailwayConstructionRow, Recorded, TableId};
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     use replay_journal::synthetic::{Input, Sample};
+
+    #[test]
+    fn a_lines_factory_cap_is_the_recorded_define_and_one_that_cannot_be_read_is_named() {
+        let defines = |text: &str| {
+            let defines = content_reader_defines::defines::Defines::new().unwrap();
+            defines.load("common/defines/00_defines.lua", text.as_bytes()).unwrap();
+            defines
+        };
+        assert_eq!(factory_cap(Ok(&defines("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }"))), Ok(20), "a mod's cap, not a built-in one");
+        for text in ["NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 2.5 } }", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 0 } }", "NDefines = { NProduction = {} }"] {
+            let refused = factory_cap(Ok(&defines(text))).unwrap_err();
+            assert!(refused.starts_with("The most factories a construction line takes is not recorded"), "{text}: {refused}");
+        }
+        assert!(factory_cap(Err("no recorded content".to_owned())).unwrap_err().ends_with("no recorded content"));
+    }
 
     fn make_source() -> Source {
         let campaign = CampaignRow { id: CAMPAIGN.into() };

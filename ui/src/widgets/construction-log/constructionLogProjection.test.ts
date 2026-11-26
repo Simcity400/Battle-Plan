@@ -52,6 +52,8 @@ function sampleReply(rows: ConstructionLogRow[], overrides: Partial<Construction
     counts: [{ key: 'active', total: String(liveCount) }],
     buildingTypes: [],
     repairIcon: null,
+    factoryCap: 15,
+    factoryCapMissing: null,
     costScale: 100_000,
     rows,
     missing: [],
@@ -175,7 +177,7 @@ test('construction projection formats levels, railway routes, live factories, st
   assert.equal(rail.cells.place?.value.kind === 'known' ? rail.cells.place.value.value : null, 'Illinois – Indiana');
   assert.equal(rail.cells.levels?.value.kind === 'known' ? rail.cells.levels.value.value : null, '8 / 9');
   assert.equal(rail.cells.levels?.unitSuffix, 'levels');
-  assert.equal(rail.cells.factories?.value.kind === 'known' ? rail.cells.factories.value.value : null, '15');
+  assert.equal(rail.cells.factories?.value.kind === 'known' ? rail.cells.factories.value.value : null, '15 / 15');
   assert.equal(rail.cells.status?.statusKind, 'running');
 
   const waiting = model.rows[1]!;
@@ -216,4 +218,21 @@ test('constructionLogDeclaration sends filters, work kind, queue toggle, order, 
       countries: [{ slot: 7 }],
     });
   }
+});
+
+test('a line shows its factories of the recorded most a line takes, and the count alone when that most is not recorded', () => {
+  const row = sampleRow({ key: '1', hour: 100, live: true, factories: 3, status: 'building' });
+  const project = (overrides: Partial<ConstructionLogTailReply>, artwork = false) => {
+    const source = buildRowSourceFromHead('test:construction:cap', sampleReply([row], overrides), undefined, 150)!;
+    const model = constructionLogProjection.project(createBoundedReadView({ hour: 150, rows: new Map([['main', source]]) }), { artwork, selected: [] });
+    return model.rows[0]!;
+  };
+  const capped = project({ factoryCap: 20, factoryCapMissing: null }, true);
+  assert.deepEqual([capped.cells.factories?.value, capped.cells.factories?.unitSuffix], [{ kind: 'known', value: '3 / 20' }, 'factories'], 'the cap the recording holds, a mod’s included');
+  assert.equal(capped.cells.factories?.unitArt?.status !== undefined, true, 'the civilian factory icon comes with the figure');
+  const reason = 'The most factories a construction line takes is not recorded: no recorded content';
+  const uncapped = project({ factoryCap: null, factoryCapMissing: reason });
+  assert.deepEqual([uncapped.cells.factories?.value, uncapped.cells.factories?.unitSuffix, uncapped.cells.factories?.unitArt], [{ kind: 'known', value: '3' }, 'factories', undefined], 'never a guessed cap');
+  const tooltip = (typeof uncapped.tooltipExtra === 'function' ? uncapped.tooltipExtra() : uncapped.tooltipExtra) ?? [];
+  assert.deepEqual(tooltip.find(entry => entry.label === 'Most factories')?.value, { kind: 'notRecorded', reason });
 });

@@ -44,8 +44,8 @@ export const CONSTRUCTION_LOG_COLUMNS: readonly TableColumnSpec[] = [
     priority: 3,
     sortable: false,
     numeric: true,
-    minWidth: 112,
-    widest: ['999 factories'],
+    minWidth: 160,
+    widest: ['999 / 999 factories'],
   },
   logStatusColumn({ minWidth: 116, widest: ['Repaired and built'] }),
 ];
