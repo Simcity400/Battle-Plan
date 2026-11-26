@@ -183,7 +183,11 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
           ? `${formatScalar(reply.unattributedSucceeded, { decimals: 0 })} raid(s) up to this date have an unrecorded raider`
           : null);
       const primaryPartial = options.metric === 'succeeded' ? succeededPartial : launchedPartial;
-      const otherPartial = launchedPartial ?? succeededPartial;
+      const allUnattributedMatched = gapPartial === null
+        && options.metric === 'both'
+        && reply.unattributed === reply.unattributedLaunched
+        && reply.unattributed === reply.unattributedSucceeded;
+      const otherPartial = allUnattributedMatched ? null : (launchedPartial ?? succeededPartial);
       const value = primaryPartial
         ? partialValue(primary, primaryPartial)
         : primary === 0 ? zeroValue() : knownValue(primary);
