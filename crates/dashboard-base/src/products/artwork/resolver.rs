@@ -1603,7 +1603,6 @@ mod tests {
         replace_paths: &[&str],
         unmounted: Option<&str>,
     ) -> (Catalogue, [crate::catalogue::tests::Folder; 2]) {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, base) = folder_catalogue(&[]);
         let (_, addon) = folder_catalogue(&[]);
         if base_files.iter().chain(mod_files).any(|(path, _)| path.ends_with(".gfx")) {
@@ -1822,7 +1821,7 @@ mod tests {
         }
         match resolve_sprite(&cat, "GFX_Unsupported", 0, 48) {
             ArtResolution::Refused { reason, construct, .. } => {
-                assert_eq!(construct, "undecodable-texture");
+                assert_eq!(construct, "unsupported-texture-format");
                 assert!(reason.contains("DXGI format 61"), "{reason}");
             }
             other => panic!("expected Refused for unsupported DXGI, got {other:?}"),
@@ -1952,25 +1951,26 @@ mod tests {
 
     #[test]
     fn a_visual_mod_sprite_that_cannot_draw_falls_back_whole_never_its_metadata_over_recorded_pixels() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let (_, base) = crate::catalogue::tests::localisation_catalogue(&[]);
-        let (_, visual) = crate::catalogue::tests::localisation_catalogue(&[]);
-        crate::catalogue::texture_tests::write_sprite_program(&base.0);
-        write_entries(&base.0, &[
-            ("interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png}}"),
-            ("gfx/sample_badge.png", &png_bytes(&solid(4, 4, [200, 10, 10, 255]))),
-        ]);
-        write_entries(&visual.0, &[
-            ("interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png effectFile=gfx/FX/sample_absent.lua}}"),
-            ("gfx/sample_badge.png", &png_bytes(&solid(8, 2, [10, 200, 10, 255]))),
-        ]);
-        let layers = content_reader_layers::content::fixtures::overlay_folders(&base.0, &visual.0, "Sample Art", false);
+        use content_reader_layers::content::visual::{apply, fixtures::{Machine, never, pick}};
+        crate::test_fixtures::game::enter();
+        let machine = Machine::new("sprite_fallback");
+        crate::catalogue::texture_tests::write_sprite_program(&machine.root.join("recorded"));
+        machine.write("recorded/interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png}}");
+        machine.write("recorded/gfx/sample_badge.png", &png_bytes(&solid(4, 4, [200, 10, 10, 255])));
+        machine.local("sample.mod", r#"name="Sample Art""#, "visual");
+        machine.write("visual/interface/sample.gfx", b"spriteTypes={spriteType={name=GFX_sample_badge textureFile=gfx/sample_badge.png effectFile=gfx/FX/sample_absent.lua}}");
+        machine.write("visual/gfx/sample_badge.png", &png_bytes(&solid(8, 2, [10, 200, 10, 255])));
+        let mut layers = machine.recorded(&["recorded"]);
+        layers.layers[0].role = LayerRole::Vanilla;
+        apply(&mut layers, &machine.options, &[pick("mod/sample.mod", "Sample Art")], &[], &never()).unwrap();
         let sprites = content_reader_gfx::gfx::read(layers.presentation()).unwrap();
         let sprite = sprites.find("GFX_sample_badge").unwrap().unwrap();
+        assert!(matches!(sprite_origin(layers.presentation(), sprite), Some(ArtOrigin::VisualMod { name, .. }) if name == "Sample Art"));
         let variant = ArtRenderVariant { max_edge: 48, decode: Decode::default() };
         match resolve_sprite_type_on_layers(&layers, "english", sprite, 0, variant) {
             ArtResolution::Ready { url, frame, origin, .. } => {
                 let pixel: [u8; 4] = from_url(&url).pixels[..4].try_into().unwrap();
+                assert_eq!(origin, ArtOrigin::BaseGame);
                 let shown = (frame.texture_width, frame.texture_height, pixel);
                 assert_eq!(shown, (4, 4, [200, 10, 10, 255]), "pixels and metadata both from the recorded sprite, origin {origin:?}");
             }
@@ -1980,7 +1980,6 @@ mod tests {
 
     #[test]
     fn scope_keys_separate_stack_order_replace_paths_dlc_and_language() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, a) = folder_catalogue(&[]);
         let (_, b) = folder_catalogue(&[]);
         let ab = ResolvedLayers::from_folders(&[(&a.0, &[][..]), (&b.0, &[][..])]).unwrap();

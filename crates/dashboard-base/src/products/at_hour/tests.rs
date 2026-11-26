@@ -286,13 +286,14 @@ impl AtHour for Scoped {
     }
 
     fn reply(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        Ok(ScopedReply { scoped: engine_executable::executable_tables::current().is_some(), warnings: Vec::new() })
+        let scoped = engine_executable::executable_tables::keywords()?.id(b"fixture_panel_key").is_some();
+        Ok(ScopedReply { scoped, warnings: Vec::new() })
     }
 }
 
 #[test]
 fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables_in_scope() {
-    let executable = engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let executable = crate::test_fixtures::game::executable().word("fixture_panel_key").build();
     let (source, _) = recording();
     let holders = Arc::clone(&crate::queries::query(&source, 1).unwrap().holders);
     let mut panel = Followed::<Scoped> {

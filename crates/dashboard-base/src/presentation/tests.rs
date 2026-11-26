@@ -41,8 +41,7 @@ impl Drop for Machine {
 }
 
 fn machine(name: &str) -> (Machine, Source, ContentOptions) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_fixtures::game::enter();
     let root =
         std::env::temp_dir().join(format!("hoi4_presentation_{name}_{}", std::process::id()));
     let mods = root.with_file_name(format!(
@@ -72,7 +71,7 @@ fn machine(name: &str) -> (Machine, Source, ContentOptions) {
     write(
         &root,
         "common/defines/00_fixture.lua",
-        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, \
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, \
           NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
     );
     let art = mods.join("art");
@@ -572,12 +571,12 @@ fn work_on_any_thread_draws_the_presentation_its_request_was_admitted_under() {
     let worker_colour = std::thread::scope(|scope| {
         let (selected, selection_changed) = std::sync::mpsc::channel();
         let (worker_source, worker_admitted) = (&source, &admitted);
-        let worker = scope.spawn(move || {
+        let worker = scope.spawn(move || worker_source.in_scope(|| {
             selection_changed.recv().unwrap();
             let catalogue = catalogue::catalogue(worker_source, worker_admitted).unwrap();
             let colour = drawn(&catalogue, "GFX_icon").0;
             (catalogue.presentation.clone(), colour)
-        });
+        }));
         assert!(present(&source, &mut options, &[]));
         selected.send(()).unwrap();
         worker.join().unwrap()

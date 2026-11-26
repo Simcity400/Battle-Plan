@@ -247,7 +247,13 @@ impl Executable {
 
     pub fn effect(mut self, name: &str, value_reader: u64, key_reader: u64, class: u64) -> Self {
         let id = self.id(name);
-        self.put_effect(id, value_reader, key_reader, class);
+        self.put_effect(id, value_reader, key_reader, class, None);
+        self
+    }
+
+    pub fn named_effect_class(mut self, name: &'static str, class: u64) -> Self {
+        let id = self.id(name);
+        self.put_effect(id, 0, 0, class, Some(name));
         self
     }
 
@@ -260,11 +266,18 @@ impl Executable {
         class: u64,
     ) -> Self {
         self.put_keyword(id, name);
-        self.put_effect(id, value_reader, key_reader, class);
+        self.put_effect(id, value_reader, key_reader, class, None);
         self
     }
 
-    fn put_effect(&mut self, id: u32, value_reader: u64, key_reader: u64, class: u64) {
+    fn put_effect(
+        &mut self,
+        id: u32,
+        value_reader: u64,
+        key_reader: u64,
+        class: u64,
+        class_name: Option<&'static str>,
+    ) {
         let name = self.keywords[&id];
         let registries = &mut self.registries;
         let at = registries.effects.partition_point(|&(kept, _)| kept < id);
@@ -274,9 +287,8 @@ impl Executable {
         );
         registries.effects.insert(at, (id, name));
         registries.effect_classes.insert(at, (id, value_reader, key_reader));
-        registries
-            .effect_identities
-            .insert(at, (id, leak(&format!("synthetic_effect_class_{class:x}")), class));
+        let name = class_name.unwrap_or_else(|| leak(&format!("synthetic_effect_class_{class:x}")));
+        registries.effect_identities.insert(at, (id, name, class));
     }
 
     pub fn effect_renderer(mut self, name: &str, class: u64) -> Self {

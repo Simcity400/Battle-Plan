@@ -771,11 +771,10 @@ mod tests {
 
     #[test]
     fn doctrine_reward_content_names_generated_prose_and_recorded_conditions() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
             ),
             (
                 "common/doctrines/tracks/test.txt",

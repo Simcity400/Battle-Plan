@@ -387,7 +387,7 @@ fn reply_within(
 mod tests {
     use super::*;
     use dashboard_text::metadata::validate_campaign;
-    use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source};
+    use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source, source_with_content};
     use replay_data::{rows::TableRows, rows::tables};
     use replay_frame::{frame::SharedView, frame::TableView};
     use std::cell::Cell;
@@ -396,41 +396,23 @@ mod tests {
         Arc::clone(&source.state::<State>().lock().unwrap().frame.cache)
     }
 
-    fn product_source_with_catalogue(
-        replay: Replay,
-        catalogue: dashboard_base::catalogue::Catalogue,
-        root: &std::path::Path,
-    ) -> (Source, LoadContext) {
+    fn focus_source(frames: Vec<DecodedFrame>, root: &std::path::Path) -> (Source, LoadContext) {
+        let (recorded, context) = source_with_content(frames, root);
+        let replay = Replay::open(recorded.replay_ref().bytes().to_vec())
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
         let source = Source::from_replay(
-            dashboard_base::SourceKey {
-                source_id: "focus-frame-fixture".into(),
-                revision: "1".into(),
-            },
-            "synthetic.battleplan".into(),
+            recorded.key().clone(),
+            recorded.path().to_owned(),
             Arc::new(replay),
             &AtomicBool::new(false),
-        )
-        .unwrap();
-        let content = dashboard_base::products::ContentOptions {
-            options: content_reader_layers::ResolveOptions {
-                game_dir: root.to_owned(),
-                user_dir: root.join("user"),
-                cache_dir: root.join("cache"),
-            },
-            allow_unverified: true,
-            presentation: Default::default(),
-        };
-        dashboard_base::catalogue::set_test_catalogue(&source, &content, Arc::new(catalogue));
-        (
-            source,
-            LoadContext {
-                content: Some(content),
-            },
-        )
+        ).unwrap();
+        (source, context)
     }
 
     fn icon_product_source(
-        replay: Replay,
+        frames: Vec<DecodedFrame>,
     ) -> (Source, LoadContext, [dashboard_base::catalogue::tests::Folder; 2]) {
         use dashboard_base::catalogue::texture_tests::{png_bytes, texture_catalogue};
         use content_reader_image::Rgba8Image;
@@ -441,7 +423,7 @@ mod tests {
                 pixels: vec![value, 0, 0, 255],
             })
         };
-        let (catalogue, folders) = texture_catalogue(
+        let (_, folders) = texture_catalogue(
             &[
                 (
                     "common/national_focus/synthetic.txt",
@@ -453,7 +435,7 @@ mod tests {
                 ),
                 (
                     "common/defines/synthetic.lua",
-                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NFocus={FOCUS_POINT_DAYS=5}}",
                 ),
                 (
                     "common/ideologies/synthetic.txt",
@@ -473,7 +455,7 @@ mod tests {
                 ("gfx/mod/conditional.png", image(47)),
             ],
         );
-        let (source, context) = product_source_with_catalogue(replay, catalogue, &folders[1].0);
+        let (source, context) = focus_source(frames, &folders[1].0);
         (source, context, folders)
     }
 
@@ -522,15 +504,12 @@ mod tests {
 
     #[test]
     fn static_icon_only_product_skips_scoped_titles() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use dashboard_base::catalogue::texture_tests::from_url;
         let mut frame = focus_scale_frame(100, 24, 12, &["static"]);
         for table in [TableId::States, TableId::Provinces] {
             frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
         }
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-        let (source, context, _folders) = icon_product_source(replay);
+        let (source, context, _folders) = icon_product_source(vec![frame]);
         let cancelled = AtomicBool::new(false);
         let basic = read_frame(source.replay_ref(), 1, 100, false, &cancelled).unwrap();
         shared_frames(&source).lock().unwrap().retain(basic, false, &cancelled).unwrap();
@@ -551,7 +530,7 @@ mod tests {
         );
         let item = &reply.items[0];
         assert_eq!(item.artwork.token, "static");
-        assert_eq!(item.artwork.base_duration_days, Some(14.0));
+        assert_eq!(item.artwork.base_duration_days, Some(10.0));
         assert_eq!(
             from_url(item.artwork.icon.as_deref().unwrap()).pixels[0],
             23
@@ -604,11 +583,8 @@ mod tests {
 
     #[test]
     fn every_projection_names_a_focus_missing_from_recorded_content() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = focus_scale_frame(100, 4, 2, &["static"]);
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-        let (source, context, _folders) = icon_product_source(replay);
+        let (source, context, _folders) = icon_product_source(vec![frame]);
         let cancelled = AtomicBool::new(false);
         for (text_only, include_descriptions, icons_only) in [
             (Some(false), Some(false), Some(true)),
@@ -649,7 +625,7 @@ mod tests {
             ),
             (
                 "common/defines/synthetic.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NFocus={FOCUS_POINT_DAYS=5}}",
             ),
             (
                 "localisation/synthetic_l_english.yml",
@@ -667,14 +643,11 @@ mod tests {
 
     #[test]
     fn each_focus_database_answers_its_own_art_and_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         for refused in [false, true] {
-            let (catalogue, folder) =
+            let (_, folder) =
                 dashboard_base::catalogue::tests::folder_catalogue(&database_files(refused));
             let frame = focus_scale_frame(100, 4, 2, &["shared"]);
-            let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-            let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
+            let (source, context) = focus_source(vec![frame], &folder.0);
             let cancelled = AtomicBool::new(false);
             let tag = String::from_utf8(scale_tag(2)).unwrap();
             let load = |database, text_only| {
@@ -719,7 +692,7 @@ mod tests {
                 }
                 assert_eq!(
                     item(&national, "shared").artwork.base_duration_days,
-                    Some(14.0)
+                    Some(10.0)
                 );
                 let continuous = load(FocusDatabase::Continuous, text_only);
                 assert_eq!(continuous.database, FocusDatabase::Continuous);
@@ -752,10 +725,8 @@ mod tests {
     fn focus_history_text_keeps_each_database_apart() {
         use dashboard_base::products::{CountryParams, Product};
         use crate::products::national_focus::NationalFocus;
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         for refused in [false, true] {
-            let (catalogue, folder) =
+            let (_, folder) =
                 dashboard_base::catalogue::tests::folder_catalogue(&database_files(refused));
             let mut frame = focus_scale_frame(100, 4, 2, &["shared"]);
             if let TableView::Complete(TableRows::Focus(rows)) =
@@ -763,11 +734,7 @@ mod tests {
             {
                 rows[2].continuous = Some(b"shared".to_vec());
             }
-            let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])])
-                .unwrap()
-                .into_timelines(&Default::default())
-                .unwrap();
-            let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
+            let (source, context) = focus_source(vec![frame], &folder.0);
             let params = CountryParams {
                 branch_id: "1".into(),
                 country: Country::from(String::from_utf8(scale_tag(2)).unwrap()),
@@ -794,7 +761,7 @@ mod tests {
                 [(
                     "shared".to_owned(),
                     Some("National title".to_owned()),
-                    Some(14.0)
+                    Some(10.0)
                 )]
             );
             assert_eq!(
@@ -803,7 +770,7 @@ mod tests {
                     .iter()
                     .map(|item| (item.token.as_str(), item.base_duration_days))
                     .collect::<Vec<_>>(),
-                [("shared", Some(14.0))]
+                [("shared", Some(10.0))]
             );
             assert_eq!(
                 texts(&reply.continuous_static_text),
@@ -818,8 +785,6 @@ mod tests {
 
     #[test]
     fn conditional_icon_only_product_uses_dated_operands_and_preserves_refusals() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use dashboard_base::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
         let mut frames: Vec<_> = (100..103)
@@ -845,8 +810,7 @@ mod tests {
             reason: "synthetic party read failed".into(),
         }
         .into();
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let (source, context, _folders) = icon_product_source(replay);
+        let (source, context, _folders) = icon_product_source(frames);
         let cancelled = AtomicBool::new(false);
         let shared = shared_frames(&source);
         for hour in 100..103 {
@@ -875,7 +839,7 @@ mod tests {
             let reply = load(&source, &params, &context, &cancelled).unwrap();
             assert_eq!(reply.items.len(), 1);
             let item = &reply.items[0];
-            assert_eq!(item.artwork.base_duration_days, Some(14.0));
+            assert_eq!(item.artwork.base_duration_days, Some(10.0));
             assert!(item.artwork.name.is_none());
             assert!(item.artwork.description.is_none());
             if let Some(pixel) = pixel {

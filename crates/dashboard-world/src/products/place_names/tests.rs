@@ -26,12 +26,11 @@ fn frame(hour: i32) -> DecodedFrame {
 
 #[test]
 fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a_reason() {
-    engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
         ("hoi4.exe", "test"),
         ("user/settings.txt", "language=l_english force_pow2_textures=no"),
         ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
-        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, NBuildings = { MAX_BUILDING_LEVELS = 13 } }"),
         ("map/default.map", "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp"),
         ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
         ("history/states/mod.txt", "state={id=64 name=MOD_STATE}"),

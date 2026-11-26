@@ -342,14 +342,6 @@ pub fn game_dev_master(keys: &content_reader_settings::settings::SettingsKeys) -
 pub fn read_game(user: &std::path::Path) -> io::Result<Game> {
     parse_game_keys(&content_reader_settings::settings::read_keys(user)?)
 }
-#[cfg(test)]
-fn parse_game(bytes: &[u8]) -> io::Result<Game> {
-    parse_game_keys(&content_reader_settings::settings::SettingsKeys::read(bytes))
-}
-#[cfg(test)]
-fn parse_game_graphics(bytes: &[u8]) -> io::Result<MapGraphics> {
-    parse_game(bytes).map(|game| game.graphics)
-}
 fn parse_game_keys(keys: &content_reader_settings::settings::SettingsKeys) -> io::Result<Game> {
     if keys.is_absent() {
         return Ok(Game {
@@ -420,6 +412,30 @@ fn parse_game_keys(keys: &content_reader_settings::settings::SettingsKeys) -> io
 mod tests {
     use super::*;
     use crate::protocol::{CounterFilter, MapAudioOverrides};
+
+    fn parse_game(bytes: &[u8]) -> io::Result<Game> {
+        use engine_executable::executable_tables::{self, Tables};
+
+        static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
+        let tables = TABLES.get_or_init(|| {
+            crate::test_fixtures::game::executable()
+                .words([
+                    "ambient_volume", "counter_color_mode", "dev_master_volume", "draw_buildings",
+                    "draw_citysprawl", "draw_map_full_res", "draw_rivers", "draw_shadows", "draw_sky",
+                    "draw_trees", "draw_units", "draw_water_reflections", "draw_weather_effects",
+                    "graphics", "hide_daynight_cycle", "high_gfx_shaders", "maprenderingoptions",
+                    "master_volume", "multi_sampling", "music_volume", "shadows", "show_allied_plans",
+                    "sound_fx_volume", "template_counter", "texture_quality", "voice_volume",
+                ])
+                .build()
+        });
+        executable_tables::enter(Some(*tables));
+        parse_game_keys(&content_reader_settings::settings::SettingsKeys::read(bytes))
+    }
+
+    fn parse_game_graphics(bytes: &[u8]) -> io::Result<MapGraphics> {
+        parse_game(bytes).map(|game| game.graphics)
+    }
 
     #[test]
     fn sample_counts_are_unknown_until_the_renderer_reports_them() {
@@ -658,8 +674,6 @@ mod tests {
 
     #[test]
     fn imports_real_graphics_and_rejects_invalid_quality() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let settings = parse_game_graphics(b"template_counter=1 graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no draw_map_full_res=no}").unwrap();
         assert_eq!(settings.nato_counters, Some(true));
         assert_eq!(settings.samples, 1);
@@ -696,8 +710,6 @@ mod tests {
 
     #[test]
     fn imports_the_map_mode_choices_and_volumes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = parse_game(
             b"hide_daynight_cycle=yes show_allied_plans=no master_volume=80.000000 \
               ambient_volume=50.4 sound_fx_volume=25 voice_volume=0 music_volume=49.6 \
@@ -741,8 +753,6 @@ mod tests {
 
     #[test]
     fn a_fresh_install_imports_as_the_defaults() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let fresh = parse_game(
             b"graphics={ shadows=no multi_sampling=4 }
               sound_fx_volume=100.000000 music_volume=75.000000 master_volume=100.000000
@@ -766,8 +776,6 @@ mod tests {
 
     #[test]
     fn map_shadow_option_is_independent_of_device_shadow_preference() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         for device in ["yes", "no"] {
             for (map, expected) in [("yes", true), ("no", false)] {
                 let input = format!(

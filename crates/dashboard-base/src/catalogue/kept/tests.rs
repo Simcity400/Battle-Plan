@@ -96,8 +96,7 @@ const GFX: &str = r#"spriteTypes = {
 
 #[test]
 fn kept_sprites_read_back_as_every_kind_was_declared() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_fixtures::game::enter();
     let read = SpriteSet::new(&[(
         "interface/test.gfx".to_owned(),
         content_reader_gui::gui::native::sprites::read_sprites(GFX.as_bytes()),
@@ -185,8 +184,7 @@ fn open(path: &std::path::Path, options: &ContentOptions) -> crate::Source {
 
 #[test]
 fn a_cold_source_reads_the_kept_catalogue_as_it_was_built() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_fixtures::game::enter();
     let (root, path, options) = recording_with_facts(
         "cold",
         &[

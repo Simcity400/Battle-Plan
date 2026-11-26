@@ -79,12 +79,11 @@ mod tests {
     fn opened_with(
         files: &[(&str, &str)],
     ) -> (Arc<Source>, ContentOptions, catalogue::tests::Folder) {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut all = vec![
             (
                 "common/defines/work.lua",
                 "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},\
-                 NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                 NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             ("common/ideas/work.txt", "ideas={country={mod_a={}}}"),
         ];

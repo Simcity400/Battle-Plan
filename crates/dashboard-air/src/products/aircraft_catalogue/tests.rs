@@ -177,8 +177,6 @@ const PLANES: &[(&str, &str)] = &[
 ];
 
 fn built(designs: &[(String, String)]) -> (Built, impl Drop) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = dashboard_base::catalogue::tests::folder_catalogue(PLANES);
     (Built::new(&Arc::new(catalogue), designs, &BTreeMap::new()), folder)
 }
@@ -523,44 +521,47 @@ fn a_visual_mod_reskinning_a_plane_names_it_as_the_viewer_draws_it() {
 }
 
 #[test]
-fn a_plane_a_visual_mod_breaks_is_flown_from_the_recording_as_the_viewer_does() {
+fn a_packed_recording_keeps_its_aircraft_declarations_when_a_visual_mod_replaces_them() {
     use dashboard_base::test_fixtures::visual_mods::{Machine, select};
     let machine = Machine::new("aircraft_recorded_fallback");
     for (path, text) in base_planes() {
         machine.write(path, text.as_bytes());
     }
+    machine.write(
+        "gfx/entities/glider.asset",
+        br#"entity = { name = "test_glider" }"#,
+    );
     machine.write_mod(
         "Broken",
         "gfx/entities/planes.asset",
-        br#"
-        entity = { name = "vanilla_plane_entity" pdxmesh = "fighter_mesh" state = { name = idle animation_speed = 0 } }
-        entity = { name = "reskinned_plane_entity" }
-        entity = { name = "mod_plane_entity" pdxmesh = "fighter_mesh" }
-        "#,
+        br#"entity = { name = "vanilla_plane_entity" pdxmesh = "fighter_mesh" state = { name = idle animation_speed = 0 } }
+            entity = { name = "reskinned_plane_entity" }
+            entity = { name = "mod_plane_entity" pdxmesh = "fighter_mesh" }"#,
+    );
+    machine.write_mod(
+        "Broken",
+        "gfx/entities/glider.asset",
+        br#"entity = { name = "test_glider" pdxmesh = "fighter_mesh" }"#,
     );
     let (source, mut options) = machine.open();
     select(&source, &mut options, &["Broken"]);
     let catalogue = dashboard_base::catalogue::catalogue(&source, &options).unwrap();
-    let designs = ["vanilla_plane_entity", "reskinned_plane_entity", "mod_plane_entity"]
+    assert_eq!(catalogue.content.layers.presentation().visual_mod_names(), ["Broken"]);
+    let designs = ["vanilla_plane_entity", "reskinned_plane_entity", "mod_plane_entity", "test_glider"]
         .map(|model| ("fighter_equipment_1".to_owned(), model.to_owned()));
     let reply = page(&Built::new(&catalogue, &designs, &BTreeMap::new()), "", 0, 100, None);
     let entry = |name: &str| reply.entries.iter().find(|entry| entry.name == name).unwrap();
-    let broken = |model: &str| matches!(&entry(model).origin, Some(AircraftOrigin::Mod { name, .. }) if name == "Broken");
-    assert_eq!(
-        (&entry("vanilla_plane_entity").refusal, &entry("vanilla_plane_entity").origin),
-        (&None, &Some(AircraftOrigin::Game { dlc: None })),
-        "the viewer flies the recorded declaration the mod's refused one shadows"
-    );
-    assert_eq!(
-        entry("reskinned_plane_entity").refusal.as_ref().map(|refusal| refusal.kind),
-        Some(AircraftRefusalKind::NoGeometry),
-        "the viewer loads the mod's meshless entity and refuses to fly it, so no recorded fallback applies"
-    );
-    assert!(broken("reskinned_plane_entity"), "{:?}", entry("reskinned_plane_entity").origin);
-    assert!(entry("mod_plane_entity").refusal.is_none() && broken("mod_plane_entity"));
+    for name in ["vanilla_plane_entity", "reskinned_plane_entity"] {
+        assert_eq!(entry(name).refusal, None, "{name}");
+        assert_eq!(entry(name).origin, Some(AircraftOrigin::Game { dlc: None }), "{name}");
+    }
+    let glider = entry("test_glider");
+    assert_eq!(glider.refusal.as_ref().map(|why| why.kind), Some(AircraftRefusalKind::NoGeometry));
+    assert_eq!(glider.origin, Some(AircraftOrigin::Game { dlc: None }));
+    assert_eq!(entry("mod_plane_entity").refusal.as_ref().map(|why| why.kind), Some(AircraftRefusalKind::Unregistered));
     assert_eq!(
         reply.refusals.iter().map(|refusal| (refusal.kind, refusal.count)).collect::<Vec<_>>(),
-        [(AircraftRefusalKind::NoGeometry, 1)]
+        [(AircraftRefusalKind::Unregistered, 1), (AircraftRefusalKind::NoGeometry, 1)]
     );
 }
 

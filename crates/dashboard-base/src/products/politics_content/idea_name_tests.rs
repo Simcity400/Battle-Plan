@@ -3,8 +3,6 @@ use std::sync::Arc;
 
 #[test]
 fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/mod.lua",
@@ -46,8 +44,6 @@ fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
 
 #[test]
 fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/mod.lua",
@@ -91,8 +87,6 @@ fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
 
 #[test]
 fn an_idea_is_named_for_its_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/test_l_english.yml",
@@ -210,8 +204,6 @@ fn an_idea_is_named_for_its_country() {
 
 #[test]
 fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::identity::NamingCountry;
     use replay_data::{rows::Recorded, rows::TableId, rows::TableRows, rows::tables};
     use replay_frame::frame::TableView;
@@ -335,8 +327,6 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
 
 #[test]
 fn a_dynamic_country_in_civil_war_skips_its_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::identity::NamingCountry;
     use replay_data::{
         rows::CountryCivilWarRow, rows::CountryCounterInputRow, rows::CountryWarRow, rows::TableId,
@@ -475,8 +465,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
 
 #[test]
 fn a_spirit_without_localisation_says_which_key_is_missing() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "localisation/test_l_english.yml",
