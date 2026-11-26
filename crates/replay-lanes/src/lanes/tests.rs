@@ -1038,3 +1038,190 @@ fn format_143_recording_opens_withholds_variant_tables_and_unverified_required_t
         )]
     );
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Power {
+    Summarized,
+    Bare,
+    WithoutFalls,
+}
+
+fn power_recording(stored: Power) -> (Recording, usize) {
+    use replay_journal::synthetic::{Input, Sample};
+    use replay_data::rows::CountryRow;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 119, 6)];
+    let column = field(TableId::Countries, "political_power_raw");
+    let mut registry = replay_recording::summaries::registry().unwrap();
+    let (_, shape) = registry.iter_mut().find(|(table, _)| *table == TableId::Countries.index()).unwrap();
+    let Shape::Values(columns) = shape else { panic!("Countries has no value summaries") };
+    let power = |held: &summary::Source| matches!(held, summary::Source::Cell(cell) if *cell == column);
+    match stored {
+        Power::Summarized => {}
+        Power::Bare => columns.retain(|held| !power(&held.source)),
+        Power::WithoutFalls => columns.iter_mut().filter(|held| power(&held.source)).for_each(|held| held.aggregates &= !summary::aggregate::FALLS),
+    }
+    let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"power synthetic", &RUNS, &[TableId::Countries], registry, |synthetic, _, ordinal| {
+        let rows: Vec<CountryRow> = (1..=8_u32)
+            .filter(|&id| (ordinal / (29 + id * 13)) % 5 != 4)
+            .map(|id| CountryRow { id, political_power_raw: Some(if ordinal == 0 { 100 } else { i64::from((ordinal / 24 + id * 5) % 11) * 3 }), ..Default::default() })
+            .collect();
+        let input = if ordinal == 0 {
+            Input::Snapshot { rows: &rows[..3], partial: Some(2), read: true, sample: Sample::FromReadBit }
+        } else {
+            Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }
+        };
+        synthetic.table(TableId::Countries, input).unwrap();
+    });
+    (Recording::open(bytes).unwrap(), column)
+}
+
+#[test]
+fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themselves() {
+    let (bare, column) = power_recording(Power::Bare);
+    let (summarized, _) = power_recording(Power::Summarized);
+    let source = summary::Source::Cell(column).id();
+    let held = bare.run(0).unwrap();
+    let (from, to) = (held.first_hour, held.last_hour());
+    let shown = |chart: &Chart| chart.values.iter().map(|bin| (bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>();
+    for (after, until) in [(from + 1, to), (from + 2, to), (from + 7, to), (from + 1, from + 23)] {
+        let chart = chart_at(&bare, 0, TableId::Countries, source, None, after, until, 0, 6).unwrap();
+        let summed = chart_at(&summarized, 0, TableId::Countries, source, None, after, until, 0, 6).unwrap();
+        assert_eq!((&chart.keys, shown(&chart), &chart.totals), (&summed.keys, shown(&summed), &summed.totals), "from {after}: the walk reads the hours the summary folds, from what a truncated hour read");
+    }
+    assert!(chart_at(&bare, 0, TableId::Countries, source, None, from, to, 1, 100).is_err(), "a bin of part of a summary bucket is refused");
+    for (level, bin_hours, (from, to)) in [(1, summary::bucket_hours(1) * 4, (from, to)), (2, summary::bucket_hours(2), (from, to)), (2, summary::bucket_hours(2), (200, to - 5))] {
+        let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
+        let summed = chart_at(&summarized, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
+        assert!(chart.walked > 0, "the hours the pieces do not summarize are walked");
+        assert!((0..chart.keys.len()).all(|at| chart.totals(at).is_some()), "political power counts its changes and falls, walked or summarized");
+        let walked = chart_at(&bare, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
+        assert_eq!((&chart.keys, &chart.values, &chart.life, &chart.totals), (&walked.keys, &walked.values, &walked.life, &walked.totals));
+        assert_eq!((&chart.keys, shown(&chart), &chart.life), (&summed.keys, shown(&summed), &summed.life), "level {level}: the walk shows what the summary shows");
+        assert_eq!(chart.totals, summed.totals, "level {level}: the walk counts only what the summary declares");
+        let keys = [1_u128, 2, 7];
+        let keyed = chart_at(&bare, 0, TableId::Countries, source, Some(&keys), from, to, level, bin_hours).unwrap();
+        let keyed_summed = chart_at(&summarized, 0, TableId::Countries, source, Some(&keys), from, to, level, bin_hours).unwrap();
+        assert_eq!((&keyed.keys, shown(&keyed), &keyed.life), (&keyed_summed.keys, shown(&keyed_summed), &keyed_summed.life), "level {level}: a keyed walk shows what the summary shows");
+    }
+    let (window, until) = (from + 170, from + 200);
+    let walked = chart_at(&summarized, 0, TableId::Countries, source, None, window, until, WALKED, 6).unwrap();
+    let summed = chart_at(&summarized, 0, TableId::Countries, source, None, window, until, 0, 6).unwrap();
+    assert!(!walked.keys.contains(&1), "country 1 is absent from these hours");
+    assert_eq!(summed.keys, walked.keys, "a key the pieces hold but these hours never saw is no row");
+    let (partial, _) = power_recording(Power::WithoutFalls);
+    let stored = chart_at(&partial, 0, TableId::Countries, source, None, from, to, 1, summary::bucket_hours(1) * 4).unwrap();
+    let whole = chart_at(&summarized, 0, TableId::Countries, source, None, from, to, 1, summary::bucket_hours(1) * 4).unwrap();
+    assert!(stored.walked > 0, "a piece without a declared aggregate is walked");
+    assert_eq!(stored.totals, whole.totals, "falls the pieces do not store are counted, never zero");
+    let floored = power_recording(Power::Summarized).0.with_coverage_from(TableId::Countries, 0, 10, "withheld before 129");
+    assert!(chart_at(&floored, 0, TableId::Countries, source, None, from - 19, to, 0, 6).is_err(), "an hour before the run is refused even past a withheld floor");
+    assert!(chart_at(&floored, 0, TableId::Countries, source, None, from - 19, from + 11, 0, 6).is_err(), "and when the floor leaves no bin to read");
+    assert!(top(&floored, 0, TableId::Countries, column as u32, from - 19, from + 11, 5, 1, By::Max).is_err(), "a top view checks the asked first hour too");
+    assert!(chart_at(&bare, 0, TableId::Countries, source, None, from, to, 16, 6).is_err(), "a level the format cannot hold is refused");
+    let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
+    for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last), (2, 1, By::Last), (4, 2, By::Last)] {
+        for start in [from, from + 2] {
+            let read = values(top(&bare, 0, TableId::Countries, column as u32, start, to, width, n, by).unwrap());
+            assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, start, to, width, n, by).unwrap()), "from {start} width {width} n {n} {by:?}");
+        }
+    }
+}
+
+#[test]
+fn a_coarse_piece_ending_inside_a_bucket_does_not_reach_past_its_last_hour() {
+    use replay_journal::synthetic::{Input, Sample};
+    use replay_data::rows::CountryRow;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 103, 17)];
+    let column = field(TableId::Countries, "political_power_raw");
+    let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"coarse edge", &RUNS, &[TableId::Countries], replay_recording::summaries::registry().unwrap(), |synthetic, _, ordinal| {
+        let hour = 103 + ordinal as i64;
+        let mut rows = vec![CountryRow { id: 1, political_power_raw: Some(5), ..Default::default() }];
+        if hour <= 11_623 {
+            rows.push(CountryRow { id: 9, political_power_raw: Some(if hour <= 11_622 { 20 } else { 10 }), ..Default::default() });
+        }
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let source = summary::Source::Cell(column).id();
+    let held = recording.run(0).unwrap();
+    let bin_hours = summary::bucket_hours(1) * 4;
+    let edge = 11_622;
+    let coarse = chart_at(&recording, 0, TableId::Countries, source, None, held.first_hour, edge, 1, bin_hours).unwrap();
+    let walked = chart_at(&recording, 0, TableId::Countries, source, None, held.first_hour, edge, WALKED, bin_hours).unwrap();
+    assert_eq!((coarse.pieces, coarse.walked), (1, 0), "one coarse piece ends at the asked hour");
+    let last = |chart: &Chart| {
+        let at = chart.keys.iter().position(|&held| held == 9).unwrap();
+        let bin = *chart.values(at).last().unwrap();
+        (bin.hours, bin.first, bin.last, bin.first_bucket, bin.last_bucket)
+    };
+    assert_eq!(last(&coarse), last(&walked), "the piece's last bucket is the last one it read, not the end of its coarse bucket");
+}
+
+#[test]
+fn a_walked_mark_ends_where_the_piece_after_it_begins_and_a_walk_between_pieces_keeps_their_ends() {
+    let spans = [(11_623, 12_342, summary::bucket_hours(1))];
+    let grid = WalkGrid { spans: &spans, ends: &[12_342], covered: &[] };
+    assert!(grid.mark(11_622) < grid.mark(11_623), "an hour before a piece is marked before the piece's own hours");
+    assert_eq!(grid.mark(11_623), hour_mark(11_711), "a piece's hour is marked at the end of the piece's own bucket");
+    let unfolded = [(823, 1_542, summary::bucket_hours(0))];
+    let edge = WalkGrid { spans: &unfolded, ends: &[824], covered: &[] };
+    assert!(edge.mark(822) < edge.mark(823), "a piece holding the measure bounds the walk's marks even where it folds nothing");
+    let bare = WalkGrid { spans: &[], ends: &[2_879], covered: &[] };
+    assert!(bare.mark(2_000) < bare.mark(2_879), "hours no piece covers are marked at their own six hours, so a later reading ranks later");
+    let constant = |value: i64, hour: i64| {
+        let mut fold = summary::Fold::constant(value, 1, summary::bucket_of(hour, 0));
+        fold.last_bucket = summary::bucket_of(hour, 0);
+        fold
+    };
+    let mut held = Bin::default();
+    held.add(&constant(10, 1_000));
+    held.add(&constant(30, 3_000));
+    add_walked(&mut held, &constant(20, 2_000), &[(900, 1_100), (2_900, 3_100)], (2_000, 2_000));
+    assert_eq!((held.first, held.last, held.hours), (10, 30, 3), "a walk between two summarized pieces is neither first nor last");
+}
+
+#[test]
+fn a_chart_bucket_split_between_a_walked_range_and_a_piece_keeps_its_first_and_last_in_hour_order() {
+    const KEY: u128 = 7;
+    for (summarized, walked, covered, ends) in [((823, 828), (822, 823), (823, 1543), (10, 20)), ((822, 827), (827, 828), (103, 827), (20, 10))] {
+        let mut chart = Chart { level: 0, bin_hours: 6, first_bin_hour: 822, bins: 1, keys: vec![KEY], values: vec![Bin::default()], totals: Vec::new(), aggregates: 0, life: vec![0], pieces: 1, walked: 0 };
+        let mut piece = summary::Fold::constant(20, (summarized.1 - summarized.0) as u32, summary::bucket_of(summarized.0, 0));
+        piece.last_bucket = summary::bucket_of(summarized.1 - 1, 0);
+        chart.values[0].add(&piece);
+        let mut walk = Walk::new(None, None, 822, 6, 1);
+        walk.add_value(KEY, 10, walked.0, walked.1);
+        let mut rows = HashMap::default();
+        rows.insert(KEY, 0);
+        chart.merge_walk(walk, &[covered], &mut rows);
+        let bin = chart.values(0)[0];
+        assert_eq!((bin.first, bin.last, bin.hours), (ends.0, ends.1, 6), "walked hours {walked:?} beside a piece from {}", covered.0);
+    }
+}
+
+#[test]
+fn a_history_at_a_truncated_first_hour_holds_the_rows_that_hour_read() {
+    use replay_journal::synthetic::{Input, Sample};
+    use replay_data::rows::CountryRow;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 100, 1)];
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"truncated start", &RUNS, &[TableId::Countries], |synthetic, _, ordinal| {
+        let rows: Vec<CountryRow> = (1..=6).map(|id| CountryRow { id, tag: format!("tag {id} {}", ordinal / 90).into_bytes(), ..Default::default() }).collect();
+        let input = if ordinal % 61 == 0 {
+            Input::Snapshot { rows: &rows[..3], partial: Some(2), read: true, sample: Sample::FromReadBit }
+        } else {
+            Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }
+        };
+        synthetic.table(TableId::Countries, input).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let tag = field(TableId::Countries, "tag");
+    let held = recording.run(0).unwrap();
+    let history = history(&recording, 0, TableId::Countries, &[tag], Keys::All, held.first_hour, held.last_hour()).unwrap();
+    for hour in [held.first_hour, held.first_hour + 61] {
+        let decoded = crate::at::frame(&recording, 0, hour, &[crate::at::Read::all(TableId::Countries)]).unwrap();
+        let replay_frame::frame::TableView::Truncated { rows, .. } = &*decoded.tables[TableId::Countries.index()] else { panic!("hour {hour} is not truncated") };
+        let read: Vec<u128> = rows.rows::<replay_data::rows::tables::Countries>().unwrap().iter().map(|row| u128::from(row.id)).collect();
+        let shown: Vec<u128> = history.keys.iter().filter(|(_, steps)| steps.iter().rev().find(|step| step.hour <= hour).is_some_and(|step| step.cells.is_some())).map(|(key, _)| *key).collect();
+        assert!(!read.is_empty());
+        assert_eq!(shown, read, "hour {hour}");
+    }
+}

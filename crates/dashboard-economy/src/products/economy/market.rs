@@ -6,7 +6,7 @@ use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::{
-    identity::{Holder, Holders},
+    identity::{Holder, Holders, NOT_HELD_AT_HOUR, NOT_IN_HISTORY, TAG_UNLINKED},
     series::ranked::GroupSelection,
 };
 use dashboard_world::products::group_members::GroupsAt;
@@ -140,7 +140,11 @@ pub struct LeaseTerms {
     #[doc = " The handle, hexadecimal."]
     pub id: String,
     pub giver: Option<String>,
+    #[doc = " Why `giver` is null at this hour."]
+    pub giver_missing: Option<String>,
     pub receiver: Option<String>,
+    #[doc = " Why `receiver` is null at this hour."]
+    pub receiver_missing: Option<String>,
     pub revision: String,
     pub active_since: i32,
     pub last_delivery: i32,
@@ -164,6 +168,8 @@ pub struct MarketLendLeaseReply {
     pub offers: Option<Vec<MarketOffer>>,
     pub contracts: Option<Vec<MarketTerms>>,
     pub agreements: Option<Vec<LeaseTerms>>,
+    #[doc = " Why `agreements` may lack rows at this hour: some were not read, so an empty list is not proof of none."]
+    pub agreements_missing: Option<String>,
     #[doc = " Why purchase progress is not known at the hour, when contracts are shown and it is not."]
     pub purchases_missing: Option<String>,
     #[doc = " Rows left out because a country on the chosen side has no country at the hour: a chosen country may be theirs."]
@@ -194,6 +200,15 @@ impl<'a> Parties<'a> {
 
     pub(crate) fn tag(&self, raw: u32) -> Option<String> {
         self.holders.slot_tag(self.slot(raw)?, self.hour).map(str::to_owned)
+    }
+
+    pub(crate) fn named(&self, raw: u32) -> (Option<String>, Option<String>) {
+        let Some(links) = self.links else { return (None, Some("Country links are not recorded at this hour".to_owned())) };
+        let Some(slot) = link_slot(links, raw) else { return (None, Some(format!("Country reference {raw} has no country link at this hour"))) };
+        match self.holders.slot_tag(slot, self.hour) {
+            Some(tag) => (Some(tag.to_owned()), None),
+            None => (None, Some(self.holders.unnamed(&Country::Slot(slot), self.hour))),
+        }
     }
 }
 
@@ -231,12 +246,15 @@ fn grants<'r>(rows: impl IntoIterator<Item = &'r MarketSubsidy>, parties: &Parti
         .collect()
 }
 
-pub(crate) fn lease_terms(row: &LendLeaseAgreementRow, tag: impl Fn(u32) -> Option<String>, named: &Named) -> LeaseTerms {
+pub(crate) fn lease_terms(row: &LendLeaseAgreementRow, party: impl Fn(u32) -> (Option<String>, Option<String>), named: &Named) -> LeaseTerms {
+    let ((giver, giver_missing), (receiver, receiver_missing)) = (party(row.country), party(row.receiver));
     LeaseTerms {
         key: lease_key(row).to_string(),
         id: format!("{:016x}", row.id),
-        giver: tag(row.country),
-        receiver: tag(row.receiver),
+        giver,
+        giver_missing,
+        receiver,
+        receiver_missing,
         revision: row.revision.to_string(),
         active_since: row.active_since,
         last_delivery: row.last_delivery,
@@ -299,24 +317,34 @@ fn section<'f, R>(shown: bool, rows: io::Result<&'f [R]>, label: &str, warnings:
     rows.map_err(|error| warnings.push(format!("{label} are not recorded at this hour: {error}"))).ok()
 }
 
-fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Option<BTreeSet<u32>> {
+fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Result<Option<BTreeSet<u32>>, String> {
     if tags.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(slots(holders, tags, hour, warnings))
+    slots(holders, tags, hour, warnings).map(Some)
 }
 
-fn slots(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> BTreeSet<u32> {
+fn slots(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Result<BTreeSet<u32>, String> {
     let mut slots = BTreeSet::new();
     for tag in tags {
         match holders.at(tag, hour).map(|run| run.holder) {
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot);
             }
-            _ => warnings.push(holders.say(tag, hour, |name| format!("{name} is not held by any country at this hour"))),
+            Some(Holder::Unresolved) => {
+                let reason = holders.unnamed(tag, hour);
+                return Err(if reason == NOT_HELD_AT_HOUR || reason == NOT_IN_HISTORY { format!("Who holds {} is not known: {TAG_UNLINKED}", tag.key()) } else { reason });
+            }
+            None => {
+                let reason = holders.unnamed(tag, hour);
+                if reason != NOT_HELD_AT_HOUR && reason != NOT_IN_HISTORY {
+                    return Err(reason);
+                }
+                warnings.push(holders.say(tag, hour, |name| format!("{name} is not held by any country at this hour")));
+            }
         }
     }
-    slots
+    Ok(slots)
 }
 
 pub struct MarketLendLease;
@@ -371,6 +399,17 @@ impl AtHour for MarketLendLease {
         out
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        names::naming_columns(table)
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        match table {
+            TableId::LendLeaseAgreements => Some((0..table.field_count()).filter(|&column| !matches!(table.field_name(column), Some("fuel_sent_raw" | "fuel_sunk_raw"))).collect()),
+            _ => Self::columns(table),
+        }
+    }
+
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let [offers, contracts, agreements] = sections(params);
         match step {
@@ -399,10 +438,8 @@ impl AtHour for MarketLendLease {
                         }
                     }
                 }
-                if let Ok(rows) = held.complete::<tables::LendLeaseAgreements>() {
-                    for row in rows {
-                        variants.extend(lease_variants(row));
-                    }
+                for row in dashboard_query::coverage::witnessed_rows::<tables::LendLeaseAgreements>(held).rows {
+                    variants.extend(lease_variants(row));
                 }
                 let mut reads = vec![
                     Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from)),
@@ -460,6 +497,7 @@ fn empty_reply(params: &MarketLendLeaseParams) -> MarketLendLeaseReply {
         offers: None,
         contracts: None,
         agreements: None,
+        agreements_missing: None,
         purchases_missing: None,
         unattributed: 0,
         refused: None,
@@ -479,12 +517,19 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
         .ok();
     let parties = Parties::new(links, holders, hour);
     let wanted = match members {
-        Some(members) => Some(slots(holders, members, hour, &mut reply.warnings)),
+        Some(members) => slots(holders, members, hour, &mut reply.warnings).map(Some),
         None => chosen(holders, &params.countries, hour, &mut reply.warnings),
+    };
+    let wanted = match wanted {
+        Ok(wanted) => wanted,
+        Err(reason) => return Ok(MarketLendLeaseReply { refused: Some(reason), warnings: reply.warnings, ..empty_reply(params) }),
     };
     let mut unattributed = 0_u32;
     let mut keep = |sides: &[u32]| -> bool {
         let Some(slots) = wanted.as_ref() else { return true };
+        if slots.is_empty() {
+            return false;
+        }
         let held: Vec<Option<u32>> = sides.iter().map(|&raw| parties.slot(raw).filter(|_| parties.tag(raw).is_some())).collect();
         if held.iter().flatten().any(|slot| slots.contains(slot)) {
             return true;
@@ -496,7 +541,21 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
     };
     let offers = section(show_offers, frame.complete::<tables::CountryMarket>(), "Market offers", &mut reply.warnings);
     let terms = section(show_contracts, frame.complete::<tables::MarketContractTerms>(), "Market requests and contracts", &mut reply.warnings);
-    let leases = section(show_agreements, frame.complete::<tables::LendLeaseAgreements>(), "Lend-lease agreements", &mut reply.warnings);
+    let none_can_match = wanted.as_ref().is_some_and(BTreeSet::is_empty);
+    let leases = show_agreements.then(|| dashboard_query::coverage::witnessed_rows::<tables::LendLeaseAgreements>(frame)).and_then(|witnessed| match witnessed.missing {
+        Some(_) if none_can_match => Some(witnessed.rows),
+        Some(reason) if witnessed.rows.is_empty() => {
+            reply.warnings.push(format!("Lend-lease agreements are not recorded at this hour: {reason}"));
+            None
+        }
+        Some(reason) => {
+            let missing = format!("Lend-lease agreements are listed only where they were read at this hour: {reason}");
+            reply.warnings.push(missing.clone());
+            reply.agreements_missing = Some(missing);
+            Some(witnessed.rows)
+        }
+        None => Some(witnessed.rows),
+    });
     let clicked = row_key(params);
     let offers: Option<Vec<_>> = offers.map(|rows| rows.iter().filter(|row| clicked.is_none_or(|key| key == u128::from(row.country)) && keep(&[row.country])).collect());
     let terms: Option<Vec<_>> = terms.map(|rows| rows.iter().filter(|row| clicked.is_none_or(|key| key == terms_key(row)) && terms_kind(params, row) && keep(&[row.country, row.buyer])).collect());
@@ -584,7 +643,7 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
         let lost = dashboard_declare::field(TableId::LendLeaseAgreements, "fuel_sunk_raw")?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            let terms = lease_terms(row, |raw| parties.tag(raw), &named);
+            let terms = lease_terms(row, |raw| parties.named(raw), &named);
             let key = lease_key(row);
             live.value(&terms.key, "fuelSent", Cell { table: TableId::LendLeaseAgreements, column: sent, key }, 1.0);
             live.value(&terms.key, "fuelLost", Cell { table: TableId::LendLeaseAgreements, column: lost, key }, 1.0);
