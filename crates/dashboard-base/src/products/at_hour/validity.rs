@@ -2,8 +2,19 @@ use dashboard_text::{metadata::check_cancel, triggers::inputs::{Resolution, Tabl
 use replay::campaign::{Replay, SeekResult};
 use replay_frame::frame::DecodedFrame;
 use replay_data::rows::TableId;
-use replay_lanes::lanes::{Cell, Keys};
+use replay_lanes::lanes::{Cell, Keys, Step};
 use std::{collections::BTreeMap, io, sync::{Arc, Mutex, atomic::AtomicBool}};
+
+pub fn row_change_hours(steps: &[Step], end_column: Option<usize>, last: i32) -> impl Iterator<Item = i32> + '_ {
+    steps.iter().enumerate().flat_map(move |(index, step)| {
+        let end = end_column.and_then(|column| {
+            let Cell::Number(value) = step.cells.as_ref()?.get(column)? else { return None };
+            let end = i32::try_from(*value).ok()?;
+            (step.hour < end && end <= steps.get(index + 1).map_or(last, |next| next.hour)).then_some(end)
+        });
+        std::iter::once(step.hour).chain(end)
+    })
+}
 
 #[derive(Default, PartialEq)]
 struct Selection {
@@ -29,16 +40,7 @@ impl Selection {
         let mut dates: Vec<_> = history.statuses.iter().map(|status| status.first).collect();
         let end = self.ends.then(|| history.columns.iter().position(|&c| table.field_name(c) == Some("end_hour"))).flatten();
         for (_, steps) in history.keys {
-            for (index, step) in steps.iter().enumerate() {
-                dates.push(step.hour);
-                if let Some(column) = end
-                    && let Some(Cell::Number(end)) = step.cells.as_deref().and_then(|cells| cells.get(column))
-                    && let Ok(end) = i32::try_from(*end)
-                    && step.hour < end && end <= steps.get(index + 1).map_or(last, |step| step.hour)
-                {
-                    dates.push(end);
-                }
-            }
+            dates.extend(row_change_hours(&steps, end, last));
         }
         dates.sort_unstable();
         dates.dedup();

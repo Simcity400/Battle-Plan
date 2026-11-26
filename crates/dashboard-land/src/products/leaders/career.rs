@@ -512,7 +512,8 @@ fn resolve_selection_at(
     for step in 0..8 {
         let reads = if step == 1 && context.roster.is_some() {
             let kept = UnitLeaders::kept(&asked, &frame, &reads_at);
-            battle_keys = Some(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32));
+            let ranges = leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32);
+            battle_keys = Some(ranges);
             UnitLeaders::people(&kept)
         } else if step == 2 {
             let (reads, clocked) = UnitLeaders::visibility_reads(&asked, &frame, &reads_at, true);
@@ -836,6 +837,13 @@ pub(super) fn leader_columns(table: TableId, plan: &[(Vec<Read>, i32)]) -> Optio
     Some(dashboard_base::products::at_hour::field_columns(table, fields))
 }
 
+pub(super) fn progress_token_changed(frame: &DecodedFrame, leader: u64, changes: &std::collections::BTreeMap<u128, u64>) -> bool {
+    let Ok(progress) = frame.complete::<tables::UnitLeaderTraitExperience>() else { return false };
+    let first = progress.partition_point(|r| r.leader_reference < leader);
+    progress[first..].iter().take_while(|r| r.leader_reference == leader)
+        .any(|r| u32::try_from(r.token_id).is_ok_and(|id| changes.contains_key(&u128::from(id))))
+}
+
 impl AtHour for LeaderHour {
     const KEY: &'static str = "unit-leader-hour";
     const TITLE: &'static str = "General career";
@@ -925,6 +933,9 @@ impl AtHour for LeaderHour {
         (reads, at.context.through(at.hour))
     }
 
+    const UPDATES_REVISION: bool = true;
+    const RESEED_ON_SEEK: bool = true;
+
     fn context_revision(context: &Self::Context) -> u64 { context.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).revision }
 
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
@@ -935,9 +946,12 @@ impl AtHour for LeaderHour {
         leader_columns(table, plan)
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         if !frame.tables[TableId::Clock.index()].held().is_not_selected() { return Ok(false); }
-        if super::unselected_leader_edits(frame, edits) { return Ok(true); }
+        if let Some(selection) = &params.selection {
+            let mut rank = at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            return rank.top_step(frame, &top_asked(&params.branch_id, selection), at, edits, data);
+        }
         let winner = data.get("reference").and_then(serde_json::Value::as_str).and_then(|key| key.parse::<u128>().ok());
         let experience = 1 << field(TableId::UnitLeaderTraitExperience, "experience")?;
         Ok(edits.replaced.is_empty() && edits.tables.iter().all(|(&table, rows)| match table {
@@ -945,6 +959,11 @@ impl AtHour for LeaderHour {
                 Some(key >> 33) != winner || key & (1 << 32) == 0 && fields & !experience == 0
             }),
             TableId::UnitLeaderTraits | TableId::LeaderTraitDates => rows.keys().all(|key| Some(key >> 32) != winner),
+            TableId::LexicalTokens => {
+                let uses_name = frame.complete::<tables::Characters>().is_ok_and(|people| people.iter()
+                    .any(|person| u32::try_from(person.name_token_id).is_ok_and(|id| rows.contains_key(&u128::from(id)))));
+                !uses_name && winner.is_none_or(|id| !progress_token_changed(frame, id as u64, rows))
+            }
             _ => false,
         }))
     }
@@ -963,6 +982,30 @@ impl AtHour for LeaderHour {
             return one_leader(frame, &params.branch_id, leader, at);
         };
         let evaluated = UnitLeaders::evaluate(frame, &top_asked(&params.branch_id, selection), at)?;
+        Self::from_evaluated(frame, params, evaluated, at)
+    }
+
+    fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let Some(selection) = &params.selection else { return Self::reply(frame, params, at) };
+        let mut rank = at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(top) = rank.take_top(at.hour) {
+            return match top {
+                Ok(leader) => one_leader(frame, &params.branch_id, leader, at),
+                Err(missing) => {
+                    let query = at.context.query(frame.branch)?;
+                    Ok(empty_hour(missing, at.context.battles_partial(&query, at.hour)?, at.context.content.missing()))
+                }
+            };
+        }
+        let mut notes = super::ranking::Notes::default();
+        let evaluated = UnitLeaders::evaluate_keys(frame, &top_asked(&params.branch_id, selection), at, None, Some(&mut notes))?;
+        *rank = super::ranking::Ranking::seed(frame, &evaluated, at.context, notes);
+        Self::from_evaluated(frame, params, evaluated, at)
+    }
+}
+
+impl LeaderHour {
+    fn from_evaluated(frame: &DecodedFrame, params: &LeaderHourParams, evaluated: super::EvaluatedLeaders<'_>, at: &At<'_, LeadersContext>) -> io::Result<LeaderHourReply> {
         let missing = match evaluated.top() {
             TopLeader::Winner(winner) => {
                 let branch = parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?;
@@ -980,25 +1023,29 @@ impl AtHour for LeaderHour {
             TopLeader::None => None,
             TopLeader::Missing(reason) => Some(reason),
         };
-        Ok(LeaderHourReply {
-            reference: None,
-            missing,
-            name: None,
-            role: None,
-            skill: None,
-            components: [0; 4],
-            traits: None,
-            trait_dates: Vec::new(),
-            trait_catalogue: Vec::new(),
-            fought: 0,
-            won: 0,
-            lost: 0,
-            battles_partial_from: evaluated.battles_partial_from,
-            first_seen_hour: None,
-            service_start: None,
-            progress: None,
-            warnings: evaluated.warnings,
-        })
+        Ok(empty_hour(missing, evaluated.battles_partial_from, evaluated.warnings))
+    }
+}
+
+fn empty_hour(missing: Option<String>, battles_partial_from: Option<i32>, warnings: Vec<String>) -> LeaderHourReply {
+    LeaderHourReply {
+        reference: None,
+        missing,
+        name: None,
+        role: None,
+        skill: None,
+        components: [0; 4],
+        traits: None,
+        trait_dates: Vec::new(),
+        trait_catalogue: Vec::new(),
+        fought: 0,
+        won: 0,
+        lost: 0,
+        battles_partial_from,
+        first_seen_hour: None,
+        service_start: None,
+        progress: None,
+        warnings,
     }
 }
 
@@ -1128,7 +1175,7 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
     });
     let name = content.person_name(person, lexical);
     let skill = (row.skill_valid != 0).then_some(row.skill_level);
-    let tally = context.tally(&query, at.hour, Asked::Id(row.id))?;
+    let tally = context.tally(&query, frame, Asked::Ids(&[row.id]))?;
     let battles = tally.battles(row.id);
     let battles_partial_from = context.battles_partial(&query, at.hour)?;
     let evaluated = EvaluatedLeader { row, handle: leader, owner, name, skill, battles };

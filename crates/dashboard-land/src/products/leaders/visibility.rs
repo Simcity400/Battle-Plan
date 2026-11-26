@@ -1,16 +1,20 @@
 use super::{Evaluator, LeaderVisibility, LeadersContext, UnitLeaders, UnitLeadersParams, core_gap, handle, needs_world, world_of};
-use dashboard_base::products::at_hour::{Read, ReadDates, ReadsAt};
+use dashboard_base::products::at_hour::{Read, ReadsAt};
 use dashboard_text::triggers::{RECORDED_TABLES, inputs::{self, TableRead}};
-use replay::campaign::SeekResult;
-use replay_data::rows::{TableId, UnitLeaderRow};
-use replay_frame::frame::DecodedFrame;
-use std::{collections::{BTreeSet, HashMap, HashSet}, io, sync::atomic::AtomicBool};
+use replay::campaign::{HourCursor, SeekResult};
+use replay_data::rows::{TableId, tables};
+use replay_frame::frame::{DecodedFrame, ViewIdentity};
+use std::{collections::{BTreeSet, HashMap}, io};
 
 #[derive(Default)]
 pub(super) struct Visibility {
     pub(super) held: Option<Dated>,
-    dates: ReadDates,
+    dates: Dates,
+    cursor: Option<(Vec<TableId>, HourCursor)>,
+    proofs: HashMap<u64, Proof>,
+    role_inputs: Option<([ViewIdentity; 5], i32)>,
     pub(super) revision: u64,
+    pub(super) changed: BTreeSet<u64>,
 }
 
 pub(super) struct Dated {
@@ -30,69 +34,189 @@ impl Dated {
 
 const CORE: [TableId; 4] = [TableId::CountryLinks, TableId::Countries, TableId::Provinces, TableId::States];
 
-fn dated(rows: &[(&UnitLeaderRow, usize)], roles: Vec<(u64, u32, usize)>, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, mut tables: BTreeSet<TableId>, dates: &mut ReadDates) -> io::Result<Dated> {
-    let replay = &at.context.replay;
-    tables.extend(CORE);
-    loop {
-        let asked: Vec<_> = tables.iter().copied().collect();
-        let SeekResult::Frame(recorded) = replay.seek_selected(frame.branch, at.hour, Some(&asked))? else {
-            return Err(io::Error::other("Leader visibility hour is not recorded"));
-        };
-        let mut world = None;
-        let world = world_of(&recorded, &at.context.content, &mut world).map_err(io::Error::other)?;
-        let gap = core_gap(&recorded);
-        let mut reads: HashSet<_> = CORE.map(TableRead::keys).into();
-        let mut decisions = HashMap::new();
-        let block = replay.block_at(frame.branch, at.hour);
-        let mut through = block.map_or(at.hour, |block| block.last_hour);
-        for &(row, role) in rows {
-            let answer = if let Some(reason) = &gap {
-                Err(reason.clone())
-            } else {
-                let (answer, inputs) = inputs::capture(&recorded, || {
-                    Evaluator::new(world, None).decide_leader_visibility(row, LeaderVisibility::Conditioned(role), true).decided()
-                });
-                if let Some(footprint) = inputs.footprint() {
-                    reads.extend(footprint.iter().copied());
-                } else {
-                    tables.extend(RECORDED_TABLES.iter().copied());
-                    through = at.hour;
+struct Proof {
+    run: u32,
+    first: i32,
+    owner: u32,
+    role: usize,
+    through: i32,
+    decision: Result<bool, String>,
+}
+
+struct Changes {
+    status: Vec<i32>,
+    rows: Vec<(u128, Vec<i32>)>,
+}
+
+#[derive(Default)]
+struct Dates {
+    span: Option<(u32, i32, i32)>,
+    tables: HashMap<(TableId, u64, bool), Option<Changes>>,
+}
+
+impl Changes {
+    fn read(replay: &replay::campaign::Replay, run: u32, read: &TableRead, first: i32, last: i32) -> io::Result<Self> {
+        use replay_lanes::lanes::{self, Keys};
+        if replay.recording().predates(read.table.index()).is_some() {
+            return Ok(Self { status: Vec::new(), rows: Vec::new() });
+        }
+        let cols: Vec<_> = (0..read.table.schema().len().min(64)).filter(|i| read.fields & (1 << i) != 0).collect();
+        let history = lanes::history(replay.recording(), run, read.table, &cols, Keys::All, first, last)?;
+        let status = history.statuses.iter().map(|s| s.first).collect();
+        let end = read.ends.then(|| history.columns.iter().position(|&c| read.table.field_name(c) == Some("end_hour"))).flatten();
+        let rows = history.keys.into_iter().filter_map(|(key, steps)| {
+            let changes: Vec<_> = dashboard_base::products::at_hour::row_change_hours(&steps, end, last).filter(|&hour| hour > first).collect();
+            (!changes.is_empty()).then_some((key, changes))
+        }).collect();
+        Ok(Self { status, rows })
+    }
+
+    fn through(&self, read: &TableRead, frame: &DecodedFrame, last: i32) -> i32 {
+        let hour = frame.hour;
+        let mut next = self.status.get(self.status.partition_point(|&h| h <= hour)).copied();
+        let (lo, hi) = read.rows.unwrap_or((0, u128::MAX));
+        let start = self.rows.partition_point(|r| r.0 < lo);
+        let slots = read.owner.and_then(|o| o.by.slots(frame));
+        for (key, dates) in self.rows[start..].iter().take_while(|r| r.0 <= hi) {
+            if let Some(owner) = read.owner && let Some(slots) = slots
+                && slots.of(key.checked_shr(owner.shift).unwrap_or(0) as u32).is_some_and(|s| s != owner.slot) { continue; }
+            if let Some(&at) = dates.get(dates.partition_point(|&h| h <= hour)) { next = Some(next.map_or(at, |n| n.min(at))); }
+        }
+        next.map_or(last, |n| n - 1)
+    }
+}
+
+impl Dates {
+    fn through(&mut self, at: &ReadsAt<'_, LeadersContext>, frame: &DecodedFrame, read: TableRead, first: i32, last: i32) -> i32 {
+        if self.span != Some((at.run, first, last)) {
+            self.span = Some((at.run, first, last));
+            self.tables.clear();
+        }
+        let changes = self.tables.entry((read.table, read.fields, read.ends))
+            .or_insert_with(|| Changes::read(&at.context.replay, at.run, &read, first, last).ok());
+        changes.as_ref().map_or(at.hour, |c| c.through(&read, frame, last))
+    }
+}
+
+impl Visibility {
+    #[cfg(test)]
+    pub(super) fn proved_at(&self, handle: u64) -> Option<i32> {
+        self.proofs.get(&handle).map(|proof| proof.first)
+    }
+
+    fn dated(&mut self, roles: Vec<(u64, u32, usize)>, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>) -> io::Result<Dated> {
+        let replay = &at.context.replay;
+        let block = replay.block_at(frame.branch, at.hour).ok_or_else(|| io::Error::other("Leader visibility hour is not recorded"))?;
+        let (first, last) = (block.first_hour, block.last_hour);
+        let mut tables = self.held.as_ref().map(|held| held.tables.clone()).unwrap_or_default();
+        tables.extend(CORE);
+        let rows = frame.complete::<tables::UnitLeaders>()?;
+        let stale: Vec<_> = roles.iter().filter(|(key, owner, role)| self.proofs.get(key).is_none_or(|p|
+            p.run != at.run || p.owner != *owner || p.role != *role || !(p.first..=p.through).contains(&at.hour)))
+            .map(|(key, _, role)| rows.binary_search_by_key(key, handle)
+                .map(|index| (&rows[index], *role)).map_err(|_| io::Error::other("Conditioned leader is not in the selected rows")))
+            .collect::<io::Result<_>>()?;
+        if !stale.is_empty() {
+            loop {
+                let asked: Vec<_> = tables.iter().copied().collect();
+                if self.cursor.as_ref().is_none_or(|(prior, _)| prior != &asked) {
+                    self.cursor = Some((asked.clone(), HourCursor::new(replay.clone(), &asked, false)));
                 }
-                answer
-            };
-            decisions.insert(handle(row), answer);
+                let SeekResult::Frame(recorded) = self.cursor.as_mut().expect("selected world").1.seek(frame.branch, at.hour)? else {
+                    return Err(io::Error::other("Leader visibility hour is not recorded"));
+                };
+                let world = world_of(&recorded, &at.context.content).map_err(io::Error::other)?;
+                let gap = core_gap(&recorded);
+                let mut bounds = HashMap::new();
+                let mut bound = |read: TableRead| *bounds.entry(read).or_insert_with(|| self.dates.through(at, &recorded, read, first, last));
+                let core = CORE.map(TableRead::keys).into_iter().map(&mut bound).min().unwrap_or(last);
+                let mut made = Vec::new();
+                for &(row, role) in &stale {
+                    let mut through = core;
+                    let decision = match &gap {
+                        Some(reason) => Err(reason.clone()),
+                        None => {
+                            let (answer, inputs) = inputs::capture(&recorded, || Evaluator::new(&world, None)
+                                .decide_leader_visibility(row, LeaderVisibility::Conditioned(role), true).decided());
+                            if let Some(reads) = inputs.footprint() {
+                                for &read in reads {
+                                    if RECORDED_TABLES.contains(&read.table) { tables.insert(read.table); }
+                                    through = through.min(bound(read));
+                                    if let Some(owner) = read.owner {
+                                        let table = match owner.by { inputs::Resolution::Links => TableId::CountryLinks, inputs::Resolution::Countries => TableId::Countries };
+                                        through = through.min(bound(TableRead::fields(table, &["canonical_slot"])));
+                                    }
+                                }
+                            } else {
+                                tables.extend(RECORDED_TABLES.iter().copied());
+                                through = at.hour;
+                            }
+                            answer
+                        }
+                    };
+                    made.push((handle(row), Proof { run: at.run, owner: row.owner, role, first: at.hour, through, decision }));
+                }
+                if tables.len() != asked.len() { continue; }
+                self.proofs.extend(made);
+                break;
+            }
         }
-        tables.extend(reads.iter().map(|read| read.table).filter(|table| RECORDED_TABLES.contains(table)));
-        if tables.len() != asked.len() { continue; }
-        if through > at.hour && let Some(block) = block {
-            through = dates.through(replay, at.run, &reads.into_iter().collect::<Vec<_>>(), block.first_hour, at.hour, through, &AtomicBool::new(false))?;
+        let mut decisions = HashMap::new();
+        let mut through = last;
+        for (handle, _, _) in &roles {
+            let proof = &self.proofs[handle];
+            through = through.min(proof.through);
+            decisions.insert(*handle, proof.decision.clone());
         }
-        return Ok(Dated { run: at.run, first: at.hour, through, tables, roles, decisions });
+        self.proofs.retain(|key, _| decisions.contains_key(key));
+        Ok(Dated { run: at.run, first: at.hour, through, tables, roles, decisions })
     }
 }
 
 pub(super) fn prepare(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>) -> (Vec<Read>, i32) {
-    let mut world = None;
-    let rows: Vec<_> = UnitLeaders::kept(params, frame, at).into_iter().filter(|row| {
-        needs_world(row) && !(row.kind == super::KIND_ARMY && (row.category as u32) < 2 && row.captured != 0)
-    }).filter_map(|row| match world_of(frame, &at.context.content, &mut world).ok()?.decoded_leader_visibility(row) {
-        LeaderVisibility::Conditioned(role) => Some((row, role)),
-        _ => None,
-    }).collect();
-    let roles: Vec<_> = rows.iter().map(|&(row, role)| (handle(row), row.owner, role)).collect();
+    const INPUTS: [TableId; 5] = [TableId::UnitLeaders, TableId::CountryLinks, TableId::Countries, TableId::Characters, TableId::LexicalTokens];
     let mut visibility = at.context.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if rows.is_empty() {
-        if visibility.held.take().is_some() { visibility.revision += 1; }
+    let same = at.since.is_some() && visibility.role_inputs.as_ref().is_some_and(|(views, end)| at.hour <= *end
+        && INPUTS.iter().zip(views).all(|(id, prior)| prior.is(&frame.tables[id.index()])));
+    let roles = if same {
+        if let Some(held) = &visibility.held {
+            if held.covers(at.run, at.hour) { return (Vec::new(), held.through.min(at.context.through(at.hour))); }
+            held.roles.clone()
+        } else { Vec::new() }
+    } else {
+        let mut world = None;
+        let roles = UnitLeaders::kept(params, frame, at).into_iter().filter(|row| {
+            needs_world(row) && !(row.kind == super::KIND_ARMY && (row.category as u32) < 2 && row.captured != 0)
+        }).filter_map(|row| match world.get_or_insert_with(|| world_of(frame, &at.context.content)).as_ref().ok()?.decoded_leader_visibility(row) {
+            LeaderVisibility::Conditioned(role) => Some((handle(row), row.owner, role)),
+            _ => None,
+        }).collect();
+        visibility.role_inputs = Some((INPUTS.map(|id| frame.tables[id.index()].identity()), at.context.through(at.hour)));
+        roles
+    };
+    if roles.is_empty() {
+        if let Some(prior) = visibility.held.take() {
+            visibility.changed = prior.decisions.into_keys().collect();
+            visibility.proofs.clear();
+            visibility.revision += 1;
+        }
     } else if !visibility.held.as_ref().is_some_and(|held| held.covers(at.run, at.hour) && roles == held.roles) {
-        let tables = visibility.held.as_ref().map(|held| held.tables.clone()).unwrap_or_default();
-        match dated(&rows, roles, frame, at, tables, &mut visibility.dates) {
+        match visibility.dated(roles, frame, at) {
             Ok(proof) => {
-                if visibility.held.as_ref().is_none_or(|prior| prior.decisions != proof.decisions) { visibility.revision += 1; }
+                let prior = visibility.held.as_ref().map(|v| &v.decisions);
+                if prior != Some(&proof.decisions) {
+                    visibility.changed = proof.decisions.keys().chain(prior.into_iter().flat_map(|p| p.keys()))
+                        .filter(|key| proof.decisions.get(key) != prior.and_then(|p| p.get(key))).copied().collect();
+                    visibility.revision += 1;
+                }
                 visibility.held = Some(proof);
             }
             Err(_) => {
+                visibility.changed = visibility.proofs.keys().copied().collect();
+                visibility.proofs.clear();
                 visibility.revision += 1;
                 visibility.held = None;
+                visibility.role_inputs = None;
                 return (RECORDED_TABLES.iter().copied().filter(|table| !super::BASE_TABLES.contains(table)).map(Read::all).collect(), at.hour);
             }
         }

@@ -1,15 +1,17 @@
 use super::{
     LeaderKinds, LeaderSelection, Tally, career::{RunValues, career_gains, career_runs, join_battles, led_spans},
-    fold_date, held_traits, KIND_ARMY, KIND_NAVY,
+    fold_date, KIND_ARMY, KIND_NAVY,
 };
 use replay_data::rows::{LeaderBattleRow as Battle, LeaderTraitGainRow as Gain, UnitLeaderTraitRow};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+thread_local! { pub(super) static TALLY_SNAPSHOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[test]
 fn a_leaders_battles_are_its_participations_and_its_results_won_or_lost() {
     let facet = |id: u32, entry: u32, outcome: u32| (u128::from(id) << 96) | (u128::from(entry) << 64) | (u128::from(outcome) << 32);
     let mut tally = Tally::default();
-    tally.counts = HashMap::from([(facet(7, 0, u32::MAX), 5), (facet(7, 1, 1), 2), (facet(7, 1, 2), 1), (facet(7, 1, u32::MAX), 1), (facet(8, 0, u32::MAX), 3)]);
+    tally.counts = BTreeMap::from([(facet(7, 0, u32::MAX), 5), (facet(7, 1, 1), 2), (facet(7, 1, 2), 1), (facet(7, 1, u32::MAX), 1), (facet(8, 0, u32::MAX), 3)]);
     let seven = tally.battles(7);
     assert_eq!((seven.fought, seven.won, seven.lost), (5, 2, 1), "a result whose outcome is not recorded is neither won nor lost");
     assert_eq!(tally.battles(8).fought, 3);
@@ -18,7 +20,7 @@ fn a_leaders_battles_are_its_participations_and_its_results_won_or_lost() {
 
 #[test]
 fn a_trait_is_dated_by_its_gain_and_a_later_first_observation_does_not_move_it() {
-    let mut dates = HashMap::new();
+    let mut dates = BTreeMap::new();
     let key = |token: &str| (5u64, token.to_owned());
     fold_date(&mut dates, key("organizer"), 100, Gain::HELD_BEFORE);
     fold_date(&mut dates, key("organizer"), 400, Gain::FIRST_OBSERVED);
@@ -79,19 +81,46 @@ fn kinds_and_countries_choose_leaders_by_kind_and_owner_tag() {
 fn a_leaders_traits_are_listed_in_their_recorded_order() {
     let row = |leader: u64, ordinal: u32, token: &str| UnitLeaderTraitRow { leader_reference: leader, ordinal, token: token.as_bytes().to_vec(), ..Default::default() };
     let rows = [row(2, 1, "b"), row(2, 0, "a"), row(3, 0, "c")];
-    let held = held_traits(&rows);
-    assert_eq!(held[&2], vec!["a".to_owned(), "b".to_owned()]);
-    assert_eq!(held[&3], vec!["c".to_owned()]);
     assert_eq!(super::held_traits_for(&rows, 2), vec!["a".to_owned(), "b".to_owned()]);
     assert_eq!(super::held_traits_for(&rows, 9), Vec::<String>::new());
+}
+
+#[test]
+fn changed_leaders_share_the_completed_run_on_a_loaded_branch() {
+    use dashboard_base::{Source, SourceKey, products::LoadContext, test_fixtures::{CAMPAIGN, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{LeaderBattleTotalRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::Arc;
+
+    let segments = [(1, 100..=102), (2, 103..=107)].map(|(branch, hours)| {
+        records(branch, hours.map(|hour| source(branch, hour, None)).collect())
+    });
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let recording = Source::from_replay(SourceKey { source_id: "leader-tally".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let context = super::LeadersContext::load(&recording, &LoadContext { content: None }).unwrap();
+    let query = context.query(1).unwrap();
+    assert_ne!(query.timeline.at(102).unwrap().run, query.timeline.at(103).unwrap().run);
+    for hour in 103..=107 {
+        let mut frame = source(1, hour, None);
+        let battles = [1_u32, 2].map(|id| LeaderBattleTotalRow { leader: u64::from(id) << 32, fought: hour as u32 * id, ..Default::default() });
+        *frame.tables[TableId::LeaderBattleTotals.index()] = TableView::Complete(TableRows::LeaderBattleTotals(battles.into()));
+        *frame.tables[TableId::LeaderTraitDates.index()] = TableView::Complete(TableRows::empty(TableId::LeaderTraitDates));
+        for id in [1_u32, 2] {
+            TALLY_SNAPSHOTS.set(0);
+            let tally = context.tally(&query, &frame, super::Asked::Ids(&[id])).unwrap();
+            assert_eq!(tally.battles(id).fought, hour as u64 * u64::from(id));
+            assert_eq!(TALLY_SNAPSHOTS.get(), usize::from(hour == 103 && id == 1), "prior run reads at {hour} for leader {id}");
+        }
+    }
 }
 
 #[test]
 fn a_leaders_battles_from_its_totals_sum_its_handles_and_runs() {
     let run = |battles: Vec<(u64, [u64; 3])>| super::RunTally { battles, dates: HashMap::new() };
     let mut tally = Tally::default();
-    tally.fold(run(vec![(7 << 32 | 1, [3, 2, 1]), (7 << 32 | 2, [1, 0, 0]), (8 << 32 | 1, [2, 0, 2])]), Some(&run(vec![(7 << 32 | 1, [1, 1, 0])])), 50);
-    tally.fold(run(vec![(7 << 32 | 1, [2, 1, 1])]), None, 100);
+    tally.fold(run(vec![(7 << 32 | 1, [3, 2, 1]), (7 << 32 | 2, [1, 0, 0]), (8 << 32 | 1, [2, 0, 2])]), &[(7 << 32 | 1, [1, 1, 0])], 50);
+    tally.fold(run(vec![(7 << 32 | 1, [2, 1, 1])]), &[], 100);
     let seven = tally.battles(7);
     assert_eq!((seven.fought, seven.won, seven.lost), (5, 2, 2));
     let eight = tally.battles(8);
@@ -141,9 +170,9 @@ fn trait_dates_from_their_table_are_the_fold_of_the_gain_rows_over_runs() {
             hour(&mut store, &mut writers, first + at as i32, at == 0, held, &mut logged);
         }
         let through = super::RunTally::of(&store.view(TableId::LeaderBattleTotals.index()), &store.view(TableId::LeaderTraitDates.index()), super::Asked::All);
-        tally.fold(through, None, first);
+        tally.fold(through, &[], first);
     }
-    let mut folded = HashMap::new();
+    let mut folded = BTreeMap::new();
     for (key, at, class) in logged {
         fold_date(&mut folded, key, at, class);
     }
@@ -557,23 +586,20 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     let cond_frames: Vec<_> = (100..=105)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1_000));
-            for table in [replay_data::rows::TableId::Provinces, replay_data::rows::TableId::States, replay_data::rows::TableId::UnitLeaderTraits] {
+            for table in [TableId::Provinces, TableId::States, TableId::UnitLeaderTraits, TableId::LandCombatDetails, TableId::NavalCombatDetails, TableId::UnitLeaderTraitExperience] {
                 frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
             }
             frame.tables[TableId::UnitLeaders.index()] =
-                TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), conditioned_ace.clone()])).into();
+                TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), conditioned_ace.clone(), UnitLeaderRow {
+                    id: 15, character_id: 10, ..conditioned_ace.clone()
+                }])).into();
+            let character = replay_data::rows::CharacterRow {
+                id: 9, country: 9001, template_present: 1, template_tag: 901,
+                template_file: b"common/characters/test.txt".to_vec(), template_line: 3, ..Default::default()
+            };
             frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
-                replay_data::rows::CharacterRow {
-                    id: 9,
-                    country: 9001,
-                    template_present: 1,
-                    template_tag: 901,
-                    template_file: b"common/characters/test.txt".to_vec(),
-                    template_line: 3,
-                    ..Default::default()
-                },
-            ]))
-            .into();
+                character.clone(), replay_data::rows::CharacterRow { id: 10, ..character },
+            ])).into();
             frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
                 replay_data::rows::LexicalTokenRow { token: 900, literal: b"mod_flag".to_vec() },
                 replay_data::rows::LexicalTokenRow { token: 901, literal: b"mod_ace".to_vec() },
@@ -621,6 +647,15 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
         !cond_context.verdicts_at(cond_context.query(1).unwrap().timeline.stretches[0].run, 100).is_empty(),
         "verdict cache must be warm before calling LeaderCareer"
     );
+    let run = cond_context.query(1).unwrap().timeline.stretches[0].run;
+    let selection = UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land };
+    for (frame, hour) in cond_frames[..2].iter().zip(100..=101) {
+        let at = dashboard_base::products::at_hour::ReadsAt { context: &cond_context, holders: &holders, run, hour, since: (hour > 100).then_some(100) };
+        super::visibility::prepare(&selection, frame, &at);
+        let proof = cond_context.visibility.lock().unwrap();
+        assert_eq!(proof.proved_at(handle(&conditioned_ace)), Some(hour));
+        assert_eq!(proof.proved_at(15_u64 << 32 | 1), Some(100), "the other leader kept its proof");
+    }
     let cached_career = LeaderCareer::load(
         &cond_src,
         &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(cond_ger.clone()), hour: 100 },
@@ -657,7 +692,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
             let expected = materialized_frame(&mut *prior, cond_src.replay_ref(), 1, read.hour);
             assert_eq!(streamed(&read.value, read.fresh), streamed(&expected, read.fresh), "{key} at {}", read.hour);
             if read.hour > 100 {
-                assert_eq!(read.product_calls, u64::from(read.hour == 101), "{key} at {}", read.hour);
+                assert_eq!(read.product_calls, u64::from(read.hour == 101 && key == "unit-leader-hour"), "{key} at {}", read.hour);
             }
         }
     }
@@ -974,7 +1009,11 @@ fn top_general_follows_recorded_faction_membership() {
             assert_eq!(streamed(&read.value, read.fresh), streamed(&fresh, read.fresh), "{request} at {}", read.hour);
             let structure = streamed(&fresh, false);
             if let Some(last) = previous {
-                assert_eq!(read.product_calls, u64::from(last != structure), "{request} calls at {}", read.hour);
+                if request.get("leaders").is_some() {
+                    assert!(read.product_calls <= u64::from(last != structure), "{request} calls at {}", read.hour);
+                } else {
+                    assert_eq!(read.product_calls, u64::from(last != structure), "{request} calls at {}", read.hour);
+                }
             }
             previous = Some(structure);
         }
@@ -1021,6 +1060,68 @@ fn top_general_follows_recorded_faction_membership() {
             let career = LeaderCareer::load(&source, &params, &load, &cancelled).unwrap();
             assert_eq!((head["reference"].as_str(), head["missing"].as_str()), (winner.map(String::as_str), missing), "{membership} at {hour}");
             assert_eq!((career.reference.as_ref(), career.missing.as_deref(), career.next_change), (winner, missing, next), "{membership} at {hour}");
+        }
+    }
+}
+
+#[test]
+fn a_thousand_played_hours_keep_the_ranking_and_only_rebuild_a_changed_top() {
+    use dashboard_base::test_fixtures::{ownership_frame, played, source_with_content, streamed, visual_mods::Machine};
+    use replay_data::rows::{CharacterRow, TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let frames = (100..=1100).map(|hour| {
+        let mut frame = ownership_frame(1, hour, 9001);
+        let leader = |id, owner, skill_level| UnitLeaderRow {
+            id, character_id: id, owner, skill_level, skill_valid: 1, kind: KIND_ARMY, experience: i64::from(hour), ..Default::default()
+        };
+        let mut leaders = vec![leader(1, 9001, 5), leader(2, 9001, 1 + hour % 2)];
+        if hour >= 850 { leaders[1].skill_level = 7; leaders[1].category = 0; } else { leaders[1].category = 1; }
+        if (450..730).contains(&hour) {
+            leaders.push(leader(3, if hour < 600 { 9001 } else { 44 }, 8));
+        }
+        *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(leaders));
+        for table in [TableId::LandCombatDetails, TableId::NavalCombatDetails, TableId::UnitLeaderTraitExperience, TableId::Characters, TableId::LexicalTokens, TableId::UnitLeaderTraits] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 1, token: if hour < 825 { b"RANK_NAME_A".to_vec() } else { b"RANK_NAME_B".to_vec() }, ..Default::default()
+        }]));
+        frame
+    }).collect();
+    let machine = Machine::new("leader-ranking");
+    machine.write("common/defines/test.lua", b"NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { } } }");
+    machine.write("localisation/english/ranking_l_english.yml", "\u{feff}l_english:\n RANK_NAME_A:0 \"First name\"\n RANK_NAME_B:0 \"New name\"\n".as_bytes());
+    let (source, load) = source_with_content(frames, &machine.root);
+    let source = Arc::new(source);
+    for (entry, request) in [
+        (crate::registrations::LEADERS_CAREER_LEADERHOUR, json!({"branchId":"1","selection":{"kind":"countries","countries":["GER"]}})),
+        (crate::registrations::LEADERS_UNITLEADERS, json!({"branchId":"1","selection":{"kind":"all"},"leaders":"land"})),
+    ] {
+        let panel = (entry.panel.unwrap().open)(&source, &load, &request).unwrap();
+        let exact = panel.exact().unwrap();
+        let top = request.get("leaders").is_none();
+        for read in played(source.replay_ref(), exact, 100, 1100) {
+            if !top && read.hour > 100 {
+                assert_eq!(read.product_calls, 0, "the leaderboard rebuilt at {}", read.hour);
+            }
+            if top && read.hour > 100 && ![450, 600, 825, 850].contains(&read.hour) {
+                assert_eq!(read.product_calls, 0, "an edit to a rival rebuilt the top at {}", read.hour);
+            }
+            if [100, 449, 450, 599, 600, 729, 730, 824, 825, 849, 850, 1100].contains(&read.hour) {
+                let cold = (exact.cold)(read.hour, &false.into());
+                assert!(cold.is_ok());
+                if top && [824, 825].contains(&read.hour) {
+                    assert_eq!(cold.as_ref().unwrap()["name"], if read.hour == 824 { "First name" } else { "New name" });
+                }
+                assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "{request} at {}", read.hour);
+            }
+        }
+        for hour in [550, 1100] {
+            let sought = (exact.advance)(hour, true, &false.into(), None);
+            assert_eq!(*sought.value, (exact.cold)(hour, &false.into()));
         }
     }
 }

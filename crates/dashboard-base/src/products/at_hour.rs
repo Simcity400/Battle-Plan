@@ -28,7 +28,7 @@ use ts_rs::TS;
 mod incremental;
 mod placed;
 mod validity;
-pub use validity::{ReadDates, ScriptedInputs, reads_through};
+pub use validity::{ReadDates, ScriptedInputs, reads_through, row_change_hours};
 pub use incremental::{Edits, Held};
 
 pub use replay_frame::frame::Keys;
@@ -159,6 +159,10 @@ pub trait AtHour: 'static {
 
     fn holds_refusal(_frame: &DecodedFrame) -> bool { false }
 
+    const UPDATES_REVISION: bool = false;
+
+    const RESEED_ON_SEEK: bool = false;
+
     fn context_revision(_context: &Self::Context) -> u64 { 0 }
 
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
@@ -174,6 +178,10 @@ pub trait AtHour: 'static {
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
         let _ = params;
         Self::context(source, load)
+    }
+
+    fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        Self::reply(frame, params, at)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply>;
