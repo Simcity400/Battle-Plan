@@ -2281,13 +2281,14 @@ test('a log scrolled deep into its rows numbers them from the top of the log, in
     const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 300, dpr: 1 });
     const step = lane.paint({
       label: 'deep',
-      binding: { family: 'table' as const, theme: TEST_THEME, kind: 'test-deep-log', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: {} }, width: 400, height: 300, scrollLeft: 0, scrollTop: 600 * 34, focusedKey: null, reducedMotion: false },
+      binding: { family: 'table' as const, theme: TEST_THEME, kind: 'test-deep-log', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: {} }, width: 400, height: 300, scrollLeft: 0, scrollTop: 610 * ROW_HEIGHT.normal, focusedKey: null, reducedMotion: false },
       hour: 1, now: 1000,
     });
     const nav = step.fields.nav?.value as readonly (readonly [string, string, number])[];
     assert.deepEqual([nav[0]![0], nav[0]![2], nav.at(-1)![2]], ['R600', 600, 619], 'each row carries its ordinal in the whole log');
     const mirror = step.fields.mirror?.value as { readonly first: number; readonly total: number; readonly rows: readonly { readonly key: string; readonly rowIndex: number }[] };
     assert.equal(mirror.total, 2000, 'the mirror counts the whole log');
+    assert.equal(mirror.first, 610 - TABLE_WINDOW_OVERSCAN, 'the mirror window starts at the row on screen, counted from the top of the log');
     assert.ok(mirror.rows.length > 0 && mirror.rows.every(row => row.rowIndex === Number(row.key.slice(1))), 'each mirrored row is numbered from the top of the log');
   } finally {
     recording.restore();
