@@ -28,7 +28,7 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { FLAG_BATCH_MAX, IdentityBroker, MAX_ENTITY_WINDOWS, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { UNHELD_HEAD_HOUR, countryPickerKeys, pickerDating, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
+import { UNHELD_HEAD_HOUR, countryPickerKeys, pickerDating, pickerHeaderTag, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -821,6 +821,64 @@ test('the playback picker dates every shown row by the displayed hour and moves 
   assert.equal(read(), 20, 'a seek back is read at the displayed hour, never a later one');
   assert.deepEqual(countryPickerKeys(null, null, ['GER']).length, 1, 'an empty selection still dates the shown rows');
   assert.deepEqual(countryPickerKeys(3, 'ALP', []), [countrySlotKey(3)], 'a selected slot stays first, so it is the header');
+  const defaultHeader = pickerHeaderTag([{ id: 'p1', tag: 'GER' }, { id: 'p2', tag: 'ALP' }], null, 'p1');
+  assert.equal(defaultHeader, 'GER', 'default player selection resolves its header tag when selectedTag is null');
+  assert.equal(pickerHeaderTag([{ id: 'p1', tag: 'GER' }], null, 'p1', 'Add country'), null, 'an add-country picker has no default header tag');
+  assert.deepEqual(countryPickerKeys(null, defaultHeader, []), [countryTagKey('GER')], 'a closed default-player picker still subscribes to the player country');
+  assert.deepEqual(countryPickerKeys(null, 'GER', ['GER', 'ALP']), [countryTagKey('GER'), countryTagKey('ALP')], 'opening the picker does not duplicate the header tag');
+  const defaultHeld: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  clockHour = 25;
+  assert.equal(readIdentityAtHeadHour(broker, clock, SCOPE, true, countryPickerKeys(null, defaultHeader, []), h => h, null, [0, 500], defaultHeld), 25);
+  clockHour = 160;
+  assert.equal(readIdentityAtHeadHour(broker, clock, SCOPE, true, countryPickerKeys(null, defaultHeader, []), h => h, null, [0, 500], defaultHeld), 160, 'crossing a rename moves the closed default-player trigger');
+  const absentSlotKeys = countryPickerKeys(99, 'ALP', [], ['ALP', defaultHeader]);
+  assert.deepEqual(absentSlotKeys, [countrySlotKey(99), countryTagKey('ALP'), countryTagKey('GER')], 'a selected slot keeps both its selected and default-player fallback tags subscribed when the picker is closed');
+  const absentHeld: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  clockHour = 50;
+  assert.equal(readIdentityAtHeadHour(broker, clock, SCOPE, true, absentSlotKeys, h => h, null, [0, 500], absentHeld), 50);
+  clockHour = 160;
+  assert.equal(readIdentityAtHeadHour(broker, clock, SCOPE, true, absentSlotKeys, h => h, null, [0, 500], absentHeld), 160, 'crossing a player rename moves a closed picker whose selected slot is absent');
+
+  const gapScope = { ...SCOPE, revision: 'gap' };
+  const gapFacts: CountryFactsReply = {
+    branchId: 'b1',
+    known: [[0, 500]],
+    names: ['Alpha Early', 'Alpha Late', 'Germany'],
+    reasons: [],
+    flags: [FLAG_A, FLAG_B],
+    countries: [
+      { tag: 'ALP', runs: [[0, 0, 0x112233, -1, 0], [150, 1, 0x112233, -1, 1]] },
+      { tag: 'GER', runs: [[0, 2, 0x334455, -1, 0]] },
+    ],
+    warnings: [],
+  };
+  const gapIdentities: CountryIdentitiesReply = {
+    ...sampleIdentities(),
+    branchId: 'b1',
+    known: [],
+    unknown: [{ firstHour: 0, lastHour: 500, reason: 'identities unrecorded' }],
+    countries: [],
+    warnings: [],
+  };
+  const gapBroker = new IdentityBroker({
+    transport: {
+      ...UNUSED_ENTITY_READS,
+      loadFacts: async () => gapFacts,
+      loadIdentities: async () => gapIdentities,
+      loadGroups: async () => sampleGroups(),
+      loadStyles: () => deferred<CountryStyleReply>().promise,
+      loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+    },
+  });
+  gapBroker.setDemand({}, gapScope, { asks: [{ key: countrySlotKey(3), hour: 25 }, { key: countryTagKey('ALP'), hour: 25 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  const gapKeys = countryPickerKeys(3, 'ALP', [], ['ALP', 'GER']);
+  const gapHeld: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  clockHour = 25;
+  assert.equal(readIdentityAtHeadHour(gapBroker, clock, gapScope, true, gapKeys, h => h, null, [0, 500], gapHeld), 25);
+  clockHour = 160;
+  assert.equal(readIdentityAtHeadHour(gapBroker, clock, gapScope, true, gapKeys, h => h, null, [0, 500], gapHeld), 160, 'crossing a selected-tag rename moves a closed picker during a slot identity gap');
+  gapBroker.dispose();
   broker.dispose();
 });
 
@@ -1265,4 +1323,25 @@ test('a country name that is still loading reads as loading in every family, nev
   const flow = presentFlowEndpoint(waiting, { key: 's7', slot: 7, tag: 'GER', collective: false, unknown: null });
   assert.equal(flow.label, LOADING_NAME, 'a flow endpoint waiting for its name does not print the tag as the name');
   assert.equal(flow.labelLoading, true);
+});
+
+test('snapshot reuse refuses equal counters from a recreated index or a different language', () => {
+  const scopeEn = { sourceId: 's', revision: '1', branchId: 'b1', content: 1, language: 'english' };
+  const first = new IdentityIndex(scopeEn, [0, 500]);
+  first.setEntityRuns({ kind: 'state', id: '1' }, [{ firstHour: 0, lastHour: 500, name: 'State One' }]);
+  const workerFirst = IdentityIndex.fromSnapshot(structuredClone(first.exportSnapshot()));
+
+  const recreated = new IdentityIndex(scopeEn, [0, 500]);
+  recreated.setEntityRuns({ kind: 'state', id: '2' }, [{ firstHour: 0, lastHour: 500, name: 'State Two' }]);
+  const workerRecreated = IdentityIndex.fromSnapshot(structuredClone(recreated.exportSnapshot()), workerFirst);
+  const stateTwo = workerRecreated.resolve({ kind: 'state', id: '2' }, 10);
+  assert.equal(stateTwo.kind, 'known', 'a recreated index with equal state revision never reuses stale entities');
+  assert.equal(stateTwo.name.kind === 'known' ? stateTwo.name.value : null, 'State Two');
+
+  const scopeDe = { ...scopeEn, language: 'german' };
+  const translated = new IdentityIndex(scopeDe, [0, 500]);
+  translated.setEntityRuns({ kind: 'state', id: '1' }, [{ firstHour: 0, lastHour: 500, name: 'Staat Eins' }]);
+  const workerTranslated = IdentityIndex.fromSnapshot(structuredClone(translated.exportSnapshot()), workerFirst);
+  const stateOneDe = workerTranslated.resolve({ kind: 'state', id: '1' }, 10);
+  assert.equal(stateOneDe.kind === 'known' && stateOneDe.name.kind === 'known' ? stateOneDe.name.value : null, 'Staat Eins');
 });

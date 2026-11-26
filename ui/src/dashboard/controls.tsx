@@ -6,7 +6,7 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import type { PlaybackController } from './playback';
-import { countryPickerKeys, pickerDating, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
+import { countryPickerKeys, pickerDating, pickerHeaderTag, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
 import { identityBrokerFor } from '../families/identity/broker.ts';
 import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
@@ -25,9 +25,21 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
   const scope = useIdentityScope(picker.client, track?.source, track?.branch.id, !!track);
   const branchBounds = useMemo(() => (first !== undefined && last !== undefined ? [first, last] as const : undefined), [first, last]);
   const [shownTags, setShownTags] = useState<readonly string[]>([]);
+  const fallbackTag = useMemo(
+    () => pickerHeaderTag(picker.countries, null, picker.playerCountryId, picker.addLabel),
+    [picker.countries, picker.playerCountryId, picker.addLabel],
+  );
+  const headerTag = useMemo(
+    () => pickerHeaderTag(picker.countries, picker.selectedTag, picker.playerCountryId, picker.addLabel),
+    [picker.countries, picker.selectedTag, picker.playerCountryId, picker.addLabel],
+  );
+  const slotFallbacks = useMemo(
+    () => (headerTag && fallbackTag && headerTag !== fallbackTag ? [headerTag, fallbackTag] : headerTag ?? fallbackTag),
+    [headerTag, fallbackTag],
+  );
   const keys = useMemo(
-    () => countryPickerKeys(selectedSlot, picker.selectedTag, shownTags),
-    [selectedSlot, picker.selectedTag, shownTags],
+    () => countryPickerKeys(selectedSlot, headerTag, shownTags, slotFallbacks),
+    [selectedSlot, headerTag, shownTags, slotFallbacks],
   );
   const { hour, results } = useIdentityAtHead(picker.client, track?.source, scope, clock, keys, trackHour, {
     active: !!track,
@@ -48,8 +60,8 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
     [track?.branch.id, shownHour],
   );
   const datedHour = useMemo(
-    () => pickerDating(identityBrokerFor(picker.client), clock, scope, selectedSlot, picker.selectedTag, trackHour, track?.source, branchBounds),
-    [picker.client, clock, scope, selectedSlot, picker.selectedTag, trackHour, track?.source, branchBounds],
+    () => pickerDating(identityBrokerFor(picker.client), clock, scope, selectedSlot, headerTag, trackHour, track?.source, branchBounds, slotFallbacks),
+    [picker.client, clock, scope, selectedSlot, headerTag, trackHour, track?.source, branchBounds, slotFallbacks],
   );
   return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} datedHour={datedHour} onShownTags={setShownTags} />;
 }

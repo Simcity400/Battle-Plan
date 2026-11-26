@@ -1,6 +1,6 @@
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { IdentityIndex } from '../identity/index.ts';
-import { PENDING_ART, productArt, readyArt, type ArtResult } from '../art/types.ts';
+import { PENDING_ART, productArt, readyArt, unavailableArt, type ArtResult } from '../art/types.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
@@ -2202,7 +2202,7 @@ test('an animation frame of a 1,500-row table with a flag per row joins no list 
 test('after a refresh with the same flags, a one-row scroll hands the art cache the offscreen list it already holds', () => {
   type Row = { id: string; v: number };
   const columns: TableColumnSpec[] = [
-    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'name', label: 'Name', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
     { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
   ];
   registerFamilyProjection({
@@ -2213,7 +2213,7 @@ test('after a refresh with the same flags, a one-row scroll hands the art cache 
       rows: (readView.panel('main') as { rows: Row[] }).rows.map(r => {
         const url = `asset://flag-${r.id}.png`;
         readView.art({ kind: 'url', url });
-        return { key: r.id, name: r.id, cells: { name: { value: knownValue(r.id), art: readyArt(url) }, v: { value: knownValue(r.v), format: 'integer' } } };
+        return { key: r.id, name: r.id, cells: { name: { value: knownValue(r.id), iconSlot: true, art: readyArt(url) }, v: { value: knownValue(r.v), format: 'integer' } } };
       }),
     }),
   });
@@ -3976,4 +3976,2074 @@ test('flag columns widen for multi-country coalitions past row 40, preserve two-
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+});
+
+test('deriveTableAudit records tooltip countryFlagKey across pending and ready states and detects flag identity changes in Aces', async () => {
+  const { acesProjection } = await import('../../widgets/aces/acesProjection.ts');
+  const { TABLE_BASE: ACES_BASE } = await import('../../widgets/aces/definition.ts');
+  const { createSnapshotIdentityProvider } = await import('../identity/provider.ts');
+  const hour = 61320100;
+  const reply = {
+    readHour: hour,
+    missing: null,
+    warnings: [],
+    aces: [{
+      id: '1',
+      tag: 'GER',
+      name: 'Ace Pilot',
+      callsign: 'Falcon',
+      portrait: null,
+      portraitMissing: 'Not recorded',
+      wing: null,
+      wingName: null,
+      aircraft: [],
+      firstSeen: hour - 50,
+      alive: true,
+      death: null,
+    }],
+  };
+  const auditAce = (flagKey: string, flagArt: ArtResult) => {
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b1', content: 1 }, [hour - 100, hour + 100]);
+    index.ingestStyle({
+      tag: 'GER',
+      name: 'Germany',
+      color: [74, 74, 74],
+      valid: [hour - 100, hour + 100],
+      flagChoice: { keys: [flagKey, null, null], reasons: [null, null, null] },
+    }, hour);
+    const rv = createBoundedReadView({
+      hour,
+      panels: new Map([['main', reply]]),
+      identity: createSnapshotIdentityProvider(index),
+      art: { resolve: () => flagArt },
+    });
+    const model = acesProjection.project(rv, { filter: { passing: null, unrecorded: [], bounds: [] } });
+    const settings = tableSettingsOf(undefined, model.columns, ACES_BASE);
+    const flatRows = resolveTableRows(model, settings);
+    const visibleColumns = buildColumnLayouts(model.columns, settings);
+    return deriveTableAudit({ model, flatRows, visibleColumns }).find(entry => entry.key === '1:_tooltip')!.value!;
+  };
+  const pendingA = auditAce('GER_fascism', PENDING_ART);
+  const readyA = auditAce('GER_fascism', readyArt('flag://GER_fascism'));
+  const readyB = auditAce('GER_democratic', readyArt('flag://GER_democratic'));
+  assert.equal(pendingA, readyA, 'tooltip audit stays invariant while the same flag loads');
+  assert.notEqual(readyA, readyB, 'tooltip audit detects a changed country flag identity in Aces');
+  assert.ok(readyA.includes('GER_fascism'), 'tooltip audit names the flag handle key');
+  assert.ok(!readyA.includes('"countryFlagKey":null'), 'Aces carries the flag handle key onto its country cell');
+
+  const { warContributionSidesProjection } = await import('../../widgets/war-contribution/sidesProjection.ts');
+  const warsReply = {
+    branchId: 'b1',
+    available: true,
+    viewpoints: [{ firstHour: hour - 50, lastHour: hour + 50, tag: 'GER' }],
+    warnings: [],
+    unobserved: [],
+    capitulationsUnobserved: [],
+    countryNames: [],
+    wars: [{
+      id: 'w1',
+      firstHour: hour - 50,
+      lastHour: hour + 50,
+      startedBy: false,
+      endedBy: false,
+      observations: [{
+        firstHour: hour - 50,
+        lastHour: hour + 50,
+        viewpointTag: 'GER',
+        viewpointSide: ['GER'],
+        opposingSide: ['FRA'],
+        attackersAreViewpoint: true,
+        representative: ['GER', 'FRA'] as [string, string],
+        name: { text: 'Test War', known: true, reason: null, key: null },
+      }],
+      participants: [
+        { firstHour: hour - 50, lastHour: hour + 50, tag: 'GER', side: 'attacker' as const, joinedBy: false, leftBy: false },
+        { firstHour: hour - 50, lastHour: hour + 50, tag: 'FRA', side: 'defender' as const, joinedBy: false, leftBy: false },
+      ],
+      capitulations: [],
+    }],
+  };
+  const zeroStats = {
+    equipmentDamage: '0', occupation: '0', airDamage: '0', strategicBombing: '0', shipDamage: '0',
+    convoyDamage: '0', casualties: '0', unknownCasualties: '0', lendLeaseSent: '0', lendLeaseReceived: '0',
+    score: '100', participation: '100',
+  };
+  const warReply = {
+    branchId: 'b1',
+    hour,
+    available: true,
+    warnings: [],
+    contributions: [{
+      viewpointSide: ['GER'],
+      opposingSide: ['FRA'],
+      reason: null,
+      participants: [
+        { tag: 'GER', side: 'attacker' as const, ...zeroStats },
+        { tag: 'FRA', side: 'defender' as const, ...zeroStats },
+      ],
+      measures: [{
+        key: 'participation' as const,
+        viewpoint: { total: '100', partial: false, shareOfWar: 5000, members: [{ tag: 'GER', value: '100', partial: false, shareOfSide: 10000 }] },
+        opposing: { total: '100', partial: false, shareOfWar: 5000, members: [{ tag: 'FRA', value: '100', partial: false, shareOfSide: 10000 }] },
+      }],
+    }],
+  };
+  const auditSide = (flagKey: string, flagArt: ArtResult) => {
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b1', content: 1 }, [hour - 100, hour + 100]);
+    index.ingestStyle({ tag: 'GER', name: 'Germany', color: [74, 74, 74], valid: [hour - 100, hour + 100], flagChoice: { keys: [flagKey, null, null], reasons: [null, null, null] } }, hour);
+    index.ingestStyle({ tag: 'FRA', name: 'France', color: [50, 80, 180], valid: [hour - 100, hour + 100], flagChoice: { keys: ['FRA_democratic', null, null], reasons: [null, null, null] } }, hour);
+    const rv = createBoundedReadView({
+      hour,
+      panels: new Map([['live', warReply]]),
+      identity: createSnapshotIdentityProvider(index),
+      art: { resolve: () => flagArt },
+    });
+    const model = warContributionSidesProjection.project(rv, { wars: warsReply, saved: 'w1' });
+    const pane = model.panes![0]!;
+    const settings = tableSettingsOf(undefined, model.columns, { density: 'compact', barsBehind: 'off', sort: { column: 'participation', direction: 'descending' } });
+    const flatRows: FlatTableRow[] = pane.rows.map((row, idx) => ({ kind: 'data', key: row.key, name: row.name, row, level: 1, rank: idx + 1, parent: null, childCount: 0, isTreeGroup: false, isOpen: false }));
+    const visibleColumns = buildColumnLayouts(model.columns, settings);
+    return deriveTableAudit({ model, flatRows, visibleColumns }).find(entry => entry.key === 'viewpoint:GER:_tooltip')!.value!;
+  };
+  const sideA = auditSide('GER_fascism', readyArt('flag://GER_fascism'));
+  const sideB = auditSide('GER_democratic', readyArt('flag://GER_democratic'));
+  assert.notEqual(sideA, sideB, 'War Contribution Sides tooltip audit detects a changed small flag choice');
+  assert.ok(sideA.includes('GER_fascism') && !sideA.includes('"countryFlagKey":null'), 'War Contribution Sides carries the small flag handle key');
+
+  const gsCell = (raw: string) => ({ raw, missing: null });
+  const gsReply = {
+    branchId: 'b1',
+    hour,
+    missing: null,
+    hints: {},
+    multipliers: [],
+    rows: [{ tag: 'GER', total: gsCell('100'), army: gsCell('50'), navy: gsCell('25'), air: gsCell('25'), industry: gsCell('10'), land: gsCell('10') }],
+    warnings: [],
+  };
+  const gsOpts = { all: true, membership: null, top: null, by: 'total' as const, factions: false, factionRuns: null, rankMarkers: false };
+  const gsAudit = (flagKey: string) => {
+    const idx = new IdentityIndex({ sourceId: 's-gs', revision: '1', branchId: 'b1', content: 1 }, [hour - 100, hour + 100]);
+    idx.ingestStyle({ tag: 'GER', name: 'Germany', color: [74, 74, 74], valid: [hour - 100, hour + 100], flagChoice: { keys: [flagKey, null, null], reasons: [null, null, null] } }, hour);
+    const rv = createBoundedReadView({ hour, panels: new Map([['main', gsReply]]), identity: createSnapshotIdentityProvider(idx), art: { resolve: () => PENDING_ART } });
+    const model = gameScoreProjection.project(rv, gsOpts as never);
+    return model.rows[0]!.cells.country!.artKey;
+  };
+  const gsKeyA = gsAudit('GER_fascism');
+  const gsKeyB = gsAudit('GER_democratic');
+  assert.notEqual(gsKeyA, gsKeyB, 'Game Score incremental cache updates country artKey when flagChoice changes while pending');
+
+  const sbCols: ScoreboardColumn[] = [{ key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null, family: { kind: 'f', measure: 'm' }, partial: null, noneAtZero: false }];
+  const sbOpts = { shown: sbCols, candidates: ['GER'], top: 4, rankMarkers: false };
+  const sbAnswer = answer({ keys: [1n], columns: 1, names: ['GER'], values: [100n], states: [CELL.value] });
+  const sbAudit = (flagKey: string) => {
+    const idx = new IdentityIndex({ sourceId: 's-sb', revision: '1', branchId: 'b1', content: 1 }, [hour - 100, hour + 100]);
+    idx.ingestStyle({ tag: 'GER', name: 'Germany', color: [74, 74, 74], valid: [hour - 100, hour + 100], flagChoice: { keys: [flagKey, null, null], reasons: [null, null, null] } }, hour);
+    const rv = createBoundedReadView({ hour, answers: new Map([[RANK_SOURCE, sbAnswer], ['factories', sbAnswer]]), identity: createSnapshotIdentityProvider(idx), art: { resolve: () => PENDING_ART } });
+    const model = scoreboardProjection.project(rv, sbOpts);
+    return model.rows[0]!.cells.country!.artKey;
+  };
+  const sbKeyA = sbAudit('GER_fascism');
+  const sbKeyB = sbAudit('GER_democratic');
+  assert.notEqual(sbKeyA, sbKeyB, 'Scoreboard incremental cache updates country artKey when flagChoice changes while pending');
+});
+
+test('tableLane.visibleArt follows frame-specific gliding rows and never pins all 1,500 flags on a rank reversal', async () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const makeModel = (scores: readonly number[], hour: number): TableModel => ({
+    columns,
+    hour,
+    rows: scores.map((score, i) => ({
+      key: `r${i}`,
+      name: `Row ${i}`,
+      cells: {
+        country: { value: knownValue(`Row ${i}`), country: `C${i}`, iconSlot: true, art: readyArt(`flag://r${i}`), artKey: `flag:panel:r${i}` },
+        score: { value: knownValue(score) },
+      },
+    })),
+  });
+  const surface = { width: 420, height: 110, dpr: 1 };
+  const measure = instrumentedContext().ctx as unknown as OffscreenCanvasRenderingContext2D;
+
+  const plainCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
+  const plainSettings = tableSettingsOf(undefined, plainCols, { density: 'normal', sort: { column: 'country', direction: 'descending' } });
+  const plainModel: TableModel = {
+    columns: plainCols,
+    hour: 100,
+    rows: [{ key: 'plain-0', name: 'Plain', cells: { country: { value: knownValue('Plain'), country: 'GER', iconSlot: true, art: readyArt('flag://plain-hidden') } } }],
+  };
+  const plainBinding = { family: 'table', settings: plainSettings, width: 420, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const plainLayout = tableLane.layout(plainModel, plainBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 900, speed: 24 } as never);
+  const plainUrls = [...tableLane.visibleArt({ model: plainModel, layout: plainLayout, binding: plainBinding, surface, theme: TEST_THEME, hour: 100, now: 900, changedAt: 900, continuity: 0, speed: 24, before: null } as never)];
+  assert.deepEqual(plainUrls, [], 'plain top-level cells without artShape contribute zero icon URLs');
+
+  const topBinding = { family: 'table', settings, width: 420, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const firstModel = makeModel([100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 5, 1], 100);
+  const firstLayout = tableLane.layout(firstModel, topBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const prevFrame = { model: firstModel, layout: firstLayout, binding: topBinding, surface, theme: TEST_THEME, hour: 100, now: 1000, changedAt: 1000, continuity: 1, speed: 24, before: null } as never;
+  const movedModel = makeModel([5, 90, 80, 70, 60, 50, 40, 30, 20, 10, 1, 100], 101);
+  const movedLayout = tableLane.layout(movedModel, topBinding, surface as never, TEST_THEME, measure, 101, { previous: prevFrame, now: 1020, speed: 24 } as never);
+  const earlyFrame = { model: movedModel, layout: movedLayout, binding: topBinding, surface, theme: TEST_THEME, hour: 101, now: 1020, changedAt: 1020, continuity: 1, speed: 24, before: prevFrame } as never;
+  const earlyUrls = [...tableLane.visibleArt(earlyFrame)];
+  assert.ok(earlyUrls.includes('flag://r0'), 'at the start of its glide out of index 0, r0 is still inside the viewport and stays in visibleArt');
+  assert.ok(!earlyUrls.includes('flag://r11'), 'at the start of its glide from index 11, r11 is still below the viewport and is not pinned early');
+
+  const count = 1500;
+  const midScroll = Math.floor(count / 2) * ROW_HEIGHT.normal;
+  const midBinding = { family: 'table', settings, width: 420, height: 110, scrollLeft: 0, scrollTop: midScroll, options: NO_OPTIONS } as never;
+  const asc = makeModel(Array.from({ length: count }, (_, i) => count - i), 100);
+  const rev = makeModel(Array.from({ length: count }, (_, i) => i + 1), 101);
+  const ascLayout = tableLane.layout(asc, midBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 2000, speed: 24 } as never);
+  const ascFrame = { model: asc, layout: ascLayout, binding: midBinding, surface, theme: TEST_THEME, hour: 100, now: 2000, changedAt: 2000, continuity: 2, speed: 24, before: null } as never;
+  const revLayout = tableLane.layout(rev, midBinding, surface as never, TEST_THEME, measure, 101, { previous: ascFrame, now: 2000, speed: 24 } as never);
+  const revFrame = (now: number) => ({ model: rev, layout: revLayout, binding: midBinding, surface, theme: TEST_THEME, hour: 101, now, changedAt: 2000, continuity: 2, speed: 24, before: ascFrame } as never);
+  const startUrls = [...tableLane.visibleArt(revFrame(2000))];
+  const nearMidUrls = [...tableLane.visibleArt(revFrame(2089))];
+  const midUrls = [...tableLane.visibleArt(revFrame(2090))];
+  assert.ok(startUrls.length > 0 && startUrls.length <= 10, `at 0 ms a 1,500-row rank reversal pins only on-screen flags (got ${startUrls.length})`);
+  assert.ok(nearMidUrls.length <= 40, `at 89 ms occluded rows do not flood visibleArt (got ${nearMidUrls.length})`);
+  assert.ok(midUrls.length > 0 && midUrls.length <= 4, `at the 90 ms midpoint occluded rows are culled instead of pinning 1,500 flags (got ${midUrls.length})`);
+
+  const portraitCols: TableColumnSpec[] = [
+    { key: 'portrait', label: '', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'kind', sortable: false },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  const portraitSettings = tableSettingsOf(undefined, portraitCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const portraitBinding = { family: 'table', settings: portraitSettings, width: 420, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const makePortraitModel = (scores: readonly [number, number], hour: number): TableModel => ({
+    columns: portraitCols,
+    hour,
+    rows: scores.map((score, i) => ({
+      key: `p${i}`,
+      name: `Portrait ${i}`,
+      cells: {
+        portrait: { value: knownValue(`Portrait ${i}`), iconSlot: true, artShape: 'portrait', art: readyArt(`portrait://p${i}`), artKey: `portrait:p${i}` },
+        score: { value: knownValue(score) },
+      },
+    })),
+  });
+  const pFirst = makePortraitModel([100, 50], 100);
+  const pFirstLayout = tableLane.layout(pFirst, portraitBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 3000, speed: 24 } as never);
+  const pPrevFrame = { model: pFirst, layout: pFirstLayout, binding: portraitBinding, surface, theme: TEST_THEME, hour: 100, now: 3000, changedAt: 3000, continuity: 3, speed: 24, before: null } as never;
+  const pSwap = makePortraitModel([50, 100], 101);
+  const pSwapLayout = tableLane.layout(pSwap, portraitBinding, surface as never, TEST_THEME, measure, 101, { previous: pPrevFrame, now: 3000, speed: 24 } as never);
+  const pMidUrls = [...tableLane.visibleArt({ model: pSwap, layout: pSwapLayout, binding: portraitBinding, surface, theme: TEST_THEME, hour: 101, now: 3093, changedAt: 3000, continuity: 3, speed: 24, before: pPrevFrame } as never)];
+  assert.ok(pMidUrls.includes('portrait://p0') && pMidUrls.includes('portrait://p1'), `exposed 40px portrait above swapping row stays in visibleArt (got ${JSON.stringify(pMidUrls)})`);
+
+  const liveCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  const liveSettings = tableSettingsOf(undefined, liveCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const liveBinding = { family: 'table', settings: liveSettings, width: 420, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const makeLiveModel = (scores: readonly [number, number], hour: number): TableModel => ({
+    columns: liveCols,
+    hour,
+    dateGrouped: true,
+    rows: [
+      { key: 'l0', name: 'Live', live: true, cells: { country: { value: knownValue('Live'), country: 'GER', iconSlot: true, art: readyArt('flag://live'), artKey: 'flag:panel:live' }, score: { value: knownValue(scores[0]) } } },
+      { key: 'l1', name: 'Hist', cells: { country: { value: knownValue('Hist'), country: 'FRA', iconSlot: true, art: readyArt('flag://hist'), artKey: 'flag:panel:hist' }, score: { value: knownValue(scores[1]) } } },
+    ],
+  });
+  const lFirst = makeLiveModel([50, 100], 100);
+  const lFirstLayout = tableLane.layout(lFirst, liveBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 4000, speed: 24 } as never);
+  const lPrevFrame = { model: lFirst, layout: lFirstLayout, binding: liveBinding, surface, theme: TEST_THEME, hour: 100, now: 4000, changedAt: 4000, continuity: 4, speed: 24, before: null } as never;
+  const lSwap = makeLiveModel([100, 50], 101);
+  const lSwapLayout = tableLane.layout(lSwap, liveBinding, surface as never, TEST_THEME, measure, 101, { previous: lPrevFrame, now: 4000, speed: 24 } as never);
+  const lMidUrls = [...tableLane.visibleArt({ model: lSwap, layout: lSwapLayout, binding: liveBinding, surface, theme: TEST_THEME, hour: 101, now: 4112, changedAt: 4000, continuity: 4, speed: 24, before: lPrevFrame } as never)];
+  assert.ok(lMidUrls.includes('flag://live') && lMidUrls.includes('flag://hist'), `flag centered in live-end content height stays visible at 112 ms (got ${JSON.stringify(lMidUrls)})`);
+
+  const pinnedCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 160 },
+    ...Array.from({ length: 6 }, (_, i) => ({ key: `c${i}`, label: `Col ${i}`, as: 'plain' as const, offered: ['plain' as const], priority: i + 1, numeric: true, hideable: false, minWidth: 90 })),
+  ];
+  const pinnedSettings = tableSettingsOf(undefined, pinnedCols, { density: 'normal', sort: { column: 'c0', direction: 'descending' } });
+  const pinnedBinding = { family: 'table', settings: pinnedSettings, width: 320, height: 110, scrollLeft: 40, scrollTop: 0, options: NO_OPTIONS } as never;
+  const pinnedSurface = { width: 320, height: 110, dpr: 1 };
+  const rowA: TableRow = { key: 'a', name: 'Alpha', cells: { country: { value: knownValue('Alpha'), country: 'GER', iconSlot: true, art: readyArt('flag://pinned-alpha'), artKey: 'flag:panel:alpha' }, c0: { value: knownValue(10) } } };
+  const gapSlot: TableModelSlot = { kind: 'gap', key: 'gap:1', firstHour: 10, lastHour: 20, reason: 'Collector detached' };
+  const gFirst: TableModel = { columns: pinnedCols, hour: 100, unsorted: true, rows: [rowA], slots: [gapSlot, { kind: 'data', row: rowA }] };
+  const gFirstLayout = tableLane.layout(gFirst, pinnedBinding, pinnedSurface as never, TEST_THEME, measure, 100, { previous: null, now: 5000, speed: 24 } as never);
+  const gPrevFrame = { model: gFirst, layout: gFirstLayout, binding: pinnedBinding, surface: pinnedSurface, theme: TEST_THEME, hour: 100, now: 5000, changedAt: 5000, continuity: 5, speed: 24, before: null } as never;
+  const gMoved: TableModel = { columns: pinnedCols, hour: 101, unsorted: true, rows: [rowA], slots: [{ kind: 'data', row: rowA }, gapSlot] };
+  const gMovedLayout = tableLane.layout(gMoved, pinnedBinding, pinnedSurface as never, TEST_THEME, measure, 101, { previous: gPrevFrame, now: 5000, speed: 24 } as never);
+  const gMidUrls = [...tableLane.visibleArt({ model: gMoved, layout: gMovedLayout, binding: pinnedBinding, surface: pinnedSurface, theme: TEST_THEME, hour: 101, now: 5020, changedAt: 5000, continuity: 5, speed: 24, before: gPrevFrame } as never)];
+  assert.ok(gMidUrls.includes('flag://pinned-alpha'), `a pinned-column flag gliding across a recording gap stays in visibleArt at 20 ms (got ${JSON.stringify(gMidUrls)})`);
+
+  const flagCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  const flagSettings = tableSettingsOf(undefined, flagCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const makeFlagModel = (scores: readonly number[], hour: number, withTraits = false): TableModel => ({
+    columns: withTraits
+      ? [...flagCols, { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 2, cellKind: 'icons', sortable: false }]
+      : flagCols,
+    hour,
+    rows: scores.map((score, i) => ({
+      key: `f${i}`,
+      name: `Flag ${i}`,
+      cells: {
+        country: { value: knownValue(`Flag ${i}`), country: `C${i}`, iconSlot: true, art: readyArt(`flag://f${i}`), artKey: `flag:panel:f${i}` },
+        score: { value: knownValue(score) },
+        ...(withTraits ? { traits: { value: knownValue('1'), icons: [{ name: 'Trait', art: readyArt('trait://shared') }] } } : {}),
+      },
+    })),
+  });
+  const offscreenBinding = { family: 'table', settings: flagSettings, width: 420, height: 110, scrollLeft: 0, scrollTop: 750 * ROW_HEIGHT.normal + 12, options: NO_OPTIONS } as never;
+  const fAsc = makeFlagModel(Array.from({ length: count }, (_, i) => count - i), 100);
+  const fRev = makeFlagModel(Array.from({ length: count }, (_, i) => i + 1), 101);
+  const fAscLayout = tableLane.layout(fAsc, offscreenBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 6000, speed: 24 } as never);
+  const fAscFrame = { model: fAsc, layout: fAscLayout, binding: offscreenBinding, surface, theme: TEST_THEME, hour: 100, now: 6000, changedAt: 6000, continuity: 6, speed: 24, before: null } as never;
+  const fRevLayout = tableLane.layout(fRev, offscreenBinding, surface as never, TEST_THEME, measure, 101, { previous: fAscFrame, now: 6000, speed: 24 } as never);
+  const offscreenUrls = [...tableLane.visibleArt({ model: fRev, layout: fRevLayout, binding: offscreenBinding, surface, theme: TEST_THEME, hour: 101, now: 6089.99, changedAt: 6000, continuity: 6, speed: 24, before: fAscFrame } as never)];
+  assert.equal(offscreenUrls.length, 0, `gliding rows whose flags are clipped outside the viewport pin zero URLs (got ${offscreenUrls.length})`);
+
+  const traitCols: TableColumnSpec[] = [
+    ...flagCols,
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 2, cellKind: 'icons', sortable: false },
+  ];
+  const traitSettings = tableSettingsOf(undefined, traitCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const traitBinding = { family: 'table', settings: traitSettings, width: 420, height: 110, scrollLeft: 0, scrollTop: 750 * ROW_HEIGHT.normal - 36, options: NO_OPTIONS } as never;
+  const tAsc = makeFlagModel(Array.from({ length: count }, (_, i) => count - i), 100, true);
+  const tRev = makeFlagModel(Array.from({ length: count }, (_, i) => i + 1), 101, true);
+  const tAscLayout = tableLane.layout(tAsc, traitBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 7000, speed: 24 } as never);
+  const tAscFrame = { model: tAsc, layout: tAscLayout, binding: traitBinding, surface, theme: TEST_THEME, hour: 100, now: 7000, changedAt: 7000, continuity: 7, speed: 24, before: null } as never;
+  const tRevLayout = tableLane.layout(tRev, traitBinding, surface as never, TEST_THEME, measure, 101, { previous: tAscFrame, now: 7000, speed: 24 } as never);
+  const traitUrls = [...tableLane.visibleArt({ model: tRev, layout: tRevLayout, binding: traitBinding, surface, theme: TEST_THEME, hour: 101, now: 7089.99, changedAt: 7000, continuity: 7, speed: 24, before: tAscFrame } as never)];
+  assert.ok(traitUrls.length > 0 && traitUrls.length <= 10, `a trait icon strip uses its 23px painted bounds instead of keeping 760 covered rows (got ${traitUrls.length})`);
+
+  const mixedCols: TableColumnSpec[] = [
+    { key: 'portrait', label: '', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'kind', sortable: false },
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 1, text: true, cellKind: 'item' },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 2, numeric: true },
+  ];
+  const mixedSettings = tableSettingsOf(undefined, mixedCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const mixedBinding = { family: 'table', settings: mixedSettings, width: 420, height: 110, scrollLeft: 0, scrollTop: midScroll, options: NO_OPTIONS } as never;
+  const makeMixedModel = (scores: readonly number[], hour: number, portrait: ArtResult): TableModel => ({
+    columns: mixedCols,
+    hour,
+    rows: scores.map((score, i) => ({
+      key: `m${i}`,
+      name: `Mixed ${i}`,
+      cells: {
+        portrait: { value: knownValue(`Mixed ${i}`), iconSlot: true, artShape: 'portrait', art: portrait, artKey: `portrait:m${i}` },
+        country: { value: knownValue(`Mixed ${i}`), country: `C${i}`, iconSlot: true, art: readyArt(`flag://m${i}`), artKey: `flag:panel:m${i}` },
+        score: { value: knownValue(score) },
+      },
+    })),
+  });
+  for (const [label, portrait, continuity] of [
+    ['unavailable portrait', unavailableArt('Missing portrait'), 8],
+    ['shared portrait', readyArt('portrait://shared'), 9],
+  ] as const) {
+    const mAsc = makeMixedModel(Array.from({ length: count }, (_, i) => count - i), 100, portrait);
+    const mRev = makeMixedModel(Array.from({ length: count }, (_, i) => i + 1), 101, portrait);
+    const mAscLayout = tableLane.layout(mAsc, mixedBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 8000, speed: 24 } as never);
+    const mAscFrame = { model: mAsc, layout: mAscLayout, binding: mixedBinding, surface, theme: TEST_THEME, hour: 100, now: 8000, changedAt: 8000, continuity, speed: 24, before: null } as never;
+    const mRevLayout = tableLane.layout(mRev, mixedBinding, surface as never, TEST_THEME, measure, 101, { previous: mAscFrame, now: 8000, speed: 24 } as never);
+    const mixedUrls = [...tableLane.visibleArt({ model: mRev, layout: mRevLayout, binding: mixedBinding, surface, theme: TEST_THEME, hour: 101, now: 8090, changedAt: 8000, continuity, speed: 24, before: mAscFrame } as never)];
+    const flagUrls = mixedUrls.filter(url => url.startsWith('flag://'));
+    assert.equal(flagUrls.length, 1, `at 90 ms with ${label}, only the single uncovered country flag is pinned (got ${flagUrls.length})`);
+  }
+
+  const detailCols: TableColumnSpec[] = [
+    { key: 'terms', label: 'Terms', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
+  const detailSettings = tableSettingsOf(undefined, detailCols, { density: 'normal', sort: { column: 'terms', direction: 'descending' } });
+  const detailFlags = Array.from({ length: 256 }, (_, i) => ({
+    tag: `T${i}`,
+    art: readyArt(`flag://term-${i}`),
+    label: `Country term ${i}`,
+  }));
+  const detailModel: TableModel = {
+    columns: detailCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'deal-parent',
+      name: 'Peace Conference',
+      cells: { terms: { value: knownValue('Peace Conference') } },
+      children: [{
+        key: 'deal-detail',
+        name: 'Deal',
+        detailColumn: 'terms',
+        detailEnd: true,
+        cells: {
+          terms: {
+            value: knownValue('Terms'),
+            heading: { flag: { tag: 'GER', art: readyArt('flag://deal-heading') }, text: knownValue('Peace conference') },
+            flags: detailFlags,
+          },
+        },
+      }],
+    }],
+  };
+  const detailBinding = { family: 'table', settings: detailSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 300, expanded: { 'deal-parent': true }, options: NO_OPTIONS } as never;
+  const detailLayout = tableLane.layout(detailModel, detailBinding, { width: 320, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 9000, speed: 24 } as never);
+  const detailUrls = [...tableLane.visibleArt({ model: detailModel, layout: detailLayout, binding: detailBinding, surface: { width: 320, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 9000, changedAt: 9000, continuity: 10, speed: 24, before: null } as never)];
+  assert.ok(!detailUrls.includes('flag://deal-heading'), 'scrolled-off detail heading flag is not pinned');
+  assert.ok(detailUrls.length > 0 && detailUrls.length <= 16, `a 256-term detail row pins only flags on visible wrapped lines (got ${detailUrls.length})`);
+
+  const medalCols: TableColumnSpec[] = [
+    { key: 'medals', label: 'Medals', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'icons', sortable: false, minWidth: 240, maxWidth: 240 },
+  ];
+  const medalSettings = tableSettingsOf(undefined, medalCols, { density: 'normal', sort: { column: 'medals', direction: 'descending' } });
+  const medalModel: TableModel = {
+    columns: medalCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'div-1',
+      name: 'Division 1',
+      cells: {
+        medals: {
+          value: knownValue('1500'),
+          iconStripKind: 'medals',
+          icons: Array.from({ length: 1500 }, (_, i) => ({ name: `Medal ${i}`, art: readyArt(`medal://m${i}`) })),
+        },
+      },
+    }],
+  };
+  const medalBinding = { family: 'table', settings: medalSettings, width: 240, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const medalLayout = tableLane.layout(medalModel, medalBinding, { width: 240, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 10000, speed: 24 } as never);
+  const medalUrls = [...tableLane.visibleArt({ model: medalModel, layout: medalLayout, binding: medalBinding, surface: { width: 240, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 10000, changedAt: 10000, continuity: 11, speed: 24, before: null } as never)];
+  assert.ok(medalUrls.length > 0 && medalUrls.length <= 10, `a 240 px medal strip with 1,500 icons pins only fitted icons (got ${medalUrls.length})`);
+
+  const { LaneArtCache } = await import('../art/laneCache.ts');
+  const { drawIconStrip, iconStripSlotWidth } = await import('../../draw/kit.ts');
+  const { resolveCachedArt, toArtSlotState } = await import('../art/adapters.ts');
+  const narrowTraitCols: TableColumnSpec[] = [
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'icons', sortable: false, minWidth: 240, maxWidth: 240 },
+  ];
+  const narrowTraitSettings = tableSettingsOf(undefined, narrowTraitCols, { density: 'normal', sort: { column: 'traits', direction: 'descending' } });
+  const narrowTraits = Array.from({ length: 1500 }, (_, i) => ({ name: `Trait ${i}`, art: readyArt(`trait://narrow-${i}`) }));
+  const narrowTraitModel: TableModel = {
+    columns: narrowTraitCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-1', name: 'General', cells: { traits: { value: knownValue('1500'), iconStripKind: 'traits', icons: narrowTraits } } }],
+  };
+  const narrowTraitBinding = { family: 'table', settings: narrowTraitSettings, width: 240, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const narrowTraitLayout = tableLane.layout(narrowTraitModel, narrowTraitBinding, { width: 240, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 11000, speed: 24 } as never);
+  const narrowCache = new LaneArtCache({
+    maxEntries: 8,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 8, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  const traitCol = narrowTraitLayout.shape.columns.columns[0]!;
+  const drawnUrls = () => {
+    const stripCtx = instrumentedContext().ctx as unknown as OffscreenCanvasRenderingContext2D;
+    const res = drawIconStrip(
+      stripCtx,
+      10 + (traitCol.leadInset ?? 0),
+      traitCol.width - 10 - (traitCol.trailInset ?? 0),
+      18,
+      narrowTraits.map(item => ({ state: toArtSlotState(resolveCachedArt(item.art, narrowCache), item.name), name: item.name })),
+      TEST_THEME,
+      { kind: 'traits' },
+    );
+    return narrowTraits.slice(0, res.drawnCount).map(item => item.art.url);
+  };
+  const pinnedUrls = () => [...tableLane.visibleArt({ model: narrowTraitModel, layout: narrowTraitLayout, binding: narrowTraitBinding, surface: { width: 240, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 11000, changedAt: 11000, continuity: 12, speed: 24, before: null, art: narrowCache } as never)];
+  const beforeDecode = pinnedUrls();
+  assert.deepEqual(beforeDecode, drawnUrls(), 'before decode, visibleArt matches drawIconStrip exactly');
+  for (let round = 0; round < 10; round++) {
+    const shown = pinnedUrls();
+    if (shown.every(url => narrowCache.stateOfUrl(url) === 'ready')) break;
+    narrowCache.requestVisible(shown, []);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const afterDecode = pinnedUrls();
+  assert.deepEqual(afterDecode, drawnUrls(), 'after decoding 8x32 bitmaps, visibleArt expands to match drawIconStrip exactly');
+  assert.ok(afterDecode.length > beforeDecode.length, `decoding narrower 8x32 bitmaps increases pinned icons (${beforeDecode.length} -> ${afterDecode.length})`);
+  assert.ok(afterDecode.every(url => narrowCache.stateOfUrl(url) === 'ready'), 'every drawn icon is decoded and ready in cache');
+  narrowCache.dispose();
+
+  const hScrollCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 160 },
+    ...Array.from({ length: 3 }, (_, i) => ({ key: `pad${i}`, label: `Pad ${i}`, as: 'plain' as const, offered: ['plain' as const], priority: i + 1, numeric: true, hideable: false, minWidth: 92 })),
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 4, cellKind: 'icons', sortable: false, hideable: false, minWidth: 240, maxWidth: 240 },
+  ];
+  const hScrollSettings = tableSettingsOf(undefined, hScrollCols, { density: 'normal', sort: { column: 'pad0', direction: 'descending' } });
+  const hScrollModel: TableModel = {
+    columns: hScrollCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'h0',
+      name: 'Alpha',
+      cells: {
+        country: { value: knownValue('Alpha'), country: 'GER', iconSlot: true, art: readyArt('flag://h-alpha') },
+        pad0: { value: knownValue(1) },
+        traits: { value: knownValue('12'), iconStripKind: 'traits', icons: Array.from({ length: 12 }, (_, i) => ({ name: `T${i}`, art: readyArt(`trait://h-${i}`) })) },
+      },
+    }],
+  };
+  const hSurface = { width: 320, height: 110, dpr: 1 };
+  const hLeftBinding = { family: 'table', settings: hScrollSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const hLeftLayout = tableLane.layout(hScrollModel, hLeftBinding, hSurface as never, TEST_THEME, measure, 100, { previous: null, now: 12000, speed: 24 } as never);
+  const hLeftUrls = [...tableLane.visibleArt({ model: hScrollModel, layout: hLeftLayout, binding: hLeftBinding, surface: hSurface, theme: TEST_THEME, hour: 100, now: 12000, changedAt: 12000, continuity: 13, speed: 24, before: null } as never)];
+  assert.deepEqual(hLeftUrls, ['flag://h-alpha'], 'horizontally offscreen trait column pins zero trait URLs');
+  const hRightBinding = { family: 'table', settings: hScrollSettings, width: 320, height: 110, scrollLeft: 320, scrollTop: 0, options: NO_OPTIONS } as never;
+  const hRightLayout = tableLane.layout(hScrollModel, hRightBinding, hSurface as never, TEST_THEME, measure, 100, { previous: null, now: 12000, speed: 24 } as never);
+  const hRightUrls = [...tableLane.visibleArt({ model: hScrollModel, layout: hRightLayout, binding: hRightBinding, surface: hSurface, theme: TEST_THEME, hour: 100, now: 12000, changedAt: 12000, continuity: 14, speed: 24, before: null } as never)];
+  assert.ok(hRightUrls.includes('flag://h-alpha') && hRightUrls.some(url => url.startsWith('trait://h-')), `scrolling the trait column into view pins its visible icons (got ${JSON.stringify(hRightUrls)})`);
+
+  const skillCols: TableColumnSpec[] = [
+    { key: 'skill', label: 'Skill', as: 'plain', offered: ['plain'], priority: 0, numeric: true, cellKind: 'skill', skillIcon: 'badge://skill-default', minWidth: 68 },
+  ];
+  const skillSettings = tableSettingsOf(undefined, skillCols, { density: 'normal', sort: { column: 'skill', direction: 'descending' } });
+  const skillModel: TableModel = {
+    columns: skillCols,
+    hour: 100,
+    unsorted: true,
+    rows: [
+      { key: 'sk-missing', name: 'Missing', cells: { skill: { value: notRecorded('Skill not recorded'), art: readyArt('badge://skill-missing') } } },
+      { key: 'sk-known', name: 'Known', cells: { skill: { value: knownValue(5), art: readyArt('badge://skill-known') } } },
+    ],
+  };
+  const skillBinding = { family: 'table', settings: skillSettings, width: 200, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const skillLayout = tableLane.layout(skillModel, skillBinding, { width: 200, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 13000, speed: 24 } as never);
+  const skillUrls = [...tableLane.visibleArt({ model: skillModel, layout: skillLayout, binding: skillBinding, surface: { width: 200, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 13000, changedAt: 13000, continuity: 15, speed: 24, before: null } as never)];
+  assert.deepEqual(skillUrls, ['badge://skill-known'], 'a notRecorded skill cell does not pin its undrawn badge URL');
+
+  const distinctPortraitModel = (scores: readonly number[], hour: number): TableModel => ({
+    columns: mixedCols,
+    hour,
+    rows: scores.map((score, i) => ({
+      key: `dp${i}`,
+      name: `Portrait ${i}`,
+      cells: {
+        portrait: {
+          value: knownValue(`Portrait ${i}`),
+          iconSlot: true,
+          artShape: 'portrait',
+          art: readyArt(`portrait://distinct-${i}`, { frame: { frameIndex: 0, frameCount: 1, frameWidth: 32, frameHeight: 32, textureWidth: 32, textureHeight: 32, outputWidth: 32, outputHeight: 32 } }),
+        },
+        country: { value: knownValue(`Portrait ${i}`), country: `C${i}`, iconSlot: true, art: readyArt(`flag://dp-${i}`) },
+        score: { value: knownValue(score) },
+      },
+    })),
+  });
+  const dpAsc = distinctPortraitModel(Array.from({ length: count }, (_, i) => count - i), 100);
+  const dpRev = distinctPortraitModel(Array.from({ length: count }, (_, i) => i + 1), 101);
+  const dpAscLayout = tableLane.layout(dpAsc, mixedBinding, surface as never, TEST_THEME, measure, 100, { previous: null, now: 14000, speed: 24 } as never);
+  const dpAscFrame = { model: dpAsc, layout: dpAscLayout, binding: mixedBinding, surface, theme: TEST_THEME, hour: 100, now: 14000, changedAt: 14000, continuity: 16, speed: 24, before: null } as never;
+  const dpRevLayout = tableLane.layout(dpRev, mixedBinding, surface as never, TEST_THEME, measure, 101, { previous: dpAscFrame, now: 14000, speed: 24 } as never);
+  const dpMidUrls = [...tableLane.visibleArt({ model: dpRev, layout: dpRevLayout, binding: mixedBinding, surface, theme: TEST_THEME, hour: 101, now: 14090, changedAt: 14000, continuity: 16, speed: 24, before: dpAscFrame } as never)];
+  const dpPortraits = dpMidUrls.filter(url => url.startsWith('portrait://'));
+  assert.equal(dpPortraits.length, 1, `at 90 ms with 1,500 distinct 32x32 portraits fitted to 30x30, only the topmost portrait is pinned (got ${dpPortraits.length})`);
+
+  const genCols: TableColumnSpec[] = [
+    { key: 'portrait', label: '', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'kind', pinned: true, hideable: false, minWidth: 58, maxWidth: 58, sortable: false },
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 1, text: true, cellKind: 'item', hideable: false, minWidth: 160 },
+    ...Array.from({ length: 4 }, (_, i) => ({ key: `stat${i}`, label: `Stat ${i}`, as: 'plain' as const, offered: ['plain' as const], priority: i + 2, numeric: true, hideable: false, minWidth: 90 })),
+  ];
+  const genSettings = tableSettingsOf(undefined, genCols, { density: 'normal', sort: { column: 'stat0', direction: 'descending' } });
+  const genModel: TableModel = {
+    columns: genCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'g0',
+      name: 'General',
+      cells: {
+        portrait: { value: knownValue('General'), iconSlot: true, artShape: 'portrait', art: readyArt('portrait://gen-0') },
+        country: { value: knownValue('Germany'), country: 'GER', iconSlot: true, art: readyArt('flag://gen-hidden-behind-pinned') },
+        stat0: { value: knownValue(5) },
+      },
+    }],
+  };
+  const genBinding = { family: 'table', settings: genSettings, width: 320, height: 110, scrollLeft: 40, scrollTop: 0, options: NO_OPTIONS } as never;
+  const genLayout = tableLane.layout(genModel, genBinding, { width: 320, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 15000, speed: 24 } as never);
+  const genUrls = [...tableLane.visibleArt({ model: genModel, layout: genLayout, binding: genBinding, surface: { width: 320, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 15000, changedAt: 15000, continuity: 17, speed: 24, before: null } as never)];
+  assert.deepEqual(genUrls, ['portrait://gen-0'], 'a country flag scrolled behind a pinned portrait column is not pinned');
+
+  const trimmedSpriteCols: TableColumnSpec[] = [
+    { key: 'kind', label: '', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', sortable: false, minWidth: 44 },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 1, text: true, cellKind: 'item' },
+  ];
+  const trimmedSpriteSettings = tableSettingsOf(undefined, trimmedSpriteCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const trimmedModel: TableModel = {
+    columns: trimmedSpriteCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'drawn-0',
+      name: 'Division',
+      cells: {
+        kind: { value: knownValue('Division'), iconSlot: true, artShape: 'drawn', artTile: 'flat', art: readyArt('sprite://padded-64x8') },
+        name: { value: knownValue('Division') },
+      },
+    }],
+  };
+  const trimmedBinding = { family: 'table', settings: trimmedSpriteSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 22, options: NO_OPTIONS } as never;
+  const trimmedLayout = tableLane.layout(trimmedModel, trimmedBinding, { width: 320, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 16000, speed: 24 } as never);
+  const OrigOffscreen = globalThis.OffscreenCanvas;
+  const paddedData = new Uint8ClampedArray(64 * 8 * 4);
+  for (let py = 0; py < 8; py++) {
+    for (let px = 28; px < 36; px++) paddedData[(py * 64 + px) * 4 + 3] = 255;
+  }
+  const paddedBitmap = { width: 64, height: 8, close() {} } as unknown as ImageBitmap;
+  (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(width: number, height: number) {
+      this.width = width;
+      this.height = height;
+    }
+    getContext() {
+      return {
+        drawImage() {},
+        getImageData: () => ({ data: paddedData }),
+      };
+    }
+  };
+  const trimmedCache = new LaneArtCache({ fetchBitmap: async () => paddedBitmap });
+  try {
+    const beforeTrimUrls = [...tableLane.visibleArt({ model: trimmedModel, layout: trimmedLayout, binding: trimmedBinding, surface: { width: 320, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 16000, changedAt: 16000, continuity: 18, speed: 24, before: null, art: trimmedCache } as never)];
+    assert.deepEqual(beforeTrimUrls, ['sprite://padded-64x8'], 'before decode, drawn sprite uses conservative slot bounds');
+    trimmedCache.requestVisible(beforeTrimUrls, []);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const afterTrimUrls = [...tableLane.visibleArt({ model: trimmedModel, layout: trimmedLayout, binding: trimmedBinding, surface: { width: 320, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 16000, changedAt: 16000, continuity: 18, speed: 24, before: null, art: trimmedCache } as never)];
+    assert.deepEqual(afterTrimUrls, ['sprite://padded-64x8'], 'after decode, 64x8 sprite with 8x8 opaque center stays pinned via trimmed bounds at scrollTop=22');
+  } finally {
+    trimmedCache.dispose();
+    (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = OrigOffscreen;
+  }
+
+  const decCols: TableColumnSpec[] = [
+    { key: 'title', label: 'Decision', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 338, maxWidth: 338 },
+    ...Array.from({ length: 3 }, (_, i) => ({ key: `d${i}`, label: `D${i}`, as: 'plain' as const, offered: ['plain' as const], priority: i + 1, numeric: true, hideable: false, minWidth: 90, maxWidth: 90 })),
+    { key: 'cost', label: 'Cost', as: 'plain', offered: ['plain'], priority: 4, numeric: true, hideable: false, minWidth: 110, maxWidth: 110 },
+    ...Array.from({ length: 2 }, (_, i) => ({ key: `t${i}`, label: `T${i}`, as: 'plain' as const, offered: ['plain' as const], priority: i + 5, numeric: true, hideable: false, minWidth: 150, maxWidth: 150 })),
+  ];
+  const decSettings = tableSettingsOf(undefined, decCols, { density: 'normal', sort: { column: 'cost', direction: 'descending' } });
+  const decModel: TableModel = {
+    columns: decCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'dec-0',
+      name: 'War Bonds',
+      cells: {
+        title: { value: knownValue('War Bonds') },
+        cost: { value: knownValue(50), unitArt: readyArt('icon://pp-cost'), unitSuffix: 'PP' },
+      },
+    }],
+  };
+  const decSurface = { width: 520, height: 110, dpr: 1 };
+  const decHiddenBinding = { family: 'table', settings: decSettings, width: 520, height: 110, scrollLeft: 345, scrollTop: 0, options: NO_OPTIONS } as never;
+  const decHiddenLayout = tableLane.layout(decModel, decHiddenBinding, decSurface as never, TEST_THEME, measure, 100, { previous: null, now: 17000, speed: 24 } as never);
+  const decHiddenUrls = [...tableLane.visibleArt({ model: decModel, layout: decHiddenLayout, binding: decHiddenBinding, surface: decSurface, theme: TEST_THEME, hour: 100, now: 17000, changedAt: 17000, continuity: 19, speed: 24, before: null } as never)];
+  assert.deepEqual(decHiddenUrls, [], 'a numeric unitArt icon scrolled behind pinned columns is not pinned even when the figure text remains exposed');
+  const decVisibleBinding = { family: 'table', settings: decSettings, width: 520, height: 110, scrollLeft: 220, scrollTop: 0, options: NO_OPTIONS } as never;
+  const decVisibleLayout = tableLane.layout(decModel, decVisibleBinding, decSurface as never, TEST_THEME, measure, 100, { previous: null, now: 17000, speed: 24 } as never);
+  const decVisibleUrls = [...tableLane.visibleArt({ model: decModel, layout: decVisibleLayout, binding: decVisibleBinding, surface: decSurface, theme: TEST_THEME, hour: 100, now: 17000, changedAt: 17000, continuity: 20, speed: 24, before: null } as never)];
+  assert.deepEqual(decVisibleUrls, ['icon://pp-cost'], 'a numeric unitArt icon exposed past pinned columns is pinned');
+
+  const peaceCols: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'date', minWidth: 320, maxWidth: 320 },
+    { key: 'terms', label: 'Terms', as: 'plain', offered: ['plain'], priority: 1, text: true, cellKind: 'item' },
+  ];
+  const peaceSettings = tableSettingsOf(undefined, peaceCols, { density: 'normal', sort: { column: 'date', direction: 'descending' } });
+  const peaceModel: TableModel = {
+    columns: peaceCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'peace-parent',
+      name: 'Peace',
+      cells: { date: { value: knownValue(100) }, terms: { value: knownValue('Peace') } },
+      children: [{
+        key: 'peace-detail',
+        name: 'Terms',
+        detailColumn: 'terms',
+        detailEnd: true,
+        cells: {
+          terms: {
+            value: knownValue('Terms'),
+            heading: { flag: { tag: 'GER', art: readyArt('flag://peace-offscreen-head') }, text: knownValue('Germany') },
+            flags: [
+              { tag: 'FRA', art: readyArt('flag://peace-offscreen-1'), label: 'France' },
+              { tag: 'POL', art: readyArt('flag://peace-offscreen-2'), label: 'Poland' },
+            ],
+          },
+        },
+      }],
+    }],
+  };
+  const peaceBinding = { family: 'table', settings: peaceSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 0, expanded: { 'peace-parent': true }, options: NO_OPTIONS } as never;
+  const peaceLayout = tableLane.layout(peaceModel, peaceBinding, { width: 320, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 18000, speed: 24 } as never);
+  const peaceUrls = [...tableLane.visibleArt({ model: peaceModel, layout: peaceLayout, binding: peaceBinding, surface: { width: 320, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 18000, changedAt: 18000, continuity: 21, speed: 24, before: null } as never)];
+  assert.deepEqual(peaceUrls, [], 'Peace Deals detail flags pushed past the 320 px viewport edge by a 320 px Date column are not pinned');
+
+  const tightTraitCols: TableColumnSpec[] = [
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'icons', sortable: false, minWidth: 40, maxWidth: 40 },
+  ];
+  const tightTraitSettings = tableSettingsOf(undefined, tightTraitCols, { density: 'normal', sort: { column: 'traits', direction: 'descending' } });
+  const tightTraitModel: TableModel = {
+    columns: tightTraitCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-tight', name: 'General', cells: { traits: { value: knownValue('1'), iconStripKind: 'traits', icons: [{ name: 'Narrow', art: readyArt('trait://tight-8x32') }] } } }],
+  };
+  const tightCache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 8, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  tightCache.requestVisible([], Array.from({ length: 128 }, (_, i) => `offscreen://fill-${i}`));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const tightBinding = { family: 'table', settings: tightTraitSettings, width: 40, height: 110, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const tightLayout = tableLane.layout(tightTraitModel, tightBinding, { width: 40, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 19000, speed: 24 } as never);
+  const tightBefore = [...tableLane.visibleArt({ model: tightTraitModel, layout: tightLayout, binding: tightBinding, surface: { width: 40, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 19000, changedAt: 19000, continuity: 22, speed: 24, before: null, art: tightCache } as never)];
+  assert.deepEqual(tightBefore, ['trait://tight-8x32'], '40 px Traits column requests its undecoded narrow trait icon even when offscreen cache is full');
+  tightCache.requestVisible(tightBefore, []);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(tightCache.stateOfUrl('trait://tight-8x32'), 'ready', 'tight trait icon decodes once requested via visibleArt');
+  const tightAfter = [...tableLane.visibleArt({ model: tightTraitModel, layout: tightLayout, binding: tightBinding, surface: { width: 40, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 19000, changedAt: 19000, continuity: 23, speed: 24, before: null, art: tightCache } as never)];
+  assert.deepEqual(tightAfter, ['trait://tight-8x32'], 'decoded 8x32 trait icon stays in visibleArt');
+  tightCache.dispose();
+
+  const fullPinCols: TableColumnSpec[] = [
+    { key: 'portrait', label: 'Portrait', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', pinned: true, hideable: false, minWidth: 320, maxWidth: 320 },
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 1, text: true, cellKind: 'item', hideable: false, minWidth: 140 },
+  ];
+  const fullPinSettings = tableSettingsOf(undefined, fullPinCols, { density: 'normal', sort: { column: 'country', direction: 'descending' } });
+  const fullPinModel: TableModel = {
+    columns: fullPinCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{
+      key: 'fp-1',
+      name: 'Alpha',
+      cells: {
+        portrait: { value: knownValue('Portrait'), art: readyArt('portrait://full-pin'), artShape: 'portrait', iconSlot: true },
+        country: { value: knownValue('Alpha'), country: 'GER', iconSlot: true, art: readyArt('flag://fully-covered-by-pin') },
+      },
+    }],
+  };
+  const fullPinBinding = { family: 'table', settings: fullPinSettings, width: 320, height: 110, scrollLeft: 20, scrollTop: 0, options: NO_OPTIONS } as never;
+  const fullPinLayout = tableLane.layout(fullPinModel, fullPinBinding, { width: 320, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 20000, speed: 24 } as never);
+  const fullPinUrls = [...tableLane.visibleArt({ model: fullPinModel, layout: fullPinLayout, binding: fullPinBinding, surface: { width: 320, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 20000, changedAt: 20000, continuity: 24, speed: 24, before: null } as never)];
+  assert.deepEqual(fullPinUrls, ['portrait://full-pin'], 'unpinned country flag completely covered when pinnedWidth >= viewport.width is excluded from visibleArt');
+
+  const clippedTraitCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 100, maxWidth: 100 },
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'icons', sortable: false, hideable: false, minWidth: 96, maxWidth: 96 },
+    { key: 'pad', label: 'Pad', as: 'plain', offered: ['plain'], priority: 2, numeric: true, hideable: false, minWidth: 120 },
+  ];
+  const clippedTraitSettings = tableSettingsOf(undefined, clippedTraitCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const clippedTraits = Array.from({ length: 4 }, (_, i) => ({ name: `Trait ${i}`, art: readyArt(`trait://clipped-${i}`) }));
+  const clippedTraitModel: TableModel = {
+    columns: clippedTraitCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-clip', name: 'General', cells: { name: { value: knownValue('General') }, traits: { value: knownValue('4'), iconStripKind: 'traits', icons: clippedTraits } } }],
+  };
+  const clippedCache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 21, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  clippedCache.requestVisible([], Array.from({ length: 128 }, (_, i) => `offscreen://clip-${i}`));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const clippedBinding = { family: 'table', settings: clippedTraitSettings, width: 140, height: 110, scrollLeft: 64, scrollTop: 0, options: NO_OPTIONS } as never;
+  const clippedLayout = tableLane.layout(clippedTraitModel, clippedBinding, { width: 140, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 21000, speed: 24 } as never);
+  for (let round = 0; round < 6; round++) {
+    const urls = [...tableLane.visibleArt({ model: clippedTraitModel, layout: clippedLayout, binding: clippedBinding, surface: { width: 140, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 21000, changedAt: 21000, continuity: 25 + round, speed: 24, before: null, art: clippedCache } as never)];
+    if (urls.length === 0 || urls.every(url => clippedCache.stateOfUrl(url) === 'ready')) break;
+    clippedCache.requestVisible(urls, []);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const clippedFinal = [...tableLane.visibleArt({ model: clippedTraitModel, layout: clippedLayout, binding: clippedBinding, surface: { width: 140, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 21000, changedAt: 21000, continuity: 31, speed: 24, before: null, art: clippedCache } as never)];
+  assert.deepEqual(clippedFinal, ['trait://clipped-2', 'trait://clipped-3'], `probing clipped undecoded traits exposes traits 2 and 3 and drops clipped predecessors (got ${JSON.stringify(clippedFinal)})`);
+  assert.equal(clippedCache.stateOfUrl('trait://clipped-2'), 'ready');
+  assert.equal(clippedCache.stateOfUrl('trait://clipped-3'), 'ready');
+  clippedCache.dispose();
+
+  const { defaultArtFrame } = await import('../art/types.ts');
+  const medalPinCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 100, maxWidth: 100 },
+    { key: 'medals', label: 'Medals', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'icons', sortable: false, hideable: false, minWidth: 40, maxWidth: 40 },
+    { key: 'pad', label: 'Pad', as: 'plain', offered: ['plain'], priority: 2, numeric: true, hideable: false, minWidth: 120 },
+  ];
+  const medalPinSettings = tableSettingsOf(undefined, medalPinCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const narrowMedalFrame = defaultArtFrame(6, 28);
+  const recordedMedals = [
+    { name: 'Medal 0', art: readyArt('medal://rec-0', { frame: narrowMedalFrame }) },
+    { name: 'Medal 1', art: readyArt('medal://rec-1', { frame: narrowMedalFrame }) },
+  ];
+  const medalPinModel: TableModel = {
+    columns: medalPinCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'div-m', name: 'Division', cells: { name: { value: knownValue('Division') }, medals: { value: knownValue('2'), iconStripKind: 'medals', icons: recordedMedals } } }],
+  };
+  const medalPinCache = new LaneArtCache({
+    maxEntries: 8,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 6, height: 28, close() {} }) as unknown as ImageBitmap,
+  });
+  const medalPinBinding = { family: 'table', settings: medalPinSettings, width: 140, height: 110, scrollLeft: 18, scrollTop: 0, options: NO_OPTIONS } as never;
+  const medalPinLayout = tableLane.layout(medalPinModel, medalPinBinding, { width: 140, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 22000, speed: 24 } as never);
+  const medalPinUrls = [...tableLane.visibleArt({ model: medalPinModel, layout: medalPinLayout, binding: medalPinBinding, surface: { width: 140, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 22000, changedAt: 22000, continuity: 32, speed: 24, before: null, art: medalPinCache } as never)];
+  assert.deepEqual(medalPinUrls, ['medal://rec-1'], 'recorded 6x28 medals only request the visible second medal when the first is behind the pinned column');
+  medalPinCache.requestVisible(medalPinUrls, []);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const medalPinCtx = instrumentedContext().ctx as unknown as OffscreenCanvasRenderingContext2D;
+  const medalCol = medalPinLayout.shape.columns.columns[1]!;
+  const medalDrawn = drawIconStrip(
+    medalPinCtx,
+    10 + (medalCol.leadInset ?? 0),
+    medalCol.width - 10 - (medalCol.trailInset ?? 0),
+    18,
+    recordedMedals.map(item => ({ state: toArtSlotState(resolveCachedArt(item.art, medalPinCache), item.name), name: item.name })),
+    TEST_THEME,
+    { kind: 'medals' },
+  );
+  assert.equal(medalDrawn.drawnCount, 2, 'drawIconStrip uses recorded slot width for the pending first medal and draws the decoded second medal');
+  medalPinCache.dispose();
+
+  const nonOverflowCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 100, maxWidth: 100 },
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'icons', sortable: false, hideable: false, minWidth: 200, maxWidth: 200 },
+  ];
+  const nonOverflowSettings = tableSettingsOf(undefined, nonOverflowCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const fiveTraits = Array.from({ length: 5 }, (_, i) => ({ name: `Trait ${i}`, art: readyArt(`trait://five-${i}`) }));
+  const nonOverflowModel: TableModel = {
+    columns: nonOverflowCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-five', name: 'General', cells: { name: { value: knownValue('General') }, traits: { value: knownValue('5'), iconStripKind: 'traits', icons: fiveTraits } } }],
+  };
+  const offscreenFill = Array.from({ length: 128 }, (_, i) => `offscreen://five-${i}`);
+  const fiveCache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 20, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  fiveCache.requestVisible([], offscreenFill);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const fiveBinding = { family: 'table', settings: nonOverflowSettings, width: 120, height: 110, scrollLeft: 75, scrollTop: 0, options: NO_OPTIONS } as never;
+  const fiveLayout = tableLane.layout(nonOverflowModel, fiveBinding, { width: 120, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 23000, speed: 24 } as never);
+  for (let round = 0; round < 8; round++) {
+    const urls = [...tableLane.visibleArt({ model: nonOverflowModel, layout: fiveLayout, binding: fiveBinding, surface: { width: 120, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 23000, changedAt: 23000, continuity: 40 + round, speed: 24, before: null, art: fiveCache } as never)];
+    fiveCache.requestVisible(urls, offscreenFill);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const fiveFinal = [...tableLane.visibleArt({ model: nonOverflowModel, layout: fiveLayout, binding: fiveBinding, surface: { width: 120, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 23000, changedAt: 23000, continuity: 50, speed: 24, before: null, art: fiveCache } as never)];
+  assert.ok(fiveFinal.includes('trait://five-4'), `non-overflowing 200 px trait strip probes clipped predecessors so trait 4 loads without scrolling (got ${JSON.stringify(fiveFinal)})`);
+  assert.equal(fiveCache.stateOfUrl('trait://five-4'), 'ready', 'trait 4 is decoded and ready with offscreen demand saturated');
+  fiveCache.dispose();
+
+  let evictFetches = 0;
+  const evictCache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async url => {
+      evictFetches++;
+      const wide = url.endsWith('-0') || url.endsWith('-1');
+      return { width: wide ? 32 : 20, height: 32, close() {} } as unknown as ImageBitmap;
+    },
+  });
+  const evictTraits = Array.from({ length: 5 }, (_, i) => ({ name: `Mixed ${i}`, art: readyArt(`trait://evict-${i}`) }));
+  const evictModel: TableModel = {
+    columns: nonOverflowCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-evict', name: 'General', cells: { name: { value: knownValue('General') }, traits: { value: knownValue('5'), iconStripKind: 'traits', icons: evictTraits } } }],
+  };
+  const evictOffscreen = Array.from({ length: 128 }, (_, i) => `offscreen://evict-${i}`);
+  evictCache.requestVisible([], evictOffscreen);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const evictBinding = { family: 'table', settings: nonOverflowSettings, width: 120, height: 110, scrollLeft: 95, scrollTop: 0, options: NO_OPTIONS } as never;
+  const evictLayout = tableLane.layout(evictModel, evictBinding, { width: 120, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 24000, speed: 24 } as never);
+  for (let round = 0; round < 10; round++) {
+    const urls = [...tableLane.visibleArt({ model: evictModel, layout: evictLayout, binding: evictBinding, surface: { width: 120, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 24000, changedAt: 24000, continuity: 60 + round, speed: 24, before: null, art: evictCache } as never)];
+    evictCache.requestVisible(urls, evictOffscreen);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const evictFinal = [...tableLane.visibleArt({ model: evictModel, layout: evictLayout, binding: evictBinding, surface: { width: 120, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 24000, changedAt: 24000, continuity: 75, speed: 24, before: null, art: evictCache } as never)];
+  assert.ok(evictFinal.includes('trait://evict-4'), `remembered widths across eviction let fifth trait load at scrollLeft=95 (got ${JSON.stringify(evictFinal)})`);
+  assert.equal(evictCache.stateOfUrl('trait://evict-4'), 'ready', 'fifth trait is ready in cache');
+  const fetchesAfterSettle = evictFetches;
+  for (let extra = 0; extra < 5; extra++) {
+    const urls = [...tableLane.visibleArt({ model: evictModel, layout: evictLayout, binding: evictBinding, surface: { width: 120, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 24000, changedAt: 24000, continuity: 80 + extra, speed: 24, before: null, art: evictCache } as never)];
+    evictCache.requestVisible(urls, evictOffscreen);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assert.equal(evictFetches, fetchesAfterSettle, 'repeated probes stop once predecessor widths are measured');
+  evictCache.dispose();
+
+  const leftEdgeCache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 8, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  const leftEdgeTraits = [
+    { name: 'Narrow 0', art: readyArt('trait://left-edge-0') },
+    { name: 'Narrow 1', art: readyArt('trait://left-edge-1') },
+  ];
+  const leftEdgeModel: TableModel = {
+    columns: nonOverflowCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-left', name: 'General', cells: { name: { value: knownValue('General') }, traits: { value: knownValue('2'), iconStripKind: 'traits', icons: leftEdgeTraits } } }],
+  };
+  const leftEdgeOffscreen = Array.from({ length: 128 }, (_, i) => `offscreen://left-edge-${i}`);
+  leftEdgeCache.requestVisible([], leftEdgeOffscreen);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const leftEdgeBinding = { family: 'table', settings: nonOverflowSettings, width: 140, height: 110, scrollLeft: 35, scrollTop: 0, options: NO_OPTIONS } as never;
+  const leftEdgeLayout = tableLane.layout(leftEdgeModel, leftEdgeBinding, { width: 140, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 25000, speed: 24 } as never);
+  for (let round = 0; round < 6; round++) {
+    const urls = [...tableLane.visibleArt({ model: leftEdgeModel, layout: leftEdgeLayout, binding: leftEdgeBinding, surface: { width: 140, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 25000, changedAt: 25000, continuity: 90 + round, speed: 24, before: null, art: leftEdgeCache } as never)];
+    leftEdgeCache.requestVisible(urls, leftEdgeOffscreen);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const leftEdgeFinal = [...tableLane.visibleArt({ model: leftEdgeModel, layout: leftEdgeLayout, binding: leftEdgeBinding, surface: { width: 140, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 25000, changedAt: 25000, continuity: 100, speed: 24, before: null, art: leftEdgeCache } as never)];
+  assert.deepEqual(leftEdgeFinal, [], 'probing clipped predecessor moves both 8x32 traits behind the pinned edge identically on cold and warm caches');
+  leftEdgeCache.dispose();
+
+  const shiftTraits = [
+    { name: 'Narrow 0', art: readyArt('trait://shift-0') },
+    { name: 'Wide 1', art: readyArt('trait://shift-1') },
+  ];
+  const shiftModel: TableModel = {
+    columns: nonOverflowCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-shift', name: 'General', cells: { name: { value: knownValue('General') }, traits: { value: knownValue('2'), iconStripKind: 'traits', icons: shiftTraits } } }],
+  };
+  const makeShiftCache = () => new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async url => ({ width: url.endsWith('-0') ? 8 : 32, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  const shiftCold = makeShiftCache();
+  const shiftWarm = makeShiftCache();
+  shiftCold.requestVisible([], leftEdgeOffscreen);
+  shiftWarm.requestVisible(['trait://shift-0', 'trait://shift-1'], leftEdgeOffscreen);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const shiftLayout = tableLane.layout(shiftModel, leftEdgeBinding, { width: 140, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 26000, speed: 24 } as never);
+  for (let round = 0; round < 6; round++) {
+    const urls = [...tableLane.visibleArt({ model: shiftModel, layout: shiftLayout, binding: leftEdgeBinding, surface: { width: 140, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 26000, changedAt: 26000, continuity: 110 + round, speed: 24, before: null, art: shiftCold } as never)];
+    shiftCold.requestVisible(urls, leftEdgeOffscreen);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const traitStartX = (cache: LaneArtCache) => {
+    const col = shiftLayout.shape.columns.columns[1]!;
+    const leftX = 100 - 35 + 10 + (col.leadInset ?? 0);
+    const w0 = iconStripSlotWidth(toArtSlotState(resolveCachedArt(shiftTraits[0]!.art, cache), shiftTraits[0]!.name), 23);
+    return leftX + w0 + 5;
+  };
+  assert.equal(traitStartX(shiftCold), traitStartX(shiftWarm), 'cold cache probes clipped 8x32 predecessor so second 32x32 trait paints at the exact warm-cache x coordinate');
+  shiftCold.dispose();
+  shiftWarm.dispose();
+
+  const gapPeaceCols: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'date', pinned: true, hideable: false, minWidth: 160, maxWidth: 160 },
+    { key: 'terms', label: 'Terms', as: 'plain', offered: ['plain'], priority: 1, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 120, maxWidth: 120 },
+    { key: 'extra', label: 'Extra', as: 'plain', offered: ['plain'], priority: 2, numeric: true, hideable: false, minWidth: 180 },
+  ];
+  const gapPeaceSettings = tableSettingsOf(undefined, gapPeaceCols, { density: 'normal', sort: { column: 'date', direction: 'descending' } });
+  const gapPeaceChild = {
+    key: 'gp-detail',
+    name: 'Terms',
+    detailColumn: 'terms',
+    detailEnd: true,
+    cells: {
+      terms: {
+        value: knownValue('Terms'),
+        heading: { flag: { tag: 'GER', art: readyArt('flag://gp-head') }, text: knownValue('Germany') },
+        flags: [{ tag: 'FRA', art: readyArt('flag://gp-recip'), label: 'France' }],
+      },
+    },
+  };
+  const gpTopRow: TableRow = { key: 'gp-top', name: 'Top', cells: { date: { value: knownValue(100) }, terms: { value: knownValue('Top') }, extra: { value: knownValue(1) } }, children: [gapPeaceChild] };
+  const gpGapSlot: TableModelSlot = { kind: 'gap', key: 'gp-gap', firstHour: 101, lastHour: 105, reason: 'Collector detached' };
+  const gapPeaceBefore: TableModel = {
+    columns: gapPeaceCols,
+    hour: 100,
+    unsorted: true,
+    rows: [gpTopRow],
+    slots: [gpGapSlot, { kind: 'data', row: gpTopRow }],
+  };
+  const gapPeaceAfter: TableModel = {
+    columns: gapPeaceCols,
+    hour: 102,
+    unsorted: true,
+    rows: [gpTopRow],
+    slots: [{ kind: 'data', row: gpTopRow }, gpGapSlot],
+  };
+  const gpBinding = { family: 'table', settings: gapPeaceSettings, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, expanded: { 'gp-top': true }, options: NO_OPTIONS } as never;
+  const gpSurface = { width: 320, height: 180, dpr: 1 };
+  const gpPrev = tableLane.layout(gapPeaceBefore, gpBinding, gpSurface as never, TEST_THEME, measure, 100, { previous: null, now: 30000, speed: 24 } as never);
+  const gpPrevFrame = { model: gapPeaceBefore, layout: gpPrev, binding: gpBinding, surface: gpSurface, theme: TEST_THEME, hour: 100, now: 30000, changedAt: 30000, continuity: 120, speed: 24, before: null } as never;
+  const gpNext = tableLane.layout(gapPeaceAfter, gpBinding, gpSurface as never, TEST_THEME, measure, 102, { previous: gpPrevFrame, now: 30000, speed: 24 } as never);
+  const gpUrls = [...tableLane.visibleArt({ model: gapPeaceAfter, layout: gpNext, binding: gpBinding, surface: gpSurface, theme: TEST_THEME, hour: 102, now: 30020, changedAt: 30000, continuity: 120, speed: 24, before: gpPrevFrame } as never)];
+  assert.ok(gpUrls.includes('flag://gp-head') && gpUrls.includes('flag://gp-recip'), `Peace Deals detail flags inside pinned region stay in visibleArt while gliding across a recording gap (got ${JSON.stringify(gpUrls)})`);
+
+  const overflowLabelCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 106, maxWidth: 106 },
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'icons', sortable: false, hideable: false, minWidth: 90, maxWidth: 90 },
+    { key: 'pad', label: 'Pad', as: 'plain', offered: ['plain'], priority: 2, numeric: true, hideable: false, minWidth: 120 },
+  ];
+  const overflowLabelSettings = tableSettingsOf(undefined, overflowLabelCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const overflowTraits = [
+    { name: 'O0', art: readyArt('trait://ovf-0') },
+    { name: 'O1', art: readyArt('trait://ovf-1', { frame: defaultArtFrame(32, 32) }) },
+    { name: 'O2', art: readyArt('trait://ovf-2', { frame: defaultArtFrame(32, 32) }) },
+    { name: 'O3', art: readyArt('trait://ovf-3', { frame: defaultArtFrame(32, 32) }) },
+  ];
+  const overflowLabelModel: TableModel = {
+    columns: overflowLabelCols,
+    hour: 100,
+    unsorted: true,
+    rows: [{ key: 'gen-ovf', name: 'General', cells: { name: { value: knownValue('General') }, traits: { value: knownValue('4'), iconStripKind: 'traits', icons: overflowTraits } } }],
+  };
+  const makeOvfCache = () => new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async url => ({ width: url.endsWith('-0') ? 8 : 32, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  const ovfCold = makeOvfCache();
+  const ovfWarm = makeOvfCache();
+  ovfCold.requestVisible([], leftEdgeOffscreen);
+  ovfWarm.requestVisible(overflowTraits.map(t => t.art.url), leftEdgeOffscreen);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const ovfBinding = { family: 'table', settings: overflowLabelSettings, width: 150, height: 110, scrollLeft: 63, scrollTop: 0, options: NO_OPTIONS } as never;
+  const ovfLayout = tableLane.layout(overflowLabelModel, ovfBinding, { width: 150, height: 110, dpr: 1 } as never, TEST_THEME, measure, 100, { previous: null, now: 31000, speed: 24 } as never);
+  for (let round = 0; round < 6; round++) {
+    const urls = [...tableLane.visibleArt({ model: overflowLabelModel, layout: ovfLayout, binding: ovfBinding, surface: { width: 150, height: 110, dpr: 1 }, theme: TEST_THEME, hour: 100, now: 31000, changedAt: 31000, continuity: 130 + round, speed: 24, before: null, art: ovfCold } as never)];
+    ovfCold.requestVisible(urls, leftEdgeOffscreen);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const ovfLabelX = (cache: LaneArtCache) => {
+    const col = ovfLayout.shape.columns.columns[1]!;
+    const leftX = ovfLayout.shape.columns.pinnedWidth - 63 + 10 + (col.leadInset ?? 0);
+    const rightX = ovfLayout.shape.columns.pinnedWidth - 63 + col.width - 10 - (col.trailInset ?? 0);
+    let labelX: number | null = null;
+    const rawCtx = instrumentedContext().ctx;
+    const captureCtx = Object.assign(Object.create(rawCtx), {
+      fillText(text: string, x: number, y: number) {
+        if (text === '+2') labelX = x;
+        return rawCtx.fillText(text, x, y);
+      },
+    }) as unknown as OffscreenCanvasRenderingContext2D;
+    drawIconStrip(
+      captureCtx,
+      leftX,
+      rightX,
+      18,
+      overflowTraits.map(item => ({ state: toArtSlotState(resolveCachedArt(item.art, cache), item.name), name: item.name })),
+      TEST_THEME,
+      { kind: 'traits' },
+    );
+    return labelX;
+  };
+  assert.equal(ovfLabelX(ovfCold), ovfLabelX(ovfWarm), 'clipped predecessor is probed so +2 overflow label paints at the exact warm-cache x coordinate');
+  assert.notEqual(ovfLabelX(ovfCold), null, '+2 overflow label was painted by drawIconStrip');
+  ovfCold.dispose();
+  ovfWarm.dispose();
+
+  const incDetailCols: TableColumnSpec[] = [
+    { key: 'terms', label: 'Terms', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
+  const incDetailSettings = tableSettingsOf(undefined, incDetailCols, { density: 'normal', sort: { column: 'terms', direction: 'descending' } });
+  const incDetailRow: TableRow = {
+    key: 'top-detail',
+    name: 'Terms',
+    detailColumn: 'terms',
+    detailEnd: true,
+    cells: {
+      terms: {
+        value: knownValue('Terms'),
+        heading: { flag: { tag: 'GER', art: readyArt('flag://inc-head') }, text: knownValue('Germany') },
+        flags: Array.from({ length: 18 }, (_, i) => ({ tag: `C${i}`, art: readyArt(`flag://inc-term-${i}`), label: `Territory ${i}` })),
+      },
+    },
+  };
+  const incDetailBase: TableModel = { columns: incDetailCols, hour: 100, unsorted: true, rows: [incDetailRow] };
+  const incDetailNext: TableModel = { columns: incDetailCols, hour: 101, unsorted: true, rows: [incDetailRow], changedKeys: new Set() };
+  const incDetailBinding = { family: 'table', settings: incDetailSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 40, options: NO_OPTIONS } as never;
+  const incDetailSurface = { width: 320, height: 110, dpr: 1 };
+  const incFresh = tableLane.layout(incDetailBase, incDetailBinding, incDetailSurface as never, TEST_THEME, measure, 100, { previous: null, now: 32000, speed: 24 } as never);
+  const incPrevFrame = { model: incDetailBase, layout: incFresh, binding: incDetailBinding, surface: incDetailSurface, theme: TEST_THEME, hour: 100, now: 32000, changedAt: 32000, continuity: 140, speed: 24, before: null } as never;
+  const incRefreshed = tableLane.layout(incDetailNext, incDetailBinding, incDetailSurface as never, TEST_THEME, measure, 101, { previous: incPrevFrame, now: 32000, speed: 24 } as never);
+  assert.equal(incRefreshed.heights(0), incFresh.heights(0), 'incremental refresh preserves top-level detail row height');
+  const incFreshUrls = [...tableLane.visibleArt({ model: incDetailBase, layout: incFresh, binding: incDetailBinding, surface: incDetailSurface, theme: TEST_THEME, hour: 100, now: 32000, changedAt: 32000, continuity: 140, speed: 24, before: null } as never)];
+  const incRefreshedUrls = [...tableLane.visibleArt({ model: incDetailNext, layout: incRefreshed, binding: incDetailBinding, surface: incDetailSurface, theme: TEST_THEME, hour: 101, now: 32000, changedAt: 32000, continuity: 140, speed: 24, before: incPrevFrame } as never)];
+  assert.ok(incFreshUrls.length > 0, 'scrolled top-level detail row exposes flags');
+  assert.deepEqual(incRefreshedUrls, incFreshUrls, 'incremental refresh preserves visible flags on a scrolled top-level detail row');
+
+  const reorderDetailCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  const reorderDetailSettings = tableSettingsOf(undefined, reorderDetailCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const tallDetailRow = (score: number): TableRow => ({
+    key: 'tall-detail',
+    name: 'Tall Detail',
+    detailColumn: 'country',
+    detailEnd: true,
+    cells: {
+      country: {
+        value: knownValue('Tall Detail'),
+        heading: { flag: { tag: 'GER', art: readyArt('flag://tall-head') }, text: knownValue('Germany') },
+        flags: Array.from({ length: 48 }, (_, i) => ({ tag: `T${i}`, art: readyArt(`flag://tall-term-${i}`), label: `Long Territory Name ${i}` })),
+      },
+      score: { value: knownValue(score) },
+    },
+  });
+  const plainRow = (score: number): TableRow => ({
+    key: 'plain-row',
+    name: 'Plain',
+    cells: {
+      country: { value: knownValue('Plain'), country: 'FRA', iconSlot: true, art: readyArt('flag://plain-mover') },
+      score: { value: knownValue(score) },
+    },
+  });
+  const rdSurface = { width: 320, height: 100, dpr: 1 };
+  const rdBinding = { family: 'table', settings: reorderDetailSettings, width: 320, height: 100, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const rdBefore: TableModel = { columns: reorderDetailCols, hour: 100, rows: [plainRow(100), tallDetailRow(50)] };
+  const rdAfter: TableModel = { columns: reorderDetailCols, hour: 101, rows: [plainRow(10), tallDetailRow(200)] };
+  const rdPrev = tableLane.layout(rdBefore, rdBinding, rdSurface as never, TEST_THEME, measure, 100, { previous: null, now: 33000, speed: 24 } as never);
+  const rdPrevFrame = { model: rdBefore, layout: rdPrev, binding: rdBinding, surface: rdSurface, theme: TEST_THEME, hour: 100, now: 33000, changedAt: 33000, continuity: 150, speed: 24, before: null } as never;
+  const rdNext = tableLane.layout(rdAfter, rdBinding, rdSurface as never, TEST_THEME, measure, 101, { previous: rdPrevFrame, now: 33000, speed: 24 } as never);
+  const rdStartUrls = [...tableLane.visibleArt({ model: rdAfter, layout: rdNext, binding: rdBinding, surface: rdSurface, theme: TEST_THEME, hour: 101, now: 33001, changedAt: 33000, continuity: 150, speed: 24, before: rdPrevFrame } as never)];
+  assert.ok(rdStartUrls.includes('flag://plain-mover'), `ordinary row gliding below a tall detail row starts at its prior top y=0 and keeps its flag in visibleArt (got ${JSON.stringify(rdStartUrls)})`);
+
+  const flatRowsBase: TableRow[] = Array.from({ length: 1500 }, (_, i) =>
+    i === 0
+      ? tallDetailRow(1500)
+      : { key: `r-${i}`, name: `Row ${i}`, cells: { country: { value: knownValue(`Row ${i}`) }, score: { value: knownValue(1500 - i) } } },
+  );
+  const flatRowsAfter: TableRow[] = [
+    { key: 'tall-detail', name: 'Row 0', cells: { country: { value: knownValue('Row 0') }, score: { value: knownValue(1500) } } },
+    ...flatRowsBase.slice(1),
+  ];
+  const flatModel0: TableModel = { columns: reorderDetailCols, hour: 100, rows: flatRowsBase };
+  const flatModel1: TableModel = { columns: reorderDetailCols, hour: 101, rows: flatRowsAfter, changedKeys: new Set(['tall-detail']) };
+  const flatLayout0 = tableLane.layout(flatModel0, rdBinding, rdSurface as never, TEST_THEME, measure, 100, { previous: null, now: 34000, speed: 24 } as never);
+  assert.notEqual(flatLayout0.shape.rowGeom, null, 'table with a detail row uses variable rowGeom');
+  const flatPrev0 = { model: flatModel0, layout: flatLayout0, binding: rdBinding, surface: rdSurface, theme: TEST_THEME, hour: 100, now: 34000, changedAt: 34000, continuity: 160, speed: 24, before: null } as never;
+  const flatLayout1 = tableLane.layout(flatModel1, rdBinding, rdSurface as never, TEST_THEME, measure, 101, { previous: flatPrev0, now: 34000, speed: 24 } as never);
+  assert.equal(flatLayout1.shape.rowGeom, null, 'removing the last detail row incrementally returns the 1,500-row table to flat rowGeom === null');
+
+  const growDetailRow = (termCount: number): TableRow => ({
+    key: 'grow-detail',
+    name: 'Terms',
+    detailColumn: 'country',
+    detailEnd: true,
+    cells: {
+      country: {
+        value: knownValue('Terms'),
+        flags: Array.from({ length: termCount }, (_, i) => ({ tag: `G${i}`, art: readyArt(`flag://grow-t-${i}`), label: `Long Territory Name ${i}` })),
+      },
+      score: { value: knownValue(200) },
+    },
+  });
+  const growFollow: TableRow = {
+    key: 'grow-follow',
+    name: 'Follow',
+    cells: {
+      country: { value: knownValue('Follow'), country: 'FRA', iconSlot: true, art: readyArt('flag://grow-follow') },
+      score: { value: knownValue(100) },
+    },
+  };
+  const growModel0: TableModel = { columns: reorderDetailCols, hour: 100, unsorted: true, rows: [growDetailRow(1), growFollow] };
+  const growModel1: TableModel = { columns: reorderDetailCols, hour: 101, unsorted: true, rows: [growDetailRow(2), growFollow] };
+  const growModel2: TableModel = { columns: reorderDetailCols, hour: 102, unsorted: true, rows: [growDetailRow(3), growFollow] };
+  const growSurface = { width: 320, height: 80, dpr: 1 };
+  const growBinding = { family: 'table', settings: reorderDetailSettings, width: 320, height: 80, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const growL0 = tableLane.layout(growModel0, growBinding, growSurface as never, TEST_THEME, measure, 100, { previous: null, now: 35000, speed: 24 } as never);
+  const growF0 = { model: growModel0, layout: growL0, binding: growBinding, surface: growSurface, theme: TEST_THEME, hour: 100, now: 35000, changedAt: 35000, continuity: 170, speed: 24, before: null } as never;
+  const growL1 = tableLane.layout(growModel1, growBinding, growSurface as never, TEST_THEME, measure, 101, { previous: growF0, now: 35000, speed: 24 } as never);
+  const growF1At30 = { model: growModel1, layout: growL1, binding: growBinding, surface: growSurface, theme: TEST_THEME, hour: 101, now: 35030, changedAt: 35000, continuity: 170, speed: 24, before: growF0 } as never;
+  const probeY = growL1.tops(1) - 1;
+  const growHitBefore = tableLane.hit(growF1At30, [40, probeY]);
+  const growUrlsBefore = [...tableLane.visibleArt(growF1At30)];
+  const growL2 = tableLane.layout(growModel2, growBinding, growSurface as never, TEST_THEME, measure, 102, { previous: growF1At30, now: 35030, speed: 24 } as never);
+  const growF2At30 = { model: growModel2, layout: growL2, binding: growBinding, surface: growSurface, theme: TEST_THEME, hour: 102, now: 35030, changedAt: 35030, continuity: 170, speed: 24, before: growF1At30 } as never;
+  const growHitAfter = tableLane.hit(growF2At30, [40, probeY]);
+  const growUrlsAfter = [...tableLane.visibleArt(growF2At30)];
+  assert.equal(growHitBefore, 'row:grow-follow', 'pre-refresh mid-glide hit lands on the following country row');
+  assert.equal(growHitAfter, 'row:grow-follow', 'refreshing mid-glide preserves the painted position so the same pointer still hits the following country row');
+  assert.ok(growUrlsBefore.includes('flag://grow-follow') && growUrlsAfter.includes('flag://grow-follow'), 'refreshing mid-glide keeps the following country flag visible without jumping');
+
+  const pagedDetail = growDetailRow(2);
+  const pagedStationary: TableRow = {
+    key: 'paged-stay',
+    name: 'Stay',
+    cells: {
+      country: { value: knownValue('Stay'), country: 'USA', iconSlot: true, art: readyArt('flag://paged-stay') },
+      score: { value: knownValue(50) },
+    },
+  };
+  const pagedMid: TableRow = {
+    key: 'paged-mid',
+    name: 'Mid',
+    cells: { country: { value: knownValue('Mid') }, score: { value: knownValue(60) } },
+  };
+  const pagedBinding = { family: 'table', settings: reorderDetailSettings, width: 320, height: 140, scrollLeft: 0, scrollTop: 70, options: NO_OPTIONS } as never;
+  const pagedSurface = { width: 320, height: 140, dpr: 1 };
+  const pagedModel0: TableModel = { columns: reorderDetailCols, hour: 100, unsorted: true, windowOffset: 0, totalRows: 3, rows: [pagedDetail, pagedMid, pagedStationary] };
+  const pagedModel1: TableModel = { columns: reorderDetailCols, hour: 101, unsorted: true, windowOffset: 1, totalRows: 3, rows: [pagedMid, pagedStationary] };
+  const pagedL0 = tableLane.layout(pagedModel0, pagedBinding, pagedSurface as never, TEST_THEME, measure, 100, { previous: null, now: 36000, speed: 24 } as never);
+  const pagedF0 = { model: pagedModel0, layout: pagedL0, binding: pagedBinding, surface: pagedSurface, theme: TEST_THEME, hour: 100, now: 36000, changedAt: 36000, continuity: 180, speed: 24, before: null } as never;
+  const pagedL1 = tableLane.layout(pagedModel1, pagedBinding, pagedSurface as never, TEST_THEME, measure, 101, { previous: pagedF0, now: 36000, speed: 24 } as never);
+  assert.equal(pagedL0.tops(2), pagedL1.tops(1), 'stationary row keeps identical absolute top across paged window shift past a detail row');
+  const pagedF1 = { model: pagedModel1, layout: pagedL1, binding: pagedBinding, surface: pagedSurface, theme: TEST_THEME, hour: 101, now: 36005, changedAt: 36000, continuity: 180, speed: 24, before: pagedF0 } as never;
+  const pagedHit = tableLane.hit(pagedF1, [40, pagedL1.tops(1) - pagedL1.tops(0) - pagedL1.localScrollTop + 18]);
+  const pagedUrls = [...tableLane.visibleArt(pagedF1)];
+  assert.equal(pagedHit, 'row:paged-stay', 'shifting paged window past a detail row does not animate stationary rows off their hit target');
+  assert.ok(pagedUrls.includes('flag://paged-stay'), `stationary row flag stays in visibleArt across paged window shift (got ${JSON.stringify(pagedUrls)})`);
+
+  const speedModel0: TableModel = { columns: reorderDetailCols, hour: 100, unsorted: true, rows: [growDetailRow(1), growFollow] };
+  const speedModel1: TableModel = { columns: reorderDetailCols, hour: 101, unsorted: true, rows: [growDetailRow(6), growFollow] };
+  const speedModel2: TableModel = { columns: reorderDetailCols, hour: 102, unsorted: true, rows: [growDetailRow(9), growFollow] };
+  const speedSurface = { width: 320, height: 240, dpr: 1 };
+  const speedBinding = { family: 'table', settings: reorderDetailSettings, width: 320, height: 240, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const speedL0 = tableLane.layout(speedModel0, speedBinding, speedSurface as never, TEST_THEME, measure, 100, { previous: null, now: 37000, speed: 24 } as never);
+  const speedF0 = { model: speedModel0, layout: speedL0, binding: speedBinding, surface: speedSurface, theme: TEST_THEME, hour: 100, now: 37000, changedAt: 37000, continuity: 190, speed: 24, before: null } as never;
+  const speedL1 = tableLane.layout(speedModel1, speedBinding, speedSurface as never, TEST_THEME, measure, 101, { previous: speedF0, now: 37000, speed: 24 } as never);
+  const speedF1At90 = { model: speedModel1, layout: speedL1, binding: speedBinding, surface: speedSurface, theme: TEST_THEME, hour: 101, now: 37090, changedAt: 37000, continuity: 190, speed: 24, before: speedF0 } as never;
+  const speedL2 = tableLane.layout(speedModel2, speedBinding, speedSurface as never, TEST_THEME, measure, 102, { previous: speedF1At90, now: 37090, speed: 168 } as never);
+  const speedF2At90 = { model: speedModel2, layout: speedL2, binding: speedBinding, surface: speedSurface, theme: TEST_THEME, hour: 102, now: 37090, changedAt: 37090, continuity: 190, speed: 168, before: speedF1At90 } as never;
+  const hitYs = (f: never) => {
+    const ys: number[] = [];
+    for (let y = 0; y < 240; y++) if (tableLane.hit(f, [40, y]) === 'row:grow-follow') ys.push(y);
+    return ys;
+  };
+  const beforeSpeedYs = hitYs(speedF1At90);
+  const afterSpeedYs = hitYs(speedF2At90);
+  assert.ok(beforeSpeedYs.length > 0, 'following row has a hit range at 90 ms before speed change');
+  assert.deepEqual(afterSpeedYs, beforeSpeedYs, 'changing playback speed from 24 to 168 h/s mid-glide keeps the following row hit range continuous');
+
+  const snapRow = (key: string, flag: string, score: number): TableRow => ({
+    key,
+    name: key,
+    cells: {
+      country: { value: knownValue(key), country: key, iconSlot: true, art: readyArt(flag) },
+      score: { value: knownValue(score) },
+    },
+  });
+  const snapSurface = { width: 320, height: 36, dpr: 1 };
+  const snapBinding = { family: 'table', settings: reorderDetailSettings, width: 320, height: 36, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS } as never;
+  const snapM0: TableModel = { columns: reorderDetailCols, hour: 100, rows: [snapRow('r0', 'flag://snap-r0', 200), snapRow('r1', 'flag://snap-r1', 100)] };
+  const snapM1: TableModel = { columns: reorderDetailCols, hour: 101, rows: [snapRow('r0', 'flag://snap-r0', 50), snapRow('r1', 'flag://snap-r1', 250)] };
+  const snapL0 = tableLane.layout(snapM0, snapBinding, snapSurface as never, TEST_THEME, measure, 100, { previous: null, now: 37500, speed: 24 } as never);
+  const snapF0 = { model: snapM0, layout: snapL0, binding: snapBinding, surface: snapSurface, theme: TEST_THEME, hour: 100, now: 37500, changedAt: 37500, continuity: 195, speed: 24, before: null } as never;
+  const snapL1 = tableLane.layout(snapM1, snapBinding, snapSurface as never, TEST_THEME, measure, 101, { previous: snapF0, now: 37500, speed: 24 } as never);
+  const snapF1Slow = { model: snapM1, layout: snapL1, binding: snapBinding, surface: snapSurface, theme: TEST_THEME, hour: 101, now: 37502, changedAt: 37500, continuity: 195, speed: 24, before: snapF0 } as never;
+  assert.equal(tableLane.hit(snapF1Slow, [40, 18]), 'row:r0', 'at 24 h/s, mid-glide hit still lands on outgoing row r0');
+  assert.deepEqual([...tableLane.visibleArt(snapF1Slow)], ['flag://snap-r0'], 'at 24 h/s, mid-glide visibleArt includes outgoing row r0');
+  const snapF1Fast = { model: snapM1, layout: snapL1, binding: snapBinding, surface: snapSurface, theme: TEST_THEME, hour: 101, now: 37502, changedAt: 37500, continuity: 195, speed: 720, before: snapF0 } as never;
+  assert.equal(tableLane.hit(snapF1Fast, [40, 18]), 'row:r1', 'jumping playback speed to 720 h/s snaps hit testing to r1');
+  assert.deepEqual([...tableLane.visibleArt(snapF1Fast)], ['flag://snap-r1'], 'jumping playback speed to 720 h/s snaps visibleArt to r1 in lockstep with paint and hit');
+  const snapF1BackSlow = { model: snapM1, layout: snapL1, binding: snapBinding, surface: snapSurface, theme: TEST_THEME, hour: 101, now: 37505, changedAt: 37500, continuity: 195, speed: 24, before: snapF0 } as never;
+  assert.equal(tableLane.hit(snapF1BackSlow, [40, 18]), 'row:r1', 'slowing back to 24 h/s on the same snapped frame never revives the discarded glide');
+  assert.deepEqual([...tableLane.visibleArt(snapF1BackSlow)], ['flag://snap-r1'], 'slowing back to 24 h/s on the same snapped frame keeps visibleArt on r1');
+  const snapM2: TableModel = { columns: reorderDetailCols, hour: 102, rows: [snapRow('r0', 'flag://snap-r0', 50), snapRow('r1', 'flag://snap-r1', 250)] };
+  const snapL2 = tableLane.layout(snapM2, snapBinding, snapSurface as never, TEST_THEME, measure, 102, { previous: snapF1Fast, now: 37504, speed: 720 } as never);
+  const snapF2Fast = { model: snapM2, layout: snapL2, binding: snapBinding, surface: snapSurface, theme: TEST_THEME, hour: 102, now: 37504, changedAt: 37504, continuity: 195, speed: 720, before: snapF1Fast } as never;
+  assert.equal(tableLane.hit(snapF2Fast, [40, 18]), 'row:r1', 'projected at 720 h/s stays snapped on r1');
+  const snapF2BackSlow = { model: snapM2, layout: snapL2, binding: snapBinding, surface: snapSurface, theme: TEST_THEME, hour: 102, now: 37505, changedAt: 37504, continuity: 195, speed: 24, before: snapF1Fast } as never;
+  assert.equal(tableLane.hit(snapF2BackSlow, [40, 18]), 'row:r1', 'slowing back to 24 h/s after snapping at 720 h/s keeps hit testing on r1');
+  assert.deepEqual([...tableLane.visibleArt(snapF2BackSlow)], ['flag://snap-r1'], 'slowing back to 24 h/s after snapping at 720 h/s keeps visibleArt on r1');
+
+  const trimCols: TableColumnSpec[] = [
+    { key: 'kind', label: 'Kind', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'kind', minWidth: 36, maxWidth: 36 },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 1, text: true, cellKind: 'item' },
+  ];
+  const trimSettings = tableSettingsOf(undefined, trimCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const makeTrimBitmap = () => {
+    const buf = new Uint8ClampedArray(64 * 64 * 4);
+    for (let y = 31; y < 33; y++) {
+      for (let x = 0; x < 64; x++) buf[(y * 64 + x) * 4 + 3] = 255;
+    }
+    return { width: 64, height: 64, data: buf, close() {} } as unknown as ImageBitmap;
+  };
+  let trimFetches = 0;
+  const trimCache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async () => {
+      trimFetches++;
+      return makeTrimBitmap();
+    },
+  });
+  const savedOffscreen = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = class {
+    width: number;
+    height: number;
+    private buf: Uint8ClampedArray;
+    constructor(w: number, h: number) { this.width = w; this.height = h; this.buf = new Uint8ClampedArray(w * h * 4); }
+    getContext() {
+      return {
+        drawImage: (src: { data?: Uint8ClampedArray }) => { if (src.data) this.buf.set(src.data); },
+        getImageData: () => ({ data: this.buf }),
+      };
+    }
+  } as unknown as typeof OffscreenCanvas;
+  try {
+    const trimSurface = { width: 200, height: 36, dpr: 1 };
+    const trimBinding = { family: 'table', settings: trimSettings, width: 200, height: 36, scrollLeft: 0, scrollTop: 25, options: NO_OPTIONS } as never;
+    const makeTrimModel = (id: number): TableModel => ({
+      columns: trimCols,
+      hour: 100,
+      unsorted: true,
+      rows: [
+        { key: `tr-${id}`, name: `Trim ${id}`, cells: { kind: { value: knownValue('K'), art: readyArt(`sprite://trim-evict-${id}`), artShape: 'drawn', iconSlot: true }, name: { value: knownValue(`Trim ${id}`) } } },
+        { key: 'tr-pad', name: 'Pad', cells: { kind: { value: knownValue('P') }, name: { value: knownValue('Pad') } } },
+      ],
+    });
+    for (let i = 0; i < 129; i++) {
+      const m = makeTrimModel(i);
+      const l = tableLane.layout(m, trimBinding, trimSurface as never, TEST_THEME, measure, 100, { previous: null, now: 38000, speed: 24 } as never);
+      const urls = [...tableLane.visibleArt({ model: m, layout: l, binding: trimBinding, surface: trimSurface, theme: TEST_THEME, hour: 100, now: 38000, changedAt: 38000, continuity: 200 + i, speed: 24, before: null, art: trimCache } as never)];
+      trimCache.requestVisible(urls, []);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      tableLane.visibleArt({ model: m, layout: l, binding: trimBinding, surface: trimSurface, theme: TEST_THEME, hour: 100, now: 38000, changedAt: 38000, continuity: 400 + i, speed: 24, before: null, art: trimCache } as never);
+    }
+    trimCache.requestVisible([], []);
+    assert.equal(trimFetches, 129, 'all 129 clipped drawn sprites are initially fetched once before trimming reveals they sit above the viewport');
+    assert.equal(trimCache.stateOfUrl('sprite://trim-evict-0'), 'unrequested', 'first trimmed sprite bitmap is evicted once 129 sprites exceed the 128-entry cache');
+    const m0 = makeTrimModel(0);
+    const l0 = tableLane.layout(m0, trimBinding, trimSurface as never, TEST_THEME, measure, 100, { previous: null, now: 38000, speed: 24 } as never);
+    const evictedUrls = [...tableLane.visibleArt({ model: m0, layout: l0, binding: trimBinding, surface: trimSurface, theme: TEST_THEME, hour: 100, now: 38000, changedAt: 38000, continuity: 600, speed: 24, before: null, art: trimCache } as never)];
+    assert.deepEqual(evictedUrls, [], 'evicted trimmed sprite retains measured bounds and is not re-fetched when clipped');
+    trimCache.requestVisible(evictedUrls, []);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(trimFetches, 129, 'stationary clipped trimmed sprite causes zero additional fetches after eviction');
+  } finally {
+    globalThis.OffscreenCanvas = savedOffscreen;
+    trimCache.dispose();
+  }
+
+  const wideTraitCols: TableColumnSpec[] = [
+    { key: 'traits', label: 'Traits', as: 'plain', offered: ['plain'], priority: 0, cellKind: 'icons', sortable: false, minWidth: 80, maxWidth: 80 },
+  ];
+  const wideTraitSettings = tableSettingsOf(undefined, wideTraitCols, { density: 'normal', sort: { column: 'traits', direction: 'descending' } });
+  const wideTraitModel: TableModel = {
+    columns: wideTraitCols,
+    hour: 100,
+    unsorted: true,
+    rows: [
+      { key: 'wt-0', name: 'General', cells: { traits: { value: knownValue('1'), iconStripKind: 'traits', icons: [{ name: 'Wide', art: readyArt('trait://wide-64x8') }] } } },
+      { key: 'wt-1', name: 'Pad', cells: { traits: { value: knownValue('0') } } },
+    ],
+  };
+  const wideTraitCache = new LaneArtCache({
+    maxEntries: 8,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 64, height: 8, close() {} }) as unknown as ImageBitmap,
+  });
+  const wtSurface = { width: 80, height: 36, dpr: 1 };
+  const wtBinding = { family: 'table', settings: wideTraitSettings, width: 80, height: 36, scrollLeft: 0, scrollTop: 25, options: NO_OPTIONS } as never;
+  const wtLayout = tableLane.layout(wideTraitModel, wtBinding, wtSurface as never, TEST_THEME, measure, 100, { previous: null, now: 39000, speed: 24 } as never);
+  const wtBefore = [...tableLane.visibleArt({ model: wideTraitModel, layout: wtLayout, binding: wtBinding, surface: wtSurface, theme: TEST_THEME, hour: 100, now: 39000, changedAt: 39000, continuity: 700, speed: 24, before: null, art: wideTraitCache } as never)];
+  assert.deepEqual(wtBefore, ['trait://wide-64x8'], 'before decode, 64x8 trait icon is probed conservatively');
+  wideTraitCache.requestVisible(wtBefore, []);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const wtAfter = [...tableLane.visibleArt({ model: wideTraitModel, layout: wtLayout, binding: wtBinding, surface: wtSurface, theme: TEST_THEME, hour: 100, now: 39000, changedAt: 39000, continuity: 701, speed: 24, before: null, art: wideTraitCache } as never)];
+  assert.deepEqual(wtAfter, [], 'after decoding 64x8 bitmap, fitted vertical bounds above the viewport drop the clipped trait icon from visibleArt');
+  wideTraitCache.dispose();
+
+  const suCols: TableColumnSpec[] = [
+    { key: 'skill', label: 'Skill', as: 'plain', offered: ['plain'], priority: 0, numeric: true, cellKind: 'skill', skillIcon: 'badge://wide-skill-64x8', minWidth: 80, maxWidth: 80 },
+    { key: 'cost', label: 'Cost', as: 'plain', offered: ['plain'], priority: 1, numeric: true, minWidth: 80, maxWidth: 80 },
+  ];
+  const suSettings = tableSettingsOf(undefined, suCols, { density: 'normal', sort: { column: 'skill', direction: 'descending' } });
+  const suModel: TableModel = {
+    columns: suCols,
+    hour: 100,
+    unsorted: true,
+    rows: [
+      { key: 'su-0', name: 'Row 0', cells: { skill: { value: knownValue(5) }, cost: { value: knownValue(50), unitArt: readyArt('unit://wide-unit-64x8') } } },
+      { key: 'su-1', name: 'Pad', cells: { skill: { value: notRecorded('None') }, cost: { value: knownValue(10) } } },
+    ],
+  };
+  const suCache = new LaneArtCache({
+    maxEntries: 8,
+    maxConcurrent: 32,
+    fetchBitmap: async () => ({ width: 64, height: 8, close() {} }) as unknown as ImageBitmap,
+  });
+  const suSurface = { width: 160, height: 36, dpr: 1 };
+  const suBinding = { family: 'table', settings: suSettings, width: 160, height: 36, scrollLeft: 0, scrollTop: 23, options: NO_OPTIONS } as never;
+  const suLayout = tableLane.layout(suModel, suBinding, suSurface as never, TEST_THEME, measure, 100, { previous: null, now: 39500, speed: 24 } as never);
+  const suBefore = [...tableLane.visibleArt({ model: suModel, layout: suLayout, binding: suBinding, surface: suSurface, theme: TEST_THEME, hour: 100, now: 39500, changedAt: 39500, continuity: 710, speed: 24, before: null, art: suCache } as never)];
+  assert.deepEqual(suBefore.sort(), ['badge://wide-skill-64x8', 'unit://wide-unit-64x8'], 'before decode, skill and unit icons are probed conservatively');
+  suCache.requestVisible(suBefore, []);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const suAfter = [...tableLane.visibleArt({ model: suModel, layout: suLayout, binding: suBinding, surface: suSurface, theme: TEST_THEME, hour: 100, now: 39500, changedAt: 39500, continuity: 711, speed: 24, before: null, art: suCache } as never)];
+  assert.deepEqual(suAfter, [], 'after decoding 64x8 bitmaps, clipped skill and unit art are dropped from visibleArt');
+  suCache.dispose();
+
+  const medalCountCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, hideable: false, minWidth: 260, maxWidth: 260 },
+    { key: 'medals', label: 'Medals', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'icons', sortable: false, hideable: false, minWidth: 160, maxWidth: 160 },
+    { key: 'pad', label: 'Pad', as: 'plain', offered: ['plain'], priority: 2, numeric: true, hideable: false, minWidth: 120 },
+  ];
+  const medalCountSettings = tableSettingsOf(undefined, medalCountCols, { density: 'normal', sort: { column: 'name', direction: 'descending' } });
+  const medalCountIcons = [
+    { name: 'Hidden', art: readyArt('medal://cnt-0') },
+    { name: 'Wide', art: readyArt('medal://cnt-1'), count: 2 },
+  ];
+  const medalCountModel: TableModel = {
+    columns: medalCountCols,
+    hour: 100,
+    unsorted: true,
+    rows: [
+      { key: 'mc-0', name: 'Div', cells: { name: { value: knownValue('Div') }, medals: { value: knownValue('2'), iconStripKind: 'medals', icons: medalCountIcons }, pad: { value: knownValue(1) } } },
+      { key: 'mc-1', name: 'Pad', cells: { name: { value: knownValue('Pad') }, medals: { value: knownValue('0') }, pad: { value: knownValue(2) } } },
+    ],
+  };
+  const makeMcCache = () => new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 32,
+    fetchBitmap: async url => ({ width: url.endsWith('-0') ? 4 : 256, height: 32, close() {} }) as unknown as ImageBitmap,
+  });
+  const mcCold = makeMcCache();
+  const mcWarm = makeMcCache();
+  mcCold.requestVisible([], leftEdgeOffscreen);
+  mcWarm.requestVisible(['medal://cnt-0', 'medal://cnt-1'], leftEdgeOffscreen);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const mcSurface = { width: 360, height: 36, dpr: 1 };
+  const mcBinding = { family: 'table', settings: medalCountSettings, width: 360, height: 36, scrollLeft: 42, scrollTop: 20, options: NO_OPTIONS } as never;
+  const mcLayout = tableLane.layout(medalCountModel, mcBinding, mcSurface as never, TEST_THEME, measure, 100, { previous: null, now: 40000, speed: 24 } as never);
+  for (let round = 0; round < 6; round++) {
+    const urls = [...tableLane.visibleArt({ model: medalCountModel, layout: mcLayout, binding: mcBinding, surface: mcSurface, theme: TEST_THEME, hour: 100, now: 40000, changedAt: 40000, continuity: 720 + round, speed: 24, before: null, art: mcCold } as never)];
+    mcCold.requestVisible(urls, leftEdgeOffscreen);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const mcLabelX = (cache: LaneArtCache) => {
+    const col = mcLayout.shape.columns.columns[1]!;
+    const leftX = mcLayout.shape.columns.pinnedWidth - 42 + 10 + (col.leadInset ?? 0);
+    const rightX = mcLayout.shape.columns.pinnedWidth - 42 + col.width - 10 - (col.trailInset ?? 0);
+    let labelX: number | null = null;
+    const rawCtx = instrumentedContext().ctx;
+    const captureCtx = Object.assign(Object.create(rawCtx), {
+      fillText(text: string, x: number, y: number) {
+        if (text === '\u00d72') labelX = x;
+        return rawCtx.fillText(text, x, y);
+      },
+    }) as unknown as OffscreenCanvasRenderingContext2D;
+    drawIconStrip(
+      captureCtx,
+      leftX,
+      rightX,
+      18,
+      medalCountIcons.map(item => ({ state: toArtSlotState(resolveCachedArt(item.art, cache), item.name), name: item.name, count: item.count })),
+      TEST_THEME,
+      { kind: 'medals' },
+    );
+    return labelX;
+  };
+  assert.notEqual(mcLabelX(mcCold), null, '×2 count badge was painted by drawIconStrip');
+  assert.equal(mcLabelX(mcCold), mcLabelX(mcWarm), 'probing hidden 4x32 predecessor keeps vertically-clipped medal ×2 badge at exact warm-cache x');
+  const mcClippedBinding = { family: 'table', settings: medalCountSettings, width: 360, height: 36, scrollLeft: 42, scrollTop: 31, options: NO_OPTIONS } as never;
+  const mcClippedIcons = [
+    { name: 'Hidden', art: readyArt('medal://cnt-clip-0') },
+    { name: 'Wide', art: readyArt('medal://cnt-clip-1', { frame: defaultArtFrame(256, 32) }), count: 2 },
+  ];
+  const mcClippedModel: TableModel = {
+    columns: medalCountCols,
+    hour: 100,
+    unsorted: true,
+    rows: [
+      { key: 'mc-0', name: 'Div', cells: { name: { value: knownValue('Div') }, medals: { value: knownValue('2'), iconStripKind: 'medals', icons: mcClippedIcons }, pad: { value: knownValue(1) } } },
+      { key: 'mc-1', name: 'Pad', cells: { name: { value: knownValue('Pad') }, medals: { value: knownValue('0') }, pad: { value: knownValue(2) } } },
+    ],
+  };
+  const mcClippedLayout = tableLane.layout(mcClippedModel, mcClippedBinding, mcSurface as never, TEST_THEME, measure, 100, { previous: null, now: 40500, speed: 24 } as never);
+  const mcClippedUrls = [...tableLane.visibleArt({ model: mcClippedModel, layout: mcClippedLayout, binding: mcClippedBinding, surface: mcSurface, theme: TEST_THEME, hour: 100, now: 40500, changedAt: 40500, continuity: 730, speed: 24, before: null, art: mcCold } as never)];
+  assert.deepEqual(mcClippedUrls, [], 'fully clipped ×2 count badge at scrollTop=31 does not probe hidden predecessor medal');
+  mcCold.dispose();
+  mcWarm.dispose();
+
+  const offSnapKind = 'test-offscreen-speed-snap';
+  const offSnapCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  registerFamilyProjection({
+    family: 'table',
+    kind: offSnapKind,
+    nextChange: (rv: { readonly hour: number }) => (rv.hour < 101 ? 101 : Infinity),
+    project: (rv: { readonly hour: number }): TableModel => {
+      const swap = rv.hour >= 101;
+      return {
+        columns: offSnapCols,
+        hour: rv.hour,
+        rows: Array.from({ length: 24 }, (_, i) => {
+          const score = i === 20 ? (swap ? 3 : 4) : i === 21 ? (swap ? 4 : 3) : 24 - i;
+          return { key: `r${i}`, name: `Row ${i}`, cells: { name: { value: knownValue(`Row ${i}`) }, score: { value: knownValue(score) } } };
+        }),
+      };
+    },
+  });
+  const savedOffscreen2 = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  } as unknown as typeof OffscreenCanvas;
+  try {
+    const view = createLaneView(tableLane, () => {});
+    const laneState = new Map<string, unknown>();
+    const transport = new LaneTransport();
+    const offSnapSettings = tableSettingsOf(undefined, offSnapCols, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+    let seq = 1;
+    const step = (hour: number, speed: number, scrollTop: number, now: number) => {
+      const model = transport.carry({
+        family: 'table',
+        theme: TEST_THEME,
+        kind: offSnapKind,
+        options: NO_OPTIONS,
+        settings: offSnapSettings,
+        sources: NO_SOURCES,
+        width: 320,
+        height: 108,
+        scrollLeft: 0,
+        scrollTop,
+      });
+      const input = {
+        widget: 77,
+        subs: [],
+        pictures: [],
+        model,
+        hour,
+        seek: 0,
+        speed,
+        binding: { generation: 1, surfaces: [{ width: 320, height: 108, dpr: 1 }], offset: 0, pin: null },
+        inspect: null,
+        now,
+      };
+      return { paint: view.paint(input, laneState, () => `s${seq++}`), input };
+    };
+    step(100, 24, 0, 50000);
+    const swapped = step(101, 24, 0, 50005);
+    assert.equal(swapped.paint.motion, false, 'offscreen rank swap at 24 h/s does not request animation frames');
+    step(101, 720, 0, 50010);
+    const scrolled = step(101, 24, 20 * 36, 50015);
+    assert.equal(scrolled.paint.hit?.([40, 18]), 'row:r21', 'speed-only switch to 720 h/s discards offscreen glide so scrolling after returning to 24 h/s hits settled r21');
+    view.unmount?.(77, laneState);
+
+    const { Lane } = await import('../../draw/lane.ts');
+    const { lazyLaneView } = await import('../laneRuntime.ts');
+    const flushTick = () => new Promise<void>(resolve => setImmediate(resolve));
+    const runWorkerScenario = async (opts: { startSpeed?: number; snapAt720: boolean; busyCrop: boolean; resizeWidth: number }) => {
+      const startSpeed = opts.startSpeed ?? 24;
+      let clockNow = 60000;
+      let lastHit: string | null = null;
+      let presentedId = 0;
+      let frameSerial = 1;
+      let holdCrop = false;
+      let releaseCrop: (() => void) | null = null;
+      const lazyView = lazyLaneView('table', async () => tableLane, () => {});
+      await lazyView.prepare!();
+      const blockerView = {
+        paint: () => ({
+          viewport: { width: 10, height: 10, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+          surfaces: [{ source: { width: 10, height: 10 } as unknown as OffscreenCanvas, content: `b${frameSerial}` }],
+          fields: {},
+          motion: false,
+          hit: () => null,
+        }),
+      };
+      const workerLane = new Lane<{ readonly width: number; close(): void }>({
+        lane: 0,
+        lanes: 1,
+        views: name => (name === 'blocker' ? blockerView : lazyView),
+        crop: async sources => {
+          if (holdCrop) await new Promise<void>(resolve => { releaseCrop = resolve; });
+          return sources.map(s => ({ width: s.width, close() {} }));
+        },
+        present: presentation => {
+          for (const entry of presentation.entries) if (entry.widget === 88) presentedId = entry.id;
+        },
+        release: () => {},
+        fail: () => {},
+        later: () => {},
+        clock: () => clockNow,
+        hit: (_wid, key) => { lastHit = key; },
+      });
+      const sender = new PayloadSender(msg => workerLane.payloads(structuredClone(msg)));
+      const wired = (m: unknown) => structuredClone(sender.acquire(m).wire);
+      const makeLaneModel = (scrollTop: number, width = 320) => ({
+        family: 'table',
+        theme: TEST_THEME,
+        kind: offSnapKind,
+        options: NO_OPTIONS,
+        settings: offSnapSettings,
+        sources: NO_SOURCES,
+        width,
+        height: 108,
+        scrollLeft: 0,
+        scrollTop,
+      });
+      const askFrame = (target: number, speed: number, ackId?: number, ackBinding = 1) => {
+        workerLane.frame({
+          type: 'frame',
+          serial: frameSerial++,
+          now: target,
+          target,
+          seek: 0,
+          speed,
+          exact: true,
+          inspect: [],
+          installed: ackId ? [{ widget: 88, binding: ackBinding, id: ackId }] : [],
+          refused: [],
+        });
+      };
+      workerLane.mount(88, [], 'table', wired(makeLaneModel(0)));
+      workerLane.bind(88, { generation: 1, surfaces: [{ width: 320, height: 108, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } });
+      askFrame(100, startSpeed);
+      await flushTick(); await flushTick();
+      clockNow = 60005;
+      askFrame(101, startSpeed, presentedId);
+      await flushTick(); await flushTick();
+      if (opts.busyCrop) {
+        holdCrop = true;
+        workerLane.mount(89, [], 'blocker', {});
+        workerLane.bind(89, { generation: 1, surfaces: [{ width: 10, height: 10, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } });
+        askFrame(101, 24, presentedId);
+        await flushTick();
+        clockNow = 60010;
+        if (opts.snapAt720) askFrame(101, 720);
+        clockNow = 60012;
+        askFrame(101, 24);
+        holdCrop = false;
+        (releaseCrop as (() => void) | null)?.();
+        await flushTick(); await flushTick();
+        workerLane.unmount(89);
+      } else if (opts.snapAt720) {
+        clockNow = 60010;
+        askFrame(101, 720, presentedId);
+        await flushTick(); await flushTick();
+      }
+      clockNow = 60015;
+      workerLane.bind(88, { generation: 2, surfaces: [{ width: opts.resizeWidth, height: 108, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } }, wired(makeLaneModel(20 * 36, opts.resizeWidth)));
+      askFrame(101, 24);
+      await flushTick(); await flushTick();
+      askFrame(101, 24, presentedId, 2);
+      await flushTick(); await flushTick();
+      workerLane.pointer(88, 0, [40, 18]);
+      workerLane.unmount(88);
+      return lastHit;
+    };
+    assert.equal(await runWorkerScenario({ snapAt720: false, busyCrop: false, resizeWidth: 320 }), 'row:r20', 'control: without 720 h/s snap, offscreen swap at 24 h/s glides when scrolled into view');
+    assert.equal(await runWorkerScenario({ snapAt720: true, busyCrop: false, resizeWidth: 319 }), 'row:r21', 'speed-only 720 h/s cancels offscreen glide and stays cancelled across a 320->319 px resize');
+    assert.equal(await runWorkerScenario({ snapAt720: true, busyCrop: true, resizeWidth: 320 }), 'row:r21', 'coalesced 720->24 h/s while another widget crop is open still cancels the offscreen glide');
+    assert.equal(await runWorkerScenario({ startSpeed: 720, snapAt720: false, busyCrop: false, resizeWidth: 319 }), 'row:r21', 'row swap first painted at 720 h/s does not start gliding after slowing to 24 h/s and resizing 320->319 px');
+
+    {
+      let clockNow = 70000;
+      let lastHit: string | null = null;
+      let presentedId = 0;
+      let frameSerial = 1;
+      let holdCrop = false;
+      let releaseCrop: (() => void) | null = null;
+      const lazyView = lazyLaneView('table', async () => tableLane, () => {});
+      await lazyView.prepare!();
+      const workerLane = new Lane<{ readonly width: number; close(): void }>({
+        lane: 0,
+        lanes: 1,
+        views: () => lazyView,
+        crop: async sources => {
+          if (holdCrop) await new Promise<void>(resolve => { releaseCrop = resolve; });
+          return sources.map(s => ({ width: s.width, close() {} }));
+        },
+        present: presentation => {
+          for (const entry of presentation.entries) if (entry.widget === 88) presentedId = entry.id;
+        },
+        release: () => {},
+        fail: () => {},
+        later: () => {},
+        clock: () => clockNow,
+        hit: (_wid, key) => { lastHit = key; },
+      });
+      const sender = new PayloadSender(msg => workerLane.payloads(structuredClone(msg)));
+      const wired = (m: unknown) => structuredClone(sender.acquire(m).wire);
+      const visibleModel = wired({
+        family: 'table',
+        theme: TEST_THEME,
+        kind: offSnapKind,
+        options: NO_OPTIONS,
+        settings: offSnapSettings,
+        sources: NO_SOURCES,
+        width: 320,
+        height: 108,
+        scrollLeft: 0,
+        scrollTop: 20 * 36,
+      });
+      const askFrame = (target: number, speed: number, ackId?: number) => {
+        workerLane.frame({
+          type: 'frame',
+          serial: frameSerial++,
+          now: target,
+          target,
+          seek: 0,
+          speed,
+          exact: true,
+          inspect: [],
+          installed: ackId ? [{ widget: 88, binding: 1, id: ackId }] : [],
+          refused: [],
+        });
+      };
+      workerLane.mount(88, [], 'table', visibleModel);
+      workerLane.bind(88, { generation: 1, surfaces: [{ width: 320, height: 108, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } });
+      askFrame(100, 24);
+      await flushTick(); await flushTick();
+      clockNow = 70005;
+      askFrame(101, 24, presentedId);
+      await flushTick(); await flushTick();
+      const glidingId = presentedId;
+      holdCrop = true;
+      clockNow = 70010;
+      askFrame(101, 720, glidingId);
+      await flushTick();
+      assert.ok(releaseCrop !== null, '720 h/s replacement frame is held in crop');
+      workerLane.pointer(88, 0, [40, 18]);
+      assert.equal(lastHit, 'row:r20', 'installed gliding bitmap keeps hitting r20 after 720 h/s request until replacement bitmap is installed');
+      holdCrop = false;
+      (releaseCrop as (() => void) | null)?.();
+      await flushTick(); await flushTick();
+      assert.notEqual(presentedId, glidingId, 'replacement bitmap is presented once crop finishes');
+      askFrame(101, 720, presentedId);
+      await flushTick(); await flushTick();
+      workerLane.pointer(88, 0, [40, 18]);
+      assert.equal(lastHit, 'row:r21', 'once 720 h/s replacement bitmap is installed, pointer hits settled r21');
+      workerLane.unmount(88);
+    }
+
+    {
+      let clockNow = 80000;
+      let lastHit: string | null = null;
+      let presentedId = 0;
+      let frameSerial = 1;
+      const lazyView = lazyLaneView('table', async () => tableLane, () => {});
+      await lazyView.prepare!();
+      const workerLane = new Lane<{ readonly width: number; close(): void }>({
+        lane: 0,
+        lanes: 1,
+        views: () => lazyView,
+        crop: async sources => sources.map(s => ({ width: s.width, close() {} })),
+        present: presentation => {
+          for (const entry of presentation.entries) if (entry.widget === 88) presentedId = entry.id;
+        },
+        release: () => {},
+        fail: () => {},
+        later: () => {},
+        clock: () => clockNow,
+        hit: (_wid, key) => { lastHit = key; },
+      });
+      const sender = new PayloadSender(msg => workerLane.payloads(structuredClone(msg)));
+      const wired = (m: unknown) => structuredClone(sender.acquire(m).wire);
+      const makeVisibleModel = (width: number) => wired({
+        family: 'table',
+        theme: TEST_THEME,
+        kind: offSnapKind,
+        options: NO_OPTIONS,
+        settings: offSnapSettings,
+        sources: NO_SOURCES,
+        width,
+        height: 108,
+        scrollLeft: 0,
+        scrollTop: 20 * 36,
+      });
+      const askFrame = (target: number, speed: number, ackId?: number, ackBinding = 1) => {
+        workerLane.frame({
+          type: 'frame',
+          serial: frameSerial++,
+          now: target,
+          target,
+          seek: 0,
+          speed,
+          exact: true,
+          inspect: [],
+          installed: ackId ? [{ widget: 88, binding: ackBinding, id: ackId }] : [],
+          refused: [],
+        });
+      };
+      workerLane.mount(88, [], 'table', makeVisibleModel(320));
+      workerLane.bind(88, { generation: 1, surfaces: [{ width: 320, height: 108, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } });
+      askFrame(100, 168);
+      await flushTick(); await flushTick();
+      clockNow = 80005;
+      askFrame(101, 168, presentedId);
+      await flushTick(); await flushTick();
+      clockNow = 80135;
+      askFrame(101, 24, presentedId);
+      await flushTick(); await flushTick();
+      askFrame(101, 24, presentedId);
+      await flushTick(); await flushTick();
+      workerLane.pointer(88, 0, [40, 33]);
+      assert.equal(lastHit, 'row:r21', '168 h/s swap is settled at +130 ms after slowing to 24 h/s');
+      workerLane.bind(88, { generation: 2, surfaces: [{ width: 319, height: 108, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: Infinity } }, makeVisibleModel(319));
+      askFrame(101, 24);
+      await flushTick(); await flushTick();
+      askFrame(101, 24, presentedId, 2);
+      await flushTick(); await flushTick();
+      workerLane.pointer(88, 0, [40, 33]);
+      assert.equal(lastHit, 'row:r21', 'resizing 320->319 px after a 168 h/s glide completed does not restart it with the 24 h/s duration');
+      workerLane.unmount(88);
+    }
+
+    {
+      const markerKind = 'table:test:speed-change-rank-markers';
+      const markerTexts: string[] = [];
+      let captureTexts = false;
+      class MarkerOffscreenCanvas {
+        width: number;
+        height: number;
+        constructor(width: number, height: number) { this.width = width; this.height = height; }
+        getContext() {
+          return {
+            font: '',
+            fillStyle: '',
+            strokeStyle: '',
+            lineWidth: 1,
+            globalAlpha: 1,
+            textAlign: 'left',
+            textBaseline: 'alphabetic',
+            measureText: (t: string) => ({ width: t.length * 7 }),
+            save() {},
+            restore() {},
+            setTransform() {},
+            clearRect() {},
+            beginPath() {},
+            rect() {},
+            clip() {},
+            fillRect() {},
+            strokeRect() {},
+            moveTo() {},
+            lineTo() {},
+            stroke() {},
+            fill() {},
+            roundRect() {},
+            fillText(t: string) { if (captureTexts) markerTexts.push(t); },
+            drawImage() {},
+          };
+        }
+      }
+      registerFamilyProjection({
+        kind: markerKind,
+        family: 'table',
+        nextChange: readView => (readView.hour < 101 ? 101 : Infinity),
+        project: (readView): TableModel => ({
+          columns: offSnapCols,
+          rank: true,
+          rankMarkers: true,
+          rows: readView.hour === 100
+            ? [
+                { key: 'a', name: 'Alpha', cells: { name: { value: knownValue('Alpha') }, score: { value: knownValue(200) } } },
+                { key: 'b', name: 'Beta', cells: { name: { value: knownValue('Beta') }, score: { value: knownValue(100) } } },
+              ]
+            : [
+                { key: 'b', name: 'Beta', cells: { name: { value: knownValue('Beta') }, score: { value: knownValue(300) } } },
+                { key: 'a', name: 'Alpha', cells: { name: { value: knownValue('Alpha') }, score: { value: knownValue(200) } } },
+              ],
+          hour: readView.hour,
+        }),
+      });
+      const prevCanvas = globalThis.OffscreenCanvas;
+      globalThis.OffscreenCanvas = MarkerOffscreenCanvas as unknown as typeof OffscreenCanvas;
+      try {
+        const markerSettings = { ...offSnapSettings, showRank: true };
+        const view = createLaneView(tableLane, () => {});
+        const state = new Map<string, unknown>();
+        const markerTransport = new LaneTransport();
+        let seq = 1;
+        const paintAt = (hour: number, speed: number, now: number) => view.paint({
+          widget: 91,
+          subs: [],
+          model: markerTransport.carry({
+            family: 'table',
+            theme: TEST_THEME,
+            kind: markerKind,
+            options: NO_OPTIONS,
+            settings: markerSettings,
+            sources: NO_SOURCES,
+            width: 320,
+            height: 120,
+            scrollLeft: 0,
+            scrollTop: 0,
+          }),
+          pictures: [],
+          hour,
+          seek: 0,
+          speed,
+          binding: { generation: 1, surfaces: [{ width: 320, height: 120, dpr: 1 }], offset: 0, pin: null },
+          inspect: null,
+          now,
+        }, state, () => `m${seq++}`);
+        paintAt(100, 24, 90000);
+        captureTexts = true;
+        const swapped = paintAt(101, 720, 90005);
+        captureTexts = false;
+        assert.equal(swapped.motion, false, 'swap on 24->720 h/s snaps row positions without glide animation frames');
+        assert.ok(markerTexts.some(t => t.includes('▲1')), `24->720 h/s swap draws ▲1 rank arrow (got: ${markerTexts.join(', ')})`);
+        assert.ok(markerTexts.some(t => t.includes('▼1')), `24->720 h/s swap draws ▼1 rank arrow (got: ${markerTexts.join(', ')})`);
+        view.unmount?.(91, state);
+      } finally {
+        globalThis.OffscreenCanvas = prevCanvas;
+      }
+    }
+  } finally {
+    globalThis.OffscreenCanvas = savedOffscreen2;
+  }
+});
+
+test('fast video export glideDurationMs override keeps gliding hit and repaint, and detail-row heading flag settles invalidate keepsCanvas', async () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'text', offered: ['text'], priority: 0, pinned: true, text: true },
+    { key: 'score', label: 'Score', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: { decimals: 0 } },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'score', direction: 'descending' } });
+  const exportKind = 'test-fast-export-glide-override';
+  registerFamilyProjection({
+    kind: exportKind,
+    family: 'table',
+    nextChange: readView => (readView.hour < 101 ? 101 : Infinity),
+    project: (readView): TableModel => ({
+      columns,
+      rows: readView.hour === 100
+        ? [
+            { key: 'a', name: 'Alpha', cells: { name: { value: knownValue('Alpha') }, score: { value: knownValue(200) } } },
+            { key: 'b', name: 'Beta', cells: { name: { value: knownValue('Beta') }, score: { value: knownValue(100) } } },
+          ]
+        : [
+            { key: 'b', name: 'Beta', cells: { name: { value: knownValue('Beta') }, score: { value: knownValue(300) } } },
+            { key: 'a', name: 'Alpha', cells: { name: { value: knownValue('Alpha') }, score: { value: knownValue(200) } } },
+          ],
+      hour: readView.hour,
+    }),
+  });
+  class SimpleOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {}, clearRect() {}, canvas: this }; }
+  }
+  const savedOffscreen = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = SimpleOffscreenCanvas as unknown as typeof OffscreenCanvas;
+  try {
+    const view = createLaneView(tableLane, () => {});
+    const state = new Map<string, unknown>();
+    const transport = new LaneTransport();
+    let seq = 1;
+    const paintExport = (hour: number, nowMs: number) => view.paint({
+      widget: 92,
+      subs: [],
+      model: transport.carry({
+        family: 'table',
+        theme: TEST_THEME,
+        kind: exportKind,
+        options: NO_OPTIONS,
+        settings,
+        sources: NO_SOURCES,
+        width: 320,
+        height: 120,
+        scrollLeft: 0,
+        scrollTop: 0,
+        motion: { nowMs, speed: 240, glideDurationMs: 50 },
+      }),
+      pictures: [],
+      hour,
+      seek: 0,
+      speed: 240,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 120, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: nowMs,
+    }, state, () => `ex${seq++}`);
+    paintExport(100, 1000);
+    const swapped = paintExport(101, 1002);
+    assert.equal(swapped.motion, true, '240 h/s export with 50 ms glideDurationMs keeps gliding');
+    assert.equal(swapped.hit?.([40, 20]), 'row:a', '2 ms into a 50 ms export glide still hits the outgoing row');
+    view.onSpeed?.(240, state);
+    const mid = paintExport(101, 1010);
+    assert.equal(mid.motion, true, 'onSpeed and keepsCanvas honor the export glideDurationMs override');
+    view.unmount?.(92, state);
+  } finally {
+    globalThis.OffscreenCanvas = savedOffscreen;
+  }
+
+  const detailCols: TableColumnSpec[] = [
+    { key: 'sides', label: 'Sides', as: 'text', offered: ['text'], priority: 0, pinned: true, text: true, minWidth: 260, maxWidth: 260 },
+    { key: 'terms', label: 'Terms', as: 'text', offered: ['text'], priority: 1, text: true, minWidth: 260, maxWidth: 260 },
+  ];
+  const detailSettings = tableSettingsOf(undefined, detailCols, { density: 'normal', sort: { column: 'sides', direction: 'ascending' } });
+  const headingUrl = 'art://peace-heading-flag';
+  const detailModel: TableModel = {
+    columns: detailCols,
+    rows: [{
+      key: 'treaty-1',
+      name: 'Treaty',
+      detailColumn: 'terms',
+      cells: {
+        sides: { value: knownValue('Allies vs Axis') },
+        terms: {
+          value: knownValue('Annexed states'),
+          heading: { flag: { tag: 'GER', art: readyArt(headingUrl) }, text: knownValue('Treaty') },
+        },
+      },
+    }],
+    hour: 100,
+  };
+  let resolveFlag!: (bmp: { width: number; height: number; close(): void }) => void;
+  const artCache = new LaneArtCache<{ width: number; height: number; close(): void }>({
+    fetchBitmap: () => new Promise(resolve => { resolveFlag = resolve; }),
+  });
+  const ctx = { ...instrumentedContext().ctx, canvas: { width: 240, height: 160 } } as unknown as OffscreenCanvasRenderingContext2D;
+  const surface = { width: 240, height: 160, dpr: 1 };
+  const detailBinding = {
+    family: 'table' as const,
+    kind: 'test-detail-heading',
+    options: NO_OPTIONS,
+    settings: detailSettings,
+    sources: NO_SOURCES,
+    width: 240,
+    height: 160,
+    scrollLeft: 0,
+    scrollTop: 0,
+    theme: TEST_THEME,
+  };
+  const detailLayout = tableLane.layout(detailModel, detailBinding as never, surface as never, TEST_THEME, ctx, 100, { previous: null, now: 100, speed: 0 } as never);
+  assert.ok(!detailLayout.visibleColumns?.some(c => c.key === 'terms'), 'terms column is scrolled offscreen at 240px width');
+  const detailFrame = {
+    binding: detailBinding,
+    theme: TEST_THEME,
+    model: detailModel,
+    layout: detailLayout,
+    surface,
+    hour: 100,
+    inspect: null,
+    now: 100,
+    speed: 0,
+    art: artCache,
+    continuity: 1,
+    changedAt: 100,
+    before: null,
+  };
+  const wanted = [...tableLane.visibleArt(detailFrame as never)];
+  assert.ok(wanted.includes(headingUrl), 'visibleArt requests the detail-row heading flag');
+  artCache.requestVisible(wanted, []);
+  tableLane.paint(ctx, detailFrame as never);
+  assert.equal(tableLane.keepsCanvas!(ctx, detailFrame as never), true, 'unchanged before heading flag decodes');
+  resolveFlag({ width: 20, height: 14, close() {} });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(tableLane.keepsCanvas!(ctx, detailFrame as never), false, 'settling offscreen detailColumn heading flag invalidates keepsCanvas');
+  artCache.dispose();
 });

@@ -1,3 +1,4 @@
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { easeBarFraction } from '../bars/painter.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
@@ -103,5 +104,28 @@ export const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> 
   },
   mirror: frame => deriveMeterMirror(frame.model),
   audit: frame => deriveMeterAudit(frame.model),
-  visibleArt: () => [],
+  visibleArt({ layout, binding, surface }) {
+    const visTop = binding.scrollTop - 40;
+    const visBottom = binding.scrollTop + surface.height + 40;
+    const items: ArtUrlInput[] = [];
+    for (const block of layout.blocks) {
+      if (block.kind === 'rule' || block.kind === 'header') continue;
+      if (block.y + block.height < visTop || block.y > visBottom) continue;
+      if (block.kind === 'chip-line') {
+        if (block.y + 22 >= visTop && block.y <= visBottom) items.push(block.ownerFlag.result);
+        for (const placed of block.chips) {
+          if (placed.y + placed.height >= visTop && placed.y <= visBottom) items.push(placed.chip.targetFlag.result);
+        }
+      } else if (layout.mode === 'ciphers') {
+        if (block.row.pair) items.push(block.row.pair.ownerFlag.result, block.row.pair.targetFlag.result);
+      } else if (layout.mode !== 'columns') {
+        if (block.row.art) {
+          if (!block.row.art.idle) items.push(block.row.art.result);
+        } else if (block.row.flag) {
+          items.push(block.row.flag.result);
+        }
+      }
+    }
+    return collectArtUrls(items);
+  },
 };

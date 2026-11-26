@@ -95,7 +95,11 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
   const datingText = named.map(({ country }) => country.tag).join('\u0001');
   const datingTags = useMemo(() => (datingText ? datingText.split('\u0001') : []), [datingText]);
-  const heldHour = flagAt && datedHour ? datedHour(datingTags) : null;
+  const datedTags = useMemo(
+    () => (displayHeaderTag && !datingTags.includes(displayHeaderTag) ? [displayHeaderTag, ...datingTags] : datingTags),
+    [displayHeaderTag, datingTags],
+  );
+  const heldHour = flagAt && datedHour ? datedHour(datedTags) : null;
   const datedAt = useMemo(
     () => (flagAt ? { branchId: flagAt.branchId, hour: heldHour ?? flagAt.hour } : null),
     [flagAt?.branchId, flagAt?.hour, heldHour],

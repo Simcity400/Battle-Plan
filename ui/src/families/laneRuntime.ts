@@ -103,6 +103,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly view: readonly (keyof TBinding & string)[];
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
+  onSpeed?(layout: TLayout, speed: number, continuity: number): void;
   paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number | { drew: boolean; next: boolean | number };
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): LaneTooltip | null;
@@ -179,11 +180,14 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   phasesField: Field | null;
   drawKey: readonly unknown[];
   content: string;
+  hit: (point: readonly [number, number]) => string | null;
   motion: boolean;
   artShown: string | null;
   artSeen: readonly string[] | null;
   artUrls: readonly string[] | null;
   artUrlsKey: string;
+  speed: number;
+  motionOverride: boolean;
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
   kept: Map<string, Field>;
@@ -221,10 +225,24 @@ function readerRevisions(binding: LaneBinding): Revisions | null {
 type Indexed = { readonly index: IdentityIndex; readonly identity: IdentityProvider; users: number };
 const indexes = new Map<number, Indexed>();
 
-function acquireIndex(revision: number, snapshot: IdentitySnapshot): Indexed {
+function acquireIndex(revision: number, snapshot: IdentitySnapshot, previous?: IdentityIndex | null): Indexed {
   let held = indexes.get(revision);
   if (!held) {
-    const index = IdentityIndex.fromSnapshot(snapshot);
+    let base = previous ?? null;
+    if (!base && snapshot.epoch !== undefined) {
+      for (const existing of indexes.values()) {
+        if (existing.index.epoch === snapshot.epoch
+          && existing.index.scope.sourceId === snapshot.scope.sourceId
+          && existing.index.scope.revision === snapshot.scope.revision
+          && existing.index.scope.branchId === snapshot.scope.branchId
+          && existing.index.scope.content === snapshot.scope.content
+          && existing.index.scope.language === snapshot.scope.language) {
+          base = existing.index;
+          break;
+        }
+      }
+    }
+    const index = IdentityIndex.fromSnapshot(snapshot, base);
     indexes.set(revision, held = { index, identity: createSnapshotIdentityProvider(index), users: 0 });
   }
   held.users++;
@@ -360,6 +378,9 @@ export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget
   };
   return {
     prepare: () => (view || failure !== null ? Promise.resolve() : start()),
+    onSpeed(speed, state) {
+      view?.onSpeed?.(speed, state);
+    },
     next(scene, hour, state) {
       const loaded = ready(scene.widget);
       return loaded?.next ? loaded.next(scene, hour, state) : null;
@@ -414,6 +435,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     ...(held.identity ? { identity: held.identity } : {}),
     art: held.artProvider,
     index: held.index,
+    artCacheRevision: held.art.failureVersion,
     ...(held.artResolutions ? { artResolutions: held.artResolutions } : {}),
     artRevision: held.artRevision,
   });
@@ -440,7 +462,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       demandFields: {},
       layout: null, layoutKey: [], expiry: Infinity,
       windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
-      drawKey: [], content: '', motion: false, artShown: null, artSeen: null, artUrls: null, artUrlsKey: '',
+      drawKey: [], content: '', hit: () => null, motion: false, artShown: null, artSeen: null, artUrls: null, artUrlsKey: '', speed: 0, motionOverride: false,
       structureKey: [], structureFields: {},
       kept: new Map(),
       frameKey: [], frameRevision: 0,
@@ -478,6 +500,12 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       held.art.dispose();
       releaseIndex(held.snapshot);
       state.delete(stateKey);
+    },
+
+    onSpeed(speed: number, state: Map<string, unknown>): void {
+      const held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
+      if (!held?.layout || held.motionOverride) return;
+      family.onSpeed?.(held.layout, speed, held.continuity);
     },
 
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
@@ -518,7 +546,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.readers = readerKey;
         const snapshot = binding.identitySnapshot;
         const revision = binding.revisions?.identitySnapshot;
-        const indexed = snapshot && typeof revision === 'number' ? acquireIndex(revision, snapshot) : null;
+        const indexed = snapshot && typeof revision === 'number' ? acquireIndex(revision, snapshot, keep.index) : null;
         releaseIndex(keep.snapshot);
         keep.snapshot = indexed ? revision as number : null;
         keep.index = indexed?.index ?? null;
@@ -533,6 +561,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const hour = input.hour;
       const effectiveNow = binding.motion?.nowMs ?? input.now;
       const effectiveSpeed = binding.motion?.speed ?? input.speed;
+      keep.motionOverride = binding.motion?.speed !== undefined;
       const timed = binding.audit === true;
       const t0 = timed ? performance.now() : 0;
       const current = painting(input, binding);
@@ -608,6 +637,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.flusher.cancel();
         keep.drawn = null;
         keep.drawKey = [];
+        keep.hit = () => null;
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
       }
 
@@ -638,7 +668,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       };
 
       const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.artRevision, width, height];
-      if (keep.motion || effectiveNow >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
+      const speedChanged = effectiveSpeed !== keep.speed;
+      if (speedChanged) family.onSpeed?.(layout, effectiveSpeed, keep.continuity);
+      const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(keep.ctx, frame) === false;
+      keep.speed = effectiveSpeed;
+      if (keep.motion || effectiveNow >= keep.expiry || speedRedraw || !sameKey(keep.drawKey, drawKey)) {
         const shown = [...family.visibleArt(frame)];
         const shownKey = shown.join('\u0000');
         let offscreenChanged = false;
@@ -670,6 +704,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.expiry = typeof next === 'number' ? next : Infinity;
         keep.drawn = { binding, model, layout, hour: drawn };
         keep.drawKey = drawKey;
+        keep.hit = point => family.hit(frame, point);
         if (!incremental || painted.drew || !keep.content) keep.content = content();
       }
 
@@ -762,7 +797,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         fields,
         motion: keep.motion,
         ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),
-        hit: point => family.hit(frame, point),
+        hit: keep.hit,
       };
     },
   };

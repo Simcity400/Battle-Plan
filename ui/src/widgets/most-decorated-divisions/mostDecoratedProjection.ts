@@ -24,6 +24,7 @@ interface DecoratedRow {
   readonly template: CareerTemplate | undefined;
   readonly kind: ArtResult;
   readonly flag: ArtResult;
+  readonly flagKey?: string;
   readonly country: Value<string>;
   readonly strip: readonly TableCellIconItem[];
 }
@@ -55,11 +56,12 @@ export function validateDecoratedDivisions(value: unknown): DecoratedDivisionsRe
   return reply;
 }
 
-function countryOf(tag: string | null, readView: BoundedReadView): { readonly flag: ArtResult; readonly country: Value<string> } {
+function countryOf(tag: string | null, readView: BoundedReadView): { readonly flag: ArtResult; readonly flagKey?: string; readonly country: Value<string> } {
   if (tag === null) return { flag: unavailableArt('Country not recorded'), country: notRecorded('Country not recorded') };
   const shown = countryRowPresentation(readView, tag);
   return {
     flag: shown.media.art,
+    ...(shown.flagKey ? { flagKey: shown.flagKey } : {}),
     country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
   };
 }
@@ -106,7 +108,9 @@ const inProductOrder = (item: DecoratedRow, options: DecoratedOptions): Value<nu
 const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedOptions>[] = [
   { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, art: item => item.kind,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
-  { ...COUNTRY!, priority: 1, iconSlot: true, art: item => item.flag, country: item => item.row.tag, value: item => item.country,
+  { ...COUNTRY!, priority: 1, iconSlot: true, art: item => item.flag,
+    extra: item => (item.flagKey ? { artKey: item.flagKey } : {}),
+    country: item => item.row.tag, value: item => item.country,
     sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
   { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },

@@ -19,6 +19,7 @@ interface AceRow {
   readonly ace: AirAce;
   readonly portrait: ArtResult;
   readonly flag: ArtResult;
+  readonly flagKey?: string;
   readonly country: Value<string>;
   readonly killerCountry: Value<string> | null;
 }
@@ -29,11 +30,12 @@ function portraitMedia(ace: AirAce, readView: BoundedReadView): ArtResult {
   return productIconArt(readView, ace.portrait, ace.portraitMissing ?? 'Portrait not recorded');
 }
 
-function countryOf(tag: string | null, readView: BoundedReadView, atHour?: number): { readonly flag: ArtResult; readonly country: Value<string> } {
+function countryOf(tag: string | null, readView: BoundedReadView, atHour?: number): { readonly flag: ArtResult; readonly flagKey?: string; readonly country: Value<string> } {
   if (tag === null) return { flag: unavailableArt('Country not recorded'), country: NO_COUNTRY };
   const shown = countryRowPresentation(readView, tag, undefined, undefined, atHour);
   return {
     flag: shown.media.art,
+    ...(shown.flagKey ? { flagKey: shown.flagKey } : {}),
     country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
   };
 }
@@ -62,7 +64,9 @@ const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
   { ...PORTRAIT!, priority: 4, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.portrait,
     extra: row => ({ artShape: 'portrait', ...(row.ace.name ? { artName: row.ace.name } : {}) }),
     value: row => row.ace.portrait === null ? notRecorded(row.ace.portraitMissing ?? 'Portrait not recorded') : textValue(row.ace.name, 'Ace name not recorded') },
-  { ...COUNTRY!, priority: 1, iconSlot: true, art: row => row.flag, country: row => row.ace.tag, value: row => row.country },
+  { ...COUNTRY!, priority: 1, iconSlot: true, art: row => row.flag,
+    extra: row => (row.flagKey ? { artKey: row.flagKey } : {}),
+    country: row => row.ace.tag, value: row => row.country },
   { ...ACE!, priority: 0, text: true, hideable: false, cellKind: 'item', widest: ['The Blond Knight of Germany'],
     extra: row => (nickname(row.ace) ? { subtext: nickname(row.ace) } : {}),
     value: row => textValue(row.ace.name, 'Ace name not recorded') },

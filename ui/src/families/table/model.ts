@@ -1142,8 +1142,14 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
         ...(cell?.heading ? { heading: [cell.heading.flag.tag, cell.heading.flag.artKey ?? null, cell.heading.note ?? null] } : {}),
       })));
     }
-    const { countryFlag: _flagStatus, rows: tooltipRows, ...tooltip } = deriveRowTooltip(item, model.columns);
-    rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData({ ...tooltip, rows: tooltipRows.filter(row => row.lookupKey !== ART_STATUS_ROW) })));
+    const firstCol = model.columns[treeColumnOf(model.columns)];
+    const firstCell = firstCol ? item.row.cells[firstCol.key] : undefined;
+    const { countryFlag, rows: tooltipRows, ...tooltip } = deriveRowTooltip(item, model.columns);
+    rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData({
+      ...tooltip,
+      ...(countryFlag !== undefined ? { countryFlagKey: firstCell?.artKey ?? null } : {}),
+      rows: tooltipRows.filter(row => row.lookupKey !== ART_STATUS_ROW),
+    })));
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
     }

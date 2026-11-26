@@ -115,17 +115,40 @@ export function installRecordingCanvas(): { readonly canvases: RecordedCanvas[];
 }
 
 export class LaneTransport {
-  readonly sent = { payloads: 0 };
+  readonly sent: {
+    payloads: number;
+    identities: number;
+    lastIdentity: {
+      readonly id: number;
+      readonly base: number;
+      readonly changes: {
+        readonly set: readonly (readonly [string, unknown])[];
+        readonly nested?: readonly (readonly [string, { readonly set: readonly (readonly [string, unknown])[]; readonly drop: readonly string[] }])[];
+      };
+    } | null;
+  } = {
+    payloads: 0,
+    identities: 0,
+    lastIdentity: null,
+  };
   private readonly store = new PayloadStore();
   private readonly sender = new PayloadSender(message => {
     this.sent.payloads += message.put?.length ?? 0;
+    if (message.identity) {
+      this.sent.identities++;
+      this.sent.lastIdentity = message.identity;
+    }
     this.store.apply(structuredClone(message));
   });
   private readonly held = new Map<string, ReadonlySet<number>>();
+  private readonly identityIds = new Map<string, number>();
 
   carry<T>(binding: T, placement = 'placement'): T {
-    const encoded = this.sender.acquire(binding);
+    const encoded = this.sender.acquire(binding, this.identityIds.get(placement));
     const decoded = this.store.resolve(structuredClone(encoded.wire)) as T;
+    const nextIdentity = (encoded.wire as { revisions?: { identitySnapshot?: number } } | null)?.revisions?.identitySnapshot;
+    if (typeof nextIdentity === 'number') this.identityIds.set(placement, nextIdentity);
+    else this.identityIds.delete(placement);
     const was = this.held.get(placement);
     this.held.set(placement, encoded.ids);
     if (was) this.sender.release(was);

@@ -273,13 +273,39 @@ export function subscribeIdentityAtHead(
   return () => { stopClock(); stopAnchor(); stopBroker(); };
 }
 
+export function pickerHeaderTag(
+  countries: readonly { readonly id: string; readonly tag: string }[],
+  selectedTag: string | null | undefined,
+  playerCountryId: string | null | undefined,
+  addLabel?: string,
+): string | null {
+  if (addLabel) return null;
+  if (selectedTag) return selectedTag;
+  if (playerCountryId == null) return null;
+  return countries.find(country => country.id === playerCountryId)?.tag ?? null;
+}
+
 export function countryPickerKeys(
   selectedSlot: number | null,
   selectedTag: string | null | undefined,
   shownTags: readonly string[],
+  fallbackTags?: string | null | readonly (string | null | undefined)[],
 ): IdentityKey[] {
-  const keys: IdentityKey[] = selectedSlot !== null ? [countrySlotKey(selectedSlot)] : selectedTag ? [countryTagKey(selectedTag)] : [];
-  for (const tag of shownTags) keys.push(countryTagKey(tag));
+  const keys: IdentityKey[] = [];
+  const seen = new Set<string>();
+  const addTag = (tag: string | null | undefined) => {
+    if (!tag || seen.has(tag)) return;
+    seen.add(tag);
+    keys.push(countryTagKey(tag));
+  };
+  if (selectedSlot !== null) {
+    keys.push(countrySlotKey(selectedSlot));
+    if (typeof fallbackTags === 'string') addTag(fallbackTags);
+    else if (fallbackTags) for (const tag of fallbackTags) addTag(tag);
+  } else {
+    addTag(selectedTag);
+  }
+  for (const tag of shownTags) addTag(tag);
   return keys;
 }
 
@@ -359,6 +385,7 @@ export function pickerDating(
   trackHour: (clockHour: number) => number | null,
   recording: DashboardSource | null | undefined,
   bounds: HourInterval | undefined,
+  fallbackTags?: string | null | readonly (string | null | undefined)[],
 ): (tags: readonly string[]) => number | null {
   const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
   let text: string | null = null;
@@ -367,7 +394,7 @@ export function pickerDating(
     const next = tags.join('\u0001');
     if (next !== text) {
       text = next;
-      keys = countryPickerKeys(selectedSlot, selectedTag, tags);
+      keys = countryPickerKeys(selectedSlot, selectedTag, tags, fallbackTags);
     }
     return readIdentityAtHeadHour(broker, clock, scope, true, keys, trackHour, recording, bounds, held);
   };

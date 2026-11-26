@@ -496,3 +496,82 @@ test('one chosen country with "only between them" is not a centred view of its t
   assert.deepEqual([params('between').subject, params('between').countries, params('between').between], [undefined, ['GER'], true]);
   assert.equal(params('touching').subject, 'GER');
 });
+
+test('flowLane.visibleArt reports visible country node flags and skips centre, others, unknown, and scrolled-off nodes', async () => {
+  const { readyArt } = await import('../art/types.ts');
+  const nodes = Array.from({ length: 16 }, (_, i) => ({
+    key: `left:s${i + 1}`,
+    side: 'left' as const,
+    label: `Country ${i + 1}`,
+    tag: `C${i + 1}`,
+    numeric: 10,
+    figure: '10',
+    spoken: `C${i + 1}`,
+    audit: `C${i + 1}`,
+    flag: readyArt(`flag://C${i + 1}`),
+  }));
+  const model = {
+    hour: HOUR,
+    mode: 'centred' as const,
+    centre: { key: 'centre:s0', side: 'centre' as const, label: 'Centre', tag: 'USA', numeric: 160, figure: '160', spoken: 'USA', audit: 'USA', flag: readyArt('flag://USA') },
+    left: [
+      ...nodes,
+      { key: 'left:others', side: 'left' as const, label: '2 other partners', numeric: 5, figure: '5', spoken: 'others', audit: 'others', others: 2, flag: readyArt('flag://others') },
+      { key: 'left:unk', side: 'left' as const, label: 'Unknown', numeric: 5, figure: '5', spoken: 'unk', audit: 'unk', unknown: 'Unlinked', flag: readyArt('flag://unk') },
+    ],
+    right: [
+      { key: 'right:s99', side: 'right' as const, label: 'Right', tag: 'ENG', numeric: 10, figure: '10', spoken: 'ENG', audit: 'ENG', flag: readyArt('flag://ENG') },
+    ],
+    ribbons: [],
+    parts: [],
+  };
+  const layout = layoutFlow(model, 846, 120);
+  const topUrls = [...flowLane.visibleArt({
+    model,
+    layout,
+    binding: { scrollTop: 0 } as never,
+    surface: { width: 846, height: 120, dpr: 1 } as never,
+  } as never)];
+  assert.ok(topUrls.includes('flag://C1'), 'top visible left flag is reported');
+  assert.ok(topUrls.includes('flag://ENG'), 'visible right flag is reported');
+  assert.ok(!topUrls.includes('flag://USA'), 'centre node draws no flag');
+  assert.ok(!topUrls.includes('flag://others'), 'others node draws no flag');
+  assert.ok(!topUrls.includes('flag://unk'), 'unknown node draws no flag');
+  assert.ok(!topUrls.includes('flag://C16'), 'scrolled-off bottom node is excluded');
+});
+
+test('projectTradeTable preserves partner flag artKey for table audit', async () => {
+  const { artHandleKey, readyArt } = await import('../art/types.ts');
+  const { flagArtHandle } = await import('../art/provider.ts');
+  const { flagChoiceKey } = await import('../identity/types.ts');
+  const { IdentityIndex } = await import('../identity/index.ts');
+  const { createSnapshotIdentityProvider } = await import('../identity/provider.ts');
+  const holFlag = { keys: ['HOL_democratic', null, null] as [string | null, string | null, string | null], reasons: [null, null, null] as [string | null, string | null, string | null] };
+  const usaFlag = { keys: ['USA_democratic', null, null] as [string | null, string | null, string | null], reasons: [null, null, null] as [string | null, string | null, string | null] };
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b1', content: 1 }, [0, HOUR + 100]);
+  index.setIdentities({
+    branchId: 'b1',
+    known: [{ firstHour: 0, lastHour: HOUR + 100 }],
+    countries: [
+      { tag: 'USA', identities: [{ firstHour: 0, lastHour: HOUR + 100, slot: 1, countryId: 10 }], unresolved: [] },
+      { tag: 'HOL', identities: [{ firstHour: 0, lastHour: HOUR + 100, slot: 2, countryId: 20 }], unresolved: [] },
+    ],
+    unknown: [],
+    warnings: [],
+  });
+  index.ingestStyle({ tag: 'USA', name: 'United States', color: [50, 90, 200], valid: [0, HOUR + 100], flagChoice: usaFlag }, HOUR);
+  index.ingestStyle({ tag: 'HOL', name: 'Netherlands', color: [200, 120, 40], valid: [0, HOUR + 100], flagChoice: holFlag }, HOUR);
+  const tradeReply: CountryFlowReply = {
+    ...centred,
+    table: [{ partner: HOL, cells: [amount(20), amount(6)], net: amount(26) }],
+  };
+  const rv = createBoundedReadView({
+    hour: HOUR,
+    panels: new Map([['main', tradeReply]]),
+    identity: createSnapshotIdentityProvider(index),
+    art: { resolve: () => readyArt('flag://HOL') },
+  });
+  const table = projectTradeTable(rv);
+  const expectedKey = artHandleKey(flagArtHandle(flagChoiceKey(holFlag), 'panel'));
+  assert.equal(table.rows[0]!.cells.partner?.flags?.[0]?.artKey, expectedKey);
+});

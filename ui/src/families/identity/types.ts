@@ -210,9 +210,15 @@ export interface SnapshotFailures {
   readonly entities?: Readonly<Record<string, readonly SpanFailure[]>>;
 }
 
+export type IdentityKindRevisions = Readonly<Record<IdentityKey['kind'], number>>;
+
 export interface IdentitySnapshot {
   readonly scope: IdentityScope;
   readonly branchBounds?: HourInterval;
+  readonly epoch?: number;
+  readonly revisions?: IdentityKindRevisions;
+  readonly flagVersion?: number;
+  readonly flagVersions?: Readonly<Record<string, number>>;
   readonly facts?: RecordedValue<CountryFactsReply>;
   readonly factsFinal?: boolean;
   readonly identities?: RecordedValue<CountryIdentitiesReply>;

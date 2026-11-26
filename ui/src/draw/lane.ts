@@ -66,6 +66,7 @@ export interface Painted {
 export interface LaneView {
   next?(scene: Scene, hour: number, state?: Map<string, unknown>): number | null;
   paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted;
+  onSpeed?(speed: number, state: Map<string, unknown>): void;
   unmount?(widget: number, state: Map<string, unknown>): void;
   prepare?(): Promise<void>;
 }
@@ -219,6 +220,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private windowSafeHi = Infinity;
   private windowSafeDirty = false;
   private lastTarget = NaN;
+  private lastSpeed: number | null = null;
   private readonly parkedWidgets = new Set<number>();
   private readonly inspectedWidgets = new Set<number>();
   private readonly nonOpenFollowed = new Set<number>();
@@ -1406,6 +1408,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   frame(request: FrameRequest) {
     this.pageRequests++;
+    if (this.lastSpeed !== request.speed) {
+      this.lastSpeed = request.speed;
+      for (const widget of this.widgets.values()) {
+        this.host.views(widget.view).onSpeed?.(request.speed, widget.state);
+      }
+    }
     if (request.installed.length || request.refused.length) {
       if (this.serving) this.acks.push({ installed: request.installed, refused: request.refused });
       else this.applyAcks(request.installed, request.refused);

@@ -96,7 +96,9 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     const partner = presentFlowEndpoint(readView, reply.endpoints[row.partner]!);
     const name = partner.labelLoading ? notRecorded(NAME_LOADING)
       : partner.labelMissing ? notRecorded(partner.unknown ?? 'Country name not recorded at this date') : knownValue(partner.label);
-    const flags = partner.unknown || !partner.flag ? {} : { flags: [{ tag: partner.tag ?? partner.label, art: partner.flag }] };
+    const flags = partner.unknown || !partner.flag ? {} : {
+      flags: [{ tag: partner.tag ?? partner.label, art: partner.flag, ...(partner.flagKey ? { artKey: partner.flagKey } : {}) }],
+    };
     const cells: Record<string, TableRow['cells'][string]> = {
       partner: { value: name, ...(partner.labelLoading ? { loading: true } : {}), ...flags },
       net: { value: signed(row.net, 'An amount with this partner was not recorded'), format: signedCellFormat },

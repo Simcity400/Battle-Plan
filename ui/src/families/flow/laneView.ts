@@ -1,3 +1,4 @@
+import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { deriveFlowAudit, deriveFlowMirror, deriveFlowNav, findFlowTooltip, type FlowModel } from './model.ts';
 import { drawFlow, hitFlow, layoutFlow, type FlowLayout } from './painter.ts';
@@ -52,5 +53,18 @@ export const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
   },
   mirror: frame => deriveFlowMirror(frame.model),
   audit: frame => deriveFlowAudit(frame.model),
-  visibleArt: () => [],
+  visibleArt({ layout, binding, surface }) {
+    const visTop = binding.scrollTop - 8;
+    const visBottom = binding.scrollTop + surface.height + 8;
+    const items: ArtUrlInput[] = [];
+    for (const box of layout.nodes) {
+      const top = Math.min(box.slotTop, box.y);
+      const bottom = Math.max(box.slotTop + box.slotHeight, box.y + box.height);
+      if (bottom < visTop || top > visBottom) continue;
+      const node = box.node;
+      if (node.side === 'centre' || node.others !== undefined || node.unknown !== undefined) continue;
+      items.push(node.flag);
+    }
+    return collectArtUrls(items);
+  },
 };

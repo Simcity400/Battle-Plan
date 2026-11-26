@@ -2,25 +2,28 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
 import { formatDateRange } from '../../dashboard/calendar.ts';
-import {
-  drawChildRowTint,
+import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ICON_STRIP_GAP, MEDAL_ICON_SIZE, TRAIT_ICON_SIZE, artDrawnBounds, drawChildRowTint,
   drawClockSummary,
   drawRowFocusRing,
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
   drawScrollFade,
+  fitIconStripCount,
+  iconStripSlotWidth,
+  missingMarkWidth,
   resolveKitTokens,
   type ClockSummaryData,
 } from '../../draw/kit.ts';
-import { resolveCachedArt } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import type { ArtResult } from '../art/types.ts';
+import type { ArtUrlInput } from '../art/provider.ts';
+import { readyArt, type ArtResult } from '../art/types.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { notApplicable } from '../value.ts';
 import { formatScalar, formatValueState } from '../valueFormat.ts';
-import { drawApprovedCell, drawDetailCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
-import { DETAIL_HEAD_LEAD, END_NOTE_HEIGHT, LIVE_END_GAP, treeColumnOf, type DetailRowLayout, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry, type TableRhythm } from './layout.ts';
+import { CHILD_FLAG_GAP, KIND_TILE_ART, UNIT_ART_GAP, UNIT_ART_SIZE, artGeometry, drawApprovedCell, drawDetailCell, glyphAdvance, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
+import { DETAIL_CHIP_GAP, DETAIL_FLAG, DETAIL_HEAD_HEIGHT, DETAIL_HEAD_LEAD, DETAIL_LINE_HEIGHT, DETAIL_NOTE_GAP, DETAIL_TEXT_SIZE, END_NOTE_HEIGHT, LIVE_END_GAP, TREE_CHEVRON_LANE, detailNote, treeColumnOf, type DetailRowLayout, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry, type TableRhythm } from './layout.ts';
 import { computeColumnMaxima, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import { PANE_FADE_WIDTH, PANE_INDICATOR_HEIGHT, type PaneGeometry, type PaneScroll, type ResolvedPane } from './panes.ts';
 import {
@@ -31,9 +34,11 @@ import {
   glideOffset,
   measuresColumn,
   scrollBounds,
+  showsIcon,
   type GlideOffset,
   type RankMarker,
   type TableCanvasContext,
+  type TableDensity,
   type TableSettings,
   type TableTheme,
 } from './settings.ts';
@@ -851,18 +856,9 @@ export function drawFamilyTable(
   const rowY = (item: FlatTableRow, index: number) =>
     topAt(index) - scrollTop + (moving && item.kind === 'data' ? glideOffset(glide.offsets.get(item.key), now, glideDuration) : 0);
 
-  const visibleIndices: number[] = [];
-  if (moving) {
-    const onScreen = (index: number) => {
-      const y = rowY(rows[index]!, index);
-      return y + heightAt(index) > 0 && y < height;
-    };
-    for (const index of glidingIndices(glide, first, last, scrollTop, scrollTop + height)) {
-      if (onScreen(index)) visibleIndices.push(index);
-    }
-  } else {
-    for (let index = first; index < last; index++) visibleIndices.push(index);
-  }
+  const visibleIndices = moving
+    ? visibleGlidingIndices(rows, glide, first, last, scrollTop, height, now, glideDuration, variableHeights ? rowGeom : null, uniformRowHeight)
+    : Array.from({ length: Math.max(0, last - first) }, (_, i) => first + i);
 
   const paintDetailRow = (
     item: Extract<FlatTableRow, { kind: 'data' }>,
@@ -1046,12 +1042,598 @@ export function glideCrossing(glide: TableGlide, top: number, bottom: number): n
   return out;
 }
 
-function glidingIndices(glide: TableGlide, first: number, last: number, top: number, bottom: number): number[] {
+function mergeInterval(intervals: [number, number][], a: number, b: number): void {
+  if (b <= a) return;
+  let i = 0;
+  while (i < intervals.length && intervals[i]![1] < a) i++;
+  let start = a;
+  let end = b;
+  let remove = 0;
+  while (i + remove < intervals.length && intervals[i + remove]![0] <= end) {
+    const cur = intervals[i + remove]!;
+    if (cur[0] < start) start = cur[0];
+    if (cur[1] > end) end = cur[1];
+    remove++;
+  }
+  intervals.splice(i, remove, [start, end]);
+}
+
+function isIntervalCovered(intervals: readonly [number, number][], a: number, b: number): boolean {
+  for (let i = 0; i < intervals.length; i++) {
+    const cur = intervals[i]!;
+    if (cur[0] <= a && cur[1] >= b) return true;
+    if (cur[0] > a) return false;
+  }
+  return false;
+}
+
+export function visibleGlidingIndices(
+  rows: readonly FlatTableRow[],
+  glide: TableGlide,
+  first: number,
+  last: number,
+  scrollTop: number,
+  height: number,
+  now: number,
+  glideDuration: number,
+  rowGeom: RowLayoutGeometry | null,
+  rowHeight: number,
+  ordered = true,
+): number[] {
   const out: number[] = [];
-  for (let index = first; index < last; index++) out.push(index);
-  for (const index of glideCrossing(glide, top, bottom)) if (index < first || index >= last) out.push(index);
-  out.sort((a, b) => a - b);
+  const start = Math.max(0, first);
+  const end = Math.min(rows.length, last);
+  const check = (index: number) => {
+    const item = rows[index];
+    if (!item) return;
+    const h = rowGeom ? rowGeom.heights[index]! : rowHeight;
+    const top = rowGeom ? rowGeom.tops[index]! : index * rowHeight;
+    const y = top - scrollTop + (item.kind === 'data' ? glideOffset(glide.offsets.get(item.key), now, glideDuration) : 0);
+    if (y + h > 0 && y < height) out.push(index);
+  };
+  for (let index = start; index < end; index++) check(index);
+  for (const index of glideCrossing(glide, scrollTop, scrollTop + height)) {
+    if (index < start || index >= end) check(index);
+  }
+  if (ordered) out.sort((a, b) => a - b);
   return out;
+}
+
+function resolvedArtDimensions(resolved: ArtResult): { readonly width: number; readonly height: number } | null {
+  if (resolved.status !== 'ready') return null;
+  if (resolved.frame.outputWidth > 0 && resolved.frame.outputHeight > 0) {
+    return { width: resolved.frame.outputWidth, height: resolved.frame.outputHeight };
+  }
+  if (resolved.bitmap && resolved.bitmap.width > 0 && resolved.bitmap.height > 0) {
+    return { width: resolved.bitmap.width, height: resolved.bitmap.height };
+  }
+  if (resolved.frame.frameWidth > 0 && resolved.frame.frameHeight > 0) {
+    return { width: resolved.frame.frameWidth, height: resolved.frame.frameHeight };
+  }
+  return null;
+}
+
+function iconArtSlotWidth(art: ArtResult | null | undefined, size: number, artCache?: LaneArtCache): number {
+  if (!art) return size;
+  return iconStripSlotWidth(toArtSlotState(resolveCachedArt(art, artCache)), size);
+}
+
+function iconArtNeedsDecode(art: ArtResult | null | undefined, artCache?: LaneArtCache): boolean {
+  if (!art) return false;
+  const resolved = resolveCachedArt(art, artCache);
+  return resolved.status === 'ready' && !resolved.bitmap && resolvedArtDimensions(resolved) === null;
+}
+
+function fittedArtSize(
+  art: ArtResult | null | undefined,
+  slotW: number,
+  slotH: number,
+  artCache?: LaneArtCache,
+  trim = false,
+): { readonly width: number; readonly height: number } {
+  if (!art) return { width: slotW, height: slotH };
+  const resolved = resolveCachedArt(art, artCache);
+  if (resolved.status === 'ready') {
+    if (trim) {
+      const bitmap = resolved.bitmap;
+      if (bitmap) {
+        const box = artDrawnBounds(bitmap as unknown as CanvasImageSource, Math.max(1, bitmap.width), Math.max(1, bitmap.height));
+        const sw = box?.width ?? Math.max(1, bitmap.width);
+        const sh = box?.height ?? Math.max(1, bitmap.height);
+        artCache?.rememberTrimmed(resolved.url, sw, sh);
+        const scale = Math.min(slotW / sw, slotH / sh);
+        return { width: sw * scale, height: sh * scale };
+      }
+      const cachedTrim = artCache?.trimmedOfUrl(resolved.url);
+      if (cachedTrim) {
+        const scale = Math.min(slotW / cachedTrim[0], slotH / cachedTrim[1]);
+        return { width: cachedTrim[0] * scale, height: cachedTrim[1] * scale };
+      }
+      return { width: slotW, height: slotH };
+    }
+    const dims = resolvedArtDimensions(resolved);
+    if (dims) {
+      const scale = Math.min(slotW / dims.width, slotH / dims.height);
+      return { width: dims.width * scale, height: dims.height * scale };
+    }
+  }
+  return { width: slotW, height: slotH };
+}
+
+function inlineRunsWidth(
+  text: string,
+  maxWidth: number,
+  font: string,
+  measure: (text: string, font: string) => number,
+): number {
+  if (maxWidth <= 0 || !text) return 0;
+  if (text.indexOf('\uFFFC') < 0) {
+    const fitted = ellipsise(text, maxWidth, s => measure(s, font));
+    return fitted ? measure(fitted, font) : 0;
+  }
+  const parts = text.split('\uFFFC');
+  let cursor = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!;
+    if (part) {
+      const rem = maxWidth - cursor;
+      if (rem <= 0) break;
+      const fitted = ellipsise(part, rem, s => measure(s, font));
+      if (fitted) cursor += measure(fitted, font);
+      if (fitted !== part) break;
+    }
+    if (i + 1 < parts.length) {
+      const lead = cursor > 0 ? 4 : 0;
+      const boxW = Math.min(48, Math.max(16, maxWidth - cursor - lead));
+      if (cursor + lead + 16 > maxWidth) break;
+      cursor += lead + boxW + (parts[i + 1] ? 4 : 0);
+    }
+  }
+  return cursor;
+}
+
+export interface TableVisibleArtViewport {
+  readonly width: number;
+  readonly scrollLeft: number;
+  readonly startX: number;
+  readonly pinnedCount: number;
+  readonly pinnedWidth: number;
+  readonly artCache?: LaneArtCache;
+  readonly treeLevels?: number;
+  readonly hideHeader?: boolean;
+  readonly fontSize?: { readonly small: number; readonly body: number };
+}
+
+type VisibleArtColumn = Pick<
+  FamilyColumnLayout,
+  'key' | 'width' | 'display' | 'skillIcon' | 'leadInset' | 'trailInset' | 'inlineFlags' | 'cellKind' | 'notRecordedReason' | 'narrow' | 'narrowed' | 'valueFormat' | 'numeric'
+>;
+
+export function collectVisibleTableArt(
+  rows: readonly FlatTableRow[],
+  indices: readonly number[],
+  rowY: (index: number) => number,
+  height: number,
+  rowGeom: RowLayoutGeometry | null,
+  rowHeight: number,
+  columns: readonly VisibleArtColumn[],
+  density: TableDensity,
+  viewport: TableVisibleArtViewport,
+  themeFont: string,
+  measure: (text: string, font: string) => number,
+  cullOccluded: boolean,
+  items: ArtUrlInput[],
+): void {
+  const pinned = Math.min(columns.length, viewport.pinnedCount);
+  const treeCol = treeColumnOf(columns as readonly FamilyColumnLayout[]);
+  const hasActionCol = columns.some(col => col.cellKind === 'action');
+  const treeLevels = viewport.treeLevels ?? 0;
+  const visibleCols: {
+    readonly col: VisibleArtColumn;
+    readonly index: number;
+    readonly pinned: boolean;
+    readonly screenLeft: number;
+    readonly screenRight: number;
+    readonly clipLeft: number;
+    readonly clipRight: number;
+  }[] = [];
+  let colX = viewport.startX;
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]!;
+    const isPinned = c < pinned;
+    const screenLeft = isPinned ? colX : colX - viewport.scrollLeft;
+    const screenRight = screenLeft + col.width;
+    const clipLeft = isPinned ? 0 : viewport.pinnedWidth;
+    const clipRight = viewport.width;
+    colX += col.width;
+    if (col.notRecordedReason || col.width <= 0 || clipLeft >= clipRight || screenLeft >= clipRight) continue;
+    visibleCols.push({ col, index: c, pinned: isPinned, screenLeft, screenRight, clipLeft, clipRight });
+  }
+  if (indices.length === 0) return;
+  const coveredAll: [number, number][] = [];
+  const coveredData: [number, number][] = [];
+  const countFont = `600 11px ${themeFont}`;
+  const moreFont = `500 11.5px ${themeFont}`;
+  const prefixFont = `600 ${density === 'compact' ? 13 : 13.5}px ${themeFont}`;
+  const detailFont = `400 ${DETAIL_TEXT_SIZE}px ${themeFont}`;
+  const markTheme = { font: themeFont, fontSize: viewport.fontSize ?? { small: 11, body: 12 } };
+  const rectVisible = (
+    covered: readonly [number, number][],
+    left: number,
+    right: number,
+    top: number,
+    bot: number,
+    clipLeft: number,
+    clipRight: number,
+  ): boolean => {
+    if (clipLeft >= clipRight || right <= clipLeft || left >= clipRight) return false;
+    const artTop = Math.max(0, top);
+    const artBot = Math.min(height, bot);
+    if (artBot <= artTop) return false;
+    return !cullOccluded || !isIntervalCovered(covered, artTop, artBot);
+  };
+  const artVisible = (covered: readonly [number, number][], center: number, artH: number): boolean => {
+    const top = Math.round(center - artH / 2);
+    const artTop = Math.max(0, top);
+    const artBot = Math.min(height, top + artH);
+    if (artBot <= artTop) return false;
+    return !cullOccluded || !isIntervalCovered(covered, artTop, artBot);
+  };
+  const slotImageVisible = (
+    covered: readonly [number, number][],
+    art: ArtResult,
+    slotLeft: number,
+    centerY: number,
+    slotW: number,
+    slotH: number,
+    clipLeft: number,
+    clipRight: number,
+    trim = false,
+  ): boolean => {
+    const fit = fittedArtSize(art, slotW, slotH, viewport.artCache, trim);
+    const slotTop = Math.round(centerY - slotH / 2);
+    const imgLeft = slotLeft + (slotW - fit.width) / 2;
+    const imgTop = slotTop + (slotH - fit.height) / 2;
+    return rectVisible(covered, imgLeft, imgLeft + fit.width, imgTop, imgTop + fit.height, clipLeft, clipRight);
+  };
+  for (let i = indices.length - 1; i >= 0; i--) {
+    const index = indices[i]!;
+    const item = rows[index];
+    if (!item) continue;
+    const h = rowGeom ? rowGeom.heights[index]! : rowHeight;
+    const y = rowY(index);
+    const y0 = Math.max(0, y);
+    const y1 = Math.min(height, y + h);
+    if (item.kind !== 'data') {
+      if (cullOccluded && y1 > y0) mergeInterval(coveredAll, y0, y1);
+      continue;
+    }
+    const detail = rowGeom?.detailRows?.get(index);
+    if (detail) {
+      const detailKey = item.row.detailColumn;
+      const cell = detailKey ? item.row.cells[detailKey] : undefined;
+      if (cell) {
+        const pinnedEdge = Math.min(viewport.width, viewport.pinnedWidth);
+        const detailFlagVisible = (flLeft: number, flRight: number, flTop: number, flBot: number): boolean =>
+          (pinnedEdge > 0 && rectVisible(coveredData, flLeft, flRight, flTop, flBot, 0, pinnedEdge))
+          || rectVisible(coveredAll, flLeft, flRight, flTop, flBot, pinnedEdge, viewport.width);
+        if (cell.heading) {
+          const headMid = y + DETAIL_HEAD_LEAD + DETAIL_HEAD_HEIGHT / 2;
+          const headTop = Math.round(headMid - FLAG_SLOT_HEIGHT / 2);
+          if (detailFlagVisible(detail.left, detail.left + FLAG_SLOT_WIDTH, headTop, headTop + FLAG_SLOT_HEIGHT)) {
+            items.push(cell.heading.flag.art);
+          }
+        }
+        const flags = cell.flags;
+        const detailRight = detail.left + detail.width;
+        if (flags?.length && detail.width > 0 && detail.left < viewport.width) {
+          const lineCovered = pinnedEdge > 0 ? coveredData : coveredAll;
+          for (let line = 0; line < detail.lines.length; line++) {
+            const mid = y + detail.top + line * DETAIL_LINE_HEIGHT + DETAIL_LINE_HEIGHT / 2;
+            if (!artVisible(lineCovered, mid, DETAIL_FLAG.height)) continue;
+            const flTop = Math.round(mid - DETAIL_FLAG.height / 2);
+            const start = detail.lines[line]!;
+            const end = detail.lines[line + 1] ?? flags.length;
+            let fx = detail.left;
+            for (let f = start; f < end && fx < detailRight && fx < viewport.width; f++) {
+              const fl = flags[f]!;
+              if (detailFlagVisible(fx, fx + DETAIL_FLAG.width, flTop, flTop + DETAIL_FLAG.height)) {
+                items.push(fl.art);
+              }
+              fx += DETAIL_FLAG.width + DETAIL_FLAG.gap;
+              if (fl.label) fx += inlineRunsWidth(fl.label, detailRight - fx, detailFont, measure);
+              if (fl.note && detailRight - fx > DETAIL_NOTE_GAP) {
+                fx += DETAIL_NOTE_GAP + inlineRunsWidth(detailNote(fl.note), detailRight - fx - DETAIL_NOTE_GAP, detailFont, measure);
+              }
+              fx += DETAIL_CHIP_GAP;
+            }
+          }
+        }
+      }
+    } else {
+      const contentH = item.isLiveEnd ? h - LIVE_END_GAP : h;
+      const middle = y + contentH / 2;
+      for (let vc = 0; vc < visibleCols.length; vc++) {
+        const entry = visibleCols[vc]!;
+        const col = entry.col;
+        const cell = item.row.cells[col.key];
+        const covered = entry.pinned ? coveredData : coveredAll;
+        if (cell?.blank) continue;
+        let left = entry.screenLeft + CELL_INSET + (col.leadInset ?? 0);
+        const right = entry.screenRight - CELL_INSET - (col.trailInset ?? 0);
+        if (entry.index === treeCol) {
+          if (hasActionCol || (item.row.pageGroup && col.cellKind === 'date')) {
+            if (item.level > 1 && !item.row.pageParent) left += (item.level - 1) * TREE_CHEVRON_LANE;
+          } else {
+            left += treeTextStart(item.level, treeLevels);
+            if (!item.isTreeGroup && item.level > 1 && cell?.iconSlot && !showsIcon(col.display) && cell.art) {
+              const fx = Math.max(entry.screenLeft, left - FLAG_SLOT_WIDTH - CHILD_FLAG_GAP);
+              const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+              if (rectVisible(covered, fx, fx + FLAG_SLOT_WIDTH, fy, fy + FLAG_SLOT_HEIGHT, entry.clipLeft, entry.clipRight)) {
+                items.push(cell.art);
+              }
+            }
+          }
+        }
+        if (col.cellKind === 'kind') {
+          if (cell && !cell.glyph && cell.art) {
+            const centerX = entry.screenLeft + (col.leadInset ?? 0) + (col.width - (col.leadInset ?? 0) - (col.trailInset ?? 0)) / 2;
+            const slot = cell.artTile ? KIND_TILE_ART : artGeometry(cell.artShape ?? 'square', density, contentH);
+            if (slotImageVisible(covered, cell.art, Math.round(centerX - slot.width / 2), middle, slot.width, slot.height, entry.clipLeft, entry.clipRight, cell.artShape === 'drawn')) {
+              items.push(cell.art);
+            }
+          }
+          continue;
+        }
+        if (cell?.glyph) {
+          left += glyphAdvance(cell.glyph);
+        }
+        if (col.cellKind === 'skill') {
+          const badgeArt = cell?.art ?? col.skillIcon;
+          if (cell && badgeArt) {
+            const formatted = formatValueState(cell.value, cell.format ?? col.valueFormat);
+            if (formatted.kind !== 'notRecorded' && formatted.kind !== 'notApplicable') {
+              const badge = col.key === 'skill' || col.key === 'level';
+              const iconW = badge ? 18 : 24;
+              const iconH = badge ? 26 : 22;
+              const numW = Math.max(14, measure(formatted.text, `${badge ? 600 : 500} 13.5px ${themeFont}`));
+              const iconX = right - numW - 6 - iconW;
+              if (iconX >= left && slotImageVisible(covered, typeof badgeArt === 'string' ? readyArt(badgeArt) : badgeArt, iconX, middle, iconW, iconH, entry.clipLeft, entry.clipRight)) {
+                items.push(badgeArt);
+              }
+            }
+          }
+          continue;
+        }
+        if (col.inlineFlags?.length && !cell?.inlinePrefix) {
+          const marks: TableCell[] = [];
+          for (const inlineKey of col.inlineFlags) {
+            const tail = item.row.cells[inlineKey];
+            if (tail && !tail.blank) marks.push(tail);
+          }
+          if (marks.length) {
+            const gap = 6;
+            let reserved = 0;
+            for (const mark of marks) {
+              reserved += (mark.glyph ? glyphAdvance(mark.glyph) : 0)
+                + (mark.flags?.length ?? 0) * (FLAG_SLOT_WIDTH + gap)
+                + (!mark.flags?.length && mark.value.kind === 'notRecorded' ? 16 + gap : 0);
+            }
+            const room = Math.max(0, right - left - reserved);
+            const formatted = cell ? formatValueState(cell.value, cell.format ?? col.valueFormat) : formatValueState(notApplicable(''));
+            const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
+            const textW = missing
+              ? missingMarkWidth(room, measure, markTheme, { figure: cell?.missingFigure })
+              : inlineRunsWidth((col.narrowed ? cell?.narrowText : undefined) ?? formatted.text, room, prefixFont, measure);
+            let at = left + textW + gap;
+            const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+            for (const mark of marks) {
+              if (mark.glyph) at += glyphAdvance(mark.glyph);
+              for (const fl of mark.flags ?? []) {
+                if (rectVisible(covered, at, at + FLAG_SLOT_WIDTH, fy, fy + FLAG_SLOT_HEIGHT, entry.clipLeft, entry.clipRight)) {
+                  items.push(fl.art);
+                }
+                at += FLAG_SLOT_WIDTH + gap;
+              }
+              if (!mark.flags?.length && mark.value.kind === 'notRecorded') at += 16 + gap;
+            }
+            continue;
+          }
+        }
+        if (!cell) continue;
+        if (cell.heading && artVisible(covered, middle, FLAG_SLOT_HEIGHT)) items.push(cell.heading.flag.art);
+        if (cell.icons?.length) {
+          const iconSize = cell.iconStripKind === 'medals' ? MEDAL_ICON_SIZE : TRAIT_ICON_SIZE;
+          if (right > entry.clipLeft && left < entry.clipRight && artVisible(covered, middle, iconSize)) {
+            const icons = cell.icons;
+            const available = Math.max(0, right - left);
+            const shown = fitIconStripCount(
+              available,
+              icons.length,
+              idx => iconArtSlotWidth(icons[idx]!.art, iconSize, viewport.artCache),
+              idx => icons[idx]!.count,
+              measure,
+              themeFont,
+            );
+            let cursor = left;
+            let minCursor = left;
+            let addedUndecoded = false;
+            let canShiftEdge = false;
+            let reachedEnd = true;
+            for (let k = 0; k < shown; k++) {
+              if (cursor >= entry.clipRight) {
+                if (minCursor < entry.clipRight) canShiftEdge = true;
+                reachedEnd = false;
+                break;
+              }
+              const icon = icons[k]!;
+              const w = iconArtSlotWidth(icon.art, iconSize, viewport.artCache);
+              const needsDecode = iconArtNeedsDecode(icon.art, viewport.artCache);
+              const minW = needsDecode ? 1 : w;
+              const countW = icon.count && icon.count > 1 ? measure(`\u00d7${icon.count}`, countFont) + 3 : 0;
+              if (cursor + w > entry.clipLeft && slotImageVisible(covered, icon.art, cursor, middle, w, iconSize, entry.clipLeft, entry.clipRight)) {
+                items.push(icon.art);
+                if (needsDecode) addedUndecoded = true;
+                if (minCursor < cursor) canShiftEdge = true;
+              }
+              if (countW > 0 && artVisible(covered, middle, 11)) {
+                if (cursor + w < entry.clipRight && cursor + w + countW > entry.clipLeft && (minCursor < cursor || needsDecode)) {
+                  canShiftEdge = true;
+                } else if (cursor + w >= entry.clipRight && minCursor + minW < entry.clipRight) {
+                  canShiftEdge = true;
+                }
+              }
+              cursor += w + countW + ICON_STRIP_GAP;
+              minCursor += minW + countW + ICON_STRIP_GAP;
+            }
+            if (reachedEnd && shown < icons.length && cursor <= right && artVisible(covered, middle, 12)) {
+              const moreW = measure(`+${icons.length - shown}`, moreFont);
+              if (cursor < entry.clipRight && cursor + moreW > entry.clipLeft && minCursor < cursor) {
+                canShiftEdge = true;
+              } else if (cursor >= entry.clipRight && minCursor < entry.clipRight) {
+                canShiftEdge = true;
+              }
+            }
+            if (!addedUndecoded && (shown < icons.length || canShiftEdge)) {
+              const maxPossible = shown < icons.length
+                ? fitIconStripCount(
+                  available,
+                  icons.length,
+                  idx => iconArtNeedsDecode(icons[idx]!.art, viewport.artCache) ? 1 : iconArtSlotWidth(icons[idx]!.art, iconSize, viewport.artCache),
+                  idx => icons[idx]!.count,
+                  measure,
+                  themeFont,
+                )
+                : shown;
+              if (maxPossible > shown || canShiftEdge) {
+                let firstUndecoded = -1;
+                for (let k = 0; k < maxPossible; k++) {
+                  if (iconArtNeedsDecode(icons[k]!.art, viewport.artCache)) {
+                    firstUndecoded = k;
+                    break;
+                  }
+                }
+                if (firstUndecoded !== -1 && (firstUndecoded < shown || cursor < entry.clipRight)) {
+                  items.push(icons[firstUndecoded]!.art);
+                }
+              }
+            }
+          }
+        }
+        if (cell.inlinePrefix && !col.numeric) {
+          const room = Math.max(0, right - left);
+          const prefixW = measure(cell.inlinePrefix, prefixFont);
+          if (cell.flags?.length || prefixW + 10 < room) {
+            left += Math.min(room, prefixW) + 8;
+            if (cell.flags?.length && right - left < FLAG_SLOT_WIDTH) continue;
+          }
+        }
+        if (cell.flags?.length) {
+          const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+          let fx = left;
+          for (const fl of cell.flags) {
+            if (col.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
+            if (rectVisible(covered, fx, fx + FLAG_SLOT_WIDTH, fy, fy + FLAG_SLOT_HEIGHT, entry.clipLeft, entry.clipRight)) {
+              items.push(fl.art);
+            }
+            fx += FLAG_SLOT_WIDTH + 6;
+          }
+        } else if (cell.art) {
+          if (cell.artShape) {
+            const slot = artGeometry(cell.artShape, density, contentH);
+            if (slotImageVisible(covered, cell.art, left, middle, slot.width, slot.height, entry.clipLeft, entry.clipRight)) {
+              items.push(cell.art);
+            }
+          } else if (cell.iconSlot && showsIcon(col.display)) {
+            if (col.display === 'flag' || col.display === 'flagName') {
+              const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+              if (rectVisible(covered, left, left + FLAG_SLOT_WIDTH, fy, fy + FLAG_SLOT_HEIGHT, entry.clipLeft, entry.clipRight)) {
+                items.push(cell.art);
+              }
+            } else {
+              const slot = artGeometry('square', density, contentH);
+              if (slotImageVisible(covered, cell.art, left, middle, slot.width, slot.height, entry.clipLeft, entry.clipRight)) {
+                items.push(cell.art);
+              }
+            }
+          }
+        }
+        if (cell.unitArt && col.numeric && col.cellKind !== 'outOf') {
+          const formatted = formatValueState(cell.value, cell.format ?? col.valueFormat);
+          if (formatted.kind !== 'notRecorded' && formatted.kind !== 'notApplicable') {
+            const hasSplit = Boolean(cell.splitBar?.length) && !(col.narrowed && col.narrow === 'total');
+            const textMid = hasSplit ? middle - 3 : middle;
+            const avail = Math.max(0, right - left);
+            const starts = viewport.hideHeader === true && (col.cellKind === undefined || col.cellKind === 'track');
+            if (starts) {
+              if (avail >= UNIT_ART_SIZE + UNIT_ART_GAP && slotImageVisible(covered, cell.unitArt, left, textMid, UNIT_ART_SIZE, UNIT_ART_SIZE, entry.clipLeft, entry.clipRight)) {
+                items.push(cell.unitArt);
+              }
+            } else {
+              let numRight = right;
+              if (cell.unitSuffix) {
+                const suffixW = measure(` ${cell.unitSuffix}`, `400 11.5px ${themeFont}`);
+                if (suffixW + 12 <= avail) numRight = right - suffixW;
+              }
+              const numFont = `500 13px ${themeFont}`;
+              const shownNum = ellipsise(formatted.text, Math.max(0, numRight - left), s => measure(s, numFont));
+              const iconX = Math.round(numRight - measure(shownNum, numFont) - UNIT_ART_SIZE - UNIT_ART_GAP);
+              if (iconX >= left && slotImageVisible(covered, cell.unitArt, iconX, textMid, UNIT_ART_SIZE, UNIT_ART_SIZE, entry.clipLeft, entry.clipRight)) {
+                items.push(cell.unitArt);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (cullOccluded) {
+      mergeInterval(coveredAll, y0, y1);
+      if (pinned > 0) mergeInterval(coveredData, y0, y1);
+      const allFull = coveredAll.length === 1 && coveredAll[0]![0] <= 0 && coveredAll[0]![1] >= height;
+      const dataFull = pinned === 0 || (coveredData.length === 1 && coveredData[0]![0] <= 0 && coveredData[0]![1] >= height);
+      if (allFull && dataFull) break;
+    }
+  }
+}
+
+export function collectVisibleGlidingArt(
+  rows: readonly FlatTableRow[],
+  glide: TableGlide,
+  first: number,
+  last: number,
+  scrollTop: number,
+  height: number,
+  now: number,
+  glideDuration: number,
+  rowGeom: RowLayoutGeometry | null,
+  rowHeight: number,
+  columns: readonly VisibleArtColumn[],
+  density: TableDensity,
+  viewport: TableVisibleArtViewport,
+  themeFont: string,
+  measure: (text: string, font: string) => number,
+  items: ArtUrlInput[],
+): void {
+  const indices = visibleGlidingIndices(rows, glide, first, last, scrollTop, height, now, glideDuration, rowGeom, rowHeight, true);
+  collectVisibleTableArt(
+    rows,
+    indices,
+    index => {
+      const item = rows[index]!;
+      const top = rowGeom ? rowGeom.tops[index]! : index * rowHeight;
+      return top - scrollTop + (item.kind === 'data' ? glideOffset(glide.offsets.get(item.key), now, glideDuration) : 0);
+    },
+    height,
+    rowGeom,
+    rowHeight,
+    columns,
+    density,
+    viewport,
+    themeFont,
+    measure,
+    true,
+    items,
+  );
 }
 
 export function hitFamilyTable(

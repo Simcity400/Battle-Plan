@@ -18,6 +18,7 @@ export interface LaneArtCacheOptions<TBitmap extends ArtBitmap = ImageBitmap> {
 const DEFAULT_MAX_ENTRIES = 128;
 const DEFAULT_MAX_FAILED = 256;
 const DEFAULT_MAX_CONCURRENT = 6;
+const DEFAULT_MAX_MEASURED = 8192;
 
 async function defaultFetchBitmap(url: string, signal: AbortSignal): Promise<ImageBitmap> {
   const response = await fetch(url, { signal });
@@ -85,6 +86,8 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   private readonly bitmaps = new Map<string, TBitmap>();
   private readonly claims = new Map<string, LaneArtClaim<TBitmap>>();
   private readonly failed = new Map<string, string>();
+  private readonly measured = new Map<string, readonly [number, number]>();
+  private readonly trimmed = new Map<string, readonly [number, number]>();
   private readonly pending = new Map<string, LaneArtClaim<TBitmap>>();
   private readonly maxEntries: number;
   private readonly maxFailed: number;
@@ -93,6 +96,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   private onSettle?: () => void;
   private contentRevision: number;
   private settleVersion = 0;
+  private failureRevision = 0;
   private visible: ReadonlySet<string> = new Set();
   private demanded: ReadonlySet<string> = new Set();
   private shownQueue: readonly string[] = [];
@@ -125,7 +129,12 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     for (const claim of this.pending.values()) claim.release();
     this.pending.clear();
     this.releaseAll();
-    this.failed.clear();
+    this.measured.clear();
+    this.trimmed.clear();
+    if (this.failed.size > 0) {
+      this.failed.clear();
+      this.failureRevision++;
+    }
     this.shownCursor = 0;
     this.demandedCursor = 0;
     this.settleVersion++;
@@ -140,6 +149,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
       if (!this.failed.size) return;
       this.failed.clear();
     }
+    this.failureRevision++;
     this.shownCursor = 0;
     this.demandedCursor = 0;
     this.pump();
@@ -173,6 +183,21 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
             retryable: true,
             retry: () => this.retry(resolution.url),
           };
+        }
+        if (resolution.frame.outputWidth <= 0 || resolution.frame.outputHeight <= 0) {
+          const dims = this.measured.get(resolution.url);
+          if (dims !== undefined) {
+            this.measured.delete(resolution.url);
+            this.measured.set(resolution.url, dims);
+            return {
+              ...resolution,
+              frame: {
+                ...resolution.frame,
+                outputWidth: dims[0],
+                outputHeight: dims[1],
+              },
+            };
+          }
         }
         return resolution;
       }
@@ -266,6 +291,8 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     this.shownQueue = [];
     this.demandedQueue = [];
     this.releaseAll();
+    this.measured.clear();
+    this.trimmed.clear();
     this.failed.clear();
   }
 
@@ -287,6 +314,10 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
 
   get version(): number {
     return this.settleVersion;
+  }
+
+  get failureVersion(): number {
+    return this.failureRevision;
   }
 
   get map(): ReadonlyMap<string, TBitmap> {
@@ -356,7 +387,10 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
           return;
         }
         this.drop(url);
-        this.failed.delete(url);
+        if (bitmap.width > 0 && bitmap.height > 0) {
+          this.rememberMeasured(url, bitmap.width, bitmap.height);
+        }
+        if (this.failed.delete(url)) this.failureRevision++;
         if (this.wants(url)) {
           this.bitmaps.set(url, bitmap);
           this.claims.set(url, claim);
@@ -382,6 +416,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
           if (oldest === undefined) break;
           this.failed.delete(oldest);
         }
+        this.failureRevision++;
         this.pump();
         this.settleVersion++;
         this.onSettle?.();
@@ -396,6 +431,36 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
       return true;
     }
     return false;
+  }
+
+  rememberTrimmed(url: string, width: number, height: number): void {
+    if (width <= 0 || height <= 0) return;
+    this.trimmed.delete(url);
+    this.trimmed.set(url, [width, height]);
+    while (this.trimmed.size > DEFAULT_MAX_MEASURED) {
+      const oldest = this.trimmed.keys().next().value;
+      if (oldest === undefined) break;
+      this.trimmed.delete(oldest);
+    }
+  }
+
+  trimmedOfUrl(url: string): readonly [number, number] | undefined {
+    const dims = this.trimmed.get(url);
+    if (dims !== undefined) {
+      this.trimmed.delete(url);
+      this.trimmed.set(url, dims);
+    }
+    return dims;
+  }
+
+  private rememberMeasured(url: string, width: number, height: number): void {
+    this.measured.delete(url);
+    this.measured.set(url, [width, height]);
+    while (this.measured.size > DEFAULT_MAX_MEASURED) {
+      const oldest = this.measured.keys().next().value;
+      if (oldest === undefined) break;
+      this.measured.delete(oldest);
+    }
   }
 
   private trim(): void {
