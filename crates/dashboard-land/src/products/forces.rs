@@ -156,7 +156,10 @@ impl Named {
     }
 }
 
-fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> (Vec<Option<i64>>, bool) {
+fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> (Vec<Option<i64>>, Option<&'static str>) {
+    if held.is_empty() && total != Some(0) {
+        return (vec![None; groups], Some("Part breakdown was not recorded at this hour"));
+    }
     let mut out = vec![Some(0i64); groups];
     for &(group, value) in held {
         out[group] = match (out[group], value) {
@@ -165,8 +168,8 @@ fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> (V
         };
     }
     let known: Option<i128> = out.iter().map(|value| value.map(i128::from)).sum();
-    let reconciled = total.is_some_and(|total| known == Some(i128::from(total)));
-    (out, reconciled)
+    let mismatch = total.is_some_and(|total| known != Some(i128::from(total)));
+    (out, mismatch.then_some("Part breakdown does not reconcile with the recorded total at this hour"))
 }
 
 pub fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<ArmySpan> {
