@@ -443,9 +443,11 @@ fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_ear
     let line = line(&query);
     let (bin_hours, hour) = (96, change + 5);
     let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
-    let top = reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 1, "hour": hour })).unwrap();
+    let (top, ranked_reads) = replay_recording::cells::count_reads(|| reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 1, "hour": hour })).unwrap());
     assert_eq!(top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(ita)], "the winning slot keys its whole history");
-    let country = tile(&line, "1", &[Ask::whole(Country::Slot(ita))], None, bin_hours, index, false).unwrap();
+    let (country, selected_reads) = replay_recording::cells::count_reads(|| tile(&line, "1", &[Ask::whole(Country::Slot(ita))], None, bin_hours, index, false).unwrap());
+    let restores = |counts: &replay_recording::cells::ReadCounts| counts.get(&replay_data::rows::TableId::Countries).map_or(0, |stats| stats.restores);
+    assert!(restores(&ranked_reads) <= restores(&selected_reads) + 3, "ranked {ranked_reads:?}, selected {selected_reads:?}");
     let tag = tile(&line, "1", &[Ask::whole(Country::from("GER"))], None, bin_hours, index, false).unwrap();
     assert_ne!(country.bins, tag.bins, "the fixture's GER was another country before {change}");
     assert_eq!(top.bins, country.bins, "the line is the country ranked at {hour} through its history, not slot {ger}'s history under GER");
