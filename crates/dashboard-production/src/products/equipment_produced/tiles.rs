@@ -1,8 +1,12 @@
 use super::{
-    Content, EquipmentProducedRaceParams, MAX_EXACT, ProducedCount, ProducedMeasure, ProducedUnknown,
-    Typed, asked_parts, back_of, decimals, invalid, produced_measure, race_reply, run_types,
+    Content, EquipmentProducedRaceParams, EquipmentProducedRaceReply, MAX_EXACT, ProducedCount, ProducedMeasure, ProducedUnknown,
+    Typed, asked_parts, back_of, decimals, invalid, produced_measure, run_types,
     unknown_of,
 };
+#[cfg(not(test))]
+use super::race_reply;
+#[cfg(test)]
+use tests::counted_race as race_reply;
 use dashboard_base::{
     Source,
     products::{Country, LoadContext, validate_country},
@@ -11,13 +15,18 @@ use dashboard_base::{
 use dashboard_query::{
     Query,
     chart::{ChartBucket, ChartRun, merge},
-    series::{Line, MissingSpan, totals::Gap},
+    identity::Holder,
+    series::{Line, MissingSpan, totals::{self, Gap}},
     tile::{self, BINS, SeriesTileReply, TileLine, TileRanking},
 };
 use dashboard_text::metadata::check_cancel;
+use replay_columnar::manifest::Status;
+use replay_data::rows::{ProducedValueRow, TableId};
+use replay_lanes::lanes::{self, Cell, History, Keys, Reading};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io,
     sync::atomic::AtomicBool,
@@ -242,6 +251,239 @@ pub(super) fn range_baseline(line: &Line<'_, '_>, query: &Query<'_>, measure: Pr
     Ok(line.clock_at(start - 1)?.read.map_or(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED), Baseline::From))
 }
 
+const RANK_HOURS: i32 = 128;
+
+struct RankHistory {
+    rows: History,
+    amount: Option<usize>,
+    read: Option<usize>,
+    since: Option<usize>,
+}
+
+impl RankHistory {
+    fn load(query: &Query<'_>, run: u32, keys: &[u128], amount: usize, first: i32, last: i32) -> io::Result<Self> {
+        let table = TableId::ProducedValues;
+        let read = dashboard_declare::field(table, "as_of")?;
+        let since = dashboard_declare::field(table, "since")?;
+        let rows = dashboard_query::cost::storage(|| lanes::history(query.replay.recording(), run, table, &[amount, read, since], Keys::These(keys), first, last))?;
+        Ok(Self { amount: rows.columns.binary_search(&amount).ok(), read: rows.columns.binary_search(&read).ok(), since: rows.columns.binary_search(&since).ok(), rows })
+    }
+
+    fn cell(&self, key: u128, at: i32, column: Option<usize>) -> Option<Option<i64>> {
+        let Reading::Cells(cells) = self.rows.reading(key, at) else { return None };
+        Some(match column.and_then(|i| cells.get(i)) { Some(Cell::Number(value)) => Some(*value), _ => None })
+    }
+
+    fn clock(&self, at: i32, column: Option<usize>) -> Option<i32> {
+        i32::try_from(self.cell(ProducedValueRow::clock(), at, column)??).ok()
+    }
+
+    fn complete(&self, at: i32) -> bool {
+        let i = self.rows.statuses.partition_point(|run| run.last < at);
+        self.rows.statuses.get(i).is_some_and(|run| run.first <= at && run.status == Status::Complete)
+    }
+
+    fn cuts(&self, key: u128, samples: &[RankSample], date: impl Fn(&RankSample) -> i32, cuts: &mut Vec<usize>) {
+        if let Ok(i) = self.rows.keys.binary_search_by_key(&key, |row| row.0) {
+            cuts.extend(self.rows.keys[i].1.iter().skip(1).map(|step| samples.partition_point(|s| date(s) < step.hour)));
+        }
+    }
+}
+
+struct RankSample {
+    hour: i32,
+    read: i32,
+    start: i32,
+}
+
+type Score = Result<Option<i64>, &'static str>;
+
+fn production_keys(parts: &[u128], id: u32) -> impl Clone + Iterator<Item = u128> {
+    parts.iter().map(move |&part| ProducedValueRow::key_of(id, part as u32))
+}
+
+struct RankWindow<'a> {
+    now: &'a RankHistory,
+    before: Option<&'a RankHistory>,
+    samples: &'a [RankSample],
+    parts: &'a [u128],
+}
+
+impl RankWindow<'_> {
+    fn scores(&self, id: u32, mut visit: impl FnMut(std::ops::Range<usize>, Score)) {
+        let keys = production_keys(self.parts, id);
+        let rest = ProducedValueRow::key_of(id, ProducedValueRow::REST);
+        let mut cuts = vec![0, self.samples.len()];
+        for key in keys.clone().chain([rest]) {
+            self.now.cuts(key, self.samples, |s| s.read, &mut cuts);
+            if let Some(before) = self.before {
+                before.cuts(key, self.samples, |s| s.start, &mut cuts);
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for range in cuts.windows(2) {
+            let sample = &self.samples[range[0]];
+            let now = |key| self.now.cell(key, sample.read, self.now.amount);
+            let before = |key| self.before.and_then(|h| h.cell(key, sample.start, h.amount));
+            let opening = self.before.map(|_| &before as totals::RankedCells<'_>);
+            visit(range[0]..range[1], totals::ranked_total(keys.clone(), Some(rest), &now, opening, &|v| v > 0));
+        }
+    }
+
+    fn matching(&self, query: &Query<'_>, reply: &EquipmentProducedRaceReply, n: usize) -> usize {
+        let mut end = self.samples.len();
+        let hour = self.samples[0].hour;
+        let countries: BTreeMap<_, _> = query.holders.tags.keys().filter_map(|tag| match query.holders.at(tag, hour)?.holder {
+            Holder::Found { id, .. } => Some((tag.as_str(), id)),
+            _ => None,
+        }).collect();
+        if let Some(reason) = reply.missing.as_deref() {
+            let mut refused = vec![None; end];
+            for &id in countries.values() {
+                self.scores(id, |range, score| {
+                    if let Err(reason) = score {
+                        for first in &mut refused[range] {
+                            first.get_or_insert(reason);
+                        }
+                    }
+                });
+            }
+            return refused.iter().position(|&actual| actual != Some(reason)).unwrap_or(end);
+        }
+
+        let mut floor = vec![0; end];
+        let mut ranked = BTreeSet::new();
+        let mut previous = None;
+        for row in &reply.rows {
+            let Some(tag) = query.holders.tag_at(&row.country, hour) else { return 0 };
+            let Some(&id) = countries.get(tag) else { return 0 };
+            if let Country::Tag(_) = row.country
+                && let Some(held @ Holder::Found { slot, .. }) = query.holders.at(tag, hour).map(|run| run.holder)
+                && query.holders.at(&Country::Slot(slot), hour).is_some_and(|run| run.holder == held) {
+                return 0;
+            }
+            if !ranked.insert(tag) { return 0; }
+            self.scores(id, |range, score| {
+                let Ok(Some(value)) = score else { end = end.min(range.start); return };
+                for (i, bound) in floor.iter_mut().enumerate().take(range.end.min(end)).skip(range.start) {
+                    if previous.is_some_and(|ahead| *bound < value || (*bound == value && ahead > tag)) {
+                        end = i;
+                        break;
+                    }
+                    *bound = value;
+                }
+            });
+            previous = Some(tag);
+        }
+        if ranked.len() < n { floor.fill(0); }
+        let lowest = floor[..end].iter().copied().min().unwrap_or(0);
+        for (&tag, &id) in &countries {
+            if end == 0 { break; }
+            if ranked.contains(tag) { continue; }
+            self.scores(id, |range, score| match score {
+                Err(_) => end = end.min(range.start),
+                Ok(Some(value)) if value >= lowest => {
+                    if let Some(i) = (range.start..range.end.min(end)).find(|&i| value > floor[i] || (value == floor[i] && previous.is_some_and(|last| tag < last))) {
+                        end = i;
+                    }
+                }
+                _ => {}
+            });
+        }
+        end
+    }
+}
+
+fn ranking_until(source: &Source, query: &Query<'_>, params: &EquipmentProducedRaceParams, reply: &EquipmentProducedRaceReply, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<i32> {
+    let until = reply.last_hour;
+    let Some(stretch) = query.timeline.at(params.hour) else { return Ok(until) };
+    let last = stretch.last.min(until.saturating_add(RANK_HOURS));
+    if until >= last { return Ok(until); }
+    let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
+    let metric = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
+    let dashboard_declare::Column::Cell(column) = metric.column else { return Ok(until) };
+    let amount = dashboard_declare::field(series.table, column)?;
+    let baseline = range_baseline(&Line::new(query, series, metric)?, query, params.measure, params.from_hour)?;
+    if matches!(baseline, Baseline::Unavailable(_)) { return Ok(last); }
+    let parts = if params.types.is_empty() {
+        vec![u128::from(ProducedValueRow::WHOLE)]
+    } else {
+        let content = Content::read(source, context, &mut Vec::new());
+        let types = run_types(source, query, &content, &[stretch.run].into(), &mut BTreeSet::new())?;
+        asked_parts(&types, &params.types).remove(&stretch.run).unwrap_or_default()
+    };
+    let ids: BTreeSet<_> = query.holders.tags.values().flat_map(|runs| {
+        let start = runs.partition_point(|run| run.last <= until);
+        runs[start..].iter().take_while(|run| run.first <= last).filter_map(|run| match run.holder {
+            Holder::Found { id, .. } => Some(id),
+            _ => None,
+        })
+    }).collect();
+    let keys: Vec<_> = ids.into_iter()
+        .flat_map(|id| production_keys(&parts, id).chain([ProducedValueRow::key_of(id, ProducedValueRow::REST)]))
+        .chain([ProducedValueRow::clock()])
+        .collect();
+    let first = reply.read_hour.unwrap_or(until).clamp(stretch.first.max(until.saturating_sub(RANK_HOURS)), until);
+    let now = RankHistory::load(query, stretch.run, &keys, amount, first, last)?;
+    let fixed = back_of(params.measure);
+    let back = |read| match baseline.hour() { Some(base) => (base <= read).then_some(base), None => fixed.and_then(|f| f(read)) };
+    let windowed = baseline.hour().is_some() || fixed.is_some();
+    let starts = (first..=last).filter_map(back).filter(|&h| stretch.first <= h && h <= last);
+    let before = match (starts.clone().min(), starts.max()) {
+        (Some(lo), Some(hi)) => Some(RankHistory::load(query, stretch.run, &keys, amount, lo, hi)?),
+        _ => None,
+    };
+    let sample_at = |hour| {
+        let complete = now.complete(hour);
+        if !complete && matches!(baseline, Baseline::Opening(_)) { return None; }
+        let since = now.clock(hour, now.since);
+        if matches!(baseline, Baseline::Opening(open) if Some(open) != since) {
+            return Some(Err(Cow::Borrowed(unknown_reason(Gap::Restarted))));
+        }
+        if let Some(reason) = query.holders.not_ranked(hour) { return Some(Err(Cow::Owned(reason))); }
+        let Some(read) = now.clock(hour, now.read).filter(|&r| complete && r >= stretch.first) else { return Some(Err(Cow::Borrowed(totals::TOTALS_NOT_READ))) };
+        if read < first || read > hour { return None; }
+        if !now.complete(read) { return Some(Err(Cow::Borrowed(totals::TOTALS_NOT_READ))); }
+        let start = if windowed {
+            let Some(start) = back(read).filter(|&s| s >= stretch.first && since.is_none_or(|since| since <= s)) else {
+                return Some(Err(Cow::Borrowed(totals::TOTALS_WINDOW_UNRECORDED)));
+            };
+            if let Some(reason) = query.holders.not_ranked(start) { return Some(Err(Cow::Owned(reason))); }
+            if !before.as_ref().is_some_and(|h| h.complete(start) && h.clock(start, h.read) == Some(start)) {
+                return Some(Err(Cow::Borrowed(totals::TOTALS_WINDOW_UNRECORDED)));
+            }
+            start
+        } else { read };
+        Some(Ok(RankSample { hour, read, start }))
+    };
+    let mut proved = until;
+    let mut samples: Vec<RankSample> = Vec::new();
+    for hour in until + 1..=last {
+        let Some(check) = sample_at(hour) else { break };
+        match check {
+            Err(reason) if reply.missing.as_deref() != Some(reason.as_ref()) => break,
+            Err(_) => {}
+            Ok(sample) => {
+                if samples.last().is_some_and(|s| s.read > sample.read || s.start > sample.start) { break; }
+                samples.push(sample);
+            }
+        }
+        proved = hour;
+    }
+    check_cancel(cancelled)?;
+    let mut rest = samples.as_slice();
+    while let Some(first) = rest.first() {
+        let edge = query.holders.interval(first.hour).1;
+        let (held, later) = rest.split_at(rest.partition_point(|s| s.hour <= edge));
+        let window = RankWindow { now: &now, before: before.as_ref(), samples: held, parts: &parts };
+        let count = window.matching(query, reply, params.top.unwrap_or(u32::MAX) as usize);
+        if let Some(changed) = held.get(count) { return Ok(changed.hour - 1); }
+        rest = later;
+    }
+    Ok(proved)
+}
+
 pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<SeriesTileReply> {
     let family: EquipmentProducedTileFamily = dashboard_query::named::named(params.get("family").unwrap_or(&Value::Null))
         .map_err(|error| invalid(format!("Invalid equipment produced tile family: {error}")))?;
@@ -281,7 +523,8 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
             };
             let at_reply = race_reply(source, query, &at_params, context, cancelled)?;
             let from = at_reply.first_hour.min(hour);
-            let until = at_reply.last_hour.max(hour);
+            let until = ranking_until(source, query, &at_params, &at_reply, context, cancelled).unwrap_or(at_reply.last_hour);
+            check_cancel(cancelled)?;
             if let Some(reason) = at_reply.missing {
                 (Vec::new(), Some(TileRanking { hour, from, until, refused: Some(reason) }))
             } else {
@@ -417,7 +660,162 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::products::equipment_produced::tests::two_producers;
+    use crate::products::equipment_produced::{EquipmentProducedRaceReply, tests::{two_producers, two_producers_read_from}};
+
+    #[derive(Default)]
+    struct RaceEvaluations(usize);
+
+    pub(super) fn counted_race(source: &Source, query: &Query<'_>, params: &EquipmentProducedRaceParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<EquipmentProducedRaceReply> {
+        source.state::<RaceEvaluations>().lock().unwrap().0 += 1;
+        super::super::race_reply(source, query, params, load, cancelled)
+    }
+
+    fn top_one(source: &Source, hour: i32, from: Option<i32>) -> SeriesTileReply {
+        tile(
+            source, &dashboard_base::queries::query(source, 1).unwrap(),
+            &serde_json::json!({
+                "branchId": "1", "family": { "kind": SERIES, "count": "units", "measure": "total", "refits": false, "fromHour": from },
+                "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 1, "hour": hour
+            }),
+            &LoadContext { content: None }, &AtomicBool::new(false),
+        ).unwrap()
+    }
+
+    #[test]
+    fn held_equipment_ranking_ends_when_the_runner_up_passes_the_leader() {
+        let first = 1_000;
+        let source = two_producers("rank-crossing", first, first + 240);
+        let held = top_one(&source, first + 175, None);
+        assert_eq!(held.lines[0].country, Country::Slot(7));
+        assert_eq!(held.ranking.unwrap().until, first + 207, "the runner-up gains at 184 and ties at 196, then leads at 208");
+        assert_eq!(top_one(&source, first + 208, None).lines[0].country, Country::Slot(8));
+    }
+
+    #[test]
+    fn held_equipment_ranking_ends_when_the_leaders_range_total_becomes_unknown() {
+        let first = 1_000;
+        let source = two_producers_read_from("rank-restart", first, first + 165, first, true, None, Some(first + 150));
+        let held = top_one(&source, first + 120, Some(first));
+        assert_eq!(held.lines[0].country, Country::Slot(7));
+        assert_eq!(held.ranking.unwrap().until, first + 149);
+        let refused = top_one(&source, first + 150, Some(first));
+        assert!(refused.lines.is_empty());
+        assert_eq!(refused.ranking.unwrap().refused.as_deref(), Some(unknown_reason(Gap::Restarted)));
+    }
+
+    #[test]
+    fn held_equipment_ranking_matches_the_race_across_a_rename_and_window_openings() {
+        let first = 1_000;
+        let last = first + 220;
+        let src = two_producers_read_from("rank-windows", first, last, first, true, Some(first + 184), None);
+        assert_eq!(top_one(&src, first + 175, None).ranking.unwrap().until, first + 207, "the renamed leader keeps its slot through the tie");
+        let mut query = dashboard_base::queries::query(&src, 1).unwrap();
+        let load = LoadContext { content: None };
+        let cancelled = AtomicBool::new(false);
+        for (measure, from_hour) in [(ProducedMeasure::Total, None), (ProducedMeasure::Total, Some(first + 165)), (ProducedMeasure::Day, None)] {
+            let mut params = EquipmentProducedRaceParams {
+                branch_id: "1".into(), hour: first + 170, countries: vec![], group: None, top: Some(2),
+                count: ProducedCount::Units, measure, types: vec![], refits: false, from_hour,
+            };
+            let mut until = i32::MIN;
+            let mut expected = (Vec::new(), None);
+            while params.hour <= last {
+                let race = super::super::race_reply(&src, &query, &params, &load, &cancelled).unwrap();
+                if params.hour > until {
+                    until = ranking_until(&src, &query, &params, &race, &load, &cancelled).unwrap();
+                    assert!(until >= params.hour);
+                    expected = (race.rows.iter().map(|r| r.country.clone()).collect(), race.missing.clone());
+                }
+                assert_eq!(expected, (race.rows.into_iter().map(|r| r.country).collect(), race.missing), "rank at {} for {measure:?}", params.hour);
+                params.hour += 1;
+            }
+        }
+        let mut tags = query.holders.tags.clone();
+        tags.get_mut("ITA").unwrap()[0].first = first + 210;
+        query.holders = dashboard_query::identity::Holders::new(tags, Vec::new()).into();
+        let mut params = EquipmentProducedRaceParams {
+            branch_id: "1".into(), hour: first + 190, countries: vec![], group: None, top: Some(1),
+            count: ProducedCount::Units, measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: None,
+        };
+        let held = super::super::race_reply(&src, &query, &params, &load, &cancelled).unwrap();
+        assert_eq!(held.rows[0].country, Country::Slot(7));
+        assert_eq!(ranking_until(&src, &query, &params, &held, &load, &cancelled).unwrap(), first + 209);
+        params.hour = first + 210;
+        assert_eq!(super::super::race_reply(&src, &query, &params, &load, &cancelled).unwrap().rows[0].country, Country::Slot(8));
+    }
+
+    #[test]
+    fn held_equipment_ranking_counts_full_races_over_100_played_hours() {
+        use dashboard_follow::panel::{AtHour, Declared, ProductRead};
+        use dashboard_base::test_fixtures;
+        use replay_data::rows::{CountryLinkRow, CountryRow, ProductionLineOutputRow, Recorded, RocketProductionOutputRow, TableId, TableRows};
+        use replay_frame::frame::TableView;
+        use std::sync::{Arc, Mutex};
+
+        let first = 1_000;
+        let frames = (first..=first + 104).map(|hour| {
+            let mut frame = test_fixtures::source(1, hour, Some(1));
+            let TableView::Complete(TableRows::Countries(held)) = &*frame.tables[TableId::Countries.index()] else { unreachable!() };
+            let other = CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..held[0].clone() };
+            *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![held[0].clone(), other]));
+            *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 },
+            ]));
+            let output = ProductionLineOutputRow {
+                line: 1, country: 9001, variant: 100, units: 9, since_hour: first, observed_since_creation: true,
+                exact: hour < first + 100, spent_raw: Recorded::Value(Some(i64::from(hour))), purpose: Recorded::Value(1), ..Default::default()
+            };
+            let runner_up = ProductionLineOutputRow { line: 2, country: 9002, units: 3, exact: true, ..output.clone() };
+            let rockets = RocketProductionOutputRow { since_hour: first, exact: true, units_exact: true, ..Default::default() };
+            *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(vec![output, runner_up]));
+            *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Complete(TableRows::RocketProductionOutput(vec![rockets]));
+            frame.metrics.table_ns[TableId::RocketProductionOutput.index()] = 1;
+            frame
+        }).collect();
+        let replay = test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+        let source = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: "rank-played".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+        let chart = Arc::clone(&source);
+        let until = Mutex::new(i32::MIN);
+        let panel = AtHour {
+            cold: Arc::new(|_, _| unreachable!()), read: Arc::new(|_, _| unreachable!()),
+            advance: Arc::new(move |hour, _, _, _| {
+                let mut until = until.lock().unwrap();
+                let rows = if hour > *until {
+                    let reply = top_one(&chart, hour, None);
+                    if hour < first + 100 { assert_eq!(reply.lines[0].country, Country::Slot(7)); }
+                    *until = reply.ranking.unwrap().until;
+                    reply.lines.len() as u64
+                } else { 0 };
+                ProductRead {
+                    value: Arc::new(Ok(chart.state::<RaceEvaluations>().lock().unwrap().0.into())), rows, fresh: rows > 0, pending: false, live: None,
+                    lanes: vec![Declared { table: TableId::ProducedValues.index(), columns: vec![], keyed: false, passing: false, hourly: true }],
+                }
+            }),
+        };
+        let played = test_fixtures::played(&source.replay(), &panel, first, first + 99);
+        let hours = played.iter().map(|step| step.hour).collect::<BTreeSet<_>>();
+        assert_eq!(hours.len(), 100);
+        let count = played.last().unwrap().value.as_ref().as_ref().unwrap().as_u64();
+        assert_eq!(count, Some(1), "full races for 100 played hours with the same leader");
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let mut previous_until = i32::MIN;
+        let mut previous_count = 0;
+        for hour in hours {
+            if hour > previous_until {
+                let params = EquipmentProducedRaceParams {
+                    branch_id: "1".into(), hour, countries: vec![], group: None, top: Some(1), count: ProducedCount::Units,
+                    measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: None,
+                };
+                previous_until = super::super::race_reply(&source, &query, &params, &LoadContext { content: None }, &false.into()).unwrap().last_hour;
+                previous_count += 1;
+            }
+        }
+        assert_eq!(previous_count, 100, "the full race's expiry with hourly production reads");
+        assert_eq!(top_one(&source, first, None).ranking.unwrap().until, first + 99);
+        let missing = top_one(&source, first + 100, None).ranking.unwrap();
+        assert_eq!(missing.refused.as_deref(), Some(totals::TOTALS_VALUE_UNKNOWN));
+        assert_eq!(missing.until, first + 104);
+    }
 
     #[test]
     fn equipment_produced_tiles_cover_total_day_and_range_from_hour() {
