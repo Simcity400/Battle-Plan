@@ -6,11 +6,82 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
-import type { TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
+import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
-import { knownValue, notRecorded } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 import { NAVAL_BATTLES_COLUMNS } from './definition.ts';
+
+const LEAST_SHARE = 0.03;
+
+function countValue(n: number | null, label: string, lowerBound?: string): Value<number> {
+  if (n === null) return notRecorded(`${label} not recorded`);
+  return lowerBound ? partialValue(n, lowerBound, { atLeast: true }) : knownValue(n);
+}
+
+function vesselValue(
+  ships: number | null,
+  convoys: number | null,
+  shipLabel: string,
+  convoyLabel: string,
+  lowerBound?: string,
+): Value<number | string> {
+  if (ships === null && convoys === null) return notRecorded(`${shipLabel} not recorded`);
+  if (ships === null) {
+    if (convoys === 0) return notRecorded(`${shipLabel} not recorded`);
+    const reason = lowerBound ? `${lowerBound}; ${shipLabel.toLowerCase()} not recorded` : `${shipLabel} not recorded`;
+    return partialValue(`${convoys}c`, reason, { atLeast: true });
+  }
+  if (convoys === null) {
+    if (ships === 0) return notRecorded(`${convoyLabel} not recorded`);
+    const reason = lowerBound ? `${lowerBound}; ${convoyLabel.toLowerCase()} not recorded` : `${convoyLabel} not recorded`;
+    return partialValue(ships, reason, { atLeast: true });
+  }
+  const raw: number | string = convoys === 0 ? ships : ships === 0 ? `${convoys}c` : `${ships}s+${convoys}c`;
+  return lowerBound ? partialValue(raw, lowerBound, { atLeast: true }) : knownValue(raw);
+}
+
+function vesselPairCell(
+  ships: readonly [number | null, number | null],
+  convoys: readonly [number | null, number | null],
+  shipLabel: string,
+  convoyLabel: string,
+  colors?: readonly (string | undefined)[],
+  lowerBound?: string,
+): TableCell {
+  const totalShips = ships[0] === null || ships[1] === null ? null : ships[0] + ships[1];
+  const totalConvoys = convoys[0] === null || convoys[1] === null ? null : convoys[0] + convoys[1];
+  const totalValue = totalShips === null
+    ? notRecorded(`${shipLabel} not recorded`)
+    : totalConvoys === null
+      ? notRecorded(`${convoyLabel} not recorded`)
+      : vesselValue(totalShips, totalConvoys, shipLabel, convoyLabel, lowerBound);
+  const cell: TableCell = {
+    value: totalValue,
+    pair: [
+      vesselValue(ships[0], convoys[0], shipLabel, convoyLabel, lowerBound),
+      vesselValue(ships[1], convoys[1], shipLabel, convoyLabel, lowerBound),
+    ],
+  };
+  if (!colors) return cell;
+  const sideA = ships[0] === null || convoys[0] === null ? null : ships[0] + convoys[0];
+  const sideB = ships[1] === null || convoys[1] === null ? null : ships[1] + convoys[1];
+  const total = sideA === null || sideB === null ? null : sideA + sideB;
+  if (total === 0) return { ...cell, splitBar: [] };
+  const share = sideA !== null && total !== null && total > 0 ? sideA / total : null;
+  const fraction = share !== null && share > 0 && share < 1 ? Math.min(1 - LEAST_SHARE, Math.max(LEAST_SHARE, share)) : share;
+  if (fraction === null || fraction < 0 || fraction > 1) {
+    return { ...cell, splitBar: [{ fraction: 1, fill: '', hatched: true }] };
+  }
+  return {
+    ...cell,
+    splitBar: [fraction, 1 - fraction].map((part, i) => ({
+      fraction: part,
+      fill: colors[i] ?? '',
+      hatched: !colors[i],
+    })),
+  };
+}
 
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {
   const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
@@ -24,19 +95,27 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
     ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('Winner not recorded') }] }
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
   const lowerBound = row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined;
-  const shipsSunk = logPairCell(row.shipsSunk, 'Ships sunk', colors, lowerBound);
+  const shipsSunk = vesselPairCell(row.shipsSunk, row.convoysSunk, 'Ships sunk', 'Convoys sunk', colors, lowerBound);
   const icLost = logPairCell(row.icLost, 'IC lost', colors, lowerBound);
-  const ships = logPairCell(row.ships, 'Ships');
+  const ships = vesselPairCell(row.ships, row.convoys, 'Ships', 'Convoys');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: row.hour,
     ...(row.result === 'unknown' ? { tooltipNote: 'The game keeps a winner only for battles a player takes part in' } : {}),
-    tooltipExtra: () => sides.flatMap((side, i) => [
-      { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
-        value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },
-      { label: 'Ships', value: ships.pair![i]!, indent: true },
-      { label: 'Ships sunk', value: shipsSunk.pair![i]!, indent: true },
-      { label: 'IC lost', value: icLost.pair![i]!, indent: true },
-    ]),
+    tooltipExtra: () => sides.flatMap((side, i): TooltipExtraRow[] => {
+      const convoyCount = row.convoys[i];
+      const convoySunkCount = row.convoysSunk[i];
+      const showConvoys = convoyCount !== 0 || convoySunkCount !== 0;
+      const rows: TooltipExtraRow[] = [
+        { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
+          value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },
+        { label: 'Ships', value: countValue(row.ships[i], 'Ships'), indent: true },
+      ];
+      if (showConvoys) rows.push({ label: 'Convoys', value: countValue(convoyCount, 'Convoys'), indent: true });
+      rows.push({ label: 'Ships sunk', value: countValue(row.shipsSunk[i], 'Ships sunk', lowerBound), indent: true });
+      if (showConvoys) rows.push({ label: 'Convoys sunk', value: countValue(convoySunkCount, 'Convoys sunk', lowerBound), indent: true });
+      rows.push({ label: 'IC lost', value: icLost.pair![i]!, indent: true });
+      return rows;
+    }),
     tooltipScrollId: JSON.stringify([options.scope, row.detailId, row.detailHour ?? (options.following ? row.readHour : view.hour)]),
     cells: {
       date: logDateCell(row.hour),

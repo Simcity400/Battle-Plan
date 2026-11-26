@@ -48,7 +48,7 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
 
 test('the followed naval table shows the supplying read, partial sinkings and IC lost, unrecorded sides and an ended battle without its winner', () => {
   const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
-    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], icLost: [1992.5, null], ships: [3, 0], result: 'ongoing' };
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
   const head: NavalBattlesTailReply = { branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
     rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
@@ -80,4 +80,74 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.equal(row.live, true);
   assert.deepEqual(JSON.parse(row.tooltipScrollId!), ['test', 'combat:9:10', 15]);
   assert.deepEqual(JSON.parse(project(false).tooltipScrollId!), ['test', 'combat:9:10', 18]);
+});
+
+test('convoy-only sides show convoy counts and live zero sinkings stay qualified as partial lower bounds', () => {
+  const raid: NavalBattleLogRow = {
+    key: 'combat:12:20', hour: 20, province: null, countries: [[], []], countriesHour: [20, 20],
+    readHour: 22, detailId: 'combat:12:20', detailHour: null,
+    ships: [6, 0], convoys: [0, 4], shipsSunk: [0, 0], convoysSunk: [0, 2], icLost: [0, 0], result: 'ongoing',
+  };
+  const escorted: NavalBattleLogRow = {
+    key: 'result:42', hour: 15, province: null, countries: [[], []], countriesHour: [15, 15],
+    readHour: 18, detailId: 'result:42', detailHour: 18,
+    ships: [4, 2], convoys: [0, 5], shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0], result: 'attackerWon',
+  };
+  const depletedConvoys: NavalBattleLogRow = {
+    key: 'combat:13:19', hour: 19, province: null, countries: [[], []], countriesHour: [19, 19],
+    readHour: 22, detailId: 'combat:13:19', detailHour: null,
+    ships: [4, 0], convoys: [0, 0], shipsSunk: [0, null], convoysSunk: [0, 2], icLost: [0, null], result: 'ongoing',
+  };
+  const depletedWithShipLoss: NavalBattleLogRow = {
+    ...depletedConvoys, key: 'combat:14:18', hour: 18, detailId: 'combat:14:18', shipsSunk: [1, null],
+  };
+  const head: NavalBattlesTailReply = { branchId: '1', total: '4', offset: '0', missing: [], warnings: [], nextChange: null, rows: [raid, escorted, depletedConvoys, depletedWithShipLoss] };
+  const source = buildRowSourceFromHead('branch', head, undefined, 22)!;
+  const view = createBoundedReadView({ hour: 22, rows: new Map([['main', source]]) });
+  const model = navalBattlesProjection.project(view, { scope: 'test', following: true, byDate: true });
+  const [raidRow, escortedRow, depletedRow, depletedShipLossRow] = model.rows;
+  assert.deepEqual(raidRow!.cells.ships!.pair, [{ kind: 'known', value: 6 }, { kind: 'known', value: '4c' }]);
+  assert.deepEqual(raidRow!.cells.shipsSunk!.pair, [
+    { kind: 'partial', value: 0, reason: 'Observed losses so far', atLeast: true },
+    { kind: 'partial', value: '2c', reason: 'Observed losses so far', atLeast: true },
+  ]);
+  assert.deepEqual(raidRow!.cells.shipsSunk!.splitBar?.map(segment => segment.fraction), [0, 1]);
+  assert.deepEqual(escortedRow!.cells.ships!.pair, [{ kind: 'known', value: 4 }, { kind: 'known', value: '2s+5c' }]);
+  assert.deepEqual(escortedRow!.cells.shipsSunk!.pair, [{ kind: 'zero', value: 0 }, { kind: 'zero', value: 0 }]);
+  assert.equal(depletedRow!.cells.shipsSunk!.value.kind, 'notRecorded');
+  assert.equal(depletedShipLossRow!.cells.shipsSunk!.value.kind, 'notRecorded');
+
+  const foundRaid = { kind: 'data', key: raidRow!.key, name: raidRow!.name, row: raidRow!, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const raidLines = deriveRowTooltip(foundRaid, model.columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
+  assert.deepEqual(
+    raidLines.map(line => [line.label, line.rawValue?.kind, line.rawValue && 'value' in line.rawValue ? line.rawValue.value : null]),
+    [
+      ['Date', 'known', 'Hour 20'],
+      ['Battle', 'notRecorded', null],
+      ['Result', 'known', 'Ongoing'],
+      ['Attackers', 'notRecorded', null],
+      ['Ships', 'known', 6],
+      ['Ships sunk', 'partial', 0],
+      ['IC lost', 'partial', 0],
+      ['Defenders', 'notRecorded', null],
+      ['Ships', 'zero', 0],
+      ['Convoys', 'known', 4],
+      ['Ships sunk', 'partial', 0],
+      ['Convoys sunk', 'partial', 2],
+      ['IC lost', 'partial', 0],
+    ],
+  );
+  const foundDepleted = { kind: 'data', key: depletedRow!.key, name: depletedRow!.name, row: depletedRow!, rank: 2, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
+  const depletedLines = deriveRowTooltip(foundDepleted, model.columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
+  assert.deepEqual(
+    depletedLines.slice(-6).map(line => [line.label, line.rawValue?.kind, line.rawValue && 'value' in line.rawValue ? line.rawValue.value : null]),
+    [
+      ['Defenders', 'notRecorded', null],
+      ['Ships', 'zero', 0],
+      ['Convoys', 'zero', 0],
+      ['Ships sunk', 'notRecorded', null],
+      ['Convoys sunk', 'partial', 2],
+      ['IC lost', 'notRecorded', null],
+    ],
+  );
 });
