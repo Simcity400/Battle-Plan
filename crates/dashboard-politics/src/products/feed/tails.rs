@@ -397,7 +397,7 @@ fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -
     [answer.next_change, read, reason].into_iter().flatten().min()
 }
 
-fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], hour: i32) -> Option<i32> {
+fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (i32, i32), hour: i32) -> Option<i32> {
     let warning = feed.warnings.iter().map(|(at, _)| *at).filter(|at| *at > hour).min();
     let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied()).flatten();
     let unrecorded = feed
@@ -405,7 +405,8 @@ fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], hour: i32) ->
         .iter()
         .filter(|family| categories.contains(&family.category))
         .flat_map(|family| &family.spans)
-        .filter_map(|&(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) })
+        .filter(|&&(first, last)| first <= to && last >= from)
+        .filter_map(|&(first, last)| if first <= hour && hour < last.min(to) { Some(hour + 1) } else { (first > hour).then_some(first) })
         .min();
     [warning, left_out, unrecorded].into_iter().flatten().min()
 }
@@ -516,8 +517,9 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             );
         }
     }
+    let to = params.to.map_or(hour, |to| to.min(hour));
     for family in feed.unrecorded.iter().filter(|family| params.categories.contains(&family.category)) {
-        let hours: i64 = family.spans.iter().map(|&(first, last)| (i64::from(last.min(hour)) - i64::from(first.max(from)) + 1).max(0)).sum();
+        let hours: i64 = family.spans.iter().map(|&(first, last)| (i64::from(last.min(to)) - i64::from(first.max(from)) + 1).max(0)).sum();
         if hours > 0 {
             notices.unavailable(family.kind, family.label, format!("{} for {hours} hours of this span; {}.", family.what, family.lost), None);
         }
@@ -529,7 +531,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         live: answer.live.to_string(),
         counts: Vec::new(),
         rows,
-        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, hour)].into_iter().flatten().min(),
+        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(i32::MAX)), hour)].into_iter().flatten().min(),
         missing: answer.gaps,
         unavailable: notices.into_list(),
         warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
@@ -828,33 +830,11 @@ impl Product for EventFeedActivity {
         }
         let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
         let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
-        let mut lines = Vec::with_capacity(params.categories.len());
-        for &category in &params.categories {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let kinds = feed_kinds(&[category], params.exclude.as_deref())?;
-            let ask = Ask {
-                hour,
-                from: None,
-                to: None,
-                gap_end: None,
-                selection: prepared.selection.as_ref(),
-                subject: None,
-                kinds: Some(&kinds),
-                states: None,
-                search: None,
-                order: dashboard_query::log::occurrence::Order::Date(dashboard_query::log::occurrence::Direction::Descending),
-                live_first: false,
-                offset: 0,
-                limit: 1,
-                chips: &[],
-            };
-            let (before, bins) = feed.index.bins(&query.holders, &ask, params.from, hour, params.bin_hours)?;
-            lines.push(EventFeedActivityLine { category, before: before.to_string(), bins });
-        }
         let whole = Ask {
             hour,
             from: None,
             to: None,
+            gap_end: None,
             selection: prepared.selection.as_ref(),
             subject: None,
             kinds: None,
@@ -866,6 +846,13 @@ impl Product for EventFeedActivity {
             limit: 1,
             chips: &[],
         };
+        let mut lines = Vec::with_capacity(params.categories.len());
+        for &category in &params.categories {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let kinds = feed_kinds(&[category], params.exclude.as_deref())?;
+            let (before, bins) = feed.index.bins(&query.holders, &Ask { kinds: Some(&kinds), ..whole }, params.from, hour, params.bin_hours)?;
+            lines.push(EventFeedActivityLine { category, before: before.to_string(), bins });
+        }
         let missing = feed.index.coverage(&query.holders, &whole, params.from, hour);
         Ok(EventFeedActivityReply {
             branch_id: params.branch_id.clone(),

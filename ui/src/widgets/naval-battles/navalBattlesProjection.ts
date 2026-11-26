@@ -83,6 +83,13 @@ function vesselPairCell(
   };
 }
 
+function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]) {
+  if (!side.length) return notRecorded('Country not recorded');
+  const names = side.map(who => who.name).join(', ');
+  const missing = side.flatMap(who => (who.value.kind === 'notRecorded' ? [who.value.reason] : []));
+  return missing.length ? partialValue(names, [...new Set(missing)].join('; ')) : knownValue(names);
+}
+
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {
   const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
   const name = place.kind === 'known' ? knownValue('Battle of ' + place.value) : place;
@@ -107,7 +114,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
       const showConvoys = convoyCount !== 0 || convoySunkCount !== 0;
       const rows: TooltipExtraRow[] = [
         { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
-          value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },
+          value: sideNames(side) },
         { label: 'Ships', value: countValue(row.ships[i], 'Ships'), indent: true },
       ];
       if (showConvoys) rows.push({ label: 'Convoys', value: countValue(convoyCount, 'Convoys'), indent: true });

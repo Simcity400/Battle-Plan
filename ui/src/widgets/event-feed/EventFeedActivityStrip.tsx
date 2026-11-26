@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
@@ -96,7 +97,7 @@ export default function EventFeedActivityStrip({
     const cutoff = gate.recorded(bound.lastHour);
     if (cutoff === null) return;
     const group = groupSelection(widget.countries);
-    const countries = widget.countries.kind === 'tags' ? widget.countries.tags.map(countryFromKey) : null;
+    const countries = widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? selectedCountryKeys(widget.countries, track).map(countryFromKey) : null;
     const request = productRequest({
       sourceId: track.source.id,
       revision: track.source.revision,
@@ -167,8 +168,9 @@ export default function EventFeedActivityStrip({
           }
           const barTotal = totals[idx]!;
           const maxPx = 22;
+          const partly = gapBins.has(idx);
           return (
-            <span key={idx} className="efs-bar">
+            <span key={idx} className={partly ? 'efs-bar is-partial' : 'efs-bar'} {...(partly ? { title: 'Partly not recorded' } : {})}>
               {barTotal > 0 ? strip.series.map(s => {
                 const count = s.counts[idx] ?? 0;
                 if (count <= 0) return null;

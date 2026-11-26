@@ -71,17 +71,13 @@ function decisionCostInfo(
   if (!chargeable.length && !proven.length) {
     return { cell: { value: notApplicable('No selection cost'), blank: true }, costText: null, costMissing: null };
   }
-  if (chargeable.some(edge => edge.costs == null)) {
-    return {
-      cell: { value: notRecorded('Decision cost was not recorded') },
-      costText: null,
-      costMissing: 'Decision cost was not recorded',
-    };
-  }
+  const wholly = chargeable.some(edge => edge.costs == null);
   const unread = new Set(chargeable.flatMap(edge => edge.costsUnread ?? []));
-  const lacking = unread.size
-    ? `${[...unread].sort().map(currency => (currency === 'politicalPower' ? 'Political power' : 'Command power')).join(' and ')} cost was not recorded`
-    : null;
+  const reasons = [
+    ...(wholly ? ['Part of the decision cost was not recorded'] : []),
+    ...(unread.size ? [`${[...unread].sort().map(currency => (currency === 'politicalPower' ? 'Political power' : 'Command power')).join(' and ')} cost was not recorded`] : []),
+  ];
+  const lacking = reasons.length ? reasons.join('; ') : null;
   const shown = (text: string) => (lacking ? partialValue(text, lacking) : knownValue(text));
   const totals = new Map<ScriptCurrency, bigint>();
   for (const edge of proven) {
@@ -90,8 +86,9 @@ function decisionCostInfo(
     }
   }
   if (!totals.size) {
-    return lacking
-      ? { cell: { value: notRecorded(lacking) }, costText: null, costMissing: lacking }
+    const missing = wholly && !unread.size ? 'Decision cost was not recorded' : lacking;
+    return missing
+      ? { cell: { value: notRecorded(missing) }, costText: null, costMissing: missing }
       : { cell: { value: notApplicable('No cost'), blank: true }, costText: null, costMissing: null };
   }
   const pp = totals.get('politicalPower');

@@ -850,6 +850,6 @@ impl<P> Index<P> {
     }
 
     pub fn coverage(&self, holders: &Holders, ask: &Ask<'_>, from: i32, hour: i32) -> Vec<MissingSpan> {
-        self.visible_gaps(&self.filtered(holders, ask), from, hour)
+        self.visible_gaps(&self.filtered(holders, ask), from, hour, hour)
     }
 }

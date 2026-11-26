@@ -360,4 +360,12 @@ test('a decision cost read in one currency keeps it, partial, when the other cur
   }, undefined, start + 1)!;
   const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [] });
   assert.deepEqual(model.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Command power cost was not recorded' });
+  const twice = card([edge('decisionSelected', start, { costs: pp('-5000000') }), edge('decisionSelected', start + 1)]);
+  const both = buildRowSourceFromHead('test:decisions-partial-edges', {
+    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k1', ordinal: '0', cells: [], occurrence: twice }], facetTotals: [], missing: [], unavailable: [], warnings: [],
+  }, undefined, start + 2)!;
+  const read = decisionsProjection.project(createBoundedReadView({ hour: start + 2, rows: new Map([['main', both]]) }), { artwork: false, breaks: [] });
+  assert.deepEqual(read.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Part of the decision cost was not recorded' },
+    'a selection whose cost was not read keeps the one that was, partial');
 });

@@ -12,7 +12,10 @@ use dashboard_query::{
     log::{Reader, occurrence::{Index, Occurrence, Role}},
     series::MissingSpan,
 };
-use replay_data::rows::FeedEventRow;
+use replay_data::{
+    event_feed_rows::{DECISION_EDGE_REFUSALS, EventFeedCoverage},
+    rows::FeedEventRow,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -135,6 +138,22 @@ fn presented_key(event: &FeedEvent, effects: bool) -> (u64, u64, i32, bool) {
 }
 
 impl Scanned {
+    fn refused(first: i32, last: i32, reason: &str) -> Self {
+        let whole = vec![(first, last)];
+        Self {
+            briefs: Vec::new(),
+            native: Vec::new(),
+            incomplete: Vec::new(),
+            windows_unrecorded: Vec::new(),
+            states: HashMap::new(),
+            resolved: Mutex::default(),
+            presented: Mutex::default(),
+            breaks: whole.clone(),
+            decision_breaks: whole,
+            gaps: vec![MissingSpan { first_hour: first, last_hour: last, reason: format!("The event history could not be read: {reason}") }],
+        }
+    }
+
     pub(crate) fn locate(&self, id: &str) -> Option<u128> {
         let mut parts = id.split(':');
         let (kind, first, second) = (parts.next()?, parts.next()?, parts.next()?);
@@ -355,13 +374,20 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let refs: Vec<&FeedEvent> = lifecycles.iter().collect();
     let resolved = decision_state::resolve_all(query, &refs)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
+    let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
     let mut held: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last)).collect();
     held.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour)));
-    let complete = replay_data::event_feed_rows::EventFeedCoverage::Complete as u32;
-    let lost = |decisions: bool| incomplete.iter().filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals != Some(0))).map(|&(hour, ..)| (hour, hour));
+    held.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)));
+    let complete = EventFeedCoverage::Complete as u32;
+    let hides = u32::from(DECISION_EDGE_REFUSALS);
+    let lost = |decisions: bool| {
+        incomplete
+            .iter()
+            .filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals.is_none_or(|refused| refused & hides != 0)))
+            .map(|&(hour, ..)| (hour, hour))
+    };
     let breaks = spans(held.iter().copied().chain(lost(false)).collect());
     let decision_breaks = spans(held.into_iter().chain(lost(true)).collect());
-    let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
     Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, gaps })
 }
 
@@ -379,7 +405,7 @@ fn spans(mut breaks: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
 }
 
 fn break_after(breaks: &[(i32, i32)], from: i32) -> Option<i32> {
-    breaks.get(breaks.partition_point(|&(_, last)| last <= from)).map(|&(first, _)| first.max(from.saturating_add(1)))
+    breaks.get(breaks.partition_point(|&(_, last)| last < from)).map(|&(first, _)| first.max(from))
 }
 
 struct Card<'b> {
@@ -664,11 +690,14 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let mut warnings: families::DatedNotes = Vec::new();
     let mut unattributed = Vec::new();
     let mut unrecorded = Vec::new();
-    if let Some((made, notes, left_out, unobserved)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
-        rows.extend(made);
-        warnings.extend(notes);
-        unattributed = left_out;
-        unrecorded.extend(unobserved);
+    if let Some(groups) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
+        rows.extend(groups.rows);
+        warnings.extend(groups.notes);
+        unattributed = groups.unattributed;
+        unrecorded.extend(groups.unrecorded);
+        if let Some(reason) = groups.refused {
+            refused.push((vec![WarsPeace], "peace".to_owned(), "Peace".to_owned(), reason, None));
+        }
     }
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, cancelled)? {
         rows.extend(made);
@@ -709,7 +738,11 @@ fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, c
     if let Some(found) = &held.scanned {
         return Ok(Arc::clone(found));
     }
-    let made = Arc::new(scan(source, query, branch, cancelled)?);
+    let made = Arc::new(match scan(source, query, branch, cancelled) {
+        Ok(made) => made,
+        Err(error) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => return Err(error),
+        Err(error) => Scanned::refused(query.timeline.first, query.timeline.last, &error.to_string()),
+    });
     held.scanned = Some(Arc::clone(&made));
     Ok(made)
 }

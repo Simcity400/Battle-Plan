@@ -408,7 +408,7 @@ function buildFeedTableRow(
   const titleLabel = primary !== null ? plainScripted(primary) : (missingReason ?? 'Not recorded');
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
-      { label: 'Time', value: knownValue(formatDateTime(event.hour)) },
+      { label: event.exact ? 'Time' : 'Observed at', value: knownValue(formatDateTime(event.hour)) },
     ];
     if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
     if (event.cause?.how) out.push({ label: 'Cause', value: knownValue(event.cause.how) });

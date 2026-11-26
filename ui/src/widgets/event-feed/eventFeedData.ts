@@ -35,7 +35,7 @@ const listed = (row: Record<string, unknown>): boolean => Array.isArray(row.part
   && JSON.stringify(row.participants.filter(value => value !== null)) === JSON.stringify(row.tags);
 const roles = (row: Record<string, unknown>): boolean => {
   if (NATIVE_KINDS.has(row.kind as string)) return row.exact === true && listed(row);
-  if (LISTED_KINDS.has(row.kind as string)) return listed(row);
+  if (LISTED_KINDS.has(row.kind as string)) return listed(row) && (row.kind === 'guaranteeGranted' || (row.participants as unknown[])[1] === null);
   return row.participants === undefined;
 };
 const cause = (row: Record<string, unknown>): boolean => {

@@ -7,7 +7,7 @@ import { artKindCell, newIdentityBoundary, resolveName, type IdentityBoundary } 
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { PeaceDealsRow, PeaceDealsTailReply, PeaceTermCount, PeaceTermKind } from '../../generated/dashboard';
 import { PEACE_DEALS_COLUMNS } from './definition.ts';
@@ -78,9 +78,16 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
   let cell: TableCell;
   if (d.kind === 'recipient') {
     const recipient = logCountryCell(view, [{ tag: d.tag, missingLabel: 'Recipient not recorded' }], row.hour, boundary);
-    const text = d.tag === null || recipient.value.kind !== 'known' ? notRecorded('Recipient not recorded') : knownValue(String(recipient.value.value));
+    const shown = recipient.value;
+    const text: Value<string> = d.tag === null
+      ? notRecorded('Recipient not recorded')
+      : shown.kind === 'known'
+        ? knownValue(String(shown.value))
+        : shown.kind === 'partial'
+          ? partialValue(String(shown.value), shown.reason)
+          : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
     const note = summary(d.terms.map(quantity));
-    name = [text.kind === 'known' ? text.value : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
+    name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
     cell = { value: knownValue([name, ...list].join(', ')), heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
   } else {
     name = list.length > 1 ? `${list[0]} \u2013 ${list[list.length - 1]}` : (list[0] ?? 'Terms');

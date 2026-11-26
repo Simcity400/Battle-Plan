@@ -81,13 +81,13 @@ pub(super) fn slot(names: Option<&Names<'_>>, reference: u32, id: Option<u32>) -
 
 pub(super) type ChargeKey = (i32, u32, Box<[u8]>, bool);
 
-pub(super) fn charges(hour: &Hour<'_>) -> io::Result<Option<HashMap<ChargeKey, [i128; 2]>>> {
+pub(super) fn charges(hour: &Hour<'_>) -> io::Result<Option<HashMap<ChargeKey, [Option<i128>; 2]>>> {
     if !hour.complete(TableId::CountryPowerChanges) || !hour.complete(TableId::PoliticsCaptureCoverage) {
         return Ok(None);
     }
     let (changes, coverage) = (hour.table(TableId::CountryPowerChanges), hour.table(TableId::PoliticsCaptureCoverage));
-    let streams = PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::CP;
-    let mut sums: HashMap<ChargeKey, [i128; 2]> = HashMap::new();
+    let streams = [PoliticsCaptureCoverageRow::PP, PoliticsCaptureCoverageRow::CP];
+    let mut sums: HashMap<ChargeKey, [Option<i128>; 2]> = HashMap::new();
     for slot in changes.rows() {
         let change: CountryPowerChangeRow = row(TableId::CountryPowerChanges, &changes, slot)?;
         let timeout = match (change.cause, change.identity.action) {
@@ -95,22 +95,23 @@ pub(super) fn charges(hour: &Hour<'_>) -> io::Result<Option<HashMap<ChargeKey, [
             (PowerCause::DecisionTimeout, PowerAction::Timeout) => true,
             _ => continue,
         };
-        let covered = match coverage.slot(u128::from(change.country)) {
-            Some(at) => {
-                let cover: PoliticsCaptureCoverageRow = row(TableId::PoliticsCaptureCoverage, &coverage, at)?;
-                cover.since_hour <= change.hour && change.hour <= cover.through_hour && cover.streams & streams == streams
-            }
-            None => false,
+        let cover: Option<PoliticsCaptureCoverageRow> = match coverage.slot(u128::from(change.country)) {
+            Some(at) => Some(row(TableId::PoliticsCaptureCoverage, &coverage, at)?),
+            None => None,
         };
+        let covered = streams.map(|stream| cover.as_ref().is_some_and(|cover| cover.since_hour <= change.hour && change.hour <= cover.through_hour && cover.streams & stream != 0));
         let token = content_reader_parser::parser::c_string(&change.identity.item_key);
-        if !covered || token.is_empty() {
+        if token.is_empty() {
             continue;
         }
         let currency = match change.currency {
             PowerCurrency::Political => 0,
             PowerCurrency::Command => 1,
         };
-        sums.entry((change.hour, change.country, token.into(), timeout)).or_insert([0; 2])[currency] += change.realized_delta_raw();
+        let sum = sums.entry((change.hour, change.country, token.into(), timeout)).or_insert(covered.map(|covered| covered.then_some(0)));
+        if let Some(sum) = &mut sum[currency] {
+            *sum += change.realized_delta_raw();
+        }
     }
     Ok(Some(sums))
 }

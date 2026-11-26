@@ -1422,7 +1422,7 @@ impl Product for SpecialProjects {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectCompletion {
-    pub slot: u32,
+    pub tag: Option<String>,
     pub date: i32,
     pub observed_hour: i32,
     pub owner: u32,
@@ -1925,7 +1925,7 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
         dashboard_text::metadata::check_cancel(cancelled)?;
         let Counted { tag, slot, owner, local, entry, read, definition } = counted;
         let mut completion =
-            ProjectCompletion { slot, date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
+            ProjectCompletion { tag: Some(tag.clone()), date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
         match definition {
             Some(definition) => {
                 let token = spelled.get(&(read, definition)).map(String::as_str);
