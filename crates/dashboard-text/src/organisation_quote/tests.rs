@@ -175,13 +175,11 @@ impl Content {
         Self::with_visible("always=yes", available)
     }
     fn with_visible(visible: &str, available: &str) -> Self {
-        game::executable()
-            .pinned_modifiers([(KEY, "fixture_policy_cost")])
-            .trigger(
+        content_reader_script::test_game::TriggerShape::Flag
+            .register(
+                game::executable().pinned_modifiers([(KEY, "fixture_policy_cost")]),
                 "has_mio_flag",
                 content_reader_script::scope::ScopeKind::IndustrialOrganisation.bit(),
-                content_reader_script::trigger_keys::Reader::Assign,
-                0,
             )
             .enter();
         let modifier = engine_executable::modifier_keys::fixed_name(KEY).unwrap();

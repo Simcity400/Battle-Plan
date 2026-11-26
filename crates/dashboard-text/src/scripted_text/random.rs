@@ -128,7 +128,7 @@ impl<'a> ScriptedText<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script_test_game as game;
+    use dashboard_core::test_fixtures::game;
 
     #[test]
     fn fixed_seed_draw_and_cumulative_pick() {

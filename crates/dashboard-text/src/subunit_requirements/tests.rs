@@ -1,4 +1,5 @@
 use super::*;
+use content_reader_script::test_game::category;
 use dashboard_core::test_fixtures::game;
 use replay_data::{rows::LexicalTokenRow, rows::TemplateSubunit};
 
@@ -200,12 +201,11 @@ fn duplicate_archetypes_copy_model_inputs_and_remap_the_parent_chain() {
     assert_eq!((first.visual_level, first.model), (3, "tier_mesh"));
     assert_eq!(
         content.equipment_category("flame_0").unwrap(),
-        ["armor", "flame", "artillery"].map(content_reader_script::test_game::category)
-            .into_iter().fold(0, |bits, category| bits | category)
+        category("armor") | category("flame") | category("artillery")
     );
     assert_eq!(
         content.equipment_category("amphibious_0").unwrap(),
-        content_reader_script::test_game::category("armor") | content_reader_script::test_game::category("train")
+        category("armor") | category("train")
     );
     let outside = content.equipment_content().get("flameold_tank").unwrap();
     assert_eq!(content.equipment("flameold_tank").unwrap().parent, outside);
@@ -245,11 +245,11 @@ fn enabled_module_slots_follow_copied_slots_and_effective_category() {
     "#]);
     for key in ["tanks", "tanks_0"] {
         assert!(
-            content.has_enabled_module_slots(key, 1 << 2).unwrap(),
+            content.has_enabled_module_slots(key, category("armor")).unwrap(),
             "{key}"
         );
         assert!(
-            !content.has_enabled_module_slots(key, 1 << 5).unwrap(),
+            !content.has_enabled_module_slots(key, category("support")).unwrap(),
             "{key}"
         );
     }
