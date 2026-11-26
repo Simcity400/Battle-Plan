@@ -208,7 +208,6 @@ export type FieldStatus<T> =
 export interface IdentityResult {
   readonly kind: EntityKind;
   readonly key: string;
-  readonly atHour: DisplayedHour;
   readonly holder: FieldStatus<string>;
   readonly tag?: FieldStatus<string>;
   readonly name: FieldStatus<string>;

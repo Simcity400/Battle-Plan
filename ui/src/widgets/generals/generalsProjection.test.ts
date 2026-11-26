@@ -36,7 +36,7 @@ const ADMIRALS: GeneralsOptions = { ...OPTIONS, kind: 'navy' };
 function view(data: UnitLeadersReply, names: Record<string, [string, number]> = {}) {
   const art = (handle: ArtHandle) => readyArt(`art:${artHandleKey(handle)}`);
   const identity = (kind: IdentityResult['kind'], key: string, atHour: number): IdentityResult => ({
-    kind, key, atHour: atHour as IdentityResult['atHour'], holder: { status: 'pending' },
+    kind, key, holder: { status: 'pending' },
     name: names[key] ? { status: 'ready', value: names[key]![0] } : { status: 'pending' },
     validInterval: [atHour, names[key]?.[1] ?? Infinity], nextChangeAt: names[key]?.[1] ?? Infinity,
   });

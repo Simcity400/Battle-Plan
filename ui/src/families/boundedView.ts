@@ -623,7 +623,6 @@ function defaultIdentityResult(kind: EntityKind, key: string, atHour: DisplayedH
   return {
     kind,
     key,
-    atHour,
     holder: { status: 'pending' },
     name: { status: 'pending' },
     validInterval: [atHour, atHour],

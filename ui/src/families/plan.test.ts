@@ -287,7 +287,6 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
         return {
           kind,
           key,
-          atHour,
           holder: { status: 'ready', value: 'GER' },
           tag: { status: 'ready', value: 'GER' },
           name: { status: 'ready', value: atHour < 50 ? 'Weimar' : 'Germany' },
@@ -300,7 +299,6 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
       return {
         kind,
         key,
-        atHour,
         holder: { status: 'pending' },
         name: { status: 'pending' },
         validInterval: [atHour, atHour],
@@ -361,12 +359,10 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
 
   const gerAt20 = view.who('country', 'GER', 20);
   assert.deepEqual(gerAt20.name, { status: 'ready', value: 'Weimar' });
-  assert.equal(gerAt20.atHour, 20);
   assert.equal(identityDemands.length, 0);
 
   const gerAtH = view.who('country', 'GER');
   assert.deepEqual(gerAtH.name, { status: 'ready', value: 'Germany' });
-  assert.equal(gerAtH.atHour, 100);
 
   const sovPending = view.who('country', 'SOV', 90);
   assert.equal(sovPending.name.status, 'pending');
@@ -1348,7 +1344,6 @@ test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url
       return {
         kind,
         key,
-        atHour,
         holder: { status: 'pending' },
         name: { status: 'pending' },
         validInterval: [atHour, atHour],

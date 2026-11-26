@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { Failure } from '../../dashboard/queryError';
-import type { ArtResolution } from '../plan.ts';
+import type { ArtResolution, EntityKind } from '../plan.ts';
 import type {
   CountryFactsReply,
   CountryFlagChoice,
@@ -75,11 +75,15 @@ export type IdentityKey =
   | ProvinceIdentityKey
   | RegionIdentityKey;
 
+export type RecordedValue<T> = { readonly [K in keyof T]: RecordedValue<T[K]> };
+
+export type RecordedFlagChoice = RecordedValue<CountryFlagChoice>;
+
 export type IdentityField<T> =
   | { readonly kind: 'known'; readonly value: T }
   | { readonly kind: 'missing'; readonly reason: string }
   | { readonly kind: 'pending' }
-  | { readonly kind: 'failed'; readonly failure: Failure };
+  | { readonly kind: 'failed'; readonly failure: Readonly<Failure> };
 
 export interface CountryHolder {
   readonly slot: number;
@@ -96,7 +100,7 @@ export type CountryIdentityResult =
       readonly tag: IdentityField<string>;
       readonly name: IdentityField<string>;
       readonly color: IdentityField<readonly [number, number, number]>;
-      readonly flagChoice: IdentityField<CountryFlagChoice>;
+      readonly flagChoice: IdentityField<RecordedFlagChoice>;
       readonly warnings: readonly string[];
     }
   | {
@@ -106,7 +110,7 @@ export type CountryIdentityResult =
       readonly reason: string;
     }
   | { readonly kind: 'pending' }
-  | { readonly kind: 'failed'; readonly failure: Failure };
+  | { readonly kind: 'failed'; readonly failure: Readonly<Failure> };
 
 export type FactionIdentityResult =
   | {
@@ -128,7 +132,7 @@ export type FactionIdentityResult =
       readonly reason: string;
     }
   | { readonly kind: 'pending' }
-  | { readonly kind: 'failed'; readonly failure: Failure };
+  | { readonly kind: 'failed'; readonly failure: Readonly<Failure> };
 
 export type EntityIdentityResult =
   | {
@@ -149,7 +153,7 @@ export type EntityIdentityResult =
       readonly reason: string;
     }
   | { readonly kind: 'pending' }
-  | { readonly kind: 'failed'; readonly failure: Failure };
+  | { readonly kind: 'failed'; readonly failure: Readonly<Failure> };
 
 export type IdentityResult<K extends IdentityKey = IdentityKey> =
   K extends CountryIdentityKey ? CountryIdentityResult
@@ -163,7 +167,7 @@ export interface StyleIntervalEntry {
   readonly color: readonly [number, number, number] | null;
   readonly absent: boolean;
   readonly reason: string | null;
-  readonly flagChoice?: CountryFlagChoice | null;
+  readonly flagChoice?: RecordedFlagChoice | null;
   readonly warnings: readonly string[];
 }
 
@@ -184,9 +188,9 @@ export interface EntityRunEntry {
 
 export interface DrawnFlagEntry {
   readonly url?: string;
-  readonly image?: CountryFlagImage;
-  readonly resolution?: ArtResolution;
-  readonly failed?: Failure;
+  readonly image?: RecordedValue<CountryFlagImage>;
+  readonly resolution?: RecordedValue<ArtResolution>;
+  readonly failed?: Readonly<Failure>;
 }
 
 export interface SnapshotFailure {
@@ -210,13 +214,13 @@ export interface SnapshotFailures {
 export interface IdentitySnapshot {
   readonly scope: IdentityScope;
   readonly branchBounds?: HourInterval;
-  readonly facts?: CountryFactsReply;
+  readonly facts?: RecordedValue<CountryFactsReply>;
   readonly factsFinal?: boolean;
-  readonly identities?: CountryIdentitiesReply;
-  readonly groups?: CountryGroupReply;
+  readonly identities?: RecordedValue<CountryIdentitiesReply>;
+  readonly groups?: RecordedValue<CountryGroupReply>;
   readonly styles?: Readonly<Record<string, readonly StyleIntervalEntry[]>>;
   readonly entities?: Readonly<Record<string, readonly EntityRunEntry[]>>;
-  readonly entityUnknown?: Readonly<Partial<Record<EntityIdentityKey['kind'], readonly RecordingGap[]>>>;
+  readonly entityUnknown?: Readonly<Partial<Record<EntityIdentityKey['kind'], readonly Readonly<RecordingGap>[]>>>;
   readonly drawnFlags?: Readonly<Record<string, DrawnFlagEntry>>;
   readonly failures?: SnapshotFailures;
 }
@@ -254,6 +258,35 @@ export function countryKeyFromString(raw: string): CountryIdentityKey {
   return countryTagKey(raw);
 }
 
+export function parseEntityKey(kind: EntityKind, key: string): IdentityKey {
+  switch (kind) {
+    case 'country':
+      return countryKeyFromString(key);
+    case 'faction':
+      return factionKey(key);
+    case 'leader': {
+      const sep = key.indexOf(':');
+      return sep >= 0 ? leaderKey(key.slice(0, sep), key.slice(sep + 1)) : leaderKey('', key);
+    }
+    case 'design': {
+      const sep = key.indexOf(':');
+      return sep >= 0 ? designKey(key.slice(0, sep), key.slice(sep + 1)) : designKey('', key);
+    }
+    case 'state': {
+      const num = Number(key);
+      return stateKey(Number.isSafeInteger(num) ? num : key);
+    }
+    case 'province': {
+      const num = Number(key);
+      return provinceKey(Number.isSafeInteger(num) ? num : key);
+    }
+    case 'region': {
+      const num = Number(key);
+      return regionKey(Number.isSafeInteger(num) ? num : key);
+    }
+  }
+}
+
 export function identityKeyString(key: IdentityKey): string {
   switch (key.kind) {
     case 'country':
@@ -275,13 +308,20 @@ export function identityKeyString(key: IdentityKey): string {
   }
 }
 
+const scopeKeys = new WeakMap<IdentityScope, string>();
+
 export function identityScopeKey(scope: IdentityScope): string {
-  return JSON.stringify([scope.sourceId, scope.revision, scope.branchId, scope.content, scope.language ?? '']);
+  let key = scopeKeys.get(scope);
+  if (key === undefined) {
+    key = JSON.stringify([scope.sourceId, scope.revision, scope.branchId, scope.content, scope.language ?? '']);
+    scopeKeys.set(scope, key);
+  }
+  return key;
 }
 
-const flagChoiceKeyCache = new WeakMap<CountryFlagChoice, string>();
+const flagChoiceKeyCache = new WeakMap<RecordedFlagChoice, string>();
 
-export function flagChoiceKey(choice: CountryFlagChoice): string {
+export function flagChoiceKey(choice: RecordedFlagChoice): string {
   let cached = flagChoiceKeyCache.get(choice);
   if (cached !== undefined) return cached;
   const searched = choice.searched?.some(Boolean) ? choice.searched.map(atlas => atlas === true) : null;

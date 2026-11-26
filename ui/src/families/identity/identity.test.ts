@@ -41,6 +41,8 @@ import {
   identityKeyString,
   stateKey,
   type IdentityScope,
+  type RecordedFlagChoice,
+  type IdentitySnapshot,
 } from './index.ts';
 
 const SCOPE: IdentityScope = { sourceId: 's1', revision: 'r1', branchId: '1', content: 1 };
@@ -179,6 +181,99 @@ test('name change at hour 150 gives old name at 149 and new name at 150 simultan
   assert.equal(index.nextBoundary([countryTagKey('GER')], 149), 150);
 });
 
+test('warm identity answers match cold fields across tag changes, annexation, gaps and seeks', () => {
+  const identities = sampleIdentities();
+  identities.countries.push({
+    tag: 'ALP', identities: [{ firstHour: 150, lastHour: 300, slot: 2, countryId: 21 }], unresolved: [],
+  });
+  identities.unknown.push({ firstHour: 220, lastHour: 225, reason: 'identity gap' });
+  const snapshot: IdentitySnapshot = {
+    scope: SCOPE, branchBounds: [0, 500],
+    facts: { ...sampleFacts(), known: [[0, 99], [110, 500]] }, factsFinal: false,
+    identities, groups: sampleGroups(),
+    styles: { GER: [{ firstHour: 0, lastHour: 500, name: 'Style', color: null, absent: false, reason: null, warnings: [] }] },
+  };
+  const source = IdentityIndex.fromSnapshot(snapshot);
+  source.setStyleFailure('unknown', 105, new RefusedError('style unavailable'));
+  const heldSnapshot = source.exportSnapshot();
+  const warm = IdentityIndex.fromSnapshot(heldSnapshot);
+  const provider = createSnapshotIdentityProvider(warm);
+  const queries: ['country' | 'faction', string][] = [
+    ...identities.countries.map(c => ['country', c.tag] as ['country', string]),
+    ...identities.countries.flatMap(c => c.identities.flatMap(run => [
+      ['country', countryKey(run.slot)] as ['country', string],
+      ['country', `holder:${run.slot}:${run.countryId}`] as ['country', string],
+    ])),
+    ['country', 'unknown'], ['faction', '7'],
+  ];
+  const edges = [0, 50, 100, 105, 110, 150, 220, 226, 301, 350, 361, 501];
+  assert.deepEqual(provider.resolve('country', 'unknown', 105 as DisplayedHour).name, {
+    status: 'failed', reason: 'style unavailable', retryable: false,
+  });
+  const hours = edges.flatMap(h => [h - 1, h, h + 1]);
+  for (const hour of [...hours, ...hours.reverse()]) {
+    for (const [kind, id] of queries) {
+      const key = parseEntityKey(kind, id);
+      const cold = IdentityIndex.fromSnapshot(heldSnapshot);
+      assert.deepEqual(warm.resolve(key, hour), cold.resolve(key, hour));
+      assert.deepEqual(provider.resolve(kind, id, hour as DisplayedHour),
+        createSnapshotIdentityProvider(cold).resolve(kind, id, hour as DisplayedHour));
+    }
+  }
+});
+
+test('1,000 repeated country and faction lookups build no new result or field objects after warm-up', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts());
+  index.setIdentities(sampleIdentities());
+  index.setGroups(sampleGroups());
+  const provider = createSnapshotIdentityProvider(index);
+  const seen = new Set<object>();
+  function observe(kind: 'country' | 'faction', key: string) {
+    const result = provider.resolve(kind, key, 100 as DisplayedHour);
+    seen.add(result);
+    for (const field of [result.holder, result.tag, result.colour, result.flagChoice, result.name]) {
+      if (field) seen.add(field);
+    }
+    return result;
+  }
+  const country = observe('country', 'GER');
+  const faction = observe('faction', '7');
+  const warm = seen.size;
+  for (let i = 0; i < 500; i++) {
+    observe('country', 'GER');
+    observe('faction', '7');
+  }
+  assert.equal(seen.size - warm, 0);
+  assert.equal(country.colour, faction.colour);
+  const key = countryTagKey('GER');
+  assert.equal(index.resolve(key, 149), index.resolve(key, 100));
+  const later = provider.resolve('country', 'GER', 149 as DisplayedHour);
+  assert.equal(later, country);
+  assert.equal(later.name, country.name);
+  assert.equal(later.colour, country.colour);
+  assert.equal(provider.resolve('country', 'GER', 149 as DisplayedHour), later);
+
+  index.setEntityRuns(stateKey(3), [{ firstHour: 0, lastHour: 500, name: 'Peak' }]);
+  assert.equal(observe('country', 'GER'), country);
+  assert.equal(observe('faction', '7'), faction);
+  const snapshot = index.exportSnapshot();
+  assert.equal(index.exportSnapshot(), snapshot);
+  const facts = sampleFacts();
+  facts.countries[0]!.runs[0]![2] = 0x123456;
+  index.setFacts(facts);
+  const changed = observe('country', 'GER');
+  assert.notDeepEqual(changed.colour, country.colour);
+  assert.equal(observe('faction', '7').colour, changed.colour);
+  assert.notEqual(index.exportSnapshot(), snapshot);
+  assert.equal(provider.resolve('country', 'GER', 100 as DisplayedHour), changed);
+  const other = IdentityIndex.fromSnapshot({ ...snapshot, scope: { ...SCOPE, branchId: '2', sourceId: 'other' } });
+  const otherCountry = createSnapshotIdentityProvider(other).resolve('country', 'GER', 100 as DisplayedHour);
+  assert.deepEqual(otherCountry, country);
+  assert.notEqual(otherCountry, country);
+  assert.equal(Object.isFrozen(facts), false);
+});
+
 test('the index answers a slot’s holder runs and a key’s runs, and counts a revision only when identities change', () => {
   const index = new IdentityIndex(SCOPE, [0, 500]);
   const before = index.slotRevision();
@@ -284,7 +379,7 @@ test('point style answer without interval proves only its point; interval style 
 });
 
 test('picker opened at hour 100 stays pending rather than borrowing hour 300, and flag swaps only when flagChoice changes', async () => {
-  const flagBatches: CountryFlagChoice[][] = [];
+  const flagBatches: RecordedFlagChoice[][] = [];
   const factsHold = deferred<CountryFactsReply>();
   const flagHoldB = deferred<CountryFlagReply>();
 
