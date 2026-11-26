@@ -76,10 +76,10 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     const data = await act<{ rounds: number; binds: number; supplies: number; tilesSupplied: readonly (string | null)[]; hoursSupplied: readonly (number | null)[]; pagesSupplied: readonly unknown[]; artSupplied: readonly unknown[]; generationKept: boolean }>('testDataSupplied()');
     assert.deepEqual([data.binds, data.generationKept], [0, true], `${data.rounds} rounds of new tiles, hover answers, row pages and art bind nothing and keep the binding generation, so the installed picture is not dimmed and in-flight pictures are not refused (${data.binds} binds)`);
     const rounds = Array.from({ length: data.rounds }, (_, at) => at + 1);
-    assert.equal(data.supplies, data.rounds * 2, 'each round is one supply for the rendered data and one for the art that landed');
-    assert.deepEqual(data.tilesSupplied, rounds.map(round => `GER:${round}`), 'every tile publish is supplied');
-    assert.deepEqual(data.hoursSupplied, rounds, 'every hover answer is supplied');
-    assert.deepEqual(data.pagesSupplied, rounds, 'every row page set is supplied');
+    assert.equal(data.supplies, data.rounds * 2, 'each round changes one data field alone, and that change is one supply, as is each art arrival');
+    assert.deepEqual(data.tilesSupplied, rounds.filter(round => round % 3 === 1).map(round => `GER:${round}`), 'every tile publish is supplied');
+    assert.deepEqual(data.hoursSupplied, [null, ...rounds.filter(round => round % 3 === 2)], 'every hover answer is supplied on its own');
+    assert.deepEqual(data.pagesSupplied, [null, ...rounds.filter(round => round % 3 === 0)], 'every row page set is supplied on its own');
     assert.deepEqual(data.artSupplied, rounds, 'every art arrival is supplied');
 
     const span = await act<{ hoursAdvanced: number; answers: number; binds: number; mode: string }>('testSpanEndOnly()');

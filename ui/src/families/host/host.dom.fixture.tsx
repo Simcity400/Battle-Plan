@@ -866,12 +866,10 @@ window.hostDom = {
     staticSupplies = [];
     const rounds = 10;
     for (let round = 1; round <= rounds; round++) {
-      currentState = {
-        ...currentState,
-        tiled: { main: new Map([['GER', tiledLine(round)]]) },
-        hovers: { hover: { hour: round, data: { round } } },
-        paged: { log: { mark: round } } as unknown as PagedRows,
-      };
+      const field = round % 3;
+      currentState = field === 1 ? { ...currentState, tiled: { main: new Map([['GER', tiledLine(round)]]) } }
+        : field === 2 ? { ...currentState, hovers: { hover: { hour: round, data: { round } } } }
+        : { ...currentState, paged: { log: { mark: round } } as unknown as PagedRows };
       renderApp();
       await frames(2);
       staticArt.land({ mark: round } as unknown as ArtResolutions);
