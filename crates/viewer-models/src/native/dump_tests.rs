@@ -1655,8 +1655,8 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
 
 #[test]
 #[ignore = "requires a GPU"]
-fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_renderer() {
-    let (_serial, device, _queue) = tests::device();
+fn a_model_pass_draws_only_after_its_placed_mesh_is_resident() {
+    let (_serial, device, queue) = tests::device();
     let arena = shader_pipeline::gpu::Arena::new(&device);
     let pass = ModelPass::with_rigs_for_tests(Vec::new(), "unit models");
     assert!(pass.layers.is_none());
@@ -1710,6 +1710,24 @@ fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_re
     pass.prepare_casters(&arena, frame, inputs)
         .expect("nor are its casters");
     assert!(pass.native.borrow().is_none(), "no renderer, so no content stack, was asked for");
+
+    let (_directory, library, _) = fixture();
+    let mut pass = ModelPass::new(&library, "unit models");
+    pass.settle_builds(true);
+    let triangle = library.meshes.iter().position(|mesh| mesh.name == "defined_triangle").unwrap();
+    let field = ModelField::build(&library, vec![(triangle, ModelInstance { scale: 1., ..Default::default() })], 128.);
+    pass.set_field(&library, field);
+    let frame = ModelFrame { visible: None, seen: None, ..frame };
+    let error = pass.prepare_kept(&arena, frame, inputs, Queue::Regular, &mut object).err().unwrap();
+    assert!(error.to_string().contains("material is not resident"), "{error}");
+    assert_eq!(pass.drawn(), 0);
+    let error = pass.prepare_casters(&arena, frame, inputs).unwrap_err();
+    assert!(error.to_string().contains("material is not resident"), "{error}");
+
+    pass.make_field_resident(&device, &queue).unwrap();
+    let first = pass.prepare_kept(&arena, frame, inputs, Queue::Regular, &mut object).unwrap();
+    assert_eq!(first.draws.len(), 1, "{:?}", pass.refusal_lines(arena.frame()));
+    pass.recycle_kept(first);
 }
 
 #[test]
@@ -1726,11 +1744,7 @@ fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is
     let decode = Decode::default();
     let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
     let mut library = ModelLibrary::empty(decode);
-    library.textures.push(crate::ModelTexture {
-        path: Some(path),
-        layers: Some(Arc::clone(&layers)),
-        held: std::sync::Mutex::new(Some(source)),
-    });
+    library.textures.push(crate::ModelTexture::readable(path, Arc::clone(&layers), source));
     library.spaces.push(ColorSpace::Srgb);
     let (_serial, device, queue) = tests::device();
     let shared = library.device_textures(&device);
@@ -1744,4 +1758,26 @@ fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is
     let reread = library.gpu_texture(&rebuilt, &device, &queue, "painted", 0).unwrap();
     assert_eq!(reread.texture.size().width, 2);
     assert!(library.textures[0].source().is_none());
+}
+
+#[test]
+fn a_pass_drops_only_the_library_sources_it_can_read_again() {
+    let directory = TestDir::new();
+    let root = &directory.0;
+    std::fs::create_dir_all(root.join("gfx/models")).unwrap();
+    let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 0x28];
+    tga.extend([10u8, 20, 30, 255].repeat(4));
+    std::fs::write(root.join("gfx/models/painted.tga"), &tga).unwrap();
+    let layers = Arc::new(ResolvedLayers::from_folders(&[(root, &[])]).unwrap());
+    let path = "gfx/models/painted.tga".to_owned();
+    let decode = Decode::default();
+    let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
+    let mut library = ModelLibrary::empty(decode);
+    library.textures.push(crate::ModelTexture::readable(path, layers, source));
+    library.spaces.push(ColorSpace::Srgb);
+    let blank = library.blank(ColorSpace::Srgb);
+    let pass = ModelPass::new(&library, "warmed");
+    assert!(library.textures[0].source().is_none(), "a texture read from the installation is read again when first drawn");
+    assert!(library.textures[blank].source().is_some(), "a texture made in memory has no file to read again");
+    assert!(pass.sources[0].0.source().is_none(), "the pass shares the library's texture, not a copy of its bytes");
 }
