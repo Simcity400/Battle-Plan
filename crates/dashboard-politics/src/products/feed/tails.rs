@@ -555,7 +555,7 @@ fn chips(list: List) -> (Vec<Chip>, &'static [&'static str]) {
 
 fn only_row(scanned: &index::Scanned, index: &Index<Item>, row: Option<&str>, answer: &mut Answer, hour: i32) -> bool {
     let Some(row) = row else { return false };
-    let found = scanned.locate(row).and_then(|key| index.find(key)).filter(|&at| index.get(at).date <= hour);
+    let found = scanned.locate(row).and_then(|key| index.find(key)).or_else(|| index::family_at(index, row)).filter(|&at| index.get(at).observed <= hour);
     answer.rows = found
         .map(|at| {
             let state = index.get(at).state_at(hour);
@@ -564,6 +564,10 @@ fn only_row(scanned: &index::Scanned, index: &Index<Item>, row: Option<&str>, an
         .into_iter()
         .collect();
     true
+}
+
+pub(super) fn listed_choice(edges: &[ScriptEdge]) -> Option<i32> {
+    edges.iter().rfind(|edge| edge.row.kind == EventFeedKind::EventOptionSelected && edge.option.is_none_or(|option| option >= 0)).and_then(|edge| edge.option)
 }
 
 fn chosen_names(item: &mut super::EventFeedItem, chosen: Option<i32>) {
@@ -592,6 +596,10 @@ pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, windo
         }
         if !window {
             row.window = None;
+        } else if let Some(presented) = row.window.as_mut().and_then(|window| window.presented.as_mut()) {
+            presented.description = None;
+            presented.options = None;
+            presented.not_offered = None;
         }
         if matches!(row.decision_state, Some(super::DecisionLifecycleState::NotApplicable { .. })) {
             row.decision_state = None;
@@ -632,13 +640,10 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         for at in edges.iter().filter(|edge| edge.hour <= hour) {
             events.push(read.get(&at.key).ok_or_else(|| invalid("A card's edge was not read back"))?);
         }
-        let opened = edges.first().is_some_and(|first| first == head) && EventFeedKind::of_code(events[first].code).is_some_and(|kind| list.openers().contains(&kind)) && events[first].opener.is_none();
+        let opened = edges.first().is_some_and(|first| first == head) && events.get(first).is_some_and(|event| EventFeedKind::of_code(event.code).is_some_and(|kind| list.openers().contains(&kind)) && event.opener.is_none());
         spans.push((first, events.len(), opened));
     }
-    let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
-    if !opened_row {
-        listed(&mut presented, list == List::Decisions, list == List::Decisions);
-    }
+    let presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
     let mut rows = Vec::with_capacity(answer.rows.len());
     for (shown, (first, end, opened)) in answer.rows.iter().zip(spans) {
         let occurrence = prepared.index.get(shown.at);
@@ -646,9 +651,12 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         if list == List::Decisions {
             super::decision_state::enforce_same_incarnation(&events[first..end], &mut card);
         }
+        if !opened_row {
+            listed(&mut card, list == List::Decisions, list == List::Decisions);
+        }
         let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
         if !opened_row {
-            let chosen = edges.iter().find_map(|edge| edge.option);
+            let chosen = listed_choice(&edges);
             let mut named = false;
             for edge in &mut edges {
                 if named {

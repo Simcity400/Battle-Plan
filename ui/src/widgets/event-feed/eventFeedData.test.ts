@@ -94,13 +94,14 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
     ['War support', '−15%'],
   ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
-  const envoyTip = (hover: { key: string; description: string | null; gaps: string | null; missing: string | null; effectsMissing: string[] } | null) => {
+  const envoyTip = (hover: { key: string; description: string | null; gaps: string | null; options: (string | null)[] | null; missing: string | null } | null) => {
     const extra = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: true, hover }).rows.find(r => r.key === 'k1')?.tooltipExtra;
-    return ((typeof extra === 'function' ? extra() : extra) ?? []).filter(r => r.label === 'Description').map(r => (r.value.kind === 'known' ? r.value.value : r.value.kind === 'notRecorded' ? `not recorded: ${r.value.reason}` : r.value.kind));
+    return ((typeof extra === 'function' ? extra() : extra) ?? []).filter(r => r.label === 'Description' || r.label.startsWith('Option ')).map(r => `${r.label}: ${r.value.kind === 'known' ? r.value.value : r.value.kind === 'notRecorded' ? `not recorded: ${r.value.reason}` : r.value.kind}`);
   };
-  assert.deepEqual(envoyTip(null), [], 'a listed row carries no description until its row is read');
-  assert.deepEqual(envoyTip({ key: 'k1', description: 'An envoy arrives.', gaps: null, missing: null, effectsMissing: [] }), ['An envoy arrives.'], 'the hovered row brings its description');
-  assert.deepEqual(envoyTip({ key: 'k1', description: null, gaps: null, missing: 'This event is not in the log at the hour it was read', effectsMissing: [] }), ['not recorded: This event is not in the log at the hour it was read']);
+  assert.deepEqual(envoyTip(null), [], 'a listed row carries no description or option text until its row is read');
+  assert.deepEqual(envoyTip({ key: 'k1', description: 'An envoy arrives.', gaps: null, options: ['Accept', null], missing: null }),
+    ['Description: An envoy arrives.', 'Option A: Accept', 'Option B: not recorded: Option text not recorded'], 'the hovered row brings its description and every option it offers');
+  assert.deepEqual(envoyTip({ key: 'k1', description: null, gaps: null, options: null, missing: 'This event is not in the log at the hour it was read' }), ['Description: not recorded: This event is not in the log at the hour it was read']);
   const foldRow = model.rows.find(r => r.key.startsWith('fold:'))!;
   assert.equal(foldRow.name, '5 events');
   assert.equal(foldRow.children?.length, 5);

@@ -5,7 +5,7 @@ use super::{
     families,
     row::{Columns, FeedEvent, Slot},
 };
-use dashboard_base::{Source, catalogue::Catalogue, products::LoadContext, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{
     Query,
     identity::Holder,
@@ -110,7 +110,7 @@ pub(crate) struct Scanned {
     pub gaps: Vec<MissingSpan>,
 }
 
-pub(crate) type HeldRow = Arc<(Option<EventFeedRow>, Notices)>;
+pub(crate) type HeldRow = Arc<(Option<EventFeedRow>, Notices, OwnRefusals)>;
 
 const PRESENTED_REQUESTS: u64 = 32;
 
@@ -180,7 +180,8 @@ impl Scanned {
             return;
         }
         for (event, row) in made {
-            memo.rows.insert(presented_key(event, effects), (request, row));
+            let held = memo.rows.entry(presented_key(event, effects)).or_insert((request, Arc::clone(&row)));
+            held.0 = held.0.max(request);
         }
         let floor = memo.request.saturating_sub(PRESENTED_REQUESTS);
         memo.rows.retain(|_, (used, _)| *used > floor);
@@ -543,6 +544,10 @@ fn choices(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
         made.push(card_occurrence(&card, head, names, states));
     }
     Index::new(made, scanned.gaps.clone(), &LIVE)
+}
+
+pub(crate) fn family_at(index: &Index<Item>, id: &str) -> Option<u32> {
+    index.find(family_id(id)).filter(|&at| matches!(&index.get(at).payload, Item::Family(row) if row.id == id))
 }
 
 fn family_id(text: &str) -> u128 {

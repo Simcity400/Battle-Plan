@@ -684,7 +684,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     let b2_h101 = pack(
         101,
         EventFeedCoverage::Complete,
-        vec![dec_ev(11, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None)],
+        vec![
+            dec_ev(11, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None),
+            dec_ev(14, 100, EventFeedSource::DecisionSelected, 4, None, None, None, None),
+        ],
     );
 
     let replay = Replay::from_records(
@@ -782,6 +785,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     );
 
     let feed_b2 = EventFeedTail::load(&replay_source, &ask("2"), &context, &cancel).unwrap();
+    let late = |hour: i32| EventFeedTail::load(&replay_source, &EventFeedTailParams { hour: Some(hour), row: Some("native:1:14".into()), limit: 1, ..ask("2") }, &context, &cancel).unwrap().rows.len();
+    assert_eq!((late(100), late(101)), (0, 1), "an event dated 100 but first read at 101 opens only from 101");
+    let late_card = |hour: i32| DecisionsTail::load(&replay_source, &ScriptTailParams { branch_id: "2".into(), row: Some("native:1:14".into()), limit: 1, ..cards_at(hour) }, &context, &cancel).unwrap().rows.len();
+    assert_eq!(late_card(100), 0, "nor does its card open before it was read");
     assert_eq!(
         state_of(&feed_b2, "native:1:11"),
         Some(DecisionLifecycleState::NotRecorded { reason: DECISION_CONTAINER_NOT_RECORDED.to_owned() }),
@@ -1087,6 +1094,10 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     let at = |hour: i32| EventFeedTail::load(&replay_source, &ask(hour), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let early = at(101);
     assert!(!early.warnings.iter().any(|warning| warning.contains("template token 77")), "a refusal first read at 103 is not in the reply at 101: {:?}", early.warnings);
+    let joined_key = early.rows.iter().find(|row| row.row.as_ref().is_some_and(|row| row.kind == EventFeedKind::FactionJoined)).map(|row| row.key.clone()).expect("faction join listed at 101");
+    let opened = |hour: i32| EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some(joined_key.clone()), limit: 1, ..ask(hour) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(opened(104).rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), [joined_key.as_str()], "a family row opens by its key");
+    assert!(opened(100).rows.is_empty(), "and is not in the log before it was observed");
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
 }
@@ -1138,4 +1149,36 @@ fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_
     let mut feed = vec![Some(row)];
     super::tails::listed(&mut feed, false, false);
     assert_eq!(feed[0].as_ref().unwrap().item.as_ref().unwrap().description, None);
+}
+
+#[test]
+fn a_listed_choice_card_names_the_option_its_last_choice_took() {
+    let chosen = |option: Option<i32>, kind: EventFeedKind| super::cards::ScriptEdge {
+        row: super::EventFeedRow {
+            id: "native:1:1".into(),
+            hour: 100,
+            read_hour: 100,
+            name_hour: 100,
+            exact: true,
+            category: super::EventFeedCategory::Politics,
+            kind,
+            tags: Vec::new(),
+            participants: None,
+            item: None,
+            amount: None,
+            cause: None,
+            strike: None,
+            decision_state: None,
+            window: None,
+        },
+        option,
+        lifecycle: None,
+        days: None,
+        costs: None,
+    };
+    let select = EventFeedKind::EventOptionSelected;
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(-1), select), chosen(Some(1), select)]), Some(1), "immediate effects are not the choice");
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(0), select), chosen(Some(2), select)]), Some(2), "the last choice is the one shown");
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(1), select), chosen(Some(3), EventFeedKind::ScriptEventFired)]), Some(1));
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(-1), select)]), None);
 }

@@ -8,11 +8,9 @@ export interface HoverText {
   readonly key: string;
   readonly description: string | null;
   readonly gaps: string | null;
+  readonly options: readonly (string | null)[] | null;
   readonly missing: string | null;
-  readonly effectsMissing: readonly string[];
 }
-
-const SEPARATOR = '\u0000';
 
 export function withHoverText(options: ResolvedViewOptions, text: HoverText | null): ResolvedViewOptions {
   if (!text) return options;
@@ -21,30 +19,52 @@ export function withHoverText(options: ResolvedViewOptions, text: HoverText | nu
     hoverRow: text.key,
     hoverDescription: text.description,
     hoverGaps: text.gaps,
+    hoverOptions: text.options ? JSON.stringify(text.options) : null,
     hoverMissing: text.missing,
-    hoverEffectsMissing: text.effectsMissing.length ? text.effectsMissing.join(SEPARATOR) : null,
   };
+}
+
+function optionNames(value: OptionValue | undefined): readonly (string | null)[] | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const names: unknown = JSON.parse(value);
+    return Array.isArray(names) && names.every(name => name === null || typeof name === 'string') ? names : null;
+  } catch {
+    return null;
+  }
 }
 
 export function hoverTextOf(options: Readonly<Record<string, OptionValue>>): HoverText | null {
   const text = (value: OptionValue | undefined): string | null => (typeof value === 'string' ? value : null);
   const key = text(options.hoverRow);
   if (key === null) return null;
-  const effects = text(options.hoverEffectsMissing);
-  return { key, description: text(options.hoverDescription), gaps: text(options.hoverGaps), missing: text(options.hoverMissing), effectsMissing: effects ? effects.split(SEPARATOR) : [] };
+  return { key, description: text(options.hoverDescription), gaps: text(options.hoverGaps), options: optionNames(options.hoverOptions), missing: text(options.hoverMissing) };
 }
 
+const readFor = (hover: HoverText | null, key: string): HoverText | null => (hover?.key === key ? hover : null);
+
 export function descriptionRows(hover: HoverText | null, key: string, listed: string | null | undefined): TooltipExtraRow[] {
-  const read = hover?.key === key ? hover : null;
+  const read = readFor(hover, key);
   const description = read?.description ?? listed ?? null;
   const out: TooltipExtraRow[] = [];
   if (description) out.push({ label: 'Description', value: knownValue(plainScripted(description)), divider: true });
   if (read?.missing) out.push({ label: description ? 'Full description' : 'Description', value: notRecorded(read.missing), ...(description ? {} : { divider: true }) });
-  for (const reason of read?.effectsMissing ?? []) out.push({ label: 'Authored effects', value: notRecorded(reason) });
   return out;
 }
 
 export function gapRows(hover: HoverText | null, key: string): TooltipExtraRow[] {
-  const gaps = hover?.key === key ? hover.gaps : null;
+  const gaps = readFor(hover, key)?.gaps;
   return gaps ? [{ label: 'Text not recorded', value: notRecorded(gaps) }] : [];
+}
+
+export function unreadRows(hover: HoverText | null, key: string): TooltipExtraRow[] {
+  const missing = readFor(hover, key)?.missing;
+  return missing ? [{ label: 'Text not recorded', value: notRecorded(missing) }] : [];
+}
+
+export function optionRows(hover: HoverText | null, key: string, letter: (index: number) => string): TooltipExtraRow[] {
+  return (readFor(hover, key)?.options ?? []).map((name, index) => ({
+    label: `Option ${letter(index)}`,
+    value: name !== null ? knownValue(plainScripted(name)) : notRecorded('Option text not recorded'),
+  }));
 }

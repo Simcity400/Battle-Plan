@@ -152,12 +152,12 @@ export default function DecisionDetailWindow({ subject, detail, anchor, onClose 
             <p className="dcd-desc dcd-missing">Reading the decision's text…</p>
           ) : detail?.missing ? (
             <p className="dcd-desc dcd-missing" title={detail.missing}>Not recorded: {detail.missing}</p>
-          ) : description ? (
+          ) : (
             <>
-              <p className="dcd-desc">{plainScripted(description)}</p>
+              {description ? <p className="dcd-desc">{plainScripted(description)}</p> : null}
               {detail?.effectsMissing?.map(reason => <p key={reason} className="dcd-desc dcd-missing" title={reason}>Authored effects not recorded: {reason}</p>)}
             </>
-          ) : null}
+          )}
         </div>
       ) : null}
     </DetailWindowHost>

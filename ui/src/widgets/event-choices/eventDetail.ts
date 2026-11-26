@@ -94,11 +94,11 @@ export function useHoverText(
   const key = answered ? shown!.key : null;
   const description = answered?.item?.description ?? null;
   const gaps = answered?.item?.gaps ?? null;
+  const named = answered?.item?.options ? JSON.stringify(answered.item.options.map(option => option.name)) : null;
   const missing = answered?.missing ?? null;
-  const effects = answered?.effectsMissing?.join('\u0000') ?? '';
   const text = useMemo<HoverText | null>(
-    () => (key === null ? null : { key, description, gaps, missing, effectsMissing: effects ? effects.split('\u0000') : [] }),
-    [key, description, gaps, missing, effects],
+    () => (key === null ? null : { key, description, gaps, options: named === null ? null : JSON.parse(named) as (string | null)[], missing }),
+    [key, description, gaps, named, missing],
   );
   return { onHoverRow, text };
 }

@@ -428,9 +428,12 @@ pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &
     for &at in &order {
         dashboard_text::metadata::check_cancel(cancelled)?;
         if held[at].is_none() {
-            let mut said = Notices::default();
-            let row = present(events[at], names, presenter, &mut said)?;
-            let kept: index::HeldRow = Arc::new((row, said));
+            let (presented, own) = catalogue::capture(|| {
+                let mut said = Notices::default();
+                present(events[at], names, presenter, &mut said).map(|row| (row, said))
+            });
+            let (row, said) = presented?;
+            let kept: index::HeldRow = Arc::new((row, said, own));
             made.push((events[at], Arc::clone(&kept)));
             held[at] = Some(kept);
         }
@@ -439,6 +442,7 @@ pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &
     let mut out: Vec<Option<EventFeedRow>> = vec![None; events.len()];
     for &at in &order {
         let Some(kept) = held[at].as_ref() else { continue };
+        catalogue::credit(&kept.2);
         notices.absorb(&kept.1);
         let mut presented = kept.0.clone();
         if let Some(row) = presented.as_mut() {

@@ -21,7 +21,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
-import { gapRows, hoverTextOf, type HoverText } from '../event-feed/hoverText.ts';
+import { gapRows, hoverTextOf, unreadRows, type HoverText } from '../event-feed/hoverText.ts';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
 import { daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
@@ -133,7 +133,7 @@ function buildChoiceRow(
     if (at.choice) out.push({ label: 'Chosen', value: knownValue(formatDateTime(at.choice.row.hour)) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Title not recorded', value: notRecorded(reasons.nameMissing) });
-    out.push(...gapRows(hover, card.occurrence.id));
+    out.push(...gapRows(hover, card.occurrence.id), ...unreadRows(hover, card.occurrence.id));
     return out;
   };
 

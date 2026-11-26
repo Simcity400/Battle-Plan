@@ -336,7 +336,7 @@ test('a decision tooltip shows its listed description until the hovered row is r
     return shown.filter(row => ['Description', 'Full description', 'Authored effects', 'Text not recorded'].includes(row.label))
       .map(row => [row.label, row.value.kind === 'known' ? row.value.value : row.value.kind === 'notRecorded' ? `not recorded: ${row.value.reason}` : row.value.kind]);
   };
-  const read = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', gaps: null, missing: null, effectsMissing: [] };
+  const read = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', gaps: null, options: null, missing: null };
   assert.deepEqual(tip(null), [['Description', 'Raise war bonds.']], 'before the read answers, the listed description');
   assert.deepEqual(tip(read), [['Description', 'Raise war bonds. Effects: +5% war support']], 'the read row brings the full text');
   assert.deepEqual(tip({ ...read, key: other.id }), [['Description', 'Raise war bonds.']], 'a read of another row changes nothing here');
@@ -346,7 +346,4 @@ test('a decision tooltip shows its listed description until the hovered row is r
   assert.deepEqual(tip({ ...read, gaps: 'GER_war_bonds.d shows its scripted text elided' }), [
     ['Text not recorded', 'not recorded: GER_war_bonds.d shows its scripted text elided'], ['Description', 'Raise war bonds. Effects: +5% war support'],
   ], 'the text the read row could not expand is named once its row is read');
-  assert.deepEqual(tip({ ...read, effectsMissing: ['GER_war_bonds complete_effect: inputs not recorded'] }), [
-    ['Description', 'Raise war bonds. Effects: +5% war support'], ['Authored effects', 'not recorded: GER_war_bonds complete_effect: inputs not recorded'],
-  ]);
 });
