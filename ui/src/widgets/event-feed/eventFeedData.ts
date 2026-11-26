@@ -1,7 +1,7 @@
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import type { ProductRequest } from '../../dashboard/client';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedKindInfo, EventFeedRow } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedKindInfo, EventFeedRow, ScriptEdge } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
@@ -122,4 +122,14 @@ export function feedKindLabel(kind: string): string {
   if (known) return known;
   const spaced = kind.replace(/([A-Z])/g, ' $1').trim();
   return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1).toLowerCase() : kind;
+}
+
+export function effectiveEventItem(event: EventFeedRow, choice: ScriptEdge | null): EventFeedItem | null {
+  const base = event.item;
+  const fallback = choice?.row.item ?? null;
+  if (!base) return fallback;
+  if ((!base.options || base.options.length === 0) && fallback?.options?.length) {
+    return { ...base, options: fallback.options };
+  }
+  return base;
 }

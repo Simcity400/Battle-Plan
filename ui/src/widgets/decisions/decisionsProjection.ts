@@ -23,6 +23,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
+import { descriptionRows, hoverTextOf, type HoverText } from '../event-feed/hoverText.ts';
 import { plainScripted, reasonsOf } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import type { DecisionDetailSubject } from './DecisionDetailWindow.tsx';
@@ -42,6 +43,7 @@ import { DECISIONS_COLUMNS } from './definition.ts';
 export interface DecisionsProjectionOptions {
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
+  readonly hover?: HoverText | null;
 }
 
 const HEAD_LIMIT = 256;
@@ -157,6 +159,7 @@ function buildDecisionRow(
   live: boolean,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
+  hover: HoverText | null,
 ): { readonly row: TableRow; readonly nextChangeAt: number } {
   const { card } = at;
   const firstRow = card.occurrence.edges[0]!.row;
@@ -242,7 +245,7 @@ function buildDecisionRow(
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
     if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
-    if (card.item?.description) out.push({ label: 'Description', value: knownValue(plainScripted(card.item.description)), divider: true });
+    out.push(...descriptionRows(hover, card.occurrence.id, card.item?.description));
     return out;
   };
 
@@ -337,7 +340,7 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
         const recorded = rawRow.status ? RECORDED_STATUS[rawRow.status] : null;
         const effective = recorded ? { ...resolved, status: recorded } : resolved;
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : effective.status === 'active';
-        const built = buildDecisionRow(readView, effective, live, options.artwork, boundary);
+        const built = buildDecisionRow(readView, effective, live, options.artwork, boundary, options.hover ?? null);
         if (asOf === hour && built.nextChangeAt > hour && built.nextChangeAt < nextTimerChange) nextTimerChange = built.nextChangeAt;
         return built.row;
       },
@@ -415,6 +418,6 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   },
   projection: decisionsProjection,
   projectionOptions(ctx): DecisionsProjectionOptions {
-    return { artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch) };
+    return { artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
   },
 };
