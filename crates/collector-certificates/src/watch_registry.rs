@@ -435,7 +435,7 @@ impl WatchRegistry {
         if !self.quiet_now_fast() {
             return false;
         }
-        if !self.synchronous && asymmetric::flush_writers() {
+        if !self.synchronous && asymmetric::flush_writers_for(self.tag()) {
             self.quiet_now_fast()
         } else {
             true
@@ -481,7 +481,7 @@ impl WatchRegistry {
         if asymmetric::current_thread_has(tag) || asymmetric::any_active(tag) {
             return None;
         }
-        if asymmetric::flush_writers() {
+        if asymmetric::flush_writers_for(tag) {
             state = self.state.0.load(SeqCst);
             if running(state) != 0 || state & UNTRUSTED != 0 || asymmetric::any_active(tag) {
                 return None;
@@ -494,7 +494,7 @@ impl WatchRegistry {
         let result = (|| {
             if self.dirty.swap(false, SeqCst) {
                 self.revision.fetch_add(1, SeqCst);
-                asymmetric::flush_writers();
+                asymmetric::flush_writers_for(tag);
             }
             let state = self.state.0.load(SeqCst);
             if running(state) != 0 || state & UNTRUSTED != 0 || asymmetric::any_active(tag) {
@@ -1146,7 +1146,7 @@ impl WatchRegistry {
                 running(state) as usize
             };
         }
-        asymmetric::flush_writers();
+        asymmetric::flush_writers_for(self.tag());
         let state = self.state.0.load(SeqCst);
         if state & UNTRUSTED != 0 {
             UNTRUSTED_ACTIVE
@@ -1168,7 +1168,7 @@ impl WatchRegistry {
         if (running(state) as usize).saturating_add(asymmetric::count_active(tag)) > 1 {
             return None;
         }
-        asymmetric::flush_writers();
+        asymmetric::flush_writers_for(tag);
         let state = self.state.0.load(SeqCst);
         if state & UNTRUSTED != 0 {
             return None;
@@ -1184,7 +1184,7 @@ impl WatchRegistry {
         let result = (|| {
             if self.dirty.swap(false, SeqCst) {
                 self.revision.fetch_add(1, SeqCst);
-                asymmetric::flush_writers();
+                asymmetric::flush_writers_for(tag);
             }
             let state = self.state.0.load(SeqCst);
             let total = (running(state) as usize).saturating_add(asymmetric::count_active(tag));

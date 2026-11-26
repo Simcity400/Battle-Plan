@@ -585,7 +585,7 @@ impl FramePool {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return false;
         }
-        if self.len() >= STEADY || live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
+        if live > SURPLUS_CAP || self.live_bytes() > MAX_LIVE_BYTES {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return true;
         }

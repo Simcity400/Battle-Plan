@@ -1195,15 +1195,60 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
                 unobserved!();
                 return;
             };
-            for ordinal in 0..array.count {
-                let Some(pointer) = array
-                    .element(ordinal, 8)
-                    .and_then(|p| engine_native_memory::read::<u64>(memory, p))
-                else {
-                    unobserved!();
-                    return;
-                };
-                mark_design(memory, base, pointer as usize, false);
+            if array.count == 0 {
+                return;
+            }
+            let Some(mutex) = STORE.get() else {
+                unobserved!();
+                return;
+            };
+            const ROSTER_BATCH: usize = 64;
+            let mut bytes = [0_u8; ROSTER_BATCH * 8];
+            let mut to_mark = [0_usize; ROSTER_BATCH];
+            let mut first_ord = 0_u32;
+            while first_ord < array.count {
+                let count = ((array.count - first_ord) as usize).min(ROSTER_BATCH);
+                let batch_ok = array
+                    .slice(first_ord, count as u32, 8)
+                    .ok()
+                    .is_some_and(|span| {
+                        engine_native_memory::read_slice(memory, span.data, &mut bytes[..count * 8])
+                    });
+                let mut mark_len = 0usize;
+                {
+                    let store = callback_store(mutex);
+                    if store.epoch != EPOCH.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if batch_ok {
+                        for chunk in bytes[..count * 8].chunks_exact(8) {
+                            let pointer = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+                            if store.watched.contains_key(&pointer) {
+                                to_mark[mark_len] = pointer;
+                                mark_len += 1;
+                            }
+                        }
+                    } else {
+                        for ordinal in first_ord..first_ord + count as u32 {
+                            let Some(pointer) = array
+                                .element(ordinal, 8)
+                                .and_then(|p| engine_native_memory::read::<u64>(memory, p))
+                            else {
+                                unobserved!();
+                                return;
+                            };
+                            let pointer = pointer as usize;
+                            if store.watched.contains_key(&pointer) {
+                                to_mark[mark_len] = pointer;
+                                mark_len += 1;
+                            }
+                        }
+                    }
+                }
+                for &pointer in &to_mark[..mark_len] {
+                    repair::mark(pointer);
+                }
+                first_ord += count as u32;
             }
         }
         Receiver::Removed => {}

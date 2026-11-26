@@ -5484,7 +5484,7 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 }
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
-    frame_builder_with_grace(shared, sizing, Duration::from_millis(6), |_| {});
+    frame_builder_with_grace(shared, sizing, Duration::from_millis(35), |_| {});
 }
 
 #[cfg(test)]
@@ -5592,9 +5592,9 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         }
         let reclaim_interval = |followups: u8| {
             if followups > 0 {
-                Duration::from_millis(750)
+                Duration::from_secs(5)
             } else {
-                Duration::from_secs(8)
+                Duration::from_secs(30)
             }
         };
         if reclaim_now || last_reclaim.elapsed() >= reclaim_interval(followup_reclaims) {

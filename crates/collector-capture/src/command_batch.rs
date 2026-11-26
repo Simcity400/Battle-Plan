@@ -142,12 +142,12 @@ unsafe extern "system" fn batch(session: usize) -> usize {
         unsafe { std::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(session) });
     DEPTH.set(depth);
+    drop(timing);
     if depth == 0 {
         BATCHING.fetch_sub(1, Ordering::SeqCst);
         crate::capture_point::batch_left();
     }
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
-    drop(timing);
     result
 }
 
