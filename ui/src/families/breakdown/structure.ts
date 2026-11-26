@@ -2,7 +2,7 @@ import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { layoutBreakdown, type BreakdownLayout, type DrawnItem } from './layout.ts';
-import { breakdownLevel, COMPARISON_KEY, type BreakdownModel, type BreakdownTotal } from './model.ts';
+import { breakdownLevel, COMPARISON_KEY, findBreakdownPart, type BreakdownModel, type BreakdownTotal } from './model.ts';
 
 function spoken(item: DrawnItem, total: BreakdownTotal): string {
   const { part } = item;
@@ -57,8 +57,15 @@ export function deriveBreakdownAudit(model: BreakdownModel, layout: BreakdownLay
   }
   if (model.empty) rows.push(auditRow('__empty__', `${model.empty}${model.emptyDetail ? `:${model.emptyDetail}` : ''}`));
   for (const item of layout?.items ?? []) rows.push(auditRow(item.key, drawn(item)));
+  const drawnPart = (key: string, kind: string) => {
+    const found = findBreakdownPart(model.parts, key)?.part;
+    if (found) rows.push(auditRow(`${key}:${kind}`, `${found.exact ?? found.text}|${found.parentShare ?? ''}`));
+  };
   if (layout?.view === 'parts') {
-    for (const row of layout.rows) for (const segment of row.segments) rows.push(auditRow(`${segment.key}:segment`, segment.text));
+    for (const row of layout.rows) for (const segment of row.segments) drawnPart(segment.key, 'segment');
+  }
+  if (layout?.view === 'ring') {
+    for (const slice of layout.outerSlices) if (slice.key !== slice.parentKey) drawnPart(slice.key, 'slice');
   }
   return rows;
 }

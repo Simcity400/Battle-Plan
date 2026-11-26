@@ -444,10 +444,11 @@ fn territory_breakdown(
             },
             None => Node::new(REGION_UNKNOWN, "Region not recorded", u32::MAX).other(),
         };
-        let amount = amount(row, column);
-        if matches!(amount, Amount::Known(known) if known.numerator() == 0) {
-            continue;
-        }
+        let amount = match (amount(row, column), unread) {
+            (Amount::Known(known), _) if known.numerator() == 0 => continue,
+            (Amount::Known(known), Some(reason)) => Amount::Partial(known, reason.to_owned()),
+            (amount, _) => amount,
+        };
         leaves.push(Leaf { path: vec![country, region], amount, count: None, last: None });
     }
     if let Some(reason) = unread {
@@ -642,6 +643,7 @@ mod tests {
         let truncated = territory_breakdown(&rows[..2], &tags, &params, None, Ok(&regions), Some("read only in part"));
         assert_eq!(truncated.total.state, BreakdownState::AtLeast, "a truncated table keeps the witnessed regions and is never a complete total");
         assert_eq!(truncated.parts[0].key, "slot:1");
+        assert_eq!(truncated.parts[0].state, BreakdownState::Partial, "a country whose other regions may be among the unread rows is no exact subtotal");
         let unread = [held(1, 7, Recorded::NotRecorded, 3), held(3, 8, Recorded::Value(2), 1)];
         let partly = territory_breakdown(&unread, &tags, &params, None, Err("names not read"), None);
         assert_eq!(partly.total.state, BreakdownState::AtLeast, "a region not recorded is never zero");

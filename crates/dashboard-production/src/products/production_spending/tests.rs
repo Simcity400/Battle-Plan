@@ -282,3 +282,39 @@ fn a_range_counts_only_what_was_spent_inside_it_and_refuses_a_baseline_across_a_
     let across = restarted.between(30, 80, ProductionSpendingScope::Military, false);
     assert_eq!(across.breakdown.total.state, BreakdownState::NotRecorded, "a range whose baseline is in an earlier observation is not a difference of two counters");
 }
+
+#[test]
+fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_range_never_subtracts_across_it() {
+    let mut rows = BTreeMap::new();
+    rows.insert((false, 1, Some(OutputPurpose::New.raw())), vec![(0, 49, row(Some(40_000_000))), (50, 100, row(Some(1_000_000)))]);
+    rows.insert((false, 2, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(1_000_000)))]);
+    let read = SpanRead {
+        span: span(0, 100, false),
+        lines: vec![(0, 100, Context::Known)],
+        rocket: vec![(0, 100, Context::Known)],
+        country: vec![(0, 100, Some((Some(1_000_000), Some(1_000_000))))],
+        rows,
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(1, 0), (2, 0)]),
+        equipment_observations: BTreeSet::from([0, 50]),
+        repairs: None,
+    };
+    let design = |key: &str, domain: Domain| Design { type_key: key.into(), name: Some(key.into()), domain: Some(domain), names: vec![StockVariantName { first_hour: 0, name: Some(key.into()), known: true, design: None }] };
+    let index = SpendingIndex {
+        from: 0,
+        to: 100,
+        country_label: "GER".into(),
+        unknown: Vec::new(),
+        unresolved: Vec::new(),
+        spans: vec![IndexedSpan::new(read, HashMap::from([(1, design("infantry_equipment", Domain::Land)), (2, design("fighter", Domain::Air))]), Vec::new())],
+        rocket_source: None,
+        warnings: Vec::new(),
+    };
+    assert_eq!(index.at(80, ProductionSpendingScope::Military, false).from, 50, "a counter restarted at 50 counts from 50, not the holding's start");
+    assert_eq!(index.at(20, ProductionSpendingScope::Military, false).through, 49);
+    assert_eq!(index.between(30, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "400 then 10 is no difference of one counter");
+    let at_restart = index.between(50, 80, ProductionSpendingScope::Military, false);
+    assert_eq!((at_restart.from, at_restart.breakdown.total.amount), (50, Some(BreakdownAmount { numerator: "20".into(), denominator: "1".into() })), "a range starting at the restart is the new counter");
+    let quiet = index.between(60, 80, ProductionSpendingScope::Military, false);
+    assert_eq!((quiet.breakdown.total.state, quiet.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "0".into(), denominator: "1".into() })), "nothing spent inside the range is exactly zero");
+}

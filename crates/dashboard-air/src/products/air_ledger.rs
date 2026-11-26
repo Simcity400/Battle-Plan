@@ -239,7 +239,7 @@ pub(crate) struct Fold {
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
     in_part: Vec<HourSpan>,
-    unsupported: Vec<(i32, String, String)>,
+    unsupported: Vec<(i32, Option<String>, Option<String>)>,
     unread: Vec<(i32, i32, String)>,
     unjoined: Vec<HourSpan>,
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
@@ -352,10 +352,7 @@ impl Fold {
                 }
                 for event in events {
                     if let Event::Bombing { cause: BuildingBombingDamageCause::Unknown, attacker, victim, .. } = *event {
-                        match (name(attacker), name(Some(victim))) {
-                            (Some(attacker), Some(victim)) => self.unsupported.push((hour, attacker.1, victim.1)),
-                            _ => append_hours(&mut self.in_part, hour, hour),
-                        }
+                        self.unsupported.push((hour, name(attacker).map(|named| named.1), name(Some(victim)).map(|named| named.1)));
                     }
                 }
                 for event in events {

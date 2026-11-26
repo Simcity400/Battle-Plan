@@ -1,4 +1,4 @@
-use super::{MilitaryAirFamily, building_name, scan};
+use super::{Fold, LeafKey, MilitaryAirFamily, building_name, scan};
 use dashboard_base::{
     Source, catalogue,
     products::{
@@ -111,6 +111,31 @@ struct StateStretch {
     by_state: HashMap<u32, usize>,
 }
 
+struct SharedFold {
+    fold: Fold,
+    by_holder: HashMap<(bool, String), Vec<LeafKey>>,
+    unattributed_first: [Option<i32>; 2],
+}
+
+impl SharedFold {
+    fn new(fold: Fold) -> Self {
+        let mut by_holder: HashMap<(bool, String), Vec<LeafKey>> = HashMap::new();
+        let mut unattributed_first = [None, None];
+        for (leaf, deltas) in &fold.leaves {
+            match &leaf.country {
+                Some((_, identity)) => by_holder.entry((leaf.dealt, identity.clone())).or_default().push(leaf.clone()),
+                None => {
+                    if let Some(&(read_hour, _)) = deltas.keys().next() {
+                        let held: &mut Option<i32> = &mut unattributed_first[usize::from(leaf.dealt)];
+                        *held = Some(held.map_or(read_hour, |held| held.min(read_hour)));
+                    }
+                }
+            }
+        }
+        Self { fold, by_holder, unattributed_first }
+    }
+}
+
 #[derive(PartialEq)]
 struct FoldKey {
     branch: u64,
@@ -127,7 +152,7 @@ struct BombingIndex {
     holder_runs: Vec<HolderSpan>,
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
-    unsupported: Vec<(i32, String, String)>,
+    unsupported: Vec<(i32, Option<String>, Option<String>)>,
     unread: Vec<(i32, i32, String)>,
     unjoined: Vec<HourSpan>,
     unattributed_first: Option<i32>,
@@ -242,30 +267,22 @@ impl BombingIndex {
     fn build(source: &Source, query: &Query<'_>, branch: u64, country: &Country, direction: BombingDirection, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self> {
         let (first, last) = (query.timeline.first, query.timeline.last);
         let dealt = direction.dealt();
-        let fold = breakdown::held(source, context, FoldKey { branch, first, last }, || scan(source, query, MilitaryAirFamily::Bombing, (first, last), cancelled))?;
+        let shared = breakdown::held(source, context, FoldKey { branch, first, last }, || scan(source, query, MilitaryAirFamily::Bombing, (first, last), cancelled).map(SharedFold::new))?;
+        let fold = &shared.fold;
         let from = fold.observed.first().map_or(first, |span| span.first_hour);
         let holder_runs = match country {
             Country::Slot(slot) => slot_runs(&query.holders, *slot),
             Country::Tag(tag) => tag_runs(&query.holders, tag),
         };
         let wanted_holders: BTreeSet<String> = holder_runs.iter().filter_map(|run| run.holder.clone()).collect();
-        let mut unattributed_first: Option<i32> = None;
+        let unattributed_first = shared.unattributed_first[usize::from(dealt)];
         let mut grouped: HashMap<String, BTreeMap<(u32, Option<String>, u32), BTreeMap<i32, i128>>> = HashMap::new();
         let mut buildings_needed: BTreeSet<String> = BTreeSet::new();
         let mut states_needed: BTreeSet<u32> = BTreeSet::new();
-        for (leaf, deltas) in &fold.leaves {
-            if leaf.dealt != dealt {
-                continue;
-            }
-            let Some((_, identity)) = leaf.country.as_ref() else {
-                if let Some(&(read_hour, _)) = deltas.keys().next() {
-                    unattributed_first = Some(unattributed_first.map_or(read_hour, |held| held.min(read_hour)));
-                }
-                continue;
-            };
-            if !wanted_holders.contains(identity) {
-                continue;
-            }
+        let wanted = wanted_holders.iter().flat_map(|identity| shared.by_holder.get(&(dealt, identity.clone())).into_iter().flatten());
+        for leaf in wanted {
+            let Some(deltas) = fold.leaves.get(leaf) else { continue };
+            let Some((_, identity)) = leaf.country.as_ref() else { continue };
             let Some((building_id, building_token)) = leaf.building.as_ref() else { continue };
             let Some(state) = leaf.state else { continue };
             if let Some(token) = building_token {
@@ -490,7 +507,10 @@ impl BombingIndex {
         } else if let Some(next_incomplete) = self.incomplete.iter().find(|span| span.first_hour > hour) {
             tighten(&mut through, Some(next_incomplete.first_hour));
         }
-        let touches = |&&(_, ref attacker, ref victim): &&(i32, String, String)| if direction.dealt() { attacker == holder } else { victim == holder };
+        let touches = |&&(_, ref attacker, ref victim): &&(i32, Option<String>, Option<String>)| {
+            let end = if direction.dealt() { attacker } else { victim };
+            end.as_deref().is_none_or(|end| end == holder)
+        };
         if self.unsupported.iter().filter(touches).any(|&(read, _, _)| read <= hour) {
             partial_reasons.push(UNSUPPORTED_CAUSE);
         } else if let Some(&(read, _, _)) = self.unsupported.iter().filter(touches).find(|&&(read, _, _)| read > hour) {

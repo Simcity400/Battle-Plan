@@ -106,7 +106,13 @@ export const territoryShare: BreakdownWidgetSpec<TerritoryShareOptions> = {
   subject: 'territory',
   emptyCampaign: 'Load a campaign to see its territory.',
   icon: 'map',
-  countries: { mode: 'filter' },
+  countries: { mode: 'none' },
+  unavailable: ctx => {
+    const selection = ctx.widget.countries;
+    if (selection.kind === 'factions') return 'World share shows countries; a faction’s combined share is in Race and Lines.';
+    if (selection.kind === 'group' && selection.aggregate) return 'World share shows each member; a group’s combined share is in Race and Lines.';
+    return null;
+  },
   projection: territoryShareProjection,
   projectionOptions: ctx => ({
     measure: measureOf(ctx.options.measure),

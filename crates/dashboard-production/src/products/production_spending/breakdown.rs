@@ -147,13 +147,13 @@ impl IndexedSpan {
             .filter(|(_, design)| design.domain.is_some())
             .filter_map(|(&variant, design)| {
                 let defined = design.names.first().filter(|name| name.known).map(|name| name.first_hour);
-                read.archetype_since.get(&variant).copied().into_iter().chain(defined).min().map(|hour| (variant, hour))
+                read.archetype_since.get(&variant).copied().or(defined).map(|hour| (variant, hour))
             })
             .collect();
         Self { read, designs, type_ordinals, classified, notes }
     }
 
-    fn classified(&self, variant: u64, hour: i32) -> Option<&Design> {
+    pub(crate) fn classified(&self, variant: u64, hour: i32) -> Option<&Design> {
         self.designs.get(&variant).filter(|_| self.classified.get(&variant).is_some_and(|&from| from <= hour))
     }
 
@@ -395,7 +395,7 @@ impl Built {
         ProductionSpendingReply { from: self.from, hour, through: self.through, breakdown, warnings: self.warnings }
     }
 
-    fn minus(mut self, start: &Built) -> Built {
+    fn minus(mut self, start: &Built, classified: impl Fn(u64) -> bool) -> Built {
         let held: HashMap<Vec<String>, &Amount> = start.leaves.iter().map(|leaf| (leaf_key(leaf), &leaf.amount)).collect();
         for leaf in &mut self.leaves {
             let before = held.get(&leaf_key(leaf)).copied();
@@ -415,15 +415,15 @@ impl Built {
             leaf.amount = next;
         }
         let keep: std::collections::HashSet<Vec<String>> = self.leaves.iter().map(leaf_key).collect();
+        let design = |leaf: &Leaf| leaf.path.last().and_then(|node| node.key.strip_prefix("variant:")).and_then(|id| id.parse::<u64>().ok());
         for leaf in &start.leaves {
-            if !keep.contains(&leaf_key(leaf)) && !matches!(leaf.amount, Amount::Known(value) if value.numerator() == 0) {
-                self.leaves.push(Leaf { path: leaf.path.clone(), amount: Amount::NotRecorded("Spent before the range start and not found at its end".into()), count: None, last: None });
+            if keep.contains(&leaf_key(leaf)) || matches!(leaf.amount, Amount::Known(value) if value.numerator() == 0) || design(leaf).is_some_and(&classified) {
+                continue;
             }
+            self.leaves.push(Leaf { path: leaf.path.clone(), amount: Amount::NotRecorded("Spent before the range start and not found at its end".into()), count: None, last: None });
         }
-        self.reasons.extend(start.reasons.iter().cloned());
-        self.reasons.sort();
-        self.reasons.dedup();
-        self.unassigned |= start.unassigned;
+        self.leaves.retain(|leaf| !matches!(leaf.amount, Amount::Known(value) if value.numerator() == 0));
+        self.unassigned = self.leaves.iter().any(|leaf| leaf.path.first().is_some_and(|node| node.key == UNRESOLVED_TYPE_KEY));
         self
     }
 }
@@ -431,11 +431,12 @@ impl Built {
 impl SpendingIndex {
     fn build(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> Result<Built, Box<ProductionSpendingReply>> {
         let held = self.spans.iter().any(|span| span.read.span.first <= hour && hour <= span.read.span.last);
+        let held_from = next_span_start(&self.spans, hour, |span| span.read.span.first).map_or(i32::MAX, |first| first - 1);
         if !held && let Some((_, last, reason)) = covering(&self.unknown, hour, |&(first, last, _)| (first, last)) {
             return Err(Box::new(ProductionSpendingReply {
                 from: self.from,
                 hour,
-                through: (*last).min(self.to),
+                through: (*last).min(self.to).min(held_from).max(hour),
                 breakdown: not_recorded(format!("Who holds {} is not known: {reason}", self.country_label)),
                 warnings: self.warnings.clone(),
             }));
@@ -444,7 +445,7 @@ impl SpendingIndex {
             return Err(Box::new(ProductionSpendingReply {
                 from: self.from,
                 hour,
-                through: (*last).min(self.to),
+                through: (*last).min(self.to).min(held_from).max(hour),
                 breakdown: not_recorded(format!("Who holds {} is not known: {TAG_UNLINKED}", self.country_label)),
                 warnings: self.warnings.clone(),
             }));
@@ -465,7 +466,9 @@ impl SpendingIndex {
         };
 
         let span = &self.spans[span_at];
+        let observed_from = span.read.equipment_observations.range(..=hour).next_back().map_or(span.read.span.first, |&since| since.max(span.read.span.first));
         let mut through = span.read.span.last.min(self.to);
+        tighten(&mut through, span.read.equipment_observations.range(hour.saturating_add(1)..).next().copied());
         tighten(&mut through, span.next_name_edge(hour, scope));
         tighten(&mut through, span.next_classification(hour));
 
@@ -863,7 +866,7 @@ impl SpendingIndex {
         reasons.sort();
         reasons.dedup();
         warnings.dedup();
-        Ok(Built { span: span_at, from: span.read.span.first, leaves, reasons, unassigned, through: through.max(hour), warnings })
+        Ok(Built { span: span_at, from: observed_from, leaves, reasons, unassigned, through: through.max(hour), warnings })
     }
 
     pub(crate) fn at(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> ProductionSpendingReply {
@@ -881,6 +884,9 @@ impl SpendingIndex {
         };
         let through = end.through;
         let refused = |reason: &str| ProductionSpendingReply { from, hour, through, breakdown: not_recorded(reason), warnings: end.warnings.clone() };
+        if end.from == from {
+            return end.reply(hour);
+        }
         if end.from > from {
             return match self.build(before, scope, include_refits) {
                 Err(_) if self.spans.iter().all(|span| span.read.span.last < from || span.read.span.first >= end.from) => ProductionSpendingReply { from, ..end.reply(hour) },
@@ -888,11 +894,12 @@ impl SpendingIndex {
             };
         }
         let start = match self.build(before, scope, include_refits) {
-            Ok(start) if start.span == end.span => start,
+            Ok(start) if start.span == end.span && start.from == end.from => start,
             Ok(_) => return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted)),
             Err(reply) => return refused(reply.breakdown.total.reason.as_deref().unwrap_or(unknown_reason(ProductionSpendingUnknown::NotRecorded))),
         };
-        let mut reply = end.minus(&start).reply(hour);
+        let span = &self.spans[end.span];
+        let mut reply = end.minus(&start, |variant| span.classified(variant, hour).is_some()).reply(hour);
         reply.from = from;
         reply
     }

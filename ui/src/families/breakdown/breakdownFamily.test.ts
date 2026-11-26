@@ -92,7 +92,7 @@ function spent(): Breakdown {
       wire('Daily costs', 3, '2071', { share: 0.35 }),
       wire('Decisions', 0, '1415', {
         share: 0.24,
-        children: [wire('Plan A', 0, '640', { share: 0.11 }), wire('Plan B', 1, '352', { share: 0.059 })],
+        children: [wire('Plan A', 0, '640', { share: 0.11, parentShare: 640 / 1415 }), wire('Plan B', 1, '352', { share: 0.059, parentShare: 352 / 1415 })],
       }),
       wire('Other', 1, '63', { share: 0.01, other: true }),
     ],
@@ -156,6 +156,24 @@ test('the three views lay out the same parts', () => {
   assert.ok(mosaic.tiles.some(tile => tile.key === 'Decisions' && tile.isGroup));
   const narrow = layoutBreakdown({ ...base, view: 'ring', width: 320, height: 220 }) as RingViewLayout;
   assert.equal(narrow.sideList, null, 'at minimum size the ring has no list');
+  const unproven = breakdownLevel(model({ ...spent(), parts: spent().parts.map(part => ({ ...part, children: part.children.map(child => ({ ...child, parentShare: null })) })) }));
+  const unprovenRing = layoutBreakdown({ ...base, level: unproven, view: 'ring' }) as RingViewLayout;
+  assert.ok(!unprovenRing.outerSlices.some(slice => slice.key === `Decisions${PATH}Plan A`), 'children with no proven share of their part are not drawn to a guessed scale');
+  const unprovenParts = layoutBreakdown({ ...base, level: unproven, view: 'parts', userExpanded: { Decisions: false } }) as PartsViewLayout;
+  assert.equal(unprovenParts.rows.find(row => row.key === 'Decisions')!.segments.length, 0);
+});
+
+test('a recorded whole larger than the drawn parts leaves the unallocated share of the ring and mosaic empty', () => {
+  const world: Breakdown = { total: { amount: exact('12'), state: 'known', reason: null }, unrecordedHours: 0, parts: [wire('GER', 0, '5', { share: 5 / 12 }), wire('ITA', 1, null)] };
+  const level = breakdownLevel(model(world));
+  const ring = layoutBreakdown({ ...at(1111, 346), level, view: 'ring', userExpanded: {} }) as RingViewLayout;
+  const slice = ring.innerSlices[0]!;
+  assert.ok(Math.abs((slice.a1 - slice.a0) - Math.PI * 2 * 5 / 12) < 0.01, 'five of twelve fill five twelfths of the ring');
+  const mosaic = layoutBreakdown({ ...at(1111, 346), level, view: 'mosaic', userExpanded: {} }) as MosaicViewLayout;
+  const tile = mosaic.tiles[0]!;
+  assert.ok(tile.width * tile.height < mosaic.area.width * mosaic.area.height * 0.5);
+  const empty = layoutBreakdown({ ...at(320, 346), level: breakdownLevel(model({ total: { amount: null, state: 'notRecorded', reason: 'Relations were not read' }, unrecordedHours: 0, parts: [wire('Relations', 0, null)] })), view: 'ring', userExpanded: {} }) as RingViewLayout;
+  assert.match(empty.center.unitLine ?? '', /Relations were not read/, 'the narrow ring says why nothing is drawn');
 });
 
 test('expanding a part is held by the host, shared by the parts list and the ring list', () => {
