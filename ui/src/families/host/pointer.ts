@@ -424,6 +424,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     pointerDown = null;
     tooltips.cancelTimers();
     lastPointerRef.current = null;
+    hoverVisit++;
     if (inspectedKeyRef.current !== null || lastHoverKey !== null || lastHoverHour !== undefined) {
       inspectedKeyRef.current = null;
       notifyHover(null);

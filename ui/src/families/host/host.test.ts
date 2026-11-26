@@ -1809,5 +1809,8 @@ test('the hovered row is the subject the row would activate, reported when it ch
   body.dispatch('pointermove', { isTrusted: true, clientX: 43, clientY: 10 });
   reply('lane:#0');
   assert.deepEqual(laneRows, ['GER', 'FRA'], 'the same lane key over another lane in a new picture is a new row');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 44, clientY: 30 });
   stopLanes();
+  reply('lane:#0');
+  assert.deepEqual(laneRows, ['GER', 'FRA', null], 'a hit answered after the binding is gone reports no row');
 });
