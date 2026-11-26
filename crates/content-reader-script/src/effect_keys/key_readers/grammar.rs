@@ -1811,6 +1811,29 @@ fn unit_officer_data(key: Option<&[u8]>) -> Option<ValueReader> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+impl crate::effect_keys::EffectShape {
+    pub const ACE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_ACE_KEYS);
+    pub const ADVISOR_DISMISSAL: Self = Self(crate::effect_keys::READ_SCRIPT, SET_CAN_BE_FIRED_IN_ADVISOR_ROLE_KEYS);
+    pub const ADVISOR_ROLE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_ADVISOR_ROLE_KEYS);
+    pub const CAPTURED_OPERATIVE: Self = Self(crate::effect_keys::READ_SCRIPT, FREE_RANDOM_OPERATIVE_KEYS);
+    pub const CHARACTER_TRAIT: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_TRAIT_KEYS);
+    pub const COMMANDER_ROLE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_CORPS_COMMANDER_ROLE_KEYS);
+    pub const CONDITIONAL: Self = Self(crate::effect_keys::READ_SCRIPT, IF_KEYS);
+    pub const COUNTRY_LEADER: Self = Self(crate::effect_keys::READ_SCRIPT, CREATE_COUNTRY_LEADER_KEYS);
+    pub const COUNTRY_LEADER_ROLE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_COUNTRY_LEADER_ROLE_KEYS);
+    pub const DIVISION_HISTORY: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_HISTORY_ENTRY_KEYS);
+    pub const SCIENTIST_EXPERIENCE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_SCIENTIST_XP_KEYS);
+    pub const SCIENTIST_LEVEL: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_SCIENTIST_LEVEL_KEYS);
+    pub const SCIENTIST_ROLE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_SCIENTIST_ROLE_KEYS);
+    pub const TIMED_TRAIT: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_TIMED_UNIT_LEADER_TRAIT_KEYS);
+    pub const UNIT_MEDAL: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_UNIT_MEDAL_TO_LATEST_ENTRY_KEYS);
+    pub const UNIT_TRAIT_CHOICE: Self = Self(crate::effect_keys::READ_SCRIPT, ADD_RANDOM_VALID_TRAIT_FROM_UNIT_KEYS);
+    pub const VARIABLE: Self = Self(crate::effect_keys::READ_SCRIPT, SET_VARIABLE_KEYS);
+    pub const VARIABLE_DIVISION: Self = Self(crate::effect_keys::READ_SCRIPT, DIVIDE_TEMP_VARIABLE_KEYS);
+    pub const VARIABLE_LIMITS: Self = Self(crate::effect_keys::READ_SCRIPT, CLAMP_TEMP_VARIABLE_KEYS);
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(in crate::effect_keys) const SYNTHETIC_EFFECTS: &[(&str, u64, u64)] = &[
     ("if", IF_KEYS, 0),
     ("set_capital", SET_CAPITAL_KEYS, 0),
