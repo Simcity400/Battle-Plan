@@ -600,15 +600,37 @@ fn spelled_at(recording: &replay_recording::columnar_frames::Recording, run: u32
     Ok(found)
 }
 
+struct Readable {
+    spans: Vec<(i32, i32)>,
+    before: Vec<i64>,
+}
+
+impl Readable {
+    fn hours(&self) -> i64 {
+        self.spans.last().map_or(0, |&(first, last)| self.before[self.spans.len() - 1] + i64::from(last - first) + 1)
+    }
+
+    fn hour(&self, at: i64) -> i32 {
+        let span = self.before.partition_point(|&before| before <= at) - 1;
+        self.spans[span].0 + (at - self.before[span]) as i32
+    }
+
+    fn index(&self, hour: i32) -> i64 {
+        let span = self.spans.partition_point(|&(first, _)| first <= hour) - 1;
+        self.before[span] + i64::from(hour - self.spans[span].0)
+    }
+}
+
 fn first_reading(
     recording: &replay_recording::columnar_frames::Recording,
     run: u32,
-    mut open: Vec<(u128, i32, i32, Option<String>)>,
+    readable: &Readable,
+    mut open: Vec<(u128, i64, i64, Option<String>)>,
     readings: &mut HashMap<(u128, i32), String>,
 ) -> io::Result<HashMap<u128, i32>> {
     let mut found = HashMap::new();
     while !open.is_empty() {
-        let mut asks: Vec<(i32, u128)> = open.iter().filter(|&&(_, low, high, _)| low < high).map(|&(token, low, high, _)| (low + (high - low) / 2, token)).collect();
+        let mut asks: Vec<(i32, u128)> = open.iter().filter(|&&(_, low, high, _)| low < high).map(|&(token, low, high, _)| (readable.hour(low + (high - low) / 2), token)).collect();
         asks.sort_unstable();
         let read = if asks.is_empty() { HashMap::new() } else { spelled_at(recording, run, &asks)? };
         for (token, low, high, wanted) in &mut open {
@@ -618,7 +640,7 @@ fn first_reading(
             let middle = *low + (*high - *low) / 2;
             let literal = read.get(token);
             if let Some(literal) = literal {
-                readings.insert((*token, middle), literal.clone());
+                readings.insert((*token, readable.hour(middle)), literal.clone());
             }
             if literal.is_some_and(|literal| wanted.as_ref().is_none_or(|wanted| wanted == literal)) {
                 *high = middle;
@@ -630,7 +652,7 @@ fn first_reading(
             if low < high {
                 return true;
             }
-            found.insert(token, high);
+            found.insert(token, readable.hour(high));
             false
         });
     }
@@ -644,29 +666,38 @@ fn dated_spellings(
     from: i32,
     to: i32,
 ) -> io::Result<HashMap<u128, Vec<(i32, String)>>> {
-    let read = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::LexicalTokens, from, to))?;
-    let mut anchors = vec![to];
-    anchors.extend(read.last().map(|&(_, last)| last).filter(|&last| last != to));
-    let mut last: HashMap<u128, (i32, String)> = HashMap::new();
-    for &anchor in anchors.iter().rev() {
-        for (token, literal) in spelled_at(recording, run, &tokens.iter().map(|&token| (anchor, token)).collect::<Vec<_>>())? {
-            last.insert(token, (anchor, literal));
+    let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::LexicalTokens, from, to))?;
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    for status in statuses.iter().filter(|status| replay_recording::columnar_frames::available(status.status)) {
+        match spans.last_mut() {
+            Some(span) if span.1 + 1 >= status.first => span.1 = span.1.max(status.last),
+            _ => spans.push((status.first, status.last)),
         }
     }
-    let mut readings: HashMap<(u128, i32), String> = last.iter().map(|(&token, (anchor, literal))| ((token, *anchor), literal.clone())).collect();
-    let first = first_reading(recording, run, last.iter().map(|(&token, &(anchor, _))| (token, from, anchor, None)).collect(), &mut readings)?;
+    let mut before = Vec::with_capacity(spans.len());
+    let mut total = 0i64;
+    for &(first, last) in &spans {
+        before.push(total);
+        total += i64::from(last - first) + 1;
+    }
+    let readable = Readable { spans, before };
+    let Some(anchor) = readable.spans.last().map(|&(_, last)| last) else { return Ok(HashMap::new()) };
+    let end = readable.hours() - 1;
+    let last: HashMap<u128, String> = spelled_at(recording, run, &tokens.iter().map(|&token| (anchor, token)).collect::<Vec<_>>())?;
+    let mut readings: HashMap<(u128, i32), String> = last.iter().map(|(&token, literal)| ((token, anchor), literal.clone())).collect();
+    let first = first_reading(recording, run, &readable, last.keys().map(|&token| (token, 0, end, None)).collect(), &mut readings)?;
     let mut later = Vec::new();
     let mut out: HashMap<u128, Vec<(i32, String)>> = HashMap::new();
-    for (&token, (anchor, literal)) in &last {
+    for (&token, literal) in &last {
         let Some(&hour) = first.get(&token) else { continue };
         let earliest = readings.get(&(token, hour)).cloned().unwrap_or_else(|| literal.clone());
         if earliest != *literal {
-            later.push((token, hour + 1, *anchor, Some(literal.clone())));
+            later.push((token, readable.index(hour) + 1, end, Some(literal.clone())));
         }
         out.insert(token, vec![(hour, earliest)]);
     }
-    for (token, hour) in first_reading(recording, run, later, &mut readings)? {
-        if let (Some(steps), Some((_, literal))) = (out.get_mut(&token), last.get(&token)) {
+    for (token, hour) in first_reading(recording, run, &readable, later, &mut readings)? {
+        if let (Some(steps), Some(literal)) = (out.get_mut(&token), last.get(&token)) {
             steps.push((hour, literal.clone()));
         }
     }

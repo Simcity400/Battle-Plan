@@ -318,6 +318,7 @@ impl OperationEpisode {
 
 struct Tail {
     episodes: Vec<OperationEpisode>,
+    reads: Vec<(i32, i32)>,
     gaps: Vec<dashboard_query::series::MissingSpan>,
     by_owner: OnceLock<Index<usize>>,
     by_target: OnceLock<Index<usize>>,
@@ -426,6 +427,11 @@ fn covered(runs: &[(i32, i32)], first: i32, last: i32) -> bool {
         from = run.1 + 1;
     }
     false
+}
+
+fn last_read(runs: &[(i32, i32)], hour: i32) -> Option<i32> {
+    let at = runs.partition_point(|run| run.0 <= hour);
+    at.checked_sub(1).map(|at| runs[at].1.min(hour))
 }
 
 fn has_read_at(runs: &[(i32, i32)], hour: i32) -> bool {
@@ -565,6 +571,7 @@ fn scan(
     let mut any_op_reads = false;
     let mut any_comp_reads = false;
     let mut carried: HashMap<u64, usize> = HashMap::new();
+    let mut all_reads: Vec<(i32, i32)> = Vec::new();
 
     for (stretch_index, stretch) in query.timeline.stretches.iter().enumerate() {
         let prior = std::mem::take(&mut carried);
@@ -576,6 +583,7 @@ fn scan(
         if !op_reads.is_empty() {
             any_op_reads = true;
         }
+        all_reads.extend_from_slice(&op_reads);
         if !comp_reads.is_empty() {
             any_comp_reads = true;
         }
@@ -829,7 +837,10 @@ fn scan(
         for (at, step) in raw.steps.iter().enumerate() {
             changes.push(step.hour);
             let through = raw.steps.get(at + 1).map_or(raw.last_seen.unwrap_or(step.hour), |next| next.hour - 1);
-            changes.extend(phase_hours(step, through));
+            changes.extend(phase_hours(step, through).filter(|&hour| has_read_at(&all_reads, hour)));
+        }
+        if let Some(last) = raw.last_seen {
+            changes.extend(all_reads.iter().map(|&(first, _)| first).filter(|&first| first > raw.appear_hour && first <= last));
         }
         if let Some(comp) = &raw.completion {
             changes.push(comp.observed_hour);
@@ -925,6 +936,7 @@ fn scan(
 
     Ok(Tail {
         episodes,
+        reads: all_reads,
         gaps,
         by_owner: OnceLock::new(),
         by_target: OnceLock::new(),
@@ -968,7 +980,9 @@ struct RawEpisode {
 
 impl RawEpisode {
     fn continues(&self, next: &CensusStep) -> bool {
-        self.steps.last().is_some_and(|last| (last.owner_slot, last.target_slot, &last.token) == (next.owner_slot, next.target_slot, &next.token))
+        self.steps.last().is_some_and(|last| {
+            last.owner_slot.is_some() && last.target_slot.is_some() && last.token.is_some() && (last.owner_slot, last.target_slot, &last.token) == (next.owner_slot, next.target_slot, &next.token)
+        })
     }
 }
 
@@ -1047,7 +1061,8 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
             terminal: u8::from(s.terminal),
             ..replay_data::rows::OperationRow::default()
         };
-        current_phase(&dummy, ep.last_seen.map_or(hour, |last| hour.min(last)))
+        let read = last_read(&tail.reads, ep.last_seen.map_or(hour, |last| hour.min(last)))?;
+        current_phase(&dummy, read)
     });
 
     let ended_hour = match status {
@@ -1429,6 +1444,27 @@ mod tests {
         frame.metrics.table_ns[TableId::OperationCompletions.index()] = 1;
         *frame.tables[TableId::OperationCompletions.index()] = TableView::Complete(TableRows::OperationCompletions(Vec::new()));
         frame
+    }
+
+    #[test]
+    fn a_phase_reached_while_operations_were_not_read_is_shown_from_the_next_read() {
+        let start = HOUR_EPOCH + 24 * 4;
+        let running = OperationRow { id: 100, owner: 1, target: 2, definition_token: 10, preparation_current: 100_000, preparation_required: 100_000, start_hour: start, duration_days: 2, phase_count: 2, assigned_slots: 1, ..OperationRow::default() };
+        let frames = (start..=start + 40).map(|hour| read_frame(1, hour, if (21..=30).contains(&(hour - start)) { None } else { Some(vec![running.clone()]) })).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "espionage-resumed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let load = LoadContext { content: None };
+        let params = |hour: i32| EspionageLogTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None };
+        let ask = |hour: i32| EspionageLogTail::load(&source, &params(hour), &load, &AtomicBool::new(false)).unwrap();
+        let gap = ask(start + 25);
+        assert_eq!(gap.rows[0].current_phase, Some(0), "the phase last read, not one reached unseen");
+        assert_eq!(gap.next_change, Some(start + 31), "the next read is the next change");
+        assert_eq!(ask(start + 31).rows[0].current_phase, Some(1));
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "1", "limit": 50 })).unwrap();
+        let exact = panel.exact().unwrap();
+        for (hour, seed) in [(start + 20, true), (start + 24, false), (start + 25, false), (start + 31, false), (start + 26, true)] {
+            assert_eq!(*(exact.advance)(hour, seed, &AtomicBool::new(false), None).value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped equals cold at {hour}");
+        }
     }
 
     #[test]

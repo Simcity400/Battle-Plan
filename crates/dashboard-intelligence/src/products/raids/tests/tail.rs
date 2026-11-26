@@ -188,3 +188,21 @@ fn a_tokens_spelling_is_dated_from_its_first_read_and_follows_a_change_of_text()
     assert_eq!(spellings[&41], [(10, "dam_raid".to_owned())]);
     assert!(!spellings.contains_key(&99), "a token never spelled has no spelling");
 }
+
+#[test]
+fn a_spelling_read_before_an_unread_stretch_of_the_dictionary_keeps_its_first_hour() {
+    let prep = raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE);
+    let frames = (10..=20)
+        .map(|hour| {
+            let mut frame = super::frame_at(1, &at(hour, whole(vec![prep.clone()]), 30));
+            if (13..=17).contains(&hour) {
+                *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "not read this hour".into() };
+            }
+            frame
+        })
+        .collect();
+    let source = opened("tail-spelling-gap", &[records(1, frames)]);
+    let run = dashboard_base::queries::query(&source, 1).unwrap().timeline.stretches[0].run;
+    let spellings = crate::products::raids::dated_spellings(source.replay_ref().recording(), run, &[40u128].into_iter().collect(), 10, 20).unwrap();
+    assert_eq!(spellings[&40], [(10, "air_raid".to_owned())]);
+}
