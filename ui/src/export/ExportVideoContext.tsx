@@ -58,6 +58,7 @@ export interface SurfaceExportContextSnapshot {
   mapWidgets: SurfaceExportMapWidget[];
   hasPinnedWidgets: boolean;
   hasPagedRowsWidgets: boolean;
+  hasRankMarkerTables: boolean;
 }
 
 export interface WidgetVideoExportTarget {

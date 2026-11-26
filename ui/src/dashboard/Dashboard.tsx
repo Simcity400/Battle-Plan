@@ -691,6 +691,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         'ships-sunk',
       ]);
       const hasPagedRowsWidgets = widgetsToCheck.some(w => pagedKinds.has(w.kind));
+      const hasRankMarkerTables = widgetsToCheck.some(w => {
+        const def = widgetDefinition(w.kind);
+        const field = def?.options?.find(item => item.key === 'rankMarkers');
+        if (!field) return false;
+        const opts = w.options ?? {};
+        if (field.visibleWhen && !field.visibleWhen(opts)) return false;
+        return opts.rankMarkers !== false;
+      });
       const scrollEl = viewport.current;
       return {
         campaigns: campaignsRef.current
@@ -714,6 +722,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         mapWidgets,
         hasPinnedWidgets,
         hasPagedRowsWidgets,
+        hasRankMarkerTables,
       };
     },
     [sourceMap, selectedBranches, selectedCountries, observed, defaultRoleId, clock, mapOptions.fog],

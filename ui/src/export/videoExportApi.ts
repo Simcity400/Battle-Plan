@@ -248,6 +248,7 @@ export interface SurfaceVideoRequest {
   scrollTop: number;
   dateStamp: boolean;
   followPinned: boolean;
+  hasRankMarkerTables?: boolean;
   audioMapWidgetId: string | null;
   allowUnverified: boolean;
   tracks: SurfaceTrackCoverage[];

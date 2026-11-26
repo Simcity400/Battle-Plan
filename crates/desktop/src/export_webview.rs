@@ -109,6 +109,8 @@ pub struct SurfaceVideoRequest {
     pub scroll_top: f64,
     pub date_stamp: bool,
     pub follow_pinned: bool,
+    #[serde(default)]
+    pub has_rank_marker_tables: bool,
     pub audio_map_widget_id: Option<String>,
     #[serde(default)]
     pub allow_unverified: bool,
@@ -1209,7 +1211,7 @@ pub fn preview_surface_video(
     let first_recorded_hour = schedule
         .first_recorded()
         .map_or(request.from_hour, |(hour, _)| hour);
-    let preview = schedule.preview_frame(preview_hour);
+    let preview = schedule.preview_frame_with_history(preview_hour, request.has_rank_marker_tables);
     let (preview_recorded_hour, preview_fraction) = match &preview.frame.kind {
         FrameKind::Recorded { hour, fraction, .. } => (*hour, *fraction),
         _ => (preview_hour, 0.0),

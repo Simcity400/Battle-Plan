@@ -299,6 +299,14 @@ impl FrameSchedule {
     }
 
     pub fn preview_frame(&self, target_hour: i32) -> PreviewFrame {
+        self.preview_frame_with_history(target_hour, false)
+    }
+
+    pub fn preview_frame_with_history(
+        &self,
+        target_hour: i32,
+        include_rank_markers: bool,
+    ) -> PreviewFrame {
         let step_hours = self.hours_per_second / f64::from(self.fps.max(1));
         let target = target_hour.clamp(self.summary.from_hour, self.summary.to_hour);
         let mk_frame = |frame_index: u64, kind: FrameKind| ScheduledFrame {
@@ -369,6 +377,7 @@ impl FrameSchedule {
                             &self.stretches,
                             self.fps,
                             self.hours_per_second,
+                            include_rank_markers,
                         )
                     };
                     return PreviewFrame {
@@ -426,6 +435,7 @@ impl FrameSchedule {
                     &self.stretches,
                     self.fps,
                     self.hours_per_second,
+                    include_rank_markers,
                 )
             };
             PreviewFrame {
@@ -1209,13 +1219,24 @@ fn build_ease_seeds(
     stretches: &[RecordedStretch],
     fps: u32,
     hours_per_second: f64,
+    include_rank_markers: bool,
 ) -> Vec<ScheduledFrame> {
     if selected_local == 0 || step_hours <= 0.0 {
         return Vec::new();
     }
     let safe_fps = fps.max(1);
-    let glide_ms = export_glide_duration_ms(hours_per_second, safe_fps);
-    let lookback = ((glide_ms * f64::from(safe_fps)) / 1000.0).ceil().max(1.0) as u64;
+    let mut history_ms = export_glide_duration_ms(hours_per_second, safe_fps);
+    if include_rank_markers {
+        let rank_hold_ms = if hours_per_second > 168.0 {
+            1500.0
+        } else {
+            2500.0
+        };
+        if rank_hold_ms > history_ms {
+            history_ms = rank_hold_ms;
+        }
+    }
+    let lookback = ((history_ms * f64::from(safe_fps)) / 1000.0).ceil().max(1.0) as u64;
     let window_min = selected_local.saturating_sub(lookback + 1);
     let mut start = selected_local;
     let mut probe = selected_local;
@@ -1866,5 +1887,50 @@ mod tests {
             glide_preview.seed_frames[1].kind,
             FrameKind::Recorded { hour: 2, reset_continuity: false, .. }
         ));
+
+        let rank_schedule = build_schedule(
+            &[RecordedStretch { first: 0, last: 100, join: StretchJoin::Start }],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 100,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let without_markers = rank_schedule.preview_frame_with_history(48, false);
+        let with_markers = rank_schedule.preview_frame_with_history(48, true);
+        let first_seed_hour = |pf: &PreviewFrame| match pf.seed_frames.first().map(|f| &f.kind) {
+            Some(FrameKind::Recorded { hour, .. }) => Some(*hour),
+            _ => None,
+        };
+        assert!(first_seed_hour(&without_markers).unwrap() > 24);
+        assert!(first_seed_hour(&with_markers).unwrap() <= 24);
+        assert!(with_markers.seed_frames.iter().any(|f| matches!(
+            f.kind,
+            FrameKind::Recorded { hour: 24, .. }
+        )));
+
+        let rank_with_cut = build_schedule(
+            &[
+                RecordedStretch { first: 0, last: 29, join: StretchJoin::Start },
+                RecordedStretch { first: 30, last: 100, join: StretchJoin::Load },
+            ],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 100,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let cut_preview = rank_with_cut.preview_frame_with_history(48, true);
+        assert_eq!(first_seed_hour(&cut_preview), Some(30));
     }
 }

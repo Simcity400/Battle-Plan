@@ -498,6 +498,7 @@ export default function ExportVideoDialog({
       scrollTop: Math.max(0, ctx.scrollTop),
       dateStamp,
       followPinned,
+      hasRankMarkerTables: ctx.hasRankMarkerTables,
       audioMapWidgetId: effectiveAudioMapId,
       allowUnverified: false,
       tracks: activeSurfaceTimelines,
