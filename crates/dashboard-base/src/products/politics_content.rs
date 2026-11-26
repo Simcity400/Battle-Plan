@@ -249,7 +249,7 @@ impl PoliticsContent {
 
     pub fn decisions(&self) -> Result<Arc<content_reader_politics::decisions::Database>, String> {
         self.decisions.get_or_init(|| content_reader_politics::decisions::read(&self.catalogue.content.layers))
-            .map(|held| Arc::clone(&held))
+            .map(|held| Arc::clone(held.as_ref()))
             .map_err(|error| error.to_string())
     }
 
