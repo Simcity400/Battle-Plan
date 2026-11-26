@@ -53,6 +53,7 @@ pub struct PoliticsContent {
     artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
     portraits: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
     portrait_thumbnails: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
+    decisions: catalogue::CachedResult<Arc<content_reader_politics::decisions::Database>>,
     abilities: catalogue::CachedResult<content_reader_abilities::abilities::AbilitySprites>,
     focuses: catalogue::CachedResult<content_reader_focus::focus::Focuses>,
     unit_traits: catalogue::CachedResult<content_reader_key_names::unit_leader::Traits>,
@@ -150,7 +151,7 @@ pub fn content_loads(source: &Source) -> usize {
         .map(|(_, result)| {
             let loads = result.loads();
             match result.get_or_init(|| unreachable!("binding was loaded")) {
-                Ok(content) => loads + content.abilities.loads() + content.focuses.loads()
+                Ok(content) => loads + content.decisions.loads() + content.abilities.loads() + content.focuses.loads()
                     + content.unit_traits.loads() + content.trigger_result.loads(),
                 Err(_) => loads,
             }
@@ -233,6 +234,7 @@ impl PoliticsContent {
             warnings,
             artwork: Mutex::new(BTreeMap::new()),
             portraits: Mutex::new(BTreeMap::new()),
+            decisions: Default::default(),
             abilities: Default::default(),
             focuses: Default::default(),
             unit_traits: Default::default(),
@@ -246,7 +248,8 @@ impl PoliticsContent {
     }
 
     pub fn decisions(&self) -> Result<Arc<content_reader_politics::decisions::Database>, String> {
-        content_reader_politics::decisions::read(&self.catalogue.content.layers)
+        self.decisions.get_or_init(|| content_reader_politics::decisions::read(&self.catalogue.content.layers))
+            .map(|held| Arc::clone(&held))
             .map_err(|error| error.to_string())
     }
 
