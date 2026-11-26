@@ -103,12 +103,12 @@ pub(super) fn index(reply: &PowerSpendingReply, unread: Vec<(i32, i32, String)>)
         at.checked_sub(1).map(|at| observed[at].1.min(read - 1))
     };
     let mut markers = Vec::with_capacity(reply.payments.len());
-    let mut latest: HashMap<u32, (Option<i32>, Option<&str>, Option<u32>)> = HashMap::new();
+    let mut latest: HashMap<(u32, u32, u32), (Option<i32>, Option<&str>, Option<u32>)> = HashMap::new();
     for payment in &reply.payments {
         let Some(item) = reply.items.get(payment.item as usize) else { continue };
         let earliest = observed_before(payment.read).unwrap_or(reply.from);
         let newest = (payment.hour, payment.sequence.as_deref(), payment.ordinal);
-        let renewed = latest.insert(payment.item, newest) != Some(newest);
+        let renewed = latest.insert(item.ledger, newest) != Some(newest);
         let own = payment.hour.filter(|&hour| renewed && hour >= earliest);
         let since = (payment.payments > 1).then_some(earliest);
         markers.push(PowerSpendMarker {

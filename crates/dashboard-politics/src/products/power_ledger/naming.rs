@@ -1033,7 +1033,7 @@ fn draw(content: &PoliticsContent, art: &Art) -> Result<Option<(String, String)>
     }
 }
 
-pub(super) fn ledger_item(id: String, row: &PowerItemRow, named: NamedItem) -> SpendItem {
+pub(super) fn ledger_item(id: String, ledger: (u32, u32, u32), row: &PowerItemRow, named: NamedItem) -> SpendItem {
     SpendItem {
         id,
         group_id: named.group,
@@ -1054,6 +1054,7 @@ pub(super) fn ledger_item(id: String, row: &PowerItemRow, named: NamedItem) -> S
             Ok(Kind { id, name, name_missing }) => super::SpendKind { id: Some(id), name: Some(name), unknown: name_missing },
             Err(reason) => super::SpendKind { id: None, name: None, unknown: Some(reason) },
         }),
+        ledger,
     }
 }
 

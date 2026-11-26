@@ -439,7 +439,7 @@ function spendDetail(marker: PowerSpendMarker, decimals: number): string {
   if (marker.chargeRaw !== null && marker.unknown < marker.payments) parts.push(formatSpend(Number(marker.chargeRaw) / 10 ** decimals));
   if (marker.unknown > 0) parts.push(marker.unknown === marker.payments ? 'Cost not recorded' : `${marker.unknown} costs not recorded`);
   if (marker.since !== null) parts.push(`${marker.payments} payments from ${formatDateOnly(marker.since)} to ${formatDateOnly(marker.hour)}`);
-  if (!marker.dated) parts.push(`Paid ${formatDateOnly(marker.hour)}`);
+  if (!marker.dated) parts.push(`Paid by ${formatDateOnly(marker.hour)}`);
   return parts.join(' · ');
 }
 
