@@ -413,7 +413,7 @@ fn aircraft(equipment: Option<&content_reader_key_names::equipment::Database>, c
     let (Some(units), Some(equipment)) = (sub_units(content, warnings).filter(|units| units.gap().is_none()), equipment) else { return Vec::new() };
     units
         .in_content_order()
-        .filter(|unit| units.air_wing_sizes(unit, equipment).is_ok_and(|sizes| sizes.iter().any(|&size| size > 0)))
+        .filter(|unit| units.air_wing_sizes(unit, equipment).is_ok_and(|sizes| sizes.iter().any(|&size| size != 0)))
         .filter_map(|unit| {
             let required = units.air_wing(unit).ok()?.first_requirement.as_ref()?;
             let at = equipment.get(required)?;
@@ -473,7 +473,7 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
     let spelled = frame_literals(frame);
     let units = sub_units(content, warnings);
     let mut resolved = BTreeMap::new();
-    let mut unplaced = BTreeMap::new();
+    let mut unplaced = BTreeSet::new();
     for &part in parts {
         let token = part as u32;
         let spelling = spelled.get(&token);
@@ -514,7 +514,7 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
         if let (Some(spelling), Some(units)) = (spelling, units.as_deref())
             && let Err(why) = units.domain(spelling.as_bytes())
         {
-            unplaced.insert(named.key.clone(), format!("{spelling}: {why}; its part is drawn in the neutral colour."));
+            unplaced.insert((named.key.clone(), format!("{spelling}: {why}; its part is drawn in the neutral colour.")));
         }
         resolved.insert(part, named);
     }
