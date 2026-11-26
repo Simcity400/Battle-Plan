@@ -1,7 +1,7 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
 import { compareTags } from './tagOrder.ts';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
-import { countryIdentityIndex } from './countryIdentity.ts';
+import { countryIdentityIndex, validCountryIdentityHistories } from './countryIdentity.ts';
 import type { CountryIdentityIndex } from './countryIdentity.ts';
 import { PlaybackIntervals, spanChanges } from '../charts/playbackIntervals.ts';
 import { NO_MEMBERS } from './noMembers.ts';
@@ -41,10 +41,65 @@ export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): 
 export function groupMembers(runs: readonly MembershipRun[], membership: GroupMembership, hour: number,
   max = Infinity, unobserved: readonly HourSpan[] = []): string[] | null {
   if (membership === 'hour' && unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return null;
+  if (membership === 'ever' && hour >= everKnownBefore(unobserved)) return null;
   const ordered = [...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
-  const tags = ordered.filter(run => membership === 'ever' || (run.firstHour <= hour && hour <= run.lastHour)).map(run => run.tag);
-  if (membership === 'ever' && !tags.length && unobserved.length) return null;
+  const tags = ordered.filter(run => membership === 'ever' ? run.firstHour <= hour : run.firstHour <= hour && hour <= run.lastHour).map(run => run.tag);
   return [...new Set(tags)].slice(0, max);
+}
+
+export function everKnownBefore(unobserved: readonly HourSpan[]): number {
+  let first = Infinity;
+  for (const span of unobserved) if (span.firstHour < first) first = span.firstHour;
+  return first;
+}
+
+export interface EverBounds {
+  readonly firstJoin: number;
+  readonly unknownFrom: number;
+}
+
+export interface EverState {
+  readonly kind: 'empty' | 'unrecorded' | null;
+  readonly from: number;
+  readonly until: number;
+}
+
+export function everBounds(selection: CountrySelection, groups: CountryGroupReply | undefined): EverBounds | null {
+  if (selection.kind !== 'group' || selection.membership !== 'ever' || !groups) return null;
+  const runs = groupRuns(groups, selection.group);
+  if (!runs) return null;
+  const unobserved = groupUnobserved(groups, selection.group);
+  if (!runs.length && !unobserved.length) return null;
+  let firstJoin = Infinity;
+  for (const run of runs) if (run.firstHour < firstJoin) firstJoin = run.firstHour;
+  return { firstJoin, unknownFrom: everKnownBefore(unobserved) };
+}
+
+export function everStateAt(bounds: EverBounds, hour: number): EverState {
+  if (hour >= bounds.unknownFrom) return { kind: 'unrecorded', from: bounds.unknownFrom, until: Infinity };
+  if (hour < bounds.firstJoin) return { kind: 'empty', from: -Infinity, until: Math.min(bounds.firstJoin, bounds.unknownFrom) - 1 };
+  return { kind: null, from: bounds.firstJoin, until: bounds.unknownFrom - 1 };
+}
+
+export const EVER_UNRECORDED = 'Group membership was not recorded at this time.';
+
+function soFarMembership(groups: CountryGroupReply, runs: readonly MembershipRun[], until: number): Map<string, MembershipRun[]> {
+  const spans: MembershipRun[] = [];
+  for (const run of runs) if (run.firstHour <= until) spans.push({ tag: run.tag, firstHour: run.firstHour, lastHour: Math.min(run.lastHour, until) });
+  if (validCountryIdentityHistories(groups.countryIdentities)) {
+    const index = countryIdentityIndex(groups.countryIdentities);
+    for (const [key, from] of index.firstHoursDuring(runs)) if (from <= until) spans.push(...index.aliasRuns(new Set([key]), from, until));
+  }
+  spans.sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
+  const membership = new Map<string, MembershipRun[]>();
+  for (const span of spans) {
+    const own = membership.get(span.tag);
+    const previous = own?.at(-1);
+    if (!own) membership.set(span.tag, [{ ...span }]);
+    else if (previous && span.firstHour <= previous.lastHour + 1) own[own.length - 1] = { ...previous, lastHour: Math.max(previous.lastHour, span.lastHour) };
+    else own.push({ ...span });
+  }
+  return membership;
 }
 
 export const DEFAULT_TOP = 10;
@@ -71,7 +126,7 @@ export function isMember(membership: readonly HourSpan[] | undefined, hour: numb
 function unrecorded(membership: GroupMembership): string {
   switch (membership) {
     case 'hour': return 'Group membership is unavailable at this time.';
-    case 'ever': return 'Group membership is incomplete for this campaign.';
+    case 'ever': return EVER_UNRECORDED;
   }
 }
 
@@ -103,6 +158,7 @@ function readWorldFilter(selection: CountrySelection, fallback: readonly string[
 }
 
 const CHOOSE = 'Choose a country in the widget settings.';
+const INCOMPLETE = 'Group membership is incomplete for this campaign.';
 const UNAVAILABLE = 'This group is unavailable in this campaign.';
 
 type FilterQueries = Map<string, PlaybackIntervals<WorldFilter>>;
@@ -186,11 +242,12 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
   if (!runs) return empty(UNAVAILABLE);
   const members = groupMembers(runs, selection.membership, hour, Infinity, groupUnobserved(groups, selection.group));
   if (!members) return empty(unrecorded(selection.membership));
-  const countryIds = selection.membership === 'ever' ? identities.keysDuring(runs)
+  const countryIds = selection.membership === 'ever'
+    ? identities.keysDuring(runs.filter(run => run.firstHour <= hour).map(run => ({ ...run, lastHour: Math.min(run.lastHour, hour) })))
     : identities.keysDuring(members.map(tag => ({ tag, firstHour: hour, lastHour: hour })));
   return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds, reason: members.length
     ? countryIds.size ? null : 'Group members are unavailable at this time.'
-    : selection.membership === 'ever' ? NO_MEMBERS.ever : NO_MEMBERS.hour };
+    : selection.membership === 'ever' ? NO_MEMBERS.yet : NO_MEMBERS.hour };
 }
 
 export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; known: MembershipKnown; reason: string | null }
@@ -199,8 +256,10 @@ const matchChanges = new WeakMap<CountryMatch['matches'], ReadonlyArray<number>>
 export const countryMatchChangeHours = (matches: CountryMatch['matches']) => matchChanges.get(matches);
 
 export function membershipUnrecordedAt(selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number): string | null {
-  if (selection.kind !== 'group' || selection.membership !== 'hour' || !groups) return null;
-  return groupUnobserved(groups, selection.group).some(span => span.firstHour <= hour && hour <= span.lastHour) ? unrecorded('hour') : null;
+  if (selection.kind !== 'group' || !groups) return null;
+  const unobserved = groupUnobserved(groups, selection.group);
+  if (selection.membership === 'ever') return hour >= everKnownBefore(unobserved) ? unrecorded('ever') : null;
+  return unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour) ? unrecorded('hour') : null;
 }
 
 export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
@@ -230,6 +289,19 @@ function readCountryMatch(selection: CountrySelection, fallback: readonly string
     const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
     return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
       && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), known: ALWAYS, reason: null };
+  }
+  if (selection.kind === 'group' && selection.membership === 'ever') {
+    const runs = groupRuns(groups!, selection.group);
+    if (!runs) return { ready: true, matches: () => false, known: ALWAYS, reason: UNAVAILABLE };
+    const unobserved = groupUnobserved(groups!, selection.group);
+    if (!runs.length && !unobserved.length) return { ready: true, matches: () => false, known: ALWAYS, reason: NO_MEMBERS.ever };
+    const until = everKnownBefore(unobserved);
+    const first = identities.firstHoursDuring(runs);
+    return { ready: true, matches: (tag, hour) => {
+      if (hour >= until) return false;
+      const key = identities.keyAt(tag, hour);
+      return key !== null && (first.get(key) ?? Infinity) <= hour;
+    }, known: ALWAYS, reason: null };
   }
   const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, identities);
   return { ready: true, matches: (tag, hour) => {
@@ -271,11 +343,18 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   const runs = groupRuns(groups, selection.group);
   if (!runs) return { ...none, reason: UNAVAILABLE, known };
   const unobserved = groupUnobserved(groups, selection.group);
-  const members = groupMembers(runs, 'ever', lastHour, Infinity, unobserved);
-  if (!members) return { ...none, unobserved, reason: unrecorded('ever'), known };
+  if (selection.membership === 'ever') {
+    const soFar = soFarMembership(groups, runs, Math.min(lastHour, everKnownBefore(unobserved) - 1));
+    const all = [...soFar.keys()];
+    if (!all.length && !unobserved.length) return { ...none, reason: NO_MEMBERS.ever, known };
+    const tags = all.slice(0, max);
+    return { tags, membership: new Map(tags.map(tag => [tag, soFar.get(tag)!])), unobserved, dropped: Math.max(0, all.length - max), known, reason: null };
+  }
+  const members = [...new Set([...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag)).map(run => run.tag))];
+  if (!members.length && unobserved.length) return { ...none, unobserved, reason: INCOMPLETE, known };
   const tags = members.slice(0, max);
-  const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
-  if (membership) for (const run of runs) membership.get(run.tag)?.push(run);
+  const membership = new Map(tags.map(tag => [tag, [] as MembershipRun[]]));
+  for (const run of runs) membership.get(run.tag)?.push(run);
   return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), known,
     reason: members.length ? null : NO_MEMBERS.ever };
 }
