@@ -7,7 +7,7 @@ use crate::{
     read,
 };
 use dashboard_declare::{Measure, Series};
-use replay_recording::columnar_frames::Recording;
+use replay_recording::{cells::TableReader, columnar_frames::Recording};
 use replay_columnar::{envelope::UNIT_ORDINALS, manifest::Status, summary::{Computed, Source}};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
@@ -658,9 +658,23 @@ impl<'q, 'a> Line<'q, 'a> {
         if let Some(reason) = board::table_unrecorded(self.series.table, snapshot.status, status_reason) {
             return Ok(Err(reason));
         }
-        let view = snapshot.view();
-        let holders = self.by_key();
-        let tag_of = |key: u128| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
+        Ok(self.rank_rows(&snapshot.view(), hour, n, least, &self.rank_owners(hour)))
+    }
+
+    fn rank_owners(&self, hour: i32) -> HashMap<u128, &str> {
+        let mut owners = HashMap::with_capacity(self.query.holders.tags.len());
+        for (tag, runs) in &self.query.holders.tags {
+            let at = runs.partition_point(|run| run.last < hour);
+            if let Some(run) = runs.get(at).filter(|run| run.first <= hour)
+                && let Holder::Found { slot, id } = run.holder
+            {
+                owners.entry(self.series.key.of(slot, id)).or_insert(tag.as_str());
+            }
+        }
+        owners
+    }
+
+    fn rank_rows(&self, view: &replay_columnar::store::TableView<'_>, hour: i32, n: usize, least: bool, owners: &HashMap<u128, &str>) -> Result<Vec<Country>, String> {
         let mut values: Vec<(i64, Country)> = Vec::new();
         let mut held: HashSet<u128> = HashSet::new();
         let drop_zero = !least && self.measure.drops_zeros_in_top();
@@ -670,23 +684,23 @@ impl<'q, 'a> Line<'q, 'a> {
                 continue;
             }
             held.insert(key);
-            let read = self.source.read(&view, slot);
+            let read = self.source.read(view, slot);
             if matches!(read, Computed::NotApplicable(_)) || (drop_zero && matches!(read, Computed::Value(0))) {
                 continue;
             }
-            let country = match (tag_of(key), self.unnamed_slot(key)) {
+            let country = match (owners.get(&key).copied(), self.unnamed_slot(key)) {
                 (Some(tag), _) => Country::from(tag),
                 (None, Some(slot)) => Country::Slot(slot),
-                (None, None) => return Ok(Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table)))),
+                (None, None) => return Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table))),
             };
             match read {
                 Computed::Value(value) => values.push((value, country)),
                 Computed::NotApplicable(_) => {}
-                Computed::Unrecorded => return Ok(Err(self.query.holders.say(&country, hour, |name| board::measure_unrecorded(name, self.measure.name)))),
+                Computed::Unrecorded => return Err(self.query.holders.say(&country, hour, |name| board::measure_unrecorded(name, self.measure.name))),
             }
         }
         if self.series.absent_none && !drop_zero {
-            values.extend(holders.iter().filter(|(key, _)| !held.contains(key)).filter_map(|(&key, _)| Some((0, Country::from(tag_of(key)?)))));
+            values.extend(owners.iter().filter(|(key, _)| !held.contains(key)).map(|(_, &tag)| (0, Country::from(tag))));
         }
         let order = |a: &(i64, Country), b: &(i64, Country)| {
             let (a0, b0) = if least { (b.0, a.0) } else { (a.0, b.0) };
@@ -697,7 +711,7 @@ impl<'q, 'a> Line<'q, 'a> {
             values.truncate(n);
         }
         values.sort_unstable_by(order);
-        Ok(Ok(values.into_iter().take(n).map(|(_, country)| country).collect()))
+        Ok(values.into_iter().take(n).map(|(_, country)| country).collect())
     }
 
     fn unnamed_slot(&self, key: u128) -> Option<u32> {
@@ -747,11 +761,53 @@ impl<'q, 'a> Line<'q, 'a> {
         let timeline = &self.query.timeline;
         let lo = within.0.max(timeline.first).max(hour.saturating_sub(crate::tile::RANK_PROOF_HOURS));
         let hi = within.1.min(timeline.last).min(hour.saturating_add(crate::tile::RANK_PROOF_HOURS));
-        let holds = |at: i32| -> io::Result<bool> { Ok(matches!(self.rank_at(at, n, least)?, Ok(ranked) if same(at, &ranked))) };
-        let mut from = hour;
-        while from > lo && holds(from - 1)? {
-            from -= 1;
+        let recording = self.query.replay.recording();
+        let columns = read::columns_of(&self.source);
+        let mut reader: Option<TableReader> = None;
+        let mut owners = HashMap::new();
+        let mut owners_until = None;
+        let mut previous = None;
+        let mut matched = false;
+        let mut holds = |at: i32| -> io::Result<bool> {
+            let prior = previous.take();
+            let Some(stretch) = timeline.at(at) else { return Ok(false) };
+            if self.withheld_at(stretch.run, at).is_some() { return Ok(false); }
+            let ordinal = read::ordinal(recording, stretch.run, at)?;
+            let fresh = prior != at.checked_sub(1) || ordinal % UNIT_ORDINALS == 0 || reader.as_ref().is_none_or(|reader| reader.run() != stretch.run);
+            let changed = crate::cost::storage(|| -> io::Result<bool> {
+                if fresh {
+                    let mut next = TableReader::new(recording, stretch.run, self.series.table, Some(&columns))?;
+                    next.seek(recording, ordinal)?;
+                    reader = Some(next);
+                    return Ok(true);
+                }
+                let reader = reader.as_mut().expect("previous rank hour has a reader");
+                let status = reader.status();
+                reader.step(recording)?;
+                let changes = reader.changes();
+                Ok(reader.status() != status || changes.anew || !changes.inserted.is_empty() || !changes.deleted.is_empty() || changes.written.iter().any(|rows| !rows.is_empty()))
+            })?;
+            let owners_changed = owners_until.is_none_or(|until| at > until);
+            if owners_changed {
+                owners = self.rank_owners(at);
+                owners_until = Some(self.query.holders.interval(at).1);
+            }
+            if changed || owners_changed {
+                let reader = reader.as_ref().expect("rank hour has a reader");
+                matched = reader.status() == Status::Complete && self.rank_rows(&reader.view(), at, n, least, &owners).is_ok_and(|ranked| same(at, &ranked));
+            }
+            previous = Some(at);
+            Ok(matched)
+        };
+        let mut from = Ok(lo.min(hour));
+        for at in lo..hour {
+            match holds(at) {
+                Ok(true) => {}
+                Ok(false) => from = Ok(at + 1),
+                Err(error) => from = Err(error),
+            }
         }
+        let from = from?;
         let mut until = hour;
         while until < hi && holds(until + 1)? {
             until += 1;
