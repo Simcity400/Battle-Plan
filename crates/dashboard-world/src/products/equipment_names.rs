@@ -6,7 +6,7 @@ use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{CountryAppearanceRow, CountryRow, LexicalTokenRow, PoliticalPartyRow, PoliticsRow, ReservedCountryNamingRow, TableId, VariantDefinitionRow, mask, tables};
 use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_selected};
-use replay_lanes::{dated::Dated, lanes::Keys as HistoryKeys};
+use replay_lanes::{dated::{Dated, Lent}, lanes::Keys as HistoryKeys};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -454,7 +454,12 @@ pub struct Naming {
     whole: Vec<Dated>,
     variants: Dated,
     spelled: Mutex<Spelled>,
-    icon_hours: Mutex<Vec<(Vec<i32>, usize, Arc<Result<IconHour, String>>)>>,
+}
+
+pub struct NamingSession<'n> {
+    naming: &'n Naming,
+    whole: Vec<Lent<'n>>,
+    icon: Option<(Vec<i32>, usize, Arc<Result<IconHour, String>>)>,
 }
 
 #[derive(Default)]
@@ -462,8 +467,6 @@ struct Spelled {
     rows: BTreeMap<u32, Option<LexicalTokenRow>>,
     refused: bool,
 }
-
-const KEPT_ICON_HOURS: usize = 8;
 
 fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, io::Result<T>>) -> io::Result<T> {
     handle.join().unwrap_or_else(|_| Err(io::Error::other("A design-name history read panicked")))
@@ -484,7 +487,6 @@ impl Naming {
             whole: whole?,
             variants: variants?,
             spelled: Mutex::default(),
-            icon_hours: Mutex::default(),
         })
     }
 
@@ -520,46 +522,56 @@ impl Naming {
         Ok(TableView::Complete(replay_data::rows::TableRows::LexicalTokens(rows)).into())
     }
 
-    fn frame(&self, recording: &Recording, hour: i32, variants: &[u64]) -> io::Result<DecodedFrame> {
-        let mut frame = DecodedFrame { branch: self.branch, hour, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
-        for dated in &self.whole {
-            frame.tables[dated.table().index()] = dated.view(hour)?;
+    pub fn session(&self) -> NamingSession<'_> {
+        NamingSession { naming: self, whole: self.whole.iter().map(Lent::new).collect(), icon: None }
+    }
+}
+
+impl NamingSession<'_> {
+    fn frame(&mut self, recording: &Recording, hour: i32, variants: &[u64]) -> io::Result<DecodedFrame> {
+        let naming = self.naming;
+        let mut frame = DecodedFrame { branch: naming.branch, hour, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        for lent in &mut self.whole {
+            frame.tables[lent.dated().table().index()] = lent.view(recording, hour)?;
         }
         let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
-        frame.tables[TableId::VariantDefinitions.index()] = self.variants.view_of(hour, &keys)?;
+        frame.tables[TableId::VariantDefinitions.index()] = naming.variants.view_of(recording, hour, &keys)?;
         let tokens: BTreeSet<u32> = variant_tokens(&frame).collect();
         if !tokens.is_empty() {
-            frame.tables[TableId::LexicalTokens.index()] = self.spellings(recording, hour, &tokens)?;
+            frame.tables[TableId::LexicalTokens.index()] = naming.spellings(recording, hour, &tokens)?;
         }
         Ok(frame)
     }
 
-    fn icon_hour(&self, frame: &DecodedFrame, context: &Content) -> Arc<Result<IconHour, String>> {
-        let epochs: Vec<i32> = self.whole.iter().map(|dated| dated.epoch(frame.hour)).collect();
+    fn icon_hour(&mut self, frame: &DecodedFrame, context: &Content) -> Arc<Result<IconHour, String>> {
+        if !self.whole.iter().all(|lent| lent.dated().covers(frame.hour)) {
+            return Arc::new(icon_hour(frame, &Ok(context.clone())));
+        }
+        let epochs: Vec<i32> = self.whole.iter().map(|lent| lent.dated().epoch(frame.hour)).collect();
         let icons = context.icons.as_ref().map_or(0, |icons| Arc::as_ptr(icons) as usize);
-        let mut held = self.icon_hours.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((.., found)) = held.iter().find(|(at, with, _)| *at == epochs && *with == icons) {
+        if let Some((at, with, found)) = &self.icon
+            && *at == epochs
+            && *with == icons
+        {
             return Arc::clone(found);
         }
         let made = Arc::new(icon_hour(frame, &Ok(context.clone())));
-        if held.len() >= KEPT_ICON_HOURS {
-            held.remove(0);
-        }
-        held.push((epochs, icons, Arc::clone(&made)));
+        self.icon = Some((epochs, icons, Arc::clone(&made)));
         made
     }
 
-    pub fn name_variants(&self, recording: &Recording, hour: i32, variants: &[u64], context: &Context, named: &mut Named) -> io::Result<()> {
+    pub fn name_variants(&mut self, recording: &Recording, hour: i32, variants: &[u64], context: &Context, named: &mut Named) -> io::Result<()> {
+        let naming = self.naming;
         let (wanted_variants, _) = wanted(variants, &[], named);
         if wanted_variants.is_empty() {
             return Ok(());
         }
         let keys: Vec<u128> = wanted_variants.iter().map(|&id| u128::from(id)).collect();
-        let tokens: BTreeMap<u64, u32> = match self.variants.view_of(hour, &keys)?.held() {
+        let tokens: BTreeMap<u64, u32> = match naming.variants.view_of(recording, hour, &keys)?.held() {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<tables::VariantDefinitions>().into_iter().flatten().map(|row| (row.id, row.equipment_token)).collect(),
             _ => BTreeMap::new(),
         };
-        let spelled = self.spelled_last(recording, &tokens.values().copied().collect())?;
+        let spelled = naming.spelled_last(recording, &tokens.values().copied().collect())?;
         let (late, unspelled): (Vec<u64>, Vec<u64>) = wanted_variants.iter().partition(|id| tokens.get(id).is_none_or(|token| spelled.contains(token)));
         for group in [late, unspelled] {
             if group.is_empty() {

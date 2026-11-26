@@ -9,13 +9,10 @@ use replay_recording::columnar_frames::Recording;
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    sync::{Mutex, PoisonError},
 };
 
 #[cfg(test)]
 mod tests;
-
-const KEPT_VIEWS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Listed {
@@ -25,6 +22,7 @@ enum Listed {
 }
 
 pub struct Dated {
+    run: u32,
     table: TableId,
     fields: u64,
     columns: Vec<usize>,
@@ -38,9 +36,63 @@ pub struct Dated {
     lists: HashMap<(usize, i32, usize), Listed>,
     statuses: Vec<StatusRun>,
     reasons: HashMap<u32, String>,
-    refused: Option<String>,
+    uncovered: Vec<(i32, i32)>,
     changes: Vec<i32>,
-    held: Mutex<Vec<(i32, SharedView)>>,
+}
+
+fn uncovered(statuses: &[StatusRun], from: i32, to: i32) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let mut next = from;
+    for run in statuses {
+        if run.first > next {
+            out.push((next, run.first - 1));
+        }
+        next = next.max(run.last + 1);
+    }
+    if next <= to {
+        out.push((next, to));
+    }
+    out
+}
+
+fn blockwise(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>) -> io::Result<lanes::History> {
+    let held = recording.run(run)?;
+    let mut merged = lanes::History::default();
+    let mut steps: BTreeMap<u128, Vec<lanes::Step>> = BTreeMap::new();
+    for block in 0..held.pages() {
+        let (first, hours) = held.block(block);
+        if hours == 0 {
+            continue;
+        }
+        let (from, to) = (held.first_hour + first as i32, held.first_hour + (first + hours) as i32 - 1);
+        let part = match lanes::witnessed_history(recording, run, table, columns, keys, from, to) {
+            Ok(part) => part,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
+            Err(error) => return Err(error),
+        };
+        for (key, held) in &mut steps {
+            if part.keys.binary_search_by_key(key, |(at, _)| *at).map_or(true, |at| part.keys[at].1.first().is_none_or(|step| step.hour > from)) {
+                held.push(lanes::Step { hour: from, cells: None });
+            }
+        }
+        let offset = merged.texts.len() as u32;
+        merged.columns = part.columns;
+        merged.to = part.to;
+        merged.texts.extend(part.texts);
+        merged.statuses.extend(part.statuses);
+        merged.reasons.extend(part.reasons);
+        for (key, part) in part.keys {
+            steps.entry(key).or_default().extend(part.into_iter().map(|step| lanes::Step {
+                hour: step.hour,
+                cells: step.cells.map(|cells| cells.iter().map(|&cell| match cell {
+                    Cell::Text(text) => Cell::Text(text + offset),
+                    other => other,
+                }).collect()),
+            }));
+        }
+    }
+    merged.keys = steps.into_iter().collect();
+    Ok(merged)
 }
 
 fn columns_of(table: TableId, fields: u64) -> Vec<usize> {
@@ -61,6 +113,7 @@ impl Dated {
         let withheld = columns.iter().map(|&column| table.column_withheld_at(column, format)).collect();
         let mode = CaptureMode::from_byte(recording.root_identity().capture_mode)?;
         let mut made = Self {
+            run,
             table,
             fields,
             columns,
@@ -74,18 +127,15 @@ impl Dated {
             lists: HashMap::new(),
             statuses: Vec::new(),
             reasons: HashMap::new(),
-            refused: None,
+            uncovered: Vec::new(),
             changes: vec![from],
-            held: Mutex::new(Vec::new()),
         };
-        let history = match lanes::history(recording, run, table, &made.columns, keys, from, to) {
+        let history = match lanes::witnessed_history(recording, run, table, &made.columns, keys, from, to) {
             Ok(history) => history,
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                made.refused = Some(error.to_string());
-                return Ok(made);
-            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => blockwise(recording, run, table, &made.columns, keys)?,
             Err(error) => return Err(error),
         };
+        made.uncovered = uncovered(&history.statuses, from, to);
         let mut changes: Vec<i32> = history.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).collect();
         changes.extend(history.statuses.iter().map(|run| run.first));
         changes.push(from);
@@ -151,6 +201,16 @@ impl Dated {
         at.checked_sub(1).map_or(i32::MIN, |at| self.changes[at])
     }
 
+    pub fn covers(&self, hour: i32) -> bool {
+        let at = self.uncovered.partition_point(|&(_, last)| last < hour);
+        self.uncovered.get(at).is_none_or(|&(first, _)| first > hour)
+    }
+
+    fn decoded(&self, recording: &Recording, hour: i32, keys: Keys<'_>) -> io::Result<SharedView> {
+        let read = crate::at::frame(recording, self.run, hour, &[crate::at::Read { table: self.table, columns: Some(&self.columns), keys }])?;
+        Ok(read.tables[self.table.index()].clone())
+    }
+
     fn status(&self, hour: i32) -> Status {
         let at = self.statuses.partition_point(|run| run.last < hour);
         self.statuses.get(at).filter(|run| run.first <= hour).map_or(Status::NotRecorded, |run| run.status)
@@ -186,9 +246,6 @@ impl Dated {
     }
 
     fn made(&self, hour: i32, live: &[usize]) -> io::Result<SharedView> {
-        if let Some(reason) = &self.refused {
-            return Ok(TableView::Unavailable { reason: reason.clone() }.into());
-        }
         let view = match self.status(hour) {
             Status::NotRecorded => Ok(TableView::NotRecorded { mode: self.mode }),
             Status::Unavailable { reason } => Ok(TableView::Unavailable { reason: self.reasons.get(&reason).cloned().unwrap_or_else(|| "A table's reason is not text".to_owned()) }),
@@ -202,29 +259,53 @@ impl Dated {
         }
     }
 
-    pub fn view(&self, hour: i32) -> io::Result<SharedView> {
+    pub fn view(&self, recording: &Recording, hour: i32) -> io::Result<SharedView> {
+        if !self.covers(hour) {
+            return self.decoded(recording, hour, Keys::All);
+        }
         let epoch = self.epoch(hour);
-        {
-            let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((_, view)) = held.iter().find(|(at, _)| *at == epoch) {
-                return Ok(view.clone());
-            }
-        }
         let live: Vec<usize> = (0..self.keys.len()).filter(|&at| self.cells(at, epoch).is_some()).collect();
-        let view = self.made(epoch, &live)?;
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.len() >= KEPT_VIEWS {
-            held.remove(0);
-        }
-        held.push((epoch, view.clone()));
-        Ok(view)
+        self.made(epoch, &live)
     }
 
-    pub fn view_of(&self, hour: i32, keys: &[u128]) -> io::Result<SharedView> {
+    pub fn view_of(&self, recording: &Recording, hour: i32, keys: &[u128]) -> io::Result<SharedView> {
         let mut asked = keys.to_vec();
         asked.sort_unstable();
         asked.dedup();
+        if !self.covers(hour) {
+            return self.decoded(recording, hour, Keys::These(&asked));
+        }
         let live: Vec<usize> = asked.iter().filter_map(|key| self.keys.binary_search(key).ok()).filter(|&at| self.cells(at, hour).is_some()).collect();
         self.made(hour, &live)
+    }
+}
+
+pub struct Lent<'d> {
+    dated: &'d Dated,
+    at: Option<(i32, SharedView)>,
+}
+
+impl<'d> Lent<'d> {
+    pub fn new(dated: &'d Dated) -> Self {
+        Self { dated, at: None }
+    }
+
+    pub fn dated(&self) -> &'d Dated {
+        self.dated
+    }
+
+    pub fn view(&mut self, recording: &Recording, hour: i32) -> io::Result<SharedView> {
+        if !self.dated.covers(hour) {
+            return self.dated.view(recording, hour);
+        }
+        let epoch = self.dated.epoch(hour);
+        if let Some((at, view)) = &self.at
+            && *at == epoch
+        {
+            return Ok(view.clone());
+        }
+        let view = self.dated.view(recording, hour)?;
+        self.at = Some((epoch, view.clone()));
+        Ok(view)
     }
 }

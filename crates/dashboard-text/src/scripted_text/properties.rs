@@ -31,6 +31,7 @@ pub(super) enum Party<'a> {
 }
 
 const POPULARITY: u64 = replay_data::rows::mask::<PoliticalPartyRow>(&["popularity"]);
+const MANPOWER: u64 = replay_data::rows::mask::<replay_data::rows::StateRow>(&["controller", "manpower_available"]);
 
 fn first_leader(party: &PoliticalPartyRow) -> u128 {
     u128::from(party.country) << 64 | u128::from(party.id) << 32
@@ -53,6 +54,7 @@ impl<'a> ScriptedText<'a> {
             .complete::<tables::PoliticalParties>(POPULARITY)
             .map_err(|e| e.to_string())?;
         let mut total = 0_i64;
+        let mut ruling_popularity = 0_i64;
         for party in each(parties) {
             let party = party?;
             let owner = self.scopes.slot(party.country).ok_or_else(|| {
@@ -61,15 +63,17 @@ impl<'a> ScriptedText<'a> {
                     party.country
                 )
             })?;
+            if (party.country, party.id) == (ruling.country, ruling.id) {
+                ruling_popularity = party.popularity;
+            }
             if owner == slot {
                 total = total.wrapping_add(party.popularity);
             }
         }
-        let value = if total == 0 || !(i64::MIN + 2..=i64::MAX - 1).contains(&ruling.popularity) {
+        let value = if total == 0 || !(i64::MIN + 2..=i64::MAX - 1).contains(&ruling_popularity) {
             0xffff_ffff
         } else {
-            ruling
-                .popularity
+            ruling_popularity
                 .wrapping_mul(100_000)
                 .checked_div(total)
                 .ok_or("GetPartySupport: native signed quotient overflows")?
@@ -101,7 +105,7 @@ impl<'a> ScriptedText<'a> {
         let country = country.ok_or_else(|| format!("GetManpower: countries: {gap}"))?;
         let states = self
             .frame
-            .complete::<tables::States>(STATE)
+            .complete::<tables::States>(MANPOWER)
             .map_err(|e| format!("GetManpower: {e}"))?;
         let provinces = self
             .frame

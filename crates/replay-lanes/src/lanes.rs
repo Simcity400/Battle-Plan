@@ -379,10 +379,23 @@ impl History {
     }
 }
 
+pub fn table_statuses(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<StatusRun>> {
+    crate::points::table_statuses(recording, run, table)
+}
+
 pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
+    history_of(recording, run, table, columns, keys, (from, to), false)
+}
+
+pub fn witnessed_history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
+    history_of(recording, run, table, columns, keys, (from, to), true)
+}
+
+fn history_of(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, (from, to): (i32, i32), witnessed: bool) -> io::Result<History> {
     let mut held: HashMap<u128, Vec<Step>, foldhash::fast::RandomState> = HashMap::default();
     let mut statuses = Vec::new();
-    let (columns, texts) = crate::points::cells(recording, run, table, columns, keys, from, to, Some(&mut statuses), &mut |hour, key, cells| {
+    let cells = if witnessed { crate::points::witnessed_cells } else { crate::points::cells };
+    let (columns, texts) = cells(recording, run, table, columns, keys, from, to, Some(&mut statuses), &mut |hour, key, cells| {
         held.entry(key).or_default().push(Step { hour, cells: cells.map(Box::from) });
         true
     })?;
