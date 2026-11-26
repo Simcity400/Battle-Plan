@@ -240,14 +240,24 @@ export function activityScopeKey(input: {
 export function canDisplayStrip(
   strip: StripState | null,
   target: ActivityDisplayTarget | null,
+  failedKey: string | null = null,
 ): strip is StripState {
   if (!strip || strip.binCount === 0 || !target) return false;
+  if (failedKey !== null && failedKey === target.queryKey) return false;
   if (strip.key === target.queryKey) return true;
   return strip.scopeKey === target.scopeKey
     && strip.binHours === target.binHours
     && target.bound.lastHour >= strip.lastHour
     && target.bound.firstHour >= strip.boundFirstHour
     && target.bound.firstHour <= strip.lastHour;
+}
+
+export function shouldFetchActivityStrip(
+  retained: StripState | null,
+  target: ActivityDisplayTarget | null,
+): boolean {
+  if (!target) return false;
+  return retained?.key !== target.queryKey;
 }
 
 export function activityRequestPlan(

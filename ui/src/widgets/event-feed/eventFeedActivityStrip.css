@@ -105,3 +105,13 @@
   background: var(--hover);
   pointer-events: none;
 }
+
+.efs-strip.is-unavailable {
+  display: flex;
+  align-items: center;
+}
+
+.efs-unavailable {
+  font-size: 11px;
+  color: var(--muted);
+}

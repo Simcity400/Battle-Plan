@@ -16,6 +16,7 @@ import {
   canDisplayStrip,
   createActivityClockTracker,
   mergeActivityStrip,
+  shouldFetchActivityStrip,
   stripBinCoverage,
   stripBinHours,
   subscribeActivityClock,
@@ -222,6 +223,25 @@ test('activityRequestPlan, mergeActivityStrip, and canDisplayStrip reuse histori
   const scopeChanged = activityRequestPlan(merged, otherScope, 0, 120, 24);
   assert.equal(scopeChanged.incremental, false);
   assert.equal(scopeChanged.invalidatePrev, true, 'changing filters invalidates stale bars immediately');
+  assert.equal(
+    shouldFetchActivityStrip(merged, { queryKey: merged.key, scopeKey: scope, binHours: 24, bound: { firstHour: 0, lastHour: 110 } }),
+    false,
+    'a retained strip matching the target queryKey does not re-fetch',
+  );
+  assert.equal(
+    shouldFetchActivityStrip(null, { queryKey: merged.key, scopeKey: scope, binHours: 24, bound: { firstHour: 0, lastHour: 110 } }),
+    true,
+    'switching A -> B (clearing retained strip) -> A before B replies still fetches A',
+  );
+  assert.equal(
+    canDisplayStrip(
+      settled,
+      { queryKey: forwardPlan.queryKey, scopeKey: scope, binHours: 24, bound: { firstHour: 0, lastHour: 110 } },
+      forwardPlan.queryKey,
+    ),
+    false,
+    'a failed overlapping forward request hides previous bars instead of leaving stale data painted',
+  );
 
   const sliding = activityRequestPlan(merged, scope, 24, 134, 24);
   assert.equal(sliding.incremental, true, 'aligned sliding window reuses surviving middle bins');

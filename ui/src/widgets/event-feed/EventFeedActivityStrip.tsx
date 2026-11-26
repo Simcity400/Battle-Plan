@@ -5,6 +5,7 @@ import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashb
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { groupUnobserved } from '../../dashboard/groups.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
+import { failureText } from '../../dashboard/queryError.ts';
 import { useGate } from '../../dashboard/regionGate.ts';
 import type { BoundHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
@@ -21,6 +22,7 @@ import {
   canDisplayStrip,
   createActivityClockTracker,
   mergeActivityStrip,
+  shouldFetchActivityStrip,
   stripBinCoverage,
   stripBinHours,
   subscribeActivityClock,
@@ -60,11 +62,11 @@ export default function EventFeedActivityStrip({
   frozenHour,
   installedHour,
 }: EventFeedActivityStripProps) {
-  const gate = useGate(runtime, widget);
+  const { span: gateSpan, recorded: gateRecorded } = useGate(runtime, widget);
   const [strip, setStrip] = useState<StripState | null>(null);
+  const [failed, setFailed] = useState<{ readonly key: string; readonly reason: string } | null>(null);
   const stripRef = useRef<StripState | null>(null);
   stripRef.current = strip;
-  const lastKeyRef = useRef('');
 
   const asked = useMemo(
     () => CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value),
@@ -119,9 +121,9 @@ export default function EventFeedActivityStrip({
     if (!track || !groupsReady || displayedHour === null || !asked.length || countryFilter.kind === 'empty') return null;
     const stripFrom = activityStripStart(track.branch.firstHour, from, displayedHour);
     if (stripFrom > displayedHour) return null;
-    const bound = gate.span(stripFrom, displayedHour);
+    const bound = gateSpan(stripFrom, displayedHour);
     if (!bound) return null;
-    const cutoff = gate.recorded(bound.lastHour);
+    const cutoff = gateRecorded(bound.lastHour);
     if (cutoff === null) return null;
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
     const scopeKey = activityScopeKey({
@@ -135,17 +137,24 @@ export default function EventFeedActivityStrip({
     });
     const queryKey = JSON.stringify([scopeKey, bound.firstHour, bound.lastHour]);
     return { bound, cutoff, binHours, scopeKey, queryKey };
-  }, [track, groupsReady, displayedHour, asked, countryFilter, from, gate, excludedKinds]);
+  }, [track, groupsReady, displayedHour, asked, countryFilter, from, gateSpan, gateRecorded, excludedKinds]);
 
   useEffect(() => {
     if (!track || !target) {
-      lastKeyRef.current = '';
-      if (stripRef.current !== null) setStrip(null);
+      if (stripRef.current !== null) {
+        stripRef.current = null;
+        setStrip(null);
+      }
+      setFailed(prev => (prev === null ? prev : null));
       return;
     }
     if (!active) return;
-    if (lastKeyRef.current === target.queryKey) return;
+    if (!shouldFetchActivityStrip(stripRef.current, target)) {
+      setFailed(prev => (prev === null ? prev : null));
+      return;
+    }
 
+    setFailed(prev => (prev === null ? prev : null));
     const plan = activityRequestPlan(
       stripRef.current,
       target.scopeKey,
@@ -154,10 +163,11 @@ export default function EventFeedActivityStrip({
       target.binHours,
     );
     if (plan.invalidatePrev) {
+      stripRef.current = null;
       setStrip(null);
     }
 
-    const requestSpan = plan.incremental ? gate.span(plan.requestFrom, target.bound.lastHour) : target.bound;
+    const requestSpan = plan.incremental ? gateSpan(plan.requestFrom, target.bound.lastHour) : target.bound;
     const effectivePlan = requestSpan
       ? plan
       : { ...plan, requestFrom: target.bound.firstHour, incremental: false };
@@ -188,7 +198,7 @@ export default function EventFeedActivityStrip({
       const data = validateProductReply(reply, request).data as EventFeedActivityReply;
       const merged = mergeActivityStrip(stripRef.current, data, effectivePlan);
       if (merged !== null) {
-        lastKeyRef.current = target.queryKey;
+        setFailed(null);
         setStrip(merged);
         return;
       }
@@ -196,18 +206,31 @@ export default function EventFeedActivityStrip({
       return runtime.client.product(fullRequest, controller.signal).then(fullReply => {
         if (controller.signal.aborted) return;
         const fullData = validateProductReply(fullReply, fullRequest).data as EventFeedActivityReply;
-        lastKeyRef.current = target.queryKey;
+        setFailed(null);
         setStrip(buildFullActivityStrip(fullData, {
           ...effectivePlan,
           requestFrom: target.bound.firstHour,
           incremental: false,
         }));
       });
-    }).catch(() => {});
+    }).catch(error => {
+      if (controller.signal.aborted) return;
+      stripRef.current = null;
+      setStrip(null);
+      setFailed({ key: target.queryKey, reason: failureText(error, 'Activity could not be loaded.') });
+    });
     return () => controller.abort();
-  }, [track, runtime.client, active, target, asked, excludedKinds, countryFilter, gate]);
+  }, [track, runtime.client, active, target, asked, excludedKinds, countryFilter, gateSpan]);
 
-  if (!canDisplayStrip(strip, target)) return null;
+  const activeFailure = target && failed?.key === target.queryKey ? failed : null;
+  if (activeFailure) {
+    return (
+      <div className="efs-strip is-unavailable" role="status" aria-label="Event activity strip" title={activeFailure.reason}>
+        <span className="efs-unavailable">Activity unavailable</span>
+      </div>
+    );
+  }
+  if (!canDisplayStrip(strip, target, failed?.key ?? null)) return null;
 
   const totals = new Array<number>(strip.binCount).fill(0);
   for (const s of strip.series) {
