@@ -51,7 +51,7 @@ import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts'
 import { gatedByCountry, planFamilySources } from './planSources.ts';
 import { factionPooledResourcesDeclaration } from '../../widgets/faction-pooled-strength/factionPooledStrengthProjection.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
-import { countryMatch, EVER_UNRECORDED, everBounds, everStateAt, groupMembers, groupRuns, groupUnobserved, membershipUnrecordedAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups.ts';
+import { countryMatch, EVER_UNRECORDED, everBounds, everStateAt, groupMembers, groupRuns, groupUnobserved, membershipUnrecordedAt, rankedCandidates, resolveCountries, tagsAt, worldFilter } from '../../dashboard/groups.ts';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import { effectiveCountryUnobserved } from '../sources.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
@@ -1629,6 +1629,11 @@ test('every member so far is dated for multi-country views: each mask ends befor
   const together = { ...everFaction([], [{ tag: 'ZZZ', firstHour: 0, lastHour: 1000 }, { tag: 'AAA', firstHour: 0, lastHour: 1000 }]),
     countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 1000, slot: 7, countryId: 107 }] }, { tag: 'ZZZ', identities: [{ firstHour: 0, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
   assert.deepEqual(resolveCountries(selection, [], together, 1000, 1).tags, ['AAA'], 'countries joining together are kept in tag order, as membership at the hour keeps them');
+  const left = { ...everFaction([], [{ tag: 'AAA', firstHour: 0, lastHour: 5 }]),
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 101 }] },
+      { tag: 'BBB', identities: [{ firstHour: 0, lastHour: 9, slot: 2, countryId: 102 }, { firstHour: 10, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  const so = resolveCountries(selection, [], left, 1000, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual([tagsAt(so, 3), tagsAt(so, 12)], [['AAA'], ['BBB']], 'a choice at an hour offers the member under its tag then, never another holder of its later tag');
   assert.deepEqual([everStateAt(everBounds(selection, groups)!, 299).kind, everStateAt(everBounds(selection, groups)!, 300).kind], [null, 'unrecorded']);
 });
 

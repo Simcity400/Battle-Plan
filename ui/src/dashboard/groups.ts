@@ -370,6 +370,11 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
     reason: members.length ? null : NO_MEMBERS.ever };
 }
 
+export function tagsAt(resolved: ResolvedCountries, hour: number): readonly string[] {
+  const membership = resolved.membership;
+  return membership ? resolved.tags.filter(tag => membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)) : resolved.tags;
+}
+
 export function noMembersAt(selection: CountrySelection, resolved: ResolvedCountries, groups: CountryGroupReply | undefined,
   hour: number): { reason: string } | null {
   if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
