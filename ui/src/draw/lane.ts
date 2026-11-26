@@ -1383,7 +1383,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.request = bare;
     this.lastExact = request.exact ? bare : null;
     if (request.exact) this.pendingExact = bare;
-    else if (this.pendingExact?.seek === request.seek) this.pendingExact.now = request.now;
+    else if (this.pendingExact?.seek === request.seek) {
+      this.pendingExact = { ...this.pendingExact, now: request.now, target: request.now };
+    }
     this.schedule();
   }
 
