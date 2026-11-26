@@ -90,6 +90,7 @@ struct Registered {
 #[derive(Default)]
 struct Subscription {
     gate: Arc<Mutex<()>>,
+    preparing: usize,
     pending: Option<(u64, PathBuf)>,
     installed: Option<Followed>,
 }
@@ -110,9 +111,10 @@ impl Reservation<'_> {
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         let mut table = lock(&self.registry.followed);
-        if let Some(sub) = table.held.get_mut(&self.id) {
+        if let Some(sub) = table.held.get_mut(&self.id).filter(|sub| Arc::ptr_eq(&sub.gate, &self.gate)) {
+            sub.preparing -= 1;
             if sub.pending.as_ref().is_some_and(|(serial, _)| *serial == self.serial) { sub.pending = None; }
-            if sub.installed.is_none() && sub.pending.is_none() && Arc::ptr_eq(&sub.gate, &self.gate) && Arc::strong_count(&self.gate) == 2 {
+            if sub.installed.is_none() && sub.preparing == 0 {
                 table.held.remove(&self.id);
             }
         }
@@ -153,12 +155,12 @@ impl Registry {
     }
 
     fn reserve(&self, id: u32, path: &Path, params: &Value) -> Option<Reservation<'_>> {
-        let _page = self.page.read().unwrap_or_else(PoisonError::into_inner);
         let mut table = lock(&self.followed);
         if !table.current(params) { return None; }
         table.serial += 1;
         let serial = table.serial;
         let sub = table.held.entry(id).or_default();
+        sub.preparing += 1;
         sub.pending = Some((serial, path.to_path_buf()));
         Some(Reservation { registry: self, id, serial, gate: sub.gate.clone() })
     }

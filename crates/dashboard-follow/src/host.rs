@@ -194,7 +194,7 @@ fn run_panel(job: impl FnOnce() + Send + 'static) {
             let receive = receive.clone();
             std::thread::Builder::new().name(format!("follow panel {i}")).spawn(move || loop {
                 let job = receive.lock().unwrap_or_else(PoisonError::into_inner).recv();
-                match job { Ok(job) => job(), Err(_) => break }
+                match job { Ok(job) => { let _ = catch_unwind(AssertUnwindSafe(job)); }, Err(_) => break }
             }).expect("a follow panel worker");
         }
         send
@@ -289,8 +289,12 @@ struct StepProduct {
     resend: bool,
 }
 
-struct Seed {
-    hour: Hour,
+enum PanelRead {
+    Seed(Hour),
+    CatchUp { before: Hour, quantum: Hour },
+}
+
+struct PanelJob {
     stamp: (i32, u32, u32),
     session: u64,
     epoch: u64,
@@ -300,46 +304,77 @@ struct Seed {
     wake: panel::Wake,
 }
 
-impl Seed {
-    fn start<E: Send + Sync + 'static>(self, mut product: StepProduct, work: Arc<Work<StepProduct>>, owner: Arc<E>, get: fn(&E) -> &Playhead) {
+impl PanelJob {
+    fn start<E: Send + Sync + 'static>(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, owner: &Arc<E>, get: fn(&E) -> &Playhead) {
+        if let PanelRead::Seed(hour) = read {
+            let (clock, route, seek) = self.stamp;
+            let reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            if reads.current(self.epoch, seek) && !self.token.load(Ordering::Acquire) && get(owner).epoch() == self.epoch {
+                let from = product.last.filter(|(_, g, _)| *g == seek).map_or(hour, |(_, _, h)| h.saturating_add(1).min(hour));
+                self.push.offer_from(self.session, PANEL, panel::dated::encoded(clock, route, seek, product.id, from, panel::dated::WAITING, &[]));
+            }
+        }
+        let owner = Arc::downgrade(owner);
         run_panel(move || {
-            let product_id = product.id;
-            product.publish_seed(self.stamp, self.session, self.hour, self.epoch, &self.token, &self.reads, &self.push, || get(&owner).epoch());
+            let epoch = || owner.upgrade().map(|owner| get(&owner).epoch());
+            match read {
+                PanelRead::Seed(hour) => self.seed(&mut product, hour, epoch),
+                PanelRead::CatchUp { before, quantum } => {
+                    if let Some((_, _, mut hour)) = product.last {
+                        while hour.saturating_add(quantum) < before {
+                            hour += quantum;
+                            if !self.read_one(&mut product, hour, quantum > 1, &epoch) {
+                                product.resend = true;
+                                product.joined = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            let id = product.id;
             work.put(product);
-            if !self.token.load(Ordering::Acquire) || self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&product_id) {
+            if !self.token.load(Ordering::Acquire) || self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&id) {
                 (self.wake)();
             }
         });
     }
-}
 
-impl StepProduct {
-    fn publish_seed(&mut self, stamp: (i32, u32, u32), session: u64, head: Hour, epoch: u64, token: &AtomicBool,
-        reads: &Mutex<ProductReads>, push: &Push, current_epoch: impl Fn() -> u64) {
-        let id = self.id;
-        if token.load(Ordering::Acquire) || current_epoch() != epoch { return; }
-        let (clock, route, seek) = stamp;
-        self.started_on = Some((epoch, seek));
-        self.joined = false;
-        self.pending_seed = None;
-        let Some(change) = self.read_at(seek, epoch, head, true, token, None, reads) else {
-            self.pending_seed = Some((epoch, seek, head));
-            return;
-        };
-        let packet = change.map(|(kind, body)| panel::dated::encoded(clock, route, seek, id, head, kind, body));
-        let reads = reads.lock().unwrap_or_else(PoisonError::into_inner);
-        if reads.current(epoch, seek) && !token.load(Ordering::Acquire) && current_epoch() == epoch
-            && let Some(packet) = packet {
-            push.offer_from(session, PANEL, packet);
-            self.wire.commit();
+    fn seed(&self, product: &mut StepProduct, hour: Hour, current_epoch: impl Fn() -> Option<u64>) {
+        product.started_on = Some((self.epoch, self.stamp.2));
+        product.joined = false;
+        product.pending_seed = None;
+        if !self.read_one(product, hour, true, &current_epoch) {
+            product.pending_seed = Some((self.epoch, self.stamp.2, hour));
         }
     }
 
+    fn read_one(&self, product: &mut StepProduct, hour: Hour, reset: bool, current_epoch: &impl Fn() -> Option<u64>) -> bool {
+        let seek = self.stamp.2;
+        let id = product.id;
+        let current = || !self.token.load(Ordering::Acquire) && current_epoch() == Some(self.epoch);
+        if !current() { return false; }
+        let Some(change) = product.read_at(seek, self.epoch, hour, reset, &self.token, None, &self.reads) else { return false };
+        let (kind, body) = change.unwrap_or((panel::dated::STANDS, &[]));
+        let packet = panel::dated::at_one_hour(self.stamp, id, hour, kind, body);
+        let reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+        if !reads.current(self.epoch, seek) || !current() { return false; }
+        self.push.offer_from(self.session, PANEL, packet);
+        product.wire.commit();
+        true
+    }
+}
+
+impl StepProduct {
     fn step(&mut self, input: panel::ProductStep<'_>, (clock, route, seek): (i32, u32, u32), session: u64, token: &AtomicBool,
         active: &Mutex<ProductReads>, push: &Push, playhead: &Playhead) -> (Hour, Option<(u8, Vec<u8>)>) {
         let step = input.step;
         let (epoch, hour, id) = (step.epoch(), step.last(), self.id);
         let current = || !token.load(Ordering::Acquire) && playhead.epoch() == epoch;
+        if step.reset() { self.pending_seed = None; }
+        if !self.joined && let Some((e, g, last)) = self.last && (e, g) == (epoch, seek) && hour < last {
+            return (last, None);
+        }
         if !self.joined && self.last == Some((epoch, seek, hour)) {
             self.joined = true;
             return (hour.saturating_add(1), Some((panel::dated::STANDS, Vec::new())));
@@ -360,17 +395,6 @@ impl StepProduct {
                 }
             }
             self.pending_seed = None;
-        }
-        if !self.joined && let Some((e, g, mut h)) = self.last && (e, g) == (epoch, seek) && !step.reset() {
-            let quantum = playhead.step_hours();
-            while h.saturating_add(quantum) < step.first() && current() {
-                h += quantum;
-                let (kind, body) = self.read_at(seek, epoch, h, false, token, None, active).flatten().unwrap_or((panel::dated::STANDS, &[]));
-                let guard = active.lock().unwrap_or_else(PoisonError::into_inner);
-                if !guard.current(epoch, seek) || !current() { break; }
-                push.offer_from(session, PANEL, panel::dated::encoded(clock, route, seek, id, h, kind, body));
-                self.wire.commit();
-            }
         }
         let joining = !self.joined;
         let Some(change) = self.read_at(seek, epoch, hour, step.reset(), token, Some(input), active) else {
@@ -490,10 +514,10 @@ fn panicked(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32, u32), version: u64, token: &AtomicBool,
-    active: &Mutex<ProductReads>, push: &Push, session: u64, playhead: &Playhead) {
+    active: &Mutex<ProductReads>, push: &Push, session: u64, epoch_is_current: impl Fn() -> bool) {
     use panel::dated::{self, Update};
     let (clock, route, epoch, seek) = stamp;
-    let current = || !token.load(Ordering::Acquire) && playhead.epoch() as u32 == epoch;
+    let current = || !token.load(Ordering::Acquire) && epoch_is_current();
     if shown.version != (version, epoch) {
         shown.frame = None;
         shown.data = None;
@@ -619,14 +643,22 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             for (id, work, token) in due {
                 if token.load(Ordering::Acquire) || get(&owner).epoch() != epoch { continue; }
                 let Some(mut product) = work.take() else {
-                    replies.push((id, token, step.last(), Some((panel::dated::WAITING, Vec::new()))));
+                    replies.push((id, token, step.last(), None));
                     continue;
                 };
-                if product.started_on != Some((epoch, stamp.2)) {
-                    let hour = get(&owner).head(Instant::now()).min(step.last());
-                    let task = Seed { hour, stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone() };
-                    task.start(product, work, owner.clone(), get);
-                    replies.push((id, token, step.last(), Some((panel::dated::WAITING, Vec::new()))));
+                let playhead = get(&owner);
+                let quantum = playhead.step_hours();
+                let job = if product.started_on != Some((epoch, stamp.2)) {
+                    Some(PanelRead::Seed(playhead.head(Instant::now()).min(step.last())))
+                } else if !product.joined && !step.reset() && product.last.is_some_and(|(e, g, h)| (e, g) == (epoch, stamp.2) && h.saturating_add(quantum) < step.first()) {
+                    Some(PanelRead::CatchUp { before: step.first(), quantum })
+                } else {
+                    None
+                };
+                if let Some(job) = job {
+                    let task = PanelJob { stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone() };
+                    task.start(job, product, work, &owner, get);
+                    replies.push((id, token, step.last(), None));
                     continue;
                 }
                 product.resend |= resend;
@@ -719,13 +751,13 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let hour = self.playhead().head(Instant::now());
             let host = panels.cells.clone();
             let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), lanes: Vec::new(), wire: Default::default(), last: None, joined: false, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
-            let task = Seed { hour, stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker() };
+            let task = PanelJob { stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker() };
             let work = Arc::new(Work::new(None));
             panels.due.insert((Hour::MIN, id));
             panels.products.insert(id, work.clone());
             drop(reads);
             drop(panels);
-            task.start(product, work, self.owner.clone(), self.get);
+            task.start(PanelRead::Seed(hour), product, work, &self.owner, self.get);
             self.driver_gate.wake();
             return Ok(());
         }
@@ -764,9 +796,9 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                                 if let Some(push) = push {
                                     for (id, work, token) in jobs {
                                         let Some(mut shown) = work.take() else { continue };
-                                        let (push, tokens, gate, sequence, owner) = (push.clone(), tokens.clone(), gate.clone(), work_seq.clone(), owner.clone());
+                                        let (push, tokens, gate, sequence, owner) = (push.clone(), tokens.clone(), gate.clone(), work_seq.clone(), Arc::downgrade(&owner));
                                         run_panel(move || {
-                                            if !token.load(Ordering::Acquire) { evaluate(id, &mut shown, stamp, version, &token, &tokens, &push, session, get(&owner)); }
+                                            if !token.load(Ordering::Acquire) { evaluate(id, &mut shown, stamp, version, &token, &tokens, &push, session, || owner.upgrade().is_some_and(|owner| get(&owner).epoch() as u32 == stamp.2)); }
                                             if work.put(shown) {
                                                 sequence.fetch_add(1, Ordering::Release);
                                                 gate.wake();
@@ -919,7 +951,7 @@ impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
 #[cfg(test)]
 #[test]
 fn a_retired_product_read_cannot_publish_its_seed() {
-    let reads = Mutex::new(ProductReads::default());
+    let reads = Arc::new(Mutex::new(ProductReads::default()));
     reads.lock().unwrap().register(4);
     let token = reads.lock().unwrap().tokens[&4].clone();
     let (started, wait_started) = std::sync::mpsc::channel();
@@ -933,9 +965,10 @@ fn a_retired_product_read_cannot_publish_its_seed() {
             panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
         }),
     };
-    let push = Push::default();
+    let push = Arc::new(Push::default());
     std::thread::scope(|threads| {
-        threads.spawn(|| product.publish_seed((0, 1, 0), 0, 12, 1, &token, &reads, &push, || 1));
+        let job = PanelJob { stamp: (0, 1, 0), session: 0, epoch: 1, token: token.clone(), reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}) };
+        threads.spawn(move || job.seed(&mut product, 12, || Some(1)));
         wait_started.recv().unwrap();
         reads.lock().unwrap().anchor(2, 9);
         release.send(()).unwrap();

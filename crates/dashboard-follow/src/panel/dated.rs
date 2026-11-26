@@ -50,6 +50,15 @@ pub fn encoded(clock: i32, route: u32, seek: u32, id: u32, hour: Hour, kind: u8,
     out
 }
 
+pub(crate) fn at_one_hour(stamp: (i32, u32, u32), id: u32, hour: Hour, kind: u8, body: &[u8]) -> Vec<u8> {
+    let (clock, route, seek) = stamp;
+    let next = hour.checked_add(1);
+    let mut out = head(1 + usize::from(next.is_some()), clock, (route, seek));
+    record(&mut out, id, hour, kind, body);
+    if let Some(next) = next { record(&mut out, id, next, WAITING, &[]); }
+    out
+}
+
 pub fn message(clock: i32, route: u32, seek: u32, updates: &[Update<'_>]) -> Vec<u8> {
     let mut out = head(updates.len(), clock, (route, seek));
     for update in updates {

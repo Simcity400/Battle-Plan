@@ -2145,7 +2145,6 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
         registry::{Anchor, Hosted},
     };
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::time::Instant;
 
     struct NoRows;
     impl PanelRows for NoRows {
@@ -2166,25 +2165,25 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     host.show_panels(Arc::new(NoRows), push.clone());
     let reading = |hour| ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() };
     let first_data = |id| {
-        let registered = Instant::now();
         host.prepare_panel(product(Arc::new(move |hour, _, _, _| reading(hour)))).unwrap()(id, 1).unwrap();
         loop {
             let (kind, bytes, _) = push.take_sent().unwrap();
             if kind == PANEL {
-                for r in dated::records(&bytes).unwrap() {
+                let records = dated::records(&bytes).unwrap();
+                for r in &records {
                     assert!(r.id != 2 || r.kind == dated::WAITING, "the removed slow reader never publishes a value");
                     if r.id == id && r.kind != dated::WAITING {
                         assert_eq!(r.kind, dated::DATA);
                         assert!(!r.stepped(), "this subscription receives its seed before its steps");
-                        return registered.elapsed();
+                        assert!(records.iter().any(|next| next.id == id && next.kind == dated::WAITING && next.hour == r.hour + 1),
+                            "a route completion cannot extend the seed over hours its reader has yet to visit");
+                        return;
                     }
                 }
             }
         }
     };
-    first_data(5);
-    host.unpanel(5);
-    let alone = first_data(1);
+    first_data(1);
     host.unpanel(1);
     let (entered, started) = mpsc::channel();
     let (open, gate) = mpsc::channel();
@@ -2192,7 +2191,6 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let gate = Mutex::new(gate);
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let slow = Instant::now();
     host.prepare_panel(product(Arc::new(move |hour, _, cancelled: &AtomicBool, _| {
         counted.fetch_add(1, Ordering::Relaxed);
         entered.send(()).unwrap();
@@ -2201,15 +2199,41 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
         reading(hour)
     }))).unwrap()(2, 1).unwrap();
     started.recv().unwrap();
-    let together = first_data(3);
+    first_data(3);
     host.anchor(Anchor { seek: 5, hour: 50, position: 50.0, playing: false, sought: true, frame_rate: 60.0, speed: 1.0, timestamps: None });
     host.unpanel(2);
-    let blocked = slow.elapsed();
     open.send(()).unwrap();
     assert!(done.recv().unwrap());
     assert_eq!(calls.load(Ordering::Relaxed), 1);
-    let barrier = first_data(4);
-    eprintln!("fast seed alone {alone:?}, alongside a gated seed {together:?}, gate held {blocked:?}, after seek {barrier:?}");
+    first_data(4);
+
+    let (started, seed_hour) = mpsc::channel();
+    let (resume, gate) = mpsc::channel();
+    let gate = Mutex::new(gate);
+    let (reader, catching_up) = mpsc::channel();
+    let first = AtomicBool::new(true);
+    host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+        if first.swap(false, Ordering::Relaxed) {
+            started.send(hour).unwrap();
+            gate.lock().unwrap().recv().unwrap();
+        } else if step.is_none() {
+            let _ = reader.send((hour, std::thread::current().id()));
+        }
+        reading(hour)
+    }))).unwrap()(6, 1).unwrap();
+    let start = seed_hour.recv().unwrap();
+    let (stepped, steps) = mpsc::channel();
+    host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+        if step.is_some() { let _ = stepped.send((hour, std::thread::current().id())); }
+        reading(hour)
+    }))).unwrap()(7, 1).unwrap();
+    host.playhead().place(start + 4);
+    host.follow().rehooker()();
+    let (_, hook) = steps.iter().find(|(hour, _)| *hour >= start + 4).unwrap();
+    resume.send(()).unwrap();
+    let (next, worker) = catching_up.recv().unwrap();
+    assert_eq!(next, start + host.playhead().step_hours());
+    assert_ne!(worker, hook, "the panel catches up on its own worker while the playhead keeps stepping");
 }
 
 #[test]
