@@ -179,28 +179,34 @@ interface HeightBasis {
 
 const heightMemories = new WeakMap<object, { readonly basis: HeightBasis; readonly rows: ReadonlyMap<number, MeasuredRow> }>();
 
+function heldHeights(owner: object, basis: HeightBasis, rows: readonly FlatTableRow[], windowOffset: number): ReadonlyMap<number, MeasuredRow> | null {
+  const held = heightMemories.get(owner);
+  if (!held || !(Object.keys(basis) as (keyof HeightBasis)[]).every(key => held.basis[key] === basis[key])) return null;
+  const end = windowOffset + rows.length;
+  for (const [ordinal, row] of held.rows) {
+    if (ordinal < windowOffset || ordinal >= end) continue;
+    const at = rows[ordinal - windowOffset]!;
+    if (at.kind !== 'loading' && at.key !== row.key) return null;
+  }
+  return held.rows;
+}
+
 function rememberHeights(
   owner: object,
   basis: HeightBasis,
+  held: ReadonlyMap<number, MeasuredRow> | null,
   rows: readonly FlatTableRow[],
   rowGeom: RowLayoutGeometry | null,
   windowOffset: number,
 ): Map<number, MeasuredRow> {
   const memory = new Map<number, MeasuredRow>();
   const end = windowOffset + rows.length;
-  const held = heightMemories.get(owner);
-  const same = held !== undefined && (Object.keys(basis) as (keyof HeightBasis)[]).every(key => held.basis[key] === basis[key]);
-  const matches = ([ordinal, row]: readonly [number, MeasuredRow]) => {
-    if (ordinal < windowOffset || ordinal >= end) return true;
-    const at = rows[ordinal - windowOffset]!;
-    return at.kind === 'loading' || at.key === row.key;
-  };
-  if (same && [...held.rows].every(matches)) {
-    for (const [ordinal, row] of held.rows) if (ordinal < windowOffset || ordinal >= end) memory.set(ordinal, row);
-  }
+  if (held) for (const [ordinal, row] of held) if (ordinal < windowOffset || ordinal >= end) memory.set(ordinal, row);
   for (let i = 0; i < rows.length; i++) {
+    const kept = rows[i]!.kind === 'loading' ? held?.get(windowOffset + i) : undefined;
     const height = rowGeom ? rowGeom.heights[i]! : basis.rowHeight;
-    if (height !== basis.rowHeight) memory.set(windowOffset + i, { key: rows[i]!.key, height });
+    if (kept) memory.set(windowOffset + i, kept);
+    else if (height !== basis.rowHeight) memory.set(windowOffset + i, { key: rows[i]!.key, height });
   }
   heightMemories.set(owner, { basis, rows: memory });
   return memory;
@@ -257,12 +263,14 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth, rhythm: model.rhythm });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
-  const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode,
-    { width, columns: columns.columns, theme, measure: canvasMeasureText(measure) }) : null;
-  const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
-  const heightMemory = panes ? new Map<number, MeasuredRow>() : rememberHeights(measure, { options: binding.options, settings, expanded, width, theme, rowHeight, totalCount }, flatRows, rowGeom, windowOffset);
+  const basis: HeightBasis = { options: binding.options, settings, expanded, width, theme, rowHeight, totalCount };
+  const heldRows = panes ? null : heldHeights(measure, basis, flatRows, windowOffset);
+  const rowGeom = hasVariableHeights ? computeRowLayout(flatRows, settings.density, rowHeightMode,
+    { width, columns: columns.columns, theme, measure: canvasMeasureText(measure) }, heldRows ? index => heldRows.get(windowOffset + index)?.height : undefined) : null;
+  const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
+  const heightMemory = panes ? new Map<number, MeasuredRow>() : rememberHeights(measure, basis, heldRows, flatRows, rowGeom, windowOffset);
   const extents = rowExtents(rowHeight, [...heightMemory].map(([ordinal, row]) => [ordinal, row.height] as const));
   const totalHeight = panes ? localTotal : extentTop(extents, rowHeight, totalCount) + (model.endNote ? END_NOTE_HEIGHT : 0);
   let maximaCols = '';

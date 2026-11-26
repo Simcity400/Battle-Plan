@@ -3193,7 +3193,7 @@ test('buildDeclarativeRow resolves country identity and flag art once per row ac
   assert.equal(artCalls, 1, 'flag art is resolved only for the country column, never numeric columns or rowName');
 });
 
-test('a tall row near the window edge keeps its neighbours on screen while scrolling a paused table, and a page that comes back as loading keeps the heights above it: the host window and the lane place rows from measured heights', () => {
+test('a tall row near the window edge keeps its neighbours on screen while scrolling a paused table, and a row whose page comes back as loading keeps its place and its height: the host window and the lane place rows from measured heights', () => {
   const columns: TableColumnSpec[] = [
     { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'date', minWidth: 70, maxWidth: 70 },
     { key: 'item', label: 'Item', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
@@ -3254,10 +3254,12 @@ test('a tall row near the window edge keeps its neighbours on screen while scrol
   }
   assert.equal(extent, reference.shape.totalHeight, 'the scroll extent is whole once every row has been seen');
   const back = reference.tops(second - 1);
-  visit(back, second);
-  assert.ok(layout.shape.windowOffset > 2, `the first tall row is above the window that starts at ${layout.shape.windowOffset}`);
-  placed(back, second);
-  visit(back);
-  placed(back, all.length);
-  assert.equal(layout.shape.totalHeight, reference.shape.totalHeight, 'the scroll extent is whole again once the page is back');
+  const past = reference.tops(second + 6);
+  for (const [scrollTop, loading] of [[back, second], [past, second], [back, null]] as const) {
+    visit(scrollTop, loading);
+    assert.ok(layout.shape.windowOffset > (scrollTop === past ? second : 2), `the tall rows before ${scrollTop === past ? 'and including the loading one ' : ''}are above the window that starts at ${layout.shape.windowOffset}`);
+    placed(scrollTop, all.length);
+    assert.equal(layout.shape.totalHeight, reference.shape.totalHeight, `the scroll extent stays whole at ${scrollTop}px with row ${loading} loading`);
+  }
+  assert.ok(layout.shape.windowOffset < second && second < layout.shape.windowOffset + layout.shape.flatRows.length, 'the page came back into the window');
 });

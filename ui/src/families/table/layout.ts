@@ -444,6 +444,7 @@ export function computeRowLayout(
   density: TableDensity,
   mode: 'standard' | 'media' = 'standard',
   detail?: { width: number; columns: readonly FamilyColumnLayout[]; theme: TableTheme; measure: MeasureText },
+  loadingHeight?: (index: number) => number | undefined,
 ): RowLayoutGeometry {
   const tops = new Array<number>(rows.length);
   const heights = new Array<number>(rows.length);
@@ -451,7 +452,7 @@ export function computeRowLayout(
   let y = 0;
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    let h = rowHeightOf(row, density, mode);
+    let h = (row.kind === 'loading' ? loadingHeight?.(i) : undefined) ?? rowHeightOf(row, density, mode);
     if (detail && row.kind === 'data' && row.row.detailColumn) {
       const layout = detailRowLayout(row, detail);
       detailRows.set(i, layout);
