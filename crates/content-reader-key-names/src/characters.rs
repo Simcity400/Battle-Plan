@@ -1480,7 +1480,14 @@ fn parse_role_visibility_templates(
                 out.push(ScientistVisibilityTemplate {
                     line: line.open,
                     triggers: template_role_for(std::slice::from_ref(item), roles)
-                        .and_then(|role| role.ok_or_else(|| "role missing".into())),
+                        .and_then(|role| role.ok_or_else(|| "role missing".into()))
+                        .and_then(|visible| {
+                            if uses_constant(&visible) {
+                                Err("its visible uses a file-local @ constant, which is not read".into())
+                            } else {
+                                Ok(visible)
+                            }
+                        }),
                 });
             }
             visit(body, roles, lines, out);
@@ -1489,6 +1496,14 @@ fn parse_role_visibility_templates(
     let mut out = Vec::new();
     visit(&document.items, roles, &lines, &mut out);
     Ok(out)
+}
+
+fn uses_constant(items: &[Item]) -> bool {
+    items.iter().any(|item| {
+        item.key.as_deref().is_some_and(|key| key.starts_with(b"@"))
+            || item.value.scalar().is_some_and(|value| value.starts_with(b"@"))
+            || item.value.items().is_some_and(uses_constant)
+    })
 }
 
 pub fn leader_templates(layers: &ResolvedLayers) -> Result<Vec<LeaderTemplate>, String> {
@@ -1574,6 +1589,9 @@ effect={generate_character={
         assert_eq!(refused.len(), 1);
         assert_eq!(refused[0].line, 3);
         assert_eq!(refused[0].triggers, Err("its unit leader role's visible is not a block".into()));
+        let constant = super::parse_leader_visibility_templates(b"@gate = mobilized\ncorps_commander = {\n visible = { has_country_flag = @gate }\n}").unwrap();
+        assert_eq!(constant[0].line, 3);
+        assert_eq!(constant[0].triggers, Err("its visible uses a file-local @ constant, which is not read".into()), "an operand the reader cannot resolve is refused, not evaluated as written");
     }
 
     use super::*;
