@@ -25,7 +25,7 @@ import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
 import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
-import { descriptionRows, gapRows, hoverTextOf, optionRows, type TooltipTexts } from './hoverText.ts';
+import { descriptionRows, gapRows, hoverTextOf, optionLines, optionRows, type TooltipTexts } from './hoverText.ts';
 import { plainScripted, reasonsOf } from './scriptedGaps.ts';
 
 export interface EventFeedProjectionOptions {
@@ -424,7 +424,8 @@ function buildFeedTableRow(
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
     out.push(...gapRows(hover, key));
     out.push(...descriptionRows(hover, key, item?.description));
-    out.push(...optionRows(hover, key, optionLetter));
+    const choiceOptions = !event.item?.options?.length ? page.choice?.row.item?.options : undefined;
+    out.push(...(choiceOptions?.length ? optionLines(choiceOptions.map(option => option.name), optionLetter) : optionRows(hover, key, optionLetter)));
     return out;
   };
 

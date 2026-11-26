@@ -468,7 +468,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             };
             if !opened {
                 let chosen = choice.as_ref().and_then(|choice| choice.option).or_else(|| row.as_ref().and_then(|row| row.cause.as_ref()).and_then(|cause| cause.selected_option));
-                for item in row.as_mut().and_then(|row| row.item.as_mut()).into_iter().chain(choice.as_mut().and_then(|choice| choice.row.item.as_mut())) {
+                if let Some(item) = row.as_mut().and_then(|row| row.item.as_mut()) {
                     chosen_names(item, chosen);
                 }
                 let listed_options = row.as_ref().and_then(|row| row.item.as_ref()).is_some_and(|item| item.options.as_ref().is_some_and(|options| !options.is_empty()));

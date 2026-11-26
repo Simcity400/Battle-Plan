@@ -12,6 +12,8 @@ test('an opened event row brings its full text, and a row not in the log at its 
   assert.deepEqual(openedItem('event-feed-tail', { rows: [{ key: 'native:1:7', hour: 100, observed: 100, ordinal: '0', live: false, row, choice: null }] }).item, item);
   const chosen = { ...item, token: 'news.323.b', description: 'The new king is crowned.' };
   assert.equal(openedItem('event-feed-tail', { rows: [{ key: 'native:1:8', hour: 100, observed: 100, ordinal: '0', live: false, row: { ...row, item: null }, choice: { row: { ...row, item: chosen }, option: 0, lifecycle: null, days: null, costs: null } }] }).item, chosen, 'a feed row without its own item opens with the item of its chosen option, as the list shows it');
+  const own = openedItem('event-feed-tail', { rows: [{ key: 'native:1:8', hour: 100, observed: 100, ordinal: '0', live: false, row: { ...row, item: { ...item, options: undefined } }, choice: { row: { ...row, item: chosen }, option: 0, lifecycle: null, days: null, costs: null } }] });
+  assert.deepEqual([own.item?.options?.length, own.own?.options], [1, undefined], 'an opened feed row keeps its own options apart from those its choice supplies, so a later choice never fills a tooltip read for an earlier page');
   const gone = openedItem('event-choices-tail', { rows: [] });
   assert.equal(gone.item, null);
   assert.match(gone.missing ?? '', /not in the log/);

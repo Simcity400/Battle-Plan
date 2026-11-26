@@ -60,7 +60,11 @@ export function unreadRows(texts: TooltipTexts | null | undefined, key: string):
 }
 
 export function optionRows(texts: TooltipTexts | null | undefined, key: string, letter: (index: number) => string): TooltipExtraRow[] {
-  return (readFor(texts, key)?.options ?? []).map((name, index) => ({
+  return optionLines(readFor(texts, key)?.options ?? [], letter);
+}
+
+export function optionLines(names: readonly (string | null)[], letter: (index: number) => string): TooltipExtraRow[] {
+  return names.map((name, index) => ({
     label: `Option ${letter(index)}`,
     value: name !== null ? knownValue(plainScripted(name)) : notRecorded('Option text not recorded'),
   }));

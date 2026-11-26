@@ -15,6 +15,7 @@ export interface EventDetail {
   readonly pending: boolean;
   readonly missing: string | null;
   readonly item: EventFeedItem | null;
+  readonly own?: EventFeedItem | null;
   readonly effectsMissing?: readonly string[];
 }
 
@@ -38,9 +39,12 @@ export function openedItem(product: DetailProduct, data: unknown): EventDetail {
   const first = Array.isArray(rows) ? rows[0] as Record<string, unknown> | undefined : undefined;
   if (!first) return { pending: false, missing: NOT_IN_LOG, item: null };
   try {
-    const item = product !== 'event-feed-tail'
-      ? (first.occurrence ? occurrenceItem(validateOccurrence(first.occurrence)) : null)
-      : effectiveEventItem(validateFeedRow(first.row), (first.choice as ScriptEdge | null | undefined) ?? null);
+    if (product === 'event-feed-tail') {
+      const row = validateFeedRow(first.row);
+      const item = effectiveEventItem(row, (first.choice as ScriptEdge | null | undefined) ?? null);
+      return { pending: false, missing: null, item, own: row.item, ...(effectsMissing.length ? { effectsMissing } : {}) };
+    }
+    const item = first.occurrence ? occurrenceItem(validateOccurrence(first.occurrence)) : null;
     return { pending: false, missing: null, item, ...(effectsMissing.length ? { effectsMissing } : {}) };
   } catch (error) {
     return { pending: false, missing: error instanceof Error ? error.message : NOT_IN_LOG, item: null };
@@ -77,7 +81,8 @@ function useRowText(runtime: FamilyViewProps['runtime'], trackId: string | undef
   const key = answered ? shown!.key : null;
   const description = answered?.item?.description ?? null;
   const gaps = answered?.item?.gaps ?? null;
-  const named = answered?.item?.options ? JSON.stringify(answered.item.options.map(option => option.name)) : null;
+  const offered = answered && answered.own !== undefined ? answered.own?.options : answered?.item?.options;
+  const named = offered ? JSON.stringify(offered.map(option => option.name)) : null;
   const missing = answered?.missing ?? null;
   return useMemo<HoverText | null>(
     () => (key === null ? null : { key, description, gaps, options: named === null ? null : JSON.parse(named) as (string | null)[], missing }),
@@ -87,13 +92,15 @@ function useRowText(runtime: FamilyViewProps['runtime'], trackId: string | undef
 
 const sameSubject = (a: DetailSubject | null, b: DetailSubject | null): boolean => !!a && !!b && a.key === b.key && a.hour === b.hour;
 
+export const readableRow = (key: string): boolean => !key.startsWith('gap:') && !key.startsWith('refused:');
+
 export function useTooltipText(
   runtime: FamilyViewProps['runtime'],
   trackId: string | undefined,
   product: DetailProduct,
   following: boolean,
   active: boolean,
-  names: (key: string) => boolean = () => true,
+  names: (key: string) => boolean = readableRow,
 ): { readonly onTooltipRow: (subject: string | null, by: TooltipRowSource) => void; readonly texts: TooltipTexts } {
   const track = runtime.tracks.find(item => item.id === trackId);
   const scope = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';

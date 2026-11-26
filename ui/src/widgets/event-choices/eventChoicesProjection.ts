@@ -23,7 +23,7 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
 import { gapRows, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
-import { daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
+import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
   awaitingText,
   choiceAt,
@@ -220,10 +220,8 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
         const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
         if (open && !source.frozen) {
-          const startHour = resolved.card.first.row.hour;
-          const elapsed = Math.max(0, daysBetween(startHour, readAt));
-          const nextDay = startHour + (elapsed + 1) * 24;
-          if (nextDay > readAt && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
+          const nextDay = (Math.floor(readAt / 24) + 1) * 24;
+          if (nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
         return buildChoiceRow(readView, resolved, page, options.artwork, boundary, options.hover ?? []);
       },

@@ -104,7 +104,7 @@ test('event choices projection turns blank authored title or option text into no
     breaks: [],
   });
   assert.equal(model.titleSummary, '2 events');
-  assert.equal(model.nextChangeAt, fired + 48, 'nextChangeAt steps to the next awaiting day boundary');
+  assert.equal(model.nextChangeAt, (Math.floor(atHour / 24) + 1) * 24, 'nextChangeAt is the next calendar day, where the days-open count changes');
   const blankRow = model.rows.find(r => r.key === blankOcc.id)!;
   assert.equal(blankRow.cells.item?.value.kind, 'notRecorded');
   assert.equal(blankRow.cells.choice?.value.kind, 'notRecorded');

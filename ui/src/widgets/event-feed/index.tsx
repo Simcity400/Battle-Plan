@@ -7,14 +7,14 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
-import { useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
+import { readableRow, useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
 import { withHoverText } from './hoverText.ts';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
 import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
 
 const CATEGORY_LABEL = new Map<string, string>(CATEGORIES.map(cat => [cat.value, cat.label]));
-const isEventRow = (key: string): boolean => !key.startsWith('fold:');
+const isEventRow = (key: string): boolean => readableRow(key) && !key.startsWith('fold:');
 
 function EventFeedView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);

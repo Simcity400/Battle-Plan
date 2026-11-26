@@ -46,14 +46,16 @@ function ScriptedSpan({ text, reason }: { readonly text: string; readonly reason
 }
 
 export default function EventDetailWindow({ subject, detail, anchor, onClose }: EventDetailWindowProps) {
-  const item = detail?.item ?? subject?.item ?? null;
+  const read = detail && !detail.pending && !detail.missing ? detail.item : null;
+  const item = read ?? subject?.item ?? null;
   const reasons = reasonsOf(item);
   const titleText = subject?.title ? plainScripted(subject.title) : 'Event presentation was not recorded';
-  const options = item?.options ?? [];
+  const options = read?.options ?? [];
+  const known = item?.options ?? [];
   const chosenIndex = subject && subject.chosenOrdinal !== null
-    ? options.findIndex(opt => opt.ordinal === subject.chosenOrdinal)
+    ? known.findIndex(opt => opt.ordinal === subject.chosenOrdinal)
     : -1;
-  const chosenOption = chosenIndex >= 0 ? options[chosenIndex]! : null;
+  const chosenOption = chosenIndex >= 0 ? known[chosenIndex]! : null;
   const chosenLetter = chosenIndex >= 0 ? optionLetter(chosenIndex) : null;
 
   const asOfHour = subject ? (subject.asOfHour ?? subject.hour) : null;
@@ -124,9 +126,9 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
                     </span>
                   </div>
                 );
-              }) : (
+              }) : read ? (
                 <div className="evd-missing">Options were not recorded for this event.</div>
-              )}
+              ) : null}
             </div>
           </div>
 
