@@ -421,7 +421,7 @@ fn territory_breakdown(
 ) -> Breakdown {
     let column = breakdown_column(params).expect("validated measure and rule");
     let mut leaves = Vec::new();
-    let mut witnessed: HashMap<u32, Exact> = HashMap::new();
+    let mut witnessed: HashMap<u32, Option<Exact>> = HashMap::new();
     for row in rows {
         let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
         if let Some(chosen) = chosen
@@ -447,8 +447,8 @@ fn territory_breakdown(
         };
         let amount = amount(row, column);
         if let (Some(slot), Amount::Known(known)) = (held, &amount) {
-            let entry = witnessed.entry(slot).or_insert(Exact::ZERO);
-            *entry = entry.plus(*known).unwrap_or(*entry);
+            let entry = witnessed.entry(slot).or_insert(Some(Exact::ZERO));
+            *entry = entry.and_then(|sum| sum.plus(*known));
         }
         if matches!(amount, Amount::Known(known) if known.numerator() == 0) {
             continue;
@@ -465,9 +465,9 @@ fn territory_breakdown(
             Some(&(tag, _)) => Node::new(format!("slot:{slot}"), tag, slot),
             None => Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other().name_missing(Some("No tag names this country at this hour".to_owned())),
         };
-        let seen = witnessed.get(&slot).copied().unwrap_or(Exact::ZERO);
+        let seen = witnessed.get(&slot).copied().unwrap_or(Some(Exact::ZERO));
         let amount = match total {
-            Some(total) => match Exact::whole(i128::from(*total)).minus(seen) {
+            Some(total) => match seen.and_then(|seen| Exact::whole(i128::from(*total)).minus(seen)) {
                 Some(left) if left.numerator() > 0 => Amount::Known(left),
                 Some(_) => continue,
                 None => Amount::NotRecorded(reason.to_owned()),
@@ -476,7 +476,9 @@ fn territory_breakdown(
         };
         leaves.push(Leaf { path: vec![country, rest()], amount, count: None, last: None });
     }
-    if let Some(missing) = &totals.missing {
+    if let Some(missing) = &totals.missing
+        && chosen.is_none_or(|chosen| chosen.iter().any(|slot| !totals.countries.contains_key(slot)))
+    {
         leaves.push(Leaf { path: vec![Node::new(UNREAD_ROWS, "Territory not read", u32::MAX).other()], amount: Amount::NotRecorded(missing.clone()), count: None, last: None });
     }
     match (chosen, totals.world) {

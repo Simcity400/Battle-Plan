@@ -79,10 +79,11 @@ function chosen(ctx: FamilyPlanContext): Readonly<Record<string, unknown>> {
 function sources(ctx: FamilyPlanContext): SourcePlan {
   const measure = measureOf(ctx.options.measure);
   const rule = ruleOf(ctx.options.rule);
-  const params = { branchId: ctx.branch.id, measure: territorySeriesMeasure(measure, rule), ...chosen(ctx) };
+  const asked = chosen(ctx);
+  const params = { branchId: ctx.branch.id, measure: territorySeriesMeasure(measure, rule), ...asked };
   return {
     owner: `territory-share:${ctx.track.source.id}:${ctx.track.source.revision}:${JSON.stringify(params)}`,
-    entries: [{
+    entries: Array.isArray(asked.countries) && asked.countries.length === 0 ? [] : [{
       name: 'main',
       source: ctx.track.source,
       branch: ctx.branch.id,

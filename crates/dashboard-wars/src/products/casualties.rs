@@ -439,7 +439,7 @@ impl CasualtyIndex {
             leaves.push(Leaf { path: vec![war, enemy], amount, count: None, last });
         }
         if let Some(reason) = truncated_reason {
-            leaves.push(Leaf { path: vec![Node::new("~unread", "Unread war relations", u32::MAX).other()], amount: Amount::NotRecorded(reason), count: None, last: None });
+            leaves.push(Leaf { path: vec![Node::new("~unread", "Unread war relations", u32::MAX).other()], amount: Amount::NotRecordedSigned(reason), count: None, last: None });
         } else if leaves.is_empty()
             && let Some(reason) = totals_issue
         {

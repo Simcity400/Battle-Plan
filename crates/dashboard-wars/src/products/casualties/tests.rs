@@ -216,7 +216,7 @@ fn coverage_gaps_holder_unknowns_truncation_missing_ended_and_unread_totals_neve
     assert_eq!(ended_part.state, BreakdownState::NotRecorded);
 
     let truncated = index.at(115);
-    assert!(matches!(truncated.breakdown.total.state, BreakdownState::AtLeast | BreakdownState::NotRecorded), "truncated lifetimes add an Unread war relations leaf");
+    assert_eq!((truncated.breakdown.total.state, truncated.breakdown.total.amount.clone()), (BreakdownState::NotRecorded, None), "truncated relations may hold a negative counter: the witnessed sum is no lower bound");
     assert!(truncated.breakdown.parts.iter().any(|part| part.key == "~unread" && part.other && part.state == BreakdownState::NotRecorded));
     assert!(truncated.breakdown.parts.iter().all(|part| part.share.is_none()));
 

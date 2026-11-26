@@ -115,7 +115,7 @@ struct SharedFold {
     fold: Fold,
     by_holder: HashMap<(bool, String), Vec<LeafKey>>,
     unattributed_first: [Option<i32>; 2],
-    unsupported: HashMap<(bool, Option<String>), Vec<i32>>,
+    unsupported: HashMap<(bool, Option<String>), i32>,
 }
 
 impl SharedFold {
@@ -133,14 +133,11 @@ impl SharedFold {
                 }
             }
         }
-        let mut unsupported: HashMap<(bool, Option<String>), Vec<i32>> = HashMap::new();
+        let mut unsupported: HashMap<(bool, Option<String>), i32> = HashMap::new();
         for (hour, attacker, victim) in &fold.unsupported {
-            unsupported.entry((true, attacker.clone())).or_default().push(*hour);
-            unsupported.entry((false, victim.clone())).or_default().push(*hour);
-        }
-        for hours in unsupported.values_mut() {
-            hours.sort_unstable();
-            hours.dedup();
+            for key in [(true, attacker.clone()), (false, victim.clone())] {
+                unsupported.entry(key).and_modify(|held| *held = (*held).min(*hour)).or_insert(*hour);
+            }
         }
         Self { fold, by_holder, unattributed_first, unsupported }
     }
@@ -162,7 +159,7 @@ struct BombingIndex {
     holder_runs: Vec<HolderSpan>,
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
-    unsupported: HashMap<Option<String>, Vec<i32>>,
+    unsupported: HashMap<Option<String>, i32>,
     unread: Vec<(i32, i32, String)>,
     unjoined: Vec<HourSpan>,
     unattributed_first: Option<i32>,
@@ -379,8 +376,8 @@ impl BombingIndex {
             incomplete: fold.in_part.clone(),
             unsupported: wanted_holders
                 .iter()
-                .map(|identity| (Some(identity.clone()), shared.unsupported.get(&(dealt, Some(identity.clone()))).cloned().unwrap_or_default()))
-                .chain(std::iter::once((None, shared.unsupported.get(&(dealt, None)).cloned().unwrap_or_default())))
+                .filter_map(|identity| Some((Some(identity.clone()), *shared.unsupported.get(&(dealt, Some(identity.clone())))?)))
+                .chain(shared.unsupported.get(&(dealt, None)).map(|&first| (None, first)))
                 .collect(),
             unread: fold.unread.clone(),
             unjoined: fold.unjoined.clone(),
@@ -521,11 +518,10 @@ impl BombingIndex {
         } else if let Some(next_incomplete) = self.incomplete.iter().find(|span| span.first_hour > hour) {
             tighten(&mut through, Some(next_incomplete.first_hour));
         }
-        let reads = [self.unsupported.get(&Some(holder.to_owned())), self.unsupported.get(&None)];
-        if reads.iter().flatten().any(|hours| hours.first().is_some_and(|&read| read <= hour)) {
-            partial_reasons.push(UNSUPPORTED_CAUSE);
-        } else if let Some(read) = reads.iter().flatten().filter_map(|hours| hours.first().copied()).min() {
-            tighten(&mut through, Some(read));
+        let first = [self.unsupported.get(&Some(holder.to_owned())), self.unsupported.get(&None)].into_iter().flatten().copied().min();
+        match first {
+            Some(read) if read <= hour => partial_reasons.push(UNSUPPORTED_CAUSE),
+            read => tighten(&mut through, read),
         }
         if let Some(first_unattributed) = self.unattributed_first {
             if first_unattributed <= hour {
