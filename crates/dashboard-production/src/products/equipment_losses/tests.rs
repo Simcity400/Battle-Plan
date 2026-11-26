@@ -895,4 +895,12 @@ fn combat_log_and_destruction_coverage_messages_use_plain_language() {
     .unwrap();
     let reason = at_104.breakdown.total.reason.as_deref().expect("destruction gap carries a reason");
     assert_eq!(reason, "Equipment destruction was not read at this hour");
+    assert_eq!(
+        super::breakdown::plain_destruction_reason(Row::DRAIN_TRUNCATED),
+        "Equipment destruction was truncated and withheld for this run",
+    );
+    assert_eq!(
+        super::breakdown::plain_destruction_reason(&format!("{}; {}", Row::DRAIN_TRUNCATED, Row::DRAIN_OWNER_UNKNOWN)),
+        "Equipment destruction was truncated and withheld for this run; Some destroyed equipment has no recorded country link",
+    );
 }

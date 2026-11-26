@@ -111,11 +111,10 @@ fn exact_loss(raw: i128) -> Amount {
     }
 }
 
-fn plain_destruction_reason(text: &str) -> String {
+pub(super) fn plain_destruction_reason(text: &str) -> String {
     fn translate(part: &str) -> &str {
         match part {
             EquipmentLossCoverageRow::DRAIN_WITHHELD => "Equipment destruction was withheld for this run",
-            EquipmentLossCoverageRow::DRAIN_TRUNCATED => "Equipment destruction was truncated and withheld for this run",
             EquipmentLossCoverageRow::DRAIN_SUPPLEMENTAL_NOT_RECORDED => "Equipment destruction coverage was not recorded",
             EquipmentLossCoverageRow::DRAIN_OWNER_UNKNOWN => "Some destroyed equipment has no recorded country link",
             EquipmentLossCoverageRow::DRAIN_NOT_RECORDED => "Equipment destruction was not recorded in this recording",
@@ -125,7 +124,11 @@ fn plain_destruction_reason(text: &str) -> String {
             other => other,
         }
     }
-    text.split("; ").map(translate).collect::<Vec<_>>().join("; ")
+    let whole = text.replace(
+        EquipmentLossCoverageRow::DRAIN_TRUNCATED,
+        "Equipment destruction was truncated and withheld for this run",
+    );
+    whole.split("; ").map(translate).collect::<Vec<_>>().join("; ")
 }
 
 fn unknown_detail(span: &UnknownSpan) -> String {

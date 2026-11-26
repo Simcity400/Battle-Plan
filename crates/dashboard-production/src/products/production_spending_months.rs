@@ -149,18 +149,14 @@ pub(crate) struct CachedLeaf {
 }
 
 impl CachedLeaf {
-    fn classification_at(&self, hour: i32) -> (Option<Domain>, bool) {
-        let found = self
+    fn classification_at(&self, hour: i32) -> Option<(Option<Domain>, bool)> {
+        let entry = self
             .classifications
             .iter()
             .rev()
-            .find(|entry| entry.first_hour <= hour && hour <= entry.last_hour)
-            .or_else(|| self.classifications.last());
-        let Some(entry) = found else {
-            return (None, true);
-        };
+            .find(|entry| entry.first_hour <= hour && hour <= entry.last_hour)?;
         let unresolved = entry.unresolved || entry.domain.is_none() || entry.classified_from.is_some_and(|at| hour < at);
-        (entry.domain, unresolved)
+        Some((entry.domain, unresolved))
     }
 
     fn touches_domain(&self, domain: Domain) -> bool {
@@ -550,7 +546,9 @@ pub(crate) fn compute_months(
             let mut purpose_unproven = false;
             let mut unresolved = false;
             for leaf in &relevant_leaves {
-                let (leaf_domain, is_unresolved) = leaf.classification_at(m_last);
+                let Some((leaf_domain, is_unresolved)) = leaf.classification_at(m_last) else {
+                    continue;
+                };
                 if !is_unresolved && leaf_domain != Some(domain) {
                     continue;
                 }
