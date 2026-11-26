@@ -584,8 +584,12 @@ pub fn compare_damage(replay: &Replay, frame: &DecodedFrame, report: &mut Report
                     (Ok(damage), Ok(observers), Ok(edges), Ok(destroyed)) if coverage.complete => {
                         recorded.damage.extend_from_slice(damage);
                         recorded.observers.extend_from_slice(observers);
-                        for edge in edges.iter().filter(|edge| edge.kind == replay_data::rows::LandCombatEdgesRow::OPENED) {
-                            recorded.opened.entry(edge.combat).or_insert(decoded.hour);
+                        for edge in edges {
+                            if edge.kind == replay_data::rows::LandCombatEdgesRow::OPENED {
+                                recorded.opened.entry(edge.combat).or_insert(decoded.hour);
+                            } else if let Some(division) = edge.division {
+                                recorded.exits.insert((edge.combat, division, edge.hour), edge.pending_strength_raw);
+                            }
                         }
                         recorded.wiped.extend(destroyed.iter().filter_map(|row| row.triggering_combat.map(|combat| (combat, row.division))));
                         for observer in observers {
@@ -616,6 +620,7 @@ struct Recorded {
     ended: BTreeMap<u64, i32>,
     wiped: BTreeSet<(u64, u64)>,
     unrecorded: BTreeSet<i32>,
+    exits: BTreeMap<(u64, u64, i32), Option<i64>>,
 }
 
 fn check_damage(recorded: &Recorded, report: &mut Report) {
@@ -670,6 +675,22 @@ fn check_damage(recorded: &Recorded, report: &mut Report) {
         }
     }
     report.compared("LandDivisionDamage per army and target", compared);
+    let mut dealt = BTreeMap::<(u64, u64, i32), i64>::new();
+    for row in &recorded.damage {
+        *dealt.entry((row.combat, row.target, row.hour)).or_default() += row.strength_raw;
+    }
+    for (&(combat, target, hour), &strength) in &dealt {
+        match recorded.exits.get(&(combat, target, hour)) {
+            None => report.difference(format!("LandDivisionDamage combat {combat} target {target} hour {hour}"), "damage published", "only when its target leaves the combat"),
+            Some(Some(pool)) if strength > *pool => report.difference(
+                format!("LandDivisionDamage combat {combat} target {target} strength"),
+                strength,
+                format!("at most {pool}, the strength damage pending on it when it left"),
+            ),
+            Some(_) => {}
+        }
+    }
+    report.compared("LandDivisionDamage within its target's pending strength damage", dealt.len());
     if !partial.is_empty() {
         report.limitation("a battle not recorded from its opening to its end has damage from before or between recorded hours; it is not compared", format!("{} battles", partial.len()));
     }
@@ -767,11 +788,13 @@ mod tests {
         let activity = |combat, attacker, item, group| CombatLogObserverRow { combat, attacker, kind: K::Activity as u8, item, identity: group, ..Default::default() };
         let damage = |combat, attacker, item, target, a| CombatLogObserverRow { combat, attacker, kind: K::ActivityDamage as u8, item, identity: target, a, ..Default::default() };
         let row = |combat, target, attacker, army, strength_raw| LandDivisionDamageRow { combat, target, attacker, army, strength_raw, ..Default::default() };
+        let exits = BTreeMap::from([((9, 5, 0), Some(2_000)), ((9, 6, 0), Some(40)), ((9, 1, 0), None)]);
         let mut recorded = Recorded {
             observers: vec![activity(9, true, 0, 70), damage(9, true, 0, 5, 1_500), damage(9, true, 0, 6, 40), activity(9, false, 0, 71), damage(9, false, 0, 1, 300)],
             damage: vec![row(9, 5, 2, Some(70), 1_000), row(9, 5, 3, Some(70), 500), row(9, 6, 2, Some(70), 40), row(9, 1, 5, Some(71), 300), row(9, 1, 6, None, 77)],
             opened: BTreeMap::from([(9, 10)]),
             ended: BTreeMap::from([(9, 20)]),
+            exits,
             ..Default::default()
         };
         let mut report = Report::default();
@@ -787,6 +810,11 @@ mod tests {
         let mut gapped = Report::default();
         check_damage(&recorded, &mut gapped);
         assert!(gapped.differences.is_empty(), "a battle with an unrecorded hour is not compared: {:?}", gapped.differences);
+        recorded.exits.insert((9, 5, 0), Some(1_000));
+        recorded.exits.remove(&(9, 6, 0));
+        let mut overdrawn = Report::default();
+        check_damage(&recorded, &mut overdrawn);
+        assert_eq!(overdrawn.differences.len(), 1, "more damage than the target's pending strength damage is a difference: {:?}", overdrawn.differences);
     }
     #[test]
     fn edge_casualties_above_the_saved_lifetime_count_or_falling_at_an_exit_are_differences() {
