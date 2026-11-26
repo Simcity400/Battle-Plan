@@ -1115,15 +1115,15 @@ states={} provinces={}"#,
     }
 
     #[test]
-    fn state_fuel_save_comparison_keeps_exact_signed_fractional_values_and_zero_omission() {
-        use collector_air::extended::air::registration_store_tests::state_orders_across_refresh;
+    fn state_save_compares_carried_country_order_and_exact_signed_fuel_with_zero_omission() {
+        use collector_air::extended::air::registration_store_tests::carried_state_orders;
 
         let (mut country, _) = links();
         country.id = 1;
         let links = BTreeMap::from([(country.id, &country)]);
         let mut frame = carrier_frame();
-        let (_, refreshed) = state_orders_across_refresh(true);
-        carrier_base(&mut frame).carrier = refreshed;
+        let (_, carried) = carried_state_orders(true);
+        carrier_base(&mut frame).carrier = carried;
         carrier_base(&mut frame).state = Some(4);
         carrier_packet(&mut frame).country = country.id;
         carrier_registration(&mut frame).fuel_demand_raw = Recorded::Value(Some(-3));

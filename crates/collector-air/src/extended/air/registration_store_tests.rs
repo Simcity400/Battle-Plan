@@ -262,7 +262,7 @@ fn a_base_without_a_reported_segment_is_walked() {
 
 type BasePacket = rows::Recorded<Option<rows::AirBaseCarrierInputs>>;
 
-pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePacket) {
+pub fn carried_state_orders(authenticated: bool) -> (BasePacket, BasePacket) {
     const DENSE: usize = 0x68000;
     let mut bytes = fixture();
     kit::put64(
@@ -294,7 +294,7 @@ pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePack
             .unwrap();
         output.packet(B0_HANDLE)
     };
-    let acquire = |job: &mut AirBasesJob, force_full| {
+    let acquire = |job: &mut AirBasesJob| {
         let memory = Reads {
             inner: kit::memory(&bytes),
             reads: RefCell::default(),
@@ -316,7 +316,7 @@ pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePack
             &world,
             AirBasesCopyContext {
                 hour: 0,
-                force_full,
+                force_full: false,
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
             },
@@ -325,7 +325,7 @@ pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePack
         assert!(report.raw_ok);
         memory.reads.into_inner()
     };
-    acquire(&mut job, false);
+    acquire(&mut job);
     let first = decode(&job);
     assert_eq!(
         first
@@ -339,7 +339,7 @@ pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePack
             .len(),
         2
     );
-    let reads = acquire(&mut job, true);
+    let reads = acquire(&mut job);
     assert_eq!(job.registration_store.as_ref().unwrap().counts().carried, 2);
     assert!(!reads.contains(&DENSE));
     assert!(!reads.contains(&(kit::B0 + cair_base::REGISTERED_CONTAINERS)));
@@ -348,8 +348,10 @@ pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePack
 
 #[test]
 fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
-    let (first, refreshed) = state_orders_across_refresh(false);
-    assert_eq!(refreshed, first);
+    for authenticated in [false, true] {
+        let (first, carried) = carried_state_orders(authenticated);
+        assert_eq!(carried, first);
+    }
 }
 
 #[test]
