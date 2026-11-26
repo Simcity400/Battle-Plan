@@ -146,4 +146,34 @@ test('raidTallyRaceProjection sends group to Rust, keys by slot, never claims em
   );
   assert.equal(emptyAfterGap.empty, partialReason, 'All countries with empty rows after a coverage gap reports the coverage reason');
   assert.equal(emptyAfterGap.emptyKind, 'unavailable');
+
+  const unattrLaunchInSucceeded = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'succeeded', unattributed: 0, unattributedLaunched: 1, unattributedSucceeded: 0 }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'succeeded', top: null },
+  );
+  const succRow = unattrLaunchInSucceeded.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(succRow.value?.value.kind, 'known', 'Succeeded primary value is complete when only a launch is unattributed');
+  assert.equal(succRow.tooltip?.items?.[0]?.partialReason, '1 raid(s) up to this date have an unrecorded raider', 'Launches hover figure carries its own partial reason');
+  assert.equal(succRow.tooltip?.items?.[1]?.partialReason, undefined, 'Successes hover figure stays complete');
+
+  const unattrLaunchInLaunched = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'launched', unattributed: 1, unattributedLaunched: 1, unattributedSucceeded: 0, partial: '1 raid(s) up to this date have an unrecorded raider' }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'launched', top: null },
+  );
+  const launchRow = unattrLaunchInLaunched.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(launchRow.value?.value.kind, 'partial');
+  assert.equal(launchRow.tooltip?.items?.[0]?.partialReason, '1 raid(s) up to this date have an unrecorded raider');
+  assert.equal(launchRow.tooltip?.items?.[1]?.partialReason, undefined, 'Successes hover figure stays complete in Launched mode');
 });

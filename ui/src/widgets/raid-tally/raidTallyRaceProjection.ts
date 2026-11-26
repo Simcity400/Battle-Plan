@@ -188,9 +188,19 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
           segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: partialReason ? partialValue(other, partialReason) : knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
         }
       }
+      const isUnattributedOnly = partialReason !== null && reply.unattributed > 0 && partialReason.includes('unrecorded raider');
+      const gapPartial = partialReason !== null && !isUnattributedOnly ? partialReason : null;
+      const launchedPartial = gapPartial
+        ?? (reply.unattributedLaunched > 0
+          ? `${formatScalar(reply.unattributedLaunched, { decimals: 0 })} raid(s) up to this date have an unrecorded raider`
+          : null);
+      const succeededPartial = gapPartial
+        ?? (reply.unattributedSucceeded > 0
+          ? `${formatScalar(reply.unattributedSucceeded, { decimals: 0 })} raid(s) up to this date have an unrecorded raider`
+          : null);
       const tooltipItems: TooltipListItem[] = [
-        { label: 'Launches', value: countText(item.launched), ...(partialReason ? { partialReason } : {}) },
-        { label: 'Successes', value: countText(item.succeeded), ...(partialReason ? { partialReason } : {}) },
+        { label: 'Launches', value: countText(item.launched), ...(launchedPartial ? { partialReason: launchedPartial } : {}) },
+        { label: 'Successes', value: countText(item.succeeded), ...(succeededPartial ? { partialReason: succeededPartial } : {}) },
       ];
       rows.push({
         kind: 'data',

@@ -106,6 +106,7 @@ struct BranchTallyIndex {
     events: Vec<TallyEvent>,
     unattributed_launched: Vec<i32>,
     unattributed_succeeded: Vec<i32>,
+    unattributed_both: Vec<i32>,
     missing: Vec<MissingSpan>,
 }
 
@@ -260,6 +261,7 @@ fn build_branch_index(source: &Source, query: &Query<'_>) -> io::Result<BranchTa
     let mut events = Vec::new();
     let mut unattributed_launched = Vec::new();
     let mut unattributed_succeeded = Vec::new();
+    let mut unattributed_both = Vec::new();
     for ep in tracked {
         match ep.identity.raider {
             Some(slot) => {
@@ -271,11 +273,17 @@ fn build_branch_index(source: &Source, query: &Query<'_>) -> io::Result<BranchTa
                 }
             }
             None => {
+                let mut first: Option<i32> = None;
                 if let Some(hour) = ep.launched_hour {
                     unattributed_launched.push(hour);
+                    first = Some(hour);
                 }
                 if let Some(hour) = ep.succeeded_hour {
                     unattributed_succeeded.push(hour);
+                    first = Some(first.map_or(hour, |prev| prev.min(hour)));
+                }
+                if let Some(hour) = first {
+                    unattributed_both.push(hour);
                 }
             }
         }
@@ -283,6 +291,7 @@ fn build_branch_index(source: &Source, query: &Query<'_>) -> io::Result<BranchTa
     events.sort_by_key(|ev| (ev.hour, ev.slot, matches!(ev.kind, EventKind::Succeeded)));
     unattributed_launched.sort_unstable();
     unattributed_succeeded.sort_unstable();
+    unattributed_both.sort_unstable();
 
     Ok(BranchTallyIndex {
         branch_first,
@@ -291,6 +300,7 @@ fn build_branch_index(source: &Source, query: &Query<'_>) -> io::Result<BranchTa
         events,
         unattributed_launched,
         unattributed_succeeded,
+        unattributed_both,
         missing: missing_spans,
     })
 }
@@ -335,8 +345,9 @@ fn recorded_segments(first: i32, last: i32, missing: &[MissingSpan]) -> Vec<(i32
 
 fn metric_rank_key(metric: RaidTallyMetric, launched: u32, succeeded: u32) -> (u32, u32) {
     match metric {
-        RaidTallyMetric::Succeeded => (succeeded, launched),
-        RaidTallyMetric::Both | RaidTallyMetric::Launched => (launched, succeeded),
+        RaidTallyMetric::Succeeded => (succeeded, 0),
+        RaidTallyMetric::Launched => (launched, 0),
+        RaidTallyMetric::Both => (launched, succeeded),
     }
 }
 
@@ -608,19 +619,17 @@ fn unattributed_for_metric(
     metric: RaidTallyMetric,
     launched: &[i32],
     succeeded: &[i32],
+    both: &[i32],
     through: i32,
 ) -> (u32, Option<i32>) {
     let launched_count = launched.partition_point(|&h| h <= through) as u32;
     let succeeded_count = succeeded.partition_point(|&h| h <= through) as u32;
-    let count = metric_unattributed(metric, launched_count, succeeded_count);
+    let both_count = both.partition_point(|&h| h <= through) as u32;
+    let count = metric_unattributed(metric, launched_count, succeeded_count, both_count);
     let first = match metric {
         RaidTallyMetric::Launched => launched.first().copied(),
         RaidTallyMetric::Succeeded => succeeded.first().copied(),
-        RaidTallyMetric::Both => match (launched.first().copied(), succeeded.first().copied()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) | (None, Some(a)) => Some(a),
-            (None, None) => None,
-        },
+        RaidTallyMetric::Both => both.first().copied(),
     }
     .filter(|&h| h <= through);
     (count, first)
@@ -705,6 +714,7 @@ impl Product for RaidTally {
             params.metric,
             &index.unattributed_launched,
             &index.unattributed_succeeded,
+            &index.unattributed_both,
             through,
         );
         let partial = partial_spans(&segments, &bounded_missing, first_unattributed);
@@ -781,32 +791,57 @@ mod tests {
             ],
             unattributed_launched: vec![10],
             unattributed_succeeded: vec![12],
+            unattributed_both: vec![10, 12],
             missing: Vec::new(),
         };
         let segs_11 = recorded_segments(10, 11, &[]);
-        let (succ_count_11, succ_first_11) =
-            unattributed_for_metric(RaidTallyMetric::Succeeded, &index.unattributed_launched, &index.unattributed_succeeded, 11);
+        let (succ_count_11, succ_first_11) = unattributed_for_metric(
+            RaidTallyMetric::Succeeded,
+            &index.unattributed_launched,
+            &index.unattributed_succeeded,
+            &index.unattributed_both,
+            11,
+        );
         assert_eq!((succ_count_11, succ_first_11), (0, None));
         assert!(partial_spans(&segs_11, &[], succ_first_11).is_empty());
         assert_eq!(compute_next_change(&index, 11, true, &[], None, RaidTallyMetric::Succeeded), Some(12));
 
-        let (launch_count_11, launch_first_11) =
-            unattributed_for_metric(RaidTallyMetric::Launched, &index.unattributed_launched, &index.unattributed_succeeded, 11);
+        let (launch_count_11, launch_first_11) = unattributed_for_metric(
+            RaidTallyMetric::Launched,
+            &index.unattributed_launched,
+            &index.unattributed_succeeded,
+            &index.unattributed_both,
+            11,
+        );
         assert_eq!((launch_count_11, launch_first_11), (1, Some(10)));
         let launch_partial = partial_spans(&segs_11, &[], launch_first_11);
         assert_eq!(launch_partial.len(), 1);
         assert_eq!((launch_partial[0].first_hour, launch_partial[0].last_hour), (10, 11));
 
         let segs_12 = recorded_segments(10, 12, &[]);
-        let (succ_count_12, succ_first_12) =
-            unattributed_for_metric(RaidTallyMetric::Succeeded, &index.unattributed_launched, &index.unattributed_succeeded, 12);
+        let (succ_count_12, succ_first_12) = unattributed_for_metric(
+            RaidTallyMetric::Succeeded,
+            &index.unattributed_launched,
+            &index.unattributed_succeeded,
+            &index.unattributed_both,
+            12,
+        );
         assert_eq!((succ_count_12, succ_first_12), (1, Some(12)));
         let succ_partial = partial_spans(&segs_12, &[], succ_first_12);
         assert_eq!(succ_partial.len(), 1);
         assert_eq!((succ_partial[0].first_hour, succ_partial[0].last_hour), (12, 12));
 
-        assert_eq!(metric_unattributed(RaidTallyMetric::Launched, 0, 1), 0);
-        assert_eq!(metric_unattributed(RaidTallyMetric::Succeeded, 1, 0), 0);
-        assert_eq!(metric_unattributed(RaidTallyMetric::Both, 1, 0), 1);
+        let (both_count_12, both_first_12) = unattributed_for_metric(
+            RaidTallyMetric::Both,
+            &index.unattributed_launched,
+            &index.unattributed_succeeded,
+            &index.unattributed_both,
+            12,
+        );
+        assert_eq!((both_count_12, both_first_12), (2, Some(10)), "distinct unattributed launch and success episodes count as 2 in Both mode");
+
+        assert_eq!(metric_rank_key(RaidTallyMetric::Succeeded, 5, 1), metric_rank_key(RaidTallyMetric::Succeeded, 1, 1), "Succeeded tiebreak ignores launches");
+        assert_eq!(metric_rank_key(RaidTallyMetric::Launched, 1, 5), metric_rank_key(RaidTallyMetric::Launched, 1, 0), "Launched tiebreak ignores successes");
+        assert!(metric_rank_key(RaidTallyMetric::Both, 1, 2) > metric_rank_key(RaidTallyMetric::Both, 1, 1));
     }
 }

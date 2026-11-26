@@ -1107,7 +1107,7 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!(unnamed_lines.unattributed, 0);
     assert_eq!(unnamed_at.unattributed, 0);
     assert_eq!(unnamed_at.partial, None);
-    assert_eq!(unnamed_at.rows.first().map(|row| (row.country.clone(), row.launched)), Some((Country::Slot(15), 1)));
+    assert_eq!(unnamed_at.rows.first().map(|row| (row.country.clone(), row.launched, row.missing.as_deref())), Some((Country::Slot(15), 1, None)));
     assert_eq!(unnamed_top.missing, None);
     assert_eq!(unnamed_top.rows.first().map(|row| (row.country.clone(), row.launched)), Some((Country::Slot(15), 1)));
 }
