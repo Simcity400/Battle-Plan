@@ -284,7 +284,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
             };
             let first = step.hour.max(span.first).max(first_hour);
             let next_battle = battle.get(i + 1);
-            let last = next_battle.map_or(span.last, |s| s.hour - 1);
+            let last = next_battle.map_or(span.last, |s| s.hour - 1).min(span.last);
             if first > last {
                 continue;
             }
@@ -362,7 +362,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                 );
             }
             if last < last_hour && !next_battle.and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
-                line.end_live(last + 1, last < span.last);
+                line.end_live(last + 1, last < span.last && complete(battles, last + 1));
             }
         }
     }
@@ -440,7 +440,9 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                 let sunk = [count(obs, 6), count(obs, 10)];
                 let convoys_sunk = [count(obs, 7), count(obs, 11)];
                 let observed = number(obs, 3).and_then(|h| i32::try_from(h).ok()).and_then(|end| line.reads.iter().rev().find(|(at, _)| *at <= end));
-                let (live_last, end_seen) = line.reads.iter().rev().find_map(|(_, read)| read.live_last.map(|last| (Some(last), read.end_seen))).unwrap_or((None, false));
+                let (live_last, end_seen) = line.reads.iter().rev().find_map(|(_, read)| read.live_last.map(|last| (Some(last), read.end_seen))).unwrap_or_else(|| {
+                    (line.reads.last().filter(|(_, read)| read.result == NavalBattleStatus::Ongoing).map(|_| hour), false)
+                });
                 let ic = std::array::from_fn(|i| observed.filter(|(_, prior)| prior.sunk[i] == sunk[i]).and_then(|(_, prior)| prior.ic[i]));
                 let status = match number(cells, 2) {
                     Some(1) => NavalBattleStatus::AttackerWon,
@@ -751,7 +753,8 @@ mod tests {
             Step { hour: 15, cells: Some(Box::new([Cell::Number(10), Cell::Number(1), Cell::Number(0)])) },
             Step { hour: 20, cells: None },
         ];
-        let battles = History { keys: vec![(7, battle)], ..History::default() };
+        let read = |last: i32| vec![lanes::StatusRun { first: 10, last, status: Status::Complete }];
+        let battles = History { keys: vec![(7, battle)], statuses: read(40), ..History::default() };
         let span = Stretch { run: 1, first: 10, last: 40, join: dashboard_query::timeline::Join::Start };
         let mut lines = BTreeMap::new();
         live_lines(&mut lines, span, span.last, &RunLinks::default(), &battles, &History::default(), &History::default(), &Prices::default());
@@ -761,6 +764,11 @@ mod tests {
         ]);
         assert_eq!(reads.last().unwrap().1.detail_hour, Some(19));
         assert_eq!((reads.last().unwrap().1.live_last, reads.last().unwrap().1.end_seen), (Some(19), true), "a removal inside the stretch is recorded");
+        let unread = History { statuses: read(19), ..battles.clone() };
+        let mut lines = BTreeMap::new();
+        live_lines(&mut lines, span, span.last, &RunLinks::default(), &unread, &History::default(), &History::default(), &Prices::default());
+        let (_, read_gap) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
+        assert_eq!((read_gap.live_last, read_gap.end_seen), (Some(19), false), "a battle absent where the census was not read has no recorded removal");
         let stretch = Stretch { run: 1, first: 10, last: 17, join: dashboard_query::timeline::Join::Start };
         let mut lines = BTreeMap::new();
         live_lines(&mut lines, stretch, 40, &RunLinks::default(), &battles, &History::default(), &History::default(), &Prices::default());
@@ -829,6 +837,7 @@ mod tests {
         result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
         let (hour, last) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
         assert_eq!((*hour, last.result, last.sunk, last.ic), (13, NavalBattleStatus::AttackerWon, [Some(1), Some(0)], [Some(5), Some(0)]));
+        assert_eq!((last.live_last, last.end_seen), (Some(13), false), "a result read while the battle is still live bounds its live hours at that read");
     }
 
     #[test]

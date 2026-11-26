@@ -61,10 +61,10 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const ongoing = row.result === 'ongoing';
   const resultRead = row.detailId.startsWith('result:') && row.detailHour !== null;
   const first = Math.max(row.hour, track.branch.firstHour);
-  const liveEnd = ongoing ? opened.hour : row.lastLiveHour ?? (resultRead ? row.detailHour! - 1 : null);
-  const ending = ongoing ? null : resultRead ? row.detailHour : liveEnd !== null ? liveEnd + 1 : null;
+  const liveEnd = ongoing ? opened.hour : row.lastLiveHour;
+  const ending = ongoing || liveEnd === null ? null : liveEnd + 1;
   const end = ongoing ? opened.hour : ending;
-  const live = useMemo<readonly (readonly [number, number])[]>(() => liveEnd === null ? NO_LIVE : [[first, liveEnd]], [first, liveEnd]);
+  const live = useMemo<readonly (readonly [number, number])[]>(() => liveEnd === null ? NO_LIVE : [[first, Math.max(first, liveEnd)]], [first, liveEnd]);
   const span = useMemo<BattleSpan | null>(() => end === null ? null : { first, last: Math.max(first, Math.min(end, opened.hour, track.branch.lastHour)) },
     [end, first, opened.hour, track.branch.lastHour]);
   const leadSlot = row.countries[0][0];
@@ -82,7 +82,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const battle = (hour: number, clock: BattleClock | null): ReactNode => {
     const finished = !ongoing && span !== null && ending !== null && liveEnd !== null && ending <= span.last;
     const until = finished ? Math.max(span.first, liveEnd) : null;
-    const headline = resultRead ? `The battle had ended by ${formatDay(ending!)}, when its result was read.`
+    const headline = resultRead ? `The battle’s result was recorded on ${formatDay(row.detailHour!)}.`
       : row.endSeen ? `The battle ended on ${formatDay(ending!)}.`
         : `The battle was last recorded on ${formatDateTime(liveEnd!)}; the recording does not show when it ended.`;
     const winner = result ? <span>{result}</span>
