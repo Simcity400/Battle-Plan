@@ -1,6 +1,57 @@
-import type { SourceEntry, SourcePlan } from '../contract.ts';
+import { readPlanExact, type ExactReadOptions, type PagedSnapshotPage } from '../broker.ts';
+import type { BoundedReadView, SourceEntry, SourcePlan } from '../contract.ts';
 import type { FamilyRowWindow } from './adapter.ts';
-import { dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagerStep } from '../table/rowSource.ts';
+import { dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagedRows, type PagerStep } from '../table/rowSource.ts';
+
+export type PagedSnapshot = Readonly<Record<string, Readonly<Record<number, PagedSnapshotPage>>>>;
+
+export const NO_PAGED_SNAPSHOT: PagedSnapshot = Object.freeze({});
+
+function samePage(a: PagedSnapshotPage | undefined, b: PagedSnapshotPage): boolean {
+  if (!a || a.kind !== b.kind || a.hour !== b.hour || a.offset !== b.offset || a.limit !== b.limit) return false;
+  return a.kind === 'answered' || (b.kind === 'refused' && a.reason === b.reason);
+}
+
+export function pagedSnapshots(
+  pages: PagedRows | undefined,
+  previous: PagedSnapshot = NO_PAGED_SNAPSHOT,
+): PagedSnapshot {
+  if (!pages) return Object.keys(previous).length === 0 ? previous : NO_PAGED_SNAPSHOT;
+  const next: Record<string, Readonly<Record<number, PagedSnapshotPage>>> = {};
+  let sameAll = true;
+  for (const [name, sourcePages] of Object.entries(pages)) {
+    const entries = Object.values(sourcePages);
+    if (entries.length === 0) continue;
+    const prevSource = previous[name];
+    const mapped: Record<number, PagedSnapshotPage> = {};
+    let sameSource = prevSource !== undefined && Object.keys(prevSource).length === entries.length;
+    for (const page of entries) {
+      const desc: PagedSnapshotPage = 'reply' in page
+        ? { kind: 'answered', hour: page.hour, offset: page.offset, limit: page.limit }
+        : { kind: 'refused', hour: page.hour, offset: page.offset, limit: page.limit, reason: page.refused };
+      mapped[page.offset] = desc;
+      if (sameSource && !samePage(prevSource?.[page.offset], desc)) sameSource = false;
+    }
+    next[name] = sameSource ? prevSource! : mapped;
+    if (!sameSource) sameAll = false;
+  }
+  const names = Object.keys(next);
+  if (names.length === 0) return Object.keys(previous).length === 0 ? previous : NO_PAGED_SNAPSHOT;
+  if (sameAll && Object.keys(previous).length === names.length) return previous;
+  return next;
+}
+
+export function createExactReadView(
+  plan: SourcePlan,
+  snapshots: PagedSnapshot,
+  options: Omit<ExactReadOptions, 'snapshotHour' | 'pagedSnapshot' | 'rowWindow'>,
+): (wantedHour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null> {
+  return (wantedHour, rowWindow) => readPlanExact(plan, wantedHour, {
+    ...options,
+    pagedSnapshot: name => snapshots[name] ?? null,
+    rowWindow,
+  });
+}
 
 export type PagedEntry = SourceEntry & { readonly read: Extract<SourceEntry['read'], { shape: 'paged-rows' }> };
 

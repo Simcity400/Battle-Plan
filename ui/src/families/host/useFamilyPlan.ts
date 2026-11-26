@@ -1,4 +1,5 @@
-import { emptyPagers, pagedEntries, pagerWindow, replacePagers, type PagerSet } from './pagers.ts';
+import { createExactReadView, emptyPagers, NO_PAGED_SNAPSHOT, pagedEntries, pagedSnapshots, pagerWindow, replacePagers, type PagedSnapshot, type PagerSet } from './pagers.ts';
+import { NO_TILED_SERIES, reuseTiledSeries, reuseTileUnrecorded, topTileProof, type HeldTileUnrecorded } from './tiledState.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
@@ -31,7 +32,6 @@ import { perfLog } from '../../shell/perf.ts';
 import type { FamilyStaticProof } from './adapter.ts';
 import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
-import { boundedUnrecorded, type UnrecordedLine } from '../boundedView.ts';
 import {
   buildTailPageRequest,
   compileFollowPlan,
@@ -40,7 +40,6 @@ import {
   hoverAsks,
   type HeldHover,
   type HoverAsk,
-  readPlanExact,
   stabilizeCanvasDimension,
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
@@ -588,19 +587,19 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const views = new Map<string, TileView>();
     let disposed = false;
     let rev = 0;
+    let heldSeries = NO_TILED_SERIES;
 
     const publish = () => {
       if (disposed) return;
-      const nextSeries: Record<string, ReadonlyMap<string, TiledLine>> = {};
+      heldSeries = reuseTiledSeries(heldSeries, views);
       let firstError: unknown = null;
       let topRefused: string | null = null;
-      for (const [name, tv] of views) {
-        if (tv.current) nextSeries[name] = tv.current;
+      for (const tv of views.values()) {
         if (firstError === null && tv.error !== null) firstError = tv.error;
         topRefused ??= tv.top?.refused ?? null;
       }
       rev++;
-      const snapshot = { key: pixelBinnedKey, series: nextSeries, revision: rev, error: firstError, topRefused };
+      const snapshot = { key: pixelBinnedKey, series: heldSeries, revision: rev, error: firstError, topRefused };
       inFrame(() => {
         if (!disposed) setTiledState(snapshot);
       });
@@ -814,14 +813,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => (pagedRowsState.sig === sig && Object.keys(pagedRowsState.map).length ? pagedRowsState.map : undefined),
     [pagedRowsState, sig],
   );
+  const pagedSnapshotRef = useRef<PagedSnapshot>(NO_PAGED_SNAPSHOT);
+  const pagedSnapshot = useMemo(
+    () => (pagedSnapshotRef.current = pagedSnapshots(pagedRows, pagedSnapshotRef.current)),
+    [pagedRows],
+  );
 
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
   const trackOffset = track?.axisOffset ?? 0;
 
+  const currentTiledSeries = currentTiled?.series;
   const [tileCrossings, setTileCrossings] = useState(0);
   const tileSeenHour = useMemo(
     () => Math.floor(runtime.clock.getHour()) + trackOffset,
-    [currentTiled, tileCrossings, runtime.clock, trackOffset],
+    [currentTiledSeries, tileCrossings, runtime.clock, trackOffset],
   );
   const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
   useEffect(() => {
@@ -835,29 +840,21 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     };
     apply();
     if (!following) return;
-    const proof = (): readonly [number, number] => {
-      const at = now();
-      if (gateRecordedRef.current(at) === null) {
-        const [unrecordedLo, unrecordedHi] = track ? coverageSpan(track, at) : [at, at];
-        return [unrecordedLo - trackOffset, unrecordedHi + 1 - trackOffset];
-      }
-      let lo = -Infinity;
-      let hi = Infinity;
-      for (const tv of tops) {
-        const held = tv.top;
-        lo = Math.max(lo, held ? held.from : at);
-        hi = Math.min(hi, held ? held.until : at);
-      }
-      return [lo - trackOffset, hi + 1 - trackOffset];
-    };
+    const proof = () => topTileProof(
+      tops,
+      now(),
+      trackOffset,
+      gateRecordedRef.current,
+      at => (track ? coverageSpan(track, at) : [at, at]),
+    );
     return watchBoundary(runtime.clock, proof, apply);
   }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, track, trackOffset]);
+  const tileUnrecordedRef = useRef<HeldTileUnrecorded | null>(null);
   const tileUnrecorded = useMemo(() => {
-    if (!currentTiled) return null;
-    const lines: UnrecordedLine[] = [];
-    for (const series of Object.values(currentTiled.series)) for (const line of series.values()) lines.push(line);
-    return lines.length ? boundedUnrecorded(lines, tileHour) : null;
-  }, [currentTiled, tileHour]);
+    const held = reuseTileUnrecorded(tileUnrecordedRef.current, currentTiledSeries, tileHour);
+    tileUnrecordedRef.current = held;
+    return held?.result ?? null;
+  }, [currentTiledSeries, tileHour]);
   const tileLo = tileUnrecorded?.validInterval[0];
   const tileHi = tileUnrecorded?.validInterval[1];
   useEffect(() => {
@@ -1004,29 +1001,19 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const exactReadView = useMemo(() => {
     if (!displayedCtx || !displayedPlan || !perfLog) return undefined;
-    const frozenPlan = displayedPlan;
-    const frozenBranch = displayedCtx.branch;
-    const frozenStaticSpan = displayedCtx.staticSpan;
-    const frozenClient = runtime.client;
-    const frozenTimeMode = widget.time.mode;
-    const frozenFollowing = following;
-    const frozenWindow = window;
-    const g = displayedGate;
-    return (wantedHour: number, rowWindow: FamilyRowWindow | null) => readPlanExact(frozenPlan, wantedHour, {
-      client: frozenClient,
-      following: frozenFollowing,
-      timeMode: frozenTimeMode,
-      branch: frozenBranch,
-      window: frozenWindow,
-      staticSpan: frozenStaticSpan,
-      gate: g,
+    return createExactReadView(displayedPlan, pagedSnapshot, {
+      client: runtime.client,
+      following,
+      timeMode: widget.time.mode,
+      branch: displayedCtx.branch,
+      window,
+      staticSpan: displayedCtx.staticSpan,
+      gate: displayedGate,
       exactOnce: (key, load) => perfLog!.exactOnce(key, load),
-      snapshotHour: name => pagersRef.current.pagers.get(name)?.shownHour ?? null,
       identity: identityProvider,
       art: artProvider,
-      rowWindow,
     });
-  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, identityProvider, artProvider]);
+  }, [displayedCtx, displayedPlan, displayedGate, runtime.client, following, widget.time.mode, window, pagedSnapshot, identityProvider, artProvider]);
 
   const loadingLabel = `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;

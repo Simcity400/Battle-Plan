@@ -557,6 +557,10 @@ export function buildPlaybackBoundedRequest(
   return null;
 }
 
+export type PagedSnapshotPage =
+  | { readonly kind: 'answered'; readonly hour: number; readonly offset: number; readonly limit: number }
+  | { readonly kind: 'refused'; readonly hour: number; readonly offset: number; readonly limit: number; readonly reason: string };
+
 export interface ExactReadOptions {
   readonly client: DashboardClient;
   readonly following: boolean;
@@ -570,6 +574,7 @@ export interface ExactReadOptions {
   readonly art?: ArtProvider;
   readonly rowWindow?: RowWindow | null;
   readonly snapshotHour?: (name: string) => number | null;
+  readonly pagedSnapshot?: (name: string) => Readonly<Record<number, PagedSnapshotPage>> | null;
 }
 
 interface ExactPart {
@@ -667,11 +672,42 @@ async function readEntryExact(
     const headLimit = Math.max(1, read.tailQuery.limit);
     const window = options.rowWindow;
     const dataWindow = window ? dataWindowOf(window) : null;
-    if (dataWindow && dataWindow.first + dataWindow.count > headLimit) {
-      const at = Math.min(recorded, options.snapshotHour?.(entry.name) ?? recorded);
+    if (options.pagedSnapshot !== undefined) {
+      const snap = options.pagedSnapshot(entry.name);
+      const snapPages = snap ? Object.values(snap) : [];
+      const activeSnap = snapPages.length > 0 && snapPages.every(page => page.hour <= recorded) ? snapPages : [];
+      const answered = activeSnap.filter((page): page is Extract<PagedSnapshotPage, { readonly kind: 'answered' }> => page.kind === 'answered');
+      const pages: Record<number, SnapshotPage> = {};
+      for (const page of activeSnap) {
+        if (page.kind === 'refused') pages[page.offset] = { hour: page.hour, offset: page.offset, limit: page.limit, refused: page.reason };
+      }
+      if (answered.length > 0) {
+        const validate = read.validate ?? validateGenericTailReply;
+        const raws = await Promise.all(answered.map(page => fetchRaw(buildTailPageRequest(entry, { offset: page.offset, limit: page.limit, hour: page.hour })!)));
+        answered.forEach((page, i) => {
+          pages[page.offset] = { hour: page.hour, offset: page.offset, limit: page.limit, raw: raws[i], reply: validate(raws[i], page.hour) };
+        });
+        const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages);
+        return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
+      }
+      const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
+      const request = productRequest({
+        sourceId: entry.source.id,
+        revision: entry.source.revision,
+        product: read.tailQuery.product,
+        params,
+      });
+      const raw = await fetchRaw(request);
+      const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded, pages);
+      return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
+    }
+    const frozenHour = options.snapshotHour?.(entry.name) ?? null;
+    if (frozenHour !== null || (dataWindow && dataWindow.first + dataWindow.count > headLimit)) {
+      const at = Math.min(recorded, frozenHour ?? recorded);
       const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
       const validate = read.validate ?? validateGenericTailReply;
-      const asks = pageOffsets(dataWindow, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
+      const slice = dataWindow ?? { first: 0, count: headLimit };
+      const asks = pageOffsets(slice, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
       const raws = await Promise.all(asks.map(ask => fetchRaw(buildTailPageRequest(entry, ask)!)));
       const pages: Record<number, SnapshotPage> = {};
       asks.forEach((ask, i) => { pages[ask.offset] = { ...ask, raw: raws[i], reply: validate(raws[i], at) }; });
