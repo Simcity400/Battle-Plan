@@ -592,7 +592,7 @@ impl<'a> Parser<'a> {
                             && !quoted
                             && bytes == b"variables"
                             && operator == Operator::Equals;
-                        let (value, kind) = if self.save && !in_variables {
+                        let (value, kind) = if self.save && !in_variables && operator == Operator::Equals {
                             self.save_value(depth, variable_map, operator_at)?
                         } else {
                             self.value(depth, variable_map)?
@@ -658,12 +658,15 @@ impl<'a> Parser<'a> {
 
     fn save_value(&mut self, depth: usize, variable_map: bool, operator: usize) -> io::Result<(Value, Kind)> {
         let empty = || (Value::Scalar(Vec::new()), Kind::Bare);
-        match self.peek()?.map(|token| &token.kind) {
-            None | Some(TokenKind::Close) => Ok(empty()),
-            Some(TokenKind::Scalar { .. }) => {
+        let bytes = self.lexer.bytes;
+        let later_line = |at: usize| bytes.get(operator..at).is_some_and(|between| between.contains(&b'\n'));
+        let next = self.peek()?.map(|token| (matches!(token.kind, TokenKind::Close), matches!(token.kind, TokenKind::Operator(_)), matches!(token.kind, TokenKind::Scalar { .. }), token.offset));
+        match next {
+            None | Some((true, ..)) => Ok(empty()),
+            Some((_, true, _, at)) if later_line(at) => Ok(empty()),
+            Some((_, _, true, _)) => {
                 let token = self.next()?.expect("peeked scalar");
-                let later_line = self.lexer.bytes.get(operator..token.offset).is_some_and(|between| between.contains(&b'\n'));
-                if later_line && matches!(self.peek()?.map(|next| &next.kind), Some(TokenKind::Operator(_))) {
+                if later_line(token.offset) && matches!(self.peek()?.map(|next| &next.kind), Some(TokenKind::Operator(_))) {
                     self.pushed = Some(token);
                     return Ok(empty());
                 }

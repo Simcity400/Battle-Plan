@@ -367,6 +367,11 @@ fn the_save_grammar_reads_an_empty_key_and_an_empty_value_as_written() {
         [(Some(b"role".to_vec()), Some(Vec::new())), (Some(b"closed".to_vec()), Some(b"yes".to_vec())), (Some(b"last".to_vec()), Some(Vec::new()))]
     );
     assert_eq!(items[3].value.scalar(), Some(b"yes".as_slice()));
+    let keyless = parse_save(b"a=\n={x}").unwrap().items;
+    assert_eq!(keyless.iter().map(key).collect::<Vec<_>>(), [Some(b"a".to_vec()), Some(Vec::new())]);
+    assert_eq!((keyless[0].value.scalar(), keyless[1].value.items().map(<[Item]>::len)), (Some(b"".as_slice()), Some(1)));
+    assert!(parse_save(b"a>").is_err());
+    assert!(parse_save(b"a<").is_err());
     let inline = parse_save(b"a=x =0").unwrap().items;
     assert_eq!(
         inline.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
