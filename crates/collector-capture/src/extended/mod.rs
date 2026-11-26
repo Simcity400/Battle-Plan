@@ -1733,6 +1733,7 @@ pub(crate) struct Homes {
     pub country_intel: daily_intel::Home,
     pub(crate) templates: division_templates::Home,
     pub(crate) naval_combat: naval_combat_sources::Home,
+    pub(crate) projects: projects::RuntimeHome,
 }
 
 impl Homes {
@@ -1744,6 +1745,7 @@ impl Homes {
             )?,
             templates: division_templates::new_home()?,
             naval_combat: naval_combat_sources::new_home()?,
+            projects: projects::new_runtime_home()?,
         })
     }
 }
@@ -1772,6 +1774,10 @@ impl Captured {
         self.division_templates.share_home(home);
     }
 
+    pub(crate) fn share_project_runtime_home(&mut self, home: &projects::RuntimeHome) {
+        self.projects.share_runtime_home(home);
+    }
+
     pub(crate) fn share_country_intel(&mut self, home: &daily_intel::Home) {
         self.intel.share_country_intel(home);
     }
@@ -1781,6 +1787,7 @@ impl Captured {
         self.share_country_intel(&homes.country_intel);
         self.share_template_home(&homes.templates);
         self.share_naval_combat_home(&homes.naval_combat);
+        self.share_project_runtime_home(&homes.projects);
     }
 
     pub(crate) fn reset_keeping_country_intel(&mut self) {
@@ -2297,6 +2304,10 @@ impl Captured {
 
     pub fn technology_carried_owners(&self) -> Option<&[u32]> {
         self.governance.technology_carried_owners()
+    }
+
+    pub fn stability_lines_carried_owners(&self) -> Option<&[u32]> {
+        self.country_stability.lines_carried_owners()
     }
 
     pub fn project_row_owners(&self) -> std::io::Result<Vec<u32>> {

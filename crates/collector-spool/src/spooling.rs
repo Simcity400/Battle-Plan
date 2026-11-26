@@ -863,7 +863,12 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                         self.sliced_owners[table.index()] = Some(owners);
                         *input = TableInput::SharedComplete(Arc::new(fresh));
                     } else if let Some(previous) = self.sliced_cache.remove(&table) {
-                        match replay_data::sliced::merge_slice(&previous, fresh, captured, live) {
+                        match replay_data::sliced::merge_slice(
+                            &previous,
+                            fresh,
+                            |owner| captured(owner) && !carried_owner(table, owner),
+                            live,
+                        ) {
                             Ok(merged) => {
                                 let owners = replay_data::sliced::try_owners(&merged)?;
                                 self.sliced_reads.merge(table, &owners, selection, hour)?;
@@ -946,7 +951,10 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                             fresh_owners = Some(replay_data::sliced::try_owners(&fresh)?);
                         }
                         match replay_data::sliced::SliceUpdate::diff_owners(
-                            previous, fresh, captured, live,
+                            previous,
+                            fresh,
+                            |owner| captured(owner) && !carried_owner(table, owner),
+                            live,
                         ) {
                             Ok(update) => Merged::Update(token, update),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
@@ -967,7 +975,12 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     } else if selection.force_full || replay_data::sliced::replaces_whole(&fresh) {
                         Merged::Rows(fresh)
                     } else if let Some(previous) = self.sliced_cache.get(&table) {
-                        match replay_data::sliced::merge_slice(previous, fresh, captured, live) {
+                        match replay_data::sliced::merge_slice(
+                            previous,
+                            fresh,
+                            |owner| captured(owner) && !carried_owner(table, owner),
+                            live,
+                        ) {
                             Ok(merged) => Merged::Rows(merged),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -2903,6 +2916,10 @@ impl<S: Schedule> Processor<S> {
                             .technology_carried_owners()
                             .is_some_and(|owners| owners.binary_search(&owner).is_ok())
                 }
+                TableId::CountryStabilityLines => captured
+                    .extended
+                    .stability_lines_carried_owners()
+                    .is_some_and(|owners| owners.binary_search(&owner).is_ok()),
                 _ => false,
             },
             |table| match table {

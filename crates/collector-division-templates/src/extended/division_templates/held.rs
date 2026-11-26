@@ -449,6 +449,11 @@ impl Store {
         self.changed
     }
 
+    pub fn clear_changed(&mut self) {
+        self.changed = false;
+        self.reordered = false;
+    }
+
     pub fn reordered(&self) -> bool {
         self.reordered
     }
@@ -678,124 +683,54 @@ impl Store {
             if !entry.requested || !entry.valid {
                 continue;
             }
-            let previous_bytes = entry.allocated_bytes();
-            let grid = |index: usize| -> Option<TemplateGrid> {
-                let cells = span(counts, row.cells[index])?;
-                Some(TemplateGrid {
-                    columns: row.grid_dimensions[index] & 0xffff,
-                    rows: row.grid_dimensions[index] >> 16,
-                    cells: owned_vec(engine_allocation::collect_vec(cells.iter().map(|cell| {
-                        TemplateCell {
-                            token: cell.token,
-                            local: u8::from(cell.local),
-                            occupied: cell.count != 0,
-                        }
-                    }))),
-                })
-            };
-            let same_grid = |grid: &TemplateGrid, index: usize| {
-                grid.columns == row.grid_dimensions[index] & 0xffff
-                    && grid.rows == row.grid_dimensions[index] >> 16
-                    && span(counts, row.cells[index]).is_some_and(|cells| {
-                        cells.len() == grid.cells.len()
-                            && grid.cells.iter().zip(cells).all(|(a, b)| {
-                                a.token == b.token
-                                    && a.local == u8::from(b.local)
-                                    && a.occupied == (b.count != 0)
-                            })
-                    })
-            };
-            let layout_equal = entry.layout.as_ref().is_some_and(|layout| {
-                row.model_failure.is_none()
-                    && same_grid(&layout.regiments, 0)
-                    && same_grid(&layout.support, 1)
-                    && same_grid(&layout.regimental_support, 2)
-            });
-            if !layout_equal {
-                self.changed = true;
-                entry.layout = (|| {
-                    if row.model_failure.is_some() {
-                        return None;
-                    }
-                    Some(Arc::new(TemplateLayout {
-                        regiments: grid(0)?,
-                        support: grid(1)?,
-                        regimental_support: grid(2)?,
-                    }))
-                })();
-                entry.layout_serial = if entry.layout.is_some() {
-                    collector_projection::projection::generation()
-                } else {
-                    0
-                };
-            }
-            let r = &row.settings;
-            let settings_equal = entry.raw_settings == Some(row.settings)
-                && entry.settings.as_ref().is_some_and(|settings| {
-                    if settings.names_group.as_deref()
-                        != row.names_group.and_then(|range| span(bytes, range))
-                    {
-                        return false;
-                    }
-                    match (&settings.forbidden_equipment, row.equipment_failure) {
-                        (None, Some(_)) => true,
-                        (Some(old), None) => {
-                            span(variants, row.forbidden_equipment).is_some_and(|tokens| {
-                                old.len() == tokens.len()
-                                    && old.iter().zip(tokens).all(|(a, b)| u64::from(*a) == *b)
-                            })
-                        }
-                        _ => false,
-                    }
-                });
-            if !settings_equal {
-                self.changed = true;
-                entry.settings = Some(Arc::new(TemplateSettings {
-                    roster_ordinal: r.roster_ordinal,
-                    names_group: row
-                        .names_group
-                        .and_then(|range| span(bytes, range))
-                        .map(|key| owned_vec(engine_allocation::copy_vec(key))),
-                    priority: r.priority,
-                    is_army_hq: r.is_army_hq,
-                    locked: r.locked,
-                    obsolete: r.obsolete,
-                    obsolete_change_date: r.obsolete_change_date,
-                    force_allow_recruiting: r.force_allow_recruiting,
-                    allow_new_equipment: r.allow_new_equipment,
-                    allow_foreign_equipment: r.allow_foreign_equipment,
-                    parent: r.parent,
-                    creator_country: r.creator_country,
-                    origin_type: r.origin_type,
-                    fake_intel: r.fake_intel,
-                    division_cap: r.division_cap,
-                    equipment_niche: r.equipment_niche,
-                    role: r.role,
-                    ai_role: r.ai_role,
-                    ai_role_fallback: r.ai_role_fallback,
-                    total_manpower: r.total_manpower,
-                    command_power_cost: r.command_power_cost,
-                    training_time: r.training_time,
-                    forbidden_equipment: if row.equipment_failure.is_some() {
-                        None
-                    } else {
-                        span(variants, row.forbidden_equipment).map(|tokens| {
-                            owned_vec(engine_allocation::collect_vec(
-                                tokens.iter().map(|&token| token as u32),
-                            ))
-                        })
-                    },
-                }));
-                entry.settings_serial = collector_projection::projection::generation();
-            }
-            entry.raw_settings = Some(row.settings);
-            entry.acquired = true;
-            entry.valid = true;
-            entry.requested = false;
-            self.payload_bytes = self.payload_bytes - previous_bytes + entry.allocated_bytes();
+            settle_entry(
+                entry,
+                row,
+                counts,
+                variants,
+                bytes,
+                &mut self.changed,
+                &mut self.payload_bytes,
+            );
         }
         self.requested = false;
         self.reordered = false;
+    }
+
+    pub fn patch_dirty(
+        &mut self,
+        row: &native::IconRow,
+        counts: &[native::SubunitCount],
+        variants: &[u64],
+        bytes: &[u8],
+        certificate: Certificate,
+    ) -> bool {
+        if !row.details_fresh {
+            return false;
+        }
+        let Some(at) = self.lookup(row.template) else {
+            return false;
+        };
+        let entry = &mut self.entries[at];
+        entry.pointer = row.pointer;
+        entry.owner = row.owner;
+        entry.ordinal = row.settings.roster_ordinal;
+        entry.certificate = Some(certificate);
+        entry.pending = Some(certificate);
+        entry.attempted = true;
+        entry.requested = true;
+        entry.valid = true;
+        entry.reordered = false;
+        settle_entry(
+            entry,
+            row,
+            counts,
+            variants,
+            bytes,
+            &mut self.changed,
+            &mut self.payload_bytes,
+        );
+        entry.valid && entry.settings.is_some()
     }
 
     pub fn settings_available(&self, row: &native::IconRow) -> bool {
@@ -860,4 +795,130 @@ impl Store {
             Recorded::Value(settings.cloned()),
         )
     }
+}
+
+fn settle_entry(
+    entry: &mut Entry,
+    row: &native::IconRow,
+    counts: &[native::SubunitCount],
+    variants: &[u64],
+    bytes: &[u8],
+    changed: &mut bool,
+    payload_bytes: &mut usize,
+) {
+    let previous_bytes = entry.allocated_bytes();
+    let grid = |index: usize| -> Option<TemplateGrid> {
+        let cells = span(counts, row.cells[index])?;
+        Some(TemplateGrid {
+            columns: row.grid_dimensions[index] & 0xffff,
+            rows: row.grid_dimensions[index] >> 16,
+            cells: owned_vec(engine_allocation::collect_vec(cells.iter().map(|cell| {
+                TemplateCell {
+                    token: cell.token,
+                    local: u8::from(cell.local),
+                    occupied: cell.count != 0,
+                }
+            }))),
+        })
+    };
+    let same_grid = |grid: &TemplateGrid, index: usize| {
+        grid.columns == row.grid_dimensions[index] & 0xffff
+            && grid.rows == row.grid_dimensions[index] >> 16
+            && span(counts, row.cells[index]).is_some_and(|cells| {
+                cells.len() == grid.cells.len()
+                    && grid.cells.iter().zip(cells).all(|(a, b)| {
+                        a.token == b.token
+                            && a.local == u8::from(b.local)
+                            && a.occupied == (b.count != 0)
+                    })
+            })
+    };
+    let layout_equal = entry.layout.as_ref().is_some_and(|layout| {
+        row.model_failure.is_none()
+            && same_grid(&layout.regiments, 0)
+            && same_grid(&layout.support, 1)
+            && same_grid(&layout.regimental_support, 2)
+    });
+    if !layout_equal {
+        *changed = true;
+        entry.layout = (|| {
+            if row.model_failure.is_some() {
+                return None;
+            }
+            Some(Arc::new(TemplateLayout {
+                regiments: grid(0)?,
+                support: grid(1)?,
+                regimental_support: grid(2)?,
+            }))
+        })();
+        entry.layout_serial = if entry.layout.is_some() {
+            collector_projection::projection::generation()
+        } else {
+            0
+        };
+    }
+    let r = &row.settings;
+    let settings_equal = entry.raw_settings == Some(row.settings)
+        && entry.settings.as_ref().is_some_and(|settings| {
+            if settings.names_group.as_deref()
+                != row.names_group.and_then(|range| span(bytes, range))
+            {
+                return false;
+            }
+            match (&settings.forbidden_equipment, row.equipment_failure) {
+                (None, Some(_)) => true,
+                (Some(old), None) => {
+                    span(variants, row.forbidden_equipment).is_some_and(|tokens| {
+                        old.len() == tokens.len()
+                            && old.iter().zip(tokens).all(|(a, b)| u64::from(*a) == *b)
+                    })
+                }
+                _ => false,
+            }
+        });
+    if !settings_equal {
+        *changed = true;
+        entry.settings = Some(Arc::new(TemplateSettings {
+            roster_ordinal: r.roster_ordinal,
+            names_group: row
+                .names_group
+                .and_then(|range| span(bytes, range))
+                .map(|key| owned_vec(engine_allocation::copy_vec(key))),
+            priority: r.priority,
+            is_army_hq: r.is_army_hq,
+            locked: r.locked,
+            obsolete: r.obsolete,
+            obsolete_change_date: r.obsolete_change_date,
+            force_allow_recruiting: r.force_allow_recruiting,
+            allow_new_equipment: r.allow_new_equipment,
+            allow_foreign_equipment: r.allow_foreign_equipment,
+            parent: r.parent,
+            creator_country: r.creator_country,
+            origin_type: r.origin_type,
+            fake_intel: r.fake_intel,
+            division_cap: r.division_cap,
+            equipment_niche: r.equipment_niche,
+            role: r.role,
+            ai_role: r.ai_role,
+            ai_role_fallback: r.ai_role_fallback,
+            total_manpower: r.total_manpower,
+            command_power_cost: r.command_power_cost,
+            training_time: r.training_time,
+            forbidden_equipment: if row.equipment_failure.is_some() {
+                None
+            } else {
+                span(variants, row.forbidden_equipment).map(|tokens| {
+                    owned_vec(engine_allocation::collect_vec(
+                        tokens.iter().map(|&token| token as u32),
+                    ))
+                })
+            },
+        }));
+        entry.settings_serial = collector_projection::projection::generation();
+    }
+    entry.raw_settings = Some(row.settings);
+    entry.acquired = true;
+    entry.valid = true;
+    entry.requested = false;
+    *payload_bytes = *payload_bytes - previous_bytes + entry.allocated_bytes();
 }

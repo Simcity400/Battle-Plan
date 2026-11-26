@@ -53,6 +53,7 @@ fn same_hq_source(held: HqSource, current: HqSource) -> bool {
 const SITES: usize = MUTATIONS.len();
 const UNIT_TYPE_SITE: usize = 23;
 const AI_ROLE_SITE: usize = 25;
+const DIRTY_LOG_LEN: usize = 256;
 const fn is_hq_site(site: usize) -> bool {
     matches!(site, 43..=54)
 }
@@ -66,9 +67,25 @@ static TEMPLATES: AtomicUsize = AtomicUsize::new(0);
 static COUNTRIES: AtomicUsize = AtomicUsize::new(0);
 static HQ_GROUPS: AtomicUsize = AtomicUsize::new(0);
 
+struct DirtySlot {
+    seq: AtomicU64,
+    receiver: AtomicUsize,
+}
+
+impl DirtySlot {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            receiver: AtomicUsize::new(0),
+        }
+    }
+}
+
 pub struct Watches {
     registry: WatchRegistry,
     hq_registry: WatchRegistry,
+    log_cursor: AtomicU64,
+    dirty_log: [DirtySlot; DIRTY_LOG_LEN],
     calls: collector_timing::hook_timing::CallCounters<SITES>,
     unchanged_unit_type_writes: AtomicU64,
     unchanged_ai_role_rebuilds: AtomicU64,
@@ -79,10 +96,51 @@ impl Watches {
         Self {
             registry: WatchRegistry::new().with_synchronous(),
             hq_registry: WatchRegistry::new().with_synchronous(),
+            log_cursor: AtomicU64::new(0),
+            dirty_log: [const { DirtySlot::new() }; DIRTY_LOG_LEN],
             calls: collector_timing::hook_timing::CallCounters::new(),
             unchanged_unit_type_writes: AtomicU64::new(0),
             unchanged_ai_role_rebuilds: AtomicU64::new(0),
         }
+    }
+
+    fn record_dirty(&self, receiver: usize) {
+        let seq = self.log_cursor.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        let slot = &self.dirty_log[(seq as usize) & (DIRTY_LOG_LEN - 1)];
+        slot.seq.store(0, Ordering::Release);
+        slot.receiver.store(receiver, Ordering::Relaxed);
+        slot.seq.store(seq, Ordering::Release);
+    }
+
+    pub fn dirty_cursor(&self) -> u64 {
+        self.log_cursor.load(Ordering::Acquire)
+    }
+
+    pub fn dirty_receivers_since(&self, since: u64, out: &mut Vec<usize>) -> Option<u64> {
+        let now = self.log_cursor.load(Ordering::Acquire);
+        if now < since || now - since > DIRTY_LOG_LEN as u64 {
+            return None;
+        }
+        out.clear();
+        for seq in (since + 1)..=now {
+            let slot = &self.dirty_log[(seq as usize) & (DIRTY_LOG_LEN - 1)];
+            if slot.seq.load(Ordering::Acquire) != seq {
+                return None;
+            }
+            let receiver = slot.receiver.load(Ordering::Acquire);
+            if slot.seq.load(Ordering::Acquire) != seq || receiver == 0 {
+                return None;
+            }
+            if !out.contains(&receiver) {
+                if out.len() == out.capacity()
+                    && engine_allocation::advisory(|| engine_allocation::reserve(out, 1)).is_err()
+                {
+                    return None;
+                }
+                out.push(receiver);
+            }
+        }
+        (self.log_cursor.load(Ordering::Acquire) == now).then_some(now)
     }
 
     pub fn notify(&self, template: usize, site: usize) -> Notification<'_> {
@@ -90,7 +148,9 @@ impl Watches {
         if is_hq_site(site) {
             self.hq_registry.notify(template)
         } else {
-            self.registry.notify(template)
+            let guard = self.registry.notify(template);
+            self.record_dirty(template);
+            guard
         }
     }
 
@@ -115,8 +175,16 @@ impl Watches {
             None
         } else {
             Some(match template {
-                Some(template) => self.registry.notify(template),
-                None => self.registry.notify_every(),
+                Some(template) => {
+                    let guard = self.registry.notify(template);
+                    self.record_dirty(template);
+                    guard
+                }
+                None => {
+                    let guard = self.registry.notify_every();
+                    self.record_dirty(0);
+                    guard
+                }
             })
         }
     }
@@ -154,6 +222,12 @@ pub trait Changes: Sync {
     fn core_dependencies(&self) -> Option<(u64, u64)> {
         None
     }
+    fn dirty_cursor(&self) -> Option<u64> {
+        None
+    }
+    fn dirty_receivers_since(&self, _since: u64, _out: &mut Vec<usize>) -> Option<u64> {
+        None
+    }
 }
 
 impl Changes for Watches {
@@ -165,6 +239,12 @@ impl Changes for Watches {
     }
     fn hq_sequence(&self, object: usize) -> Option<(u64, u64)> {
         self.hq_registry.sequence(object)
+    }
+    fn dirty_cursor(&self) -> Option<u64> {
+        Some(Watches::dirty_cursor(self))
+    }
+    fn dirty_receivers_since(&self, since: u64, out: &mut Vec<usize>) -> Option<u64> {
+        Watches::dirty_receivers_since(self, since, out)
     }
 }
 
@@ -206,6 +286,15 @@ impl Changes for Observer {
             &collector_model_inputs::local_subunit_changes::Observer,
         )
     }
+    fn dirty_cursor(&self) -> Option<u64> {
+        (!collector_hook_failures::failed(collector_hook_failures::Family::Templates))
+            .then(|| WATCHES.dirty_cursor())
+    }
+    fn dirty_receivers_since(&self, since: u64, out: &mut Vec<usize>) -> Option<u64> {
+        (!collector_hook_failures::failed(collector_hook_failures::Family::Templates))
+            .then(|| WATCHES.dirty_receivers_since(since, out))
+            .flatten()
+    }
 }
 
 pub fn active() -> usize {
@@ -216,6 +305,9 @@ pub fn active() -> usize {
 }
 
 pub fn boundary(invalidate: bool) {
+    if invalidate {
+        WATCHES.record_dirty(0);
+    }
     WATCHES.registry.boundary(invalidate);
     WATCHES.hq_registry.boundary(invalidate);
 }
@@ -380,6 +472,7 @@ impl Hooks {
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
+            WATCHES.record_dirty(0);
             WATCHES.registry.set_enabled(false);
             WATCHES.hq_registry.set_enabled(false);
             collector_observers::occupation_changes::forwarder(
@@ -504,7 +597,9 @@ fn notification<'a>(
             if is_hq_site(site) {
                 watches.hq_registry.notify_every()
             } else {
-                watches.registry.notify_every()
+                let guard = watches.registry.notify_every();
+                watches.record_dirty(0);
+                guard
             }
         }
     };

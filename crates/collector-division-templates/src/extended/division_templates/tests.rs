@@ -1236,6 +1236,12 @@ impl crate::template_changes::Changes for CoreChanges {
     fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
         collector_model_inputs::local_subunit_changes::Changes::sequence(&self.locals, status)
     }
+    fn dirty_cursor(&self) -> Option<u64> {
+        crate::template_changes::Changes::dirty_cursor(&self.templates)
+    }
+    fn dirty_receivers_since(&self, since: u64, out: &mut Vec<usize>) -> Option<u64> {
+        crate::template_changes::Changes::dirty_receivers_since(&self.templates, since, out)
+    }
 }
 
 #[cfg(test)]
@@ -1746,6 +1752,121 @@ fn clean_whole_table_fast_path_matches_full_walk_and_invalidates_on_change() {
     }
     assert!(fast.fast_clean.is_none());
     assert!(recording.template(A) > 0);
+    assert_eq!(fast.tables(), reference.tables());
+    assert_eq!(fast.country_state(), reference.country_state());
+}
+
+#[test]
+fn dirty_receiver_in_place_patch_reads_only_dirty_template_and_matches_full_walk() {
+    const A: usize = 0x5000;
+    const B: usize = 0x5400;
+    let changes = CoreChanges::new();
+    let mut source = gridded_fixture();
+    let mut template_b = source.bytes[A..A + 0x400].to_vec();
+    template_b[8..16].copy_from_slice(&0xffff_fffe_0000_0034_u64.to_le_bytes());
+    source.bytes[B..B + 0x400].copy_from_slice(&template_b);
+    source.bytes[0x4008..0x4010].copy_from_slice(&(B as u64).to_le_bytes());
+    source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
+        .copy_from_slice(&(2_u64 | (2_u64 << 32)).to_le_bytes());
+    let mut cap = capacity();
+    cap.rows = 4;
+    cap.icon_rows = 4;
+    cap.bytes = 128;
+    cap.icon_bytes = 128;
+    cap.name_bytes = 128;
+    cap.counts = 64;
+    cap.variants = 16;
+    let mut fast = Captured::with_capacities(&cap);
+    let mut reference = Captured::with_capacities(&cap);
+    for hour in 0..2 {
+        // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+        unsafe {
+            fast.capture_original(&source, 0, 0x1000, hour, hour == 0, &changes);
+            reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        }
+        assert_eq!(fast.tables(), reference.tables(), "hour {hour}");
+    }
+    source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
+        .copy_from_slice(&13_i32.to_le_bytes());
+    drop(changes.templates.notify(A, site("rebuild_template_caches")));
+    let recording = Recording::new(&source);
+    // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+    unsafe {
+        fast.capture_original(&recording, 0, 0x1000, 2, false, &changes);
+        reference.capture_original(&source, 0, 0x1000, 2, true, &changes);
+    }
+    assert!(recording.template(A) > 0);
+    assert_eq!(recording.template(B), 0);
+    assert_eq!(fast.occurrences(), [1, 1]);
+    assert_eq!(fast.tables(), reference.tables());
+    assert_eq!(fast.country_state(), reference.country_state());
+    let scratch = collector_projection::projection::ProjectionScratch::default();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut reference_encoder = replay_frame::frame::FrameEncoder::new();
+    for hour in [3, 4] {
+        if hour == 4 {
+            source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
+                .copy_from_slice(&17_i32.to_le_bytes());
+            drop(changes.templates.notify(A, site("rebuild_template_caches")));
+        }
+        // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+        unsafe {
+            fast.capture_original(&source, 0, 0x1000, hour, false, &changes);
+            reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        }
+        let mut projection =
+            collector_projection::projection::Projection::new(&encoder, 1, hour, false, &scratch);
+        let actual = fast.projected_inputs(Some(&mut projection));
+        let expected = reference.table_inputs();
+        let make_frame = |inputs: [TableInput; N]| {
+            let mut frame = replay_frame::frame::FrameInput {
+                branch: 1,
+                hour,
+                tables: std::array::from_fn(|_| unavailable("fixture").into()),
+                metrics: replay_frame::frame::Metrics::default(),
+            };
+            for (table, input) in TABLES.into_iter().zip(inputs) {
+                frame.tables[table.index()] = input;
+            }
+            frame
+        };
+        assert_eq!(
+            encoder.encode_input(make_frame(actual), false).unwrap(),
+            reference_encoder
+                .encode_input(make_frame(expected), false)
+                .unwrap(),
+            "hour {hour}"
+        );
+    }
+}
+
+#[test]
+fn unmatched_temporary_template_receiver_reuses_clean_state_without_rereading() {
+    const A: usize = 0x5000;
+    const TEMP: usize = 0x9990_0000;
+    let changes = CoreChanges::new();
+    let source = gridded_fixture();
+    let mut fast = Captured::with_capacities(&capacity());
+    let mut reference = Captured::with_capacities(&capacity());
+    for hour in 0..2 {
+        // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+        unsafe {
+            fast.capture_original(&source, 0, 0x1000, hour, hour == 0, &changes);
+            reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        }
+    }
+    let witness_before = fast.witness;
+    drop(changes.templates.notify(TEMP, site("rebuild_template_caches")));
+    let recording = Recording::new(&source);
+    // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+    unsafe {
+        fast.capture_original(&recording, 0, 0x1000, 2, false, &changes);
+        reference.capture_original(&source, 0, 0x1000, 2, true, &changes);
+    }
+    assert!(fast.fast_clean.is_some());
+    assert_eq!(recording.template(A), 0);
+    assert_eq!(fast.occurrences(), [1, 0]);
+    assert_eq!(fast.witness, witness_before);
     assert_eq!(fast.tables(), reference.tables());
     assert_eq!(fast.country_state(), reference.country_state());
 }

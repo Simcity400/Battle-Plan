@@ -129,6 +129,10 @@ impl Runtime {
         self.held.is_empty() && self.pending.is_empty()
     }
 
+    pub(super) fn pending_is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
     pub(super) fn cold_counts(&self) -> (usize, usize) {
         (self.held.len(), self.pending.len())
     }

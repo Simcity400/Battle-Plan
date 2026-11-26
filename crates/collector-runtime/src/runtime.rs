@@ -4991,6 +4991,7 @@ struct SizingBackoff {
 impl SizingBackoff {
     const FAST: Duration = Duration::from_secs(1);
     const MAX: Duration = Duration::from_secs(5);
+    const SETTLED_START: Duration = Duration::from_secs(30);
     const SETTLED: Duration = Duration::from_secs(60);
 
     fn new() -> Self {
@@ -5018,8 +5019,12 @@ impl SizingBackoff {
         self.last = Some(now);
         self.interval = if demand {
             Self::FAST
+        } else if settled {
+            (self.interval * 2)
+                .max(Self::SETTLED_START)
+                .min(Self::SETTLED)
         } else {
-            (self.interval * 2).min(if settled { Self::SETTLED } else { Self::MAX })
+            (self.interval * 2).min(Self::MAX)
         };
     }
 }
@@ -5077,7 +5082,7 @@ struct SizingShared {
     capacities: engine_allocation::SharedBox<collector_capture::frame_capacities::Capacities>,
     capacities_version: AtomicU64,
     idle_growth_requested: AtomicBool,
-    home_accounted: Mutex<[usize; 3]>,
+    home_accounted: Mutex<[usize; 4]>,
     pass_requested: AtomicBool,
     hint_demand: AtomicBool,
     settled_world: AtomicU64,
@@ -5107,6 +5112,7 @@ impl SizingShared {
             home_accounted: Mutex::new([
                 // SAFETY: Sizing and the test use only the home associated with these session frames.
                 unsafe { shared.country_intel() }.allocated_bytes(),
+                0,
                 0,
                 0,
             ]),
@@ -5187,6 +5193,10 @@ impl SizingShared {
             collector_naval_details::naval_combat_sources::home_allocated_bytes(
                 // SAFETY: The sizing pass uses its session's live shared storage.
                 unsafe { shared.naval_combat_home() },
+            ),
+            collector_projects::projects::runtime_home_allocated_bytes(
+                // SAFETY: The sizing pass uses its session's live shared storage.
+                unsafe { shared.project_runtime_home() },
             ),
         ];
         for (slot, bytes) in accounted.iter_mut().zip(current) {
@@ -5654,8 +5664,12 @@ fn sizing_pass(
     let registry = &mut state.registry;
     let loading = collector_lifetime::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
+    let settled = collector_lifetime::world_lifetime::token()
+        == Some(sizing.settled_world.load(Ordering::Acquire));
     let periodic_interval = if hint_demand {
         Duration::from_secs(2)
+    } else if settled {
+        Duration::from_secs(30)
     } else {
         Duration::from_secs(8)
     };
@@ -7955,6 +7969,10 @@ mod tests {
                 + collector_naval_details::naval_combat_sources::home_allocated_bytes(
                     // SAFETY: The sizing pass uses its session's live shared storage.
                     unsafe { shared.naval_combat_home() },
+                )
+                + collector_projects::projects::runtime_home_allocated_bytes(
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.project_runtime_home() },
                 )
         };
         let returning =

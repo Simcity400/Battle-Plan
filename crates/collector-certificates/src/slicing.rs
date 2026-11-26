@@ -535,6 +535,8 @@ impl SliceSelection {
             1 << self.hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD)
         };
         fingerprints.held.epoch = None;
+        fingerprints.secondary.epoch = None;
+        fingerprints.secondary.values.clear();
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -562,6 +564,7 @@ pub struct SliceFingerprints {
     values: HashMap<u32, Fingerprint>,
     stale_slices: u32,
     pub held: Held,
+    secondary: SecondaryHeld,
     marks: Option<u64>,
     pub drift: crate::drift::Store,
     pub witnesses: Witnesses,
@@ -583,6 +586,7 @@ impl SliceFingerprints {
             values: HashMap::new(),
             stale_slices: 0,
             held: Held::default(),
+            secondary: SecondaryHeld::default(),
             marks: None,
             drift: Default::default(),
             witnesses: Witnesses::default(),
@@ -593,6 +597,9 @@ impl SliceFingerprints {
         self.values.clear();
         self.stale_slices = 0;
         self.held = Held::default();
+        self.secondary.epoch = None;
+        self.secondary.context = None;
+        self.secondary.values.clear();
         self.marks = None;
         self.drift.clear();
         self.witnesses.forget();
@@ -600,6 +607,9 @@ impl SliceFingerprints {
 
     fn keep_only(&mut self, seen: &[u32]) {
         self.values
+            .retain(|owner, _| seen.binary_search(owner).is_ok());
+        self.secondary
+            .values
             .retain(|owner, _| seen.binary_search(owner).is_ok());
         self.drift.retain(seen);
     }
@@ -652,12 +662,76 @@ impl SliceFingerprints {
     pub fn finish_scan(&mut self) {
         self.stale_slices = 0;
     }
+
+    pub fn certify_secondary(
+        &mut self,
+        changed: &mut Changed,
+        take: impl FnOnce(&mut dyn FnMut(usize)) -> Option<u64>,
+        context: u64,
+    ) {
+        changed.reset();
+        let marked = &mut changed.marked;
+        let mut overflow = false;
+        let epoch = take(&mut |id| match u32::try_from(id) {
+            Ok(id) => {
+                if engine_allocation::reserve_push_batch(marked, 1).is_ok() {
+                    marked.push(id);
+                } else {
+                    overflow = true;
+                }
+            }
+            Err(_) => overflow = true,
+        });
+        marked.sort_unstable();
+        marked.dedup();
+        changed.certified = !overflow
+            && epoch.is_some()
+            && epoch == self.secondary.epoch
+            && self.secondary.context == Some(context);
+        if !changed.certified {
+            self.secondary.values.clear();
+        } else {
+            for &owner in &changed.marked {
+                self.secondary.values.remove(&owner);
+            }
+        }
+        self.secondary.epoch = if overflow { None } else { epoch };
+        self.secondary.context = Some(context);
+    }
+
+    pub fn secondary_held(&self, owner: u32) -> Option<u64> {
+        self.secondary.values.get(&owner).copied()
+    }
+
+    pub fn hold_secondary(&mut self, owner: u32, value: u64) {
+        if let Some(slot) = self.secondary.values.get_mut(&owner) {
+            *slot = value;
+        } else if engine_allocation::reserve_map(&mut self.secondary.values, 1).is_ok() {
+            self.secondary.values.insert(owner, value);
+        }
+    }
+
+    pub fn forget_secondary(&mut self, owner: u32) {
+        self.secondary.values.remove(&owner);
+    }
+
+    pub fn forget_all_secondary(&mut self) {
+        self.secondary.epoch = None;
+        self.secondary.values.clear();
+    }
 }
 
 #[derive(Default)]
 pub struct Held {
     epoch: Option<u64>,
     context: Option<u64>,
+}
+
+#[derive(Default)]
+struct SecondaryHeld {
+    epoch: Option<u64>,
+    context: Option<u64>,
+    values: HashMap<u32, u64>,
 }
 
 mod digest;

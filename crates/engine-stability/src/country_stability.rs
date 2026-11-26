@@ -488,6 +488,13 @@ pub struct CountryWalk {
     pub required_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountryWalkCarry {
+    pub walk: CountryWalk,
+    pub carried_lines: bool,
+    pub line_fingerprint: u64,
+}
+
 pub struct WalkTiming {
     ticks: [u64; 4],
     previous: i64,
@@ -548,7 +555,9 @@ pub fn walk_country<M: Memory>(
         line_start,
         byte_start,
         None,
+        None,
     )
+    .map(|carry| carry.walk)
 }
 
 #[expect(
@@ -584,7 +593,9 @@ pub fn walk_country_memo<M: Memory>(
         line_start,
         byte_start,
         None,
+        None,
     )
+    .map(|carry| carry.walk)
 }
 
 #[expect(
@@ -619,10 +630,81 @@ pub fn walk_country_memo_timed<M: Memory>(
         Buffer::Growing(bytes),
         line_start,
         byte_start,
+        None,
+        Some(timing),
+    )
+    .map(|carry| carry.walk)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, country and context locate the walk, and the memo, scratch, input row, arenas with their starts, expected fingerprint and timing are caller-owned"
+)]
+pub fn walk_country_memo_timed_or_carry<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: engine_native_memory::country_identity::Country,
+    context: &Context,
+    memo: &mut Memo,
+    scratch: &mut Scratch,
+    input: &mut InputRow,
+    lines: &mut Vec<LineRow>,
+    bytes: &mut Vec<u8>,
+    line_start: usize,
+    byte_start: usize,
+    expected_line_fingerprint: Option<u64>,
+    timing: &mut WalkTiming,
+) -> Result<CountryWalkCarry, &'static str> {
+    walk_country_buffers(
+        memo,
+        memory,
+        base,
+        countries,
+        country,
+        context,
+        scratch,
+        input,
+        Buffer::Growing(lines),
+        Buffer::Growing(bytes),
+        line_start,
+        byte_start,
+        expected_line_fingerprint,
         Some(timing),
     )
 }
 
+fn line_fingerprint(
+    country: usize,
+    children: Array,
+    totals: &[Option<i64>; TOTALS],
+    witnesses: StaticWitnesses,
+) -> u64 {
+    let mut digest = Signature::new();
+    digest.add(1, country as i64);
+    digest.add(2, children.data as i64);
+    digest.add(3, i64::from(children.count));
+    for (index, total) in totals.iter().enumerate() {
+        match total {
+            Some(value) => digest.add(10 + index as u32, *value),
+            None => digest.add(20 + index as u32, 0),
+        }
+    }
+    let witness = |value: Option<bool>| match value {
+        None => -1,
+        Some(false) => 0,
+        Some(true) => 1,
+    };
+    digest.add(30, witness(witnesses.attache_sent));
+    digest.add(31, witness(witnesses.at_war_mode0));
+    digest.add(32, witness(witnesses.pride_sunk));
+    digest.digest
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal country walk takes caller buffers, expected carry fingerprint and optional timing"
+)]
 fn walk_country_buffers<M: Memory>(
     memo: &mut Memo,
     memory: &M,
@@ -636,15 +718,33 @@ fn walk_country_buffers<M: Memory>(
     bytes: Buffer<'_, u8>,
     line_start: usize,
     byte_start: usize,
+    expected_line_fingerprint: Option<u64>,
     mut timing: Option<&mut WalkTiming>,
-) -> Result<CountryWalk, &'static str> {
+) -> Result<CountryWalkCarry, &'static str> {
     scratch.batch_fallbacks = 0;
     let acquired_input = inputs(memory, base, countries, country, context);
     if let Some(timing) = timing.as_deref_mut() {
         timing.boundary(0);
     }
-    let (acquired, witnesses) = acquired_input?;
+    let (acquired, witnesses, children_array) = acquired_input?;
     *input = acquired;
+    let fingerprint = line_fingerprint(
+        country.pointer,
+        children_array,
+        &acquired.totals,
+        witnesses,
+    );
+    if expected_line_fingerprint == Some(fingerprint) {
+        return Ok(CountryWalkCarry {
+            walk: CountryWalk {
+                lines: Outcome::Rows { len: 0 },
+                bytes_len: 0,
+                required_bytes: 0,
+            },
+            carried_lines: true,
+            line_fingerprint: fingerprint,
+        });
+    }
     let mut observations = std::mem::take(&mut scratch.observations);
     let memory = Observed::new(memory, &mut observations, memo);
     let result = (|| {
@@ -678,7 +778,11 @@ fn walk_country_buffers<M: Memory>(
     })();
     scratch.batch_fallbacks = memory.fallbacks();
     scratch.observations = observations;
-    result
+    result.map(|walk| CountryWalkCarry {
+        walk,
+        carried_lines: false,
+        line_fingerprint: fingerprint,
+    })
 }
 
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
@@ -747,7 +851,7 @@ fn inputs<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     country: engine_native_memory::country_identity::Country,
     context: &Context,
-) -> Result<(InputRow, StaticWitnesses), &'static str> {
+) -> Result<(InputRow, StaticWitnesses, Array), &'static str> {
     phase!(Fields);
     let c = country.pointer;
     let mut bases = [0_u8; 16];
@@ -825,6 +929,7 @@ fn inputs<M: Memory>(
             at_war_mode0: wars.at_war_mode0,
             pride_sunk,
         },
+        children,
     ))
 }
 
