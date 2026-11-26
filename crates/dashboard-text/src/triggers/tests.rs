@@ -1,6 +1,6 @@
 
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 use content_reader_key_names::{buildings::Buildings, tag_aliases::TagAliases};
 use content_reader_script::{key_names::KeyNames, trigger_keys::TriggerNames};
 use replay_data::{
@@ -276,7 +276,7 @@ fn items(text: &str) -> Vec<content_reader_parser::parser::Item> {
 
 #[test]
 fn faction_leader_scope_and_boolean_trigger_share_the_first_member() {
-    game::enter();
+    script_game::enter();
     let mut frame = frame(
         &[
             (100, 1, "AAA", 1, "", ""),
@@ -327,7 +327,7 @@ fn faction_leader_scope_and_boolean_trigger_share_the_first_member() {
 
 #[test]
 fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::PoliticsRow;
     let mut frame = frame(
         &[(100, 1, "GER", 1, "", ""), (200, 2, "SOV", 1, "", "")],
@@ -364,7 +364,7 @@ fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() 
 
 #[test]
 fn a_country_trigger_reading_no_map_is_answered_without_the_map() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::PoliticsRow;
     let mut frame = frame(&[(100, 1, "GER", 1, "", "")], &[]);
     *frame.tables[TableId::Politics.index()] =
@@ -391,7 +391,7 @@ fn a_country_trigger_reading_no_map_is_answered_without_the_map() {
 
 #[test]
 fn ruling_leader_traits_use_role_key_and_definition_identity() {
-    game::enter();
+    script_game::enter();
     use replay_data::{
         rows::CharacterRoleTraitRow, rows::CountryLeaderRoleRow, rows::PartyLeaderRow,
         rows::PoliticalPartyRow,
@@ -483,7 +483,7 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
 
 #[test]
 fn default_event_scope_and_country_targets_follow_scope_masks() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&[(100, 1, "AAA", 1, "AAA", "costume")], &[]);
     let roles = LeaderRoles::new(Vec::new());
     with_world(&frame, "", Ok(&roles), |world| {
@@ -524,7 +524,7 @@ fn default_event_scope_and_country_targets_follow_scope_masks() {
 
 #[test]
 fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
-    game::enter();
+    script_game::enter();
     let mut frame = frame(&[(100, 1, "AAA", 1, "AAA", "costume")], &[]);
     *frame.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
         reason: "test missing appearance".into(),
@@ -562,7 +562,7 @@ fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
 
 #[test]
 fn only_loaded_children_count() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
         assert_eq!(world.has_children(&items("")), Ok(false));
@@ -601,7 +601,7 @@ fn only_loaded_children_count() {
 
 #[test]
 fn a_check_all_alias_needs_the_whole_roster() {
-    game::enter();
+    script_game::enter();
     let mut frame = frame(&countries(), &[]);
     let aliases = "SEL = { always = yes }";
     assert_eq!(
@@ -623,7 +623,7 @@ fn a_check_all_alias_needs_the_whole_roster() {
 
 #[test]
 fn a_set_target_carries_nothing_it_was_entered_from() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&original_countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
         let leader = Scopes::of(Scope::Leader((7 << 32) | 1));
@@ -644,7 +644,7 @@ fn a_set_target_carries_nothing_it_was_entered_from() {
 
 #[test]
 fn a_character_target_reads_only_this_country() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&countries(), &[]);
     let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/GER.txt".into(),
@@ -668,7 +668,7 @@ fn a_character_target_reads_only_this_country() {
 
 #[test]
 fn a_fallback_cycle_is_refused_by_name() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&original_countries(), &[]);
     for aliases in [
         "ALI = { original_tag = GER always = no fallback = ALI }",
@@ -683,7 +683,7 @@ fn a_fallback_cycle_is_refused_by_name() {
 
 #[test]
 fn an_endless_alias_cycle_refuses_every_enclosing_evaluation() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&original_countries(), &[]);
     for (aliases, trigger) in [
         ("ALI = { variable = ALI.id }", "tag = ALI"),
@@ -705,7 +705,7 @@ fn an_endless_alias_cycle_refuses_every_enclosing_evaluation() {
 
 #[test]
 fn later_candidates_are_read_only_when_reached() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&original_countries(), &[]);
     let aliases = "ALI = { original_tag = GER country = SB1 } SB1 = { variable = global.foo }";
     assert_eq!(check(&frame, aliases, 1, "tag = ALI"), Eval::True);
@@ -731,7 +731,7 @@ fn later_candidates_are_read_only_when_reached() {
 
 #[test]
 fn a_candidate_scope_is_fresh() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&original_countries(), &[]);
     with_world(
         &frame,
@@ -755,7 +755,7 @@ fn a_candidate_scope_is_fresh() {
 
 #[test]
 fn conditionals_load_limits_and_alternative_chains() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
         let scopes = Scopes::of(Scope::Country(0));
@@ -810,7 +810,7 @@ fn colour_refusals(eval: &Evaluator, scopes: Scopes, body: &str, inputs: &[&str]
 
 #[test]
 fn colour_callbacks_refuse_unknown_conditions_even_without_temp_writes() {
-    game::enter();
+    script_game::enter();
     let f = variables_frame();
     with_world(&f, "", Err("none"), |world| {
         let eval = Evaluator::new(world, None);
@@ -833,7 +833,7 @@ fn colour_callbacks_refuse_unknown_conditions_even_without_temp_writes() {
 
 #[test]
 fn colour_callbacks_refuse_uncertain_scratch_even_after_known_overwrites() {
-    game::enter();
+    script_game::enter();
     let f = variables_frame();
     with_world(&f, "", Err("none"), |world| {
         let eval = Evaluator::new(world, None);
@@ -868,7 +868,7 @@ fn colour_callbacks_refuse_uncertain_scratch_even_after_known_overwrites() {
 
 #[test]
 fn colour_callbacks_name_each_missing_input_once_independently_of_destinations() {
-    game::enter();
+    script_game::enter();
     let f = variables_frame();
     with_world(&f, "", Err("none"), |world| {
         let eval = Evaluator::new(world, None);
@@ -905,7 +905,7 @@ fn colour_callbacks_name_each_missing_input_once_independently_of_destinations()
 
 #[test]
 fn colour_callbacks_keep_a_later_failure_after_an_alias_observed_another_input() {
-    game::enter();
+    script_game::enter();
     let f = positive_variables_frame();
     let aliases =
         "ALI = { original_tag = GER OR = { is_in_tech_sharing_group = mod_group always = yes } }";
@@ -921,7 +921,7 @@ fn colour_callbacks_keep_a_later_failure_after_an_alias_observed_another_input()
 
 #[test]
 fn colour_callbacks_preserve_input_identity_through_an_unresolved_alias() {
-    game::enter();
+    script_game::enter();
     let f = positive_variables_frame();
     with_world(
         &f,
@@ -940,7 +940,7 @@ fn colour_callbacks_preserve_input_identity_through_an_unresolved_alias() {
 
 #[test]
 fn calculated_stability_and_its_modifier_callback_share_the_missing_field_identity() {
-    game::enter();
+    script_game::enter();
     let mut f = variables_frame();
     let row = replay_data::rows::CountryStabilityInputRow {
         country: 101,
@@ -972,7 +972,7 @@ fn calculated_stability_and_its_modifier_callback_share_the_missing_field_identi
 
 #[test]
 fn original_tag_alias_and_direct_scope_read_share_the_failed_appearance_input() {
-    game::enter();
+    script_game::enter();
     let mut f = positive_variables_frame();
     *f.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
         reason: "synthetic appearance acquisition failed".into(),
@@ -994,7 +994,7 @@ fn original_tag_alias_and_direct_scope_read_share_the_failed_appearance_input() 
 
 #[test]
 fn cached_core_gaps_and_direct_table_reads_keep_one_source_identity() {
-    game::enter();
+    script_game::enter();
     let mut f = positive_variables_frame();
     *f.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
         reason: "synthetic missing links".into(),
@@ -1017,7 +1017,7 @@ fn cached_core_gaps_and_direct_table_reads_keep_one_source_identity() {
 
 #[test]
 fn colour_callbacks_tag_alias_context_preserves_the_one_source_failure() {
-    game::enter();
+    script_game::enter();
     let f = positive_variables_frame();
     with_world(
         &f,
@@ -1036,7 +1036,7 @@ fn colour_callbacks_tag_alias_context_preserves_the_one_source_failure() {
 
 #[test]
 fn colour_callbacks_sharing_lookup_keeps_lexical_failure_global_across_scopes() {
-    game::enter();
+    script_game::enter();
     let mut f = positive_variables_frame();
     *f.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "synthetic missing dictionary".into(),
@@ -1061,7 +1061,7 @@ fn colour_callbacks_sharing_lookup_keeps_lexical_failure_global_across_scopes() 
 
 #[test]
 fn colour_callbacks_global_table_failures_have_no_country_scope_even_when_cached() {
-    game::enter();
+    script_game::enter();
     let mut f = positive_variables_frame();
     *f.tables[TableId::SimulationFeatures.index()] = TableView::Unavailable {
         reason: "synthetic missing global inputs".into(),
@@ -1081,7 +1081,7 @@ fn colour_callbacks_global_table_failures_have_no_country_scope_even_when_cached
 
 #[test]
 fn colour_callbacks_identify_roster_failures_across_iterators_and_builtin_arrays() {
-    game::enter();
+    script_game::enter();
     let mut f = positive_variables_frame();
     if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *f.tables[TableId::CountryCounterInputs.index()]
@@ -1136,7 +1136,7 @@ fn colour_callbacks_identify_roster_failures_across_iterators_and_builtin_arrays
 
 #[test]
 fn unavailable_roster_order_keeps_its_field_identity_through_the_iterator_fallback() {
-    game::enter();
+    script_game::enter();
     let mut f = positive_variables_frame();
     if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *f.tables[TableId::CountryCounterInputs.index()]
@@ -1156,7 +1156,7 @@ fn unavailable_roster_order_keeps_its_field_identity_through_the_iterator_fallba
 
 #[test]
 fn colour_callbacks_refuse_optional_destination_insertion_without_a_store() {
-    game::enter();
+    script_game::enter();
     let f = variables_frame();
     with_world(&f, "", Err("none"), |world| {
         let eval = Evaluator::new(world, None);
@@ -1181,7 +1181,7 @@ fn colour_callbacks_refuse_optional_destination_insertion_without_a_store() {
 
 #[test]
 fn colour_callbacks_refuse_uncertain_iterator_stop_and_scope_rosters() {
-    game::enter();
+    script_game::enter();
     let roles = LeaderRoles::new(Vec::new());
     let mut f = variables_frame();
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
@@ -1240,7 +1240,7 @@ fn colour_callbacks_refuse_uncertain_iterator_stop_and_scope_rosters() {
 
 #[test]
 fn a_character_scope_is_named_by_the_templates() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&countries(), &[]);
     let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/GER.txt".into(),
@@ -1265,7 +1265,7 @@ fn a_character_scope_is_named_by_the_templates() {
 
 #[test]
 fn a_link_through_a_link_is_its_scope_s_own() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&original_countries(), &[]);
     with_world(&frame, "", Err("none"), |world| {
         let scopes = Scopes {
@@ -1302,7 +1302,7 @@ fn a_link_through_a_link_is_its_scope_s_own() {
 
 #[test]
 fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
-    game::enter();
+    script_game::enter();
     struct Side;
     impl Combat for Side {
         fn country(&self) -> Result<u32, crate::triggers::Failure> {
@@ -1366,7 +1366,7 @@ fn original_countries() -> Vec<(u32, u32, &'static str, i32, &'static str, &'sta
 
 #[test]
 fn original_predicate_selects_both_countries_and_compares_raw_aliases() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(
         &[(100, 1, "GER", 1, "SOV", ""), (200, 2, "SOV", 1, "", "")],
         &[],
@@ -1413,7 +1413,7 @@ fn original_predicate_selects_both_countries_and_compares_raw_aliases() {
 
 #[test]
 fn original_predicate_uses_static_substitution_and_alias_dispatch() {
-    game::enter();
+    script_game::enter();
     let f = frame(
         &[
             (100, 1, "GER", 0, "SOV", ""),
@@ -1431,7 +1431,7 @@ fn original_predicate_uses_static_substitution_and_alias_dispatch() {
 
 #[test]
 fn original_predicate_resolves_a_known_null_operand_through_reserved_original() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&original_countries(), &[]);
     if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
         &mut *f.tables[TableId::ReservedCountryNaming.index()]
@@ -1458,7 +1458,7 @@ fn original_predicate_resolves_a_known_null_operand_through_reserved_original() 
 
 #[test]
 fn reserved_world_owned_count_preserves_signed_values_and_independent_refusals() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&original_countries(), &[]);
     for count in [
         Recorded::Value(Some(4)),
@@ -1494,7 +1494,7 @@ fn reserved_world_owned_count_preserves_signed_values_and_independent_refusals()
 
 #[test]
 fn original_iterators_keep_bucket_order_duplicates_and_skip_resolved_zero() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(
         &[(100, 1, "GER", 1, "GER", ""), (200, 2, "SOV", 1, "", "")],
         &[],
@@ -1542,7 +1542,7 @@ fn original_iterators_keep_bucket_order_duplicates_and_skip_resolved_zero() {
 
 #[test]
 fn original_aliases_and_null_iterators_read_later_membership_only_when_reached() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&original_countries(), &[]);
     *f.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
         reason: "later membership not sampled".into(),
@@ -1607,7 +1607,7 @@ fn original_aliases_and_null_iterators_read_later_membership_only_when_reached()
 
 #[test]
 fn an_alias_is_the_first_candidate_whose_triggers_pass() {
-    game::enter();
+    script_game::enter();
     let aliases = "ALI = { original_tag = GER has_country_flag = x } \
                    PRV = { original_tag = GER PREV = { tag = SOV } }";
     let flagged = frame(&original_countries(), &[101]);
@@ -1630,7 +1630,7 @@ fn an_alias_is_the_first_candidate_whose_triggers_pass() {
 
 #[test]
 fn aliases_use_exact_bucket_and_physical_array_order_with_first_tie() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&original_countries(), &[101, 102]);
     let original = "ALI = { original_tag = GER has_country_flag = x }";
     assert_eq!(check(&f, original, 2, "tag = ALI"), Eval::True);
@@ -1677,7 +1677,7 @@ fn aliases_use_exact_bucket_and_physical_array_order_with_first_tie() {
 
 #[test]
 fn scores_fallbacks_and_every_country() {
-    game::enter();
+    script_game::enter();
     let aliases = "SOU = { original_tag = SOV country_score = { base = 1 \
                      modifier = { add = 2 has_cosmetic_tag = SOV_left_opposition exists = yes } } } \
                    VIC = { original_tag = FRA has_focus_tree = vichy_french_focus } \
@@ -1694,7 +1694,7 @@ fn scores_fallbacks_and_every_country() {
 
 #[test]
 fn an_event_target_alias_is_refused_by_name() {
-    game::enter();
+    script_game::enter();
     let aliases = "SB1 = { global_event_target = appeased }";
     let mut frame = frame(&countries(), &[]);
     *frame.tables[TableId::GlobalSavedEventTargets.index()] = TableView::Unavailable {
@@ -1787,7 +1787,7 @@ fn variables_for(frame: DecodedFrame) -> DecodedFrame {
 
 #[test]
 fn variables_read_the_recorded_stores_as_the_game_reads_them() {
-    game::enter();
+    script_game::enter();
     let frame = variables_frame();
     let decided = |slot, trigger: &str| check(&frame, "", slot, trigger).decided();
     for trigger in [
@@ -1838,7 +1838,7 @@ fn variables_read_the_recorded_stores_as_the_game_reads_them() {
 
 #[test]
 fn stored_scopes_decode_where_a_scope_is_read() {
-    game::enter();
+    script_game::enter();
     let frame = positive_variables_frame();
     let aliases = "SB1 = { variable = global.owner }";
     for trigger in [
@@ -1873,7 +1873,7 @@ fn stored_scopes_decode_where_a_scope_is_read() {
 
 #[test]
 fn recorded_builtin_opinion_uses_the_callback_scope_and_directed_sparse_relations() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::RelationOpinionRow;
 
     let tags: Vec<_> = (0..5000)
@@ -1961,7 +1961,7 @@ fn recorded_builtin_opinion_uses_the_callback_scope_and_directed_sparse_relation
 
 #[test]
 fn recorded_builtin_faction_leader_encodes_first_member_and_requires_membership() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(
         &[
             (100, 1, "AAA", 1, "", ""),
@@ -2010,7 +2010,7 @@ fn recorded_builtin_faction_leader_encodes_first_member_and_requires_membership(
 
 #[test]
 fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete_inputs() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::ProvinceRow, rows::StateRow};
 
     let mut f = with_variables(
@@ -2093,7 +2093,7 @@ fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete
 
 #[test]
 fn runtime_only_operands_are_refused_by_name() {
-    game::enter();
+    script_game::enter();
     let mut frame = variables_frame();
     *frame.tables[TableId::GlobalSavedEventTargets.index()] = TableView::Unavailable {
         reason: "not sampled".into(),
@@ -2132,7 +2132,7 @@ fn runtime_only_operands_are_refused_by_name() {
 
 #[test]
 fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
-    game::enter();
+    script_game::enter();
     let frame = variables_frame();
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -2166,7 +2166,7 @@ fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
 
 #[test]
 fn an_injected_temp_after_an_unported_writer_is_refused() {
-    game::enter();
+    script_game::enter();
     let frame = variables_frame();
     let scopes = Scopes {
         target_state: Some(64),
@@ -2196,7 +2196,7 @@ fn set_saved(f: &mut DecodedFrame, rows: Vec<replay_data::rows::GlobalSavedEvent
 
 #[test]
 fn saved_entries_keep_empty_scope_masks_and_caller_clearing() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::GlobalSavedEventTargetRow as Row;
     let mut f = frame(&original_countries(), &[]);
     set_saved(
@@ -2281,7 +2281,7 @@ fn saved_entries_keep_empty_scope_masks_and_caller_clearing() {
 
 #[test]
 fn an_unsaved_first_name_still_resolves_but_does_not_make_a_dead_target_valid() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::GlobalSavedEventTargetRow as Row;
     let mut f = frame(&countries(), &[]);
     for (country, expected) in [(100, Eval::True), (0, Eval::False)] {
@@ -2306,7 +2306,7 @@ fn an_unsaved_first_name_still_resolves_but_does_not_make_a_dead_target_valid() 
 
 #[test]
 fn saved_globals_decide_scope_operands_aliases_and_cleared_names() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = with_variables(
         frame(&original_countries(), &[]),
@@ -2373,7 +2373,7 @@ fn saved_globals_decide_scope_operands_aliases_and_cleared_names() {
 }
 #[test]
 fn saved_target_aliases_append_id_before_parsing_dotted_values() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     set_saved(
@@ -2401,7 +2401,7 @@ fn saved_target_aliases_append_id_before_parsing_dotted_values() {
 
 #[test]
 fn first_duplicate_invalid_record_stops_global_lookup_and_state_wins_context() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     let first = GlobalSavedEventTargetRow {
@@ -2440,7 +2440,7 @@ fn first_duplicate_invalid_record_stops_global_lookup_and_state_wins_context() {
 
 #[test]
 fn global_event_target_prefix_is_a_variable_operand_and_invalid_as_a_context_key() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
     set_saved(
@@ -2466,7 +2466,7 @@ fn global_event_target_prefix_is_a_variable_operand_and_invalid_as_a_context_key
 
 #[test]
 fn saved_characters_select_leaders_for_contexts_and_characters_for_variables() {
-    game::enter();
+    script_game::enter();
     use super::saved_event_targets::{Reader, Selected as SavedSelection};
     use replay_data::rows::GlobalSavedEventTargetRow;
     let mut f = frame(&countries(), &[]);
@@ -2495,7 +2495,7 @@ fn saved_characters_select_leaders_for_contexts_and_characters_for_variables() {
 
 #[test]
 fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::CharacterRow, rows::CountryLeaderRoleRow, rows::Recorded};
     let mut frame = frame(&[(100, 1, "AAA", 1, "AAA", "")], &[]);
     *frame.tables[TableId::Characters.index()] =
@@ -2569,7 +2569,7 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
 
 #[test]
 fn in_array_uses_exact_fixed5_and_truncated_wrapping_length() {
-    game::enter();
+    script_game::enter();
     for (length, wanted, expected) in [
         (190_000, "5", false),
         (200_000, "5", true),
@@ -2601,7 +2601,7 @@ fn in_array_uses_exact_fixed5_and_truncated_wrapping_length() {
 
 #[test]
 fn in_array_preserves_unused_index_fields_and_reads_tooltip_shorthand() {
-    game::enter();
+    script_game::enter();
     let f = with_variables(
         frame(&countries(), &[]),
         &[(
@@ -2648,7 +2648,7 @@ fn in_array_preserves_unused_index_fields_and_reads_tooltip_shorthand() {
 
 #[test]
 fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::CompletedFocusRow;
     let mut healthy = frame(&countries(), &[100]);
     *healthy.tables[TableId::CompletedFocuses.index()] =
@@ -2719,7 +2719,7 @@ fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
 
 #[test]
 fn a_state_trigger_reading_no_provinces_is_answered_without_them() {
-    game::enter();
+    script_game::enter();
     use replay_data::rows::StateRow;
     let mut f = frame(&countries(), &[]);
     let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
@@ -2784,7 +2784,7 @@ fn a_state_trigger_reading_no_provinces_is_answered_without_them() {
 
 #[test]
 fn continent_reads_the_retained_token_and_names_missing_operands() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::Recorded, rows::StateRow};
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
@@ -2889,7 +2889,7 @@ fn continent_reads_the_retained_token_and_names_missing_operands() {
 
 #[test]
 fn country_leader_ideology_reads_the_recorded_first_leader_without_a_character() {
-    game::enter();
+    script_game::enter();
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/ideologies/synthetic.txt",
         "ideologies={mod_group={types={First_Subtype={} visible_subtype={}}}}",
@@ -2948,7 +2948,7 @@ fn country_leader_ideology_reads_the_recorded_first_leader_without_a_character()
 
 #[test]
 fn in_array_stops_before_a_second_alias_index_and_evaluates_length_once() {
-    game::enter();
+    script_game::enter();
     let f = with_variables(
         frame(&original_countries(), &[]),
         &[(
@@ -2977,7 +2977,7 @@ fn in_array_stops_before_a_second_alias_index_and_evaluates_length_once() {
 
 #[test]
 fn country_government_and_numeric_original_keep_local_table_admission() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/ideologies/synthetic.txt",
@@ -3166,7 +3166,7 @@ fn country_government_and_numeric_original_keep_local_table_admission() {
 
 #[test]
 fn missing_state_content_refuses_only_state_predicates_that_read_it() {
-    game::enter();
+    script_game::enter();
     let f = with_variables(frame(&original_countries(), &[]), &[]);
     let dlcs = BTreeSet::new();
     let names = TriggerNames::default();
@@ -3194,7 +3194,7 @@ fn missing_state_content_refuses_only_state_predicates_that_read_it() {
 
 #[test]
 fn government_id_and_scope_resolution_cover_every_country() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/ideologies/synthetic.txt",
@@ -3287,7 +3287,7 @@ fn government_id_and_scope_resolution_cover_every_country() {
 
 #[test]
 fn roster_visibility_keeps_country_and_selected_character_without_changing_other_callers() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let mut frame = frame(&countries(), &[101]);
     let row = UnitLeaderRow {
@@ -3357,7 +3357,7 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
 
 #[test]
 fn leader_visibility_steps_decide_as_the_roster_check() {
-    game::enter();
+    script_game::enter();
     use content_reader_key_names::characters::LeaderTemplate;
     use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
     let path = "common/characters/mod.txt";
@@ -3481,7 +3481,7 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
 
 #[test]
 fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
-    game::enter();
+    script_game::enter();
     use crate::triggers::inputs::{Key, capture};
     use replay_data::rows::StateCoreRow;
     let with_claims = |claims: Vec<u32>| {
@@ -3517,7 +3517,7 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
 
 #[test]
 fn invasion_preparation_on_a_warmed_world_records_its_table() {
-    game::enter();
+    script_game::enter();
     use crate::triggers::inputs::capture;
     use replay_data::rows::InvasionPreparationRow;
     let with_progress = |progress| {
@@ -3546,7 +3546,7 @@ fn invasion_preparation_on_a_warmed_world_records_its_table() {
 
 #[test]
 fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
-    game::enter();
+    script_game::enter();
     use replay_data::{rows::Recorded, rows::StateCoreRow};
     let mut f = with_variables(frame(&original_countries(), &[]), &[]);
     let TableView::Complete(TableRows::CountryLinks(links)) =
@@ -3592,7 +3592,7 @@ mod refusal_consumption;
 
 #[test]
 fn new_assignment_triggers_refuse_unrecorded_predicates_in_their_accepted_scopes() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&[(100, 1, "AAA", 1, "", "")], &[]);
     with_world(&frame, "", Err("none"), |world| {
         for (name, operand, scope) in [
@@ -3618,7 +3618,7 @@ fn new_assignment_triggers_refuse_unrecorded_predicates_in_their_accepted_scopes
 
 #[test]
 fn volunteer_presence_trigger_refuses_its_unrecorded_predicate_in_country_scope() {
-    game::enter();
+    script_game::enter();
     let frame = frame(&[(100, 1, "AAA", 1, "", "")], &[]);
     with_world(&frame, "", Err("none"), |world| {
         for operand in ["AAA", "THIS"] {

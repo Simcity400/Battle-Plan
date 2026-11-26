@@ -1,5 +1,5 @@
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 
 const NOW: i32 = game_model::calendar::HOUR_EPOCH + 1003 * 24 + 1;
 const SET: i32 = game_model::calendar::HOUR_EPOCH + 1000 * 24 + 5;
@@ -44,7 +44,7 @@ fn flagged() -> DecodedFrame {
 
 #[test]
 fn country_flags_compare_value_date_and_days() {
-    game::enter();
+    script_game::enter();
     let f = flagged();
     for (slot, trigger, expected) in [
         (1, "has_country_flag = x", Some(true)),
@@ -95,7 +95,7 @@ fn country_flags_compare_value_date_and_days() {
 
 #[test]
 fn state_global_and_character_flags_share_the_test() {
-    game::enter();
+    script_game::enter();
     let f = flagged();
     with_world(&f, "", Err("none"), |world| {
         let cases = |trigger: &str, positive: Scope, zero: Option<Scope>| {

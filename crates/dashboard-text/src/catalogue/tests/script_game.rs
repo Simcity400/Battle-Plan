@@ -1,14 +1,18 @@
-use content_reader_script::{scope::ScopeKind, test_game::TriggerShape, trigger_keys::Reader};
+use content_reader_script::{scope::ScopeKind, test_game::{Executable, TriggerShape}, trigger_keys::Reader};
 use dashboard_core::test_fixtures::game;
 use engine_executable::executable_tables::{self, Tables};
 use std::sync::OnceLock;
 
-pub(crate) fn enter() {
-    static TABLES: OnceLock<Tables> = OnceLock::new();
-    executable_tables::enter(Some(*TABLES.get_or_init(tables)));
+pub fn enter() {
+    executable_tables::enter(Some(tables()));
 }
 
 fn tables() -> Tables {
+    static TABLES: OnceLock<Tables> = OnceLock::new();
+    *TABLES.get_or_init(|| executable().build())
+}
+
+pub fn executable() -> Executable {
     use Reader::{Assign, Body, Comparison};
     use ScopeKind::{Character, Combat, Country, IndustrialOrganisation, State};
 
@@ -84,5 +88,4 @@ fn tables() -> Tables {
                 "owner", "resistance", "resistance_speed", "state_population", "state_population_k",
             ];
         })
-        .build()
 }

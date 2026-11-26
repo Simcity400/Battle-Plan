@@ -1,5 +1,5 @@
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 use crate::triggers::{Eval, Evaluator, Scope};
 use replay_data::{
     rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::TableId, rows::TableRows,
@@ -9,7 +9,7 @@ use crate::scripted_text::tests::complete_frame as frame;
 
 #[test]
 fn template_fallback_uses_recorded_language_and_template_country() {
-    game::enter();
+    script_game::enter();
     let (catalogue, _folder) = tests::catalogue(
         "",
         " force:0 \"Default Force\"\n GER_force:0 \"Intervention Force\"\n",
@@ -70,7 +70,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
 
 #[test]
 fn entry_conditions_use_deep_links_and_description_variable_session() {
-    game::enter();
+    script_game::enter();
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Deep text = { trigger = { FROM.FROM = { tag = SOV } check_variable = { temp_var:x = 7 } } localization_key = YES } text = { localization_key = NO } }",
         " YES:0 \"yes\"\n NO:0 \"no\"\n",
@@ -108,7 +108,7 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
 
 #[test]
 fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
-    game::enter();
+    script_game::enter();
     let (catalogue, _folder) = tests::catalogue("", "");
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());

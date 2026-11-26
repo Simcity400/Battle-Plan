@@ -4,8 +4,6 @@
 static TEST_ALLOCATOR: test_allocator::Allocator = test_allocator::Allocator;
 #[cfg(test)]
 mod test_allocator;
-#[cfg(test)]
-mod script_test_game;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_country_links;
 

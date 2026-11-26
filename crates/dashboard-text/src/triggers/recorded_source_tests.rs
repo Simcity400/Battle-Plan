@@ -1,10 +1,10 @@
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 use replay_frame::frame::{DecodedSource, RecordedSource};
 
 #[test]
 fn decoded_source_keeps_trigger_short_circuits_and_native_scope_order() {
-    game::enter();
+    script_game::enter();
     let mut frame = frame(
         &[
             (100, 1, "AAA", 1, "AAA", "costume"),

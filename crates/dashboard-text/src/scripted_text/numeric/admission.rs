@@ -129,7 +129,7 @@ pub(super) fn admit<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script_test_game as game;
+    use crate::catalogue::tests::script_game;
     use replay_data::{
         rows::CharacterRow, rows::CountryCharacterRow, rows::LexicalTokenRow, rows::TableId,
         rows::TableRows,
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn live_character_grammar_uses_country_rosters_before_temps() {
-        game::enter();
+        script_game::enter();
         let (catalogue, _folder, mut frame) = fixture();
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         {
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn exact_properties_and_missing_character_census_remain_named() {
-        game::enter();
+        script_game::enter();
         let (catalogue, _folder, mut frame) = fixture();
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         *frame.tables[TableId::Characters.index()] = TableView::Unavailable {
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn original_character_fallback_runs_only_after_temp_admission() {
-        game::enter();
+        script_game::enter();
         let (catalogue, _folder, mut frame) = fixture();
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn known_empty_character_registry_needs_no_token_dictionary() {
-        game::enter();
+        script_game::enter();
         let (catalogue, _folder, mut frame) = fixture();
         *frame.tables[TableId::Characters.index()] =
             TableView::Complete(TableRows::Characters(Vec::new()));
