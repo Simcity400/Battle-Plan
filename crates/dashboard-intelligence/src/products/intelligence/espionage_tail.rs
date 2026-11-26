@@ -1530,11 +1530,12 @@ mod tests {
         }
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[before, after]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(SourceKey { source_id: "espionage-load".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        assert_eq!(dashboard_base::queries::query(&source, 1).unwrap().timeline.stretches.len(), 2, "the load continues the branch in a second stretch");
         let load = LoadContext { content: None };
         let ask = |hour: i32| {
             EspionageLogTail::load(
                 &source,
-                &EspionageLogTailParams { branch_id: "2".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None },
+                &EspionageLogTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None },
                 &load,
                 &AtomicBool::new(false),
             )
@@ -1547,7 +1548,7 @@ mod tests {
         let late = ask(h10 + 18);
         assert_eq!(late.rows.iter().map(|row| (row.key.as_str(), row.status)).collect::<Vec<_>>(), [("op:100", EspionageStatus::Ended), ("op:300", EspionageStatus::NotRead)]);
         assert_eq!(late.rows[0].ended_hour, Some(h10 + 16));
-        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "2", "limit": 50 })).unwrap();
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "1", "limit": 50 })).unwrap();
         let exact = panel.exact().unwrap();
         for (hour, seed) in [(h10 + 5, true), (h10 + 10, false), (h10 + 11, false), (h10 + 16, false), (h10 + 12, true)] {
             assert_eq!(*(exact.advance)(hour, seed, &AtomicBool::new(false), None).value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped equals cold at {hour}");
