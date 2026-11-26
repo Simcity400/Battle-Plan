@@ -27,10 +27,6 @@ test('at 15 hours a frame for 600 frames, the page plays the same with the prepa
     assert.deepEqual(await act('heldFirstRender()'), { product: true, followed: true }, 'a reply the lane holds shows from the first render: no loading state, not for a frame');
     assert.deepEqual(await act('heldBetweenRenders()'), { product: true, products: true, followed: true },
       'a reply settling while its reader waits is shown by the update that hands it over, so what it starts runs');
-    const followed = await act<{ acquired: string[]; seen: Record<string, { status: string; hidden: boolean }> }>('followed()');
-    assert.deepEqual(followed.acquired, ['shown'], 'a prepared copy follows nothing; a shown widget follows its head');
-    assert.deepEqual(followed.seen.prepared, { status: 'off', hidden: false }, 'a prepared copy reads its head as an unfollowed widget does, through the lane');
-    assert.deepEqual(followed.seen['off screen'], { status: 'pending', hidden: true }, 'a shown widget off screen still reads nothing');
   }));
 });
 

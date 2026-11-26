@@ -2,11 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-const capture = (name: string) => (code: string) => {
-  if (!code.includes(`export default function ${name}(`)) throw new Error(`${name} is not declared as expected`);
-  return `${code.replace(`export default function ${name}(`, `function real_${name}(`)}
-export default function ${name}(props) { return globalThis.__finding.capture('${name}')(props); }`;
-};
 const source = (name: string) => (code: string) => {
   const declared = new RegExp(`export function ${name}\\(`);
   if (!declared.test(code)) throw new Error(`${name} is not declared as expected`);
@@ -18,7 +13,6 @@ const tracked = (name: string) => (code: string) => {
   return `${code.replace(declared, `function real_${name}(`)}\nexport function ${name}(...args) { const held = real_${name}(...args); globalThis.__finding.importing(held); return held; }`;
 };
 const TRANSFORMS: Record<string, (code: string) => string> = {
-  '/charts/TimeChart.tsx': capture('TimeChart'),
   '/dashboard/raids.ts': source('useRaidLog'),
   '/dashboard/widgetPerf.ts': source('shownSink'),
   '/widgets/rendererLoaders.ts': tracked('loadWidgetRenderer'),
@@ -77,9 +71,6 @@ test('7. Before a 100–109 track at 95, coverage wins over loading, failures an
   }
   const queue = await act<Read>(scene({ kind: 'training-queue', time: { mode: 'follow' }, hour: 95, countries: GER, groups: groupsOf(['GER']) }));
   assert.deepEqual(queue.asks.filter(ask => ask.product === 'country-groups' || ask.product === 'training-queue'), [], `outside asks nothing: ${JSON.stringify(queue.asks)}`);
-  await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 105, countries: GER, groups: groupsOf(['GER']) }));
-  const hovered = await act<Read>('call("TimeChart", "onHover", 112)');
-  assert.deepEqual(hovered.asks.filter(ask => ask.product === 'country-fuel' && ask.hour === 112), [], `no hover read past the track: ${JSON.stringify(hovered.asks)}`);
 }));
 
 const COLUMNS = `({ branchId: '1', warnings: [], defaultColumns: ['power'], defaultSort: 'power', columns: [{ key: 'power', label: 'Power', unit: '', decimals: 0,

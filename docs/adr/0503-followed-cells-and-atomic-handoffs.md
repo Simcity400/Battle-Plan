@@ -8,4 +8,4 @@ The `live` section places formulas over grouped recorded sources into the rows a
 
 The frame reads and paints live values from the answer's version. A widget renders for status and structural changes. During a change to a set of followed queries, keep the previous fully answered set only while the new set is still waiting and belongs to the same owner and timeline. Switch as a set after all new answers land. Refusal, interruption or another owner releases the previous set. Browser measurements prepare test data outside the paint pass and report the median, reducing the contribution of fixture setup and garbage collection.
 
-[Follow transport](../../ui/src/dashboard/follow/connection.ts) · [Wire decoder](../../ui/src/dashboard/follow/decode.ts) · [Live cells](../../ui/src/dashboard/follow/liveCells.ts) · [Handoff](../../ui/src/dashboard/follow/liveFollowed.ts)
+[Follow pipeline](../../ui/src/dashboard/follow/pipeline.ts) · [Follow messages](../../ui/src/dashboard/follow/message.ts) · [Live cells](../../ui/src/dashboard/follow/liveCells.ts)

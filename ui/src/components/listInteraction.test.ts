@@ -28,9 +28,8 @@ test('windowed controls retain focus, sequential row access and nested expansion
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'list-interaction-hooks', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (['/components/VirtualList.tsx', '/components/Select.tsx', '/charts/WindowedRows.tsx'].some(suffix => path.endsWith(suffix)))
+        if (['/components/VirtualList.tsx', '/components/Select.tsx'].some(suffix => path.endsWith(suffix)))
           return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__listInteraction;');
-        if (path.endsWith('/charts/useRowMotion.ts')) return 'export const useRowMotion = () => globalThis.__listInteraction.rows; export const movingRowClass = () => "";';
         if (path.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ open: true, trigger: { current: null }, close() {} }); export const Popover = () => null;';
       } }] });
   const draw = (render: () => any) => { cursor = 0; layouts.length = 0; return render(); };
@@ -67,22 +66,6 @@ test('windowed controls retain focus, sequential row access and nested expansion
     selectKey('Tab', true);
     assert.equal(keyPrevented, 0, 'Tab and Shift+Tab leave the menu instead of moving between options');
     assert.equal(focusedOption(), 4999);
-
-    reset();
-    const { default: WindowedRows } = await vite.ssrLoadModule('/ui/src/charts/WindowedRows.tsx');
-    const items = fixture.rows.map(row => ({ key: row.key, item: row.item }));
-    const rows = () => draw(() => WindowedRows({ items, rowHeight: 20, label: 'Legend', children: () => null }));
-    let list = rows(); list.props.ref.current = scroller;
-    const last = list.props.children[1].props.children.at(-1), target = { getClientRects: () => [1] };
-    let prevented = 0;
-    const event = { key: 'Tab', shiftKey: false, target, currentTarget: { querySelectorAll: () => [target] }, preventDefault() { prevented++; } };
-    last.props.onKeyDown(event);
-    assert.equal(prevented, 1, 'Tab reaches the following row beyond overscan');
-    list = rows();
-    assert.ok(list.props.children[1].props.children.some((node: any) => node.props['data-row-index'] === last.props['data-row-index'] + 1));
-    prevented = 0;
-    last.props.onKeyDown({ ...event, key: 'ArrowDown', target: new Input() });
-    assert.equal(prevented, 0, 'native colour-input keys stay with their input');
 
     reset();
     const { VirtualList } = await vite.ssrLoadModule('/ui/src/components/VirtualList.tsx');

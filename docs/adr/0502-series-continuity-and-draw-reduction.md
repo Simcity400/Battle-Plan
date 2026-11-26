@@ -10,4 +10,4 @@ Bar strips reveal a bar only when its recording read has been reached. A shared 
 
 Calendar ticks derive from the recorded hours. Pick the finest calendar level with room for its labels and measure the visible portion of each period. The first visible month or quarter label includes the year, and January carries it at later year boundaries. Quarter labels use the first month's tick. Dates are left empty outside the supported calendar.
 
-[Series](../../ui/src/charts/series.ts) · [Shares](../../ui/src/charts/share.ts) · [Tiled stacks](../../ui/src/charts/tiledStack.ts) · [Calendar ticks](../../ui/src/charts/timeAxis.ts)
+[Series](../../ui/src/charts/series.ts) · [Time-chart painter](../../ui/src/families/time-chart/painter.ts) · [Time-chart series helpers](../../ui/src/families/time-chart/seriesHelpers.ts)

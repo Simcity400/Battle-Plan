@@ -75,6 +75,30 @@ const DETAIL_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       declaration: mod.fuelHistoryChartDeclaration,
     })),
   },
+  {
+    kind: 'stability-parts-table',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: () => import('./stability/stabilityDetailProjection.ts').then(mod => ({
+      family: 'table',
+      kind: 'stability-parts-table',
+      view: DEFAULT_VIEW,
+      projection: mod.stabilityPartsTableProjection,
+      declaration: mod.stabilityPartsTableDeclaration,
+    })),
+  },
+  {
+    kind: 'stability-parts-chart',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: () => import('./stability/stabilityDetailProjection.ts').then(mod => ({
+      family: 'time-chart',
+      kind: 'stability-parts-chart',
+      view: DEFAULT_VIEW,
+      projection: mod.stabilityPartsChartProjection,
+      declaration: mod.stabilityPartsChartDeclaration,
+    })),
+  },
 ];
 
 bindFamilyManifest(FAMILY_VIEWS);
