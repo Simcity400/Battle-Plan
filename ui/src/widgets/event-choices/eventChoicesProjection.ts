@@ -21,8 +21,9 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
+import { gapRows, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
-import { daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
+import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
   awaitingText,
   choiceAt,
@@ -42,6 +43,7 @@ export interface EventChoicesProjectionOptions {
   readonly awaiting: boolean;
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
+  readonly hover?: TooltipTexts;
 }
 
 const HEAD_LIMIT = 256;
@@ -59,6 +61,7 @@ function buildChoiceRow(
   page: ChoicePageInfo,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
+  hover: TooltipTexts,
 ): TableRow {
   const { card } = at;
   const firstRow = card.first.row;
@@ -130,7 +133,7 @@ function buildChoiceRow(
     if (at.choice) out.push({ label: 'Chosen', value: knownValue(formatDateTime(at.choice.row.hour)) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Title not recorded', value: notRecorded(reasons.nameMissing) });
-    if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
+    out.push(...gapRows(hover, card.occurrence.id), ...unreadRows(hover, card.occurrence.id));
     return out;
   };
 
@@ -193,6 +196,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
     }
     const boundary = newIdentityBoundary();
     let nextAwaitingChange = Infinity;
+    const readAt = source.at ?? hour;
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
@@ -208,20 +212,18 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
         const card = choiceCard(occ);
         const resolved = choiceAt(
           card,
-          hour,
+          readAt,
           options.breaks,
         );
         if (!resolved) return null;
         const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved);
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
         const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
-        if (open) {
-          const startHour = resolved.card.first.row.hour;
-          const elapsed = Math.max(0, daysBetween(startHour, hour));
-          const nextDay = startHour + (elapsed + 1) * 24;
-          if (nextDay > hour && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
+        if (open && !source.frozen) {
+          const nextDay = (Math.floor(readAt / 24) + 1) * 24;
+          if (nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
-        return buildChoiceRow(readView, resolved, page, options.artwork, boundary);
+        return buildChoiceRow(readView, resolved, page, options.artwork, boundary, options.hover ?? []);
       },
     );
 
@@ -304,6 +306,6 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   projection: eventChoicesProjection,
   projectionOptions(ctx): EventChoicesProjectionOptions {
     const events = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.event);
-    return { events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch) };
+    return { events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
   },
 };

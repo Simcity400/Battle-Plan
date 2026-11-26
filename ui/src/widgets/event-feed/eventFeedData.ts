@@ -1,7 +1,7 @@
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import type { ProductRequest } from '../../dashboard/client';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
-import type { EventFeedItem, EventFeedKindInfo, EventFeedRow } from '../../generated/dashboard';
+import type { EventFeedItem, EventFeedKindInfo, EventFeedRow, ScriptEdge } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
@@ -26,7 +26,7 @@ const strike = (row: Record<string, unknown>): boolean => {
 };
 
 const optionalText = (value: unknown) => value === undefined || typeof value === 'string';
-const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && text(value.description)
+const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && (value.description === undefined || text(value.description))
   && optionalText(value.nameMissing) && optionalText(value.gaps)
   && (value.options === undefined || (Array.isArray(value.options) && value.options.every(option => object(option) && int(option.ordinal) && text(option.name))));
 const roles = (row: Record<string, unknown>): boolean => {
@@ -37,9 +37,10 @@ const roles = (row: Record<string, unknown>): boolean => {
 const cause = (row: Record<string, unknown>): boolean => {
   const value = row.cause;
   if (value === undefined) return true;
-  return CAUSED_KINDS.has(row.kind as string) && object(value) && text(value.how) && text(value.within) && text(value.conference) && text(value.reason)
-    && (value.state === null || (int(value.state) && value.state > 0)) && (value.ally === null || opaqueTag(value.ally))
-    && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string');
+  return CAUSED_KINDS.has(row.kind as string) && object(value) && optionalText(value.how) && optionalText(value.within) && optionalText(value.conference) && optionalText(value.reason)
+    && (value.state === null || value.state === undefined || (int(value.state) && value.state > 0)) && (value.ally === null || value.ally === undefined || opaqueTag(value.ally))
+    && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string')
+    && (value.selectedOption === undefined || int(value.selectedOption)) && typeof value.targetRecorded === 'boolean';
 };
 
 const decisionState = (row: Record<string, unknown>): boolean => {
@@ -61,7 +62,7 @@ export function validateFeedRow(value: unknown): EventFeedRow {
     || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
     || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
     || (!NATIVE_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
-    || !(value.item === null || item(value.item)) || !(value.amount === null || (int(value.amount) && value.amount > 0))) {
+    || !(value.item === null || item(value.item)) || !(value.amount == null || (int(value.amount) && value.amount > 0))) {
     throw new Error('The event feed row is malformed.');
   }
   const row = value as unknown as EventFeedRow;
@@ -121,4 +122,14 @@ export function feedKindLabel(kind: string): string {
   if (known) return known;
   const spaced = kind.replace(/([A-Z])/g, ' $1').trim();
   return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1).toLowerCase() : kind;
+}
+
+export function effectiveEventItem(event: EventFeedRow, choice: ScriptEdge | null): EventFeedItem | null {
+  const base = event.item;
+  const fallback = choice?.row.item ?? null;
+  if (!base) return fallback;
+  if ((!base.options || base.options.length === 0) && fallback?.options?.length) {
+    return { ...base, options: fallback.options };
+  }
+  return base;
 }

@@ -684,7 +684,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     let b2_h101 = pack(
         101,
         EventFeedCoverage::Complete,
-        vec![dec_ev(11, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None)],
+        vec![
+            dec_ev(11, 101, EventFeedSource::DecisionTimedOut, 1, None, Some(11), Some(2), None),
+            dec_ev(14, 100, EventFeedSource::DecisionSelected, 4, None, None, None, None),
+        ],
     );
 
     let replay = Replay::from_records(
@@ -716,13 +719,14 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         countries: None,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
         categories: vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones],
         exclude: None,
     };
-    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
+    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, row: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
 
     let feed_b1 = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     let state_of = |page: &super::EventFeedTailReply, id: &str| {
@@ -732,9 +736,12 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(state_of(&feed_b1, "native:1:11"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:12"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:13"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:9"), None, "a list row leaves out a state no list shows");
+    let feed_opened = EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some("native:1:9".into()), ..ask("1") }, &context, &cancel).unwrap();
     assert_eq!(
-        state_of(&feed_b1, "native:1:9"),
-        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
+        state_of(&feed_opened, "native:1:9"),
+        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
+        "the opened row keeps it, with its reason"
     );
 
     let card_end_state = |page: &super::ScriptOccurrenceTailReply, opener_id: &str| {
@@ -748,12 +755,26 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     let cards_b1_at_100 = DecisionsTail::load(&replay_source, &cards_at(100), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:2"), Some(DecisionLifecycleState::Active));
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:4"), Some(DecisionLifecycleState::Active));
+    assert_eq!(card_end_state(&cards_b1_at_100, "native:1:9"), None, "a listed card leaves out a state no list shows");
+    let card_opened = DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some("native:1:9".into()), ..cards_at(100) }, &context, &cancel).unwrap();
     assert_eq!(
-        card_end_state(&cards_b1_at_100, "native:1:9"),
-        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
+        card_end_state(&card_opened, "native:1:9"),
+        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
+        "the opened card keeps it, with its reason"
     );
 
     let cards_b1 = DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap();
+    assert_eq!(DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap(), cards_b1, "a second read of the hour, from the states the index remembers, is the same reply");
+    let notes = |reply: &super::ScriptOccurrenceTailReply| reply.rows.iter().flat_map(|row| row.occurrence.iter()).flat_map(|occurrence| &occurrence.edges).filter_map(|edge| edge.row.cause.as_ref()).map(|cause| cause.notes.len()).sum::<usize>();
+    let key = cards_b1.rows[0].key.clone();
+    let opened = DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some(key.clone()), ..cards_at(101) }, &context, &cancel).unwrap();
+    assert_eq!(opened.rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), [key.as_str()], "the opened row is that row alone");
+    assert_eq!(notes(&cards_b1), 0, "list rows leave the notes to the opened row");
+    let reopened: usize = cards_b1.rows.iter().map(|row| notes(&DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some(row.key.clone()), ..cards_at(101) }, &context, &cancel).unwrap())).sum();
+    assert!(reopened > 0, "opened rows carry them");
+    let cause = |reply: &super::ScriptOccurrenceTailReply| reply.rows[0].occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map_or((None, false), |cause| (cause.selected_option, cause.target_recorded));
+    assert_eq!(cause(&opened), cards_b1.rows.iter().find(|row| row.key == key).and_then(|row| row.occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone())).map_or((None, false), |cause| (cause.selected_option, cause.target_recorded)), "a list row keeps the facts its notes carried");
+    assert!(DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some("native:9:9".into()), ..cards_at(101) }, &context, &cancel).unwrap().rows.is_empty(), "a row not in the log at the hour is no row");
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
@@ -764,6 +785,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     );
 
     let feed_b2 = EventFeedTail::load(&replay_source, &ask("2"), &context, &cancel).unwrap();
+    let late = |hour: i32| EventFeedTail::load(&replay_source, &EventFeedTailParams { hour: Some(hour), row: Some("native:1:14".into()), limit: 1, ..ask("2") }, &context, &cancel).unwrap().rows.len();
+    assert_eq!((late(100), late(101)), (0, 1), "an event dated 100 but first read at 101 opens only from 101");
+    let late_card = |hour: i32| DecisionsTail::load(&replay_source, &ScriptTailParams { branch_id: "2".into(), row: Some("native:1:14".into()), limit: 1, ..cards_at(hour) }, &context, &cancel).unwrap().rows.len();
+    assert_eq!(late_card(100), 0, "nor does its card open before it was read");
     assert_eq!(
         state_of(&feed_b2, "native:1:11"),
         Some(DecisionLifecycleState::NotRecorded { reason: DECISION_CONTAINER_NOT_RECORDED.to_owned() }),
@@ -903,6 +928,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         countries,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
@@ -917,6 +943,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         countries,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
@@ -1057,6 +1084,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         countries: None,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
@@ -1066,6 +1094,174 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     let at = |hour: i32| EventFeedTail::load(&replay_source, &ask(hour), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let early = at(101);
     assert!(!early.warnings.iter().any(|warning| warning.contains("template token 77")), "a refusal first read at 103 is not in the reply at 101: {:?}", early.warnings);
+    let joined_key = early.rows.iter().find(|row| row.row.as_ref().is_some_and(|row| row.kind == EventFeedKind::FactionJoined)).map(|row| row.key.clone()).expect("faction join listed at 101");
+    let opened = |hour: i32| EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some(joined_key.clone()), limit: 1, ..ask(hour) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(opened(104).rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), [joined_key.as_str()], "a family row opens by its key");
+    assert!(opened(100).rows.is_empty(), "and is not in the log before it was observed");
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
+}
+
+#[test]
+fn notices_kept_with_each_presented_event_add_up_to_the_notices_said_at_once() {
+    let say = |notices: &mut Notices, event: u32| {
+        notices.sampled("nativeEventCountry", "Native event country", format!("actor of event {event}"), 1);
+        notices.sampled("nativeEventCountry", "Native event country", format!("target of event {event}"), 1);
+        notices.unavailable("decisionIcon", "Decision icon", "the icon is not in the installation", Some(2));
+        notices.unavailable("eventWindows", "Event windows", format!("from read {}", event % 2), None);
+    };
+    let mut direct = Notices::default();
+    let mut kept = Notices::default();
+    for event in 0..5 {
+        say(&mut direct, event);
+        let mut own = Notices::default();
+        say(&mut own, event);
+        kept.absorb(&own);
+    }
+    assert_eq!(kept.into_list(), direct.into_list(), "a reply built from kept rows says what presenting them again would");
+}
+
+#[test]
+fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_row() {
+    let row = super::EventFeedRow {
+        id: "native:1:9".into(),
+        hour: 100,
+        read_hour: 100,
+        name_hour: 100,
+        exact: true,
+        category: super::EventFeedCategory::Politics,
+        kind: EventFeedKind::DecisionActivated,
+        tags: Vec::new(),
+        participants: None,
+        item: Some(super::EventFeedItem { name: Some("Raise war bonds".into()), description: Some("Bonds.".into()), gaps: Some("GER_war_bonds.d shows its scripted text elided".into()), ..Default::default() }),
+        amount: None,
+        cause: None,
+        strike: None,
+        decision_state: Some(super::decision_state::DecisionLifecycleState::NotApplicable { reason: super::decision_state::DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
+        window: None,
+    };
+    let mut decisions = vec![Some(row.clone())];
+    super::tails::listed(&mut decisions, true, true);
+    let listed = decisions[0].as_ref().unwrap();
+    let item = listed.item.as_ref().unwrap();
+    assert_eq!((item.gaps.as_deref(), item.description.as_deref(), item.name.as_deref()), (None, Some("Bonds."), Some("Raise war bonds")), "the list keeps what it shows and leaves the elision reasons to the opened row");
+    assert_eq!(listed.decision_state, None, "a state no list shows is left to the opened row");
+    let mut feed = vec![Some(row)];
+    super::tails::listed(&mut feed, false, false);
+    assert_eq!(feed[0].as_ref().unwrap().item.as_ref().unwrap().description, None);
+}
+
+#[test]
+fn a_listed_choice_card_names_the_option_its_last_choice_took() {
+    let chosen = |option: Option<i32>, kind: EventFeedKind| super::cards::ScriptEdge {
+        row: super::EventFeedRow {
+            id: "native:1:1".into(),
+            hour: 100,
+            read_hour: 100,
+            name_hour: 100,
+            exact: true,
+            category: super::EventFeedCategory::Politics,
+            kind,
+            tags: Vec::new(),
+            participants: None,
+            item: None,
+            amount: None,
+            cause: None,
+            strike: None,
+            decision_state: None,
+            window: None,
+        },
+        option,
+        lifecycle: None,
+        days: None,
+        costs: None,
+    };
+    let select = EventFeedKind::EventOptionSelected;
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(-1), select), chosen(Some(1), select)]), Some(1), "immediate effects are not the choice");
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(0), select), chosen(Some(2), select)]), Some(2), "the last choice is the one shown");
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(1), select), chosen(Some(3), EventFeedKind::ScriptEventFired)]), Some(1));
+    assert_eq!(super::tails::listed_choice(&[chosen(Some(-1), select)]), None);
+}
+
+#[test]
+fn a_kept_row_says_again_which_mod_its_art_came_from() {
+    use super::{DecisionsTail, ScriptTailParams};
+    use dashboard_base::{
+        catalogue::{self, OwnRefusals},
+        products::{LoadContext, Product},
+        test_fixtures::{
+            source,
+            visual_mods::{BLUE, Machine, RED, first_pixel, png, select},
+        },
+    };
+    use replay_data::{
+        event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript},
+        rows::{Recorded, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_kept_fallback");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/decisions/categories/fixture.txt", b"FIXTURE_CATEGORY={}");
+    machine.write("common/decisions/fixture.txt", b"FIXTURE_CATEGORY={fixture_decision={allowed={always=yes}}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_decision_fixture_decision textureFile=gfx/fixture_decision.png}}");
+    machine.write("gfx/fixture_decision.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_decision.png", &png(BLUE));
+    let token = b"fixture_decision";
+    let event = EventFeedEvent {
+        sequence: 1,
+        generation: 1,
+        hour: 100,
+        source: EventFeedSource::DecisionSelected,
+        actor: EventFeedCountry { reference: 9001, id: 9001, instance: 1 },
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript { token_start: 0, token_len: token.len() as u32, ..EventFeedScript::default() }),
+    };
+    let mut frame = source(1, 100, Some(1));
+    frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+    *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+        generation: 1,
+        read_hour: 100,
+        coverage: EventFeedCoverage::Complete,
+        counts: Some(EventFeedCounts { acquired: 1, settled: 1, failed: 0, rejected: 0 }),
+        outstanding: 0,
+        failure: None,
+        script_refusals: 0,
+        events: vec![event],
+        script_tokens: token.to_vec(),
+        script_scopes: Vec::new(),
+        windows: Default::default(),
+    }]));
+    let (source, mut options) = machine.open_frames(vec![frame]);
+    select(&source, &mut options, &["fixture_art"]);
+    let context = LoadContext { content: Some(options) };
+    let params = ScriptTailParams {
+        branch_id: "1".into(),
+        hour: Some(100),
+        from: None,
+        to: None,
+        countries: None,
+        group: None,
+        search: None,
+        row: None,
+        sort: None,
+        offset: None,
+        limit: 64,
+        events: None,
+        statuses: None,
+    };
+    let read = || {
+        let mut own = OwnRefusals::default();
+        let reply = catalogue::own_refusals(&mut own, || DecisionsTail::load(&source, &params, &context, &AtomicBool::new(false))).unwrap();
+        let icon = reply.rows.iter().filter_map(|row| row.occurrence.as_ref()).flat_map(|occurrence| &occurrence.edges).find_map(|edge| edge.row.item.as_ref().and_then(|item| item.icon.clone()));
+        let mut warnings = Vec::new();
+        own.diagnostics().append_to(&mut warnings);
+        (icon.as_deref().map(first_pixel), warnings)
+    };
+    let (pixel, cold) = read();
+    assert_eq!(pixel, Some(BLUE), "the decision draws the selected mod's icon");
+    assert!(!cold.is_empty(), "the first read says which mod the icon came from");
+    assert_eq!(read(), (pixel, cold), "a read built from kept rows says it too");
 }

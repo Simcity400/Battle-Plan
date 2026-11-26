@@ -22,7 +22,7 @@ export interface ChoiceAt {
   pause: RecordingBreak | null;
 }
 
-const isChoice = (edge: ScriptEdge) => edge.row.kind === 'eventOptionSelected' && (edge.option === null || edge.option >= 0);
+const isChoice = (edge: ScriptEdge) => edge.row.kind === 'eventOptionSelected' && (edge.option == null || edge.option >= 0);
 
 const cardEdge = (occurrence: ScriptOccurrence): ScriptEdge | null =>
   occurrence.opened ? occurrence.edges[0] : occurrence.edges.find(isChoice) ?? null;

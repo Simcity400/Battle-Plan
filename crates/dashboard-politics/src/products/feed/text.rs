@@ -65,6 +65,23 @@ impl Notices {
         self.list.push(EventFeedUnavailable { kind: key.0, label: key.1, reason, count });
     }
 
+    pub fn absorb(&mut self, other: &Notices) {
+        let mut said: Vec<_> = other.keys.iter().collect();
+        said.sort_by_key(|(_, (index, _))| *index);
+        for (key, (index, samples)) in said {
+            let entry = &other.list[*index];
+            match samples.split_first() {
+                None => self.merge(key.clone(), entry.reason.clone(), entry.count, Vec::new()),
+                Some((first, rest)) => {
+                    self.merge(key.clone(), first.clone(), entry.count, vec![first.clone()]);
+                    if !rest.is_empty() {
+                        self.merge(key.clone(), first.clone(), Some(0), rest.to_vec());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn into_list(self) -> Vec<EventFeedUnavailable> {
         self.list
     }
@@ -312,6 +329,7 @@ pub(crate) struct Presenter<'q> {
     catalogue: Option<Arc<Catalogue>>,
     frames: RefCell<Frames>,
     kept: Arc<Mutex<KeptNaming>>,
+    effects: bool,
 }
 
 const HELD: [(TableId, u64); 8] = [
@@ -405,6 +423,7 @@ pub(crate) struct KeptNaming {
 pub(super) struct Art<'a> {
     catalogue: &'a Arc<Catalogue>,
     kept: &'a Mutex<KeptNaming>,
+    effects: bool,
 }
 
 impl Art<'_> {
@@ -451,11 +470,23 @@ struct Frames {
 
 impl<'q> Presenter<'q> {
     pub fn new(query: &'q Query<'q>, catalogue: Option<Arc<Catalogue>>, kept: Arc<Mutex<KeptNaming>>) -> Self {
-        Self { query, catalogue, frames: RefCell::default(), kept }
+        Self { query, catalogue, frames: RefCell::default(), kept, effects: true }
+    }
+
+    pub fn without_effects(self) -> Self {
+        Self { effects: false, ..self }
     }
 
     pub fn catalogue(&self) -> Option<&Catalogue> {
         self.catalogue.as_deref()
+    }
+
+    pub fn content(&self) -> Option<&Arc<Catalogue>> {
+        self.catalogue.as_ref()
+    }
+
+    pub fn effects(&self) -> bool {
+        self.effects
     }
 
     fn dated(&self, run: u32, hour: i32, frames: &mut Frames) -> io::Result<DecodedFrame> {
@@ -513,7 +544,7 @@ impl<'q> Presenter<'q> {
     }
 
     pub fn picture(&self, token: &str, key: &str, notices: &mut Notices) -> Option<String> {
-        draw_picture(notices, &Art { catalogue: self.catalogue.as_ref()?, kept: &self.kept }, token, key)
+        draw_picture(notices, &Art { catalogue: self.catalogue.as_ref()?, kept: &self.kept, effects: self.effects }, token, key)
     }
 
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
@@ -525,7 +556,7 @@ impl<'q> Presenter<'q> {
         let present = |frame: Result<&DecodedFrame, String>, notices: &mut Notices| -> io::Result<EventFeedItem> {
             let mut item = item.clone();
             let inputs = Inputs::of(event, frame.as_ref().ok().copied());
-            presentation(notices, &Art { catalogue: shown, kept: &self.kept }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
+            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
             Ok(item)
         };
         let dated = match self.frame(event.hour)? {
@@ -569,7 +600,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
                 Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
             }
         }
-        return effects(notices, catalogue, kind, item, inputs);
+        return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
     }
     let Some(token) = item.token.clone() else {
         item.name_missing = Some("the event's identity was not recorded".into());
@@ -582,12 +613,12 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
             let reason = event.refused.clone().unwrap_or_default();
             item.name_missing = Some(reason.clone());
             notices.unavailable("scriptEventContent", "Event content", reason, Some(1));
-            return effects(notices, catalogue, kind, item, inputs);
+            return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
         }
         Err(reason) => {
             item.name_missing = Some(reason.clone());
             notices.unavailable("scriptEventContent", "Event content", reason, Some(1));
-            return effects(notices, catalogue, kind, item, inputs);
+            return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
         }
     };
     let mut scripted = Vec::new();
@@ -664,7 +695,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
         body.push_str("Authored options (native ordinals):\n");
         body.push_str(&options.join("\n"));
     }
-    effects(notices, catalogue, kind, item, inputs)
+    if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) }
 }
 
 fn draw_picture(notices: &mut Notices, art: &Art<'_>, token: &str, picture: &str) -> Option<String> {

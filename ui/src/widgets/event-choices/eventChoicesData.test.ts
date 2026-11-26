@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { buildRowSourceFromHead, validateGenericTailReply } from '../../families/table/rowSource.ts';
 import { awaitingText, choiceAt, choiceCard, choiceDates, choiceText, choiceTitle, isOpen, noChoiceText, optionLetter, optionLines } from './eventChoicesData.ts';
 import { eventChoicesProjection } from './eventChoicesProjection.ts';
 import type { EventDetailSubject } from './EventDetailWindow.tsx';
@@ -104,7 +104,7 @@ test('event choices projection turns blank authored title or option text into no
     breaks: [],
   });
   assert.equal(model.titleSummary, '2 events');
-  assert.equal(model.nextChangeAt, fired + 48, 'nextChangeAt steps to the next awaiting day boundary');
+  assert.equal(model.nextChangeAt, (Math.floor(atHour / 24) + 1) * 24, 'nextChangeAt is the next calendar day, where the days-open count changes');
   const blankRow = model.rows.find(r => r.key === blankOcc.id)!;
   assert.equal(blankRow.cells.item?.value.kind, 'notRecorded');
   assert.equal(blankRow.cells.choice?.value.kind, 'notRecorded');
@@ -131,4 +131,21 @@ test('event choices projection turns blank authored title or option text into no
   assert.equal(awaitingModel.rows[1]?.live, false);
   assert.equal(awaitingModel.rows[1]?.cells.choice?.value.kind, 'notRecorded');
   assert.equal((awaitingModel.rows[1]?.meta as EventDetailSubject).awaiting, false);
+});
+
+test('an awaiting choice on a page frozen at an earlier hour counts its days open at that hour, and does not wake playback', () => {
+  const fired = day(3, 3);
+  const card = occurrence([fire(fired)]);
+  const reply = (at: number) => ({ branchId: '1', total: '1', offset: '0', live: '1', counts: [{ key: 'awaiting', total: '1' }], nextChange: null,
+    rows: [{ hour: fired, key: card.id, observed: fired, ordinal: '0', live: true, status: 'awaiting' as const, occurrence: card }], missing: [], unavailable: [], warnings: [], at });
+  const frozenAt = fired + 30, shownAt = fired + 100;
+  const pages = { 0: { hour: frozenAt, offset: 0, limit: 256, raw: reply(frozenAt), reply: validateGenericTailReply(reply(frozenAt), frozenAt) } };
+  const source = buildRowSourceFromHead('test:choices-frozen', reply(shownAt), undefined, shownAt, pages)!;
+  const model = eventChoicesProjection.project(createBoundedReadView({ hour: shownAt, rows: new Map([['main', source]]) }), { events: ['country'], awaiting: false, artwork: false, breaks: [] });
+  const meta = model.rows[0]!.meta as EventDetailSubject;
+  assert.equal(meta.asOfHour, frozenAt, 'the row is read as of the frozen hour');
+  const row = model.rows[0]!;
+  const extra = typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra;
+  assert.ok(JSON.stringify(extra).includes('1 day open'), `one day open at the frozen hour, not four: ${JSON.stringify(extra)}`);
+  assert.equal(model.nextChangeAt ?? Infinity, Infinity, 'a frozen row does not wake playback to advance');
 });

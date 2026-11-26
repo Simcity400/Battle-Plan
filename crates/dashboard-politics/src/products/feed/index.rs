@@ -5,7 +5,7 @@ use super::{
     families,
     row::{Columns, FeedEvent, Slot},
 };
-use dashboard_base::{Source, catalogue::Catalogue, products::LoadContext, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::{Catalogue, OwnRefusals}, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{
     Query,
     identity::Holder,
@@ -104,8 +104,119 @@ pub(crate) struct Scanned {
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
     pub windows_unrecorded: Vec<(i32, i32, String)>,
     states: HashMap<u128, DecisionLifecycleState>,
+    resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
+    presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
     pub gaps: Vec<MissingSpan>,
+}
+
+pub(crate) type HeldRow = Arc<(Option<EventFeedRow>, Notices, OwnRefusals)>;
+
+const PRESENTED_REQUESTS: u64 = 32;
+
+#[derive(Default)]
+struct Presented {
+    content: Option<Arc<Catalogue>>,
+    request: u64,
+    rows: HashMap<(u64, u64, i32, bool), (u64, HeldRow)>,
+}
+
+fn same_content(held: Option<&Arc<Catalogue>>, asked: Option<&Arc<Catalogue>>) -> bool {
+    match (held, asked) {
+        (Some(held), Some(asked)) => Arc::ptr_eq(held, asked),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn presented_key(event: &FeedEvent, effects: bool) -> (u64, u64, i32, bool) {
+    (event.generation, event.sequence, event.read_hour, effects)
+}
+
+impl Scanned {
+    pub(crate) fn locate(&self, id: &str) -> Option<u128> {
+        let mut parts = id.split(':');
+        let (kind, first, second) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let found = match kind {
+            "native" => {
+                let (generation, sequence): (u64, u64) = (first.parse().ok()?, second.parse().ok()?);
+                self.briefs.iter().find(|brief| brief.generation == generation && brief.sequence == sequence && generation != FeedEventRow::DERIVED)
+            }
+            "derived" => {
+                let (hour, sequence): (i32, u32) = (first.parse().ok()?, second.parse().ok()?);
+                self.briefs.iter().find(|brief| brief.generation == FeedEventRow::DERIVED && brief.at.hour == hour && brief.sequence as u32 == sequence)
+            }
+            _ => None,
+        };
+        found.map(|brief| brief.at.key)
+    }
+
+    pub(crate) fn held_rows(&self, content: Option<&Arc<Catalogue>>, effects: bool, events: &[&FeedEvent]) -> (u64, Vec<Option<HeldRow>>) {
+        let mut memo = self.presented.lock().unwrap_or_else(PoisonError::into_inner);
+        if !same_content(memo.content.as_ref(), content) {
+            memo.rows.clear();
+            memo.content = content.cloned();
+        }
+        memo.request += 1;
+        let request = memo.request;
+        let held = events
+            .iter()
+            .map(|event| {
+                memo.rows.get_mut(&presented_key(event, effects)).map(|(used, row)| {
+                    *used = request;
+                    Arc::clone(row)
+                })
+            })
+            .collect();
+        (request, held)
+    }
+
+    pub(crate) fn keep_rows(&self, content: Option<&Arc<Catalogue>>, effects: bool, request: u64, made: Vec<(&FeedEvent, HeldRow)>) {
+        let mut memo = self.presented.lock().unwrap_or_else(PoisonError::into_inner);
+        if !same_content(memo.content.as_ref(), content) {
+            return;
+        }
+        for (event, row) in made {
+            let held = memo.rows.entry(presented_key(event, effects)).or_insert((request, Arc::clone(&row)));
+            held.0 = held.0.max(request);
+        }
+        let floor = memo.request.saturating_sub(PRESENTED_REQUESTS);
+        memo.rows.retain(|_, (used, _)| *used > floor);
+    }
+
+    pub(crate) fn decision_states(&self, query: &Query<'_>, events: &[&FeedEvent]) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
+        let key = |event: &FeedEvent| (u128::from(event.generation) << 64) | u128::from(event.sequence);
+        let mut out: Vec<Option<DecisionLifecycleState>> = vec![None; events.len()];
+        let mut missing: Vec<usize> = Vec::new();
+        {
+            let held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+            for (at, event) in events.iter().enumerate() {
+                if !decision_state::applies(event) {
+                    continue;
+                }
+                let key = key(event);
+                match (self.states.get(&key), held.get(&key)) {
+                    (Some(state), _) => out[at] = Some(state.clone()),
+                    (None, Some(state)) => out[at] = state.clone(),
+                    (None, None) => missing.push(at),
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(out);
+        }
+        let asked: Vec<&FeedEvent> = missing.iter().map(|&at| events[at]).collect();
+        let resolved = decision_state::resolve_all(query, &asked)?;
+        let mut held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+        for (&at, state) in missing.iter().zip(resolved) {
+            held.insert(key(events[at]), state.clone());
+            out[at] = state;
+        }
+        Ok(out)
+    }
 }
 
 pub(crate) struct Feed {
@@ -248,7 +359,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     breaks.retain(|(first, last)| first <= last);
     breaks.sort_unstable();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, gaps })
 }
 
 fn break_after(breaks: &[(i32, i32)], from: i32, hour: i32) -> Option<(i32, i32)> {
@@ -433,6 +544,10 @@ fn choices(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
         made.push(card_occurrence(&card, head, names, states));
     }
     Index::new(made, scanned.gaps.clone(), &LIVE)
+}
+
+pub(crate) fn family_at(index: &Index<Item>, id: &str) -> Option<u32> {
+    index.find(family_id(id)).filter(|&at| matches!(&index.get(at).payload, Item::Family(row) if row.id == id))
 }
 
 fn family_id(text: &str) -> u128 {

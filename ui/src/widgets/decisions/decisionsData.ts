@@ -59,7 +59,7 @@ export function decisionAt(card: DecisionCard | null, hour: number, breaks: read
   const start = card.occurrence.opened && STARTS.includes(edges[0]?.row.kind) ? edges[0] : null;
   const latest = lastEdge(edges, [...ENDS, 'decisionActivated']);
   const end = latest && ENDS.includes(latest.row.kind) ? latest : null;
-  const timing = edges.filter(edge => TIMERS.includes(edge.row.kind) && edge.days !== null).at(-1);
+  const timing = edges.filter(edge => TIMERS.includes(edge.row.kind) && edge.days != null).at(-1);
   const timer = timing && timing.days! > 0 ? { days: timing.days!, from: timing.row.hour } : null;
   const hasLifecycle = (state: ScriptEdge['row']['decisionState']) => state !== undefined && state.kind !== 'notApplicable';
   const latestState = edges.filter(edge => hasLifecycle(edge.row.decisionState)).at(-1)?.row.decisionState ?? null;
