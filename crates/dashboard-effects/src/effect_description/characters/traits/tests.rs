@@ -398,19 +398,27 @@ fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
 }
 
 #[test]
-fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
+fn targeted_trait_resolves_the_retained_operand_and_names_an_unavailable_target() {
     game::enter();
-    let (fixture, _folder) = fixture();
+    let (mut fixture, _folder) = fixture();
+    let effect = "fixture_grant_ruling=syn_targeted_dynamic";
+    let missing = fixture.render(effect, &mut character(), Content::default());
+    assert!(missing.text.is_empty());
+    assert_eq!(missing.refusals.len(), 1);
+    assert!(missing.refusals.keys().all(|why| why.contains("event_target:syn_target")), "{:?}", missing.refusals);
+    *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
+        TableView::Complete(TableRows::GlobalSavedEventTargets(vec![GlobalSavedEventTargetRow {
+            name: b"syn_target".to_vec(),
+            country: 200,
+            ..Default::default()
+        }]));
     let result = fixture.render(
-        "fixture_grant_ruling=syn_targeted_dynamic",
+        effect,
         &mut character(),
         Content::default(),
     );
-    assert_eq!(result.text, "");
-    assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect fixture_grant_ruling: key fixture_grant_ruling: country trait syn_targeted_dynamic targeted-country operand is not retained by the shared catalogue".into(),
-        1,
-    )]));
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    assert!(result.text.contains("\u{12}BBB/Beta: Power: \u{11}G+0.10\u{11}!"), "{}", result.text);
 }
 
 #[test]

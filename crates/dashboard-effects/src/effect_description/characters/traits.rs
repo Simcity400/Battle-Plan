@@ -232,12 +232,12 @@ impl Renderer<'_, '_, '_> {
         let empty = Scopes::empty();
         let mut targets = String::new();
         for target in &trait_.targeted {
-            let tag = target.tag.as_deref().ok_or_else(|| format!(
-                "country trait {} targeted-country operand is not retained by the shared catalogue", trait_.token,
+            let operand = target.operand.as_deref().ok_or_else(|| format!(
+                "country trait {} has no targeted-country operand", trait_.token,
             ))?;
             let country = self
                 .evaluator()?
-                .scoped_country(tag.as_bytes(), empty)
+                .scoped_country(operand, empty)
                 .map_err(|why| why.to_string())?
                 .filter(|country| *country > 0);
             let context = if let Some(country) = country {
@@ -255,6 +255,11 @@ impl Renderer<'_, '_, '_> {
                     empty,
                     false,
                 )?
+            } else if target.tag.is_none() {
+                return Err(format!(
+                    "country trait {} target {} resolves to no country in the trait scope",
+                    trait_.token, String::from_utf8_lossy(operand)
+                ));
             } else {
                 String::new()
             };
