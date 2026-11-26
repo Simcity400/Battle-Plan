@@ -57,6 +57,7 @@ pub fn dated_panel_of(source: &Arc<Source>, load: &LoadContext, asked: &Value) -
         "air-force-at" => dashboard_land::registrations::EXACT_AIRFORCEAT(source, load, asked),
         "navy-at" => dashboard_land::registrations::EXACT_NAVYAT(source, load, asked),
         "army-at" => dashboard_land::registrations::EXACT_ARMYAT(source, load, asked),
+        "unit-leader-hour" if asked.pointer("/selection/kind").and_then(Value::as_str) == Some("group") => dashboard_land::registrations::EXACT_LEADERHOUR(source, load, asked),
         "factory-mix" => dashboard_world::registrations::EXACT_FACTORYMIX(source, load, asked),
         "faction-totals-at" => dashboard_wars::registrations::EXACT_FACTIONTOTALSAT(source, load, asked),
         "faction-pools" => dashboard_wars::registrations::EXACT_FACTIONPOOLS(source, load, asked),

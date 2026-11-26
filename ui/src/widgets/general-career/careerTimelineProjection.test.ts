@@ -17,6 +17,7 @@ import {
   validateLeaderCareer,
   type CareerTimelineOptions,
 } from './careerTimelineProjection.ts';
+import { dossierDeclaration } from './dossierProjection.ts';
 
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
 const FIRST = H(1936, 1, 1);
@@ -86,6 +87,26 @@ const careerReply = (hour = AT, nextChange: number | null = AT + 500): LeaderCar
 });
 
 const OPTIONS: CareerTimelineOptions = { reference: '42', firstHour: FIRST, surface: '#161616' };
+
+test('the career and hour requests keep the faction and its membership rule', () => {
+  for (const membership of ['hour', 'ever'] as const) {
+    const group = { type: 'faction', id: '9' };
+    const ctx = {
+      track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, options: {},
+      widget: { countries: { kind: 'group', group, membership } }, countries: { all: false, tags: ['AAA', 'BBB'] },
+    } as unknown as Parameters<typeof careerTimelineDeclaration.sources>[0];
+    const selection = { kind: 'group', group: { ...group, membership } };
+    for (const [view, names] of [[careerTimelineDeclaration, ['hour', 'career']], [dossierDeclaration, ['main']]] as const) {
+      const { entries } = view.sources(ctx, { following: true, staticSpan: null });
+      assert.deepEqual(entries.map(entry => entry.name), names);
+      for (const { read } of entries) {
+        assert.ok(read.shape === 'point' || read.shape === 'branch-to-hour');
+        assert.deepEqual(read.params?.selection, selection);
+        if (read.shape === 'point') assert.deepEqual(read.followQuery?.selection, selection);
+      }
+    }
+  }
+});
 
 test('general career timeline projects leader header KPIs, command bars, battle histogram, trait diamonds, and training meters', () => {
   const identity = datedIdentity({ JAP: [{ from: FIRST, name: 'Imperial Japan' }] });

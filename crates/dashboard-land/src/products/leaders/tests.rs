@@ -68,11 +68,11 @@ fn kinds_and_countries_choose_leaders_by_kind_and_owner_tag() {
     assert!(LeaderKinds::Land.includes(KIND_ARMY) && !LeaderKinds::Land.includes(KIND_NAVY));
     assert!(LeaderKinds::Navy.includes(KIND_NAVY) && !LeaderKinds::Navy.includes(KIND_ARMY));
     let countries = LeaderSelection::Countries { countries: vec!["GER".into()] };
-    assert!(countries.keeps(Some((7, "GER"))));
-    assert!(!countries.keeps(None), "a leader whose owner is not named is in no country");
+    assert!(countries.keeps(Some(7), Some("GER"), None, 100));
+    assert!(!countries.keeps(None, None, None, 100), "a leader whose owner is not named is in no country");
     let slot = LeaderSelection::Countries { countries: vec![dashboard_base::products::Country::Slot(7)] };
-    assert!(slot.keeps(Some((7, "DEU"))) && !slot.keeps(Some((9, "GER"))));
-    assert!(LeaderSelection::All.keeps(None));
+    assert!(slot.keeps(Some(7), Some("DEU"), None, 100) && !slot.keeps(Some(9), Some("GER"), None, 100));
+    assert!(LeaderSelection::All.keeps(None, None, None, 100));
 }
 
 #[test]
@@ -439,4 +439,96 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
     assert_eq!(overtaken.next_change, Some(118), "a general's character link is an input of its name, so of the order");
     let relinked = LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 118 }, &load, &cancelled).unwrap();
     assert_eq!(relinked.next_change, Some(119), "so is the spelling of its name token");
+}
+
+#[test]
+fn top_general_follows_recorded_faction_membership() {
+    use super::career::{LeaderCareer, LeaderCareerParams};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{FactionMemberRow, FactionRow, LandCombatDetailsRow, LandCombatSideDetails, TableId, TableRows, UnitLeaderRow, UnitLeaderTraitExperienceRow};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let leader = |id, owner, skill_level| UnitLeaderRow { id, owner, skill_level, skill_valid: 1, kind: KIND_ARMY, ..Default::default() };
+    let home = leader(1, 9001, 2);
+    let visitor = leader(2, 44, 4);
+    let frames: Vec<_> = (150..=255).map(|hour| {
+        let mut frame = ownership_frame(1, hour, 9001);
+        let mut members = vec![FactionMemberRow { faction: 9, country: 9001, ordinal: 0 }];
+        if (200..251).contains(&hour) {
+            members.insert(0, FactionMemberRow { faction: 9, country: 44, ordinal: 1 });
+        }
+        *frame.tables[TableId::FactionMembers.index()] = if hour == 253 {
+            TableView::Unavailable { reason: "roster unavailable".into() }
+        } else {
+            TableView::Complete(TableRows::FactionMembers(members))
+        };
+        *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: 9, ..Default::default() }]));
+        for table in [TableId::NavalCombatDetails, TableId::UnitLeaderTraits, TableId::Characters, TableId::LexicalTokens] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        let combat = LandCombatDetailsRow { combat: 7, sides: [LandCombatSideDetails { commander: super::handle(&visitor), ..Default::default() }, Default::default()], ..Default::default() };
+        *frame.tables[TableId::LandCombatDetails.index()] = TableView::Complete(TableRows::LandCombatDetails(if hour >= 175 { vec![combat] } else { vec![] }));
+        *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
+            UnitLeaderTraitExperienceRow { leader_reference: super::handle(&visitor), experience: i64::from(hour), ..Default::default() },
+        ]));
+        let skill_level = if hour == 225 { 1 } else { visitor.skill_level };
+        *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![
+            UnitLeaderRow { experience: i64::from(hour), ..home.clone() },
+            UnitLeaderRow { skill_level, captured: u8::from(hour == 232), ..visitor.clone() },
+        ]));
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Source::from_replay(SourceKey { source_id: "faction-career".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+    let load = LoadContext { content: None };
+    let home = super::handle(&home).to_string();
+    let visitor = super::handle(&visitor).to_string();
+    let unknown = Some(dashboard_world::products::group_members::UNKNOWN);
+    for membership in ["hour", "ever"] {
+        let selection = json!({"kind":"group","group":{"type":"faction","id":"9","membership":membership}});
+        let params = json!({"branchId":"1","selection":selection});
+        let panel = crate::registrations::EXACT_LEADERHOUR(&source, &load, &params).unwrap();
+        let selection: LeaderSelection = serde_json::from_value(selection).unwrap();
+        let ever = membership == "ever";
+        let exact = panel.exact().unwrap();
+        let advance = exact.advance.clone();
+        let follow = dashboard_follow::panel::AtHour {
+            cold: exact.cold.clone(), read: exact.read.clone(),
+            advance: Arc::new(move |hour, values, cancelled, step| {
+                let mut reply = advance(hour, values, cancelled, step);
+                reply.lanes.sort_by_key(|lane| lane.table);
+                reply.lanes.dedup_by(|second, first| {
+                    if first.table != second.table { return false; }
+                    first.columns.extend(&second.columns);
+                    first.columns.sort_unstable();
+                    first.columns.dedup();
+                    true
+                });
+                reply
+            }),
+        };
+        let played = dashboard_base::test_fixtures::played(&source.replay(), &follow, 150, 255);
+        let ranks: Vec<_> = played.iter().filter(|read| read.hour > 150 && read.visited > 0).map(|read| read.hour).collect();
+        let changes = if ever { vec![200, 225, 226, 232, 233] } else { vec![200, 225, 226, 232, 233, 251, 254] };
+        assert_eq!(ranks, changes, "{membership} follow ranks only at changes with a known roster");
+        for (hour, winner, missing, next) in [
+            (150, Some(&home), None, Some(200)), (200, Some(&visitor), None, Some(225)), (225, Some(&home), None, Some(226)),
+            (226, Some(&visitor), None, Some(232)), (232, Some(&home), None, Some(233)),
+            (250, Some(&visitor), None, Some(if ever { 253 } else { 251 })), (251, Some(if ever { &visitor } else { &home }), None, Some(253)),
+            (253, None, unknown, if ever { None } else { Some(254) }), (254, if ever { None } else { Some(&home) }, if ever { unknown } else { None }, None),
+        ] {
+            let head = (exact.cold)(hour, &cancelled).unwrap();
+            if hour == 200 { assert_eq!(head["fought"], 1, "the visitor fought before joining"); }
+            let followed = played.iter().find(|read| read.hour == hour).unwrap().value.as_ref().as_ref().unwrap();
+            assert_eq!((&followed["reference"], &followed["missing"]), (&head["reference"], &head["missing"]));
+            let params = LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(selection.clone()), hour };
+            let career = LeaderCareer::load(&source, &params, &load, &cancelled).unwrap();
+            assert_eq!((head["reference"].as_str(), head["missing"].as_str()), (winner.map(String::as_str), missing), "{membership} at {hour}");
+            assert_eq!((career.reference.as_ref(), career.missing.as_deref(), career.next_change), (winner, missing, next), "{membership} at {hour}");
+        }
+    }
 }

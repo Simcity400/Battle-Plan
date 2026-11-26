@@ -1,9 +1,7 @@
 import { liveKey } from '../../charts/live.ts';
 import { commandTermColour, measureColour } from '../../charts/palette.ts';
 import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
-import { subjectHandle } from '../../dashboard/chosen.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { BoundedReadView, FamilyPlanContext } from '../../families/contract.ts';
+import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, timelineModel } from '../../families/timeline/helpers.ts';
@@ -21,10 +19,9 @@ import type {
   CareerBattle,
   LeaderCareerReply,
   LeaderHourReply,
-  LeaderSelection,
   LeaderTrait,
 } from '../../generated/dashboard';
-import { validateLeaderHour } from './dossierProjection.ts';
+import { leaderParams, validateLeaderHour } from './dossierProjection.ts';
 import { experienceWhole } from './experience.ts';
 
 export const TIMELINE_VIEW = 'timeline';
@@ -64,16 +61,6 @@ export function leaderCareerProof(data: unknown, _requested: readonly [number, n
   const reply = data as LeaderCareerReply;
   const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
   return reply.hour <= hour && hour <= last ? [reply.hour, last] : null;
-}
-
-function leaderParams(ctx: FamilyPlanContext): { readonly reference: string } | { readonly selection: LeaderSelection } | null {
-  const chosen = String(ctx.options.leader ?? '');
-  if (chosen) {
-    const reference = subjectHandle(ctx.track.source.metadata.campaignKey, chosen);
-    return reference === null ? null : { reference };
-  }
-  if (ctx.countries.all) return { selection: { kind: 'all' } };
-  return ctx.countries.tags.length ? { selection: { kind: 'countries', countries: ctx.countries.tags.map(countryFromKey) } } : null;
 }
 
 const traitName = (trait: LeaderTrait | undefined) => trait?.name ?? trait?.token ?? 'Trait name not recorded';

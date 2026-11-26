@@ -4,6 +4,7 @@ import { subjectHandle } from '../../dashboard/chosen.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
 import { cardFlag, type CardItemRow, type CardModel, type CardProjection, type CardRow } from '../../families/card/model.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -33,12 +34,14 @@ export function validateLeaderHour(input: unknown): LeaderHourReply {
   return reply;
 }
 
-function leaderParams(ctx: FamilyPlanContext): { readonly reference: string } | { readonly selection: LeaderSelection } | null {
+export function leaderParams(ctx: FamilyPlanContext): { readonly reference: string } | { readonly selection: LeaderSelection } | null {
   const chosen = String(ctx.options.leader ?? '');
   if (chosen) {
     const reference = subjectHandle(ctx.track.source.metadata.campaignKey, chosen);
     return reference === null ? null : { reference };
   }
+  const group = groupSelection(ctx.widget.countries);
+  if (group) return { selection: { kind: 'group', group } };
   if (ctx.countries.all) return { selection: { kind: 'all' } };
   return ctx.countries.tags.length ? { selection: { kind: 'countries', countries: ctx.countries.tags.map(countryFromKey) } } : null;
 }

@@ -1,12 +1,14 @@
 
 pub mod career;
+mod membership;
 #[cfg(test)]
 mod tests;
 
 use dashboard_base::products::{LoadContext, Product, artwork::{ArtResolution, sprites::SpriteFrame}, at_hour::{At, AtHour, Read, ReadsAt}, politics_content::{PoliticsContent, recorded_politics_content}};
 use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
-use dashboard_query::Query;
+use dashboard_query::{Query, series::ranked::GroupSelection};
+use membership::Roster;
 use dashboard_text::triggers::{Evaluator, LeaderVisibility, RECORDED_TABLES, World, core_gap};
 use content_reader_gui::gui::native::{Guis, window_icon_sprite};
 use content_reader_key_names::unit_leader::Leaders;
@@ -61,6 +63,7 @@ impl LeaderKinds {
 pub enum LeaderSelection {
     All,
     Countries { countries: Vec<dashboard_base::products::Country> },
+    Group { group: GroupSelection },
 }
 
 #[derive(Deserialize)]
@@ -68,6 +71,7 @@ pub enum LeaderSelection {
 struct SelectionAsked {
     kind: SelectionKind,
     countries: Option<Vec<dashboard_base::products::Country>>,
+    group: Option<GroupSelection>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +79,7 @@ struct SelectionAsked {
 enum SelectionKind {
     All,
     Countries,
+    Group,
 }
 
 impl TryFrom<SelectionAsked> for LeaderSelection {
@@ -85,21 +90,19 @@ impl TryFrom<SelectionAsked> for LeaderSelection {
             (SelectionKind::All, _) => Ok(Self::All),
             (SelectionKind::Countries, Some(countries)) => Ok(Self::Countries { countries }),
             (SelectionKind::Countries, None) => Err("A leader selection of countries names them"),
+            (SelectionKind::Group, _) => asked.group.map(|group| Self::Group { group }).ok_or("A leader group selection names its group"),
         }
     }
 }
 
 impl LeaderSelection {
-    fn keeps(&self, owner: Option<(u32, &str)>) -> bool {
+    fn keeps(&self, slot: Option<u32>, tag: Option<&str>, roster: Option<&Roster>, hour: i32) -> bool {
         match self {
             Self::All => true,
-            Self::Countries { countries } => owner.is_some_and(|(slot, tag)| countries.iter().any(|country| dashboard_world::products::holder_tags::matches(country, (slot, 0), tag))),
+            Self::Countries { countries } => slot.zip(tag).is_some_and(|(slot, tag)| countries.iter().any(|country| dashboard_world::products::holder_tags::matches(country, (slot, 0), tag))),
+            Self::Group { .. } => slot.zip(roster).is_some_and(|(slot, roster)| roster.includes(slot, hour)),
         }
     }
-}
-
-fn owned(tags: &Tags, raw: u32) -> Option<(u32, String)> {
-    Some((tags.slot(raw)?, tags.tag(raw)?))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -501,6 +504,7 @@ pub struct LeadersContext {
     index: Arc<dashboard_query::Index>,
     lifetimes: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
     verdicts: Arc<std::sync::Mutex<Verdicts>>,
+    roster: Option<Arc<Roster>>,
 }
 
 impl LeadersContext {
@@ -522,7 +526,16 @@ impl LeadersContext {
                 *held = Verdicts { catalogue: catalogue.cloned(), at: HashMap::new() };
             }
         }
-        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts })
+        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None })
+    }
+
+    fn for_selection(source: &Source, load: &LoadContext, branch: &str, selection: Option<&LeaderSelection>, cancelled: &AtomicBool) -> io::Result<Self> {
+        let mut context = Self::load(source, load)?;
+        if let Some(LeaderSelection::Group { group }) = selection {
+            let query = context.query(parse_branch(branch).map_err(dashboard_core::invalid)?)?;
+            context.roster = Some(Roster::load(source, &query, load, group, cancelled)?);
+        }
+        Ok(context)
     }
 
     fn verdicts_at(&self, run: u32, hour: i32) -> HashMap<u64, Result<bool, String>> {
@@ -552,6 +565,13 @@ impl LeadersContext {
 
     pub fn tally(&self, query: &Query<'_>, hour: i32, asked: Asked) -> io::Result<Tally> {
         Tally::read(query, hour, asked)
+    }
+
+    fn battles_partial(&self, query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
+        match &self.roster {
+            Some(roster) => Ok(roster.partial_from.filter(|&first| first <= hour)),
+            None => battles_partial_from(query, query.timeline.first, hour),
+        }
     }
 
     #[cfg(feature = "test-support")]
@@ -720,6 +740,42 @@ pub fn held_traits(rows: &[UnitLeaderTraitRow]) -> BTreeMap<u64, Vec<String>> {
         .collect()
 }
 
+impl UnitLeaders {
+    fn kept<'a>(params: &UnitLeadersParams, frame: &'a DecodedFrame, at: &ReadsAt<'_, LeadersContext>) -> Vec<&'a UnitLeaderRow> {
+        let Ok(leaders) = frame.complete::<tables::UnitLeaders>() else { return Vec::new() };
+        let roster = at.context.roster.as_deref();
+        let tags = Tags::read(frame).ok();
+        leaders.iter().filter(|row| params.leaders.includes(row.kind)).filter(|row| {
+            let slot = tags.as_ref().and_then(|tags| tags.slot(row.owner));
+            let tag = tags.as_ref().and_then(|tags| tags.tag(row.owner));
+            params.selection.keeps(slot, tag.as_deref(), roster, at.hour)
+        }).collect()
+    }
+
+    fn people(kept: &[&UnitLeaderRow]) -> Vec<Read> {
+        if kept.is_empty() { return Vec::new(); }
+        vec![Read::these(TableId::Characters, kept.iter().map(|row| u128::from(row.character_id))), Read::all(TableId::LexicalTokens)]
+    }
+
+    fn visibility_reads(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, cached: bool) -> (Vec<Read>, bool) {
+        let kept = Self::kept(params, frame, at);
+        if !kept.iter().any(|row| needs_world(row)) { return (Vec::new(), false); }
+        let mut world = None;
+        let Ok(world) = world_of(frame, &at.context.content, &mut world) else { return (Vec::new(), false) };
+        let decided = cached.then(|| at.context.verdicts_at(at.run, at.hour));
+        let mut clocked = false;
+        for row in kept {
+            let known = decided.as_ref().is_some_and(|known| known.contains_key(&handle(row)));
+            if (known && at.context.roster.is_none()) || !conditioned(row, world) { continue; }
+            if !known {
+                return (RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)).map(Read::all).collect(), true);
+            }
+            clocked = true;
+        }
+        (Vec::new(), clocked)
+    }
+}
+
 impl AtHour for UnitLeaders {
     const KEY: &'static str = "unit-leaders";
     const TITLE: &'static str = "Generals leaderboard";
@@ -751,33 +807,11 @@ impl AtHour for UnitLeaders {
     }
 
     fn reads_in(params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        let kept = || -> Vec<&UnitLeaderRow> {
-            let Ok(leaders) = held.complete::<tables::UnitLeaders>() else { return Vec::new() };
-            let tags = Tags::read(held).ok();
-            leaders
-                .iter()
-                .filter(|row| params.leaders.includes(row.kind) && params.selection.keeps(tags.as_ref().and_then(|tags| owned(tags, row.owner)).as_ref().map(|(slot, tag)| (*slot, tag.as_str()))))
-                .collect()
-        };
+        if at.context.roster.as_ref().is_some_and(|roster| roster.missing(at.hour).is_some()) { return Vec::new(); }
         match step {
             0 => BASE_TABLES.into_iter().map(Read::all).collect(),
-            1 => {
-                let kept = kept();
-                if kept.is_empty() {
-                    return Vec::new();
-                }
-                vec![Read::these(TableId::Characters, kept.iter().map(|row| u128::from(row.character_id))), Read::all(TableId::LexicalTokens)]
-            }
-            2 => {
-                let kept = kept();
-                if !kept.iter().any(|row| needs_world(row)) {
-                    return Vec::new();
-                }
-                let decided = at.context.verdicts_at(at.run, at.hour);
-                let mut world = None;
-                let open = world_of(held, &at.context.content, &mut world).is_ok_and(|world| kept.iter().any(|row| !decided.contains_key(&handle(row)) && conditioned(row, world)));
-                if open { RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)).map(Read::all).collect() } else { Vec::new() }
-            }
+            1 => Self::people(&Self::kept(params, held, at)),
+            2 => Self::visibility_reads(params, held, at, true).0,
             _ => Vec::new(),
         }
     }
@@ -786,11 +820,22 @@ impl AtHour for UnitLeaders {
         LeadersContext::load(source, load)
     }
 
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        LeadersContext::for_selection(source, load, &params.branch_id, Some(&params.selection), &AtomicBool::new(false))
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let context = at.context;
         let content = &context.content;
         let mut warnings = content.missing();
-        let leaders = match frame.complete::<tables::UnitLeaders>().map_err(|error| error.to_string()) {
+        let roster = context.roster.as_deref();
+        let tags = Tags::read(frame).map_err(|error| error.to_string());
+        let rows = match roster.and_then(|roster| roster.missing(at.hour)) {
+            Some(reason) => Err(reason.to_owned()),
+            None if roster.is_some() && let Err(why) = &tags => Err(why.clone()),
+            None => frame.complete::<tables::UnitLeaders>().map_err(|error| error.to_string()),
+        };
+        let leaders = match rows {
             Ok(leaders) => leaders,
             Err(why) => {
                 return Ok(UnitLeadersReply { leaders: Vec::new(), traits: Vec::new(), withheld: Vec::new(), missing: Some(why), battles_partial_from: None, results_missing: RESULTS_MISSING.into(), skill_icons: content.skill_icons().0.clone(), warnings });
@@ -799,7 +844,8 @@ impl AtHour for UnitLeaders {
         let branch = parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?;
         let query = context.query(branch)?;
         let run = query.timeline.at(at.hour).map(|stretch| stretch.run);
-        let tags = Tags::read(frame).map_err(|error| error.to_string());
+        #[cfg(test)]
+        if roster.is_some() { dashboard_base::products::at_hour::count_rows(|| leaders.len() as u64); }
         if let Err(why) = &tags {
             warnings.push(format!("Leaders' owners are not named at this hour: {why}"));
         }
@@ -826,13 +872,14 @@ impl AtHour for UnitLeaders {
             let owner = tags.as_ref().ok().and_then(|tags| tags.tag(row.owner));
             let character = characters.and_then(|rows| rows.binary_search_by_key(&row.character_id, |character| character.id).ok().map(|at| &rows[at]));
             let name = content.person_name(character, lexical);
-            if owner.is_none() && tags.is_ok() {
+            if owner.is_none() && tags.is_ok() && roster.is_none() {
                 if matches!(params.selection, LeaderSelection::All) {
                     withheld.push(LeaderWithheld { reference: handle(row).to_string(), owner: None, kind: row.kind, name, reason: "Leader owner has no resolved recorded country tag".into() });
                 }
                 continue;
             }
-            if !params.selection.keeps(tags.as_ref().ok().and_then(|tags| owned(tags, row.owner)).as_ref().map(|(slot, tag)| (*slot, tag.as_str()))) {
+            let slot = tags.as_ref().ok().and_then(|tags| tags.slot(row.owner));
+            if !params.selection.keeps(slot, owner.as_deref(), roster, at.hour) {
                 continue;
             }
             let verdict = match decided.get(&handle(row)) {
@@ -882,7 +929,7 @@ impl AtHour for UnitLeaders {
             });
         }
         sort_leaders(&mut out);
-        let battles_partial_from = battles_partial_from(&query, query.timeline.first, at.hour)?;
+        let battles_partial_from = context.battles_partial(&query, at.hour)?;
         let (icons, icon_warnings) = content.skill_icons();
         warnings.extend(icon_warnings.iter().cloned());
         Ok(UnitLeadersReply { leaders: out, traits: traits.traits, withheld, missing: None, battles_partial_from, results_missing: RESULTS_MISSING.into(), skill_icons: icons.clone(), warnings })
