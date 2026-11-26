@@ -2879,23 +2879,17 @@ fn compare_operation_tokens(
 ) -> io::Result<()> {
     let mut recorded = BTreeMap::new();
     let mut owners_with_targets = BTreeSet::new();
-    let mut null_target_owners = BTreeSet::new();
     for actual in complete::<tables::OperationTokens>(frame)? {
         let owner = required_country_tag(actual.owner, countries)?;
         country(save, owner)?;
         owners_with_targets.insert(owner);
-        if actual.target == 0 {
-            if !null_target_owners.insert(owner) {
-                return Err(invalid("duplicate resolved null operation-token target"));
-            }
-            report.limitation(
-                "operation-token native null-target serialization is not proved",
-                format!("{} tokens {:?}", text(owner), actual.tokens),
-            );
-            continue;
-        }
-        let target = required_country_tag(actual.target, countries)?;
-        country(save, target)?;
+        let target: &[u8] = if actual.target == 0 {
+            b""
+        } else {
+            let target = required_country_tag(actual.target, countries)?;
+            country(save, target)?;
+            target
+        };
         let mut names = Vec::new();
         let mut missing_ids = BTreeMap::<u32, usize>::new();
         let mut name_ids = BTreeMap::<&[u8], BTreeSet<u32>>::new();
@@ -2963,7 +2957,7 @@ fn compare_operation_tokens(
                 text(owner),
                 text(&expected.target)
             );
-            if !save.countries.contains_key(&expected.target) {
+            if !expected.target.is_empty() && !save.countries.contains_key(&expected.target) {
                 return Err(invalid("unknown saved operation-token target country"));
             }
             let Some(actual) = recorded.remove(&(owner.as_slice(), expected.target.as_slice()))
@@ -4872,6 +4866,24 @@ mod tests {
             &mut report,
         )
         .unwrap();
+        assert_eq!(report.differences.len(), 1);
+    }
+
+    #[test]
+    fn operation_tokens_held_against_no_target_compare_with_the_saved_empty_key() {
+        let pack = saved::parse(&content_reader_parser::parser::parse_save(b"countries={GER={tokens={operation_assets={ ={z a} }}} FRA={}}").unwrap().items).unwrap();
+        let ger = germany();
+        let links = BTreeMap::from([(101, &ger)]);
+        let names = BTreeMap::from([(1, b"a".as_slice()), (2, b"z".as_slice())]);
+        let row = replay_data::rows::OperationTokensRow { owner: 101, target: 0, tokens: vec![1, 2] };
+        let mut report = Report::default();
+        let table = TableId::OperationTokens;
+        compare_operation_tokens(&frame(table, TableRows::OperationTokens(vec![row.clone()])), &pack, &links, &names, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables.get("OperationTokens"), Some(&1));
+        let mut report = Report::default();
+        let fewer = replay_data::rows::OperationTokensRow { tokens: vec![1], ..row };
+        compare_operation_tokens(&frame(table, TableRows::OperationTokens(vec![fewer])), &pack, &links, &names, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
     }
 

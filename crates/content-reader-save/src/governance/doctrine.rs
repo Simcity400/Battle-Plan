@@ -52,7 +52,7 @@ pub struct DoctrineMasteryGrant {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DoctrineEquipmentBonus {
-    pub id: u32,
+    pub id: Vec<u8>,
     pub index: i32,
     pub equipment_bonus: i32,
 }
@@ -174,7 +174,7 @@ pub(super) fn mastery_grants(fields: &[Item]) -> io::Result<Vec<Option<DoctrineM
 pub(super) fn equipment_bonuses(fields: &[Item]) -> io::Result<Vec<DoctrineEquipmentBonus>> {
     entries(fields, b"equipment_bonus", |fields| {
         Ok(DoctrineEquipmentBonus {
-            id: required_integer(fields, b"id")?,
+            id: required_bytes(fields, b"id")?,
             index: required_integer(fields, b"index")?,
             equipment_bonus: required_integer(fields, b"equipment_bonus")?,
         })
@@ -194,7 +194,7 @@ mod tests {
             }} completed_subdoctrines={mod_sub mod_other mod_sub}} {folder=empty}}
             cost_reduction={{uses=-1 name="" cost_factor=-0.35 folder=mod_folder}}
             daily_mastery={{name=grant relevant_tracks={folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track=mod_track track_index=0} daily_mastery=0.125 bonus=-0.5 days=-1}}
-            equipment_bonus={{id=4294967295 index=-1 equipment_bonus=4}}
+            equipment_bonus={{id=mod_sub index=-1 equipment_bonus=4}}
         }}}"#;
         let pack =
             super::super::parse(&content_reader_parser::parser::parse(text).unwrap().items).unwrap();
@@ -225,7 +225,7 @@ mod tests {
             Some(b"mod_track".to_vec())
         );
         assert_eq!(state.daily_mastery[0].as_ref().unwrap().days, -1);
-        assert_eq!(state.equipment_bonuses[0].id, u32::MAX);
+        assert_eq!(state.equipment_bonuses[0].id, b"mod_sub");
     }
 
     #[test]

@@ -455,10 +455,8 @@ fn required_block<'a>(items: &'a [Item], key: &[u8]) -> io::Result<&'a [Item]> {
 }
 
 fn integer<T: std::str::FromStr>(bytes: &[u8]) -> io::Result<T> {
-    std::str::from_utf8(bytes)
-        .map_err(|_| invalid("save integer is not ASCII"))?
-        .parse()
-        .map_err(|_| invalid("save integer is out of range or malformed"))
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid(format!("save integer \"{}\" is not ASCII", bytes.escape_ascii())))?;
+    text.parse().map_err(|_| invalid(format!("save integer {text:?} is out of range or malformed")))
 }
 
 fn decimal(items: &[Item], key: &[u8]) -> io::Result<Option<Decimal>> {

@@ -62,19 +62,35 @@ fn bare_empty_variable_keys_keep_values_and_scope_presence() {
 }
 
 #[test]
-fn empty_variable_keys_do_not_relax_other_save_or_content_syntax() {
+fn empty_keys_read_as_written_while_variable_maps_keep_their_fixed5_values() {
+    fn empty_keyed(items: &[content_reader_parser::parser::Item]) -> Vec<Vec<u8>> {
+        items
+            .iter()
+            .flat_map(|item| match (item.key.as_deref(), item.value.items()) {
+                (Some(b""), _) => vec![item.value.scalar().unwrap_or(b"{}").to_vec()],
+                (_, Some(inner)) => empty_keyed(inner),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+    for (body, values) in [
+        ("=0", vec![b"0".to_vec()]),
+        ("other={=0}", vec![b"0".to_vec()]),
+        ("\"variables\"={=0}", vec![b"0".to_vec()]),
+        ("variables={=0} other={=0}", vec![b"0".to_vec(), b"0".to_vec()]),
+        ("variables>{=word}", vec![b"word".to_vec()]),
+        ("variables={random={=0}}", vec![b"0".to_vec()]),
+    ] {
+        let input = format!("HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b {body}");
+        let saved = SaveDocument::read(input.as_bytes()).unwrap_or_else(|error| panic!("{body}: {error}"));
+        assert_eq!(empty_keyed(saved.items()), values, "{body}");
+    }
     for body in [
-        "=0",
-        "other={=0}",
         "variables={=}",
-        "\"variables\"={=0}",
-        "variables={=0} other={=0}",
-        "variables>{=0}",
         "variables={=word}",
         "variables={=\"0\"}",
         "variables={={}}",
         "variables={==0}",
-        "variables={random={=0}}",
         "variables={=0",
         "variables={=+0}",
         "variables={=0.000001}",

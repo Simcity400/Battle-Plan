@@ -979,7 +979,6 @@ fn parse_operation_tokens(items: &[Item]) -> io::Result<Vec<OperationTokens>> {
         let target = item
             .key
             .clone()
-            .filter(|tag| !tag.is_empty())
             .ok_or_else(|| invalid("operation token list lacks target country"))?;
         if !seen.insert(target.clone()) {
             return Err(invalid("duplicate operation-token target country"));
@@ -1821,6 +1820,29 @@ mod tests {
         );
         assert!(parsed(b"countries={GER={tokens={operation_assets={FRA={}}}}}").is_err());
         assert!(parsed(b"countries={GER={tokens={operation_assets={FRA={x} FRA={y}}}}}").is_err());
+    }
+
+    #[test]
+    fn operation_tokens_with_a_null_target_are_kept_under_the_empty_key_the_game_writes() {
+        let text = b"countries={
+ GER={
+  tokens={
+   operation_assets={
+    ={ team_b team_a }
+    FRA={ x }
+   }
+  }
+ }
+}
+";
+        let pack = parse(&content_reader_parser::parser::parse_save(text).unwrap().items).unwrap();
+        let targets = pack.countries[b"GER".as_slice()].operation_tokens.as_ref().unwrap().operation_assets.as_ref().unwrap();
+        assert_eq!(targets.iter().map(|t| (t.target.clone(), t.names.clone())).collect::<Vec<_>>(), [
+            (Vec::new(), vec![b"team_b".to_vec(), b"team_a".to_vec()]),
+            (b"FRA".to_vec(), vec![b"x".to_vec()]),
+        ]);
+        let twice = b"countries={ GER={ tokens={ operation_assets={ ={ a } ={ b } } } } }";
+        assert!(parse(&content_reader_parser::parser::parse_save(twice).unwrap().items).is_err());
     }
 
     #[test]

@@ -279,7 +279,7 @@ pub fn parse(bytes: &[u8]) -> io::Result<Document> {
 pub fn parse_save(bytes: &[u8]) -> io::Result<Document> {
     crate::parse_counts::parse("save grammar", bytes);
     let mut parser = Parser::new(bytes, false, false);
-    parser.save_variables = true;
+    parser.save = true;
     parser.document()
 }
 
@@ -441,9 +441,10 @@ pub fn parse_unclosed(input: &[u8]) -> io::Result<(Document, bool)> {
 struct Parser<'a> {
     lexer: Lexer<'a>,
     lookahead: Option<Token>,
+    pushed: Option<Token>,
     lines: Option<Lines>,
     closed_at: usize,
-    save_variables: bool,
+    save: bool,
 }
 
 struct Lines {
@@ -471,6 +472,7 @@ impl<'a> Parser<'a> {
                 lenient: false,
             },
             lookahead: None,
+            pushed: None,
             lines: lines.then(|| Lines {
                 newlines: bytes
                     .iter()
@@ -481,7 +483,7 @@ impl<'a> Parser<'a> {
                 blocks: Vec::new(),
             }),
             closed_at: 0,
-            save_variables: false,
+            save: false,
         }
     }
 
@@ -492,6 +494,9 @@ impl<'a> Parser<'a> {
     }
 
     fn peek(&mut self) -> io::Result<Option<&Token>> {
+        if self.pushed.is_some() {
+            return Ok(self.pushed.as_ref());
+        }
         if self.lookahead.is_none() {
             self.lookahead = self.lexer.next()?;
         }
@@ -499,6 +504,9 @@ impl<'a> Parser<'a> {
     }
 
     fn next(&mut self) -> io::Result<Option<Token>> {
+        if let Some(token) = self.pushed.take() {
+            return Ok(Some(token));
+        }
         match self.lookahead.take() {
             Some(token) => Ok(Some(token)),
             None => self.lexer.next(),
@@ -545,6 +553,16 @@ impl<'a> Parser<'a> {
                         kind: Kind::Bare,
                     });
                 }
+                TokenKind::Operator(Operator::Equals) if self.save => {
+                    let (value, kind) = self.save_value(depth, false, token.offset)?;
+                    items.push(Item {
+                        key: Some(Vec::new()),
+                        key_quoted: false,
+                        operator: Operator::Equals,
+                        value,
+                        kind,
+                    });
+                }
                 TokenKind::Operator(Operator::Equals) => {
                     return Err(invalid(token.offset, "expected an item before '='"));
                 }
@@ -567,13 +585,18 @@ impl<'a> Parser<'a> {
                         self.peek()?.map(|token| &token.kind)
                     {
                         let operator = *operator;
-                        self.next()?;
+                        let operator_at = self.next()?.expect("peeked operator").offset;
                         let key_quoted = quoted;
-                        let variable_map = self.save_variables
+                        let in_variables = variable_map;
+                        let variable_map = self.save
                             && !quoted
                             && bytes == b"variables"
                             && operator == Operator::Equals;
-                        let (value, kind) = self.value(depth, variable_map)?;
+                        let (value, kind) = if self.save && !in_variables && operator == Operator::Equals {
+                            self.save_value(depth, variable_map, operator_at)?
+                        } else {
+                            self.value(depth, variable_map)?
+                        };
                         items.push(Item {
                             key: Some(bytes),
                             key_quoted,
@@ -630,6 +653,29 @@ impl<'a> Parser<'a> {
                 },
             )),
             TokenKind::Close => Err(invalid(token.offset, "expected a value")),
+        }
+    }
+
+    fn save_value(&mut self, depth: usize, variable_map: bool, operator: usize) -> io::Result<(Value, Kind)> {
+        let empty = || (Value::Scalar(Vec::new()), Kind::Bare);
+        let bytes = self.lexer.bytes;
+        let later_line = |at: usize| bytes.get(operator..at).is_some_and(|between| between.contains(&b'\n'));
+        let next = self.peek()?.map(|token| (matches!(token.kind, TokenKind::Close), matches!(token.kind, TokenKind::Operator(Operator::Equals)), matches!(token.kind, TokenKind::Scalar { .. }), token.offset));
+        match next {
+            None | Some((true, ..)) => Ok(empty()),
+            Some((_, true, _, at)) if later_line(at) => Ok(empty()),
+            Some((_, _, true, _)) => {
+                let token = self.next()?.expect("peeked scalar");
+                if later_line(token.offset) && matches!(self.peek()?.map(|next| &next.kind), Some(TokenKind::Operator(_))) {
+                    self.pushed = Some(token);
+                    return Ok(empty());
+                }
+                let TokenKind::Scalar { bytes, quoted } = token.kind else { unreachable!("peeked scalar") };
+                let value = self.scalar_or_tag(bytes, quoted, depth)?;
+                let kind = tree_kind(&value, quoted);
+                Ok((value, kind))
+            }
+            Some(_) => self.value(depth, variable_map),
         }
     }
 

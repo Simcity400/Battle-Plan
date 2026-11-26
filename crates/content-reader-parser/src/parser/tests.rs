@@ -350,3 +350,40 @@ fn depth_limit_applies_to_anonymous_and_tagged_blocks() {
         Document::default()
     );
 }
+
+#[test]
+fn the_save_grammar_reads_an_empty_key_and_an_empty_value_as_written() {
+    let text = b"HOI4txt\nassets={\n\t={ alpha beta }\n\tGER={ gamma }\n}\nconveyor={\n\trole=\n\tclosed=yes\n\tlast=\n}\ntail=yes\n";
+    let items = parse_save(text).unwrap().items;
+    let key = |item: &Item| item.key.clone();
+    assert_eq!(items.iter().map(key).collect::<Vec<_>>(), [None, Some(b"assets".to_vec()), Some(b"conveyor".to_vec()), Some(b"tail".to_vec())]);
+    let assets = items[1].value.items().unwrap();
+    assert_eq!(assets.iter().map(key).collect::<Vec<_>>(), [Some(Vec::new()), Some(b"GER".to_vec())]);
+    let teams = assets[0].value.items().unwrap();
+    assert_eq!(teams.iter().map(|item| item.value.scalar().unwrap().to_vec()).collect::<Vec<_>>(), [b"alpha".to_vec(), b"beta".to_vec()]);
+    let conveyor = items[2].value.items().unwrap();
+    assert_eq!(
+        conveyor.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
+        [(Some(b"role".to_vec()), Some(Vec::new())), (Some(b"closed".to_vec()), Some(b"yes".to_vec())), (Some(b"last".to_vec()), Some(Vec::new()))]
+    );
+    assert_eq!(items[3].value.scalar(), Some(b"yes".as_slice()));
+    let keyless = parse_save(b"a=\n={x}").unwrap().items;
+    assert_eq!(keyless.iter().map(key).collect::<Vec<_>>(), [Some(b"a".to_vec()), Some(Vec::new())]);
+    assert_eq!((keyless[0].value.scalar(), keyless[1].value.items().map(<[Item]>::len)), (Some(b"".as_slice()), Some(1)));
+    assert!(parse_save(b"a>").is_err());
+    assert!(parse_save(b"a<").is_err());
+    let inline = parse_save(b"a=x =0").unwrap().items;
+    assert_eq!(
+        inline.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
+        [(Some(b"a".to_vec()), Some(b"x".to_vec())), (Some(Vec::new()), Some(b"0".to_vec()))]
+    );
+    let variables = parse_save(b"variables={named=1 =2}").unwrap().items;
+    let entries = variables[0].value.items().unwrap();
+    assert_eq!(
+        entries.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
+        [(Some(b"named".to_vec()), Some(b"1".to_vec())), (Some(Vec::new()), Some(b"2".to_vec()))]
+    );
+    assert!(parse(text).is_err());
+    assert!(parse(b"a={ ={ b } }").is_err());
+    assert!(parse(b"a={ b= c=d }").is_err());
+}
