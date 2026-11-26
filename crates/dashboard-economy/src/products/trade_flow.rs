@@ -232,7 +232,7 @@ impl AtHour for TradeFlow {
         let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
         let subject = params.subject.as_ref().map(resolve);
         if let Some(None) = subject {
-            return Ok(CountryFlowReply::not_recorded("The chosen country holds no tag at this hour".to_owned(), RESOURCE_DECIMALS, warnings));
+            return Ok(CountryFlowReply::not_recorded(params.subject.as_ref().and_then(|country| at.holders.not_known(country, at.hour)).unwrap_or_else(|| "The chosen country holds no tag at this hour".to_owned()), RESOURCE_DECIMALS, warnings));
         }
         let chosen = match at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
             Ok(chosen) => chosen,
