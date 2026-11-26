@@ -280,10 +280,10 @@ const staticArt = (() => {
 
 let windowFirst = 0;
 const WINDOWED_ADAPTER = { ...tableHostAdapter, rowWindow: () => ({ first: windowFirst, count: 4 }) };
-const WINDOWED_PLAN = {
+const WINDOWED_PLAN: SourcePlan = {
   owner: 'windowed',
-  entries: [{ name: 'log', source: sourceA, branch: '1', offset: 0, read: { shape: 'paged-rows', tailQuery: { product: 'event-feed', params: {}, limit: 64 }, followQuery: null } }],
-} as unknown as SourcePlan;
+  entries: [{ name: 'log', source: sourceA, branch: '1', offset: 0, read: { shape: 'paged-rows', tailQuery: { product: 'event-feed-tail', branchId: '1', from: null, limit: 64 }, followQuery: null } }],
+};
 
 const NO_EXACT = async () => null;
 const NO_SUBSCRIPTIONS: ReturnType<typeof makeSubs> = [];
