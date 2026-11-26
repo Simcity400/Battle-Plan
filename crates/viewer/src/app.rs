@@ -58,6 +58,7 @@ use viewer_map_text::name_pass::{LayerFade, StrategicNames};
 use viewer_world::scene::{Overlay, Request};
 
 mod air_orders;
+mod residency;
 pub(crate) mod combat_rows;
 mod drop;
 mod embedded;
@@ -656,6 +657,7 @@ pub struct Viewer {
     startup_content: Option<content_reader_layers::content::Loading>,
     error: Option<String>,
     scene: Option<Scene>,
+    scene_build: Option<residency::SceneBuild>,
     scene_target: Presented,
     map_error: Option<String>,
     camera: Option<Placement>,
@@ -824,16 +826,16 @@ pub struct Viewer {
 pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    document: &Document,
+    document: &crate::document::Content,
     graphics: dashboard_core::protocol::MapGraphics,
     workers: &viewer_runtime::parallel::Workers,
 ) -> std::io::Result<Scene> {
     let _startup = crate::perf_log::StartupSpan::new("scene");
-    let scene = engine_executable::executable_tables::scope(document.content.tables, || {
+    let scene = engine_executable::executable_tables::scope(document.tables, || {
         load_scene_scoped(device, queue, document, graphics, workers)
     });
     if scene.is_err() {
-        document.content.release_loading();
+        document.release_loading();
     }
     scene
 }
@@ -841,7 +843,7 @@ pub(crate) fn load_scene(
 fn load_scene_scoped(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    document: &Document,
+    document: &crate::document::Content,
     graphics: dashboard_core::protocol::MapGraphics,
     workers: &viewer_runtime::parallel::Workers,
 ) -> std::io::Result<Scene> {
@@ -911,10 +913,10 @@ fn load_scene_scoped(
     apply(
         "scene.political",
         SceneInput::WarmPolitical {
-            map: &document.content.map,
-            strategic_regions: &document.content.strategic_regions,
-            field: &document.content.map_defines.gradient_field,
-            cache: &document.content.political_gpu,
+            map: &document.map,
+            strategic_regions: &document.strategic_regions,
+            field: &document.map_defines.gradient_field,
+            cache: &document.political_gpu,
         },
     )?;
     let warm_started = Instant::now();
@@ -1247,6 +1249,7 @@ impl Viewer {
             startup_content: content_reader_layers::content::Generation::loading(),
             error,
             scene: None,
+            scene_build: None,
             scene_target: Presented::default(),
             map_error: None,
             playing: false,
@@ -6788,6 +6791,7 @@ impl eframe::App for Viewer {
         engine_executable::executable_tables::scope(self.tables(), || {
             self.embedded_logic(ctx, frame)
         });
+        self.follow_shown_maps(ctx, frame);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -6914,7 +6918,7 @@ impl Viewer {
         if !profiling() || self.capture.is_none() {
             self.profile_playback.configure(None, false);
         }
-        let drawn = if let Some(mut document) = self.document.take() {
+        let drawn = if self.scene.is_some() && let Some(mut document) = self.document.take() {
             if profiling() && self.capture.is_some() {
                 let mode = std::env::var("BATTLEPLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
                 let sweep_frames = profiling_sweep();
@@ -7018,7 +7022,7 @@ impl Viewer {
         } else {
             self.release_audio();
             central_panel.show(ui, |ui| {
-                if self.loading.is_some() {
+                if self.loading.is_some() || self.building_scene() {
                     ui.vertical_centered(|ui| {
                         ui.add_space(100.0);
                         ui.spinner();

@@ -28,6 +28,20 @@ pub struct LoadMasks {
 }
 
 pub struct SceneSources {
+    pub terrain: TerrainSources,
+    pub reader: TerrainReader,
+    pub icon_images: Vec<dds::Texture>,
+}
+
+pub struct TerrainReader {
+    pub layers: Arc<content_reader_layers::ResolvedLayers>,
+    pub terrain: String,
+    pub atlas_of_palette: [u8; 256],
+    pub quality: u8,
+    pub decode: content_reader_image::native::Decode,
+}
+
+pub struct TerrainSources {
     pub atlas: dds::Texture,
     pub atlas_normal: dds::Texture,
     pub colormap: dds::Texture,
@@ -48,7 +62,6 @@ pub struct SceneSources {
     pub world_normal: Rgba8Image,
     pub terrain_ids: Vec<u8>,
     pub padded_heights: Option<([u32; 2], Vec<u8>)>,
-    pub icon_images: Vec<dds::Texture>,
 }
 
 impl MapAssets {

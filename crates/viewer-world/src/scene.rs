@@ -1,6 +1,6 @@
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
-use crate::scene_content::{MapAssets, SceneSources};
+use crate::scene_content::{MapAssets, SceneSources, TerrainSources};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -298,6 +298,7 @@ pub struct Scene {
     faction_highlight_regions: Vec<u32>,
     selection_outlined: bool,
     icon_textures: Arc<IconTextures>,
+    _shared: Arc<SceneTextures>,
     name_pass: NamePass,
     near_name_pass: NamePass,
     order_label_pass: [NamePass; 3],
@@ -422,7 +423,8 @@ impl SceneTextures {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        sources: &SceneSources,
+        sources: &TerrainSources,
+        icon_textures: impl FnOnce() -> io::Result<Arc<IconTextures>>,
     ) -> io::Result<Arc<Self>> {
         check_textures(device)?;
         let fow_noise = Arc::new(upload(
@@ -602,21 +604,36 @@ impl SceneTextures {
             heightmap,
             terrain_ids,
             hatch_heights,
-            icon_textures: Arc::new(IconTextures::new(device, queue, &sources.icon_images)?),
+            icon_textures: icon_textures()?,
         }))
     }
 }
 
 pub struct TextureCache(std::sync::Mutex<Uploads>);
 
-enum Uploads {
-    Pending(Box<SceneSources>),
-    Made(wgpu::Device, Arc<SceneTextures>),
+struct Uploads {
+    first: Option<Box<TerrainSources>>,
+    reader: crate::scene_content::TerrainReader,
+    icons: Icons,
+    device: Option<wgpu::Device>,
+    terrain: std::sync::Weak<SceneTextures>,
+}
+
+enum Icons {
+    Pending(Vec<content_reader_image::dds::Texture>),
+    Made(Arc<IconTextures>),
 }
 
 impl TextureCache {
     pub fn new(sources: SceneSources) -> Self {
-        Self(std::sync::Mutex::new(Uploads::Pending(Box::new(sources))))
+        let SceneSources { terrain, reader, icon_images } = sources;
+        Self(std::sync::Mutex::new(Uploads {
+            first: Some(Box::new(terrain)),
+            reader,
+            icons: Icons::Pending(icon_images),
+            device: None,
+            terrain: std::sync::Weak::new(),
+        }))
     }
 
     pub fn warm(
@@ -626,20 +643,30 @@ impl TextureCache {
         assets: &MapAssets,
     ) -> io::Result<Arc<SceneTextures>> {
         let mut uploads = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        let made = match &*uploads {
-            Uploads::Made(owner, textures) if owner == device => {
-                viewer_runtime::load_record::count("scene textures reused", 1, 0);
-                return Ok(Arc::clone(textures));
+        if uploads.device.as_ref().is_some_and(|owner| owner != device) {
+            return Err(invalid(
+                "this map content's textures live on another graphics device; the map loads its content again to draw here",
+            ));
+        }
+        if let Some(shared) = uploads.terrain.upgrade() {
+            viewer_runtime::load_record::count("scene textures reused", 1, 0);
+            return Ok(shared);
+        }
+        let sources = match uploads.first.take() {
+            Some(first) => first,
+            None => {
+                viewer_runtime::load_record::count("scene textures read again", 1, 0);
+                Box::new(uploads.reader.read(&assets.heightmap)?)
             }
-            Uploads::Made(..) => {
-                return Err(invalid(
-                    "this map content's textures live on another graphics device; the map loads its content again to draw here",
-                ));
-            }
-            Uploads::Pending(sources) => SceneTextures::new(device, queue, assets, sources)?,
         };
+        let made = SceneTextures::new(device, queue, assets, &sources, || match &uploads.icons {
+            Icons::Made(icons) => Ok(Arc::clone(icons)),
+            Icons::Pending(images) => Ok(Arc::new(IconTextures::new(device, queue, images)?)),
+        })?;
         viewer_runtime::load_record::count("scene textures uploaded", 1, 0);
-        *uploads = Uploads::Made(device.clone(), Arc::clone(&made));
+        uploads.icons = Icons::Made(Arc::clone(&made.icon_textures));
+        uploads.device = Some(device.clone());
+        uploads.terrain = Arc::downgrade(&made);
         Ok(made)
     }
 }
@@ -755,6 +782,7 @@ impl Scene {
             &[0, 0, 0, 0],
         )?;
 
+        let _shared = Arc::clone(&textures);
         let SceneTextures {
             atlas,
             atlas_normal,
@@ -906,6 +934,7 @@ impl Scene {
             faction_highlight_regions: Vec::new(),
             selection_outlined: false,
             icon_textures,
+            _shared,
             name_pass,
             near_name_pass,
             order_label_pass,
