@@ -422,6 +422,7 @@ fn territory_breakdown(
     let column = breakdown_column(params).expect("validated measure and rule");
     let mut leaves = Vec::new();
     let mut witnessed: HashMap<u32, Option<Exact>> = HashMap::new();
+    let totalled = |slot: u32| unread.is_some_and(|(_, totals)| totals.countries.get(&slot).is_some_and(Option::is_some));
     for row in rows {
         let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
         if let Some(chosen) = chosen
@@ -450,7 +451,7 @@ fn territory_breakdown(
             let entry = witnessed.entry(slot).or_insert(Some(Exact::ZERO));
             *entry = entry.and_then(|sum| sum.plus(*known));
         }
-        if matches!(amount, Amount::Known(known) if known.numerator() == 0) {
+        if matches!(amount, Amount::Known(known) if known.numerator() == 0) || (matches!(amount, Amount::NotRecorded(_)) && held.is_some_and(totalled)) {
             continue;
         }
         leaves.push(Leaf { path: vec![country, region], amount, count: None, last: None });
@@ -574,10 +575,16 @@ impl AtHour for TerritoryBreakdown {
         };
         let chosen = at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)?;
         let read = witnessed_rows::<tables::TerritoryRegionTotals>(frame);
+        let column = breakdown_column(params).ok_or_else(|| dashboard_core::invalid("Unknown territory measure or rule"))?;
+        let cells_unread = read.rows.iter().any(|row| matches!(amount(row, column), Amount::NotRecorded(_)));
         let breakdown = match (read.missing, chosen) {
             (_, Err(refused)) => not_recorded(refused),
             (missing, Ok(chosen)) => {
-                let unread = missing.map(|reason| (format!("Territory by strategic region was not read whole at this hour: {reason}"), country_totals(frame, params)));
+                let reason = match missing {
+                    Some(reason) => Some(format!("Territory by strategic region was not read whole at this hour: {reason}")),
+                    None => cells_unread.then(|| "Territory was not recorded in some strategic regions at this hour".to_owned()),
+                };
+                let unread = reason.map(|reason| (reason, country_totals(frame, params)));
                 territory_breakdown(read.rows, &slot_tags(at.holders, frame.hour), params, chosen.as_ref(), regions, unread.as_ref().map(|(reason, totals)| (reason.as_str(), totals)))
             }
         };
@@ -709,6 +716,11 @@ mod tests {
         assert_eq!(truncated.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "the country's recorded total, its unread regions as one part");
         assert!(truncated.parts[0].children.iter().any(|child| child.key == UNREAD_ROWS && child.amount == Some(BreakdownAmount { numerator: "8".into(), denominator: "3".into() })));
         assert!(truncated.parts.iter().any(|part| part.key == "slot:3" && part.state == BreakdownState::NotRecorded), "a country whose total is unread is not recorded, never zero");
+        let cells = [held(1, 7, Recorded::NotRecorded, 3), held(1, 8, Recorded::Value(2), 1)];
+        let filled = territory_breakdown(&cells, &tags, &params, None, Ok(&regions), Some(("cells not read", &totals)));
+        assert_eq!(filled.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "an unread cell in a complete table takes the country's recorded total");
+        assert!(filled.parts[0].children.iter().any(|child| child.key == UNREAD_ROWS && child.amount == Some(BreakdownAmount { numerator: "3".into(), denominator: "1".into() })), "its unread regions are one known remainder");
+        assert!(!filled.parts[0].children.iter().any(|child| child.key == "7"), "the unread cell is not shown beside the remainder that holds it");
         let unread = [held(1, 7, Recorded::NotRecorded, 3), held(3, 8, Recorded::Value(2), 1)];
         let partly = territory_breakdown(&unread, &tags, &params, None, Err("names not read"), None);
         assert_eq!(partly.total.state, BreakdownState::AtLeast, "a region not recorded is never zero");

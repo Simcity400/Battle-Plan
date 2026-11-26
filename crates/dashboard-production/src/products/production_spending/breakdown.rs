@@ -216,12 +216,138 @@ pub(crate) struct SpendingIndex {
     pub(crate) warnings: Vec<String>,
 }
 
-fn repair_since(repairs: &RepairRead, hour: i32) -> Option<i32> {
-    repairs
-        .total()
-        .into_iter()
-        .find(|&(first, _, amount)| first <= hour && matches!(amount, RunAmount::Known(_)))
-        .map(|(first, _, _)| first)
+enum RepairSegment {
+    Gap(ProductionSpendingUnknown),
+    Unsplit(i64),
+    Split(Vec<(Option<u64>, i64)>),
+}
+
+impl RepairSegment {
+    fn add(&self, hours: i128, sign: i128, designs: &mut BTreeMap<u64, i128>, unattributed: &mut i128) {
+        match self {
+            Self::Gap(_) => {}
+            Self::Unsplit(rate) => *unattributed += sign * i128::from(*rate) * hours,
+            Self::Split(parts) => {
+                for &(design, rate) in parts {
+                    let added = sign * i128::from(rate) * hours;
+                    match design {
+                        Some(variant) => *designs.entry(variant).or_default() += added,
+                        None => *unattributed += added,
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RepairIndex {
+    total: Vec<Piece<RunAmount>>,
+    segments: Vec<(i32, i32, RepairSegment)>,
+    unattributed: Vec<i128>,
+    designs: BTreeMap<u64, Vec<(usize, i128)>>,
+    gaps: Vec<usize>,
+    incomplete: Vec<usize>,
+}
+
+impl RepairIndex {
+    pub(crate) fn of(repairs: &RepairRead) -> Self {
+        let mut edges: BTreeSet<i32> = BTreeSet::new();
+        let mut collect = |first: i32, last: i32| {
+            edges.insert(first);
+            edges.extend(last.checked_add(1));
+        };
+        for &(first, last, _) in &repairs.total {
+            collect(first, last);
+        }
+        for pieces in repairs.parts.values() {
+            for &(first, last, _) in pieces {
+                collect(first, last);
+            }
+        }
+        let points: Vec<i32> = edges.into_iter().collect();
+        let mut index = Self { total: repairs.total(), unattributed: vec![0], ..Self::default() };
+        for pair in points.windows(2) {
+            let (first, last) = (pair[0], pair[1] - 1);
+            let segment = match piece_at(&repairs.total, first).and_then(|piece| piece.2) {
+                None => RepairSegment::Gap(ProductionSpendingUnknown::NotRecorded),
+                Some((None, _)) => RepairSegment::Gap(ProductionSpendingUnknown::SpendingUnavailable),
+                Some((Some(rate), false)) => RepairSegment::Unsplit(rate),
+                Some((Some(rate), true)) => {
+                    let mut parts: Vec<(Option<u64>, i64)> = Vec::new();
+                    let mut missing = false;
+                    for (&design, pieces) in &repairs.parts {
+                        match piece_at(pieces, first).and_then(|piece| piece.2) {
+                            None => {}
+                            Some(None) => {
+                                missing = true;
+                                break;
+                            }
+                            Some(Some(part)) if part != 0 => parts.push((design, part)),
+                            Some(Some(_)) => {}
+                        }
+                    }
+                    if missing { RepairSegment::Unsplit(rate) } else { RepairSegment::Split(parts) }
+                }
+            };
+            let at = index.segments.len();
+            let hours = i128::from(last - first + 1);
+            let mut designs = BTreeMap::new();
+            let mut unattributed = 0;
+            segment.add(hours, 1, &mut designs, &mut unattributed);
+            index.unattributed.push(index.unattributed[at] + unattributed);
+            for (variant, added) in designs {
+                let held = index.designs.entry(variant).or_default();
+                let before = held.last().map_or(0, |entry| entry.1);
+                held.push((at, before + added));
+            }
+            match segment {
+                RepairSegment::Gap(_) => index.gaps.push(at),
+                RepairSegment::Unsplit(rate) if rate != 0 => index.incomplete.push(at),
+                _ => {}
+            }
+            index.segments.push((first, last, segment));
+        }
+        index
+    }
+
+    fn since(&self, hour: i32) -> Option<i32> {
+        self.total.iter().find(|&&(first, _, amount)| first <= hour && matches!(amount, RunAmount::Known(_))).map(|piece| piece.0)
+    }
+
+    pub(super) fn sum(&self, since: i32, hour: i32) -> (BTreeMap<u64, i128>, i128, Option<ProductionSpendingUnknown>, bool) {
+        let mut designs: BTreeMap<u64, i128> = BTreeMap::new();
+        let a = self.segments.partition_point(|segment| segment.1 < since);
+        let b = self.segments.partition_point(|segment| segment.0 <= hour);
+        if a >= b {
+            return (designs, 0, (since <= hour).then_some(ProductionSpendingUnknown::NotRecorded), false);
+        }
+        let first_gap = self.gaps.get(self.gaps.partition_point(|&at| at < a)).filter(|&&at| at < b).map(|&at| match self.segments[at].2 {
+            RepairSegment::Gap(why) => why,
+            _ => ProductionSpendingUnknown::NotRecorded,
+        });
+        let gap = if self.segments[a].0 > since { Some(ProductionSpendingUnknown::NotRecorded) } else { first_gap }
+            .or_else(|| (self.segments[b - 1].1 < hour).then_some(ProductionSpendingUnknown::NotRecorded));
+        let incomplete = self.incomplete.get(self.incomplete.partition_point(|&at| at < a)).is_some_and(|&at| at < b);
+        let mut unattributed = self.unattributed[b] - self.unattributed[a];
+        for (&variant, held) in &self.designs {
+            let before = |at: usize| held[..held.partition_point(|entry| entry.0 < at)].last().map_or(0, |entry| entry.1);
+            let sum = before(b) - before(a);
+            if sum != 0 {
+                designs.insert(variant, sum);
+            }
+        }
+        let (first, _, segment) = &self.segments[a];
+        if *first < since {
+            segment.add(i128::from(since - first), -1, &mut designs, &mut unattributed);
+        }
+        let (_, last, segment) = &self.segments[b - 1];
+        if *last > hour {
+            segment.add(i128::from(last - hour), -1, &mut designs, &mut unattributed);
+        }
+        designs.retain(|_, sum| *sum != 0);
+        (designs, unattributed, gap, incomplete)
+    }
 }
 
 struct RepairSummary {
@@ -234,105 +360,25 @@ struct RepairSummary {
 
 fn repair_summary(repairs: &RepairRead, hour: i32, floor: Option<i32>) -> RepairSummary {
     let start = repairs.total.first().map_or(i32::MIN, |piece| piece.0).max(floor.unwrap_or(i32::MIN));
-    let Some(known) = repair_since(repairs, hour) else {
+    let Some(known) = repairs.index.since(hour) else {
         return RepairSummary { recorded: false, designs: BTreeMap::new(), unattributed: 0, gap: None, split_incomplete: false };
     };
     let since = known.max(start);
-    let mut designs: BTreeMap<u64, i128> = BTreeMap::new();
-    let mut unattributed: i128 = 0;
-    let mut gap: Option<ProductionSpendingUnknown> = (known > start).then_some(ProductionSpendingUnknown::NotRecorded);
-    let mut split_incomplete = false;
-    let mut edges: BTreeSet<i32> = BTreeSet::new();
-    edges.insert(since);
-    if let Some(after) = hour.checked_add(1) {
-        edges.insert(after);
-    }
-    let collect = |edges: &mut BTreeSet<i32>, first: i32, last: i32| {
-        if last < since || first > hour {
-            return;
-        }
-        edges.insert(first.max(since));
-        if let Some(after) = last.min(hour).checked_add(1) {
-            edges.insert(after);
-        }
-    };
-    for &(first, last, _) in &repairs.total {
-        collect(&mut edges, first, last);
-    }
-    for pieces in repairs.parts.values() {
-        for &(first, last, _) in pieces {
-            collect(&mut edges, first, last);
-        }
-    }
-    let points: Vec<i32> = edges.into_iter().collect();
-    for pair in points.windows(2) {
-        let seg_first = pair[0];
-        let seg_last = pair[1] - 1;
-        if seg_first > seg_last || seg_last < since || seg_first > hour {
-            continue;
-        }
-        let hours = i128::from(seg_last - seg_first + 1);
-        match piece_at(&repairs.total, seg_first).and_then(|piece| piece.2) {
-            None => {
-                gap.get_or_insert(ProductionSpendingUnknown::NotRecorded);
-            }
-            Some((None, _)) => {
-                gap.get_or_insert(ProductionSpendingUnknown::SpendingUnavailable);
-            }
-            Some((Some(total_rate), split_known)) => {
-                if !split_known {
-                    unattributed += i128::from(total_rate) * hours;
-                    if total_rate != 0 {
-                        split_incomplete = true;
-                    }
-                    continue;
-                }
-                let mut missing_part = false;
-                let mut part_rates: Vec<(Option<u64>, i64)> = Vec::new();
-                for (&design, pieces) in &repairs.parts {
-                    match piece_at(pieces, seg_first).and_then(|piece| piece.2) {
-                        None => {}
-                        Some(None) => {
-                            missing_part = true;
-                            break;
-                        }
-                        Some(Some(rate)) => {
-                            if rate != 0 {
-                                part_rates.push((design, rate));
-                            }
-                        }
-                    }
-                }
-                if missing_part {
-                    unattributed += i128::from(total_rate) * hours;
-                    if total_rate != 0 {
-                        split_incomplete = true;
-                    }
-                } else {
-                    for (design, rate) in part_rates {
-                        let added = i128::from(rate) * hours;
-                        match design {
-                            Some(variant) => *designs.entry(variant).or_default() += added,
-                            None => unattributed += added,
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (designs, unattributed, gap, split_incomplete) = repairs.index.sum(since, hour);
+    let gap = if known > start { Some(ProductionSpendingUnknown::NotRecorded) } else { gap };
     RepairSummary { recorded: true, designs, unattributed, gap, split_incomplete }
 }
 
 fn tighten_repairs(through: &mut i32, repairs: &RepairRead, hour: i32) {
-    let total = repairs.total();
+    let total = &repairs.index.total;
     if let Some(next_hour) = hour.checked_add(1)
-        && let Some(piece) = piece_at(&total, next_hour)
+        && let Some(piece) = piece_at(total, next_hour)
         && matches!(piece.2, RunAmount::Known(rate) if rate != 0)
     {
         *through = (*through).min(hour);
         return;
     }
-    tighten(through, next_piece_edge(&total, hour));
+    tighten(through, next_piece_edge(total, hour));
     for pieces in repairs.parts.values() {
         tighten(through, next_piece_edge(pieces, hour));
     }
@@ -367,6 +413,7 @@ fn rocket_node(source: Option<&Result<(String, Option<String>), String>>) -> Nod
 pub(crate) struct Built {
     span: usize,
     from: i32,
+    rocket_from: i32,
     leaves: Vec<Leaf>,
     reasons: Vec<String>,
     unassigned: bool,
@@ -472,9 +519,11 @@ impl SpendingIndex {
         };
 
         let span = &self.spans[span_at];
-        let observed_from = span.read.equipment_observations.range(..=hour).next_back().map_or(span.read.span.first, |&since| since.max(span.read.span.first));
+        let since = |observations: &BTreeSet<i32>| observations.range(..=hour).next_back().map_or(span.read.span.first, |&since| since.max(span.read.span.first));
+        let (observed_from, rocket_from) = (since(&span.read.equipment_observations), since(&span.read.rocket_observations));
         let mut through = span.read.span.last.min(self.to);
         tighten(&mut through, span.read.equipment_observations.range(hour.saturating_add(1)..).next().copied());
+        tighten(&mut through, span.read.rocket_observations.range(hour.saturating_add(1)..).next().copied());
         tighten(&mut through, span.next_name_edge(hour, scope));
         tighten(&mut through, span.next_classification(hour));
 
@@ -848,7 +897,7 @@ impl SpendingIndex {
         reasons.sort();
         reasons.dedup();
         warnings.dedup();
-        Ok(Built { span: span_at, from: observed_from, leaves, reasons, unassigned, through: through.max(hour), warnings })
+        Ok(Built { span: span_at, from: observed_from, rocket_from, leaves, reasons, unassigned, through: through.max(hour), warnings })
     }
 
     pub(crate) fn at(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> ProductionSpendingReply {
@@ -869,18 +918,22 @@ impl SpendingIndex {
         };
         let through = end.through;
         let refused = |reason: &str| ProductionSpendingReply { from, hour, through, breakdown: not_recorded(reason), warnings: end.warnings.clone() };
-        if end.from >= from {
-            return if end.from > from && self.counted_before(from, end.from) {
-                refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted))
-            } else {
-                ProductionSpendingReply { from, ..end.reply(hour) }
-            };
+        let rocket = |leaf: &Leaf| leaf.path.iter().any(|node| node.key == "rocket" || node.key.starts_with("rocket:"));
+        let rockets = end.leaves.iter().any(rocket);
+        let counters = [Some(end.from), rockets.then_some(end.rocket_from)];
+        if counters.into_iter().flatten().any(|since| since > from && self.counted_before(from, since)) {
+            return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted));
         }
-        let start = match self.build(from - 1, scope, include_refits, None) {
-            Ok(start) if start.span == end.span && start.from == end.from => start,
+        let (equipment_baseline, rocket_baseline) = (end.from < from, rockets && end.rocket_from < from);
+        if !equipment_baseline && !rocket_baseline {
+            return ProductionSpendingReply { from, ..end.reply(hour) };
+        }
+        let mut start = match self.build(from - 1, scope, include_refits, None) {
+            Ok(start) if start.span == end.span && (!equipment_baseline || start.from == end.from) && (!rocket_baseline || start.rocket_from == end.rocket_from) => start,
             Ok(_) => return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted)),
             Err(reply) => return refused(reply.breakdown.total.reason.as_deref().unwrap_or(unknown_reason(ProductionSpendingUnknown::NotRecorded))),
         };
+        start.leaves.retain(|leaf| if rocket(leaf) { rocket_baseline } else { equipment_baseline });
         let span = &self.spans[end.span];
         let mut reply = end.minus(&start, |variant| span.classified(variant, hour).is_some()).reply(hour);
         reply.from = from;

@@ -33,6 +33,7 @@ fn read(span: Span) -> SpanRead {
         archetypes: BTreeMap::new(),
         archetype_since: BTreeMap::new(),
         equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::new(),
         repairs: None,
     }
 }
@@ -63,10 +64,10 @@ fn a_design_is_zero_without_a_row_and_rocket_and_the_total_sum_their_parts_or_sa
 
 #[test]
 fn a_repaired_design_is_zero_where_the_split_is_known_and_unknown_where_it_is_not() {
-    let repairs = RepairRead {
-        total: vec![(0, 9, Some((Some(2_400), true))), (10, 19, Some((Some(2_400), false))), (20, 24, Some((None, false))), (25, 29, None)],
-        parts: BTreeMap::from([(Some(5), vec![(0, 4, None), (5, 29, Some(Some(1_000)))]), (None, vec![(0, 29, Some(Some(1_400)))])]),
-    };
+    let repairs = RepairRead::new(
+        vec![(0, 9, Some((Some(2_400), true))), (10, 19, Some((Some(2_400), false))), (20, 24, Some((None, false))), (25, 29, None)],
+        BTreeMap::from([(Some(5), vec![(0, 4, None), (5, 29, Some(Some(1_000)))]), (None, vec![(0, 29, Some(Some(1_400)))])]),
+    );
     assert_eq!(repairs.total()[0], (0, 19, Amount::Known(2_400)));
     assert_eq!(repairs.part(Some(5)), vec![
         (0, 4, Amount::Known(0)),
@@ -102,10 +103,10 @@ fn breakdown_scopes_answer_at_hour_with_exact_fractions_and_quiet_through_bounds
     rows.insert((false, 2, Some(OutputPurpose::Converted.raw())), vec![(0, 100, row(Some(100_000)))]);
     rows.insert((false, 3, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(400_000)))]);
     rows.insert((false, 3, Some(OutputPurpose::Refit.raw())), vec![(0, 100, row(Some(50_000)))]);
-    let repairs = RepairRead {
-        total: vec![(0, 23, Some((Some(100_000), true))), (24, 100, Some((Some(0), true)))],
-        parts: BTreeMap::from([(Some(3), vec![(0, 23, Some(Some(100_000))), (24, 100, Some(Some(0)))]), (None, vec![(0, 100, Some(Some(0)))])]),
-    };
+    let repairs = RepairRead::new(
+        vec![(0, 23, Some((Some(100_000), true))), (24, 100, Some((Some(0), true)))],
+        BTreeMap::from([(Some(3), vec![(0, 23, Some(Some(100_000))), (24, 100, Some(Some(0)))]), (None, vec![(0, 100, Some(Some(0)))])]),
+    );
     let span_read = SpanRead {
         span: span(0, 100, false),
         lines: vec![(0, 100, Context::Known)],
@@ -115,6 +116,7 @@ fn breakdown_scopes_answer_at_hour_with_exact_fractions_and_quiet_through_bounds
         archetypes: BTreeMap::new(),
         archetype_since: BTreeMap::from([(2, 0)]),
         equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::new(),
         repairs: Some(repairs),
     };
     let design = |type_key: &str, name: &str, domain: Domain, label: &str, first_hour: i32| Design {
@@ -174,10 +176,10 @@ fn breakdown_scopes_answer_at_hour_with_exact_fractions_and_quiet_through_bounds
 
 #[test]
 fn dockyard_purposes_keeps_known_repairs_when_equipment_is_not_recorded_and_withholds_shares() {
-    let repairs = RepairRead {
-        total: vec![(0, 23, Some((Some(21_100_000), true))), (24, 50, Some((Some(0), true)))],
-        parts: BTreeMap::from([(None, vec![(0, 23, Some(Some(21_100_000))), (24, 50, Some(Some(0)))])]),
-    };
+    let repairs = RepairRead::new(
+        vec![(0, 23, Some((Some(21_100_000), true))), (24, 50, Some((Some(0), true)))],
+        BTreeMap::from([(None, vec![(0, 23, Some(Some(21_100_000))), (24, 50, Some(Some(0)))])]),
+    );
     let span_read = SpanRead {
         span: span(0, 50, false),
         lines: vec![(0, 50, Context::NotShown)],
@@ -187,6 +189,7 @@ fn dockyard_purposes_keeps_known_repairs_when_equipment_is_not_recorded_and_with
         archetypes: BTreeMap::new(),
         archetype_since: BTreeMap::new(),
         equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::new(),
         repairs: Some(repairs),
     };
     let index = SpendingIndex {
@@ -228,6 +231,7 @@ fn a_design_counts_under_its_type_only_from_the_hour_its_classification_is_recor
         archetypes: BTreeMap::new(),
         archetype_since: BTreeMap::from([(1, 0), (2, 40)]),
         equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::new(),
         repairs: None,
     };
     let design = |type_key: &str, domain: Domain| Design {
@@ -265,6 +269,28 @@ fn a_design_counts_under_its_type_only_from_the_hour_its_classification_is_recor
 }
 
 #[test]
+fn a_design_is_typed_from_its_first_archetype_and_named_only_from_its_last_rename() {
+    use replay_lanes::lanes::{Cell, History, Step};
+    let history = History { texts: vec![b"Old".to_vec().into_boxed_slice(), b"New".to_vec().into_boxed_slice(), b"New".to_vec().into_boxed_slice()], ..History::default() };
+    let cells = |name: u32, archetype: i64| Some(vec![Cell::Number(1), Cell::Number(0), Cell::Number(0), Cell::Number(0), Cell::Text(name), Cell::Text(name), Cell::Text(name), Cell::Number(archetype)].into_boxed_slice());
+    let steps = [Step { hour: 10, cells: cells(0, 0) }, Step { hour: 40, cells: cells(0, 7) }, Step { hour: 60, cells: cells(1, 7) }, Step { hour: 70, cells: cells(2, 7) }];
+    assert_eq!(super::definition_dates(&history, &steps, 0), Some(super::DefinitionDates { since: 10, typed: Some(40), named: 60 }), "typed when the archetype is first read, named from the rename, and an equal spelling is no rename");
+}
+
+#[test]
+fn repairs_are_summed_from_indexed_rate_segments_clipped_to_the_asked_hours() {
+    let repairs = RepairRead::new(
+        vec![(0, 9, Some((Some(100), true))), (10, 19, Some((Some(50), false))), (20, 24, Some((None, false))), (25, 29, Some((Some(10), true)))],
+        BTreeMap::from([(Some(5), vec![(0, 29, Some(Some(100)))]), (None, vec![(0, 9, Some(Some(0))), (10, 29, Some(Some(10)))])]),
+    );
+    assert_eq!(repairs.index.sum(5, 14), (BTreeMap::from([(5, 500)]), 250, None, true), "five hours split to the design, five unsplit");
+    assert_eq!(repairs.index.sum(0, 9), (BTreeMap::from([(5, 1_000)]), 0, None, false));
+    assert_eq!(repairs.index.sum(12, 22).2, Some(Why::SpendingUnavailable), "an unread rate inside the hours leaves them unknown");
+    let (designs, unattributed, gap, _) = repairs.index.sum(26, 40);
+    assert_eq!((designs, unattributed, gap), (BTreeMap::from([(5, 400)]), 40, Some(Why::NotRecorded)), "hours after the last rate are not recorded");
+}
+
+#[test]
 fn a_range_counts_only_what_was_spent_inside_it_and_refuses_a_baseline_across_a_restart() {
     let mut rows = BTreeMap::new();
     rows.insert((false, 1, Some(OutputPurpose::New.raw())), vec![(0, 49, row(Some(10_000_000))), (50, 100, row(Some(12_000_000)))]);
@@ -277,6 +303,7 @@ fn a_range_counts_only_what_was_spent_inside_it_and_refuses_a_baseline_across_a_
         archetypes: BTreeMap::new(),
         archetype_since: BTreeMap::from([(1, 0)]),
         equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::new(),
         repairs: None,
     };
     let design = Design { type_key: "infantry_equipment".into(), name: Some("Infantry".into()), domain: Some(Domain::Land), names: vec![StockVariantName { first_hour: 0, name: Some("Rifle".into()), known: true, design: None }], typed_since: None };
@@ -303,6 +330,7 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
         archetypes: BTreeMap::new(),
         archetype_since: BTreeMap::from([(1, 0), (2, 0)]),
         equipment_observations: BTreeSet::from([0, 50]),
+        rocket_observations: BTreeSet::new(),
         repairs: None,
     };
     let design = |key: &str, domain: Domain| Design { type_key: key.into(), name: Some(key.into()), domain: Some(domain), names: vec![StockVariantName { first_hour: 0, name: Some(key.into()), known: true, design: None }], typed_since: None };
@@ -322,6 +350,43 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
     assert_eq!(index.between(0, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "a range from the branch start across the restart is not the new counter alone");
     let at_restart = index.between(50, 80, ProductionSpendingScope::Military, false);
     assert_eq!((at_restart.from, at_restart.breakdown.total.amount), (50, Some(BreakdownAmount { numerator: "20".into(), denominator: "1".into() })), "a range starting at the restart is the new counter");
+    let mut rockets = BTreeMap::new();
+    rockets.insert((false, 2, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(1_000_000)))]);
+    rockets.insert((true, 9, None), vec![(0, 49, row(Some(40_000_000))), (50, 100, row(Some(1_000_000)))]);
+    let rocket_read = SpanRead {
+        span: span(0, 100, false),
+        lines: vec![(0, 100, Context::Known)],
+        rocket: vec![(0, 100, Context::Known)],
+        country: vec![(0, 100, Some((Some(1_000_000), Some(1_000_000))))],
+        rows: rockets,
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(2, 0)]),
+        equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::from([0, 50]),
+        repairs: None,
+    };
+    let mut steady = BTreeMap::new();
+    steady.insert((false, 1, Some(OutputPurpose::New.raw())), vec![(0, 49, row(Some(40_000_000))), (50, 100, row(Some(1_000_000)))]);
+    steady.insert((true, 9, None), vec![(0, 100, row(Some(10_000_000)))]);
+    let steady_read = SpanRead {
+        span: span(0, 100, false),
+        lines: vec![(0, 100, Context::Known)],
+        rocket: vec![(0, 100, Context::Known)],
+        country: vec![(0, 100, Some((Some(1_000_000), Some(1_000_000))))],
+        rows: steady,
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(1, 0)]),
+        equipment_observations: BTreeSet::from([0, 50]),
+        rocket_observations: BTreeSet::new(),
+        repairs: None,
+    };
+    let steady_index = SpendingIndex { spans: vec![IndexedSpan::new(steady_read, HashMap::from([(1, design("infantry_equipment", Domain::Land))]), Vec::new())], from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), rocket_source: None, warnings: Vec::new() };
+    let steady_range = steady_index.between(50, 80, ProductionSpendingScope::Military, false);
+    assert_eq!(steady_range.breakdown.total.amount, Some(BreakdownAmount { numerator: "10".into(), denominator: "1".into() }), "equipment counts from its restart and the rocket counter, running on, subtracts its own baseline");
+    let rocket_index = SpendingIndex { spans: vec![IndexedSpan::new(rocket_read, HashMap::from([(2, design("fighter", Domain::Air))]), Vec::new())], ..index };
+    assert_eq!(rocket_index.between(30, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "a rocket counter restarted inside the range is no difference either");
+    assert_eq!(rocket_index.at(20, ProductionSpendingScope::Military, false).through, 49, "the answer stands no later than the rocket restart");
+    let index = rocket_index;
     let quiet = index.between(60, 80, ProductionSpendingScope::Military, false);
     assert_eq!((quiet.breakdown.total.state, quiet.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "0".into(), denominator: "1".into() })), "nothing spent inside the range is exactly zero");
 }

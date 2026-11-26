@@ -225,12 +225,14 @@ pub(crate) struct SpanRead {
     pub(crate) archetypes: BTreeMap<u64, u32>,
     pub(crate) archetype_since: BTreeMap<u64, i32>,
     pub(crate) equipment_observations: BTreeSet<i32>,
+    pub(crate) rocket_observations: BTreeSet<i32>,
     pub(crate) repairs: Option<RepairRead>,
 }
 
 pub(crate) struct RepairRead {
     pub(super) total: Vec<Piece<Option<(Option<i64>, bool)>>>,
     pub(crate) parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>,
+    pub(super) index: breakdown::RepairIndex,
 }
 
 const RUN: u128 = ProductionCoverageRow::RUN as u128;
@@ -256,6 +258,8 @@ impl SpanRead {
         let [own_rocket, run_lines, run_rocket] = coverage_keys.map(|key| coverage.pieces(key, &span, cells));
         let observations = |rows: &[Piece<Option<Coverage>>]| rows.iter().filter_map(|piece| piece.2.and_then(|row| row.observation)).collect::<BTreeSet<_>>();
         let equipment_observations = observations(&run_lines);
+        let mut rocket_observations = observations(&run_rocket);
+        rocket_observations.extend(observations(&own_rocket));
 
         let shown: Vec<Piece<bool>> = country.iter().map(|&(first, last, row)| (first, last, row.is_some())).collect();
         let lines = zip(&shown, &unknown_pieces(&run_lines), |&shown, why| Context::of(shown, *why));
@@ -287,7 +291,7 @@ impl SpanRead {
         }
 
         let repairs = repairs.then(|| RepairRead::read(query, &span)).transpose()?;
-        Ok(Self { lines, rocket, country, rows, archetypes, archetype_since, equipment_observations, repairs, span })
+        Ok(Self { lines, rocket, country, rows, archetypes, archetype_since, equipment_observations, rocket_observations, repairs, span })
     }
 
     fn context(&self, rocket: bool) -> &[Piece<Context>] {
@@ -334,7 +338,13 @@ impl RepairRead {
             parts.insert(design, rates.pieces(*key, span, |read, cells| read.number(cells, 0)));
         }
         parts.entry(None).or_insert_with(|| vec![(span.first, span.last, None)]);
-        Ok(Self { total, parts })
+        Ok(Self::new(total, parts))
+    }
+
+    pub(crate) fn new(total: Vec<Piece<Option<(Option<i64>, bool)>>>, parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>) -> Self {
+        let mut read = Self { total, parts, index: breakdown::RepairIndex::default() };
+        read.index = breakdown::RepairIndex::of(&read);
+        read
     }
 
     fn span(&self) -> [Piece<()>; 1] {
@@ -443,11 +453,8 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         .complete::<tables::VariantDefinitions>()
         .map(|rows| rows.iter().map(|row| (row.id, row.clone())).collect())
         .unwrap_or_default();
-    let since: HashMap<u64, i32> = cost::storage(|| lanes::history(recording, span.run, TableId::VariantDefinitions, &[0], Keys::These(&keys), span.first, span.last))?
-        .keys
-        .iter()
-        .filter_map(|(key, steps)| steps.iter().find(|step| step.cells.is_some()).map(|step| (*key as u64, step.hour.max(span.first))))
-        .collect();
+    let history = cost::storage(|| lanes::history(recording, span.run, TableId::VariantDefinitions, &DEFINITION_COLUMNS, Keys::These(&keys), span.first, span.last))?;
+    let dated: HashMap<u64, DefinitionDates> = history.keys.iter().filter_map(|(key, steps)| definition_dates(&history, steps, span.first).map(|dates| (*key as u64, dates))).collect();
     let modules: Option<Vec<VariantModuleRow>> = frame.complete::<tables::VariantModules>().ok().map(|rows| rows.to_vec());
     let upgrades: Option<Vec<VariantUpgradeRow>> = frame.complete::<tables::VariantUpgrades>().ok().map(|rows| rows.to_vec());
     let mut tokens: BTreeSet<u128> = BTreeSet::new();
@@ -529,14 +536,61 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                     variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
                 }
                 let (name, _) = variant_names::variant_names(&raw, texts);
-                StockVariantName { first_hour: since.get(&variant).copied().unwrap_or(span.last), name, known: true, design: raw.design }
+                let dates = dated.get(&variant);
+                let named = StockVariantName { first_hour: dates.map_or(span.last, |dates| dates.named), name, known: true, design: raw.design };
+                match dates {
+                    Some(dates) if dates.named > dates.since => vec![StockVariantName { first_hour: dates.since, name: None, known: false, design: None }, named],
+                    _ => vec![named],
+                }
             }
-            None => StockVariantName { first_hour: span.first, name: None, known: false, design: None },
+            None => vec![StockVariantName { first_hour: span.first, name: None, known: false, design: None }],
         };
-        let typed_since = definition.filter(|definition| definition.archetype_token > 0).and_then(|_| since.get(&variant).copied());
-        out.insert(variant, Design { type_key, name, domain, names: vec![names], typed_since });
+        let typed_since = definition.filter(|definition| definition.archetype_token > 0).and_then(|_| dated.get(&variant)).and_then(|dates| dates.typed);
+        out.insert(variant, Design { type_key, name, domain, names, typed_since });
     }
     Ok(out)
+}
+
+const DEFINITION_COLUMNS: [usize; 8] = [0, 1, 2, 3, 7, 8, 9, 10];
+const ARCHETYPE_AT: usize = 7;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DefinitionDates {
+    pub(crate) since: i32,
+    pub(crate) typed: Option<i32>,
+    pub(crate) named: i32,
+}
+
+pub(crate) fn definition_dates(history: &History, steps: &[Step], floor: i32) -> Option<DefinitionDates> {
+    let same = |a: &[Cell], b: &[Cell]| {
+        a[..ARCHETYPE_AT].iter().zip(&b[..ARCHETYPE_AT]).all(|(&x, &y)| match (x, y) {
+            (Cell::Text(_), Cell::Text(_)) => history.text(x) == history.text(y),
+            _ => x == y,
+        })
+    };
+    let mut dates: Option<DefinitionDates> = None;
+    let mut last: Option<&[Cell]> = None;
+    for step in steps {
+        let Some(cells) = step.cells.as_deref() else {
+            last = None;
+            continue;
+        };
+        let hour = step.hour.max(floor);
+        let typed = matches!(cells.get(ARCHETYPE_AT), Some(Cell::Number(token)) if *token > 0);
+        match &mut dates {
+            None => dates = Some(DefinitionDates { since: hour, typed: typed.then_some(hour), named: hour }),
+            Some(held) => {
+                if typed && held.typed.is_none() {
+                    held.typed = Some(hour);
+                }
+                if last.is_none_or(|before| !same(before, cells)) {
+                    held.named = hour;
+                }
+            }
+        }
+        last = Some(cells);
+    }
+    dates
 }
 
 fn of_variant<T>(rows: Option<&[T]>, variant: u64, key: impl Fn(&T) -> u64) -> Option<&[T]> {
