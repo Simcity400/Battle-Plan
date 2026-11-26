@@ -196,7 +196,7 @@ impl std::ops::DerefMut for CounterAssets {
 impl CounterAssets {
     pub fn load(
         shared: &Arc<ResolvedLayers>,
-        (layouts, windows): (Layouts, SharedNativeWindows),
+        (layouts, windows, window_cache): (Layouts, SharedNativeWindows, Arc<WindowCache>),
         defines: &Defines,
         (sprites, registry): (&SpriteSet, &native::resources::Registry),
         (language, map_size, decode): (&str, [u32; 2], content_reader_image::native::Decode),
@@ -385,7 +385,7 @@ impl CounterAssets {
             flags,
             medium_flags,
             large_flags,
-            window_cache: Arc::new(WindowCache::new(Arc::clone(shared))),
+            window_cache,
             types,
             portraits,
             recorded_sheets,

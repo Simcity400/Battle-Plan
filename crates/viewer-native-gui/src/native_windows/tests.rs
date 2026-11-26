@@ -72,6 +72,46 @@ const MAX_RESOLUTION_NAVY: &str = r#"guiTypes = {
     containerWindowType = { name = "naval_combat_mapicon" size = { width = 33 height = 43 } } }"#;
 
 #[test]
+fn viewport_layouts_share_until_a_window_inherits_a_different_size() {
+    content_reader_script::test_game::enter();
+    let root = std::env::temp_dir().join(format!("bp-gui-viewport-{}", std::process::id()));
+    let base = root.join("base");
+    let overlay = root.join("overlay");
+    for (folder, threshold) in [(&base, 513), (&overlay, 731)] {
+        let interface = folder.join("interface");
+        std::fs::create_dir_all(&interface).unwrap();
+        let file = format!(r#"guiTypes = {{
+            containerWindowType = {{ name = "{NAVY_WINDOW}" }}
+            containerWindowType = {{ name = "{NAVAL_COMBAT_WINDOW}" }}
+            windowType = {{ name = "parent" size = {{ x = 42 y = 37 }} position = {{ x = 9 y = 8 }}
+                background = "plate" horizontalBorder = "horizontal" verticalBorder = "vertical" }}
+            windowType = {{ name = "resized" parent = "parent" position = {{ x = {threshold} y = 3 }}
+                size = {{ x = max_resolution y = 5 }} }}
+        }}"#);
+        std::fs::write(interface.join("viewport.gui"), file).unwrap();
+    }
+    let vanilla = [(base.as_path(), &[][..])];
+    let modded = [vanilla[0], (overlay.as_path(), &[][..])];
+    for (folders, threshold) in [(&vanilla[..], 513), (&modded[..], 731)] {
+        let layers = Arc::new(ResolvedLayers::from_folders(folders).unwrap());
+        let cache = WindowCache::new(layers);
+        let wide = cache.at([threshold + 1, 483]).unwrap();
+        let same = cache.at([threshold - 1, 537]).unwrap();
+        let exact = cache.at([threshold, 483]).unwrap();
+        let size = |layout: &NativeWindows| layout.guis.template("resized").unwrap().window().unwrap().size;
+        assert_eq!(size(&wide)[0], native::WindowExtent::MaxResolution { less: threshold as i32 });
+        assert_eq!(size(&exact)[0], native::WindowExtent::Pixels(42));
+        assert!(wide.same(&same));
+        assert!(exact.same(&cache.at([threshold, 537]).unwrap()));
+        assert!(wide.same(&cache.at([threshold + 3, 537]).unwrap()));
+        let retired = Arc::downgrade(&exact.0);
+        drop(exact);
+        assert!(retired.upgrade().is_none());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn the_asset_set_does_not_depend_on_the_gui_viewport() {
     content_reader_script::test_game::enter();
     let localisation = content_reader_localisation::localisation::Localisation::default();

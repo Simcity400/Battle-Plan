@@ -301,7 +301,7 @@ impl Picker {
             .is_none_or(|(size, built)| *size != viewport || !built.same(&windows))
         {
             *self = Self {
-                built: Some((viewport, (*windows).clone())),
+                built: Some((viewport, windows.clone())),
                 ..Self::default()
             };
         }

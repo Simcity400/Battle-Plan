@@ -704,6 +704,7 @@ pub struct Viewer {
     startup_content: Option<content_reader_layers::content::Loading>,
     error: Option<String>,
     scene: Option<Scene>,
+    window_layout: Option<viewer_native_gui::native_windows::NativeWindows>,
     scene_build: Option<residency::SceneBuild>,
     scene_target: Presented,
     map_error: Option<String>,
@@ -1308,6 +1309,7 @@ impl Viewer {
             startup_content: content_reader_layers::content::Generation::loading(),
             error,
             scene: None,
+            window_layout: None,
             scene_build: None,
             scene_target: Presented::default(),
             map_error: None,
@@ -1666,6 +1668,7 @@ impl Viewer {
     }
 
     pub(crate) fn close_playhead(&mut self) {
+        self.window_layout = None;
         for _ in 0..2 {
             self.hover_rows.end_frame(false);
             if self.playhead_map.is_some() {
@@ -4305,6 +4308,12 @@ impl Viewer {
             ]
         };
         let extent = ui_scale_extent(pixels, ui_scale);
+        self.window_layout = if interface {
+            let viewport = viewer_native_gui::native_shader::draw::gui_viewport(pixels, ui_scale);
+            Some(document.icons.counters.window_cache.at(viewport).map_err(|error| error.to_string())?)
+        } else {
+            None
+        };
         let owner = ui
             .ctx()
             .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));

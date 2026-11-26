@@ -3,8 +3,7 @@ use super::native_gui;
 use viewer_runtime::errors::invalid;
 use content_reader_layers::ResolvedLayers;
 use content_reader_gui::gui::native;
-use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, Weak};
 use std::{io, sync::Arc};
 
 pub const MAPICONS_GUI: &str = "interface/mapicons.gui";
@@ -45,34 +44,44 @@ pub const OCCUPATION_ITEM_WINDOW: &str = "resistance_compliance_map_icon_modifie
 
 pub struct WindowCache {
     shared: Arc<ResolvedLayers>,
-    by_viewport: Mutex<BTreeMap<[u32; 2], Arc<NativeWindows>>>,
+    layouts: Mutex<Vec<Weak<WindowLayout>>>,
 }
 
 impl WindowCache {
     pub fn new(shared: Arc<ResolvedLayers>) -> Self {
         Self {
             shared,
-            by_viewport: Default::default(),
+            layouts: Default::default(),
         }
     }
 
-    pub fn at(&self, viewport: [u32; 2]) -> io::Result<Arc<NativeWindows>> {
-        let mut read = self
-            .by_viewport
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(windows) = read.get(&viewport) {
-            return Ok(Arc::clone(windows));
+    pub fn at(&self, viewport: [u32; 2]) -> io::Result<NativeWindows> {
+        let mut layouts = self.layouts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        layouts.retain(|layout| layout.strong_count() > 0);
+        let size = viewport.map(|value| value as i32);
+        if let Some(windows) = layouts.iter().filter_map(Weak::upgrade).find(|windows| windows.guis.fits_viewport(size)) {
+            return Ok(NativeWindows(windows));
         }
-        let windows = Arc::new(NativeWindows::load_at(&self.shared, viewport)?);
-        read.insert(viewport, Arc::clone(&windows));
+        let windows = NativeWindows::load_at(&self.shared, viewport)?;
+        layouts.push(Arc::downgrade(&windows.0));
         Ok(windows)
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct NativeWindows {
-    pub guis: Arc<native::Guis>,
+pub struct NativeWindows(Arc<WindowLayout>);
+
+impl std::ops::Deref for NativeWindows {
+    type Target = WindowLayout;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct WindowLayout {
+    pub guis: native::Guis,
     navy: (usize, usize),
     naval_combat: (usize, usize),
     tiny: Option<(usize, usize)>,
@@ -108,14 +117,14 @@ impl NativeWindows {
         let tiny = index(TINY_UNIT_COUNTER_WINDOW);
         let naval_base = index(NAVAL_BASE_WINDOW);
         let naval_result = index(NAVAL_RESULT_WINDOW);
-        Ok(Self {
-            guis: Arc::new(guis),
+        Ok(Self(Arc::new(WindowLayout {
+            guis,
             navy,
             naval_combat,
             tiny,
             naval_base,
             naval_result,
-        })
+        })))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -163,7 +172,7 @@ impl NativeWindows {
     }
 
     pub fn same(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.guis, &other.guis)
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     pub fn assets(
