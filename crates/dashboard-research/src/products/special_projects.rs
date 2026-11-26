@@ -621,10 +621,16 @@ fn uncovered(spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     let mut at = first;
     for &(a, b) in spans {
+        if a > last {
+            break;
+        }
         if a > at {
             out.push((at, a - 1));
         }
-        at = at.max(b.saturating_add(1));
+        if b >= last {
+            return out;
+        }
+        at = at.max(b + 1);
     }
     if at <= last {
         out.push((at, last));
@@ -979,6 +985,19 @@ fn pieces(query: &Query<'_>, country: &Country, from: i32, through: i32) -> (Vec
             pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id, held_from, opened });
         }
     }
+    if matches!(country, Country::Slot(_)) {
+        let resolved: Vec<(i32, i32)> = identities.iter().map(|run| (run.first_hour, run.last_hour)).collect();
+        let unlinked = query.holders.unlinked();
+        let start = unlinked.partition_point(|&(_, last)| last < from);
+        let mut cursor = 0;
+        for &(first, last) in unlinked[start..].iter().take_while(|&&(first, _)| first <= through) {
+            let (first, last) = (first.max(from), last.min(through));
+            while cursor < resolved.len() && resolved[cursor].1 < first {
+                cursor += 1;
+            }
+            unknown.extend(uncovered(&resolved[cursor..], first, last));
+        }
+    }
     unknown.sort_unstable();
     let mut unresolved: Vec<(i32, i32)> = Vec::new();
     for (first, last) in unknown {
@@ -1139,6 +1158,26 @@ fn current_pick<'f>(project: &'f facts::Project, evidence: &'f facts::Evidence, 
     Some(Current { project, runs: before.into_iter().chain([displayed]).collect(), block_first: Some(completed), marker })
 }
 
+fn holder_not_known(holders: &dashboard_query::identity::Holders, country: &Country, hour: i32) -> Option<String> {
+    let label = match country {
+        Country::Tag(tag) => std::borrow::Cow::Borrowed(tag.as_str()),
+        Country::Slot(slot) => holders.label(country, hour).map_or_else(|| std::borrow::Cow::Owned(format!("country slot {slot}")), std::borrow::Cow::Owned),
+    };
+    if let Some(reason) = holders.unknown_reason(hour) {
+        return Some(format!("Who holds {label} is not known: {reason}"));
+    }
+    let unlinked = match country {
+        Country::Tag(_) => matches!(holders.at(country, hour).map(|run| run.holder), Some(Holder::Unresolved)),
+        Country::Slot(_) => {
+            holders.at(country, hour).is_none() && {
+                let spans = holders.unlinked();
+                spans.get(spans.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour)
+            }
+        }
+    };
+    unlinked.then(|| format!("Who holds {label} is not known: {}", dashboard_query::identity::TAG_UNLINKED))
+}
+
 fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, follow: &incremental::Follow, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let facts = &follow.facts;
     let mut naming = Naming::new(content);
@@ -1198,7 +1237,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             });
             naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, tag, &mut |key| match slot {
                 Some(slot) => scoped_at(query, content, key, hour, slot),
-                None => Err(query.holders.not_known(&params.country, hour).unwrap_or_else(|| "The project's name needs its country's scope, which is unresolved".to_owned())),
+                None => Err(holder_not_known(&query.holders, &params.country, hour).unwrap_or_else(|| "The project's name needs its country's scope, which is unresolved".to_owned())),
             })
         });
         let person = |person: &Person| match person {
@@ -1276,8 +1315,20 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         ));
     }
     let Holding { identities, unresolved } = follow.holding.clone();
-    let unavailable = if identities.is_empty() && !unresolved.is_empty() {
-        Some("Who held this tag was not recorded.".into())
+    let unavailable = if let Some(reason) = current_at.and_then(|hour| holder_not_known(&query.holders, &params.country, hour)) {
+        Some(reason)
+    } else if current_at.is_some() && identities.is_empty() && !unresolved.is_empty() {
+        Some(match params.country {
+            Country::Tag(_) => "No country held this tag at this hour.".into(),
+            Country::Slot(_) => dashboard_query::identity::NOT_HELD_AT_HOUR.into(),
+        })
+    } else if identities.is_empty() && !unresolved.is_empty() {
+        Some(
+            unresolved
+                .iter()
+                .find_map(|&(hour, _)| holder_not_known(&query.holders, &params.country, hour))
+                .unwrap_or_else(|| "Who held this tag was not recorded.".into()),
+        )
     } else if identities.is_empty() {
         Some("No country held this tag in the recording.".into())
     } else if content.definitions.projects.is_empty() {

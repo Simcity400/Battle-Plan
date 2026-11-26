@@ -28,6 +28,7 @@ fn custody_holds_only_when_the_owner_stayed_linked_from_the_read_through_the_hou
     assert_eq!(custody.usable(10, Some(25), &[(26, 60)], 28), None, "a read in part supplies nothing");
     assert!(!Custody::new(&returned, 5, 26, 60).held(10, 25, 28), "nor a read from before the country held the tag");
     assert_eq!(uncovered(&[(30, 40), (60, 300)], 20, 150), [(20, 29), (41, 59)]);
+    assert_eq!(uncovered(&[(29, 30)], 25, 25), [(25, 25)]);
 }
 
 #[test]
@@ -1189,4 +1190,181 @@ fn the_current_view_carries_only_the_status_at_the_hour_and_the_one_before_it_wh
     assert_eq!(shown_runs(&cancelled, 15), None, "a cancelled project leaves Current");
     let relooked = [run(0, 9, ProjectState::Running), run(10, 19, ProjectState::Completed), run(20, 40, ProjectState::Completed)];
     assert_eq!(shown_runs(&relooked, 30), Some(0..=2), "completed statuses that follow each other keep the attempt before them");
+}
+
+#[test]
+fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hour() {
+    dashboard_core::test_fixtures::game::enter();
+    let root = std::env::temp_dir().join(format!("special-projects-current-holder-{}-{:?}", std::process::id(), std::thread::current().id()));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    for (path, text) in [
+        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7}}"),
+        ("common/country_tags/fixture.txt", "GER=countries/home.txt POL=countries/other.txt"),
+        ("common/special_projects/specialization/test.txt", "mod_science={}"),
+        ("common/special_projects/projects/test.txt", "project={specialization=mod_science}"),
+        ("localisation/test_l_english.yml", "\u{feff}l_english:\n project:0 \"Project\"\n"),
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let (options, identity) = dashboard_base::test_fixtures::content_identity(&root);
+    let build = |name: &str, frames: Vec<replay_frame::frame::DecodedFrame>| {
+        let mut input = records(1, frames);
+        let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
+        session.identity = identity.clone();
+        let path = root.join(format!("{name}.battleplan"));
+        dashboard_base::test_fixtures::write_with_facts(&path, &options, &identity, input);
+        let replay = replay::campaign::Replay::open(std::fs::read(&path).unwrap()).unwrap().into_timelines(&Default::default()).unwrap();
+        Source::from_replay(dashboard_base::SourceKey { source_id: name.into(), revision: "1".into() }, path, Arc::new(replay), &AtomicBool::new(false)).unwrap()
+    };
+    let with_unknown = |at: i32| {
+        let mut f = frame(at, &hour(at, RUNNING));
+        *f.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 40, literal: b"project".to_vec() }]));
+        if at == 25 {
+            *f.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+        }
+        if at == 27 {
+            if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *f.tables[TableId::CountryLinks.index()] {
+                links.retain(|link: &CountryLinkRow| link.id != 9001);
+            }
+        }
+        f
+    };
+    let source = build("gap-mid", (20..=30).map(with_unknown).collect());
+    let load = LoadContext { content: Some(options.clone()) };
+    let cancelled = AtomicBool::new(false);
+    for (country, subject) in [(Country::Tag("GER".into()), "GER"), (Country::Slot(7), "country slot 7")] {
+        let asked = serde_json::json!({ "panel": "special-projects", "branchId": "1", "country": country, "current": true });
+        let panel = dated_panel(&source, &load, &asked).unwrap();
+        let exact = panel.exact().unwrap();
+        for at in [24, 25, 26, 27, 28] {
+            let followed = (exact.advance)(at, at == 24, &cancelled, None).value.as_ref().as_ref().unwrap().clone();
+            let direct = (exact.cold)(at, &cancelled).unwrap();
+            assert_eq!(followed, direct, "followed matches direct at hour {at} for {country:?}");
+            if at == 25 {
+                let why = direct["unavailable"].as_str().expect("unknown holder hour must explain why Current is unavailable");
+                assert_eq!(why, format!("Who holds {subject} is not known: Countries was not complete at these hours"));
+            } else if at == 27 {
+                let why = direct["unavailable"].as_str().expect("unlinked tag hour must explain why Current is unavailable");
+                assert_eq!(why, format!("Who holds {subject} is not known: {}", dashboard_query::identity::TAG_UNLINKED));
+            } else {
+                assert_eq!(direct["unavailable"], serde_json::Value::Null, "known hour {at} should be available: {direct}");
+            }
+        }
+    }
+    let history = SpecialProjects::load(
+        &source,
+        &SpecialProjectsParams { branch_id: "1".into(), country: Country::Tag("GER".into()), hour: Some(30), current: None },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(history.unavailable, None, "History keeps earlier and later lanes across an unknown-holder hour");
+    assert_eq!(history.unresolved, vec![HourSpan { first_hour: 25, last_hour: 25 }, HourSpan { first_hour: 27, last_hour: 27 }]);
+    let slot_history = SpecialProjects::load(
+        &source,
+        &SpecialProjectsParams { branch_id: "1".into(), country: Country::Slot(7), hour: Some(30), current: None },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(slot_history.unavailable, None);
+    assert_eq!(slot_history.unresolved, vec![HourSpan { first_hour: 25, last_hour: 25 }, HourSpan { first_hour: 27, last_hour: 27 }]);
+
+    let only_unlinked = build(
+        "only-unlinked",
+        (20..=23)
+            .map(|at| {
+                let mut f = frame(at, &hour(at, RUNNING));
+                if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *f.tables[TableId::CountryLinks.index()] {
+                    links.retain(|link: &CountryLinkRow| link.id != 9001);
+                }
+                f
+            })
+            .collect(),
+    );
+    let slot_unlinked_history = SpecialProjects::load(
+        &only_unlinked,
+        &SpecialProjectsParams { branch_id: "1".into(), country: Country::Slot(7), hour: Some(23), current: None },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(
+        slot_unlinked_history.unavailable.as_deref(),
+        Some(format!("Who holds country slot 7 is not known: {}", dashboard_query::identity::TAG_UNLINKED).as_str()),
+    );
+    assert_eq!(slot_unlinked_history.unresolved, vec![HourSpan { first_hour: 20, last_hour: 23 }]);
+
+    let bounded_unlinked = build(
+        "bounded-unlinked",
+        (25..=30)
+            .map(|at| {
+                let mut f = frame(at, &Hour { holder: Some(at == 25 || at >= 29), ..hour(at, RUNNING) });
+                if at == 25 {
+                    if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *f.tables[TableId::CountryLinks.index()] {
+                        links.retain(|link: &CountryLinkRow| link.id != 9001);
+                    }
+                } else if (26..=28).contains(&at) {
+                    if let TableView::Complete(TableRows::Countries(countries)) = &mut *f.tables[TableId::Countries.index()] {
+                        countries[0].canonical_slot = 8;
+                    }
+                    if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *f.tables[TableId::CountryLinks.index()] {
+                        for link in links.iter_mut() {
+                            if link.id == 9001 {
+                                link.canonical_slot = 8;
+                            }
+                        }
+                    }
+                }
+                f
+            })
+            .collect(),
+    );
+    let slot_bounded = SpecialProjects::load(
+        &bounded_unlinked,
+        &SpecialProjectsParams { branch_id: "1".into(), country: Country::Slot(7), hour: Some(30), current: None },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(slot_bounded.unavailable, None);
+    assert_eq!(slot_bounded.unresolved, vec![HourSpan { first_hour: 25, last_hour: 25 }]);
+
+    let early_unknown = |at: i32| {
+        let mut f = frame(at, &Hour { holder: Some(false), ..hour(at, RUNNING) });
+        if at <= 22 {
+            *f.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+        }
+        f
+    };
+    let absent_after = build("early-unknown", (20..=25).map(early_unknown).collect());
+    let during = SpecialProjects::load(
+        &absent_after,
+        &SpecialProjectsParams { branch_id: "1".into(), country: Country::Tag("GER".into()), hour: Some(21), current: Some(true) },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    let why = during.unavailable.as_deref().expect("unknown holder at 21 must report reason");
+    assert!(why.contains("Who holds GER is not known:") && why.contains("Countries"), "got {why:?}");
+    let after = SpecialProjects::load(
+        &absent_after,
+        &SpecialProjectsParams { branch_id: "1".into(), country: Country::Tag("GER".into()), hour: Some(25), current: Some(true) },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    let why_after = after.unavailable.as_deref().expect("absent country at 25 is unavailable");
+    assert!(!why_after.contains("is not known:"), "known absent hour 25 must not reuse earlier unknown-holder reason: {why_after:?}");
 }

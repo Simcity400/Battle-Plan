@@ -166,7 +166,7 @@ impl Holders {
         self.slots.get_or_init(|| slot_histories(&self.tags))
     }
 
-    fn unlinked(&self) -> &[(i32, i32)] {
+    pub fn unlinked(&self) -> &[(i32, i32)] {
         self.unlinked.get_or_init(|| {
             let mut spans: Vec<(i32, i32)> = self.tags.values().flatten().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last)).collect();
             spans.sort_unstable();
