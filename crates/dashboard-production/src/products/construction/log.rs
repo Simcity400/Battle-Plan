@@ -126,7 +126,10 @@ pub(crate) struct ConstructionProject {
     pub end: Option<ProjectEnd>,
     pub first_repair_tick: Option<i32>,
     pub outputs: Vec<ConstructionOutputRun>,
+    pub counters_read: u8,
 }
+
+const COUNTERS: [usize; 7] = [col::BUILT, col::REPAIRED, col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::POSSIBLE, col::ADDED_NEW, col::ADDED_REPAIR];
 
 fn join_runs<T>(
     mut a: Vec<T>,
@@ -147,7 +150,7 @@ fn join_runs<T>(
     a
 }
 
-fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>) -> Vec<LevelsBuilt> {
+fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>, read: [bool; 2]) -> Vec<LevelsBuilt> {
     let mut prior = [0u32; 2];
     for levels in &x {
         prior[usize::from(levels.repair)] = prior[usize::from(levels.repair)].saturating_add(levels.count);
@@ -162,7 +165,7 @@ fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>) -> Vec<LevelsBuilt>
         let delta = levels.count.saturating_sub(prior[side]);
         if delta > 0 {
             prior[side] = prior[side].saturating_add(delta);
-            if prior[side] != delta {
+            if read[side] {
                 levels.count = delta;
                 levels.carried = false;
             }
@@ -178,6 +181,8 @@ fn join_unread(a: Option<Vec<(i32, i32)>>, b: Option<Vec<(i32, i32)>>) -> Option
 }
 
 pub(crate) fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionProject {
+    let read = |new: usize, repair: usize| [a.counters_read & (1 << new) != 0, a.counters_read & (1 << repair) != 0];
+    let read = [read(0, 1), read(2, 3), read(4, 4), read(5, 6)];
     let output_origin = a.output_origin.or_else(|| {
         if a.source == ProjectSource::OutputAlone && b.source == ProjectSource::Census {
             Some(OutputOrigin { tag: a.tag, country_slot: a.country_slot, building: a.building, state: a.state, to_state: a.to_state, province: a.province })
@@ -211,10 +216,11 @@ pub(crate) fn join_project(a: ConstructionProject, b: ConstructionProject) -> Co
         repaired_unread: join_unread(a.repaired_unread, b.repaired_unread),
         runs,
         outputs,
-        built: join_levels(a.built, b.built),
-        unaccounted: join_levels(a.unaccounted, b.unaccounted),
-        possible: join_levels(a.possible, b.possible),
-        added: join_levels(a.added, b.added),
+        built: join_levels(a.built, b.built, read[0]),
+        unaccounted: join_levels(a.unaccounted, b.unaccounted, read[1]),
+        possible: join_levels(a.possible, b.possible, read[2]),
+        added: join_levels(a.added, b.added, read[3]),
+        counters_read: a.counters_read | b.counters_read,
         end: b.end.or(a.end),
         ..b
     }
@@ -302,7 +308,8 @@ fn shown<'a>(steps: &'a [Step], to: i32) -> Vec<(i32, i32, &'a [Cell])> {
 pub(crate) fn rise_hours(steps: &[Step]) -> Vec<i32> {
     let mut out = Vec::new();
     let mut held: (Option<i64>, Option<i64>) = (None, None);
-    let mut saw_unread = (false, false);
+    let continued = steps.iter().find_map(|step| step.cells.as_deref().map(|cells| hour(cells, col::FIRST_READ).is_some_and(|first| first < step.hour))).unwrap_or(false);
+    let mut saw_unread = (continued, continued);
     for step in steps {
         let Some(cells) = step.cells.as_deref() else { continue };
         let built = number(cells, col::BUILT);
@@ -384,10 +391,10 @@ fn end_of(cells: &[Cell], at: i32) -> Option<ProjectEnd> {
     Some(ProjectEnd { kind, hour: hour(cells, col::END_HOUR), known_at: hour(cells, col::END_KNOWN_AT).unwrap_or(at), unknown })
 }
 
-fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &dyn Fn(i32) -> Option<Vec<ConstructionRise>>) -> Vec<LevelsBuilt> {
+fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &dyn Fn(i32) -> Option<Vec<ConstructionRise>>, continued: bool) -> Vec<LevelsBuilt> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
-    let mut saw_unread = false;
+    let mut saw_unread = continued;
     for &(at, _, cells) in shown {
         let Some(now) = number(cells, column) else {
             saw_unread = true;
@@ -519,6 +526,7 @@ fn assemble_inner<'r>(
             _ => outputs.push(run),
         }
     }
+    let continued = first_read < shown[0].0;
     let built = |at: i32| rises(at).map(|rises| rises.built.clone());
     let repaired = |at: i32| rises(at).map(|rises| rises.repaired.clone());
     let undated = |_: i32| -> Option<Vec<ConstructionRise>> { None };
@@ -574,15 +582,20 @@ fn assemble_inner<'r>(
         first_read,
         earlier_unknown: number(last, col::EARLIER_UNKNOWN) == Some(1),
         runs,
-        built: merged(rises_of(&shown, col::BUILT, false, &built), rises_of(&shown, col::REPAIRED, true, &repaired)),
+        built: merged(rises_of(&shown, col::BUILT, false, &built, continued), rises_of(&shown, col::REPAIRED, true, &repaired, continued)),
         built_unread: counter_unread(col::BUILT),
         repaired_unread: counter_unread(col::REPAIRED),
-        unaccounted: merged(rises_of(&shown, col::UNACCOUNTED_NEW, false, &undated), rises_of(&shown, col::UNACCOUNTED_REPAIR, true, &undated)),
-        possible: rises_of(&shown, col::POSSIBLE, false, &undated),
-        added: merged(rises_of(&shown, col::ADDED_NEW, false, &undated), rises_of(&shown, col::ADDED_REPAIR, true, &undated)),
+        unaccounted: merged(rises_of(&shown, col::UNACCOUNTED_NEW, false, &undated, false), rises_of(&shown, col::UNACCOUNTED_REPAIR, true, &undated, false)),
+        possible: rises_of(&shown, col::POSSIBLE, false, &undated, false),
+        added: merged(rises_of(&shown, col::ADDED_NEW, false, &undated, false), rises_of(&shown, col::ADDED_REPAIR, true, &undated, false)),
         end: end_of(last, last_at),
         first_repair_tick: hour(last, col::FIRST_REPAIR_TICK),
         outputs,
+        counters_read: COUNTERS
+            .iter()
+            .enumerate()
+            .filter(|&(_, &column)| shown.iter().any(|&(_, _, cells)| number(cells, column).is_some()))
+            .fold(0, |bits, (at, _)| bits | 1 << at),
     }))
 }
 
