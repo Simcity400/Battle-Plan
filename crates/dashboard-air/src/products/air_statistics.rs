@@ -260,6 +260,22 @@ impl AtHour for AirStatisticsAt {
         }
     }
 
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        let dated = [TableId::AirStatistics, TableId::AirTheatres, TableId::AirTheatreGroups, TableId::AirTheatreMembers, TableId::CountryLinks, TableId::AirWings].iter().any(|table| {
+            let view = &frame.tables[table.index()];
+            !view.is_not_selected() && !matches!(view.held(), replay_frame::frame::TableView::Complete(_))
+        });
+        if dated { frame.hour } else { i32::MAX }
+    }
+
+    fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Names) -> Option<Vec<usize>> {
+        if table == TableId::AirStatistics {
+            let channel = usize::from(params.channel);
+            return Some(vec![channel_column(channel).ok()?, channel_column(channel + PAIRS).ok()?]);
+        }
+        crate::products::air_missions::theatre_columns(table)
+    }
+
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(names(source, load))
     }

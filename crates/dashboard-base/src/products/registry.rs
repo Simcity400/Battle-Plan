@@ -36,7 +36,6 @@ macro_rules! register_products {
             $crate::products::Registered { load, $(panel: Some($panel),)? ..registration::<$product>() }
         };
     };
-    (@hour custom $product:ty, $panel:expr) => { $panel };
     (@hour exact $product:ty, $conditions:expr) => {
         $crate::products::PanelReader {
             kind: $crate::products::PanelKind::ExactHourlyWhen($conditions),

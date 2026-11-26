@@ -35,14 +35,7 @@ struct PowerReply {
 
 crate::reply_warnings!(PowerReply);
 
-fn streamed(data: &PanelData, fresh: bool) -> PanelData {
-    data.clone().map(|mut reply| {
-        for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
-            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); group.remove("rawValues"); }
-        }
-        reply
-    })
-}
+use crate::test_fixtures::streamed;
 
 fn column(table: TableId, name: &str) -> usize {
     dashboard_declare::field(table, name).unwrap()
@@ -336,6 +329,18 @@ impl AtHour for Static {
     fn reply(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(ScopedReply { scoped: false, warnings: Vec::new() })
+    }
+}
+
+#[test]
+fn exact_panels_name_the_invalid_field_before_selecting_the_branch() {
+    let source = Arc::new(recording().0);
+    for (params, reason) in [
+        (json!({"country": "GER"}), "missing field branchId"),
+        (json!({"branchId": false, "country": "GER"}), "branchId: invalid type: boolean `false`, expected a string"),
+        (json!({"branchId": "unreadable"}), "missing field country"),
+    ] {
+        assert_eq!(exact_panel::<Power>(&source, &load(), &params).err().unwrap(), format!("Invalid test-power panel: {reason}"));
     }
 }
 
@@ -832,7 +837,8 @@ impl AtHour for Partial {
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let (keys, missing) = partly_held(frame.tables[TableId::CountryResources.index()].held());
-        Ok(PartialReply { keys, missing, warnings: Vec::new() })
+        let warnings = missing.and_then(|_| frame.complete::<tables::CountryResources>().err()).map(|e| e.to_string()).into_iter().collect();
+        Ok(PartialReply { keys, missing, warnings })
     }
 }
 
@@ -845,7 +851,7 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
             if partly.contains(&hour) {
                 let coal = CountryResourceRow { country: 9001, resource: 1, special_total: i64::from(hour), ..CountryResourceRow::default() };
                 let oil = CountryResourceRow { country: 9001, resource: 2, special_total: 5, ..CountryResourceRow::default() };
-                let rows = if hour % 2 == 0 { vec![coal, oil] } else { vec![oil] };
+                let rows = if hour == 110 { vec![coal, oil] } else { vec![oil] };
                 *frame.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(rows), missing: 3 };
             }
             frame
@@ -872,6 +878,7 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
     for every in [1, 3] {
         for read in stepped(&pages, exact, every, FIRST, 1).into_iter().filter(|read| !read.pending) {
             assert_eq!(said(read.value.as_ref().as_ref().unwrap()), recorded(read.hour), "steps of {every} hours: hour {}", read.hour);
+            assert_eq!(*read.value, (exact.cold)(read.hour, &token), "including the partial read's dated reason at {}", read.hour);
         }
     }
 }

@@ -1,6 +1,6 @@
 
 use dashboard_base::products::{BranchParams, LoadContext, Product, regions::{ActiveRegions, NoRegions, no_regions}};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{At, AtHour, Read}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::at_hour::{self, At, AtHour, Read}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::identity::{Holder, Holders};
 use dashboard_world::products::{groups::{self, FactionGroup}, styles::{BranchLooks, LookResolver, ResolvedCountryLook}};
@@ -372,6 +372,23 @@ impl BranchSideResolver {
             .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction.clone())))
             .collect();
         Ok(Self { looks, factions })
+    }
+
+    fn through(&self, hour: i32, sides: &[AirSide], viewpoint: Option<&AirCountryStyle>) -> i32 {
+        let mut next = viewpoint.and_then(|style| self.looks.next_for(&style.tag, hour));
+        for side in sides {
+            if (side.factions.is_empty() || side.anchor.is_none())
+                && let Some(tag) = side.tag.as_ref().or(side.leader.as_ref()) {
+                next = next.into_iter().chain(self.looks.next_for(tag, hour)).min();
+            }
+            for group in side.factions.iter().filter_map(|id| self.factions.get(&id.parse::<u64>().ok()?)) {
+                let at = group.names.partition_point(|name| name.first_hour <= hour);
+                let last = at.checked_sub(1).map(|i| group.names[i].last_hour).filter(|&last| last >= hour);
+                let date = group.names.get(at).map(|name| name.first_hour);
+                next = next.into_iter().chain(last.and_then(|h| h.checked_add(1))).chain(date).min();
+            }
+        }
+        at_hour::before(next)
     }
 }
 
@@ -959,19 +976,33 @@ impl AtHour for AirSuperiorityAt {
         let theatres = params.theatre_ids().is_some();
         match step {
             0 => {
-                let mut reads = vec![Read::all(TableId::RaidAirScores), Read::all(TableId::AirRegionWings), Read::all(TableId::CountryLinks)];
+                let mut reads = vec![Read::all(TableId::RaidAirScores), Read::all(TableId::AirRegionWings)];
                 if theatres {
                     reads.extend(THEATRE_TABLES.into_iter().map(Read::all));
                 }
                 reads
             }
-            1 if theatres => member_wings(held).into_iter().collect(),
+            1 => {
+                let rows = dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(held).unwrap_or_default();
+                let countries: BTreeSet<_> = rows.iter().map(|row| u128::from(row.country)).collect();
+                let mut reads = vec![Read::these(TableId::CountryLinks, countries)];
+                if theatres { reads.extend(member_wings(held)); }
+                reads
+            }
             _ => Vec::new(),
         }
     }
 
     fn columns(table: TableId) -> Option<Vec<usize>> {
         (table == TableId::RaidAirScores).then(|| ["friendly", "enemy"].iter().filter_map(|name| dashboard_declare::field(table, name).ok()).collect())
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &AirContext) -> Option<Vec<usize>> {
+        match table {
+            TableId::AirTheatres => Some(Vec::new()),
+            TableId::RaidAirScores => Self::columns(table),
+            _ => crate::products::air_missions::theatre_columns(table),
+        }
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -1001,8 +1032,12 @@ impl AtHour for AirSuperiorityAt {
         })
     }
 
-    fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        valid_through(at.context, at.hour)
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        if matches!(frame.tables[TableId::RaidAirScores.index()].held(), replay_frame::frame::TableView::NotRecorded { .. }) {
+            return at.hour;
+        }
+        let through = valid_through(at.context, at.hour).min(at_hour::before(at.holders.next_change(at.hour)));
+        at.context.resolver.as_ref().map_or(through, |resolver| through.min(resolver.through(at.hour, &reply.sides, reply.viewpoint_country_style.as_ref())))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -1019,22 +1054,16 @@ impl AtHour for AirSuperiorityAt {
 
 fn valid_through(context: &AirContext, hour: i32) -> i32 {
     let Ok(index) = &context.index else { return hour };
+    epoch_through(index, hour)
+}
+
+fn epoch_through(index: &index::AirIndex, hour: i32) -> i32 {
     let at = index.epochs.partition_point(|epoch| epoch.last < hour);
-    let mut through = match index.epochs.get(at) {
+    match index.epochs.get(at) {
         Some(epoch) if epoch.first <= hour => epoch.last,
-        Some(next) => next.first - 1,
+        Some(next) => next.first.saturating_sub(1),
         None => i32::MAX,
-    };
-    if let Some(resolver) = &context.resolver {
-        through = through.min(resolver.looks.next_change(hour).saturating_sub(1));
-        for group in resolver.factions.values() {
-            let next = group.names.iter().flat_map(|run| [run.first_hour, run.last_hour.saturating_add(1)]).filter(|&boundary| boundary > hour).min();
-            if let Some(next) = next {
-                through = through.min(next - 1);
-            }
-        }
     }
-    through.max(hour)
 }
 
 pub struct AirSuperiorityChoices;

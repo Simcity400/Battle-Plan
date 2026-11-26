@@ -8,6 +8,26 @@ pub fn named<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, Error> {
     T::deserialize(Named(value))
 }
 
+#[derive(Debug)]
+struct FieldError(String);
+
+impl std::fmt::Display for FieldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
+}
+
+impl std::error::Error for FieldError {}
+
+impl de::Error for FieldError {
+    fn custom<T: std::fmt::Display>(message: T) -> Self { Self(message.to_string()) }
+    fn missing_field(field: &'static str) -> Self { Self(format!("missing field {field}")) }
+}
+
+pub fn named_fields<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, String> {
+    let Some(fields) = value.as_object() else { return named(value).map_err(|error| error.to_string()) };
+    let entries = Entries { fields: fields.iter(), value: None, field_error: |key, error| FieldError(format!("{key}: {error}")) };
+    T::deserialize(de::value::MapAccessDeserializer::new(entries)).map_err(|error| error.0)
+}
+
 fn kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -44,7 +64,7 @@ impl<'de> de::Deserializer<'de> for Named<'de> {
                     left => Err(Error::invalid_length(items.len() - left, &"fewer elements")),
                 }
             }
-            Value::Object(fields) => visitor.visit_map(Entries { fields: fields.iter(), value: None }),
+            Value::Object(fields) => visitor.visit_map(Entries { fields: fields.iter(), value: None, field_error: |_, error| error }),
         }
     }
 
@@ -100,24 +120,26 @@ impl<'de> SeqAccess<'de> for Items<'de> {
     }
 }
 
-struct Entries<'a> {
+struct Entries<'a, E> {
     fields: serde_json::map::Iter<'a>,
-    value: Option<&'a Value>,
+    value: Option<(&'a str, &'a Value)>,
+    field_error: fn(&str, Error) -> E,
 }
 
-impl<'de> MapAccess<'de> for Entries<'de> {
-    type Error = Error;
+impl<'de, E: de::Error> MapAccess<'de> for Entries<'de, E> {
+    type Error = E;
 
-    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Error> {
+    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, E> {
         let Some((key, value)) = self.fields.next() else {
             return Ok(None);
         };
-        self.value = Some(value);
-        seed.deserialize(Key(key)).map(Some)
+        self.value = Some((key, value));
+        seed.deserialize(Key(key)).map(Some).map_err(E::custom)
     }
 
-    fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, Error> {
-        seed.deserialize(Named(self.value.take().ok_or_else(|| Error::custom("a value without its key"))?))
+    fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, E> {
+        let (key, value) = self.value.take().ok_or_else(|| E::custom("a value without its key"))?;
+        seed.deserialize(Named(value)).map_err(|error| (self.field_error)(key, error))
     }
 }
 
