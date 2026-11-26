@@ -1,7 +1,7 @@
 
 use super::{
-    Asked, Battles, Content, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeadersContext, RESULTS_MISSING, TraitList, UnitLeaders, UnitLeadersParams, cell_number, cell_text,
-    handle, held_traits, parse_branch,
+    Asked, Content, EvaluatedLeader, LeaderKinds, LeaderRole, LeaderSelection, LeaderTrait, LeadersContext, RESULTS_MISSING, Tally, TopLeader, TraitList, UnitLeaders, UnitLeadersParams,
+    cell_number, cell_text, handle, held_traits_for, parse_branch,
 };
 use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_intelligence::products::intelligence::Tags;
@@ -297,14 +297,13 @@ fn ranking_steps(history: &History, after: i32, next: &mut NextHour) {
     }
 }
 
-fn ranking_tokens(query: &Query<'_>, run: u32, hour: i32, group: bool) -> io::Result<Vec<u128>> {
+fn ranking_tokens(query: &Query<'_>, run: u32, hour: i32) -> io::Result<Vec<u128>> {
     let characters = TableId::Characters;
-    let mut columns = vec![field(characters, "name_token_id")?];
-    if group { columns.push(field(characters, "template_tag")?); }
+    let columns = [field(characters, "name_token_id")?, field(characters, "template_tag")?];
     let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at(query.replay.recording(), run, characters, hour, Some(&columns)))?;
     let view = held.view();
     let mut tokens = Vec::new();
-    for &column in &columns {
+    for column in columns {
         tokens.extend(view.rows().filter_map(|slot| u32::try_from(view.number(column, slot)?).ok()).map(u128::from));
     }
     tokens.sort_unstable();
@@ -313,29 +312,34 @@ fn ranking_tokens(query: &Query<'_>, run: u32, hour: i32, group: bool) -> io::Re
 }
 
 fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, members: Option<&[(u128, u128)]>) -> io::Result<Option<i32>> {
-    let group = members.is_some();
     let recording = query.replay.recording();
     let leaders = TableId::UnitLeaders;
     let components = field(leaders, "skill_category")? + 1;
     let characters = TableId::Characters;
     let lexical = TableId::LexicalTokens;
-    let mut leader_fields = dashboard_base::products::at_hour::field_columns(leaders, &["owner", "kind", "character_id", "skill_valid", "skill_level"]);
+    let mut leader_fields = dashboard_base::products::at_hour::field_columns(
+        leaders,
+        &[
+            "owner", "kind", "category", "captured", "character_id", "skill_valid", "skill_level",
+            "visibility_choice", "template_visibility", "visible_state", "visible_origin",
+        ],
+    );
     leader_fields.extend(components..components + 4);
-    let mut character_fields = dashboard_base::products::at_hour::field_columns(characters, &["name_token_id", "name", "token"]);
-    if group {
-        leader_fields.extend(dashboard_base::products::at_hour::field_columns(leaders, &["category", "captured", "visibility_choice", "template_visibility", "visible_state", "visible_origin"]));
-        character_fields.extend(dashboard_base::products::at_hour::field_columns(characters, &["template_present", "template_tag", "template_file", "template_line", "template_generated"]));
-    }
+    let mut character_fields = dashboard_base::products::at_hour::field_columns(
+        characters,
+        &["name_token_id", "name", "token", "template_present", "template_tag", "template_file", "template_line", "template_generated"],
+    );
+    let mut country_fields = dashboard_base::products::at_hour::field_columns(TableId::Countries, &["tag", "canonical_slot"]);
     leader_fields.sort_unstable();
     character_fields.sort_unstable();
-    let mut inputs = vec![
+    country_fields.sort_unstable();
+    let inputs = vec![
         (leaders, leader_fields),
         (TableId::LeaderBattleTotals, (0..TableId::LeaderBattleTotals.field_count()).collect()),
         (characters, character_fields),
+        (TableId::Countries, country_fields),
+        (TableId::CountryLinks, vec![field(TableId::CountryLinks, "canonical_slot")?]),
     ];
-    if group {
-        inputs.push((TableId::CountryLinks, vec![field(TableId::CountryLinks, "canonical_slot")?]));
-    }
     let literal = [field(lexical, "literal")?];
     let held = |table: TableId| recording.predates(table.index()).is_none() && recording.withheld_reason(table.index()).is_none();
     let block = replay_columnar::envelope::UNIT_ORDINALS as i32;
@@ -345,7 +349,7 @@ fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, members: Opti
         if last <= hour { continue; }
         let origin = recording.run(stretch.run)?.first_hour;
         let start = hour.max(stretch.first);
-        let tokens = if held(characters) && held(lexical) { ranking_tokens(query, stretch.run, start, group)? } else { Vec::new() };
+        let tokens = if held(characters) && held(lexical) { ranking_tokens(query, stretch.run, start)? } else { Vec::new() };
         let mut from = start;
         while from <= last {
             let after = if from == start { hour.max(from - 1) } else { from - 1 };
@@ -510,9 +514,9 @@ fn resolve_selection_at(
             let kept = UnitLeaders::kept(&asked, &frame, &reads_at);
             battle_keys = Some(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32));
             UnitLeaders::people(&kept)
-        } else if step == 2 && context.roster.is_some() {
+        } else if step == 2 {
             let (reads, clocked) = UnitLeaders::visibility_reads(&asked, &frame, &reads_at, true);
-            if clocked { next.see(hour.saturating_add(1)); }
+            if clocked || !reads.is_empty() { next.see(hour.saturating_add(1)); }
             reads
         } else {
             UnitLeaders::reads_in(&asked, None, step, &frame, &reads_at)
@@ -529,23 +533,12 @@ fn resolve_selection_at(
     let until = next.0.map_or(through, |at| through.min(at - 1));
     if let Some(change) = next_ranking_change(&query, hour, until, battle_keys.as_deref())? { next.see(change); }
     let at = At { owner: None, holders: &query.holders, hour, context: &context, cancelled, live: &live };
-    let shown = UnitLeaders::reply(&frame, &asked, &at)?;
-    let top = shown
-        .leaders
-        .iter()
-        .find(|row| row.skill.is_some())
-        .and_then(|row| reference(&row.reference).ok());
-    if let Some(leader) = top {
-        return Ok((Some(leader), None, shown.warnings));
+    let evaluated = UnitLeaders::evaluate(&frame, &asked, &at)?;
+    match evaluated.top() {
+        TopLeader::Winner(winner) => Ok((Some(winner.handle), None, evaluated.warnings)),
+        TopLeader::None => Ok((None, None, evaluated.warnings)),
+        TopLeader::Missing(reason) => Ok((None, Some(reason), evaluated.warnings)),
     }
-    let missing = shown.missing.or_else(|| {
-        if !shown.leaders.is_empty() {
-            Some("Generals' skills were not recorded at this hour, so no top general is known".into())
-        } else {
-            shown.withheld.first().map(|first| format!("{} generals could not be shown: {}", shown.withheld.len(), first.reason))
-        }
-    });
-    Ok((None, missing, shown.warnings))
 }
 
 impl Product for LeaderCareer {
@@ -761,6 +754,15 @@ pub struct LeaderProgress {
     pub factors: Option<Vec<LeaderFactor>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum LeaderServiceStart {
+    Since { hour: i32 },
+    Before { hour: i32 },
+    Unknown { reason: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -783,6 +785,7 @@ pub struct LeaderHourReply {
     pub lost: u64,
     pub battles_partial_from: Option<i32>,
     pub first_seen_hour: Option<i32>,
+    pub service_start: Option<LeaderServiceStart>,
     pub progress: Option<LeaderProgress>,
     pub warnings: Vec<String>,
 }
@@ -825,7 +828,7 @@ impl AtHour for LeaderHour {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![LeaderHourParams::decl(), LeaderTraining::decl(), LeaderFactor::decl(), LeaderProgress::decl(), LeaderHourReply::decl()]
+        vec![LeaderHourParams::decl(), LeaderTraining::decl(), LeaderFactor::decl(), LeaderProgress::decl(), LeaderServiceStart::decl(), LeaderHourReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -944,22 +947,24 @@ impl AtHour for LeaderHour {
             let leader = reference(params.reference.as_deref().unwrap_or_default()).map_err(dashboard_core::invalid)?;
             return one_leader(frame, &params.branch_id, leader, at);
         };
-        let shown = UnitLeaders::reply(frame, &top_asked(&params.branch_id, selection), at)?;
-        let top = shown
-            .leaders
-            .iter()
-            .find(|row| row.skill.is_some())
-            .and_then(|row| reference(&row.reference).ok());
-        if let Some(leader) = top {
-            return one_leader(frame, &params.branch_id, leader, at);
-        }
-        let missing = shown.missing.or_else(|| {
-            if !shown.leaders.is_empty() {
-                Some("Generals' skills were not recorded at this hour, so no top general is known".into())
-            } else {
-                shown.withheld.first().map(|first| format!("{} generals could not be shown: {}", shown.withheld.len(), first.reason))
+        let evaluated = UnitLeaders::evaluate(frame, &top_asked(&params.branch_id, selection), at)?;
+        let missing = match evaluated.top() {
+            TopLeader::Winner(winner) => {
+                let branch = parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?;
+                let query = at.context.query(branch)?;
+                return finish_one_leader(
+                    frame,
+                    &query,
+                    winner,
+                    evaluated.tally.as_ref(),
+                    evaluated.battles_partial_from,
+                    evaluated.warnings.clone(),
+                    at,
+                );
             }
-        });
+            TopLeader::None => None,
+            TopLeader::Missing(reason) => Some(reason),
+        };
         Ok(LeaderHourReply {
             reference: None,
             missing,
@@ -973,51 +978,131 @@ impl AtHour for LeaderHour {
             fought: 0,
             won: 0,
             lost: 0,
-            battles_partial_from: shown.battles_partial_from,
+            battles_partial_from: evaluated.battles_partial_from,
             first_seen_hour: None,
+            service_start: None,
             progress: None,
-            warnings: shown.warnings,
+            warnings: evaluated.warnings,
         })
     }
+}
+
+fn service_start(query: &Query<'_>, leader: u64, hour: i32) -> io::Result<Option<LeaderServiceStart>> {
+    use replay_columnar::manifest::Status;
+    use replay_recording::columnar_frames::TableCoverage;
+
+    let recording = query.replay.recording();
+    let key = u128::from(leader);
+    let mut first: Option<i32> = None;
+    for stretch in query.timeline.stretches.iter().rev() {
+        if stretch.first > hour {
+            continue;
+        }
+        if let Some(current_first) = first {
+            if stretch.last < current_first - 1 {
+                break;
+            }
+        } else if stretch.last < hour {
+            return Ok(None);
+        }
+        if matches!(recording.table_coverage(TableId::UnitLeaders.index(), stretch.run), TableCoverage::WithheldAll(_)) {
+            break;
+        }
+        let target = first.map_or(hour, |at| at - 1).min(stretch.last);
+        let spans = dashboard_query::cost::storage(|| {
+            replay_lanes::lanes::presences(recording, stretch.run, TableId::UnitLeaders, (key, key), i64::from(stretch.first), i64::from(target))
+        })?;
+        let found = spans
+            .into_iter()
+            .find(|(held, _)| *held == key)
+            .and_then(|(_, spans)| spans.into_iter().rev().find(|&(a, b)| a <= i64::from(target) && i64::from(target) <= b));
+        let Some((span_first, _)) = found else {
+            break;
+        };
+        let span_first = i32::try_from(span_first).unwrap_or(stretch.first).max(stretch.first);
+        first = Some(span_first);
+        if span_first > stretch.first {
+            break;
+        }
+    }
+    let Some(first) = first else { return Ok(None) };
+    if first <= query.timeline.first {
+        return Ok(Some(LeaderServiceStart::Before { hour: first }));
+    }
+    let prev = first - 1;
+    let Some(prev_stretch) = query.timeline.at(prev) else {
+        return Ok(Some(LeaderServiceStart::Unknown {
+            reason: "Unit leaders were not recorded before this leader was observed".into(),
+        }));
+    };
+    if matches!(recording.table_coverage(TableId::UnitLeaders.index(), prev_stretch.run), TableCoverage::WithheldAll(_)) {
+        return Ok(Some(LeaderServiceStart::Unknown {
+            reason: "Unit leaders were withheld before this leader was observed".into(),
+        }));
+    }
+    let runs = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, prev_stretch.run, TableId::UnitLeaders, prev, prev))?;
+    let status = runs.first().map(|run| run.status).unwrap_or(Status::NotRecorded);
+    let reason = match status {
+        Status::Complete => return Ok(Some(LeaderServiceStart::Since { hour: first })),
+        Status::Truncated { .. } => "Unit leaders were only partly recorded before this leader was observed",
+        Status::Unavailable { .. } => "Unit leaders were unavailable before this leader was observed",
+        Status::NotRecorded => "Unit leaders were not recorded before this leader was observed",
+    };
+    Ok(Some(LeaderServiceStart::Unknown { reason: reason.into() }))
 }
 
 fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, LeadersContext>) -> io::Result<LeaderHourReply> {
     let context = at.context;
     let content = &context.content;
-    let mut reply = LeaderHourReply {
-        reference: Some(leader.to_string()),
-        missing: None,
-        name: None,
-        role: None,
-        skill: None,
-        components: [0; 4],
-        traits: None,
-        trait_dates: Vec::new(),
-        trait_catalogue: Vec::new(),
-        fought: 0,
-        won: 0,
-        lost: 0,
-        battles_partial_from: None,
-        first_seen_hour: None,
-        progress: None,
-        warnings: content.missing(),
-    };
     let row = match frame.complete::<tables::UnitLeaders>() {
         Ok(rows) => match rows.iter().find(|row| handle(row) == leader) {
             Some(row) => row,
             None => {
-                reply.missing = Some("This leader is not serving at this hour".into());
-                return Ok(reply);
+                return Ok(LeaderHourReply {
+                    reference: Some(leader.to_string()),
+                    missing: Some("This leader is not serving at this hour".into()),
+                    name: None,
+                    role: None,
+                    skill: None,
+                    components: [0; 4],
+                    traits: None,
+                    trait_dates: Vec::new(),
+                    trait_catalogue: Vec::new(),
+                    fought: 0,
+                    won: 0,
+                    lost: 0,
+                    battles_partial_from: None,
+                    first_seen_hour: None,
+                    service_start: None,
+                    progress: None,
+                    warnings: content.missing(),
+                });
             }
         },
         Err(error) => {
-            reply.missing = Some(error.to_string());
-            return Ok(reply);
+            return Ok(LeaderHourReply {
+                reference: Some(leader.to_string()),
+                missing: Some(error.to_string()),
+                name: None,
+                role: None,
+                skill: None,
+                components: [0; 4],
+                traits: None,
+                trait_dates: Vec::new(),
+                trait_catalogue: Vec::new(),
+                fought: 0,
+                won: 0,
+                lost: 0,
+                battles_partial_from: None,
+                first_seen_hour: None,
+                service_start: None,
+                progress: None,
+                warnings: content.missing(),
+            });
         }
     };
     let branch = parse_branch(branch_id).map_err(dashboard_core::invalid)?;
     let query = context.query(branch)?;
-    reply.first_seen_hour = query.timeline.at(at.hour).and_then(|stretch| context.first_seen(stretch.run, u128::from(leader), at.hour));
     let owner = Tags::read(frame).ok().and_then(|tags| tags.tag(row.owner));
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
     let person = frame.complete::<tables::Characters>().ok().and_then(|rows| {
@@ -1026,19 +1111,39 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
             .or_else(|| rows.iter().position(|character| character.id == row.character_id))
             .map(|at| &rows[at])
     });
-    reply.name = content.person_name(person, lexical);
-    reply.skill = (row.skill_valid != 0).then_some(row.skill_level);
-    reply.role = Some(content.role(owner, row.kind, row.category, reply.skill));
-    reply.components = row.components;
-    let tokens = frame.complete::<tables::UnitLeaderTraits>().ok().map(|rows| held_traits(rows).remove(&leader).unwrap_or_default());
+    let name = content.person_name(person, lexical);
+    let skill = (row.skill_valid != 0).then_some(row.skill_level);
     let tally = context.tally(&query, at.hour, Asked::Id(row.id))?;
-    let (battles, dates): (Battles, Vec<Option<(i32, u8)>>) = (tally.battles(row.id), tokens.iter().flatten().map(|token| tally.date(leader, token)).collect());
+    let battles = tally.battles(row.id);
+    let battles_partial_from = context.battles_partial(&query, at.hour)?;
+    let evaluated = EvaluatedLeader { row, handle: leader, owner, name, skill, battles };
+    finish_one_leader(frame, &query, &evaluated, Some(&tally), battles_partial_from, content.missing(), at)
+}
+
+fn finish_one_leader(
+    frame: &DecodedFrame,
+    query: &Query<'_>,
+    evaluated: &EvaluatedLeader<'_>,
+    tally: Option<&Tally>,
+    battles_partial_from: Option<i32>,
+    warnings: Vec<String>,
+    at: &At<'_, LeadersContext>,
+) -> io::Result<LeaderHourReply> {
+    let context = at.context;
+    let content = &context.content;
+    let row = evaluated.row;
+    let leader = evaluated.handle;
+    let first_seen_hour = query.timeline.at(at.hour).and_then(|stretch| context.first_seen(stretch.run, u128::from(leader), at.hour));
+    let start = service_start(query, leader, at.hour)?;
+    let lexical = frame.complete::<tables::LexicalTokens>().ok();
+    let tokens = frame.complete::<tables::UnitLeaderTraits>().ok().map(|rows| held_traits_for(rows, leader));
+    let dates: Vec<Option<(i32, u8)>> = tokens
+        .iter()
+        .flatten()
+        .map(|token| tally.and_then(|tally| tally.date(leader, token)))
+        .collect();
     let mut traits = TraitList::default();
-    reply.traits = tokens.map(|tokens| tokens.iter().map(|token| traits.index(token, content)).collect());
-    reply.trait_catalogue = traits.traits;
-    reply.trait_dates = dates;
-    (reply.fought, reply.won, reply.lost) = (battles.fought, battles.won, battles.lost);
-    reply.battles_partial_from = context.battles_partial(&query, at.hour)?;
+    let trait_indices = tokens.map(|tokens| tokens.iter().map(|token| traits.index(token, content)).collect());
     let spelled = |token: i32| -> Option<String> {
         let token = u32::try_from(token).ok()?;
         let rows = lexical?;
@@ -1046,7 +1151,7 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
     };
     let experience = field(TableId::UnitLeaders, "experience")?;
     at.live.value(&leader.to_string(), "experience", Cell { table: TableId::UnitLeaders, column: experience, key: u128::from(leader) }, 1.0);
-    let next_required_raw = reply.skill.and_then(|level| content.next_required(level, row.category)).map(|value| value.to_string());
+    let next_required_raw = evaluated.skill.and_then(|level| content.next_required(level, row.category)).map(|value| value.to_string());
     let (training, factors) = match frame.complete::<tables::UnitLeaderTraitExperience>() {
         Ok(rows) => {
             let trained = field(TableId::UnitLeaderTraitExperience, "experience")?;
@@ -1068,8 +1173,25 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
         }
         Err(_) => (None, None),
     };
-    reply.progress = Some(LeaderProgress { next_required_raw, training, factors });
-    Ok(reply)
+    Ok(LeaderHourReply {
+        reference: Some(leader.to_string()),
+        missing: None,
+        name: evaluated.name.clone(),
+        role: Some(content.role(evaluated.owner.clone(), row.kind, row.category, evaluated.skill)),
+        skill: evaluated.skill,
+        components: row.components,
+        traits: trait_indices,
+        trait_dates: dates,
+        trait_catalogue: traits.traits,
+        fought: evaluated.battles.fought,
+        won: evaluated.battles.won,
+        lost: evaluated.battles.lost,
+        battles_partial_from,
+        first_seen_hour,
+        service_start: start,
+        progress: Some(LeaderProgress { next_required_raw, training, factors }),
+        warnings,
+    })
 }
 
 fn top_asked(branch_id: &str, selection: &LeaderSelection) -> UnitLeadersParams {

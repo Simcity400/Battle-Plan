@@ -1,4 +1,5 @@
 import { useGate } from '../../dashboard/regionGate';
+import { at } from '../../dashboard/regionTime';
 import { useMemo, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import FloatingPanel from '../../components/FloatingPanel';
@@ -15,7 +16,7 @@ import { useTechnologyArtwork } from './useTechnologyArtwork';
 import '../../components/Dossier.css';
 import './gameText.css';
 
-interface Shown { runtime: WidgetRuntime; widget: WidgetBase; tag: string; active: boolean }
+interface Shown { runtime: WidgetRuntime; widget: WidgetBase; tag: string; hour: number; active: boolean }
 
 export function LinkWindow({ link, onClose, ...shown }: Shown & { link: EntityLink; onClose: () => void }) {
   return link.kind === 'technology'
@@ -24,13 +25,14 @@ export function LinkWindow({ link, onClose, ...shown }: Shown & { link: EntityLi
 }
 
 export function OpenedLink({ opened, onClose, ...shown }: Shown & { opened: EntityLink | null; onClose: () => void }) {
-  return opened && <LinkWindow key={JSON.stringify([opened.kind, opened.token, opened.databaseIndex])} {...shown} link={opened} onClose={onClose} />;
+  return opened && <LinkWindow key={JSON.stringify([opened.kind, opened.token, opened.databaseIndex, shown.hour])} {...shown} link={opened} onClose={onClose} />;
 }
 
 export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { token: string; databaseIndex: number | null }) {
-  const { runtime, widget, tag, active } = shown;
+  const { runtime, widget, tag, hour, active } = shown;
+  const action = useMemo(() => at(hour), [hour]);
   const params = useMemo(() => ({ country: countryFromKey(tag), token, databaseIndex }), [tag, token, databaseIndex]);
-  const effects = useHeadProduct(runtime, useGate(runtime, widget), 'technology-effects', params,
+  const effects = useHeadProduct(runtime, useGate(runtime, widget, action, active), 'technology-effects', params,
     { active, validate: validateTechnologyEffects, structure: technologyEffectsStructure });
   const [opened, setOpened] = useState<EntityLink | null>(null);
   const { data, error, retry } = effects;

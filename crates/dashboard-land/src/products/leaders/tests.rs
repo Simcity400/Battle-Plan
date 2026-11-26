@@ -78,9 +78,12 @@ fn kinds_and_countries_choose_leaders_by_kind_and_owner_tag() {
 #[test]
 fn a_leaders_traits_are_listed_in_their_recorded_order() {
     let row = |leader: u64, ordinal: u32, token: &str| UnitLeaderTraitRow { leader_reference: leader, ordinal, token: token.as_bytes().to_vec(), ..Default::default() };
-    let held = held_traits(&[row(2, 1, "b"), row(2, 0, "a"), row(3, 0, "c")]);
+    let rows = [row(2, 1, "b"), row(2, 0, "a"), row(3, 0, "c")];
+    let held = held_traits(&rows);
     assert_eq!(held[&2], vec!["a".to_owned(), "b".to_owned()]);
     assert_eq!(held[&3], vec!["c".to_owned()]);
+    assert_eq!(super::held_traits_for(&rows, 2), vec!["a".to_owned(), "b".to_owned()]);
+    assert_eq!(super::held_traits_for(&rows, 9), Vec::<String>::new());
 }
 
 #[test]
@@ -317,26 +320,428 @@ fn skill_icons_are_the_installed_leader_windows_buttons_and_a_missing_one_is_nam
 
 #[test]
 fn leaders_order_by_skill_then_battles_won_and_fought() {
-    let row = |reference: &str, name: &str, skill: Option<i32>, won: u64, fought: u64, components: [i32; 4]| super::LeaderRow {
-        reference: reference.into(),
-        name: Some(name.into()),
-        role: super::LeaderRole { owner: Some("JAP".into()), kind: 1, category: 0, rank: Some("General".into()), attribute_names: [None, None, None, None], maximum_skill: Some(9) },
-        skill,
-        components,
-        traits: Some(Vec::new()),
-        trait_dates: Vec::new(),
-        first_seen_hour: Some(0),
-        fought,
-        won,
-        lost: fought.saturating_sub(won),
-    };
     let mut rows = vec![
-        row("2", "Hisaichi Terauchi", Some(7), 831, 1643, [10, 6, 8, 2]),
-        row("3", "Toshizo Nishio", Some(6), 0, 0, [7, 4, 9, 5]),
-        row("1", "Tomoyuki Yamashita", Some(7), 1071, 1876, [9, 5, 7, 6]),
+        (2u64, Some("Hisaichi Terauchi"), Some(7), 831u64, 1643u64, [10, 6, 8, 2]),
+        (3u64, Some("Toshizo Nishio"), Some(6), 0u64, 0u64, [7, 4, 9, 5]),
+        (1u64, Some("Tomoyuki Yamashita"), Some(7), 1071u64, 1876u64, [9, 5, 7, 6]),
     ];
-    super::sort_leaders(&mut rows);
-    assert_eq!(rows.iter().map(|r| r.reference.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
+    rows.sort_by(|a, b| super::leader_rank_cmp(a.2, a.3, a.4, a.5, a.1, a.0, b.2, b.3, b.4, b.5, b.1, b.0));
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2, 3]);
+
+    let mut tied = vec![
+        (10u64, Some("Same Name"), Some(5), 0u64, 0u64, [2, 2, 2, 2]),
+        (2u64, Some("Same Name"), Some(5), 0u64, 0u64, [2, 2, 2, 2]),
+    ];
+    tied.sort_by(|a, b| super::leader_rank_cmp(a.2, a.3, a.4, a.5, a.1, a.0, b.2, b.3, b.4, b.5, b.1, b.0));
+    assert_eq!(tied.iter().map(|r| r.0).collect::<Vec<_>>(), [2, 10], "numeric handle order breaks final ties, not string order");
+}
+
+#[test]
+fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
+    use super::{
+        LeaderKinds, LeaderSelection, LeadersContext, UnitLeaders, UnitLeadersParams,
+        career::{LeaderCareer, LeaderCareerParams, LeaderHour, LeaderHourParams},
+        handle,
+    };
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{LoadContext, Product, at_hour::{At, AtHour}},
+        test_fixtures::{CAMPAIGN, snapshot_records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let base = |id: u32| UnitLeaderRow {
+        id,
+        reference_type: 1,
+        kind: KIND_ARMY,
+        owner: 9001,
+        skill_valid: 1,
+        skill_level: 5,
+        components: [2, 2, 2, 2],
+        ..Default::default()
+    };
+    let smaller_handle = base(2);
+    let larger_handle = base(10);
+    assert!(handle(&larger_handle).to_string() < handle(&smaller_handle).to_string());
+    let unknown_skill = UnitLeaderRow { skill_valid: 0, skill_level: 0, ..base(11) };
+    let withheld_rival = UnitLeaderRow { visibility_choice: 1, ..base(12) };
+
+    let mut frame_tied = source(1, 100, Some(1_000));
+    frame_tied.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), larger_handle.clone()])).into();
+
+    let mut frame_unknown_skill = source(1, 101, Some(1_000));
+    frame_unknown_skill.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), unknown_skill])).into();
+
+    let mut frame_withheld = source(1, 102, Some(1_000));
+    frame_withheld.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), withheld_rival])).into();
+
+    let mut frame_no_tags = source(1, 103, Some(1_000));
+    frame_no_tags.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone()])).into();
+    frame_no_tags.tables[TableId::Countries.index()] =
+        TableView::Unavailable { reason: "countries unread".into() }.into();
+
+    let mut frame_tags_recovered = source(1, 104, Some(1_000));
+    frame_tags_recovered.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone()])).into();
+
+    let captured_ace = UnitLeaderRow { skill_level: 7, captured: 1, ..base(13) };
+    let freed_ace = UnitLeaderRow { captured: 0, ..captured_ace.clone() };
+    let mut frame_captured = source(1, 105, Some(1_000));
+    frame_captured.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), captured_ace])).into();
+    let mut frame_freed = source(1, 106, Some(1_000));
+    frame_freed.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), freed_ace.clone()])).into();
+
+    let frames = vec![
+        frame_tied.clone(),
+        frame_unknown_skill.clone(),
+        frame_withheld.clone(),
+        frame_no_tags.clone(),
+        frame_tags_recovered,
+        frame_captured,
+        frame_freed,
+    ];
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancelled = AtomicBool::new(false);
+    let src = Source::from_replay(
+        SourceKey { source_id: "ranking-parity".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &cancelled,
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let context = LeadersContext::load(&src, &load).unwrap();
+    let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
+    let live = dashboard_follow::live::Cells::default();
+    let at = |hour| At { owner: None, holders: &holders, context: &context, hour, cancelled: &cancelled, live: &live };
+    let ger = LeaderSelection::Countries { countries: vec!["GER".into()] };
+
+    let board = UnitLeaders::reply(
+        &frame_tied,
+        &UnitLeadersParams { branch_id: "1".into(), selection: ger.clone(), leaders: LeaderKinds::Land },
+        &at(100),
+    )
+    .unwrap();
+    let expected = handle(&smaller_handle).to_string();
+    assert_eq!(
+        board.leaders.iter().map(|r| r.reference.as_str()).collect::<Vec<_>>(),
+        [expected.as_str(), handle(&larger_handle).to_string().as_str()],
+        "leaderboard orders tied generals by numeric handle"
+    );
+    let hour_tied = LeaderHour::reply(
+        &frame_tied,
+        &LeaderHourParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()) },
+        &at(100),
+    )
+    .unwrap();
+    let career_tied = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 100 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(hour_tied.reference.as_deref(), Some(expected.as_str()));
+    assert_eq!(career_tied.reference.as_deref(), Some(expected.as_str()));
+
+    let hour_unknown = LeaderHour::reply(
+        &frame_unknown_skill,
+        &LeaderHourParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()) },
+        &at(101),
+    )
+    .unwrap();
+    let career_unknown = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 101 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert!(hour_unknown.reference.is_none() && hour_unknown.missing.is_some(), "unrecorded rival skill withholds top general in LeaderHour");
+    assert!(career_unknown.reference.is_none() && career_unknown.missing.is_some(), "unrecorded rival skill withholds top general in LeaderCareer");
+
+    let hour_withheld = LeaderHour::reply(
+        &frame_withheld,
+        &LeaderHourParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()) },
+        &at(102),
+    )
+    .unwrap();
+    let career_withheld = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 102 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert!(hour_withheld.reference.is_none() && hour_withheld.missing.is_some(), "withheld rival withholds top general in LeaderHour");
+    assert!(career_withheld.reference.is_none() && career_withheld.missing.is_some(), "withheld rival withholds top general in LeaderCareer");
+
+    let board_no_tags = UnitLeaders::reply(
+        &frame_no_tags,
+        &UnitLeadersParams { branch_id: "1".into(), selection: ger.clone(), leaders: LeaderKinds::Land },
+        &at(103),
+    )
+    .unwrap();
+    let hour_no_tags = LeaderHour::reply(
+        &frame_no_tags,
+        &LeaderHourParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()) },
+        &at(103),
+    )
+    .unwrap();
+    let career_no_tags = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 103 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert!(board_no_tags.missing.is_some(), "unread Countries cannot prove a country selection has no leaders");
+    assert!(hour_no_tags.reference.is_none() && hour_no_tags.missing.is_some());
+    assert!(career_no_tags.reference.is_none() && career_no_tags.missing.is_some());
+    assert_eq!(career_no_tags.next_change, Some(104), "recovering Countries wakes the missing career at 104");
+    let career_recovered = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 104 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(career_recovered.reference.as_deref(), Some(expected.as_str()));
+    let career_captured = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger.clone()), hour: 105 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(career_captured.reference.as_deref(), Some(expected.as_str()));
+    assert_eq!(career_captured.next_change, Some(106), "a visibility-only captured change wakes the career at 106");
+    let career_freed = LeaderCareer::load(
+        &src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(ger), hour: 106 },
+        &load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(career_freed.reference.as_deref(), Some(handle(&freed_ace).to_string().as_str()));
+
+    dashboard_core::test_fixtures::game::enter();
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("localisation/languages.yml", "\u{feff}l_english:\n l_english: \"English\"\n"),
+        (
+            "common/characters/test.txt",
+            "characters = {\n    mod_ace = {\n        corps_commander = { visible = { has_character_flag = mod_flag } }\n    }\n}\n",
+        ),
+        (
+            "common/defines/test.lua",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 10 }, NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { } } }",
+        ),
+    ]);
+    let (content, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
+    let conditioned_ace = UnitLeaderRow { character_id: 9, skill_level: 7, visibility_choice: 1, ..base(14) };
+    let cond_frames: Vec<_> = (100..=102)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            for table in [replay_data::rows::TableId::Provinces, replay_data::rows::TableId::States, replay_data::rows::TableId::UnitLeaderTraits] {
+                frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
+            }
+            frame.tables[TableId::UnitLeaders.index()] =
+                TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), conditioned_ace.clone()])).into();
+            frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
+                replay_data::rows::CharacterRow {
+                    id: 9,
+                    country: 9001,
+                    template_present: 1,
+                    template_tag: 901,
+                    template_file: b"common/characters/test.txt".to_vec(),
+                    template_line: 3,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+            frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                replay_data::rows::LexicalTokenRow { token: 900, literal: b"mod_flag".to_vec() },
+                replay_data::rows::LexicalTokenRow { token: 901, literal: b"mod_ace".to_vec() },
+            ]))
+            .into();
+            let flags = if hour >= 101 {
+                vec![replay_data::rows::ScriptFlagRow { scope_kind: 3, scope_id: 9, token: 900, value: 1, ..Default::default() }]
+            } else {
+                Vec::new()
+            };
+            frame.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(flags)).into();
+            frame
+        })
+        .collect();
+    let mut input = dashboard_base::test_fixtures::snapshot_records(1, cond_frames.clone());
+    if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+        session.identity = identity.clone();
+    }
+    let cond_replay = dashboard_base::test_fixtures::with_facts(&content, &identity, input)
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cond_src = Source::from_replay(
+        SourceKey { source_id: "conditioned-cache".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(cond_replay),
+        &cancelled,
+    )
+    .unwrap();
+    let cond_load = LoadContext { content: Some(content) };
+    let cond_context = LeadersContext::load(&cond_src, &cond_load).unwrap();
+    let cond_ger = LeaderSelection::Countries { countries: vec!["GER".into()] };
+    let warm_at = At { owner: None, holders: &holders, context: &cond_context, hour: 100, cancelled: &cancelled, live: &live };
+    let warm_board = UnitLeaders::reply(
+        &cond_frames[0],
+        &UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land },
+        &warm_at,
+    )
+    .unwrap();
+    assert!(warm_board.withheld.is_empty(), "conditioned ace should evaluate cleanly, not withhold: {:?}", warm_board.withheld);
+    assert_eq!(warm_board.leaders.len(), 1, "conditioned ace is hidden at 100 while warming the verdict cache");
+    assert!(
+        !cond_context.verdicts_at(cond_context.query(1).unwrap().timeline.stretches[0].run, 100).is_empty(),
+        "verdict cache must be warm before calling LeaderCareer"
+    );
+    let cached_career = LeaderCareer::load(
+        &cond_src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(cond_ger.clone()), hour: 100 },
+        &cond_load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(cached_career.reference.as_deref(), Some(expected.as_str()));
+    assert_eq!(cached_career.next_change, Some(101), "reusing a cached conditioned verdict must still wake at H + 1");
+    let visible_career = LeaderCareer::load(
+        &cond_src,
+        &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(cond_ger), hour: 101 },
+        &cond_load,
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(visible_career.reference.as_deref(), Some(handle(&conditioned_ace).to_string().as_str()));
+}
+
+#[test]
+fn service_start_distinguishes_proven_start_branch_start_and_post_gap() {
+    use super::{
+        LeadersContext,
+        career::{LeaderHour, LeaderHourParams, LeaderServiceStart},
+        handle,
+    };
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{LoadContext, at_hour::{At, AtHour}},
+        test_fixtures::{CAMPAIGN, snapshot_records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let make = |id: u32| UnitLeaderRow {
+        id,
+        reference_type: 1,
+        kind: KIND_ARMY,
+        owner: 9001,
+        skill_valid: 1,
+        skill_level: 3,
+        ..Default::default()
+    };
+    let from_start = make(1);
+    let proven_start = make(2);
+    let after_unread = make(3);
+    let after_gap = make(4);
+
+    let stretch1: Vec<_> = (100..=108)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            let mut rows = vec![from_start.clone()];
+            if hour >= 105 {
+                rows.push(proven_start.clone());
+            }
+            frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(rows)).into();
+            frame
+        })
+        .collect();
+    let stretch2: Vec<_> = (109..=112)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            if hour == 111 {
+                frame.tables[TableId::UnitLeaders.index()] =
+                    TableView::Unavailable { reason: "leaders unread".into() }.into();
+            } else {
+                let mut rows = vec![from_start.clone(), proven_start.clone()];
+                if hour >= 112 {
+                    rows.push(after_unread.clone());
+                }
+                frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(rows)).into();
+            }
+            frame
+        })
+        .collect();
+    let stretch3: Vec<_> = (120..=122)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            frame.tables[TableId::UnitLeaders.index()] =
+                TableView::Complete(TableRows::UnitLeaders(vec![from_start.clone(), after_gap.clone()])).into();
+            frame
+        })
+        .collect();
+
+    let replay = Replay::from_records(
+        recorder_derive::writers(),
+        CAMPAIGN.into(),
+        &[snapshot_records(1, stretch1.clone()), snapshot_records(2, stretch2.clone()), snapshot_records(3, stretch3.clone())],
+    )
+    .unwrap()
+    .into_timelines(&Default::default())
+    .unwrap();
+    let cancelled = AtomicBool::new(false);
+    let src = Source::from_replay(
+        SourceKey { source_id: "service-start".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &cancelled,
+    )
+    .unwrap();
+    let context = LeadersContext::load(&src, &LoadContext { content: None }).unwrap();
+    let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
+    let live = dashboard_follow::live::Cells::default();
+    let ask = |frame: &replay_frame::frame::DecodedFrame, hour: i32, leader: &UnitLeaderRow| {
+        let at = At { owner: None, holders: &holders, context: &context, hour, cancelled: &cancelled, live: &live };
+        LeaderHour::reply(
+            frame,
+            &LeaderHourParams { branch_id: "1".into(), reference: Some(handle(leader).to_string()), selection: None },
+            &at,
+        )
+        .unwrap()
+        .service_start
+    };
+
+    assert_eq!(ask(&stretch1[8], 108, &from_start), Some(LeaderServiceStart::Before { hour: 100 }));
+    assert_eq!(ask(&stretch1[8], 108, &proven_start), Some(LeaderServiceStart::Since { hour: 105 }));
+    assert_eq!(ask(&stretch2[1], 110, &from_start), Some(LeaderServiceStart::Before { hour: 100 }), "contiguous runs keep the branch-start service span");
+    assert_eq!(ask(&stretch2[1], 110, &proven_start), Some(LeaderServiceStart::Since { hour: 105 }), "contiguous runs keep the proven start date");
+    assert!(matches!(ask(&stretch2[3], 112, &after_unread), Some(LeaderServiceStart::Unknown { .. })), "appearance immediately after unread UnitLeaders cannot claim Serving since");
+    assert!(matches!(ask(&stretch2[3], 112, &proven_start), Some(LeaderServiceStart::Unknown { .. })), "service after an unread hour cannot claim continuous service since the post-unread hour");
+    assert!(matches!(ask(&stretch3[1], 121, &after_gap), Some(LeaderServiceStart::Unknown { .. })), "appearance immediately after a recording gap cannot claim Serving since");
+    assert!(matches!(ask(&stretch3[1], 121, &from_start), Some(LeaderServiceStart::Unknown { .. })), "continuation after a recording gap cannot prove uninterrupted service since 120");
 }
 
 #[test]

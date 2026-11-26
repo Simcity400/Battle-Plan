@@ -11,7 +11,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { LOADING_NAME } from '../../families/table/identityCell.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
-import type { LeaderHourReply, LeaderSelection, LeaderTrait } from '../../generated/dashboard';
+import type { LeaderHourReply, LeaderSelection, LeaderServiceStart, LeaderTrait } from '../../generated/dashboard';
 import { experienceText, experienceWhole } from './experience.ts';
 
 export const DOSSIER_VIEW = 'dossier';
@@ -68,6 +68,13 @@ function traitText(trait: LeaderTrait | undefined, date: readonly [number, numbe
   return year === undefined ? `${traitName(trait)} · date not recorded` : `${traitName(trait)} · ${date?.[1] === 0 ? 'before ' : ''}${year}`;
 }
 
+function serviceStartItem(start: LeaderServiceStart | null): TooltipListItem | null {
+  if (!start) return null;
+  if (start.kind === 'since') return { label: 'Serving since', value: formatDateOnly(start.hour), divider: true };
+  if (start.kind === 'before') return { label: 'Serving before', value: formatDateOnly(start.hour), divider: true };
+  return { label: 'Service start', missingReason: start.reason, divider: true };
+}
+
 function header(readView: Parameters<CardProjection['project']>[0], reply: LeaderHourReply, reference: string, partial: boolean): CardItemRow {
   const hour = readView.hour;
   const role = reply.role!;
@@ -79,6 +86,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
   const record = `${reply.won} won · ${reply.lost} lost · ${decided ? formatShare(reply.won / decided) : 'no results'}`;
   const names = role.attributeNames.map(item => item ?? 'Name not recorded');
   const ownerName = owner ? (owner.name.kind === 'known' ? owner.name.value : owner.loading ? LOADING_NAME : 'Country name not recorded') : 'Owner not recorded';
+  const serviceStart = serviceStartItem(reply.serviceStart);
   const items: TooltipListItem[] = [
     { label: 'Country', value: ownerName },
     { label: 'Rank', value: rank },
@@ -89,7 +97,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
     { label: 'Lost', value: String(reply.lost) },
     { label: 'Unresolved', value: String(Math.max(0, reply.fought - decided)) },
     ...(partial ? [{ label: PARTIAL, tone: 'muted' as const }] : []),
-    ...(reply.firstSeenHour !== null ? [{ label: 'Serving since', value: formatDateOnly(reply.firstSeenHour), divider: true }] : []),
+    ...(serviceStart ? [serviceStart] : []),
   ];
   return {
     kind: 'item',

@@ -6078,11 +6078,12 @@ export type LeaderProgress = { nextRequiredRaw: string | null,
  * None where the training rows were not recorded.
  */
 training: Array<LeaderTraining> | null, factors: Array<LeaderFactor> | null, };
+export type LeaderServiceStart = { "kind": "since", hour: number, } | { "kind": "before", hour: number, } | { "kind": "unknown", reason: string, };
 export type LeaderHourReply = { reference: string | null,
 /**
  * Why the leader is not shown at this hour, when it is not.
  */
-missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, firstSeenHour: number | null, progress: LeaderProgress | null, warnings: Array<string>, };
+missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, firstSeenHour: number | null, serviceStart: LeaderServiceStart | null, progress: LeaderProgress | null, warnings: Array<string>, };
 export type LeaderHourParamsAtHour = LeaderHourParams & { hour: number };
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };

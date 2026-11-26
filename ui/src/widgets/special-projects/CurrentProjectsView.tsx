@@ -5,6 +5,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
+import { at, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
@@ -30,7 +31,8 @@ export default function CurrentProjectsView(props: FamilyViewProps) {
     if (!on || !project) return;
     setOpened({ on, tag: project.country, id: project.id, hour: action.hour });
   }, [on, tag]);
-  const gate = useGate(runtime, widget);
+  const action = useMemo(() => shown ? at(shown.hour) : SPEC, [shown?.hour]);
+  const gate = useGate(runtime, widget, action, active && !!shown);
   const recorded = shown ? gate.recorded(shown.hour) : null;
   const request = useMemo(() => (shown && track && recorded !== null
     ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',

@@ -57,3 +57,43 @@ test('a fuel consumption drill told to follow playback, in a widget pinned at 10
     assert.ok(drawn.includes(OUTSIDE) && !drawn.includes('data-state="loading"'), `following playback at 110, the drill is outside its track: ${drawn}`);
   } finally { delete host.__stub; await close(); }
 });
+
+test('nested technology and entity-stat effect windows pin to their clicked hour instead of following playback', async () => {
+  const { load, close } = await mount({
+    '/dashboard/headProduct.ts': wrapped('useHeadProduct'),
+    '/components/FloatingPanel.tsx': 'export default ({ children }) => children;',
+    '/widgets/research/GameText.tsx': 'export const GameArtFor = ({ children }) => children; export const GameBlocks = () => null; export const GameIcons = ({ children }) => children; export const GameRuns = () => null;',
+    '/widgets/research/useTechnologyArtwork.ts': 'export const useTechnologyArtwork = () => ({ artwork: new Map(), failures: new Map() });',
+  });
+  try {
+    const { default: TechnologyWindow, TechnologyEffects } = await load<{
+      default: ComponentType<Record<string, unknown>>;
+      TechnologyEffects: ComponentType<Record<string, unknown>>;
+    }>('/ui/src/widgets/research/TechnologyWindow.tsx');
+    const { default: EntityStatsWindow } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/research/EntityStatsWindow.tsx');
+    const fullTrack = track(100, 200);
+    const widget = { id: 'proj', kind: 'special-projects', trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'follow' }, options: {} };
+    const clock = clockAt({ firstHour: 100, lastHour: 200 }, 180);
+    const seen: { product: string; action: unknown; hour: number | null }[] = [];
+    host.__stub = {
+      useHeadProduct: (_runtime: never, gate: { region: { action: unknown }; hour: number | null }, product: string) => {
+        seen.push({ product, action: gate.region.action, hour: gate.hour });
+        return head();
+      },
+    };
+    markup(createElement(TechnologyEffects, { runtime: { tracks: [fullTrack], client: {}, clock }, widget, tag: 'GER', hour: 120, token: 'mod_tech', databaseIndex: null, active: true }));
+    markup(createElement(TechnologyWindow, {
+      runtime: { tracks: [fullTrack], client: {}, clock }, widget, tag: 'GER', hour: 122,
+      link: { kind: 'technology', token: 'mod_tech_2', databaseIndex: null, text: 'Tech 2', x: 0, y: 0 }, active: true, onClose() {},
+    }));
+    markup(createElement(EntityStatsWindow, {
+      runtime: { tracks: [fullTrack], client: {}, clock }, widget, tag: 'GER', hour: 125,
+      link: { kind: 'equipment', token: 'mod_eq', databaseIndex: null, text: 'Rifle', x: 0, y: 0 }, active: true, onClose() {},
+    }));
+    assert.deepEqual(seen, [
+      { product: 'technology-effects', action: { kind: 'at', hour: 120 }, hour: 120 },
+      { product: 'technology-effects', action: { kind: 'at', hour: 122 }, hour: 122 },
+      { product: 'content-entity-stats', action: { kind: 'at', hour: 125 }, hour: 125 },
+    ]);
+  } finally { delete host.__stub; await close(); }
+});
