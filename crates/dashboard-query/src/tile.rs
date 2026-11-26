@@ -212,7 +212,7 @@ pub fn tile(
         if key.unowned() && ask.country.tag().and_then(|tag| key.fixed(tag)).is_none() {
             return Err(invalid(format!("{} names no row of {}", ask.country, line.series().kind)));
         }
-        if !key.unowned() && !query.holders.named(&ask.country) {
+        if !key.unowned() && !query.holders.named(&ask.country) && !query.holders.unknown_within(first, last) {
             return Err(invalid(match &ask.country {
                 Country::Tag(tag) => format!("No country of this history holds the tag {tag}"),
                 Country::Slot(slot) => format!("No country of this history is the country {slot}"),

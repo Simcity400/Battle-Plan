@@ -2002,3 +2002,19 @@ fn territory_ranking_skips_world_summary_row() {
     assert_eq!(tiles.ranking.as_ref().and_then(|r| r.refused.as_deref()), None);
     assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), vec![Country::from("GER"), Country::from("ITA")]);
 }
+
+#[test]
+fn a_tile_over_hours_whose_holders_are_not_known_draws_a_country_never_seen_as_not_recorded_with_the_reason() {
+    let fixture = Fixture::new(Data::Power, FIRST..=FIRST + 300);
+    let query = fixture.query();
+    let reason = "Countries was not complete at these hours";
+    let holders = Arc::new(crate::identity::Holders::new(query.holders.tags.clone(), vec![(FIRST + 100, FIRST + 120, reason.to_owned())]));
+    let query = crate::Query { holders, ..query };
+    let series = dashboard_declare::series("country-measure").unwrap();
+    let line = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
+    let index = i64::from(FIRST + 100).div_euclid(BINS as i64);
+    let reply = tile::tile(&line, "1", &[Ask::whole("GER"), Ask::whole("ZZZ")], None, 1, index, false).expect("a tile over unknown hours answers every country asked");
+    assert!(reply.lines[1].missing.iter().any(|span| span.first_hour <= FIRST + 110 && FIRST + 110 <= span.last_hour && span.reason.contains(reason)), "{:?}", reply.lines[1].missing);
+    let outside = i64::from(FIRST + 300).div_euclid(BINS as i64) + 4;
+    assert!(tile::tile(&line, "1", &[Ask::whole("ZZZ")], None, 1, outside, false).is_err(), "where every holder is known, a country never seen is still refused");
+}
