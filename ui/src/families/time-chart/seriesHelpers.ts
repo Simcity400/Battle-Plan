@@ -773,7 +773,10 @@ const covers = (part: StackPart, hour: number) =>
   !part.within || part.within.some(([first, last]) => first <= hour && hour <= last);
 
 function inMissing(series: BoundedSeries, hour: number): boolean {
-  for (const span of series.missing) {
+  const missing = series.missing;
+  const len = missing.length;
+  for (let i = 0; i < len; i++) {
+    const span = missing.at(i)!;
     if (hour >= span.firstHour && hour <= span.lastHour) return true;
   }
   return false;
@@ -836,7 +839,7 @@ function collectSeriesHours(series: BoundedSeries, until: number, target: Set<nu
   }
 }
 
-export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour: number): ChartStackModel {
+function buildBoundedStackUncached(inputs: readonly BoundedStackBandInput[], hour: number): ChartStackModel {
   const hourSet = new Set<number>();
   for (const input of inputs) {
     for (const part of input.parts) {
@@ -884,6 +887,467 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
     }
     if (missing || present === 0) continue;
     for (let b = 0; b < inputs.length; b++) valuesByBand[b]![i] = row[b]!;
+  }
+
+  const bands: ChartStackBand[] = inputs.map((input, idx) => ({
+    id: input.id,
+    key: input.key,
+    name: input.name,
+    color: input.color,
+    ...(input.opacity !== undefined ? { opacity: input.opacity } : {}),
+    values: valuesByBand[idx]!,
+    ...(outsideByBand[idx] ? { outside: outsideByBand[idx]! } : {}),
+    ...(input.endLabel !== undefined ? { endLabel: input.endLabel } : {}),
+    ...(input.flag ? { flag: input.flag } : {}),
+  }));
+  return { hours, bands };
+}
+
+interface CachedStackPart {
+  readonly hasSeries: boolean;
+  readonly useRuns: boolean;
+  readonly sliceSource: object | null;
+  readonly missingSource: object | null;
+  readonly from: number;
+  readonly binHours: number;
+  readonly within: readonly (readonly [number, number])[] | null;
+  scannedClosed: number;
+  prevLast: number;
+  lastNonNullClosedIdx: number;
+  nextMissingIdx: number;
+}
+
+interface CachedStackBand {
+  readonly valueScale: number;
+  readonly parts: readonly CachedStackPart[];
+}
+
+interface CachedBoundedStack {
+  readonly bands: readonly CachedStackBand[];
+  closedThrough: number;
+  hours: number[];
+  valuesByBand: (number | null)[][];
+  outsideByBand: (boolean[] | null)[];
+}
+
+const STACK_CACHE_MAX = 8;
+const stackPrefixCache: CachedBoundedStack[] = [];
+
+function sameWithinRanges(
+  cached: readonly (readonly [number, number])[] | null,
+  live: readonly (readonly [number, number])[] | undefined,
+): boolean {
+  if (!cached) return !live || live.length === 0;
+  if (!live || cached.length !== live.length) return false;
+  for (let i = 0; i < cached.length; i++) {
+    if (cached[i]![0] !== live[i]![0] || cached[i]![1] !== live[i]![1]) return false;
+  }
+  return true;
+}
+
+function matchesStackCache(entry: CachedBoundedStack, inputs: readonly BoundedStackBandInput[]): boolean {
+  if (entry.bands.length !== inputs.length) return false;
+  for (let b = 0; b < inputs.length; b++) {
+    const input = inputs[b]!;
+    const cb = entry.bands[b]!;
+    if (cb.valueScale !== (input.valueScale ?? 1) || cb.parts.length !== input.parts.length) return false;
+    for (let p = 0; p < input.parts.length; p++) {
+      const part = input.parts[p]!;
+      const cp = cb.parts[p]!;
+      const s = part.series;
+      if (cp.hasSeries !== (s !== undefined)) return false;
+      if (s) {
+        const useRuns = Boolean(s.runs && s.runs.length > 0);
+        const sliceSource = useRuns ? s.runs!.source : s.buckets.source;
+        if (
+          cp.useRuns !== useRuns
+          || cp.sliceSource !== sliceSource
+          || cp.missingSource !== s.missing.source
+          || cp.from !== s.from
+          || cp.binHours !== s.binHours
+        ) return false;
+      }
+      if (!sameWithinRanges(cp.within, part.within)) return false;
+    }
+  }
+  return true;
+}
+
+function createStackCacheEntry(inputs: readonly BoundedStackBandInput[]): CachedBoundedStack {
+  const bands: CachedStackBand[] = inputs.map(input => ({
+    valueScale: input.valueScale ?? 1,
+    parts: input.parts.map(part => {
+      const s = part.series;
+      const useRuns = Boolean(s?.runs && s.runs.length > 0);
+      return {
+        hasSeries: s !== undefined,
+        useRuns,
+        sliceSource: s ? (useRuns ? s.runs!.source : s.buckets.source) : null,
+        missingSource: s ? s.missing.source : null,
+        from: s ? s.from : 0,
+        binHours: s ? s.binHours : 1,
+        within: part.within && part.within.length > 0 ? part.within.map(([a, b]) => [a, b] as const) : null,
+        scannedClosed: 0,
+        prevLast: -Infinity,
+        lastNonNullClosedIdx: -1,
+        nextMissingIdx: 0,
+      };
+    }),
+  }));
+  return {
+    bands,
+    closedThrough: -Infinity,
+    hours: [],
+    valuesByBand: inputs.map(() => []),
+    outsideByBand: inputs.map(() => null),
+  };
+}
+
+function resetStackCacheEntry(entry: CachedBoundedStack): void {
+  entry.closedThrough = -Infinity;
+  entry.hours = [];
+  for (let b = 0; b < entry.bands.length; b++) {
+    entry.valuesByBand[b] = [];
+    entry.outsideByBand[b] = null;
+    for (const part of entry.bands[b]!.parts) {
+      part.scannedClosed = 0;
+      part.prevLast = -Infinity;
+      part.lastNonNullClosedIdx = -1;
+      part.nextMissingIdx = 0;
+    }
+  }
+}
+
+function collectSeriesHoursWindow(
+  series: BoundedSeries,
+  cp: CachedStackPart,
+  afterHour: number,
+  untilHour: number,
+  clampHour: number,
+  commitClosed: boolean,
+  target: Set<number>,
+): void {
+  const add = (h: number) => {
+    if (h > afterHour && h <= untilHour) target.add(h);
+  };
+  if (cp.useRuns) {
+    const runs = series.runs!;
+    const limit = commitClosed ? runs.closedLength : runs.length;
+    let pLast = cp.prevLast;
+    let nextScanned = cp.scannedClosed;
+    let canAdvance = commitClosed;
+    for (let i = cp.scannedClosed; i < limit; i++) {
+      const run = runs.at(i)!;
+      if (pLast !== -Infinity && (run.breakBefore || run.firstHour > pLast + 1)) {
+        const gapHour = Math.min(clampHour, pLast + 1);
+        if (gapHour < run.firstHour) add(gapHour);
+      }
+      if (run.firstHour > untilHour) break;
+      add(run.firstHour);
+      const end = Math.min(clampHour, run.lastHour);
+      if (end > run.firstHour) add(end);
+      pLast = end;
+      if (canAdvance && run.lastHour <= untilHour) {
+        nextScanned = i + 1;
+        cp.prevLast = run.lastHour;
+      } else {
+        canAdvance = false;
+      }
+    }
+    if (commitClosed) cp.scannedClosed = nextScanned;
+  } else {
+    const buckets = series.buckets;
+    const limit = commitClosed ? buckets.closedLength : buckets.length;
+    const minStep = Math.max(1, series.binHours);
+    let pLast = cp.prevLast;
+    let nextScanned = cp.scannedClosed;
+    let canAdvance = commitClosed;
+    for (let i = cp.scannedClosed; i < limit; i++) {
+      const b = buckets.at(i);
+      if (!b) {
+        if (canAdvance && series.from + (i + 1) * series.binHours - 1 <= untilHour) {
+          nextScanned = i + 1;
+        }
+        continue;
+      }
+      if (pLast !== -Infinity && (b.firstBreak || b.firstHour > pLast + minStep)) {
+        const gapHour = Math.min(clampHour, pLast + 1);
+        if (gapHour < b.firstHour) add(gapHour);
+      }
+      if (b.firstHour > untilHour) break;
+      add(b.firstHour);
+      if (!b.hasBreak) {
+        const end = Math.min(clampHour, b.lastHour);
+        if (end > b.firstHour) add(end);
+      }
+      pLast = Math.min(clampHour, b.lastHour);
+      if (canAdvance && b.lastHour <= untilHour) {
+        nextScanned = i + 1;
+        cp.prevLast = b.lastHour;
+      } else {
+        canAdvance = false;
+      }
+    }
+    if (commitClosed) cp.scannedClosed = nextScanned;
+  }
+  const missing = series.missing;
+  const mLen = missing.length;
+  let nextMissing = cp.nextMissingIdx;
+  let advanceMissing = commitClosed;
+  for (let i = cp.nextMissingIdx; i < mLen; i++) {
+    const span = missing.at(i)!;
+    if (span.firstHour > untilHour) {
+      advanceMissing = false;
+      continue;
+    }
+    add(span.firstHour);
+    if (advanceMissing) nextMissing = i + 1;
+  }
+  if (commitClosed) cp.nextMissingIdx = nextMissing;
+}
+
+function collectWithinHoursWindow(
+  within: readonly (readonly [number, number])[] | null,
+  afterHour: number,
+  untilHour: number,
+  hour: number,
+  target: Set<number>,
+): void {
+  if (!within) return;
+  for (let i = 0; i < within.length; i++) {
+    const first = within[i]![0];
+    const last = within[i]![1];
+    if (first > afterHour && first <= untilHour) target.add(first);
+    if (last < hour) {
+      if (last > afterHour && last <= untilHour) target.add(last);
+      if (last + 1 > afterHour && last + 1 <= untilHour) target.add(last + 1);
+    }
+  }
+}
+
+function sampleStackRow(
+  inputs: readonly BoundedStackBandInput[],
+  h: number,
+  hour: number,
+  row: number[],
+  outsideFlags: boolean[],
+): boolean {
+  outsideFlags.fill(false);
+  let present = 0;
+  for (let b = 0; b < inputs.length; b++) {
+    const input = inputs[b]!;
+    const parts = input.parts;
+    let covered = false;
+    let value: number | null = null;
+    if (h === hour && input.head) {
+      for (let p = 0; p < parts.length; p++) {
+        if (covers(parts[p]!, h)) { covered = true; break; }
+      }
+      if (!covered) {
+        row[b] = 0;
+        outsideFlags[b] = true;
+        continue;
+      }
+      present++;
+      outsideFlags[b] = false;
+      value = 'value' in input.head ? input.head.value : null;
+    } else {
+      const scale = input.valueScale ?? 1;
+      for (let p = 0; p < parts.length; p++) {
+        const part = parts[p]!;
+        if (!covers(part, h)) continue;
+        covered = true;
+        if (value === null && part.series) value = sampleOneBounded(part.series, h, scale);
+      }
+      if (!covered) {
+        row[b] = 0;
+        outsideFlags[b] = true;
+        continue;
+      }
+      present++;
+      outsideFlags[b] = false;
+    }
+    if (value === null) return false;
+    row[b] = value;
+  }
+  return present > 0;
+}
+
+export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour: number): ChartStackModel {
+  if (!timeChartCacheState.enabled || !Number.isFinite(hour) || inputs.length === 0) {
+    return buildBoundedStackUncached(inputs, hour);
+  }
+  let entry: CachedBoundedStack | undefined;
+  let hitIdx = -1;
+  for (let i = stackPrefixCache.length - 1; i >= 0; i--) {
+    if (matchesStackCache(stackPrefixCache[i]!, inputs)) {
+      entry = stackPrefixCache[i]!;
+      hitIdx = i;
+      break;
+    }
+  }
+  if (!entry) {
+    entry = createStackCacheEntry(inputs);
+    if (stackPrefixCache.length >= STACK_CACHE_MAX) stackPrefixCache.shift();
+    stackPrefixCache.push(entry);
+  } else if (hitIdx !== stackPrefixCache.length - 1) {
+    stackPrefixCache.splice(hitIdx, 1);
+    stackPrefixCache.push(entry);
+  }
+
+  let closedThrough = Math.floor(hour) - 1;
+  let shrunk = false;
+  for (let b = 0; b < inputs.length; b++) {
+    const input = inputs[b]!;
+    const cb = entry.bands[b]!;
+    for (let p = 0; p < input.parts.length; p++) {
+      const s = input.parts[p]!.series;
+      if (!s) continue;
+      const cp = cb.parts[p]!;
+      if (cp.useRuns) {
+        const runs = s.runs!;
+        const closed = runs.closedLength;
+        if (closed < cp.scannedClosed) shrunk = true;
+        if (closed === 0) closedThrough = -Infinity;
+        else {
+          const last = runs.at(closed - 1)!.lastHour;
+          if (last < closedThrough) closedThrough = last;
+        }
+      } else {
+        const buckets = s.buckets;
+        const closed = buckets.closedLength;
+        if (closed < cp.scannedClosed || closed - 1 < cp.lastNonNullClosedIdx) {
+          shrunk = true;
+          cp.lastNonNullClosedIdx = -1;
+        }
+        let lastIdx = cp.lastNonNullClosedIdx;
+        for (let i = closed - 1; i > lastIdx; i--) {
+          if (buckets.at(i) != null) { lastIdx = i; break; }
+        }
+        cp.lastNonNullClosedIdx = lastIdx;
+        if (lastIdx < 0) closedThrough = -Infinity;
+        else {
+          const last = buckets.at(lastIdx)!.lastHour;
+          if (last < closedThrough) closedThrough = last;
+        }
+      }
+      if (s.missing.length < cp.nextMissingIdx) shrunk = true;
+    }
+  }
+
+  if (shrunk || closedThrough < entry.closedThrough) {
+    resetStackCacheEntry(entry);
+    for (let b = 0; b < inputs.length; b++) {
+      const input = inputs[b]!;
+      const cb = entry.bands[b]!;
+      for (let p = 0; p < input.parts.length; p++) {
+        const s = input.parts[p]!.series;
+        if (!s || cb.parts[p]!.useRuns) continue;
+        const closed = s.buckets.closedLength;
+        let lastIdx = -1;
+        for (let i = closed - 1; i >= 0; i--) {
+          if (s.buckets.at(i) != null) { lastIdx = i; break; }
+        }
+        cb.parts[p]!.lastNonNullClosedIdx = lastIdx;
+      }
+    }
+  }
+
+  const bandCount = inputs.length;
+  const row = new Array<number>(bandCount);
+  const outsideFlags = new Array<boolean>(bandCount);
+
+  if (closedThrough > entry.closedThrough && Number.isFinite(closedThrough)) {
+    const newSet = new Set<number>();
+    const prevClosed = entry.closedThrough;
+    for (let b = 0; b < bandCount; b++) {
+      const input = inputs[b]!;
+      const cb = entry.bands[b]!;
+      for (let p = 0; p < input.parts.length; p++) {
+        const part = input.parts[p]!;
+        const cp = cb.parts[p]!;
+        if (part.series) collectSeriesHoursWindow(part.series, cp, prevClosed, closedThrough, hour, true, newSet);
+        collectWithinHoursWindow(cp.within, prevClosed, closedThrough, hour, newSet);
+      }
+    }
+    if (newSet.size > 0) {
+      const added = [...newSet].sort((a, b) => a - b);
+      for (let i = 0; i < added.length; i++) {
+        const h = added[i]!;
+        const idx = entry.hours.length;
+        entry.hours.push(h);
+        const valid = sampleStackRow(inputs, h, hour, row, outsideFlags);
+        for (let b = 0; b < bandCount; b++) {
+          entry.valuesByBand[b]!.push(valid ? row[b]! : null);
+          if (outsideFlags[b]) {
+            let out = entry.outsideByBand[b];
+            if (!out) {
+              out = new Array<boolean>(idx + 1).fill(false);
+              entry.outsideByBand[b] = out;
+            } else {
+              out.push(true);
+            }
+            out[idx] = true;
+          } else if (entry.outsideByBand[b]) {
+            entry.outsideByBand[b]!.push(false);
+          }
+        }
+      }
+    }
+    entry.closedThrough = closedThrough;
+  }
+
+  const tailSet = new Set<number>();
+  const afterClosed = entry.closedThrough;
+  for (let b = 0; b < bandCount; b++) {
+    const input = inputs[b]!;
+    const cb = entry.bands[b]!;
+    for (let p = 0; p < input.parts.length; p++) {
+      const part = input.parts[p]!;
+      const cp = cb.parts[p]!;
+      if (part.series) collectSeriesHoursWindow(part.series, cp, afterClosed, hour, hour, false, tailSet);
+      collectWithinHoursWindow(cp.within, afterClosed, hour, hour, tailSet);
+    }
+  }
+  if ((entry.hours.length > 0 || tailSet.size > 0 || inputs.some(input => input.head)) && hour > afterClosed) {
+    tailSet.add(hour);
+  }
+  const tailHours = tailSet.size > 1 ? [...tailSet].sort((a, b) => a - b) : [...tailSet];
+  const prefixLen = entry.hours.length;
+  const totalLen = prefixLen + tailHours.length;
+  const hours = new Array<number>(totalLen);
+  for (let i = 0; i < prefixLen; i++) hours[i] = entry.hours[i]!;
+  for (let i = 0; i < tailHours.length; i++) hours[prefixLen + i] = tailHours[i]!;
+
+  const valuesByBand: (number | null)[][] = new Array(bandCount);
+  const outsideByBand: (boolean[] | null)[] = new Array(bandCount);
+  for (let b = 0; b < bandCount; b++) {
+    const srcVals = entry.valuesByBand[b]!;
+    const dstVals = new Array<number | null>(totalLen);
+    for (let i = 0; i < prefixLen; i++) dstVals[i] = srcVals[i]!;
+    for (let i = prefixLen; i < totalLen; i++) dstVals[i] = null;
+    valuesByBand[b] = dstVals;
+    const srcOut = entry.outsideByBand[b];
+    if (srcOut) {
+      const dstOut = new Array<boolean>(totalLen);
+      for (let i = 0; i < prefixLen; i++) dstOut[i] = srcOut[i]!;
+      for (let i = prefixLen; i < totalLen; i++) dstOut[i] = false;
+      outsideByBand[b] = dstOut;
+    } else {
+      outsideByBand[b] = null;
+    }
+  }
+
+  for (let i = 0; i < tailHours.length; i++) {
+    const h = tailHours[i]!;
+    const idx = prefixLen + i;
+    const valid = sampleStackRow(inputs, h, hour, row, outsideFlags);
+    for (let b = 0; b < bandCount; b++) {
+      if (outsideFlags[b]) {
+        (outsideByBand[b] ??= new Array<boolean>(totalLen).fill(false))[idx] = true;
+      }
+      if (valid) valuesByBand[b]![idx] = row[b]!;
+    }
   }
 
   const bands: ChartStackBand[] = inputs.map((input, idx) => ({

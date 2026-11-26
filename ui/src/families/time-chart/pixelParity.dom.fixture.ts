@@ -729,6 +729,45 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     ctx.lineCap = 'square';
   });
 
+  const stepHours = Array.from({ length: 40 }, (_, i) => H0 + i * 24);
+  const stepEndHour = stepHours[stepHours.length - 1]! + 12;
+  compareChart('step-stack-signed-gaps-total-dpr125', {
+    kind: 'step-stack-probe',
+    measureTitle: 'Step stack',
+    mode: 'stack',
+    hour: stepEndHour,
+    extent: [H0, stepEndHour],
+    yAxis: { format: 'percent', fixed: [-30, 100] },
+    series: [],
+    gaps: [{ firstHour: H0 + 15 * 24 + 6, lastHour: H0 + 17 * 24, reason: 'Unrecorded' }],
+    stack: {
+      hours: stepHours,
+      step: true,
+      bands: [
+        {
+          id: 'A',
+          key: 'A',
+          name: 'Band A',
+          color: darkTheme.blue,
+          opacity: 0.84,
+          values: stepHours.map((_, i) => (i === 10 ? null : i % 7 === 0 ? -12 : 18 + (i % 5) * 4)),
+        },
+        {
+          id: 'B',
+          key: 'B',
+          name: 'Band B',
+          color: darkTheme.amber,
+          opacity: 0.84,
+          values: stepHours.map((_, i) => (i === 10 ? null : i % 9 === 0 ? -8 : 14 + (i % 4) * 5)),
+        },
+      ],
+      total: {
+        color: darkTheme.text,
+        values: stepHours.map((_, i) => (i === 10 ? null : 24 + (i % 6) * 7)),
+      },
+    },
+  }, 480, 240, dpr);
+
   return { checked: steps.length, failures };
 }
 

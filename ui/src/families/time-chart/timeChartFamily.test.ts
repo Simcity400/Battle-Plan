@@ -2778,3 +2778,79 @@ describe('time-chart PR 2 lines zero-Path2D drawing', () => {
     assert.equal(clips, 1, '10 plain lines share exactly one hoisted plot clip');
   });
 });
+
+describe('time-chart PR 3 incremental buildBoundedStack', () => {
+  it('matches uncached buildBoundedStack across playback, null gaps, missing spans, within ranges, backward seek, and runs', () => {
+    const binA = 24;
+    const binB = 48;
+    const bucketsA: (ChartBucket | null)[] = Array.from({ length: 30 }, (_, i) => (
+      i === 8 || i === 9 ? null : makeBucket(H1936 + i * binA, H1936 + (i + 1) * binA - 1, 30 + (i % 5) * 4, 25, 50, 32 + (i % 4) * 3)
+    ));
+    const bucketsB: (ChartBucket | null)[] = Array.from({ length: 15 }, (_, i) => (
+      i === 5 ? null : makeBucket(H1936 + i * binB, H1936 + (i + 1) * binB - 1, 40 - (i % 4) * 5, 20, 45, 38 - (i % 3) * 4)
+    ));
+    const missingA = [{ firstHour: H1936 + 12 * binA, lastHour: H1936 + 13 * binA, reason: 'gap' }];
+    const tiledA: TiledLine = {
+      tag: 'A', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 30 * binA - 1, width: 30, buckets: bucketsA, tiles: { binHours: binA, valueAt: () => null } },
+      missing: missingA, parts: [], marks: null,
+    };
+    const tiledB: TiledLine = {
+      tag: 'B', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 15 * binB - 1, width: 15, buckets: bucketsB, tiles: { binHours: binB, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const cursorA = new BoundedSeriesCursor();
+    const cursorB = new BoundedSeriesCursor();
+    const withinB: readonly (readonly [number, number])[] = [[H1936 + 3 * binA, H1936 + 18 * binA]];
+    const checkHours = [
+      H1936 + 2 * binA + 6,
+      H1936 + 5 * binA + 12,
+      H1936 + 10 * binA + 3,
+      H1936 + 14 * binA + 18,
+      H1936 + 18 * binA + 1,
+      H1936 + 24 * binA + 5.5,
+      H1936 + 7 * binA + 4,
+      H1936 + 26 * binA + 9,
+    ];
+    for (const hour of checkHours) {
+      const bA = cursorA.advance(tiledA, hour, { headValue: knownValue(35) });
+      const bB = cursorB.advance(tiledB, hour, { headValue: knownValue(40) });
+      const inputs = [
+        { id: 'a', key: 'a', name: 'A', color: LANE_THEME.blue, parts: [{ series: bA }], head: { value: 35 } },
+        { id: 'b', key: 'b', name: 'B', color: LANE_THEME.amber, parts: [{ series: bB, within: withinB }], head: { value: 40 } },
+      ];
+      const cached = buildBoundedStack(inputs, hour);
+      const uncached = (() => {
+        timeChartCacheState.enabled = false;
+        try { return buildBoundedStack(inputs, hour); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `stack parity failed at offset ${hour - H1936}`);
+    }
+
+    const runs: Run[] = Array.from({ length: 20 }, (_, i) => ({
+      firstHour: H1936 + i * 24,
+      lastHour: H1936 + i * 24 + (i === 6 ? 10 : 23),
+      value: 20 + (i % 6) * 5,
+      ...(i === 10 ? { breakBefore: true } : {}),
+    }));
+    const runTiled: TiledLine = {
+      tag: 'R', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 20 * 24 - 1, width: 20, buckets: [], runs, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const runCursor = new BoundedSeriesCursor();
+    for (const hour of [H1936 + 30, H1936 + 160, H1936 + 250, H1936 + 420, H1936 + 90]) {
+      const bR = runCursor.advance(runTiled, hour, { headValue: knownValue(25) });
+      const inputs = [{ id: 'r', key: 'r', name: 'R', color: LANE_THEME.green, parts: [{ series: bR }], head: { value: 25 } }];
+      const cached = buildBoundedStack(inputs, hour);
+      const uncached = (() => {
+        timeChartCacheState.enabled = false;
+        try { return buildBoundedStack(inputs, hour); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `run stack parity failed at offset ${hour - H1936}`);
+    }
+  });
+});
