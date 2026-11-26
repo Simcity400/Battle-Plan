@@ -806,6 +806,8 @@ mod tests {
         assert_eq!(chosen["rows"][0]["missing"], reason);
         let unlinked = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 108, "kind": "country-factories", "measure": "free7", "members": ["GER"] }), &load, &cancelled);
         assert_eq!(unlinked["rows"][0]["missing"], format!("Who holds GER is not known: {}", dashboard_query::identity::TAG_UNLINKED));
+        let slot = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 108, "kind": "country-factories", "measure": "free7", "members": [7] }), &load, &cancelled);
+        assert_eq!(slot["rows"][0]["missing"], format!("Who holds slot 7 is not known: {}", dashboard_query::identity::TAG_UNLINKED));
     }
 
     fn load_at(source: &Source, params: Value, load: &LoadContext, cancelled: &AtomicBool) -> Value {

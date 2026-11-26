@@ -319,6 +319,21 @@ fn ever_group(params: &FactionTotalsAtParams) -> Option<&GroupSelection> {
     params.group.as_ref().filter(|group| group.membership == GroupMembership::Ever)
 }
 
+fn missing_member(holders: &Holders, country: &Country, hour: i32, holder: Option<Holder>) -> String {
+    let (name, unlinked) = match country {
+        Country::Tag(tag) => (tag.clone(), holder == Some(Holder::Unresolved)),
+        Country::Slot(slot) => {
+            let spans = holders.unlinked();
+            let unlinked = spans.get(spans.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour);
+            (format!("slot {slot}"), unlinked)
+        }
+    };
+    match holders.unknown_reason(hour).or(unlinked.then_some(TAG_UNLINKED)) {
+        Some(reason) => format!("Who holds {name} is not known: {reason}"),
+        None => format!("A member ({name}) is not present at this hour"),
+    }
+}
+
 fn group_countries(group: &GroupSelection, context: &FactionsAt, hour: i32) -> io::Result<Result<Vec<Country>, String>> {
     if let (GroupMembership::Ever, Some(index)) = (group.membership, context.ever.as_ref()) {
         return Ok(match index.refusal(hour) {
@@ -512,11 +527,7 @@ impl AtHour for FactionTotalsAt {
                     holder => {
                         member_countries.push(country.clone());
                         if missing.is_none() {
-                            missing = Some(if holder == Some(Holder::Unresolved) {
-                                format!("Who holds {country} is not known: {}", at.holders.unknown_reason(frame.hour).unwrap_or(TAG_UNLINKED))
-                            } else {
-                                format!("A member ({country}) is not present at this hour")
-                            });
+                            missing = Some(missing_member(at.holders, country, frame.hour, holder));
                         }
                     }
                 }
