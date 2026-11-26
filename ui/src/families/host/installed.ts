@@ -107,7 +107,8 @@ export function resolveHostInput(
   if (command === 'menu') {
     if (!options.menu) return null;
     const target = key ? picture.actionKeys.get(key) : undefined;
-    const hitHour = hit?.hour ?? target?.hour ?? null;
+    const resolved = key !== null && adapter.resolveHitAction ? adapter.resolveHitAction(hit ?? { key }, picture, record.fields) : null;
+    const hitHour = resolved?.hour ?? hit?.hour ?? target?.hour ?? null;
     return {
       kind: 'menu',
       hit: {

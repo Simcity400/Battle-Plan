@@ -8,7 +8,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
-import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -44,7 +44,7 @@ import {
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { withSoFarMembership } from './membership.ts';
-import { plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
+import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
@@ -86,7 +86,6 @@ import {
   extractFactionData,
   freezeGate,
   planOwner,
-  selectionUnobservedReason,
   trackGate,
   type FrozenGate,
 } from '../sources.ts';
@@ -240,7 +239,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  const isSingle = policy.mode === 'single';
+  const isSingle = gatedByCountry(policy, options);
   const isFilter = policy.mode === 'filter';
   const isMulti = policy.mode === 'multi';
 
@@ -451,11 +450,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
   const identitySnapshot = useSyncExternalStore(snapshots.subscribe, snapshots.read, snapshots.read);
 
-  const filterUnobserved = useMemo(
-    () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
-    [isFilter, widget.countries, groups.data],
-  );
-
   const selectedSlots = useMemo(() => {
     if (!isFilter && !isMulti) return undefined;
     if (widget.countries.kind !== 'tags' && widget.countries.kind !== 'selected') return undefined;
@@ -480,10 +474,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     factionUnobserved: factionData.unobserved,
     factionIncomplete: factionData.incomplete,
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
-    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
+    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
@@ -1045,7 +1039,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         if (s.stage === 'outside') {
           return { kind: 'outside', outside: s.outside };
         }
-        if (s.stage === 'choose') return { kind: 'choose', message: policy.choose ?? `Choose a country to see its ${subject}.` };
+        if (s.stage === 'choose') return { kind: 'choose', message: (policy.mode === 'single' ? policy.choose : undefined) ?? `Choose a country to see its ${subject}.` };
         if (s.stage === 'holders') return { kind: 'holders', tag: singleCountry?.chosen ?? null, holders: s.holders, pick: s.pick };
         if (s.stage === 'absent') {
           const msg = nameFailureDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`;

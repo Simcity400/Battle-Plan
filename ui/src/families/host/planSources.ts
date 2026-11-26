@@ -1,6 +1,13 @@
 import type { WidgetSpec } from '../../dashboard/model';
 import { planSignature } from '../broker.ts';
-import type { FamilyPlanContext, FamilyViewportRequest, SourcePlan } from '../plan.ts';
+import type { CountryPolicy, FamilyPlanContext, FamilyViewportRequest, SourcePlan } from '../plan.ts';
+import type { OptionValue } from '../../dashboard/options';
+
+export function gatedByCountry(policy: CountryPolicy, options: Readonly<Record<string, OptionValue>>): boolean {
+  if (policy.mode !== 'single') return false;
+  const subject = policy.subjectOption === undefined ? undefined : options[policy.subjectOption];
+  return subject === undefined || subject === null || subject === '';
+}
 
 export function plannedRangeSpan(
   timeMode: WidgetSpec['time']['mode'],
