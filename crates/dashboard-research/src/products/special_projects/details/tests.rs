@@ -456,7 +456,7 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
 
 #[test]
 fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predecessors_project_values() {
-    use replay_data::rows::{CountryRow, ProjectVariable, ProjectVariableStore};
+    use replay_data::rows::{CountryCounterInputRow, CountryRow, ProjectVariable, ProjectVariableStore};
     dashboard_core::test_fixtures::game::enter();
     const REPLACED: i32 = 35;
     const BEFORE: i32 = 30;
@@ -502,6 +502,9 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
         countries[0].tag = b"HOM".to_vec();
         countries.insert(0, CountryRow { id: OTHER_OWNER, canonical_slot: 8, tag: b"ALT".to_vec(), ..Default::default() });
+        set(&mut frame, TableId::CountryCounterInputs, TableRows::CountryCounterInputs(vec![
+            CountryCounterInputRow { country: OTHER_OWNER, owned_state_count: 1, ..Default::default() },
+        ]));
         let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
         links.insert(1, CountryLinkRow { id: OTHER_OWNER, canonical_slot: 8 });
         if hour >= TRANSFERRED {

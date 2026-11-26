@@ -52,6 +52,7 @@ fn d16_equipment_reuse_verifies_covered_reads_in_native_order() {
             let names = layers.key_name_products().unwrap();
             assert!(names.equipment_database().unwrap().lost.is_none());
             assert!(IconContent::load(Arc::clone(&catalogue)).is_ok());
+            let first_changed = files[changed[0]].0;
             for index in changed {
                 let path = folder.0.join(files[index].0);
                 if remove {
@@ -60,10 +61,10 @@ fn d16_equipment_reuse_verifies_covered_reads_in_native_order() {
                     std::fs::write(path, "changed covered payload").unwrap();
                 }
             }
-            let expected = Database::load_complete(layers).err().unwrap();
+            let expected = layers.read(first_changed).expect_err("the first changed file must fail its verified read");
             let actual = IconContent::load(Arc::clone(&catalogue))
                 .err()
-                .expect("equipment reuse must retain the complete loader's verified reads");
+                .expect("equipment reuse must verify every file in native order");
             assert_eq!(actual.kind(), expected.kind());
             assert_eq!(actual.to_string(), expected.to_string());
         }
