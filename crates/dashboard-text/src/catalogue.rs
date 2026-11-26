@@ -88,13 +88,6 @@ impl<T> CachedResult<T> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn loaded(value: Arc<T>) -> Self {
-        let result = Self::default();
-        *result.value.lock().unwrap() = Some(Ok(value));
-        result
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     pub fn loads(&self) -> usize {
         self.loads.load(std::sync::atomic::Ordering::Relaxed)
     }

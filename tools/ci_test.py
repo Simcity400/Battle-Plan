@@ -12,7 +12,6 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from xml.sax.saxutils import escape
 
 import yaml
 
@@ -313,64 +312,26 @@ class Verdict(unittest.TestCase):
     def outcomes(self, *states):
         return [ci.Outcome(f"job{index}", state) for index, state in enumerate(states)]
 
-    def test_a_not_run_rule_names_its_crates_and_its_panic(self):
-        for rule in ('{ crates = ["a"] }', "{ panic = 'x' }", '{ crates = [], panic = \'x\' }'):
-            with self.assertRaises(SystemExit, msg=rule):
-                ci.load_pipeline(PIPELINE.replace('command = ["boat", "test", "{packages}"]\n',
-                                                  'command = ["boat", "test", "{packages}"]\nreport = "r.xml"\nnot-run = { "why" = ' + rule + ' }\n'))
-
     def test_a_job_that_could_not_run_is_never_a_success(self):
         self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "skipped")), "error")
         self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "fail")), "failure")
         self.assertEqual(ci.verdict(self.outcomes("pass", "skipped", "later", "ci only")), "success")
 
-    def test_a_failure_a_rule_names_is_not_run_and_every_other_failure_still_fails(self):
-        fixture = ("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
-                   "error: \"BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
-        unset = "effect grammar tests require BATTLEPLAN_GAME_DIR with the supported installation"
-        metadata = "BATTLEPLAN_GAME_DIR must name the supported installation for executable metadata"
-        other_error = unset + ": Custom { kind: InvalidData, error: \"table digest mismatch\" }"
-
-        def panic(thread, message):
-            return f"thread '{thread}' (4242) panicked at crates/a/src/lib.rs:1:2:\n{message}\nnote: run with `RUST_BACKTRACE=1`\n"
-
-        def case(name, stderr, kind="test failure with exit code 101"):
-            return f'<testcase name="{name}"><failure type="{kind}"/><system-err>{escape(stderr)}</system-err></testcase>'
-        report = "<testsuites><testsuite name=\"dashboard-base\"><testcase name=\"passes\"/><testcase name=\"ignored\"><skipped/></testcase>" + "".join([
-            case("a::fixture", panic("a::fixture", fixture)),
-            case("a::unset", panic("a::unset", unset)),
-            case("a::metadata", panic("a::metadata", metadata)),
-            case("a::other_error", panic("a::other_error", other_error)),
-            case("a::leaks", panic("a::leaks", fixture), kind="test failure with exit code 101 (leaked handles)"),
-            case("a::caught_then_returns_err", panic("a::caught_then_returns_err", fixture) + "Error: \"checksum mismatch\"\n"),
-            case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLEPLAN_GAME_DIR")')),
-            case("a::caught_then_asserts", panic("a::caught_then_asserts", fixture) + panic("a::caught_then_asserts", "assertion failed: x")),
-            case("a::worker", panic("worker", fixture)),
-            case("a::times_out", panic("a::times_out", fixture), kind="test timeout"),
-        ]) + "</testsuite><testsuite name=\"viewer-raids\">" + case("a::fixture", panic("a::fixture", fixture)) + "</testsuite></testsuites>"
-        rules = list(next(job for job in ci.load_pipeline(ci.PIPELINE.read_text(encoding="utf-8")).jobs
-                          if job.name == "rust-test").not_run)
-        passed, failures, held = ci.sorted_failures(report, rules)
-        self.assertEqual(passed, 1)
-        self.assertEqual([test for test, _ in failures], [f"dashboard-base a::{name}" for name in
-                                                          ("other_error", "leaks", "caught_then_returns_err",
-                                                           "asserts_on_the_name", "caught_then_asserts", "worker", "times_out")]
-                         + ["viewer-raids a::fixture"])
-        reason = "needs the game install until the dashboard rework (#169)"
-        self.assertEqual(held, {reason: {"dashboard-base": 3}})
-        self.assertIn("table digest mismatch", failures[0][1])
-        self.assertEqual(ci.held_detail(held), f"3 not run here: {reason}")
-        lines = ci.failure_report((passed, failures, held))
-        self.assertIn(f"not run here: {reason}: 3 tests, in dashboard-base (3)", lines)
-        self.assertEqual(sum(line.startswith("--- FAIL ") for line in lines), 8)
-        self.assertIsNone(ci.sorted_failures("not a report", rules))
-        summary = "        Summary [ 12.000s] {} tests run: 1 passed, 11 failed, 1 skipped\n"
-        self.assertTrue(ci.finished_every_test(summary.format(12), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test(summary.format(13), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test("  Cancelling due to interrupt: 1 test still running\n" + summary.format(12),
-                                                (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test(summary.format("12/13"), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test("error: test run cancelled\n", (passed, failures, held)))
+    def test_every_junit_failure_is_reported_with_its_output(self):
+        report = """<testsuites><testsuite name="dashboard-base">
+            <testcase name="ready"/><testcase name="ignored"><skipped/></testcase>
+            <testcase name="needs_tables"><failure type="test failure with exit code 101"/>
+            <system-err>thread 'needs_tables' panicked at test.rs:1:1:
+BATTLEPLAN_GAME_DIR</system-err></testcase></testsuite>
+            <testsuite name="consumer::integration"><testcase name="lost"><error message="interrupted"/></testcase>
+            </testsuite></testsuites>"""
+        lines = ci.failure_report(report, {"consumer"})
+        self.assertEqual(lines[0], "1 passed, 2 failed")
+        self.assertIn("--- FAIL dashboard-base needs_tables", lines)
+        self.assertIn("BATTLEPLAN_GAME_DIR", lines)
+        self.assertIn("--- FAIL consumer::integration lost (beyond a pull request's scope)", lines)
+        self.assertTrue(any("interrupted" in line for line in lines))
+        self.assertIsNone(ci.failure_report("not XML"))
 
 
 class ReviewOfFourteen(unittest.TestCase):

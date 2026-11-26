@@ -1928,8 +1928,6 @@ mod tests {
 
     #[test]
     fn focus_text_keeps_authored_titles_without_reaching_conditional_icons() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::DecodedFrame, frame::TableView};
         let (catalogue, _folders) = texture_catalogue(
@@ -2010,8 +2008,6 @@ mod tests {
 
     #[test]
     fn each_focus_database_answers_only_for_its_own_focuses() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::DecodedFrame, frame::TableView};
         let frame = DecodedFrame {
@@ -2034,7 +2030,7 @@ mod tests {
                 ),
                 (
                     "common/defines/mod.lua",
-                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NFocus={FOCUS_POINT_DAYS=5}}",
                 ),
                 (
                     "localisation/mod_l_english.yml",
@@ -2085,8 +2081,8 @@ mod tests {
             texts(&national),
             [
                 ("continuous_only".to_owned(), None, None),
-                ("national_only".to_owned(), national_title.clone(), Some(14.0)),
-                ("shared".to_owned(), national_title.clone(), Some(14.0)),
+                ("national_only".to_owned(), national_title.clone(), Some(10.0)),
+                ("shared".to_owned(), national_title.clone(), Some(10.0)),
             ]
         );
         assert_eq!(
@@ -2113,8 +2109,8 @@ mod tests {
             texts(&national),
             [
                 ("continuous_only".to_owned(), None, None),
-                ("national_only".to_owned(), national_title.clone(), Some(14.0)),
-                ("shared".to_owned(), national_title.clone(), Some(14.0)),
+                ("national_only".to_owned(), national_title.clone(), Some(10.0)),
+                ("shared".to_owned(), national_title.clone(), Some(10.0)),
             ]
         );
         let (art, reason) = titles(&mut national, "shared");
@@ -2153,8 +2149,6 @@ mod tests {
 
     #[test]
     fn focus_display_projections_do_not_reach_unrequested_scoped_descriptions() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
         use replay_frame::{frame::DecodedFrame, frame::TableView};
         let (catalogue, _folders) = texture_catalogue(
@@ -2169,7 +2163,7 @@ mod tests {
                 ),
                 (
                     "common/defines/mod.lua",
-                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
                 ),
                 (
                     "common/ideologies/mod.txt",
@@ -2259,8 +2253,6 @@ mod tests {
 
     #[test]
     fn focus_icons_evaluate_native_cases_and_preserve_caller_overrides() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows, rows::tables};
         use replay_frame::{frame::DecodedFrame, frame::TableView};
         let icon = |value| Rgba8Image {
@@ -2360,13 +2352,12 @@ mod tests {
 
     #[test]
     fn focus_art_uses_the_row_country_and_only_refuses_a_missing_random_seed() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay_data::{
             rows::ClockRow, rows::CountryLinkRow, rows::CountryRow, rows::PoliticalPartyRow,
             rows::TableId, rows::TableRows, rows::tables,
         };
         use replay_frame::{frame::DecodedFrame, frame::TableView};
+        dashboard_text::catalogue::tests::script_game::enter();
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -2376,7 +2367,7 @@ mod tests {
                 ("common/ideologies/mod.txt", "ideologies={mod_party={}}"),
                 (
                     "common/defines/mod.lua",
-                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
                 ),
                 (
                     "common/scripted_localisation/mod.txt",
@@ -2601,13 +2592,8 @@ mod tests {
         let conditional = context
             .focuses_at(&[("conditional", "M1")], &frame)
             .remove(0);
-        assert!(
-            conditional
-                .1
-                .as_deref()
-                .unwrap()
-                .contains("selected sprite GFX_other ")
-        );
+        let reason = conditional.1.as_deref().unwrap();
+        assert!(reason.contains("selected sprite GFX_other "), "{reason}");
         assert_eq!(
             context.focuses_at(&[("scoped", "M1")], &frame)[0]
                 .0
@@ -2619,8 +2605,12 @@ mod tests {
 
     #[test]
     fn technology_limits_use_load_time_dlcs_empty_scope_and_unknown_globals() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use engine_native::cequipment_variant::FLOATING_HARBOR_CLASSIFIER_MASK;
+        crate::test_fixtures::game::executable()
+            .auxiliary(|tables| {
+                tables.category_names.as_mut().unwrap().push(("fixture_dock", FLOATING_HARBOR_CLASSIFIER_MASK));
+            })
+            .enter();
         let feature_dlc = engine_dlc::dlc_feature_state::NAME_MASKS
             .iter()
             .find(|(_, mask)| *mask == 1 << 7)
@@ -2633,7 +2623,7 @@ mod tests {
             &[
                 (
                     "common/units/equipment/mod.txt",
-                    "equipments={mod_child={} mod_harbor={type=floating_harbor}}",
+                    "equipments={mod_child={} mod_harbor={type=fixture_dock}}",
                 ),
                 ("common/technologies/mod.txt", &technologies),
                 (
@@ -2700,8 +2690,6 @@ mod tests {
 
     #[test]
     fn technology_catalogue_keeps_parent_text_and_skips_unrequested_children() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -2743,8 +2731,6 @@ mod tests {
 
     #[test]
     fn a_repeated_technology_is_named_by_its_recorded_template() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -2803,8 +2789,6 @@ mod tests {
 
     #[test]
     fn a_template_past_a_file_not_read_whole_is_refused() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -2848,8 +2832,6 @@ mod tests {
 
     #[test]
     fn technology_descriptions_use_distinct_child_gate_and_archetype_fallback() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -2902,8 +2884,6 @@ mod tests {
 
     #[test]
     fn nuke_artwork_uses_the_recorded_gui_sprite_and_authored_frame() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let sheet = Rgba8Image {
             width: 2,
             height: 1,
@@ -2948,8 +2928,6 @@ mod tests {
 
     #[test]
     fn mod_png_artwork_and_native_refusals_reach_the_catalogue_reply() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let image = Rgba8Image {
             width: 6,
             height: 3,
@@ -2975,7 +2953,7 @@ mod tests {
             &[
                 ("gfx/mod/sheet.png", png_bytes(&image)),
                 ("gfx/mod/noise.png", vec![0x13; 20]),
-                ("gfx/mod/tiny.png", vec![0, 0, 1]),
+                ("gfx/mod/tiny.png", b"DDS ".to_vec()),
             ],
         );
         catalogue.gui_decode = Ok(Decode {
@@ -2997,9 +2975,9 @@ mod tests {
         assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 1, 20, 30, 200]);
         assert_eq!(&frame.pixels[24..], [0; 8]);
         for (token, reason) in [
-            ("bad_tech", "the game draws no texture either"),
-            ("unknown_tech", "does not determine what the game draws"),
-            ("absent_tech", "tried"),
+            ("bad_tech", "cannot be decoded"),
+            ("unknown_tech", "undefined format behaviour: a 4-byte DDS"),
+            ("absent_tech", r#"no layer holds any of ["gfx/mod/absent.dds", "gfx/mod/absent.tga", "gfx/mod/absent.png"]"#),
         ] {
             assert!(
                 artwork
@@ -3022,8 +3000,6 @@ mod tests {
 
     #[test]
     fn every_texture_refusal_reaches_artwork_warnings() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let refusals = crate::catalogue::texture_tests::refusal_textures();
         let sprites = format!(
             "spriteTypes = {{ {} }}",
@@ -3060,11 +3036,23 @@ mod tests {
             .catalogue(tokens.iter().map(String::as_str).collect(), &cancelled)
             .unwrap();
         assert!(artwork.iter().all(|art| art.icon.is_none()));
-        for (token, (_, _, reason)) in tokens.iter().zip(&refusals) {
+        let reasons = [
+            "no layer holds any of",
+            "has no extension",
+            "cannot be decoded",
+            "undefined format behaviour: a 4-byte DDS",
+            "depends on device limits",
+            "is a cube map, not a 2D UI texture",
+            "first level runs past the file",
+            "past the 16 MiB texture limit",
+        ];
+        assert_eq!(refusals.len(), reasons.len());
+        for ((token, (path, _, _)), reason) in tokens.iter().zip(&refusals).zip(reasons) {
+            let prefix = format!("{token}: icon unavailable: ");
             assert!(
-                warnings
-                    .iter()
-                    .any(|warning| warning.contains(token) && warning.contains(reason)),
+                warnings.iter().any(|warning| {
+                    warning.starts_with(&prefix) && warning.contains(path) && warning.contains(reason)
+                }),
                 "{warnings:?}"
             );
         }
@@ -3076,8 +3064,6 @@ mod tests {
 
     #[test]
     fn unknown_gui_decode_is_the_items_problem_and_keeps_its_text() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -3126,8 +3112,6 @@ mod interface_refusals {
 
     #[test]
     fn d16_fresh_text_only_reply_keeps_interface_refusal_summary() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_, folder) = folder_catalogue(&[
             (
                 "interface/synthetic.gfx",

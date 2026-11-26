@@ -71,6 +71,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [dev-dependencies]
+engine-native.workspace = true
 engine-native-parts = { workspace = true, features = ["test-support"] }
 content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
