@@ -2,6 +2,8 @@ import { answerShape } from './message.ts';
 import { answerBody } from './messages.fixture.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { decode, encode, ExtData } from '@msgpack/msgpack';
+import { ReplyDecoder } from '../../draw/replyDecoder.ts';
 import { CELL, cellState, cellValue, rowKey, rowName, rowReason } from './message.ts';
 import { parseDatedPanels, parseFollowed } from '../../test-support/followMessage.ts';
 import { datedPanel, message } from './messages.fixture.ts';
@@ -43,6 +45,46 @@ test('a dated panel reads the native MessagePack bytes', () => {
   const bytes = datedPanel(1, 7, { rows: [7] });
   assert.deepEqual([...bytes.slice(40, 48)], [0x81, 0xa4, 114, 111, 119, 115, 0x91, 7]);
   assert.deepEqual(parseDatedPanels(bytes).panels[0]!.panel?.data, { rows: [7] });
+  const body = bytes.subarray(40, 48);
+  assert.deepEqual(new ReplyDecoder().decode(body), decode(body));
+});
+
+test('lane reply strings preserve MessagePack values, binary, extensions and noncanonical string headers', () => {
+  const reader = new ReplyDecoder();
+  const samples = [
+    encode([null, false, 0, 1.25, { nested: ['é漢', '🟩', '\uFEFFtag', '', 'x'.repeat(256)] }]),
+    encode([new Uint8Array([1, 2, 3]), new Date(100), new ExtData(12, new Uint8Array([0xa3, 2, 3]))]),
+    encode(['yrljbjuz', 'jsldzojd', 'yrljbjuz']),
+    ...[0xd9, 0xda, 0xdb, 0xc4, 0xc5, 0xc6].map((tag, i) =>
+      Uint8Array.of(tag, ...Array((1 << (i % 3)) - 1).fill(0), 3, 0xc0, 0xaf, 0xff)),
+    Uint8Array.of(0x92, 0xa2, 0xc3, 0xa9, 0xa1, 0xc3),
+    Uint8Array.of(0x92, 0xa1, 0xc3, 1),
+    Uint8Array.of(0x92, 0xa1, 0xc3, 2),
+  ];
+  for (const body of samples) {
+    const padded = new Uint8Array(7 + body.length);
+    padded.set(body, 7);
+    assert.deepEqual(reader.decode(padded.subarray(7)), decode(body));
+  }
+});
+
+test('1,000 decodes build each distinct short string once per lane', t => {
+  const reader = new ReplyDecoder();
+  const bytes = encode({ tag: 'ABC', values: ['ABC', '1245', 'counted', 'tag'] });
+  const built = t.mock.method(String, 'fromCharCode');
+  const first = reader.decode(bytes);
+  for (let i = 1; i < 1000; i++) assert.deepEqual(reader.decode(bytes), first);
+  assert.equal(built.mock.callCount(), 5);
+  assert.deepEqual(new ReplyDecoder().decode(bytes), first);
+  assert.equal(built.mock.callCount(), 10);
+  for (const [i, tag] of [0xd9, 0xda, 0xdb].entries()) {
+    assert.equal(reader.decode(Uint8Array.of(tag, ...Array((1 << i) - 1).fill(0), 3, 65, 66, 67)), 'ABC');
+  }
+  assert.equal(built.mock.callCount(), 10);
+  const long = encode('x'.repeat(32));
+  reader.decode(long);
+  reader.decode(long);
+  assert.equal(built.mock.callCount(), 12);
 });
 
 test('review 10: an answer\'s shape names its rows and columns, not their order', () => {

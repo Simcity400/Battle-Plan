@@ -5,6 +5,7 @@ import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
 import { PayloadStore, type PayloadsMessage, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { InstalledViewport } from '../families/plan.ts';
+import { ReplyDecoder } from './replyDecoder.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null }
 export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
@@ -201,6 +202,7 @@ function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value
 
 export class Lane<B extends { readonly width: number; close(): void }> {
   readonly facts = new Facts<Value>();
+  private readonly replyDecoder = new ReplyDecoder();
   readonly stats = { frames: 0, entries: 0, motion: 0, crops: 0, refused: {} as Record<string, number>, visited: 0, pruned: 0 };
   private readonly subs = new Map<number, Sub>();
   private readonly widgets = new Map<number, Widget>();
@@ -1279,7 +1281,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     let cells: ReturnType<typeof cellsOf> = [];
     try {
       const previous = this.facts.latest(rawId);
-      panel = parseDatedPanelRecord(record, previous?.kind === 'panel' ? previous : undefined);
+      panel = parseDatedPanelRecord(record, previous?.kind === 'panel' ? previous : undefined, this.replyDecoder.decode);
       if (panel.panel && panel.panel.refused === null) cells = cellsOf(panel.panel.data);
     } catch (error) {
       this.freed += size;
