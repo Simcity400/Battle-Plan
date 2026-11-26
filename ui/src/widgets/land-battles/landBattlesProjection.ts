@@ -16,25 +16,51 @@ const IC_UNRECORDED = 'IC lost not recorded: a lost design has no recorded build
 
 function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], unknown: boolean): Value<string> {
   if (!side.length) return notRecorded('Country not recorded');
-  const names = side.map(who => who.name).join(', ');
-  return unknown ? partialValue(names, 'Some participants on this side were not recorded') : knownValue(names);
+  const known: string[] = [];
+  let missingReason: string | null = null;
+  for (const who of side) {
+    if (who.value.kind === 'known') known.push(who.value.value);
+    else if (missingReason === null && who.value.kind === 'notRecorded') missingReason = who.value.reason;
+  }
+  if (!known.length) return notRecorded(missingReason ?? 'Country not recorded');
+  const reason = missingReason
+    ? (unknown ? `${missingReason}; some participants on this side were not recorded` : missingReason)
+    : unknown
+      ? 'Some participants on this side were not recorded'
+      : null;
+  const text = known.join(', ');
+  return reason ? partialValue(text, reason) : knownValue(text);
 }
 
-function coalitionSummary(sides: readonly (readonly ReturnType<typeof resolveIdentity>[])[]): string | undefined {
-  const parts = sides
-    .map((side, i) => side.length > 1 ? `+${side.length - 1} ${i === 0 ? 'attacker' : 'defender'}${side.length - 1 === 1 ? '' : 's'}` : '')
-    .filter(Boolean);
-  return parts.length ? parts.join(', ') : undefined;
+function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
+  if (sideValues.every(value => value.kind === 'notRecorded')) return notRecorded('Country not recorded');
+  const parts = sideValues.map(value => value.kind === 'known' || value.kind === 'partial' ? value.value : 'Country not recorded');
+  const reasons: string[] = [];
+  for (const value of sideValues) {
+    if (value.kind === 'partial' || value.kind === 'notRecorded') {
+      if (!reasons.includes(value.reason)) reasons.push(value.reason);
+    }
+  }
+  const text = parts.join(' · ');
+  return reasons.length ? partialValue(text, reasons.join('; ')) : knownValue(text);
 }
 
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
   const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
   const name = place.kind === 'known' ? knownValue('Battle of ' + place.value) : place;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
-  const flags = row.countries.map((slots, i) => ({ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i] }));
-  const countryCell = logCountryCell(view, flags, row.hour, boundary);
-  const countryNames = sides.map(side => side.length ? side.map(who => who.name).join(', ') : 'Country not recorded').join(' · ');
-  const extraAllies = coalitionSummary(sides);
+  const flagEntries = row.countries.flatMap<{ readonly tag: string | null; readonly atHour: number }>((slots, i) => (
+    slots.length
+      ? slots.map(slot => ({ tag: countryKey(slot), atHour: row.countriesHour[i]! }))
+      : [{ tag: null, atHour: row.countriesHour[i]! }]
+  ));
+  const coalition = row.countries[0].length > 1 || row.countries[1].length > 1;
+  const defenderStart = Math.max(1, row.countries[0].length);
+  const countryCell = logCountryCell(view, flagEntries, row.hour, boundary);
+  const countryFlags = coalition && countryCell.flags
+    ? countryCell.flags.map((flag, idx) => idx === defenderStart ? { ...flag, separator: true } : flag)
+    : countryCell.flags;
+  const sideValues = sides.map((side, i) => sideParticipants(side, row.countriesUnknown[i]!));
   const title = name.kind === 'known' ? name.value : 'Battle name not recorded';
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
@@ -42,16 +68,16 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, sides, colors },
-    tooltipExtra: (): TooltipExtraRow[] => sides.map((side, i) => ({
+    tooltipExtra: (): TooltipExtraRow[] => sideValues.map((value, i) => ({
       label: i === 0 ? 'Attackers' : 'Defenders',
-      value: sideParticipants(side, row.countriesUnknown[i]!),
+      value,
       ...(i === 0 ? { divider: true } : {}),
     })),
     cells: {
       date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 }, 'square', 'Land battle', 'Battle artwork unavailable'),
-      country: { ...countryCell, value: knownValue(countryNames) },
-      item: { value: name, ...(extraAllies ? { inlineSubtext: extraAllies } : {}) },
+      country: { ...countryCell, ...(countryFlags ? { flags: countryFlags } : {}), value: battleSidesValue(sideValues) },
+      item: { value: name },
       place: { value: row.state === null ? notRecorded('Province state not recorded') : resolveName(view, 'state', String(row.state), { atHour: row.hour, boundary }).value },
       casualties: logPairCell(row.casualties, 'Casualties', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined),
       icLost: logPairCell(row.icLost, 'IC lost', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined, IC_UNRECORDED),

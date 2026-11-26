@@ -49,12 +49,18 @@ test('the goals filter goes to the product; an unrecognised state is not called 
   assert.equal(strange.cells.state!.value.kind, 'notRecorded');
   assert.equal(strange.cells.state!.tone, 'grey');
   const cancelled = project(reply({
-    definitions: [{ token: 'goal_alpha', name: null, description: null, icon: null, category: null, categoryName: null, bands: [], reason: 'Goal name is not localised' } as FactionGoalDefinition],
-    goals: [goal('cancelled:0', 0, 'cancelled', null)],
-  })).rows[0]!;
-  assert.equal(cancelled.muted, true);
-  assert.equal(cancelled.cells.icon!.artName, 'goal_alpha');
-  assert.equal(cancelled.cells.icon!.art?.status === 'unavailable' && cancelled.cells.icon!.art.reason === 'goal_alpha: Goal name is not localised', true);
+    definitions: [
+      { token: 'goal_alpha', name: null, description: null, icon: null, category: null, categoryName: null, bands: [], reason: 'Goal name is not localised' } as FactionGoalDefinition,
+      { token: 'goal_blank', name: '', description: null, icon: null, category: null, categoryName: null, bands: [], reason: null } as FactionGoalDefinition,
+    ],
+    goals: [goal('cancelled:0', 0, 'cancelled', null), goal('goal:blank', 1, 'inProgress', 1)],
+  }));
+  const [cancelledRow, blankRow] = cancelled.rows;
+  assert.equal(cancelledRow!.muted, true);
+  assert.equal(cancelledRow!.cells.icon!.artName, 'goal_alpha');
+  assert.equal(cancelledRow!.cells.icon!.art?.status === 'unavailable' && cancelledRow!.cells.icon!.art.reason === 'goal_alpha: Goal name is not localised', true);
+  assert.equal(blankRow!.cells.icon!.artName, 'goal_blank');
+  assert.equal(blankRow!.cells.icon!.art?.status === 'unavailable' && blankRow!.cells.icon!.art.reason === 'No icon recorded for goal_blank', true);
   const unknown = project(reply({ faction: null, membershipMissing: 'Faction memberships are not known at this hour' }));
   assert.deepEqual([unknown.emptyKind, unknown.empty], ['unavailable', 'Faction memberships are not known at this hour']);
   assert.equal(project(reply({ faction: null })).emptyKind, 'empty');

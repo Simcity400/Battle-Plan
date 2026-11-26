@@ -29,7 +29,7 @@ const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never
     extra: row => row.kind === 'ship'
       ? shipPictureCell(row.ship, row.picture)
       : row.port.queue.length === 0
-        ? { subtext: row.port.queueMissing ?? 'No ships waiting' }
+        ? { inlineSubtext: row.port.queueMissing ?? 'No ships waiting' }
         : {} },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),

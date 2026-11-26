@@ -227,7 +227,10 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.display === 'flag') {
-      out[column.key] = Math.ceil(Math.max(column.flagsWidth ?? column.minWidth ?? 48, headerWidth));
+      const count = options?.flags?.[column.key] ?? 0;
+      const needed = count > 2 ? count * FLAG_SLOT_WIDTH + (count - 1) * FLAG_GAP + 7 + CELL_INSET * 2 : 0;
+      const measured = Math.ceil(Math.max(column.flagsWidth ?? column.minWidth ?? 48, needed, headerWidth));
+      out[column.key] = column.maxWidth !== undefined ? Math.min(column.maxWidth, measured) : measured;
       continue;
     }
     const samples = column.widest?.length

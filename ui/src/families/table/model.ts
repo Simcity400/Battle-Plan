@@ -75,6 +75,7 @@ export interface TableCellFlag {
   readonly art: ArtResult;
   readonly artKey?: string;
   readonly dimmed?: boolean;
+  readonly separator?: boolean;
 }
 
 export interface TableCellHeading {
@@ -1136,7 +1137,7 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
       rowOut.push(auditCell(item.key, col.key, canonicalAuditData({
         ...painted,
         artKey: cell?.artKey ?? null,
-        flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true, ...(flag.label ? [flag.label] : [])]) ?? null,
+        flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true, ...(flag.separator ? ['|'] : []), ...(flag.label ? [flag.label] : [])]) ?? null,
         ...(cell?.heading ? { heading: [cell.heading.flag.tag, cell.heading.flag.artKey ?? null, cell.heading.note ?? null] } : {}),
       })));
     }

@@ -4,6 +4,7 @@ import { createBoundedReadView } from '../../families/boundedView.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import type { StockFigure, StockTypeRow, StockpileArtworkReply, StockpileTypesReply } from '../../generated/dashboard';
 import { buildColumnLayouts, measureFixedColumnWidths } from '../../families/table/layout.ts';
+import { deriveRowTooltip } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
 import { STOCKPILE_BASE, stockpileColumns, stockpileProjection } from './stockpileProjection.ts';
@@ -106,9 +107,9 @@ test('small signed residues, exact zeros and same-name variants remain distingui
     'Bravo',
     'Design #4',
   ]);
-  const firstTip = (typeof children[0]!.tooltipExtra === 'function' ? children[0]!.tooltipExtra() : children[0]!.tooltipExtra) ?? [];
-  const storedEntry = firstTip.find(entry => entry.label === 'Stored')!;
-  const exact = formatValueState(storedEntry.value, storedEntry.format);
-  assert.equal(exact.kind === 'known' ? exact.text : null, '\u22120.14');
-  assert.deepEqual(firstTip.find(entry => entry.label === 'Design ID')?.value, { kind: 'known', value: '1' });
+  const first = children[0]!;
+  const tip = deriveRowTooltip({ kind: 'data', key: first.key, name: first.name, rank: 1, level: 2, parent: model.rows[0]!.key, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: first }, model.columns);
+  const storedRow = tip.rows.find(entry => entry.label === 'Stored');
+  assert.equal(storedRow?.valueState?.kind === 'known' ? storedRow.valueState.text : null, '\u22120.14');
+  assert.deepEqual(tip.rows.find(entry => entry.label === 'Design ID')?.rawValue, { kind: 'known', value: '1' });
 });

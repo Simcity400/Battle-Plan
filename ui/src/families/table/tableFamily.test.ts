@@ -3789,3 +3789,68 @@ test('declareTableProjection incremental cache keeps unchanged rows across ticks
   const m3 = proj.project(makeView(12), options);
   assert.equal(m3.rows[0]!.name, 'Alpha Renamed', 'country identity change invalidates the incremental snapshot');
 });
+
+test('flag columns widen for multi-country coalitions and inline subtext paints beside missing names and in compact density', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: '', as: 'flag', cellKind: 'country', offered: ['flagName', 'name', 'flag'], priority: 0, minWidth: 68, grow: 0 },
+    { key: 'name', label: 'Port', as: 'plain', cellKind: 'item', offered: ['plain'], priority: 0, text: true, minWidth: 160 },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'name', direction: 'ascending' } });
+  const baseCols = buildColumnLayouts(columns, settings);
+  const twoWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7, undefined, { flags: { country: 2 } });
+  const fourWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7, undefined, { flags: { country: 4 } });
+  assert.equal(twoWidths.country, 68);
+  assert.ok(fourWidths.country! > twoWidths.country!, 'four coalition flags widen a flag-only column');
+  const model: TableModel = {
+    hour: 1,
+    columns,
+    rows: [
+      {
+        key: 'unnamed',
+        name: 'Port name unavailable',
+        cells: {
+          country: {
+            value: knownValue('Alpha, Charlie · Bravo, Delta'),
+            flags: [
+              { tag: 'AAA', art: PENDING_ART },
+              { tag: 'CCC', art: PENDING_ART },
+              { tag: 'BBB', art: PENDING_ART, separator: true },
+              { tag: 'DDD', art: PENDING_ART },
+            ],
+          },
+          name: { value: notRecorded('Port name unavailable'), inlineSubtext: 'No ships waiting' },
+        },
+      },
+      {
+        key: 'named',
+        name: 'Harbour',
+        cells: {
+          country: { value: knownValue('Alpha · Bravo'), flags: [{ tag: 'AAA', art: PENDING_ART }, { tag: 'BBB', art: PENDING_ART }] },
+          name: { value: knownValue('Harbour'), inlineSubtext: 'No ships waiting' },
+        },
+      },
+    ],
+  };
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fourWidths), 480);
+  const grid = gridContext(480, 120);
+  drawFamilyTable(grid.ctx as unknown as CanvasRenderingContext2D, {
+    layout,
+    rows: resolveTableRows(model, settings),
+    settings,
+    hour: 1,
+    width: 480,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+  });
+  const texts = [...grid.marks.values()];
+  assert.equal(texts.filter(text => text === 'No ships waiting').length, 2, 'inline status paints beside both a missing-name hatch and a compact named row');
+});

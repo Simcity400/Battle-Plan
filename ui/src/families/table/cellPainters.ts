@@ -787,7 +787,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     for (const fl of cell.flags) {
+      if (fl.separator && fx > left) {
+        if ((column.narrow === 'flag' || column.display === 'flag') && fx + 7 + FLAG_SLOT_WIDTH > right) break;
+        ctx.save();
+        ctx.fillStyle = theme.gridLine ?? theme.muted;
+        ctx.fillRect(fx, fy + 1, 1, FLAG_SLOT_HEIGHT - 2);
+        ctx.restore();
+        fx += 7;
+      }
       if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
+      if (column.display === 'flag' && fx > left && fx + FLAG_SLOT_WIDTH > right) break;
       const state = slotOf(fl.art, fl.tag, rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
@@ -817,7 +826,18 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
     if (kind === 'item' && formatted.kind === 'notRecorded' && !cell?.missingFigure) {
-      const hatchW = Math.min(148, Math.max(0, right - left - 4));
+      const avail = Math.max(0, right - left - 4);
+      const inline = cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined ? cell.inlineSubtext : undefined;
+      if (inline) {
+        const inlineFont = fontOf(theme, 12.5, 400);
+        const gap = 8;
+        const hatchW = Math.min(avail, Math.min(72, Math.max(24, avail - measure(inline, inlineFont) - gap)));
+        if (hatchW > 0) drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
+        const rem = avail - hatchW - gap;
+        if (rem >= 20) drawInlineRuns(rc, inline, left + hatchW + gap, middle, rem, inlineFont, theme.muted);
+        return;
+      }
+      const hatchW = Math.min(148, avail);
       drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
       return;
     }

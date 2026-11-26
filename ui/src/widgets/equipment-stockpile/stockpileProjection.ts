@@ -19,7 +19,6 @@ export interface StockpileProjectionOptions {
 }
 
 const STORED: ValueFormat = { decimals: 5, maxDecimals: 0 };
-const STORED_EXACT: ValueFormat = { decimals: 5, maxDecimals: 5 };
 const RATE_SMALL: ValueFormat = { decimals: 0, maxDecimals: 1, fixedDecimals: true };
 const RATE_LARGE: ValueFormat = { decimals: 0, maxDecimals: 0 };
 const RATE_CUT = 100n * 100_000n;
@@ -97,7 +96,7 @@ function tooltipRows(row: StockTypeRow): TooltipExtraRow[] {
     return { label, value: raw === null ? notRecorded(value.missing ?? `${label} not recorded`) : knownValue(rate(raw, signed)) };
   };
   return [
-    { label: 'Stored', value: stored(row.stored), format: STORED_EXACT },
+    { label: 'Stored', value: stored(row.stored), format: STORED },
     figure('Produced a day', row.produced),
     figure('Need a day', row.need),
     figure('Balance a day', row.balance, true),
@@ -136,7 +135,7 @@ function variantRow(
     tooltipExtra: [
       ...(duplicateNameOrigin ? [{ label: 'Design ID', value: knownValue(variant.id) }] : []),
       { label: 'Design origin', value: origin ? origin.value : notRecorded('The design names no origin') },
-      { label: 'Stored', value: stored(variant.stored), format: STORED_EXACT },
+      { label: 'Stored', value: stored(variant.stored), format: STORED },
       { label: 'Produced a day', value: figureOf(variant.produced) === null ? notRecorded(variant.produced.missing ?? 'Not recorded') : knownValue(rate(figureOf(variant.produced)!)) },
     ],
   };

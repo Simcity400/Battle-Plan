@@ -65,8 +65,15 @@ const fraction = (value: Value<number>): Value<number> => value.kind === 'known'
 const goalName = (definition: FactionGoalDefinition): Value<string> =>
   textValue(definition.name, definition.reason ?? 'Goal name unavailable');
 
+function goalIdentity(definition: FactionGoalDefinition): string | null {
+  const name = definition.name?.trim();
+  if (name) return name;
+  const token = definition.token?.trim();
+  return token || null;
+}
+
 function goalIcon(definition: FactionGoalDefinition, readView: BoundedReadView): ArtResult {
-  const label = definition.name ?? definition.token;
+  const label = goalIdentity(definition);
   const reason = definition.reason
     ? (label ? `${label}: ${definition.reason}` : definition.reason)
     : (label ? `No icon recorded for ${label}` : 'The product drew no icon for this goal');
@@ -83,7 +90,7 @@ function goalRows(reply: CountryFactionGoalsReply, readView: BoundedReadView): G
 const [ICON, GOAL, PROGRESS, STATE] = COLUMNS;
 
 const GOAL_COLUMNS: readonly DeclarativeColumnSpec<GoalRow, Record<string, never>>[] = [
-  { ...ICON!, priority: 3, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.icon, extra: row => ({ artShape: 'square', artName: row.definition.name ?? row.definition.token ?? 'Faction goal' }),
+  { ...ICON!, priority: 3, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.icon, extra: row => ({ artShape: 'square', artName: goalIdentity(row.definition) ?? 'Faction goal' }),
     value: row => goalName(row.definition) },
   { ...GOAL!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Conquest and Domination'], value: row => goalName(row.definition) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],

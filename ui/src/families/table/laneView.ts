@@ -170,7 +170,7 @@ function flagCounts(columns: readonly { readonly key: string; readonly display?:
   const counts: Record<string, number> = {};
   const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
   for (const column of columns) {
-    if (column.display !== 'flagName') continue;
+    if (column.display !== 'flagName' && column.display !== 'flag') continue;
     let most = 0;
     for (let i = 0; i < limit; i++) {
       const item = rows[i]!;
