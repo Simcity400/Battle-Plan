@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, rmSync } from 'node:fs';
-import { createServer as createHttpServer, type ServerResponse } from 'node:http';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep } from 'node:path';
+import type { Duplex } from 'node:stream';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { build, createServer, type PluginOption } from 'vite';
+import { parseAst } from 'rolldown/parseAst';
+import { build, createLogger, createServer, type PluginOption } from 'vite';
 import { browserStage, ownedEdgeProcesses, stopBrowser, stopOwnedProfile } from './canvas-page.ts';
 
 function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -92,6 +94,238 @@ export interface NativePage {
   stage<T>(label: string, run: (signal: AbortSignal) => Promise<T>, timeout?: number): Promise<T>;
 }
 
+export interface ServerFailure {
+  url: string;
+  status?: number;
+  reason: string;
+}
+
+export interface BrowserNetworkFailure {
+  url: string;
+  status?: number;
+  reason: string;
+}
+
+export interface ServedFixture {
+  port: number;
+  fixture: string;
+  failures: ServerFailure[];
+  ready(signal?: AbortSignal): Promise<void>;
+  close(): Promise<void>;
+}
+
+function errorDetail(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const parts = [error.message];
+  let current: unknown = error.cause;
+  while (current instanceof Error) {
+    const code = (current as NodeJS.ErrnoException).code;
+    parts.push(code ? `${code}: ${current.message}` : current.message);
+    current = current.cause;
+  }
+  return parts.join(' — ');
+}
+
+function captureBodyChunk(chunk: unknown, encoding?: BufferEncoding): Buffer | null {
+  if (chunk == null || typeof chunk === 'function') return null;
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (ArrayBuffer.isView(chunk)) return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  if (typeof chunk === 'string') return Buffer.from(chunk, encoding);
+  return null;
+}
+
+function handleClientError(record: (url: string, status: number | undefined, reason: string) => void) {
+  return (error: Error, socket: Duplex) => {
+    record('<socket>', undefined, `HTTP client error: ${error.message}`);
+    if (socket.writable && !socket.destroyed) {
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    } else {
+      socket.destroy();
+    }
+  };
+}
+
+export function formatFixtureLoadError(
+  fixture: string,
+  detail: string,
+  serverFailures: readonly ServerFailure[],
+  networkFailures: readonly BrowserNetworkFailure[],
+): Error {
+  const parts: string[] = [];
+  for (const failure of serverFailures) {
+    const status = failure.status === undefined ? '' : `${failure.status} `;
+    parts.push(`server ${status}${failure.url}: ${failure.reason}`);
+  }
+  for (const failure of networkFailures) {
+    const status = failure.status === undefined ? '' : `HTTP ${failure.status} `;
+    parts.push(`browser ${status}${failure.reason} (${failure.url})`);
+  }
+  if (detail) parts.push(detail);
+  return new Error(`fixture could not be loaded (${fixture}): ${parts.join('; ')}`);
+}
+
+const JS_MIME_TYPES = new Set([
+  'application/ecmascript',
+  'application/javascript',
+  'application/x-ecmascript',
+  'application/x-javascript',
+  'text/ecmascript',
+  'text/javascript',
+  'text/javascript1.0',
+  'text/javascript1.1',
+  'text/javascript1.2',
+  'text/javascript1.3',
+  'text/javascript1.4',
+  'text/javascript1.5',
+  'text/jscript',
+  'text/livescript',
+  'text/x-ecmascript',
+  'text/x-javascript',
+]);
+
+async function fetchFixtureModule(
+  target: string,
+  fixture: string,
+  failures: ServerFailure[],
+  signal?: AbortSignal,
+): Promise<{ code: string; url: string }> {
+  const before = failures.length;
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetch(target, { signal });
+    if (!response.ok) {
+      const body = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 512);
+      const serverSeen = failures.slice(before);
+      const detail = serverSeen.length > 0 ? '' : `server ${response.status} ${target}: ${body || response.statusText || 'HTTP error'}`;
+      throw formatFixtureLoadError(fixture, detail, serverSeen, []);
+    }
+    text = await response.text();
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('fixture could not be loaded (')) throw error;
+    if (signal?.aborted) throw signal.reason;
+    throw formatFixtureLoadError(fixture, `HTTP probe failed for ${target}: ${errorDetail(error)}`, failures.slice(before), []);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  const mimeType = contentType.split(';', 1)[0]!.trim().toLowerCase();
+  if (!JS_MIME_TYPES.has(mimeType)) {
+    throw formatFixtureLoadError(fixture, `server returned non-JavaScript content-type ${JSON.stringify(contentType)} for ${response.url || target}`, failures.slice(before), []);
+  }
+  return { code: text, url: response.url || target };
+}
+
+export async function runFixtureLoadStage(
+  stage: <T>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => Promise<T>,
+  label: string,
+  served: Pick<ServedFixture, 'fixture' | 'failures'>,
+  work: (signal: AbortSignal, networkFailures: BrowserNetworkFailure[]) => Promise<void>,
+  timeout?: number,
+): Promise<void> {
+  const networkFailures: BrowserNetworkFailure[] = [];
+  try {
+    await stage(label, signal => work(signal, networkFailures), timeout);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('fixture could not be loaded (')) throw error;
+    throw formatFixtureLoadError(served.fixture, errorDetail(error), served.failures, networkFailures);
+  }
+}
+
+export function loadFixture(
+  endpoint: string,
+  served: Pick<ServedFixture, 'fixture' | 'failures'>,
+  signal: AbortSignal,
+  networkFailures: BrowserNetworkFailure[] = [],
+): Promise<void> {
+  signal.throwIfAborted();
+  const failuresBefore = served.failures.length;
+  return new Promise<void>((done, reject) => {
+    const socket = new WebSocket(endpoint);
+    const requestUrls = new Map<string, string>();
+    const httpFailedUrls = new Set<string>();
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      socket.close();
+      if (error) reject(error); else done();
+    };
+    const abort = () => finish(formatFixtureLoadError(served.fixture, errorDetail(signal.reason), served.failures.slice(failuresBefore), networkFailures));
+    signal.addEventListener('abort', abort, { once: true });
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify({ id: 1, method: 'Network.enable' }));
+    });
+    socket.addEventListener('message', event => {
+      const message = JSON.parse(String(event.data));
+      if (message.id === 1) {
+        if (message.error) {
+          finish(formatFixtureLoadError(served.fixture, `Network.enable: ${JSON.stringify(message.error)}`, served.failures.slice(failuresBefore), networkFailures));
+          return;
+        }
+        socket.send(JSON.stringify({
+          id: 2,
+          method: 'Runtime.evaluate',
+          params: { expression: `import(${JSON.stringify(served.fixture)}).then(() => true)`, awaitPromise: true, returnByValue: true },
+        }));
+        return;
+      }
+      if (message.method === 'Network.requestWillBeSent') {
+        requestUrls.set(message.params.requestId, message.params.request.url);
+        return;
+      }
+      if (message.method === 'Network.responseReceived') {
+        const { url, status, statusText } = message.params.response;
+        if (status >= 400 && !String(url).endsWith('/favicon.ico')) {
+          httpFailedUrls.add(url);
+          networkFailures.push({ url, status, reason: statusText || 'HTTP error' });
+        }
+        return;
+      }
+      if (message.method === 'Network.loadingFailed') {
+        const url = requestUrls.get(message.params.requestId) ?? '<unknown>';
+        if (!url.endsWith('/favicon.ico') && !(message.params.canceled && httpFailedUrls.has(url))) {
+          networkFailures.push({ url, reason: message.params.errorText || 'loading failed' });
+        }
+        return;
+      }
+      if (message.id === 2) {
+        if (message.error) {
+          finish(formatFixtureLoadError(served.fixture, JSON.stringify(message.error), served.failures.slice(failuresBefore), networkFailures));
+          return;
+        }
+        const exception = message.result?.exceptionDetails;
+        if (exception) {
+          const detail = exception.exception?.description ?? exception.text ?? JSON.stringify(exception);
+          finish(formatFixtureLoadError(served.fixture, detail, served.failures.slice(failuresBefore), networkFailures));
+          return;
+        }
+        finish();
+      }
+    });
+    socket.addEventListener('error', () => finish(formatFixtureLoadError(served.fixture, 'CDP connection failed while loading fixture', served.failures.slice(failuresBefore), networkFailures)));
+    socket.addEventListener('close', () => finish(formatFixtureLoadError(served.fixture, 'CDP connection closed before the fixture finished loading', served.failures.slice(failuresBefore), networkFailures)));
+  });
+}
+
+function staticImportsOf(code: string, fromUrl: string): string[] {
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code, { lang: 'js' }, fromUrl);
+  } catch {
+    return [];
+  }
+  const imports: string[] = [];
+  for (const stmt of ast.body) {
+    if ((stmt.type === 'ImportDeclaration' || stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportAllDeclaration') && typeof stmt.source?.value === 'string') {
+      const spec = stmt.source.value;
+      if (spec.startsWith('/') || spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('http://') || spec.startsWith('https://')) {
+        imports.push(new URL(spec, fromUrl).href);
+      }
+    }
+  }
+  return imports;
+}
+
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const PAGE_LOAD_MS = 180_000;
 const TYPES: Readonly<Record<string, string>> = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
@@ -112,42 +346,227 @@ function builtFixture(name: string, fixture: string, plugins: PluginOption[]): P
   return held;
 }
 
-async function builtServer(name: string, route: string, out: string) {
+export async function builtServer(name: string, route: string, out: string): Promise<ServedFixture> {
+  const failures: ServerFailure[] = [];
+  const record = (url: string, status: number | undefined, reason: string) => {
+    if (url !== '/favicon.ico') failures.push({ url, status, reason });
+  };
   const server = createHttpServer((request, response) => {
-    const path = (request.url ?? '/').split('?')[0]!;
+    const url = request.url ?? '/';
+    const path = url.split('?')[0]!;
+    if (path === '/favicon.ico') { response.statusCode = 204; response.end(); return; }
     if (path.startsWith('/recorded-replies')) {
-      recordedReplies(path.slice('/recorded-replies'.length) || '/', response).catch(error => { response.statusCode = 500; response.end(String(error)); });
+      recordedReplies(path.slice('/recorded-replies'.length) || '/', response).catch(error => {
+        const reason = error instanceof Error ? error.message : String(error);
+        record(url, 500, reason);
+        response.statusCode = 500;
+        response.end(reason);
+      });
       return;
     }
-    if (path === route) { response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><title>${name}</title>`); return; }
-    const file = resolve(out, `.${decodeURIComponent(path)}`);
-    if (!file.startsWith(out + sep)) { response.statusCode = 403; response.end(); return; }
-    stat(file).then(found => {
-      if (!found.isFile()) throw new Error('not a file');
+    if (path === route) {
+      const html = `<!doctype html><title>${name}</title>`;
+      response.setHeader('Content-Type', 'text/html');
+      response.setHeader('Content-Length', Buffer.byteLength(html));
+      response.end(html);
+      return;
+    }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch (error) {
+      const reason = `malformed path: ${error instanceof Error ? error.message : String(error)}`;
+      record(url, 400, reason);
+      response.statusCode = 400;
+      response.end(reason);
+      return;
+    }
+    const file = resolve(out, `.${decoded}`);
+    if (!file.startsWith(out + sep)) {
+      const reason = `${path} escapes the built fixture`;
+      record(url, 403, reason);
+      response.statusCode = 403;
+      response.end(reason);
+      return;
+    }
+    readFile(file).then(body => {
       response.setHeader('Content-Type', TYPES[extname(file)] ?? 'application/octet-stream');
-      createReadStream(file).pipe(response);
-    }, () => { response.statusCode = 404; response.end(`${path} is not in the built fixture`); });
+      response.setHeader('Content-Length', body.byteLength);
+      response.end(body);
+    }, error => {
+      const code = (error as NodeJS.ErrnoException).code;
+      const missing = code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR';
+      const status = missing ? 404 : 500;
+      const reason = missing ? `${path} is not in the built fixture` : `${path} could not be read (${code ?? String(error)})`;
+      record(url, status, reason);
+      response.statusCode = status;
+      response.end(reason);
+    });
   });
+  const sockets = new Set<Duplex>();
+  server.on('connection', socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  server.keepAliveTimeout = PAGE_LOAD_MS;
+  server.headersTimeout = PAGE_LOAD_MS + 1_000;
+  server.on('clientError', handleClientError(record));
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
-  return { port: address.port, fixture: '/fixture.js', close: () => new Promise<void>(done => server.close(() => done())) };
+  return {
+    port: address.port,
+    fixture: '/fixture.js',
+    failures,
+    ready: async signal => { await fetchFixtureModule(`http://127.0.0.1:${address.port}/fixture.js`, '/fixture.js', failures, signal); },
+    close: () => new Promise<void>(done => {
+      server.close(() => done());
+      server.closeAllConnections();
+      for (const socket of sockets) socket.destroy();
+    }),
+  };
 }
 
-async function devServer(name: string, route: string, fixture: string, profile: string, plugins: PluginOption[]) {
-  const vite = await createServer({ configFile: false, root: ROOT,
-    cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-grid-layout'], noDiscovery: true },
-    server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
-    plugins: [...plugins, { name: `${name}-page`, configureServer(server) {
+export async function devServer(name: string, route: string, fixture: string, profile: string, plugins: PluginOption[]): Promise<ServedFixture> {
+  const failures: ServerFailure[] = [];
+  const viteErrors: string[] = [];
+  const record = (url: string, status: number | undefined, reason: string) => {
+    if (url !== '/favicon.ico') failures.push({ url, status, reason });
+  };
+  const baseLogger = createLogger('error');
+  const customLogger = {
+    ...baseLogger,
+    error(message: string, options?: Parameters<typeof baseLogger.error>[1]) {
+      const cleaned = message.replace(/\x1b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim();
+      if (cleaned) viteErrors.push(cleaned);
+      baseLogger.error(message, options);
+    },
+  };
+  const capturePlugin: PluginOption = {
+    name: `${name}-page-capture`,
+    enforce: 'pre',
+    configureServer: {
+      order: 'pre',
+      handler(server) {
+        server.middlewares.use((request, response, next) => {
+          const url = request.url ?? '/';
+          if (url === '/favicon.ico') { response.statusCode = 204; response.end(); return; }
+          const chunks: Buffer[] = [];
+          let captured = 0;
+          const push = (chunk: unknown, encoding?: BufferEncoding) => {
+            if (response.statusCode < 400 || captured >= 512) return;
+            const buffer = captureBodyChunk(chunk, encoding);
+            if (!buffer) return;
+            const slice = buffer.subarray(0, 512 - captured);
+            chunks.push(slice);
+            captured += slice.length;
+          };
+          const write = response.write.bind(response);
+          response.write = ((chunk: unknown, encoding?: BufferEncoding | ((error?: Error | null) => void), cb?: (error?: Error | null) => void) => {
+            push(chunk, typeof encoding === 'string' ? encoding : undefined);
+            return write(chunk as never, encoding as never, cb as never);
+          }) as typeof response.write;
+          const end = response.end.bind(response);
+          response.end = ((chunk?: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) => {
+            push(chunk, typeof encoding === 'string' ? encoding : undefined);
+            return end(chunk as never, encoding as never, cb as never);
+          }) as typeof response.end;
+          response.on('finish', () => {
+            if (response.statusCode >= 400) {
+              const body = Buffer.concat(chunks).toString('utf8').replace(/\s+/g, ' ').trim();
+              const detail = body || response.statusMessage || viteErrors.at(-1) || 'HTTP error';
+              record(url, response.statusCode, detail);
+            }
+          });
+          next();
+        });
+        return () => {
+          server.middlewares.use((error: unknown, request: IncomingMessage, _response: ServerResponse, next: (err?: unknown) => void) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            record(request.url ?? fixture, 500, reason);
+            next(error);
+          });
+        };
+      },
+    },
+  };
+  const routePlugin: PluginOption = {
+    name: `${name}-page`,
+    configureServer(server) {
       server.middlewares.use('/recorded-replies', (request, response) => {
-        recordedReplies((request.url ?? '/').split('?')[0]!, response).catch(error => { response.statusCode = 500; response.end(String(error)); });
+        const url = request.url ?? '/';
+        recordedReplies(url.split('?')[0]!, response).catch(error => {
+          const reason = error instanceof Error ? error.message : String(error);
+          record(`/recorded-replies${url}`, 500, reason);
+          response.statusCode = 500;
+          response.end(reason);
+        });
       });
       server.middlewares.use(route, (_request, response) => {
-        response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><title>${name}</title>`);
+        const html = `<!doctype html><title>${name}</title>`;
+        response.setHeader('Content-Type', 'text/html');
+        response.setHeader('Content-Length', Buffer.byteLength(html));
+        response.end(html);
       });
-    } }] });
+    },
+  };
+  const vite = await createServer({ configFile: false, root: ROOT, customLogger,
+    cacheDir: resolve(profile, 'vite'),
+    optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-grid-layout'], noDiscovery: true },
+    server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
+    plugins: [capturePlugin, ...plugins, routePlugin] });
   await vite.listen();
-  const address = vite.httpServer!.address(); assert.ok(address && typeof address !== 'string');
-  return { port: address.port, fixture, close: () => vite.close() };
+  const httpServer = vite.httpServer!;
+  const sockets = new Set<Duplex>();
+  httpServer.on('connection', socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  if ('keepAliveTimeout' in httpServer) {
+    httpServer.keepAliveTimeout = PAGE_LOAD_MS;
+    httpServer.headersTimeout = PAGE_LOAD_MS + 1_000;
+  }
+  httpServer.on('clientError', handleClientError(record));
+  const address = httpServer.address(); assert.ok(address && typeof address !== 'string');
+  const origin = `http://127.0.0.1:${address.port}`;
+  const ready = async (signal?: AbortSignal) => {
+    const seen = new Set<string>();
+    const queue = [new URL(fixture, origin).href];
+    while (queue.length > 0) {
+      signal?.throwIfAborted();
+      const url = queue.shift()!;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const fetched = await fetchFixtureModule(url, fixture, failures, signal);
+      seen.add(fetched.url);
+      for (const imported of staticImportsOf(fetched.code, fetched.url)) {
+        if (!seen.has(imported)) queue.push(imported);
+      }
+    }
+  };
+  return {
+    port: address.port,
+    fixture,
+    failures,
+    ready,
+    close: async () => {
+      const closing = vite.close().catch(() => {});
+      if ('closeAllConnections' in httpServer) httpServer.closeAllConnections();
+      for (const socket of sockets) socket.destroy();
+      const listenerClosed = new Promise<void>(done => {
+        if (!httpServer.listening) { done(); return; }
+        httpServer.close(() => done());
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all([closing, listenerClosed]),
+          new Promise<void>(done => { timer = setTimeout(done, 500); }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
 
 export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>, plugins: PluginOption[] = [], built = false, browserArgs: readonly string[] = []): Promise<void> {
@@ -158,11 +577,13 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
   const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
   const route = `/${name}-page`;
   const served = built ? await builtServer(name, route, await builtFixture(name, fixture, plugins)) : await devServer(name, route, fixture, profile, plugins);
+  const readyAbort = new AbortController();
+  const ready = served.ready(readyAbort.signal).then(() => null, error => error as unknown);
   let browser: ReturnType<typeof spawn> | undefined, endpoint = '', browserPid: number | undefined;
   try {
     const address = { port: served.port };
-    browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--edge-skip-compat-layer-relaunch',
-      '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...browserArgs], { windowsHide: true });
+    browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--no-proxy-server', '--disable-background-networking',
+      '--edge-skip-compat-layer-relaunch', '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...browserArgs], { windowsHide: true });
     browser.stdout?.resume(); browser.stderr?.resume();
     endpoint = await browserStage(browser, `${name} Edge startup`, async signal => {
       for (;;) {
@@ -189,9 +610,17 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     const owned = browser;
     const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) =>
       browserStage(owned, label, signal => guard.run(signal, () => work(signal)), timeout);
-    await stage(`${name} page load`, async signal => {
+    await runFixtureLoadStage(stage, `${name} page load`, served, async (signal, networkFailures) => {
+      const onAbort = () => readyAbort.abort(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        const readyError = await ready;
+        if (readyError) throw readyError;
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
       await navigate(target, `http://127.0.0.1:${address.port}${route}`, signal);
-      await evaluate(`import(${JSON.stringify(served.fixture)}).then(() => true)`);
+      await loadFixture(target, served, signal, networkFailures);
     }, PAGE_LOAD_MS);
     const press = async (key: NativeKey, shift = false) => {
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 }, guard.getStore());
@@ -199,6 +628,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     };
     await run({ evaluate, press, page: target, stage });
   } finally {
+    readyAbort.abort();
     try {
       if (browser) await stopBrowser(browser, async (_budget, signal) => { if (endpoint) await cdp(endpoint, 'Browser.close', {}, signal); }, async budget => {
         if (process.platform === 'win32') {
