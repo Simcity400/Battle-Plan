@@ -10,12 +10,14 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["dep:replay-capture-spool", "dep:recorder-derive", "content-reader-key-names/test-support", "content-reader-layers/test-support", "replay/test-support"]
+test-support = ["dep:replay-capture-spool", "dep:recorder-derive", "dep:content-reader-script", "dep:synthetic-game", "content-reader-key-names/test-support", "content-reader-layers/test-support", "replay/test-support"]
 
 [dependencies]
 content-reader-key-names.workspace = true
 content-reader-layers.workspace = true
 content-reader-parser.workspace = true
+content-reader-script = { workspace = true, optional = true, features = ["test-support"] }
+synthetic-game = { workspace = true, optional = true }
 replay-capture-spool = { workspace = true, optional = true }
 replay.workspace = true
 replay-settings.workspace = true
@@ -33,6 +35,8 @@ ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+content-reader-script = { workspace = true, features = ["test-support"] }
+synthetic-game.workspace = true
 content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-layers = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true

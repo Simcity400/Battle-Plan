@@ -1607,6 +1607,7 @@ pub mod texture_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
+    pub use dashboard_core::test_fixtures::game;
 
     #[test]
     fn keyed_results_resolve_new_keys_once_and_share_success() {
