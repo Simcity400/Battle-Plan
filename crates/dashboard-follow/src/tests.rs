@@ -2179,7 +2179,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let first_data = |id| {
         host.prepare_panel(product(Arc::new(move |hour, _, _, _| reading(hour)))).unwrap()(id, 1).unwrap();
         loop {
-            let (kind, bytes, _) = push.take_sent().unwrap();
+            let (kind, bytes, _, offered) = push.take_kind().unwrap();
             if kind == PANEL {
                 let records = dated::records(&bytes).unwrap();
                 for r in &records {
@@ -2189,7 +2189,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
                         assert!(!r.stepped(), "this subscription receives its seed before its steps");
                         assert!(records.iter().any(|next| next.id == id && next.kind == dated::WAITING && next.hour == r.hour + 1),
                             "a route completion cannot extend the seed over hours its reader has yet to visit");
-                        return;
+                        return offered;
                     }
                 }
             }
@@ -2217,7 +2217,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     open.send(()).unwrap();
     assert!(done.recv().unwrap());
     assert_eq!(calls.load(Ordering::Relaxed), 1);
-    first_data(4);
+    let anchored_at = first_data(4);
     host.unpanel(3);
     host.unpanel(4);
 
@@ -2243,7 +2243,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     gate_from.store(start + 3 * quantum, Ordering::Release);
     host.playhead().frame_rate(60.0);
     host.playhead().pace(60.0 * f64::from(quantum));
-    host.playhead().anchor(f64::from(start + 6 * quantum), true, 0.0, std::time::Instant::now(), false);
+    host.playhead().anchor(f64::from(start + 6 * quantum), true, 0.0, anchored_at, false);
     let (_, through, advance) = steps.recv().unwrap();
     let (returned, handoffs) = mpsc::channel();
     let _watch = host.playhead().watch_control(Arc::new(move || {
