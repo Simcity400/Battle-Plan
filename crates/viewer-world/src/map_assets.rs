@@ -4,7 +4,7 @@ use content_reader_image::native::Decode;
 #[cfg(test)]
 use content_reader_image::bmp;
 use std::{io, sync::Arc};
-use crate::scene_content::MapAssets;
+use crate::scene_content::{LoadMasks, MapAssets, SceneSources};
 use viewer_runtime::errors::invalid;
 use viewer_gpu::{
     camera::MapSize,
@@ -24,7 +24,7 @@ pub fn load_with_products(
     warnings: &mut Vec<String>,
     quality: u8,
     decode: Decode,
-) -> io::Result<MapAssets> {
+) -> io::Result<(MapAssets, SceneSources, LoadMasks)> {
     if quality > 2 {
         return Err(invalid("Invalid texture quality"));
     }
@@ -132,11 +132,7 @@ pub fn load_with_products(
                 ),
             ))
         })?;
-    let assets = MapAssets {
-        map,
-        mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
-            viewer_scene_base::mesh_budget::Budget::read(defines)
-        })?,
+    let sources = SceneSources {
         atlas: texture(&format!("atlas{quality}.dds"), ColorSpace::Srgb)?,
         atlas_normal: texture(&format!("atlas_normal{quality}.dds"), ColorSpace::Linear)?,
         colormap: texture("colormap_rgb_cityemissivemask_a.dds", ColorSpace::Srgb)?,
@@ -162,6 +158,20 @@ pub fn load_with_products(
         lean2: texture("lean2.dds", ColorSpace::Linear)?,
         water_specular: texture("fow_rgb_waterspec_a.dds", ColorSpace::Linear)?,
         naval_dominance: texture("naval_dominance_fx.dds", ColorSpace::Srgb)?,
+        reflection,
+        ice_diffuse: texture("ice_diffuse.dds", ColorSpace::Linear)?,
+        ice_noise: texture(&format!("ice_noise_{quality}.dds"), ColorSpace::Linear)?,
+        fow_noise: texture(&format!("fow_noise_{quality}.dds"), ColorSpace::Linear)?,
+        world_normal,
+        terrain_ids,
+        padded_heights: height_texture,
+        icon_images: Vec::new(),
+    };
+    let assets = MapAssets {
+        map,
+        mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
+            viewer_scene_base::mesh_budget::Budget::read(defines)
+        })?,
         terrain_shader: shader("terrain shader", viewer_terrain::terrain_shader::load)?,
         water_shader: shader("water shader", viewer_terrain::water_shader::load)?,
         sky_shader: shader("sky shader", viewer_terrain::sky_shader::load)?,
@@ -170,20 +180,11 @@ pub fn load_with_products(
         movement_arrows,
         order_label_shader,
         tree_shader: shader("tree shadow shader", viewer_scene_base::tree_caster::load)?,
-        reflection,
-        ice_diffuse: texture("ice_diffuse.dds", ColorSpace::Linear)?,
-        ice_noise: texture(&format!("ice_noise_{quality}.dds"), ColorSpace::Linear)?,
-        fow_noise: texture(&format!("fow_noise_{quality}.dds"), ColorSpace::Linear)?,
-        world_normal,
         heightmap: Arc::new(heightmap),
-        height_texture,
-        terrain_ids,
         post: layers.artwork("post-processing", |stack| {
             PostAssets::load(stack, defines_for(stack), map, decode)
         })?,
         shadow_blur: shader("shadow blur shader", viewer_scene_base::shadow_blur::load)?,
-        rivers,
-        trees,
         perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
         spawn_city: Arc::new(terrain_flag_mask(definitions, &terrain, |kind| {
             kind.spawn_city
@@ -191,7 +192,7 @@ pub fn load_with_products(
         sight: Default::default(),
     };
     warnings.extend(texture_warnings);
-    Ok(assets)
+    Ok((assets, sources, LoadMasks { rivers, trees }))
 }
 
 fn world_normal(

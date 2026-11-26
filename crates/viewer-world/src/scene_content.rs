@@ -6,6 +6,28 @@ use viewer_gpu::camera::MapSize;
 pub struct MapAssets {
     pub mesh_limit: i32,
     pub map: MapSize,
+    pub terrain_shader: Arc<shader_pipeline::library::Effect>,
+    pub water_shader: Arc<shader_pipeline::library::Effect>,
+    pub arrow_shader: Arc<shader_pipeline::library::Effect>,
+    pub movement_arrows: crate::movement_arrows::Assets,
+    pub order_label_shader: (Arc<shader_pipeline::library::Effect>, String),
+    pub tree_shader: Arc<shader_pipeline::library::Effect>,
+    pub sky_shader: Arc<shader_pipeline::library::Effect>,
+    pub name_shader: Arc<shader_pipeline::library::Effect>,
+    pub heightmap: Arc<IndexedImage>,
+    pub post: PostAssets,
+    pub shadow_blur: Arc<shader_pipeline::library::Effect>,
+    pub perm_snow: Arc<[bool]>,
+    pub spawn_city: Arc<Vec<bool>>,
+    pub sight: std::sync::OnceLock<viewer_gpu::terrain_sight::TerrainSight>,
+}
+
+pub struct LoadMasks {
+    pub rivers: IndexedImage,
+    pub trees: IndexedImage,
+}
+
+pub struct SceneSources {
     pub atlas: dds::Texture,
     pub atlas_normal: dds::Texture,
     pub colormap: dds::Texture,
@@ -19,29 +41,14 @@ pub struct MapAssets {
     pub lean2: dds::Texture,
     pub water_specular: dds::Texture,
     pub naval_dominance: dds::Texture,
-    pub terrain_shader: Arc<shader_pipeline::library::Effect>,
-    pub water_shader: Arc<shader_pipeline::library::Effect>,
-    pub arrow_shader: Arc<shader_pipeline::library::Effect>,
-    pub movement_arrows: crate::movement_arrows::Assets,
-    pub order_label_shader: (Arc<shader_pipeline::library::Effect>, String),
-    pub tree_shader: Arc<shader_pipeline::library::Effect>,
-    pub sky_shader: Arc<shader_pipeline::library::Effect>,
-    pub name_shader: Arc<shader_pipeline::library::Effect>,
     pub reflection: dds::Texture,
     pub ice_diffuse: dds::Texture,
     pub ice_noise: dds::Texture,
     pub fow_noise: dds::Texture,
     pub world_normal: Rgba8Image,
-    pub heightmap: Arc<IndexedImage>,
-    pub height_texture: Option<([u32; 2], Vec<u8>)>,
     pub terrain_ids: Vec<u8>,
-    pub post: PostAssets,
-    pub shadow_blur: Arc<shader_pipeline::library::Effect>,
-    pub rivers: IndexedImage,
-    pub trees: IndexedImage,
-    pub perm_snow: Arc<[bool]>,
-    pub spawn_city: Arc<Vec<bool>>,
-    pub sight: std::sync::OnceLock<viewer_gpu::terrain_sight::TerrainSight>,
+    pub padded_heights: Option<([u32; 2], Vec<u8>)>,
+    pub icon_images: Vec<dds::Texture>,
 }
 
 impl MapAssets {
@@ -61,15 +68,5 @@ impl MapAssets {
         self.sight.get_or_init(|| {
             viewer_gpu::terrain_sight::TerrainSight::new(&self.height_field())
         })
-    }
-
-    pub fn height_texture(&self) -> ([u32; 2], &[u8]) {
-        match &self.height_texture {
-            Some((size, texels)) => (*size, texels),
-            None => (
-                [self.heightmap.width, self.heightmap.height],
-                self.heightmap_texels(),
-            ),
-        }
     }
 }

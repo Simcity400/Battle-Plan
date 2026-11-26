@@ -2019,7 +2019,8 @@ impl Document {
                     texture_quality,
                     decode,
                 );
-                Ok((assets?, warnings))
+                let (assets, sources, masks) = assets?;
+                Ok((assets, warnings, sources, masks))
             });
             let h_icons = dag.add(&[], || {
                 let _stage = viewer_runtime::load_record::stage("wave1.icons");
@@ -2290,7 +2291,7 @@ impl Document {
                 let h_borders_in = h_borders_in.clone();
                 dag.add(&[h_assets.id(), h_borders_in.id()], move || {
                     let _stage = viewer_runtime::load_record::stage("wave2.borders");
-                    let (assets, _) = h_assets.read()?;
+                    let (assets, _, _, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
                         height: assets.heightmap.height,
@@ -2322,7 +2323,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || -> io::Result<_> {
                     let _stage = viewer_runtime::load_record::stage("wave2.rivers");
-                    let (assets, _) = h_assets.read()?;
+                    let (assets, _, _, masks) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
                         height: assets.heightmap.height,
@@ -2333,9 +2334,9 @@ impl Document {
                         &art_defines,
                         &defines,
                         &RiverImage {
-                            width: assets.rivers.width,
-                            height: assets.rivers.height,
-                            indices: &assets.rivers.indices,
+                            width: masks.rivers.width,
+                            height: masks.rivers.height,
+                            indices: &masks.rivers.indices,
                         },
                         &heights,
                     )
@@ -2345,7 +2346,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || {
                     let _stage = viewer_runtime::load_record::stage("wave2.trees");
-                    let (assets, _) = h_assets.read()?;
+                    let (assets, _, _, masks) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
                         height: assets.heightmap.height,
@@ -2355,9 +2356,9 @@ impl Document {
                     let started = Instant::now();
                     let tree_field = trees::generate(
                         &TreeImage {
-                            width: assets.trees.width,
-                            height: assets.trees.height,
-                            indices: &assets.trees.indices,
+                            width: masks.trees.width,
+                            height: masks.trees.height,
+                            indices: &masks.trees.indices,
                         },
                         &heights,
                     )?;
@@ -2367,7 +2368,7 @@ impl Document {
                             stack,
                             decode,
                             &tree_field.palettes,
-                            &assets.rivers,
+                            &masks.rivers,
                             &mut warnings,
                         )
                         .map(|trees| (trees, warnings))
@@ -2388,7 +2389,7 @@ impl Document {
                 let h_rail_reads = h_rail_reads.clone();
                 dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
                     let _stage = viewer_runtime::load_record::stage("wave2.sprawl");
-                    let (assets, _) = h_assets.read()?;
+                    let (assets, _, _, masks) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
                         height: assets.heightmap.height,
@@ -2403,7 +2404,7 @@ impl Document {
                         &assets.spawn_city,
                         &heights,
                         &map.province_ids,
-                        &assets.rivers,
+                        &masks.rivers,
                     )?;
                     let (sprawl, warnings) =
                         load_sprawl(layers, decode, &sprawl_plan, (&defines, &art_defines))?;
@@ -2416,7 +2417,7 @@ impl Document {
                 let h_rail_reads = h_rail_reads.clone();
                 dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
                     let _stage = viewer_runtime::load_record::stage("wave2.railgeom");
-                    let (assets, _) = h_assets.read()?;
+                    let (assets, _, _, masks) = h_assets.read()?;
                     let (_, _, buildings_read, building_types, rail_defines) =
                         h_rail_reads.read()?;
 
@@ -2425,7 +2426,7 @@ impl Document {
                         &map,
                         &buildings_read,
                         &building_types,
-                        &assets.rivers,
+                        &masks.rivers,
                         Arc::clone(&assets.heightmap),
                         *rail_defines,
                     )?;
@@ -2470,7 +2471,7 @@ impl Document {
             let products_stage = viewer_runtime::load_record::stage("products");
             dag.run();
             drop(products_stage);
-            let (mut assets, notes) = h_assets.take()?;
+            let (mut assets, notes, mut scene_sources, _) = h_assets.take()?;
             let mut joined_warnings = notes;
             let crate::map_icons::LoadedIcons {
                 combat: mut combat_assets,
@@ -2728,12 +2729,12 @@ impl Document {
             if icon_images.len() >= viewer_native_gui::lazy_icons::DYNAMIC_BASE {
                 return Err(invalid("more static icon pages than texture ids"));
             }
+            scene_sources.icon_images = icon_images;
             let icons = MapIcons {
                 combat: Arc::new(combat_assets),
                 raids: Arc::new(raid_assets),
                 intel: Arc::new(intel_assets),
                 occupation,
-                images: icon_images,
                 fonts: icon_fonts,
                 counters: Arc::new(counter_assets),
                 animated_text: Arc::new(animated_text),
@@ -3089,7 +3090,7 @@ impl Document {
                 rail_build,
                 orders: order_assets,
                 political_gpu: viewer_map_modes::political_gpu::Cache::default(),
-                scene_textures: viewer_world::scene::TextureCache::default(),
+                scene_textures: viewer_world::scene::TextureCache::new(scene_sources),
                 eta_cache,
                 order_memo: Recent::new(),
                 trade_route_memo: Recent::new(),

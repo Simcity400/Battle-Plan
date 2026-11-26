@@ -1,6 +1,6 @@
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
-use crate::scene_content::MapAssets;
+use crate::scene_content::{MapAssets, SceneSources};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -298,7 +298,6 @@ pub struct Scene {
     faction_highlight_regions: Vec<u32>,
     selection_outlined: bool,
     icon_textures: Arc<IconTextures>,
-    _shared: Arc<SceneTextures>,
     name_pass: NamePass,
     near_name_pass: NamePass,
     order_label_pass: [NamePass; 3],
@@ -423,32 +422,35 @@ impl SceneTextures {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        icon_images: &[content_reader_image::dds::Texture],
+        sources: &SceneSources,
     ) -> io::Result<Arc<Self>> {
         check_textures(device)?;
         let fow_noise = Arc::new(upload(
             device,
             queue,
             "FOWNoise",
-            &assets.fow_noise,
+            &sources.fow_noise,
             ColorSpace::Linear,
         )?);
         let water_specular = Arc::new(upload(
             device,
             queue,
             "SpecularMap",
-            &assets.water_specular,
+            &sources.water_specular,
             ColorSpace::Linear,
         )?);
         let height_normal = Arc::new(data_texture(
             device,
             queue,
             "HeightNormal (world_normal.bmp)",
-            [assets.world_normal.width, assets.world_normal.height],
+            [sources.world_normal.width, sources.world_normal.height],
             wgpu::TextureFormat::Rgba8Unorm,
-            &assets.world_normal.pixels,
+            &sources.world_normal.pixels,
         )?);
-        let (height_size, height_texels) = assets.height_texture();
+        let (height_size, height_texels) = match &sources.padded_heights {
+            Some((size, texels)) => (*size, texels.as_slice()),
+            None => ([assets.heightmap.width, assets.heightmap.height], assets.heightmap_texels()),
+        };
         let heightmap = Arc::new(data_texture(
             device,
             queue,
@@ -463,10 +465,10 @@ impl SceneTextures {
             "TerrainIDMap",
             [assets.heightmap.width, assets.heightmap.height],
             wgpu::TextureFormat::Rgba8Unorm,
-            &assets.terrain_ids,
+            &sources.terrain_ids,
         )?);
-        let hatch_heights = assets
-            .height_texture
+        let hatch_heights = sources
+            .padded_heights
             .is_some()
             .then(|| {
                 data_texture(
@@ -485,77 +487,77 @@ impl SceneTextures {
                 device,
                 queue,
                 "atlas0",
-                &assets.atlas,
+                &sources.atlas,
                 ColorSpace::Srgb,
             )?),
             atlas_normal: Arc::new(upload(
                 device,
                 queue,
                 "atlas_normal0",
-                &assets.atlas_normal,
+                &sources.atlas_normal,
                 ColorSpace::Linear,
             )?),
             colormap: Arc::new(upload(
                 device,
                 queue,
                 "TerrainColorTint",
-                &assets.colormap,
+                &sources.colormap,
                 ColorSpace::Srgb,
             )?),
             city_lights: Arc::new(upload(
                 device,
                 queue,
                 "CityLightsAndSnowNoise",
-                &assets.city_lights,
+                &sources.city_lights,
                 ColorSpace::Srgb,
             )?),
             snow: Arc::new(upload(
                 device,
                 queue,
                 "SnowTexture",
-                &assets.snow,
+                &sources.snow,
                 ColorSpace::Linear,
             )?),
             mud_diffuse: Arc::new(upload(
                 device,
                 queue,
                 "MudDiffuseGloss",
-                &assets.mud_diffuse,
+                &sources.mud_diffuse,
                 ColorSpace::Srgb,
             )?),
             mud_normal: Arc::new(upload(
                 device,
                 queue,
                 "MudNormalSpec",
-                &assets.mud_normal,
+                &sources.mud_normal,
                 ColorSpace::Linear,
             )?),
             colormap_water: Arc::new(upload(
                 device,
                 queue,
                 "colormap_water",
-                &assets.colormap_water,
+                &sources.colormap_water,
                 ColorSpace::Srgb,
             )?),
             underwater: Arc::new(upload(
                 device,
                 queue,
                 "underwater_terrain",
-                &assets.underwater,
+                &sources.underwater,
                 ColorSpace::Srgb,
             )?),
             lean1: Arc::new(upload(
                 device,
                 queue,
                 "LeanTexture1",
-                &assets.lean1,
+                &sources.lean1,
                 ColorSpace::Linear,
             )?),
             lean2: Arc::new(upload(
                 device,
                 queue,
                 "LeanTexture2",
-                &assets.lean2,
+                &sources.lean2,
                 ColorSpace::Linear,
             )?),
             water_specular,
@@ -563,28 +565,28 @@ impl SceneTextures {
                 device,
                 queue,
                 "naval dominance colors",
-                &assets.naval_dominance,
+                &sources.naval_dominance,
                 ColorSpace::Srgb,
             )?),
             reflection: Arc::new(upload(
                 device,
                 queue,
                 "ReflectionCubeMap",
-                &assets.reflection,
+                &sources.reflection,
                 ColorSpace::Srgb,
             )?),
             ice_diffuse: Arc::new(upload(
                 device,
                 queue,
                 "IceDiffuse",
-                &assets.ice_diffuse,
+                &sources.ice_diffuse,
                 ColorSpace::Linear,
             )?),
             ice_noise: Arc::new(upload(
                 device,
                 queue,
                 "IceNoise",
-                &assets.ice_noise,
+                &sources.ice_noise,
                 ColorSpace::Linear,
             )?),
             terrain_null: Arc::new(data_texture(
@@ -600,35 +602,45 @@ impl SceneTextures {
             heightmap,
             terrain_ids,
             hatch_heights,
-            icon_textures: Arc::new(IconTextures::new(device, queue, icon_images)?),
+            icon_textures: Arc::new(IconTextures::new(device, queue, &sources.icon_images)?),
         }))
     }
 }
 
-#[derive(Default)]
-pub struct TextureCache(std::sync::Mutex<Vec<(wgpu::Device, std::sync::Weak<SceneTextures>)>>);
+pub struct TextureCache(std::sync::Mutex<Uploads>);
+
+enum Uploads {
+    Pending(Box<SceneSources>),
+    Made(wgpu::Device, Arc<SceneTextures>),
+}
 
 impl TextureCache {
+    pub fn new(sources: SceneSources) -> Self {
+        Self(std::sync::Mutex::new(Uploads::Pending(Box::new(sources))))
+    }
+
     pub fn warm(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        icon_images: &[content_reader_image::dds::Texture],
     ) -> io::Result<Arc<SceneTextures>> {
-        let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        entries.retain(|(_, textures)| textures.strong_count() != 0);
-        if let Some(shared) = entries
-            .iter()
-            .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
-        {
-            viewer_runtime::load_record::count("scene textures reused", 1, 0);
-            return Ok(shared);
-        }
-        let shared = SceneTextures::new(device, queue, assets, icon_images)?;
+        let mut uploads = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let made = match &*uploads {
+            Uploads::Made(owner, textures) if owner == device => {
+                viewer_runtime::load_record::count("scene textures reused", 1, 0);
+                return Ok(Arc::clone(textures));
+            }
+            Uploads::Made(..) => {
+                return Err(invalid(
+                    "this map content's textures live on another graphics device; the map loads its content again to draw here",
+                ));
+            }
+            Uploads::Pending(sources) => SceneTextures::new(device, queue, assets, sources)?,
+        };
         viewer_runtime::load_record::count("scene textures uploaded", 1, 0);
-        entries.push((device.clone(), Arc::downgrade(&shared)));
-        Ok(shared)
+        *uploads = Uploads::Made(device.clone(), Arc::clone(&made));
+        Ok(made)
     }
 }
 
@@ -679,27 +691,6 @@ impl Scene {
             .as_ref()
             .map(|w| w.offline_packets.clone())
             .unwrap_or_default()
-    }
-
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        assets: &MapAssets,
-        icon_images: &[content_reader_image::dds::Texture],
-        lazy: &Arc<LazyTextures>,
-        graphics: dashboard_core::protocol::MapGraphics,
-    ) -> io::Result<Self> {
-        check_device(device, graphics.samples)?;
-        let textures = SceneTextures::new(device, queue, assets, icon_images)?;
-        Self::with_textures(
-            device,
-            queue,
-            textures,
-            assets,
-            lazy,
-            graphics,
-            &viewer_runtime::parallel::Workers::default(),
-        )
     }
 
     pub fn with_textures(
@@ -764,7 +755,6 @@ impl Scene {
             &[0, 0, 0, 0],
         )?;
 
-        let _shared = Arc::clone(&textures);
         let SceneTextures {
             atlas,
             atlas_normal,
@@ -916,7 +906,6 @@ impl Scene {
             faction_highlight_regions: Vec::new(),
             selection_outlined: false,
             icon_textures,
-            _shared,
             name_pass,
             near_name_pass,
             order_label_pass,
