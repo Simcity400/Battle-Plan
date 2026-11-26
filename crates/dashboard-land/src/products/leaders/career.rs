@@ -919,7 +919,7 @@ impl AtHour for LeaderHour {
 
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
         let reads = match (stage, &params.selection) {
-            (2, Some(selection)) => UnitLeaders::visibility_reads(&top_asked(&params.branch_id, selection), held, at, false).0,
+            (2, Some(selection)) => return super::visibility::prepare(&top_asked(&params.branch_id, selection), held, at),
             _ => Self::reads_in(params, owner, stage, held, at),
         };
         (reads, at.context.through(at.hour))

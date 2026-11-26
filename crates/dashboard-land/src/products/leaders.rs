@@ -1,6 +1,7 @@
 
 pub mod career;
 mod membership;
+mod visibility;
 #[cfg(test)]
 mod tests;
 
@@ -505,6 +506,7 @@ pub struct LeadersContext {
     lifetimes: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
     verdicts: Arc<std::sync::Mutex<Verdicts>>,
     roster: Option<Arc<Roster>>,
+    visibility: std::sync::Mutex<Option<visibility::Dated>>,
     battle_coverage: Option<(u64, Option<i32>)>,
 }
 
@@ -527,7 +529,7 @@ impl LeadersContext {
                 *held = Verdicts { catalogue: catalogue.cloned(), at: HashMap::new() };
             }
         }
-        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, battle_coverage: None })
+        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, visibility: Default::default(), battle_coverage: None })
     }
 
     fn for_selection(source: &Source, load: &LoadContext, branch: &str, selection: Option<&LeaderSelection>, cancelled: &AtomicBool) -> io::Result<Self> {
@@ -546,7 +548,11 @@ impl LeadersContext {
     }
 
     fn verdicts_at(&self, run: u32, hour: i32) -> HashMap<u64, Result<bool, String>> {
-        self.verdicts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).at.get(&(run, hour)).cloned().unwrap_or_default()
+        let mut decisions = self.verdicts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).at.get(&(run, hour)).cloned().unwrap_or_default();
+        if let Some(held) = self.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().filter(|held| held.covers(run, hour)) {
+            decisions.extend(held.decisions.iter().map(|(&key, value)| (key, value.clone())));
+        }
+        decisions
     }
 
     fn keep(&self, run: u32, hour: i32, made: HashMap<u64, Result<bool, String>>) {
@@ -584,7 +590,9 @@ impl LeadersContext {
     fn through(&self, hour: i32) -> i32 {
         let membership = self.roster.as_ref().map_or(i32::MAX, |roster| roster.through(hour));
         let damage = self.battle_coverage.and_then(|(_, first)| first).filter(|&first| first > hour);
-        membership.min(damage.map_or(i32::MAX, |first| first - 1))
+        let visibility = self.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let world = visibility.as_ref().map_or(i32::MAX, |held| held.through);
+        membership.min(damage.map_or(i32::MAX, |first| first - 1)).min(world)
     }
 
     #[cfg(feature = "test-support")]
@@ -1024,7 +1032,7 @@ impl AtHour for UnitLeaders {
     fn retained_reads(params: &Self::Params, owner: Option<dashboard_base::products::at_hour::Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
         let reads = match stage {
             1 => career::member_details(params, held, at, false),
-            2 => Self::visibility_reads(params, held, at, false).0,
+            2 => return visibility::prepare(params, held, at),
             _ => Self::reads_in(params, owner, stage, held, at),
         };
         (reads, at.context.through(at.hour))
