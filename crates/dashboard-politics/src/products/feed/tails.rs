@@ -399,7 +399,7 @@ fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -
 
 fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (i32, i32), hour: i32) -> Option<i32> {
     let warning = feed.warnings.iter().map(|(at, _)| *at).filter(|at| *at > hour).min();
-    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied().filter(|&at| at <= to)).flatten();
+    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour || at < from)).copied().filter(|&at| at <= to)).flatten();
     let unrecorded = feed
         .unrecorded
         .iter()

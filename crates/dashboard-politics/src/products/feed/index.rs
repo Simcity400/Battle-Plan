@@ -691,13 +691,21 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let mut unattributed = Vec::new();
     let mut unrecorded = Vec::new();
     if let Some(groups) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
+        let ended = kind_code(EventFeedKind::WarEnded);
+        let native: BTreeSet<(i32, u32, u32)> = scanned
+            .native
+            .iter()
+            .filter(|occurrence| occurrence.kind == ended)
+            .filter_map(|occurrence| match (occurrence.roles.first()?.slot, occurrence.roles.get(1)?.slot) {
+                (Some(one), Some(other)) => Some((occurrence.date, one.min(other), one.max(other))),
+                _ => None,
+            })
+            .collect();
         rows.extend(groups.rows);
+        rows.extend(groups.peaces.into_iter().filter(|&((hour, one, other), _)| !native.contains(&(hour, one, other)) && !native.contains(&(hour - 1, one, other))).map(|(_, row)| row));
         warnings.extend(groups.notes);
         unattributed = groups.unattributed;
         unrecorded.extend(groups.unrecorded);
-        if let Some(reason) = groups.refused {
-            refused.push((vec![WarsPeace], "peace".to_owned(), "Peace".to_owned(), reason, None));
-        }
     }
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, cancelled)? {
         rows.extend(made);

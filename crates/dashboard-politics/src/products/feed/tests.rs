@@ -1076,13 +1076,24 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    let frames: Vec<_> = (100..=112)
+    let frames: Vec<_> = (100..=115)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             if hour >= 110
                 && let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()]
             {
                 rows[0].tag = b"QQQ".to_vec();
+                if hour == 114 {
+                    let mut lower = rows[0].clone();
+                    (lower.id, lower.canonical_slot) = (9000, 8);
+                    rows.insert(0, lower);
+                }
+            }
+            if hour == 114
+                && let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                let at = links.partition_point(|link| link.id < 9000);
+                links.insert(at, replay_data::rows::CountryLinkRow { id: 9000, canonical_slot: 8 });
             }
             let factions = if hour >= 101 {
                 let axis = FactionRow { id: 1, name: if hour >= 103 { b"Axis".to_vec() } else { Vec::new() }, ..Default::default() };
@@ -1113,13 +1124,13 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     )
     .unwrap();
     let query = dashboard_base::queries::query(&replay_source, 1).unwrap();
-    let groups = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 112, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
+    let groups = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 115, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
     let (rows, notes) = (&groups.rows, &groups.notes);
     let dated = |kind: EventFeedKind| rows.iter().filter(|row| row.kind == kind).map(|row| row.hour).collect::<Vec<_>>();
     assert_eq!(
         (dated(EventFeedKind::FactionJoined), dated(EventFeedKind::FactionLeft)),
         (vec![101, 107], vec![]),
-        "no departure at 104 or 105 with membership unread at 104; none at 108 nor a join at 109 around a roster that named an unknown country; none at the tag change of 110"
+        "no departure at 104 or 105 with membership unread at 104; none at 108 nor a join at 109 around a roster that named an unknown country; none at the tag change of 110, nor at 114 when a lower country also held the tag"
     );
     assert_eq!(groups.unrecorded.iter().map(|family| (family.kind, family.spans.clone())).collect::<Vec<_>>(), [("factionMembership", vec![(104, 105), (108, 109)])], "the dates whose joins and departures lack evidence on one side are the family's own coverage");
     let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
