@@ -16,6 +16,19 @@ fn event(id: u64, hour: i32, kind: u8, more: MarketEventRow) -> MarketEventRow {
     MarketEventRow { id, occurrence: id, hour, country: 9001, receiver: 44, kind, agreement: 0x12, ..more }
 }
 
+fn delivered(id: u64, hour: i32, variant: u64, amount_raw: i64, total_raw: i64) -> MarketEventRow {
+    event(id, hour, 20, MarketEventRow { variant, amount_raw, total_raw, flags: 0x80, ..Default::default() })
+}
+
+fn stepped_matches_cold(src: &Source, asked: serde_json::Value, hours: &[i32]) {
+    let panel = dated_panel(src, &LoadContext { content: None }, &asked).unwrap();
+    let exact = panel.exact().unwrap();
+    for (step, &hour) in hours.iter().enumerate() {
+        let stepped = (exact.advance)(hour, step == 0, &AtomicBool::new(false), None);
+        assert_eq!(*stepped.value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped vs cold at {hour}");
+    }
+}
+
 fn load(src: &Source, params: &MarketLedgerTailParams) -> MarketLedgerTailReply {
     MarketLedgerTail::load(src, params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
 }
@@ -52,8 +65,9 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
         .map(|hour| {
             let mut frame = ownership_frame(1, hour, 9001);
             *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 1, literal: b"rifle_0".to_vec() }]));
+            let name: &[u8] = if hour <= 103 { b"Copperline Field Kit" } else { b"Copperline Field Kit II" };
             *frame.tables[TableId::VariantDefinitions.index()] =
-                TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Copperline Field Kit".to_vec(), ..Default::default() }]));
+                TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: name.to_vec(), ..Default::default() }]));
             if (100..=108).contains(&hour) {
                 *frame.tables[TableId::MarketContractTerms.index()] = TableView::Complete(TableRows::MarketContractTerms(vec![MarketContractTermsRow {
                     country: 9001,
@@ -68,9 +82,9 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
             let events = match hour {
                 100 => vec![event(1, hour, 11, MarketEventRow::default())],
                 102 => vec![event(2, hour, 21, MarketEventRow { amount_raw: 48_000, ..Default::default() })],
-                104 => vec![event(3, hour, 20, MarketEventRow { variant: 6, amount_raw: 250_000, ..Default::default() })],
+                104 => vec![delivered(3, 103, 6, 250_000, 250_000)],
                 106 => vec![event(4, hour, 21, MarketEventRow { amount_raw: 48_000, ..Default::default() })],
-                108 => vec![event(5, hour, 20, MarketEventRow { variant: 6, amount_raw: 250_000, ..Default::default() }), event(6, hour, 12, MarketEventRow { flags: 1, ..Default::default() })],
+                108 => vec![delivered(5, hour, 6, 250_000, 500_000), event(6, hour, 12, MarketEventRow { flags: 1, ..Default::default() })],
                 _ => Vec::new(),
             };
             *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
@@ -98,8 +112,8 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     let open = load_tail_at(&opening, &query, &expanding, 105, &AtomicBool::new(false)).unwrap();
     assert!(matches!(open.rows[0], MarketLedgerLine::Contract(_)), "an opened contract's events follow it");
     let listed = contracts(&open)[0];
-    assert_eq!(events(&open).iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(), [(104, MarketContractEventKind::Delivery), (102, MarketContractEventKind::Payment), (100, MarketContractEventKind::ContractStarted)]);
-    assert_eq!(events(&open)[0].equipment.as_deref(), Some("Copperline Field Kit"), "an expanded contract's delivery names its design at its own hour");
+    assert_eq!(events(&open).iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(), [(103, MarketContractEventKind::Delivery), (102, MarketContractEventKind::Payment), (100, MarketContractEventKind::ContractStarted)]);
+    assert_eq!(events(&open)[0].equipment.as_deref(), Some("Copperline Field Kit"), "a delivery read at 104 names its design at its own hour, 103, not at the hour it was read");
     assert_eq!((&listed.items, &listed.quotes, &listed.paid_raw), (&contract.items, &contract.quotes, &contract.paid_raw), "expanding a contract changes none of its row's measures");
     let unterms: Vec<_> = (100..=112)
         .map(|hour| {
@@ -109,7 +123,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
                 TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Brasswick Rifle Set".to_vec(), ..Default::default() }]));
             let events = match hour {
                 100 => vec![event(1, hour, 11, MarketEventRow::default())],
-                104 => vec![event(3, hour, 20, MarketEventRow { variant: 6, amount_raw: 250_000, ..Default::default() })],
+                104 => vec![delivered(3, hour, 6, 250_000, 250_000)],
                 _ => Vec::new(),
             };
             *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
@@ -130,13 +144,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     assert_eq!(finished.events_total, "6");
     let ended_only = load(&src, &MarketLedgerTailParams { statuses: Some(vec![MarketContractStatus::Active]), ..ask(110) });
     assert_eq!(ended_only.total, "0", "the status filter applies at the hour asked, before counting");
-    let asked = serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "countries": ["GER"] });
-    let panel = dated_panel(&src, &LoadContext { content: None }, &asked).unwrap();
-    let exact = panel.exact().unwrap();
-    for hour in [100, 102, 105, 108, 104, 112] {
-        let stepped = (exact.advance)(hour, true, &AtomicBool::new(false), None);
-        assert_eq!(*stepped.value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped vs cold at {hour}");
-    }
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "countries": ["GER"] }), &[100, 102, 103, 105, 108, 104, 112]);
 }
 
 #[test]
@@ -255,9 +263,11 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
                     100 => vec![event(1, hour, 11, MarketEventRow::default())],
                     101 => vec![
                         MarketEventRow { agreement: 0x13, ..event(4, hour, 21, MarketEventRow { amount_raw: 2_000, ..Default::default() }) },
-                        MarketEventRow { agreement: 0x13, ..event(5, hour, 20, MarketEventRow { variant: 6, amount_raw: 3_000, ..Default::default() }) },
+                        MarketEventRow { agreement: 0x13, ..delivered(5, hour, 6, 3_000, 9_000) },
                     ],
                     102 => vec![event(2, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }), event(3, hour, 21, MarketEventRow { amount_raw: 5_000, ..Default::default() })],
+                    107 => vec![event(6, 104, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
+                    109 => vec![event(7, hour, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
                     _ => Vec::new(),
                 };
                 TableView::Complete(TableRows::MarketEvents(events))
@@ -278,14 +288,31 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
         (101, None, Some("2000"), Some(START_UNSEEN)),
         "the payments of a contract first seen after its start are at least those seen"
     );
-    assert_eq!((unseen.items[0].delivered_raw.as_deref(), unseen.items[0].delivery_unavailable.as_deref(), unseen.delivery_missing.as_deref()), (Some("3000"), Some(START_UNSEEN), Some(START_UNSEEN)));
-    assert_eq!(witnessed(&load(&src, &ask(105))).status, MarketContractStatus::NotRecorded, "an unread stretch with no recorded end leaves the status unknown");
+    assert_eq!(
+        (unseen.items[0].delivered_raw.as_deref(), unseen.items[0].delivery_unavailable.as_deref(), unseen.delivery_missing.as_deref()),
+        (Some("9000"), None, Some(START_UNSEEN)),
+        "a delivery's certified cumulative total is the design's whole delivery, even when the start was not recorded"
+    );
+    let inside = witnessed(&load(&src, &ask(105)));
+    assert_eq!(inside.status, MarketContractStatus::NotRecorded, "an unread stretch with no recorded end leaves the status unknown");
+    assert!(inside.paid_missing.as_deref().is_some_and(|reason| reason.contains("not recorded from 105 to 106")), "the reason names the whole unread stretch from its first hour: {:?}", inside.paid_missing);
+    let delayed = load(&src, &ask(107));
+    assert_eq!(
+        (witnessed(&delayed).status, witnessed(&delayed).paid_raw.as_deref()),
+        (MarketContractStatus::NotRecorded, Some("6000")),
+        "a payment dated before the unread stretch counts from when it was read, yet does not show the contract alive after the stretch"
+    );
+    assert_eq!(delayed.counts[0].total, "0", "a contract of unknown status is not counted active");
     let after_gap = load(&src, &ask(110));
     let row = witnessed(&after_gap);
-    assert_eq!((row.status, row.paid_raw.as_deref()), (MarketContractStatus::NotRecorded, Some("5000")), "payments over an unread stretch are a lower bound, and no later event shows the contract alive");
+    assert_eq!((row.status, row.paid_raw.as_deref()), (MarketContractStatus::Active, Some("7000")), "a payment dated after the unread stretch shows the contract alive, and the payments stay a lower bound");
     assert!(row.paid_missing.as_deref().is_some_and(|reason| reason.contains("not recorded from 105 to 106")), "{:?}", row.paid_missing);
-    assert_eq!(after_gap.counts[0].total, "0", "a contract of unknown status is not counted active");
+    let unseen = contracts(&after_gap).into_iter().find(|row| !row.exact).unwrap();
+    assert_eq!(unseen.items[0].delivered_raw.as_deref(), Some("9000"));
+    assert!(unseen.items[0].delivery_unavailable.as_deref().is_some_and(|reason| reason.contains("not recorded from 105 to 106")), "an unread stretch after a certified total leaves it a lower bound");
+    assert_eq!(after_gap.counts[0].total, "1");
     assert_eq!(after_gap.missing.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect::<Vec<_>>(), [(105, 106)]);
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64 }), &(100..=110).collect::<Vec<_>>());
 }
 
 #[test]
@@ -294,7 +321,7 @@ fn an_event_is_dated_by_its_own_hour_and_listed_from_the_hour_it_was_read() {
         "mkt-late",
         frames(100..=110, |hour| match hour {
             102 => vec![event(1, 101, 11, MarketEventRow::default())],
-            105 => vec![event(2, 103, 21, MarketEventRow { amount_raw: 5_000, ..Default::default() })],
+            105 => vec![event(2, 104, 21, MarketEventRow { amount_raw: 5_000, ..Default::default() }), delivered(4, 103, 6, 2_000, 2_000)],
             107 => vec![event(3, 106, 12, MarketEventRow { flags: 1, ..Default::default() })],
             _ => Vec::new(),
         }),
@@ -307,7 +334,11 @@ fn an_event_is_dated_by_its_own_hour_and_listed_from_the_hour_it_was_read() {
     let paid = load(&src, &MarketLedgerTailParams { expanded: Some(vec![row.key.clone()]), ..ask(106) });
     let contract = contracts(&paid)[0];
     assert_eq!((contract.status, contract.ended_hour, contract.paid_raw.as_deref()), (MarketContractStatus::Active, None, Some("5000")), "a removal is not applied before it was read");
-    assert_eq!(events(&paid).iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(), [(103, MarketContractEventKind::Payment), (101, MarketContractEventKind::ContractStarted)], "an event is dated by its own hour");
+    assert_eq!(
+        events(&paid).iter().map(|ev| (ev.hour, ev.kind)).collect::<Vec<_>>(),
+        [(104, MarketContractEventKind::Payment), (103, MarketContractEventKind::Delivery), (101, MarketContractEventKind::ContractStarted)],
+        "events are dated by their own hour and listed newest first, whatever order one read published them in"
+    );
     let ended = load(&src, &ask(107));
     assert_eq!((contracts(&ended)[0].status, contracts(&ended)[0].ended_hour), (MarketContractStatus::Ended, Some(106)));
 }
@@ -319,6 +350,7 @@ fn an_opened_contract_pages_its_events_after_it_and_lists_the_newest_until_asked
         frames(100..=142, |hour| match hour {
             100 => vec![event(1, hour, 11, MarketEventRow::default())],
             101..=140 => vec![event(hour as u64, hour, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
+            141 => vec![event(500, 101, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
             _ => Vec::new(),
         }),
     );
@@ -326,24 +358,22 @@ fn an_opened_contract_pages_its_events_after_it_and_lists_the_newest_until_asked
     let opened = MarketLedgerTailParams { expanded: Some(vec![key.clone()]), ..ask(141) };
     let capped = load(&src, &opened);
     assert_eq!(capped.total, "34", "a contract, its newest 32 events and the line naming the rest");
-    assert_eq!((contracts(&capped).len(), events(&capped).first().map(|ev| ev.hour), events(&capped).last().map(|ev| ev.hour)), (1, Some(140), Some(109)));
-    assert_eq!(capped.rows.last(), Some(&MarketLedgerLine::More(MarketEventsMore { key: format!("more:{key}"), hour: 100, contract: key.clone(), total: "41".into(), hidden: "9".into() })));
-    assert_eq!(capped.counts[0].total, "1", "event lines are not counted as contracts");
+    assert_eq!(
+        (contracts(&capped).len(), events(&capped).first().map(|ev| ev.hour), events(&capped).last().map(|ev| ev.hour)),
+        (1, Some(140), Some(109)),
+        "an event read late but dated early never displaces a newer one"
+    );
+    assert_eq!(capped.rows.last(), Some(&MarketLedgerLine::More(MarketEventsMore { key: format!("more:{key}"), hour: 100, contract: key.clone(), total: "42".into(), hidden: "10".into() })));
+    assert_eq!((capped.counts[0].total.as_str(), capped.live.as_str()), ("1", "1"), "event lines are not counted as contracts, nor as live ones");
     let all = MarketLedgerTailParams { full: Some(vec![key.clone()]), ..opened.clone() };
     let every = load(&src, &all);
-    assert_eq!(every.total, "43", "asking for every event lists them all");
+    assert_eq!(every.total, "44", "asking for every event lists them all");
     assert!(matches!(every.rows.last(), Some(MarketLedgerLine::More(more)) if more.hidden == "0"));
     let page = load(&src, &MarketLedgerTailParams { offset: Some("35".into()), limit: 4, ..all });
     assert_eq!(events(&page).iter().map(|ev| ev.hour).collect::<Vec<_>>(), [106, 105, 104, 103], "an opened contract's events page like any other line");
     let early = load(&src, &MarketLedgerTailParams { hour: Some(120), ..opened });
     assert_eq!((early.total.as_str(), early.rows.iter().any(|line| matches!(line, MarketLedgerLine::More(_)))), ("22", false), "the cap counts only the events read by the hour asked");
-    let asked = serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "expanded": [key] });
-    let panel = dated_panel(&src, &LoadContext { content: None }, &asked).unwrap();
-    let exact = panel.exact().unwrap();
-    for hour in [120, 131, 132, 133, 141, 136] {
-        let stepped = (exact.advance)(hour, true, &AtomicBool::new(false), None);
-        assert_eq!(*stepped.value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped vs cold at {hour}");
-    }
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "expanded": [key] }), &[120, 131, 132, 133, 140, 141, 136]);
 }
 
 #[test]

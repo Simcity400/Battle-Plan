@@ -284,7 +284,7 @@ function buildContractRow(
       { label: 'Seller', value: contract.seller ? knownValue(contract.seller) : notRecorded(contract.sellerNotRecorded ? 'Seller not recorded' : 'Seller name unavailable') },
       { label: 'Buyer', value: contract.buyer ? knownValue(contract.buyer) : notRecorded(contract.buyerNotRecorded ? 'Buyer not recorded' : 'Buyer name unavailable') },
     ];
-    if (!contract.exact) out.push({ label: 'First seen', value: knownValue(formatDateTime(contract.hour)) });
+    if (!contract.exact) out.push({ label: 'First seen', value: knownValue(formatDateTime(contract.observed)) });
     if (contract.startedHour !== null) out.push({ label: 'Started', value: knownValue(formatDateTime(contract.startedHour)) });
     else if (!contract.request) out.push({ label: 'Started', value: notRecorded('The contract began before its first recorded event') });
     if (contract.endedHour !== null) out.push({ label: 'Ended', value: knownValue(formatDateTime(contract.endedHour)) });

@@ -22,7 +22,8 @@ use replay::campaign::Replay;
 use replay_data::rows::{MarketEventRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
@@ -47,6 +48,7 @@ struct Columns {
     ordinal: usize,
     variant: usize,
     amount: usize,
+    total: usize,
     flags: usize,
 }
 
@@ -63,6 +65,7 @@ impl Columns {
             ordinal: field("ordinal")?,
             variant: field("variant")?,
             amount: field("amount_raw")?,
+            total: field("total_raw")?,
             flags: field("flags")?,
         })
     }
@@ -110,6 +113,10 @@ const MORE: u16 = 3;
 const START_UNSEEN: &str = "The contract began before its first recorded event";
 const UNTOLD_REMOVAL: &str = "do not record whether a removal ended a request or an accepted contract";
 const UNDATED: &str = "do not record their own hour";
+const UNTOLD: [&str; 2] = [UNTOLD_REMOVAL, UNDATED];
+const NO_DESIGN: &str = "A delivery's design was not recorded";
+const NO_TOTAL: &str = "A delivery's cumulative total was not recorded";
+const CERTIFIED_TOTAL: i64 = 0x80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -132,7 +139,7 @@ pub struct MarketContractItem {
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub icon: Option<String>,
-    #[doc = " Delivered by the hour asked; with `deliveryUnavailable` only a lower bound, null when nothing was witnessed."]
+    #[doc = " The latest certified cumulative delivery read by the hour asked; with `deliveryUnavailable` only a lower bound, null when none was recorded."]
     pub delivered_raw: Option<String>,
     pub contracted_raw: Option<String>,
     pub delivery_unavailable: Option<String>,
@@ -300,7 +307,145 @@ struct Child {
     kind: MarketContractEventKind,
     variant: Option<u64>,
     amount: Option<i64>,
+    total: Option<i64>,
     reason: Option<&'static str>,
+}
+
+impl Child {
+    fn rank(&self) -> Rank {
+        (self.hour, self.key)
+    }
+}
+
+type Rank = (i32, u128);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Delivered {
+    certified: Option<(i64, Rank)>,
+    refused: Option<(Rank, &'static str)>,
+}
+
+struct Design {
+    variant: u64,
+    first: u32,
+    steps: Vec<(u32, Delivered)>,
+}
+
+impl Design {
+    fn by(&self, read: usize) -> Delivered {
+        let at = self.steps.partition_point(|&(place, _)| (place as usize) < read);
+        at.checked_sub(1).map_or_else(Delivered::default, |at| self.steps[at].1)
+    }
+}
+
+#[derive(Default)]
+struct Measures {
+    paid: Vec<(u32, i64)>,
+    paid_unrecorded: Option<u32>,
+    refused_all: Vec<(u32, Rank, &'static str)>,
+    designs: Vec<Design>,
+}
+
+impl Measures {
+    fn of(children: &[Child]) -> Self {
+        let mut out = Self::default();
+        let mut paid: i64 = 0;
+        let mut designs: HashMap<u64, usize> = HashMap::new();
+        for (place, child) in children.iter().enumerate() {
+            let (place, rank) = (place as u32, child.rank());
+            match (child.kind, child.variant) {
+                (MarketContractEventKind::Payment, _) => match child.amount {
+                    Some(amount) => {
+                        paid = paid.saturating_add(amount);
+                        out.paid.push((place, paid));
+                    }
+                    None => {
+                        out.paid_unrecorded.get_or_insert(place);
+                    }
+                },
+                (MarketContractEventKind::Delivery | MarketContractEventKind::DeliveryUnavailable, None) => {
+                    if out.refused_all.last().is_none_or(|&(_, held, _)| rank > held) {
+                        out.refused_all.push((place, rank, child.reason.unwrap_or(NO_DESIGN)));
+                    }
+                }
+                (MarketContractEventKind::Delivery | MarketContractEventKind::DeliveryUnavailable, Some(variant)) => {
+                    let at = *designs.entry(variant).or_insert_with(|| {
+                        out.designs.push(Design { variant, first: place, steps: Vec::new() });
+                        out.designs.len() - 1
+                    });
+                    let design = &mut out.designs[at];
+                    let last = design.steps.last().map(|&(_, held)| held);
+                    let mut held = last.unwrap_or_default();
+                    match child.total.filter(|_| child.kind == MarketContractEventKind::Delivery) {
+                        Some(total) => {
+                            if held.certified.is_none_or(|(_, at)| rank > at) {
+                                held.certified = Some((total, rank));
+                            }
+                        }
+                        None => {
+                            if held.refused.is_none_or(|(at, _)| rank > at) {
+                                held.refused = Some((rank, child.reason.unwrap_or(NO_TOTAL)));
+                            }
+                        }
+                    }
+                    if last != Some(held) {
+                        design.steps.push((place, held));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn paid_by(&self, read: usize) -> Option<i64> {
+        let at = self.paid.partition_point(|&(place, _)| (place as usize) < read);
+        at.checked_sub(1).map(|at| self.paid[at].1)
+    }
+
+    fn refused_all_by(&self, read: usize) -> Option<(Rank, &'static str)> {
+        let at = self.refused_all.partition_point(|&(place, ..)| (place as usize) < read);
+        at.checked_sub(1).map(|at| (self.refused_all[at].1, self.refused_all[at].2))
+    }
+
+    fn designs_by(&self, read: usize) -> impl Iterator<Item = &Design> {
+        self.designs.iter().filter(move |design| (design.first as usize) < read)
+    }
+}
+
+struct Unread {
+    gaps: Vec<MissingSpan>,
+    reach: Vec<i32>,
+}
+
+impl Unread {
+    fn new(mut gaps: Vec<MissingSpan>) -> Self {
+        gaps.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
+        let reach = gaps
+            .iter()
+            .scan(i32::MIN, |held, gap| {
+                *held = (*held).max(gap.last_hour);
+                Some(*held)
+            })
+            .collect();
+        Self { gaps, reach }
+    }
+
+    fn since(&self, known: i32, hour: i32) -> bool {
+        let begun = self.gaps.partition_point(|gap| gap.first_hour <= hour);
+        begun.checked_sub(1).is_some_and(|at| self.reach[at] > known)
+    }
+
+    fn after(&self, hour: i32) -> Option<&MissingSpan> {
+        self.gaps.get(self.gaps.partition_point(|gap| gap.first_hour <= hour))
+    }
+
+    fn within(&self, from: i32, hour: i32, ended: Option<i32>) -> Option<String> {
+        let gap = self.gaps.get(self.reach.partition_point(|&reach| reach < from))?;
+        let last = ended.map_or(gap.last_hour, |ended| gap.last_hour.min(ended));
+        (gap.first_hour <= ended.unwrap_or(hour) && from <= last)
+            .then(|| format!("Market events were not recorded from {} to {}: {}", gap.first_hour.max(from), last, gap.reason))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -322,6 +467,8 @@ impl Contract {
     }
 }
 
+type Party = (Option<String>, bool);
+
 struct Placed {
     key: u128,
     date: i32,
@@ -330,6 +477,19 @@ struct Placed {
     states: Box<[(i32, u8)]>,
     text: Box<str>,
     contract: Contract,
+    measures: Measures,
+    seller: Party,
+    buyer: Party,
+    buyer_later: Option<(i32, Party)>,
+}
+
+impl Placed {
+    fn buyer_at(&self, hour: i32) -> &Party {
+        match &self.buyer_later {
+            Some((seen, later)) if *seen <= hour => later,
+            _ => &self.buyer,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -350,8 +510,8 @@ type TermsKey = (i32, u32, u64, u8);
 struct Ledger {
     contracts: Vec<Placed>,
     by_key: HashMap<u128, u32>,
-    gaps: Vec<MissingSpan>,
-    untold: Vec<(i32, &'static str)>,
+    unread: Unread,
+    untold: Vec<(i32, [u32; 2])>,
     closed: Arc<Index<Line>>,
     opened: Mutex<Option<(Opening, Arc<Index<Line>>)>>,
     terms: Mutex<HashMap<TermsKey, Option<Arc<Terms>>>>,
@@ -378,7 +538,7 @@ impl Ledger {
             return Ok(Arc::clone(index));
         }
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let index = Arc::new(lines(&self.contracts, &opening, self.gaps.clone())?);
+        let index = Arc::new(lines(&self.contracts, &opening, self.unread.gaps.clone())?);
         *kept = Some((opening, Arc::clone(&index)));
         Ok(index)
     }
@@ -418,12 +578,22 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
         }
         let children = &placed.contract.children;
         let full = opening.full.contains(&at);
-        for (place, child) in children.iter().enumerate().rev() {
-            let hidden = if full { None } else { children.get(place + CHILDREN_SHOWN).map(|newer| newer.observed) };
-            if hidden == Some(child.observed) {
+        let mut ranked: Vec<u32> = (0..children.len() as u32).collect();
+        ranked.sort_unstable_by_key(|&place| Reverse(children[place as usize].rank()));
+        let mut newer: BinaryHeap<i32> = BinaryHeap::with_capacity(CHILDREN_SHOWN + 1);
+        for place in ranked {
+            let child = &children[place as usize];
+            let hidden = if !full && newer.len() == CHILDREN_SHOWN { newer.peek().copied() } else { None };
+            if !full {
+                newer.push(child.observed);
+                if newer.len() > CHILDREN_SHOWN {
+                    newer.pop();
+                }
+            }
+            if hidden.is_some_and(|hidden| hidden <= child.observed) {
                 continue;
             }
-            push(Line::Event(at, place as u32), placed, EVENT, child.observed, following(&placed.states, child.observed, hidden));
+            push(Line::Event(at, place), placed, EVENT, child.observed, following(&placed.states, child.observed, hidden));
         }
         if let Some(first) = children.get(CHILDREN_SHOWN) {
             push(Line::More(at), placed, MORE, first.observed, following(&placed.states, first.observed, None));
@@ -468,22 +638,31 @@ fn contract_id(contract: &Contract, incarnation: u32, row_key: u128) -> u128 {
     if contract.agreement.is_none() { row_key } else { (u128::from(u64::MAX) << 64) | u128::from(hash) }
 }
 
-fn states(contract: &Contract, gaps: &[MissingSpan]) -> Box<[(i32, u8)]> {
+fn states(contract: &Contract, unread: &Unread) -> Box<[(i32, u8)]> {
     let opened = if contract.request { MarketContractStatus::Requested } else { MarketContractStatus::Active };
     let closed = if contract.request { MarketContractStatus::RequestEnded } else { MarketContractStatus::Ended };
     let mut states: Vec<(i32, u8)> = Vec::new();
-    let mut step = |hour: i32, status: MarketContractStatus| match states.last_mut() {
-        Some(last) if last.0 == hour => last.1 = status.code(),
-        _ => states.push((hour, status.code())),
+    let mut step = |hour: i32, status: MarketContractStatus| {
+        let code = status.code();
+        match states.last_mut() {
+            Some(last) if last.0 == hour => last.1 = code,
+            Some(last) if last.1 == code => return,
+            _ => states.push((hour, code)),
+        }
+        if matches!(states.as_slice(), [.., (_, before), (_, last)] if before == last) {
+            states.pop();
+        }
     };
+    let mut known = i32::MIN;
     for (place, child) in contract.children.iter().enumerate() {
         if contract.ended.is_some_and(|(_, seen)| seen <= child.observed) {
             step(child.observed, closed);
             continue;
         }
-        step(child.observed, opened);
+        known = known.max(child.hour);
+        step(child.observed, if unread.since(known, child.observed) { MarketContractStatus::NotRecorded } else { opened });
         let next = contract.children.get(place + 1).map(|next| next.observed);
-        if let Some(gap) = gaps.get(gaps.partition_point(|gap| gap.first_hour <= child.observed))
+        if let Some(gap) = unread.after(child.observed)
             && next.is_none_or(|next| gap.first_hour < next)
         {
             step(gap.first_hour, MarketContractStatus::NotRecorded);
@@ -501,7 +680,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
     runs.sort_unstable();
     runs.dedup();
     let mut rows: Vec<(i32, u128, u8, i32, Vec<Cell>)> = Vec::new();
-    let mut untold: Vec<(i32, &'static str)> = Vec::new();
+    let mut untold: Vec<(i32, usize)> = Vec::new();
     for run in runs {
         dashboard_text::metadata::check_cancel(cancelled)?;
         reader.each(run, |row| {
@@ -514,7 +693,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             }
             match number(&row.cells, columns.hour).and_then(|hour| i32::try_from(hour).ok()) {
                 Some(hour) => rows.push((row.hour.max(hour), row.key, kind, hour, row.cells)),
-                None => untold.push((row.hour, UNDATED)),
+                None => untold.push((row.hour, 1)),
             }
             Ok(())
         })?;
@@ -532,7 +711,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let buyer = number(&cells, columns.receiver);
         let variant = number(&cells, columns.variant).map(|variant| variant as u64).filter(|&variant| variant != 0);
         let Some(agreement) = number(&cells, columns.agreement).map(|agreement| agreement as u64) else {
-            let child = Child { key, hour, observed, kind: MarketContractEventKind::Delivery, variant, amount: None, reason: Some("The contract of this event was not recorded") };
+            let child = Child { key, hour, observed, kind: MarketContractEventKind::Delivery, variant, amount: None, total: None, reason: Some("The contract of this event was not recorded") };
             made.push((Contract { seller, buyer, buyer_later: None, agreement: None, request: false, requested: None, started: None, ended: None, children: vec![child] }, 0, key));
             continue;
         };
@@ -553,7 +732,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
                     Some(0) => true,
                     Some(1) => false,
                     _ => {
-                        untold.push((observed, UNTOLD_REMOVAL));
+                        untold.push((observed, 0));
                         continue;
                     }
                 };
@@ -579,6 +758,8 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         };
         let reason = (kind == 34).then(|| refusal(number(&cells, columns.ordinal)));
         let amount = if reason.is_some() || !matches!(kind, 20 | 21) { None } else { number(&cells, columns.amount) };
+        let certified = kind == 20 && number(&cells, columns.flags).is_some_and(|flags| flags & CERTIFIED_TOTAL != 0);
+        let total = if certified { number(&cells, columns.total) } else { None };
         let contract = &mut made[at].0;
         if contract.buyer_later.is_none()
             && contract.buyer.is_none_or(|raw| raw == 0)
@@ -586,15 +767,22 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         {
             contract.buyer_later = Some((raw, observed));
         }
-        contract.children.push(Child { key, hour, observed, kind: child_kind, variant, amount, reason });
+        contract.children.push(Child { key, hour, observed, kind: child_kind, variant, amount, total, reason });
     }
     untold.sort_unstable();
+    let untold: Vec<(i32, [u32; 2])> = untold
+        .into_iter()
+        .scan([0u32; 2], |counts, (seen, reason)| {
+            counts[reason] += 1;
+            Some((seen, *counts))
+        })
+        .collect();
     let slot = |raw: Option<i64>, hour: i32| {
         let raw = u32::try_from(raw?).ok().filter(|&raw| raw != 0)?;
         let run = query.timeline.at(hour)?.run;
         links.get(&run)?.slot_at(raw, hour)
     };
-    let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
+    let unread = Unread::new(dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?);
     let tags = Names::new(&query.holders);
     let mut contracts = Vec::with_capacity(made.len());
     for (contract, incarnation, first_key) in made {
@@ -604,13 +792,18 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let text = opening.iter().flatten().filter_map(|&slot| tags.slot_tag(slot, observed)).collect::<Vec<_>>().join(" ");
         let later = contract.buyer_later.map(|(raw, seen)| Role { slot: slot(Some(raw), seen), at: seen });
         let roles: Box<[Role]> = opening.into_iter().map(|slot| Role { slot, at: date }).chain(later).collect();
+        let party = |raw: Option<i64>, hour: i32| resolve_party(query, &links, &tags, raw, hour);
         contracts.push(Placed {
             key: contract_id(&contract, incarnation, first_key),
             date,
             observed,
             roles,
-            states: states(&contract, &gaps),
+            states: states(&contract, &unread),
             text: text.into_boxed_str(),
+            measures: Measures::of(&contract.children),
+            seller: party(contract.seller, observed),
+            buyer: party(contract.buyer, observed),
+            buyer_later: contract.buyer_later.map(|(raw, seen)| (seen, party(Some(raw), seen))),
             contract,
         });
     }
@@ -621,8 +814,8 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             return Err(invalid("Two market contracts share one key"));
         }
     }
-    let closed = Arc::new(lines(&contracts, &Opening::default(), gaps.clone())?);
-    Ok(Ledger { contracts, by_key, gaps, untold, closed, opened: Mutex::default(), terms: Mutex::default() })
+    let closed = Arc::new(lines(&contracts, &Opening::default(), unread.gaps.clone())?);
+    Ok(Ledger { contracts, by_key, unread, untold, closed, opened: Mutex::default(), terms: Mutex::default() })
 }
 
 type Opened = HashMap<(Option<i64>, u64, bool), usize>;
@@ -754,17 +947,10 @@ fn variant_names(
 
 const UNNAMED: &str = "The recording does not name this design at the ledger's reads";
 
-fn gap_within(gaps: &[MissingSpan], from: i32, to: i32) -> Option<String> {
-    gaps.iter()
-        .find(|gap| gap.first_hour <= to && gap.last_hour >= from)
-        .map(|gap| format!("Market events were not recorded from {} to {}: {}", gap.first_hour.max(from), gap.last_hour.min(to), gap.reason))
-}
-
 struct Prepared {
     ledger: Arc<Ledger>,
     index: Arc<Index<Line>>,
     selection: Option<Selection>,
-    links: Arc<BTreeMap<u32, Arc<RunLinks>>>,
     context: Arc<names::Context>,
     namings: Arc<BTreeMap<u32, Arc<names::Naming>>>,
     full: BTreeSet<u32>,
@@ -788,93 +974,44 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, 
     let opening = ledger.opening(params);
     let full = opening.full.clone();
     let index = ledger.index(opening, cancelled)?;
-    Ok(Prepared { ledger, index, selection, links: Arc::new(links_by_run(source, query)?), context: Arc::new(context), namings: Arc::new(namings), full })
-}
-
-type Party = (Option<String>, bool);
-
-fn parties(prepared: &Prepared, query: &Query<'_>, placed: &Placed, hour: i32) -> (Party, Party) {
-    let tags = Names::new(&query.holders);
-    let contract = &placed.contract;
-    let seller = resolve_party(query, &prepared.links, &tags, contract.seller, placed.observed);
-    let buyer = match contract.buyer_later {
-        Some((raw, seen)) if seen <= hour => resolve_party(query, &prepared.links, &tags, Some(raw), seen),
-        _ => resolve_party(query, &prepared.links, &tags, contract.buyer, placed.observed),
-    };
-    (seller, buyer)
+    Ok(Prepared { ledger, index, selection, context: Arc::new(context), namings: Arc::new(namings), full })
 }
 
 type NameOf<'a> = &'a dyn Fn(i32, u64) -> (Option<String>, Option<String>, Option<String>);
 
-fn contract_row(prepared: &Prepared, query: &Query<'_>, shown: &Shown, placed: &Placed, hour: i32, terms: &HashMap<TermsKey, Arc<Terms>>, name_of: NameOf<'_>) -> MarketContractRow {
-    let contract = &placed.contract;
+fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, terms: &HashMap<TermsKey, Arc<Terms>>, name_of: NameOf<'_>) -> MarketContractRow {
+    let (contract, measures) = (&placed.contract, &placed.measures);
     let (date, at) = (placed.date, placed.observed);
-    let children = &contract.children[..contract.read_by(hour)];
+    let read = contract.read_by(hour);
     let ended = contract.ended.filter(|&(_, seen)| seen <= hour).map(|(ended, _)| ended);
-    let covered_to = ended.unwrap_or(hour);
     let unseen = (!contract.request && contract.started.is_none()).then(|| START_UNSEEN.to_owned());
-    let uncovered = unseen.or_else(|| gap_within(&prepared.ledger.gaps, date, covered_to));
+    let uncovered = unseen.or_else(|| ledger.unread.within(date, hour, ended));
     let found = contract.seller.and_then(|raw| u32::try_from(raw).ok()).zip(contract.agreement).and_then(|(seller, agreement)| terms.get(&(at, seller, agreement, u8::from(!contract.request))));
     let terms_missing = found.is_none().then(|| "The contract's terms were not recorded at its start".to_owned());
-    let mut order: Vec<u64> = found.map(|terms| terms.equipment.iter().map(|&(variant, _)| variant).collect()).unwrap_or_default();
-    let mut delivered: HashMap<u64, i64> = HashMap::new();
-    let mut refused: HashMap<u64, String> = HashMap::new();
-    let mut refused_all: Option<String> = None;
-    let mut paid: i64 = 0;
-    let mut paid_any = false;
-    let mut paid_missing = uncovered.clone();
-    for child in children {
-        match child.kind {
-            MarketContractEventKind::Delivery => match (child.variant, child.amount) {
-                (Some(variant), Some(amount)) => {
-                    if !order.contains(&variant) {
-                        order.push(variant);
-                    }
-                    *delivered.entry(variant).or_default() += amount;
-                }
-                (Some(variant), None) => {
-                    refused.entry(variant).or_insert_with(|| child.reason.unwrap_or("A delivery's amount was not recorded").to_owned());
-                }
-                (None, _) => {
-                    refused_all.get_or_insert_with(|| child.reason.unwrap_or("A delivery's design was not recorded").to_owned());
-                }
-            },
-            MarketContractEventKind::DeliveryUnavailable => match child.variant {
-                Some(variant) => {
-                    if !order.contains(&variant) {
-                        order.push(variant);
-                    }
-                    refused.entry(variant).or_insert_with(|| child.reason.unwrap_or_default().to_owned());
-                }
-                None => {
-                    refused_all.get_or_insert_with(|| child.reason.unwrap_or_default().to_owned());
-                }
-            },
-            MarketContractEventKind::Payment => match child.amount {
-                Some(amount) => {
-                    paid = paid.saturating_add(amount);
-                    paid_any = true;
-                }
-                None => {
-                    paid_missing.get_or_insert_with(|| "A payment's amount was not recorded".to_owned());
-                }
-            },
-            _ => {}
-        }
-    }
+    let refused_all = measures.refused_all_by(read);
+    let designs: HashMap<u64, Delivered> = measures.designs_by(read).map(|design| (design.variant, design.by(read))).collect();
     let contracted: HashMap<u64, i64> = found.map(|terms| terms.equipment.iter().copied().collect()).unwrap_or_default();
+    let mut order: Vec<u64> = found.map(|terms| terms.equipment.iter().map(|&(variant, _)| variant).collect()).unwrap_or_default();
+    order.extend(measures.designs_by(read).map(|design| design.variant).filter(|variant| !contracted.contains_key(variant)));
     let items = order
         .iter()
         .map(|&variant| {
             let (name, icon, name_missing) = name_of(at, variant);
-            let unavailable = refused.get(&variant).cloned().or_else(|| refused_all.clone()).or_else(|| uncovered.clone());
-            let witnessed = delivered.get(&variant).copied();
+            let held = designs.get(&variant).copied().unwrap_or_default();
+            let refusal = held.refused.into_iter().chain(refused_all).max_by_key(|&(rank, _)| rank);
+            let (delivered, unavailable) = match held.certified {
+                Some((total, rank)) => (Some(total), refusal.filter(|&(refused, _)| refused > rank).map(|(_, why)| why.to_owned()).or_else(|| ledger.unread.within(rank.0.saturating_add(1), hour, ended))),
+                None => {
+                    let why = refusal.map(|(_, why)| why.to_owned()).or_else(|| uncovered.clone());
+                    (why.is_none().then_some(0), why)
+                }
+            };
             MarketContractItem {
                 variant: variant.to_string(),
                 name,
                 name_missing,
                 icon,
-                delivered_raw: if unavailable.is_none() { Some(witnessed.unwrap_or(0).to_string()) } else { witnessed.filter(|&amount| amount > 0).map(|amount| amount.to_string()) },
+                delivered_raw: delivered.map(|amount| amount.to_string()),
                 contracted_raw: contracted.get(&variant).map(|amount| amount.to_string()),
                 delivery_unavailable: unavailable,
             }
@@ -892,7 +1029,8 @@ fn contract_row(prepared: &Prepared, query: &Query<'_>, shown: &Shown, placed: &
                 .collect()
         })
         .unwrap_or_default();
-    let ((seller, seller_not_recorded), (buyer, buyer_not_recorded)) = parties(prepared, query, placed, hour);
+    let unrecorded = measures.paid_unrecorded.is_some_and(|place| (place as usize) < read).then(|| "A payment's amount was not recorded".to_owned());
+    let ((seller, seller_not_recorded), (buyer, buyer_not_recorded)) = (placed.seller.clone(), placed.buyer_at(hour).clone());
     MarketContractRow {
         key: placed.key.to_string(),
         hour: date,
@@ -910,12 +1048,12 @@ fn contract_row(prepared: &Prepared, query: &Query<'_>, shown: &Shown, placed: &
         buyer,
         buyer_not_recorded,
         items,
-        delivery_missing: refused_all.clone().or_else(|| uncovered.clone()),
-        paid_raw: paid_any.then(|| paid.to_string()),
-        paid_missing,
+        delivery_missing: refused_all.map(|(_, why)| why.to_owned()).or_else(|| uncovered.clone()),
+        paid_raw: measures.paid_by(read).map(|paid| paid.to_string()),
+        paid_missing: uncovered.or(unrecorded),
         quotes,
         terms_missing,
-        events_total: children.len().to_string(),
+        events_total: read.to_string(),
     }
 }
 
@@ -955,8 +1093,8 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         warnings.push(why.clone());
     }
     let untold = ledger.untold.partition_point(|&(seen, _)| seen <= hour);
-    for reason in [UNTOLD_REMOVAL, UNDATED] {
-        let count = ledger.untold[..untold].iter().filter(|&&(_, held)| held == reason).count();
+    let counts = untold.checked_sub(1).map_or([0; 2], |at| ledger.untold[at].1);
+    for (reason, count) in UNTOLD.iter().zip(counts) {
         if count > 0 {
             warnings.push(format!("Market events not listed because they {reason}: {count}"));
         }
@@ -964,21 +1102,25 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
     let run_of = |hour: i32| query.timeline.at(hour).map(|stretch| stretch.run);
     let mut terms_wanted: BTreeMap<(u32, i32), Vec<(u32, u64, u8)>> = BTreeMap::new();
     let mut variants_wanted: BTreeMap<(u32, i32), BTreeSet<u64>> = BTreeMap::new();
+    let mut next_change = answer.next_change.into_iter().chain(ledger.untold.get(untold).map(|&(seen, _)| seen)).min();
     for shown in &answer.rows {
+        let (Line::Contract(at) | Line::Event(at, _) | Line::More(at)) = index.get(shown.at).payload;
+        let placed = &ledger.contracts[at as usize];
+        let contract = &placed.contract;
+        let read = contract.read_by(hour);
+        next_change = next_change.into_iter().chain(contract.children.get(read).map(|next| next.observed)).min();
         match index.get(shown.at).payload {
-            Line::Contract(at) => {
-                let placed = &ledger.contracts[at as usize];
-                let contract = &placed.contract;
+            Line::Contract(_) => {
                 let Some(run) = run_of(placed.observed) else { continue };
                 if let (Some(seller), Some(agreement)) = (contract.seller.and_then(|raw| u32::try_from(raw).ok()), contract.agreement) {
                     terms_wanted.entry((run, placed.observed)).or_default().push((seller, agreement, u8::from(!contract.request)));
                 }
-                variants_wanted.entry((run, placed.observed)).or_default().extend(contract.children[..contract.read_by(hour)].iter().filter_map(|child| child.variant));
+                variants_wanted.entry((run, placed.observed)).or_default().extend(placed.measures.designs_by(read).map(|design| design.variant));
             }
-            Line::Event(at, place) => {
-                let child = &ledger.contracts[at as usize].contract.children[place as usize];
-                if let (Some(variant), Some(run)) = (child.variant, run_of(child.observed)) {
-                    variants_wanted.entry((run, child.observed)).or_default().insert(variant);
+            Line::Event(_, place) => {
+                let child = &contract.children[place as usize];
+                if let (Some(variant), Some(run)) = (child.variant, run_of(child.hour)) {
+                    variants_wanted.entry((run, child.hour)).or_default().insert(variant);
                 }
             }
             Line::More(_) => {}
@@ -1005,20 +1147,19 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         .rows
         .iter()
         .map(|shown| match index.get(shown.at).payload {
-            Line::Contract(at) => MarketLedgerLine::Contract(contract_row(prepared, query, shown, &ledger.contracts[at as usize], hour, &terms, &name_of)),
+            Line::Contract(at) => MarketLedgerLine::Contract(contract_row(ledger, shown, &ledger.contracts[at as usize], hour, &terms, &name_of)),
             Line::Event(at, place) => {
                 let placed = &ledger.contracts[at as usize];
                 let child = &placed.contract.children[place as usize];
                 let (equipment, _, equipment_missing) = match child.variant {
-                    Some(variant) => name_of(child.observed, variant),
+                    Some(variant) => name_of(child.hour, variant),
                     None => (None, None, None),
                 };
-                let ((seller, _), (buyer, _)) = parties(prepared, query, placed, hour);
                 MarketLedgerLine::Event(MarketContractEvent {
                     key: child.key.to_string(),
                     contract: placed.key.to_string(),
-                    seller,
-                    buyer,
+                    seller: placed.seller.0.clone(),
+                    buyer: placed.buyer_at(hour).0.clone(),
                     hour: child.hour,
                     kind: child.kind,
                     variant: child.variant.map(|variant| variant.to_string()),
@@ -1045,7 +1186,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         counts: occurrences::counts(&answer, &["active"]),
         rows,
         missing: answer.gaps,
-        next_change: answer.next_change.into_iter().chain(ledger.untold.get(untold).map(|&(seen, _)| seen)).min(),
+        next_change,
         warnings,
     };
     dashboard_base::products::check_reply_budget(&reply)?;

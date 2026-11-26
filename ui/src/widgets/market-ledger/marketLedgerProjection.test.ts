@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import type { MarketContractRow, MarketLedgerLine, MarketLedgerTailReply } from '../../generated/dashboard';
@@ -71,7 +72,9 @@ test('the line after a capped contract offers the rest, and toggles back once ev
 
 test('payments and deliveries seen only after an unrecorded start or across a gap are lower bounds with their reason', () => {
   const reason = 'The contract began before its first recorded event';
-  const row = project([{ line: 'contract', ...contract, exact: false, startedHour: null, paidMissing: reason, deliveryMissing: reason, items: [{ ...contract.items[0]!, deliveryUnavailable: reason }] }], []).rows[0]!;
+  const row = project([{ line: 'contract', ...contract, hour: 103, observed: 105, exact: false, startedHour: null, paidMissing: reason, deliveryMissing: reason, items: [{ ...contract.items[0]!, deliveryUnavailable: reason }] }], []).rows[0]!;
+  const extras = typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra;
+  assert.deepEqual(extras?.find(extra => extra.label === 'First seen')?.value, { kind: 'known', value: formatDateTime(105) }, 'a contract whose start was not recorded was first seen when its first event was read');
   assert.deepEqual(row.cells.paid.value, { kind: 'partial', value: '−48', reason, atLeast: true });
   assert.deepEqual(row.cells.delivered.value, { kind: 'partial', value: '250', reason, atLeast: true });
   const unseen = project([{ line: 'contract', ...contract, paidRaw: null, paidMissing: reason, deliveryMissing: reason, items: [{ ...contract.items[0]!, deliveredRaw: null, deliveryUnavailable: reason }] }], []).rows[0]!;
