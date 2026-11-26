@@ -328,12 +328,13 @@ mod lend_lease {
 mod market {
     use super::*;
     use crate::products::economy::market::MarketLendLease;
-    use replay_data::rows::{CountryLinkRow, CountryMarketRow, CountryRow, LendLeaseAgreementRow, MarketContractTermsRow, MarketEquipment, MarketPool, PurchaseContractRow, SharedMarketPool, tables};
+    use replay_data::rows::{CountryLinkRow, CountryMarketRow, CountryRow, LendLeaseAgreementRow, MarketContractTermsRow, MarketEquipment, MarketPool, PurchaseContractRow, SharedMarketPool, VariantDefinitionRow, tables};
 
     const FRA: u32 = 44;
     const UNREAD: i32 = 117;
     const ENDS: i32 = 124;
     const UNKNOWN: i32 = 105;
+    const UNLINKED: i32 = 108;
     const PARTLY: i32 = 120;
 
     fn equipment(variant: u64, amount_raw: i64) -> SharedMarketPool {
@@ -357,9 +358,13 @@ mod market {
         let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
         links.push(CountryLinkRow { id: FRA, canonical_slot: 3 });
         links.sort_by_key(|row| row.id);
+        if hour == UNLINKED {
+            links.retain(|row| row.id != GER);
+        }
         set::<tables::CountryLinks>(&mut frame, links);
         set::<tables::LexicalTokens>(&mut frame, Vec::new());
-        set::<tables::VariantDefinitions>(&mut frame, Vec::new());
+        let designs = if (PARTLY - 1..=PARTLY).contains(&hour) { vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Stored Design".to_vec(), ..Default::default() }] } else { Vec::new() };
+        set::<tables::VariantDefinitions>(&mut frame, designs);
         set::<tables::CountryMarket>(&mut frame, vec![
             CountryMarketRow { country: FRA, inventory: equipment(5, 300_000), ..CountryMarketRow::default() },
             CountryMarketRow { country: GER, inventory: equipment(6, i64::from(hour) * 100_000), subsidy_total_raw: 7, ..CountryMarketRow::default() },
@@ -430,6 +435,7 @@ mod market {
         assert_eq!(at["agreements"][0]["receiver"], "FRA");
         assert_eq!(at["unattributed"], 1, "the request to a buyer with no country is left out but counted: it may be GER's");
         assert!(at["live"].is_object(), "purchase progress and fuel are named as live cells");
+        assert!(at["live"].to_string().contains(&(110 * 32_768).to_string()), "the fuel sent is the recorded count, never a zero the agreements read left out: {}", at["live"]);
         let side = |side: &str| asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"], "only": "agreements", "leaseSide": side }), 110).unwrap();
         assert_eq!(side("sent")["agreements"].as_array().unwrap().len(), 1, "GER gives to FRA");
         assert_eq!(side("received")["agreements"], json!([]), "GER receives nothing");
@@ -445,6 +451,11 @@ mod market {
         let unknown = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"] }), UNKNOWN).unwrap();
         assert_eq!((&unknown["agreements"], &unknown["offers"]), (&Value::Null, &Value::Null), "who holds GER is not known, so no list is given");
         assert!(unknown["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known")), "{}", unknown["refused"]);
+        let unlinked = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"] }), UNLINKED).unwrap();
+        assert!(unlinked["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known")), "GER's country is not resolved: {}", unlinked["refused"]);
+        let slot = |hour: i32| asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [99] }), hour).unwrap();
+        assert_eq!((&slot(110)["agreements"], &slot(110)["refused"]), (&json!([]), &Value::Null), "an unheld slot holds nothing while every tag is resolved");
+        assert!(slot(UNLINKED)["refused"].as_str().is_some_and(|reason| reason.contains("is not known")), "an unresolved tag could be the slot's: {}", slot(UNLINKED)["refused"]);
     }
 
     #[test]
@@ -457,6 +468,13 @@ mod market {
         assert_eq!(agreements[1]["receiver"], Value::Null);
         assert!(agreements[1]["receiverMissing"].as_str().is_some_and(|reason| reason.contains("77")), "{}", agreements[1]["receiverMissing"]);
         assert!(reply["warnings"].as_array().unwrap().iter().any(|line| line.as_str().is_some_and(|line| line.contains("listed only where they were read"))));
+        let whole = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [], "only": "agreements" }), PARTLY - 1).unwrap();
+        assert_eq!(reply["variants"], whole["variants"], "a read row's designs are named as on a whole hour");
+        assert!(reply["variants"].as_array().is_some_and(|variants| !variants.is_empty()));
+        let unsent = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["FRA"], "only": "agreements", "leaseSide": "sent" }), PARTLY).unwrap();
+        assert_eq!(unsent["agreements"], json!([]));
+        assert!(unsent["agreementsMissing"].as_str().is_some(), "an unread row could be FRA's, so the empty list says so");
+        assert_eq!(whole["agreementsMissing"], Value::Null);
     }
 
     #[test]

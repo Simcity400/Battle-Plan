@@ -1,12 +1,35 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { lastDelivery } from './agreementsProjection.ts';
+import { validateMarketReply } from '../../dashboard/market.ts';
+import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
+import { emptyAgreements, lastDelivery } from './agreementsProjection.ts';
 
 const item = (amountRaw: string) => ({ variant: '6', name: null, amountRaw });
+const terms = (lastDelivery: number, delivered: string[], lastFuelDeliveredRaw = '0') => ({ lastDelivery, delivered: delivered.map(item), lastFuelDeliveredRaw });
 
-test('a last delivery is a date when recorded, no delivery only when nothing was delivered, and otherwise not recorded', () => {
-  assert.deepEqual(lastDelivery({ lastDelivery: 60_800_000, delivered: [item('500000')] }), lastDelivery({ lastDelivery: 60_800_000, delivered: [] }));
-  assert.equal(lastDelivery({ lastDelivery: 60_800_000, delivered: [] }).kind, 'known');
-  assert.equal(lastDelivery({ lastDelivery: 0, delivered: [item('0')] }).kind, 'notApplicable');
-  assert.equal(lastDelivery({ lastDelivery: 0, delivered: [item('500000')] }).kind, 'notRecorded');
+test('a last delivery is a date when recorded, no delivery only when neither equipment nor fuel was delivered, and otherwise not recorded', () => {
+  const none = zeroValue(0n);
+  assert.equal(lastDelivery(terms(60_800_000, []), none).kind, 'known');
+  assert.equal(lastDelivery(terms(0, ['0']), none).kind, 'notApplicable');
+  assert.equal(lastDelivery(terms(0, ['500000']), none).kind, 'notRecorded');
+  assert.equal(lastDelivery(terms(0, []), knownValue(32_768n)).kind, 'notRecorded', 'fuel sent is a delivery');
+  assert.equal(lastDelivery(terms(0, [], '32768'), none).kind, 'notRecorded', 'a last fuel delivery is a delivery');
+  const unread = lastDelivery(terms(0, []), notRecorded('fuel unread'));
+  assert.equal(unread.kind, 'notRecorded', 'unread fuel is never no delivery');
+  assert.match(unread.kind === 'notRecorded' ? unread.reason : '', /fuel unread/);
+});
+
+test('an empty list is no lend-lease only when every agreement was read and placed', () => {
+  assert.deepEqual(emptyAgreements({ unattributed: 0, agreementsMissing: null }, 'sent'), { empty: 'No lend-lease sent', emptyKind: 'empty' });
+  assert.deepEqual(emptyAgreements({ unattributed: 0, agreementsMissing: 'rows unread' }, 'received'), { empty: 'Not recorded', emptyDetail: 'rows unread', emptyKind: 'unavailable' });
+  assert.equal(emptyAgreements({ unattributed: 2, agreementsMissing: null }, 'received').emptyKind, 'unavailable');
+});
+
+test('a lease without the reasons its sides are unnamed is not a valid reply', () => {
+  const lease = { key: '1', id: '9', giver: 'GER', giverMissing: null, receiver: null, receiverMissing: 'unlinked', revision: '1', activeSince: 1, lastDelivery: 0,
+    monthly: [], percentage: [], once: [], delivered: [], sunk: [], fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0' };
+  const reply = (agreements: unknown[]) => ({ branchId: '1', offers: null, contracts: null, agreements, agreementsMissing: null, purchasesMissing: null, unattributed: 0, refused: null, variants: [], icons: [], warnings: [] });
+  assert.doesNotThrow(() => validateMarketReply(reply([lease])));
+  const { giverMissing: _, ...older } = lease;
+  assert.throws(() => validateMarketReply(reply([older])));
 });

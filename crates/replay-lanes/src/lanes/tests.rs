@@ -1069,13 +1069,36 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
     let (from, to) = (held.first_hour, held.last_hour());
     let bin_hours = summary::bucket_hours(1) * 4;
     let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, 1, bin_hours).unwrap();
-    let walked = chart_at(&bare, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
+    let summed = chart_at(&summarized, 0, TableId::Countries, source, None, from, to, 1, bin_hours).unwrap();
     assert!(chart.walked > 0, "the hours the pieces do not summarize are walked");
+    assert!((0..chart.keys.len()).all(|at| chart.totals(at).is_some()), "political power counts its changes and falls, walked or summarized");
+    let walked = chart_at(&bare, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
     assert_eq!((&chart.keys, &chart.values, &chart.life, &chart.totals), (&walked.keys, &walked.values, &walked.life, &walked.totals));
+    let shown = |chart: &Chart| chart.values.iter().map(|bin| (bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>();
+    assert_eq!((&chart.keys, shown(&chart), &chart.life), (&summed.keys, shown(&summed), &summed.life), "the walk shows what the summary shows");
+    assert_eq!(chart.totals, summed.totals, "the walk counts only what the summary declares");
     let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
-    for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min)] {
+    for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last)] {
         let read = values(top(&bare, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap());
-        assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap()), "width {width} n {n}");
+        assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap()), "width {width} n {n} {by:?}");
+    }
+}
+
+#[test]
+fn a_chart_bucket_split_between_a_walked_range_and_a_piece_keeps_its_first_and_last_in_hour_order() {
+    const KEY: u128 = 7;
+    for (summarized, walked, covered, ends) in [((823, 828), (822, 823), (823, 1543), (10, 20)), ((822, 827), (827, 828), (103, 827), (20, 10))] {
+        let mut chart = Chart { level: 0, bin_hours: 6, first_bin_hour: 822, bins: 1, keys: vec![KEY], values: vec![Bin::default()], totals: Vec::new(), aggregates: 0, life: vec![0], pieces: 1, walked: 0 };
+        let mut piece = summary::Fold::constant(20, (summarized.1 - summarized.0) as u32, summary::bucket_of(summarized.0, 0));
+        piece.last_bucket = summary::bucket_of(summarized.1 - 1, 0);
+        chart.add_beside(0, 0, &piece, false, false);
+        let mut walk = Walk::new(None, None, 822, 6, 1);
+        walk.add_value(KEY, 10, walked.0, walked.1);
+        let mut rows = HashMap::default();
+        rows.insert(KEY, 0);
+        chart.merge_walk(walk, &[covered], &mut rows);
+        let bin = chart.values(0)[0];
+        assert_eq!((bin.first, bin.last, bin.hours), (ends.0, ends.1, 6), "walked hours {walked:?} beside a piece from {}", covered.0);
     }
 }
 

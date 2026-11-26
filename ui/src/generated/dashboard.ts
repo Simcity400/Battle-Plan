@@ -5667,6 +5667,10 @@ export type MarketLendLeaseReply = { branchId: string,
  */
 offers: Array<MarketOffer> | null, contracts: Array<MarketTerms> | null, agreements: Array<LeaseTerms> | null,
 /**
+ * Why `agreements` may lack rows at this hour: some were not read, so an empty list is not proof of none.
+ */
+agreementsMissing: string | null,
+/**
  * Why purchase progress is not known at the hour, when contracts are shown and it is not.
  */
 purchasesMissing: string | null,

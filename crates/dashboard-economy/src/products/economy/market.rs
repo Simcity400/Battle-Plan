@@ -6,7 +6,7 @@ use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::{
-    identity::{Holder, Holders},
+    identity::{Holder, Holders, NOT_HELD_AT_HOUR, NOT_IN_HISTORY, TAG_UNLINKED},
     series::ranked::GroupSelection,
 };
 use dashboard_world::products::group_members::GroupsAt;
@@ -168,6 +168,8 @@ pub struct MarketLendLeaseReply {
     pub offers: Option<Vec<MarketOffer>>,
     pub contracts: Option<Vec<MarketTerms>>,
     pub agreements: Option<Vec<LeaseTerms>>,
+    #[doc = " Why `agreements` may lack rows at this hour: some were not read, so an empty list is not proof of none."]
+    pub agreements_missing: Option<String>,
     #[doc = " Why purchase progress is not known at the hour, when contracts are shown and it is not."]
     pub purchases_missing: Option<String>,
     #[doc = " Rows left out because a country on the chosen side has no country at the hour: a chosen country may be theirs."]
@@ -329,9 +331,14 @@ fn slots(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<Stri
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot);
             }
-            Some(Holder::Unresolved) => return Err(holders.unnamed(tag, hour)),
-            None if holders.unknown.iter().any(|(first, last, _)| *first <= hour && hour <= *last) => return Err(holders.unnamed(tag, hour)),
-            None => warnings.push(holders.say(tag, hour, |name| format!("{name} is not held by any country at this hour"))),
+            Some(Holder::Unresolved) => return Err(format!("Who holds {} is not known: {TAG_UNLINKED}", tag.key())),
+            None => {
+                let reason = holders.unnamed(tag, hour);
+                if reason != NOT_HELD_AT_HOUR && reason != NOT_IN_HISTORY {
+                    return Err(reason);
+                }
+                warnings.push(holders.say(tag, hour, |name| format!("{name} is not held by any country at this hour")));
+            }
         }
     }
     Ok(slots)
@@ -390,9 +397,13 @@ impl AtHour for MarketLendLease {
     }
 
     fn columns(table: TableId) -> Option<Vec<usize>> {
+        names::naming_columns(table)
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         match table {
             TableId::LendLeaseAgreements => Some((0..table.field_count()).filter(|&column| !matches!(table.field_name(column), Some("fuel_sent_raw" | "fuel_sunk_raw"))).collect()),
-            _ => names::naming_columns(table),
+            _ => Self::columns(table),
         }
     }
 
@@ -424,10 +435,8 @@ impl AtHour for MarketLendLease {
                         }
                     }
                 }
-                if let Ok(rows) = held.complete::<tables::LendLeaseAgreements>() {
-                    for row in rows {
-                        variants.extend(lease_variants(row));
-                    }
+                for row in dashboard_query::coverage::witnessed_rows::<tables::LendLeaseAgreements>(held).rows {
+                    variants.extend(lease_variants(row));
                 }
                 let mut reads = vec![
                     Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from)),
@@ -485,6 +494,7 @@ fn empty_reply(params: &MarketLendLeaseParams) -> MarketLendLeaseReply {
         offers: None,
         contracts: None,
         agreements: None,
+        agreements_missing: None,
         purchases_missing: None,
         unattributed: 0,
         refused: None,
@@ -534,7 +544,9 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
             None
         }
         Some(reason) => {
-            reply.warnings.push(format!("Lend-lease agreements are listed only where they were read at this hour: {reason}"));
+            let missing = format!("Lend-lease agreements are listed only where they were read at this hour: {reason}");
+            reply.warnings.push(missing.clone());
+            reply.agreements_missing = Some(missing);
             Some(witnessed.rows)
         }
         None => Some(witnessed.rows),

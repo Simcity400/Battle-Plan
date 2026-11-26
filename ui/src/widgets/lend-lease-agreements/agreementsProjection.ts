@@ -39,11 +39,18 @@ const whole = (raw: bigint, denominator: bigint): Value => {
 
 const dateCell = (hour: number | null, none: Value): TableCell => (hour === null ? { value: none } : { value: knownValue(hour) });
 
-export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered'>): Value {
+export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'lastFuelDeliveredRaw'>, fuelSent: Value): Value {
   if (terms.lastDelivery > 0) return knownValue(terms.lastDelivery);
-  return terms.delivered.every(item => BigInt(item.amountRaw) === 0n)
-    ? notApplicable('No delivery yet')
-    : notRecorded('The last delivery date was not recorded, though deliveries were');
+  const fuel = BigInt(terms.lastFuelDeliveredRaw) !== 0n || fuelSent.kind === 'known' || fuelSent.kind === 'partial';
+  if (fuel || terms.delivered.some(item => BigInt(item.amountRaw) !== 0n)) return notRecorded('The last delivery date was not recorded, though deliveries were');
+  if (fuelSent.kind === 'notRecorded') return notRecorded(`The last delivery date was not recorded, and whether fuel was sent is not known: ${fuelSent.reason}`);
+  return notApplicable('No delivery yet');
+}
+
+export function emptyAgreements(reply: Pick<MarketLendLeaseReply, 'unattributed' | 'agreementsMissing'>, direction: Direction): Pick<TableModel, 'empty' | 'emptyDetail' | 'emptyKind'> {
+  if (reply.agreementsMissing !== null) return { empty: 'Not recorded', emptyDetail: reply.agreementsMissing, emptyKind: 'unavailable' };
+  if (reply.unattributed) return { empty: 'Not recorded', emptyDetail: `Some agreements' ${direction === 'sent' ? 'givers' : 'receivers'} are not in this recording at this date`, emptyKind: 'unavailable' };
+  return { empty: direction === 'sent' ? 'No lend-lease sent' : 'No lend-lease received', emptyKind: 'empty' };
 }
 
 function amounts(list: readonly MarketItem[]): Map<string, bigint> {
@@ -86,7 +93,7 @@ function agreementRows(
   const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
   const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
   const country: TableCell = { value: knownValue(pair), flags };
-  const last: TableCell = { value: lastDelivery(terms) };
+  const last: TableCell = { value: lastDelivery(terms, valueFromLive(live, liveKey(terms.key, 'fuelSent'))) };
   const since = dateCell(terms.activeSince, notRecorded('Start date not recorded'));
   const unnamed: TooltipExtraRow[] = [
     ...(terms.giverMissing !== null ? [{ label: 'Giver', value: notRecorded(terms.giverMissing) }] : []),
@@ -170,8 +177,6 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const rows: TableRow[] = [];
     const lookups: Lookups = { variants: new Map(reply.variants.map(variant => [variant.id, variant])), images: new Map(reply.icons.map(icon => [icon.key, icon.image])) };
     for (const terms of reply.agreements) rows.push(...agreementRows(readView, lookups, terms, live, boundary));
-    const side = options.direction === 'sent' ? 'givers' : 'receivers';
-    const unattributed = reply.unattributed;
     const warnings = reply.warnings;
     return {
       columns: AGREEMENT_COLUMNS,
@@ -179,11 +184,7 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      ...(rows.length === 0
-        ? unattributed
-          ? { empty: 'Not recorded', emptyDetail: `Some agreements' ${side} are not in this recording at this date`, emptyKind: 'unavailable' as const }
-          : { empty: options.direction === 'sent' ? 'No lend-lease sent' : 'No lend-lease received', emptyKind: 'empty' as const }
-        : {}),
+      ...(rows.length === 0 ? emptyAgreements(reply, options.direction) : {}),
       warnings,
     };
   },

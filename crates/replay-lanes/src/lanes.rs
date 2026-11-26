@@ -1177,6 +1177,7 @@ pub struct Chart {
     pub keys: Vec<u128>,
     values: Vec<Bin>,
     totals: Vec<Totals>,
+    aggregates: u8,
     life: Vec<u32>,
     pub pieces: usize,
     pub walked: usize,
@@ -1188,7 +1189,7 @@ impl Chart {
     }
 
     pub fn totals(&self, at: usize) -> Option<&[Totals]> {
-        (!self.totals.is_empty()).then(|| &self.totals[at * self.bins..(at + 1) * self.bins])
+        (self.aggregates != 0).then(|| &self.totals[at * self.bins..(at + 1) * self.bins])
     }
 
     pub fn life(&self, at: usize) -> &[u32] {
@@ -1197,7 +1198,7 @@ impl Chart {
 
     fn row(&mut self, key: u128, rows: &mut HashMap<u128, usize, foldhash::fast::RandomState>) -> usize {
         let bins = self.bins;
-        let declares = !self.totals.is_empty();
+        let declares = self.aggregates != 0;
         *rows.entry(key).or_insert_with(|| {
             self.keys.push(key);
             self.values.resize(self.values.len() + bins, Bin::default());
@@ -1209,12 +1210,49 @@ impl Chart {
         })
     }
 
-    fn add(&mut self, at: usize, bin: usize, fold: &Fold) {
+    fn merge_walk(&mut self, walk: Walk<'_>, covered: &[(i64, i64)], rows: &mut HashMap<u128, usize, foldhash::fast::RandomState>) {
+        let pieced_after = |hour: i64| {
+            let bucket_end = (summary::bucket_of(hour, 0) + 1) * summary::bucket_hours(0);
+            covered.iter().any(|&(lo, _)| hour < lo && lo < bucket_end)
+        };
+        let mut walked: Vec<(u128, Row)> = walk.rows.into_iter().collect();
+        walked.sort_unstable_by_key(|(key, _)| *key);
+        for (key, folded) in walked {
+            let row = self.row(key, rows);
+            for (bin, walked_bin) in folded.bins {
+                self.life[row * self.bins + bin] += walked_bin.life;
+                if let Some(fold) = walked_bin.fold() {
+                    self.add_beside(row, bin, &fold, pieced_after(walked_bin.first_hour), pieced_after(walked_bin.last_hour));
+                }
+            }
+        }
+    }
+
+    fn add_beside(&mut self, at: usize, bin: usize, fold: &Fold, first_earlier: bool, last_earlier: bool) {
         let index = at * self.bins + bin;
+        let held = self.values[index];
         self.values[index].add(fold);
+        if held.hours > 0 {
+            let value = &mut self.values[index];
+            if first_earlier && fold.first_bucket as i32 == held.first_bucket {
+                value.first = fold.first;
+            }
+            if last_earlier && fold.last_bucket as i32 == held.last_bucket {
+                value.last = held.last;
+            }
+        }
         if let Some(totals) = self.totals.get_mut(index) {
             totals.add(fold);
         }
+    }
+
+    fn declared(mut self) -> Self {
+        let declared = |bit: u8| self.aggregates & bit != 0;
+        let (sum, abs, falls, changes) = (declared(summary::aggregate::SUM), declared(summary::aggregate::ABS), declared(summary::aggregate::FALLS), declared(summary::aggregate::CHANGES));
+        for totals in &mut self.totals {
+            *totals = Totals { sum: if sum { totals.sum } else { 0 }, abs: if abs { totals.abs } else { 0 }, falls: if falls { totals.falls } else { 0 }, changes: if changes { totals.changes } else { 0 } };
+        }
+        self
     }
 }
 
@@ -1272,6 +1310,7 @@ pub fn chart_at(
                     keys: Vec::new(),
                     values: Vec::new(),
                     totals: Vec::new(),
+                    aggregates: 0,
                     life: Vec::new(),
                     pieces: 0,
                     walked: 0,
@@ -1304,6 +1343,7 @@ pub fn chart_at(
         keys: Vec::new(),
         values: Vec::new(),
         totals: Vec::new(),
+        aggregates: column.aggregates,
         life: Vec::new(),
         pieces: extents.len(),
         walked: 0,
@@ -1352,7 +1392,7 @@ pub fn chart_at(
     };
     chart.values = vec![Bin::default(); asked.len() * bins];
     chart.life = vec![0; asked.len() * bins];
-    if column.aggregates != 0 {
+    if chart.aggregates != 0 {
         chart.totals = vec![Totals::default(); asked.len() * bins];
         chart
             .values
@@ -1375,24 +1415,11 @@ pub fn chart_at(
     chart.keys = asked;
     let ranges = uncovered(recording, run, blocks, &covered, first, last)?;
     if !ranges.is_empty() {
-        if column.aggregates != 0 && chart.totals.is_empty() {
-            chart.totals = vec![Totals::default(); chart.values.len()];
-        }
         let mut walk = Walk::new(Some(column.source), keys, first_bin_hour, bin_hours, bins);
         chart.walked = walk_ranges(recording, run, table, &inputs(column.source), &ranges, &mut walk)?;
-        let mut walked: Vec<(u128, Row)> = walk.rows.into_iter().collect();
-        walked.sort_unstable_by_key(|(key, _)| *key);
-        for (key, folded) in walked {
-            let row = chart.row(key, &mut rows);
-            for (bin, walked_bin) in folded.bins {
-                chart.life[row * bins + bin] += walked_bin.life;
-                if let Some(fold) = walked_bin.fold() {
-                    chart.add(row, bin, &fold);
-                }
-            }
-        }
+        chart.merge_walk(walk, &covered, &mut rows);
     }
-    Ok(chart)
+    Ok(chart.declared())
 }
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
@@ -1578,6 +1605,7 @@ struct WalkBin {
     life: u32,
     changes: u64,
     falls: u64,
+    first_hour: i64,
     last_hour: i64,
 }
 
@@ -1705,10 +1733,12 @@ impl<'a> Walk<'a> {
             match &mut slot.value {
                 Some(held) => {
                     held.merge(&part);
+                    slot.first_hour = slot.first_hour.min(start);
                     slot.last_hour = slot.last_hour.max(end - 1);
                 }
                 empty @ None => {
                     *empty = Some(part);
+                    slot.first_hour = start;
                     slot.last_hour = end - 1;
                 }
             }
@@ -2099,16 +2129,16 @@ fn top_with(
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
-        .map(|bytes| -> io::Result<Option<(Piece<'_>, ColumnFrame, usize)>> {
+        .map(|bytes| -> io::Result<(i64, Option<(Piece<'_>, ColumnFrame, usize)>)> {
             let piece = Piece::read(bytes)?;
-            let Some(column) = piece.column_of(source) else { return Ok(None) };
+            let end = piece.directory.first_hour + i64::from(piece.directory.hours) - 1;
+            let Some(column) = piece.column_of(source) else { return Ok((end, None)) };
             let frame = piece.column(column)?;
-            Ok(Some((piece, frame, column)))
+            Ok((end, Some((piece, frame, column))))
         })
-        .collect::<io::Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut walked_ends: Vec<i64> = decoded.iter().map(|(end, _)| *end).collect();
+    let decoded = decoded.into_iter().filter_map(|(_, decoded)| decoded).collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
         .filter_map(|(piece, _, _)| {
@@ -2124,6 +2154,10 @@ fn top_with(
         })
         .collect();
     let ranges = uncovered(recording, run, blocks, &covered, first, last)?;
+    let run_first = i64::from(recording.run(run)?.first_hour);
+    walked_ends.extend(ranges.iter().map(|&(_, last)| run_first + i64::from(last)));
+    walked_ends.sort_unstable();
+    walked_ends.dedup();
     let walked: HashMap<u128, Row, foldhash::fast::RandomState> = if ranges.is_empty() {
         HashMap::default()
     } else {
@@ -2159,7 +2193,7 @@ fn top_with(
     };
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
-        false => grid.top_folded(&decoded, &walked, n, by),
+        false => grid.top_folded(&decoded, &walked, (&walked_ends, summary::bucket_hours(level)), n, by),
     }
 }
 
@@ -2208,9 +2242,15 @@ impl Grid {
         &self,
         pieces: &[(Piece<'_>, ColumnFrame)],
         walked: &HashMap<u128, Row, foldhash::fast::RandomState>,
+        (walked_ends, bucket_hours): (&[i64], i64),
         n: usize,
         by: By,
     ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
+        let walked_mark = |hour: i64| {
+            let bucket_last = (hour.div_euclid(bucket_hours) + 1) * bucket_hours - 1;
+            let range_last = walked_ends[walked_ends.partition_point(|&end| end < hour).min(walked_ends.len() - 1)];
+            hour_mark(bucket_last.min(range_last))
+        };
         use std::cmp::Ordering;
         let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).chain(walked.keys().copied()).collect();
         keys.sort_unstable();
@@ -2227,7 +2267,7 @@ impl Grid {
                 if let Some(row) = walked.get(&key) {
                     for &(bin, walked_bin) in &row.bins {
                         if let Some(fold) = walked_bin.fold() {
-                            let mark = hour_mark(walked_bin.last_hour);
+                            let mark = walked_mark(walked_bin.last_hour);
                             if values[bin].hours == 0 {
                                 values[bin].add(&fold);
                                 marks[bin] = mark;
