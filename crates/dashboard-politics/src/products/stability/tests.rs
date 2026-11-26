@@ -80,7 +80,7 @@ fn stability_panels_hold_quiet_hours_and_seed_the_requested_country_at_each_seek
             };
             let line = |country, value| CountryStabilityLineRow {
                 country, key: 3, value, kind: CountryStabilityLineRow::IDEA,
-                identity: if hour < 107 { b"first".to_vec() } else { b"second".to_vec() }, ..Default::default()
+                identity: format!("idea_{branch}_{}", if hour < 107 { 1 } else { 2 }).into_bytes(), ..Default::default()
             };
             let slices = [TableId::CountryStabilityInputs, TableId::CountryStabilityLines].map(|table| SliceReadRow {
                 owner: 9001, table: table.index() as u32, sample_hour: if hour >= 107 { 107 } else { 100 },
@@ -139,6 +139,31 @@ fn stability_panels_hold_quiet_hours_and_seed_the_requested_country_at_each_seek
             }
         }
     }
+}
+
+#[test]
+fn a_dynamic_idea_name_stops_using_the_civil_war_look_when_the_recorded_relation_ends() {
+    use replay_data::rows::{CountryAppearanceRow, CountryCivilWarRow, CountryCounterInputRow, CountryLinkRow, CountryRow, TableRows, WarRelationRow};
+    use replay_frame::frame::TableView;
+    let owner = Owner { slot: 7, id: 9001 };
+    let mut frame = dashboard_base::test_fixtures::source(1, 100, None);
+    for (table, rows) in [
+        (TableId::Countries, TableRows::Countries(vec![
+            CountryRow { id: owner.id, canonical_slot: owner.slot, ..Default::default() },
+            CountryRow { id: 9002, canonical_slot: 8, ..Default::default() },
+        ])),
+        (TableId::CountryAppearance, TableRows::CountryAppearance(vec![CountryAppearanceRow { country: owner.id, name_tag: b"D01".to_vec(), ..Default::default() }])),
+        (TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: owner.id, canonical_slot: owner.slot }, CountryLinkRow { id: 9002, canonical_slot: 8 }])),
+        (TableId::CountryCivilWars, TableRows::CountryCivilWars(vec![CountryCivilWarRow { country: 9002, target: owner.id, ..Default::default() }])),
+        (TableId::CountryCounterInputs, TableRows::CountryCounterInputs(vec![CountryCounterInputRow { country: 9002, owned_state_count: 1, ..Default::default() }])),
+        (TableId::CountryWars, TableRows::CountryWars(Vec::new())),
+        (TableId::WarRelations, TableRows::WarRelations(vec![WarRelationRow { first_country: owner.id, second_country: 9002, start_hour: 95, end_hour: 105, ..Default::default() }])),
+    ] { *frame.tables[table.index()] = TableView::Complete(rows); }
+    assert_eq!(look(&frame, owner).unwrap().civil_war, Ok(true));
+    assert_eq!(naming_through(&frame, Some(owner)), 104);
+    frame.hour = 105;
+    assert_eq!(look(&frame, owner).unwrap().civil_war, Ok(false));
+    assert_eq!(naming_through(&frame, Some(owner)), i32::MAX);
 }
 
 #[test]

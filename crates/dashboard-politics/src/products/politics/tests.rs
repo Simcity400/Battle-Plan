@@ -445,7 +445,11 @@ fn elections_follow_only_schedule_and_eligibility_changes_on_the_selected_branch
             set(&mut frame, TableId::CountryCounterInputs, TableRows::CountryCounterInputs(counters));
             frame
         }).collect();
-        snapshot_records(branch, frames)
+        let mut records = snapshot_records(branch, frames);
+        for record in &mut records {
+            if let replay_capture_spool::spool::Record::Frame(frame) = record && (125..129).contains(&frame.hour) { frame.keyframe = false; }
+        }
+        records
     }).into();
     let load = dashboard_base::products::LoadContext { content: None };
     for branch in [1, 2] {
