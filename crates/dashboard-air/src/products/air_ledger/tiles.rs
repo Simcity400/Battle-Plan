@@ -359,40 +359,69 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
             Some(from) => Some(from),
             None => super::first_observed(source, query, MilitaryAirFamily::AirLosses, (query.timeline.first, query.timeline.last))?,
         };
-        let mut subtotal: Option<(i32, &'static str)> = None;
+        let mut partial: Vec<(i32, i32, &'static str)> = Vec::new();
         if let Some(from) = count_from {
-            let mut note = |hour: i32, reason: &'static str| {
-                if subtotal.is_none_or(|(at, _)| hour < at) {
-                    subtotal = Some((hour, reason));
-                }
-            };
+            let mut unread_from: Option<i32> = None;
+            let mut note = |hour: i32| unread_from = Some(unread_from.map_or(hour, |at| at.min(hour)));
             if from < scan_first {
                 let family = MilitaryAirFamily::AirLosses;
                 if super::observed_since(source, query, family, scan_first, from)? > from || super::latest_in_part(source, query, family, (from, scan_first - 1))?.is_some() {
-                    note(scan_first, SUBTOTAL_UNREAD);
-                }
-                if opened.iter().any(|((identity, dealt, ..), total)| identity.is_none() && *dealt == is_dealt && *total != 0) {
-                    note(scan_first, UNATTRIBUTED);
+                    note(scan_first);
                 }
             }
             for gap in missing_all.iter().filter(|gap| gap.last_hour >= from) {
-                note(gap.first_hour.max(from), SUBTOTAL_UNREAD);
+                note(gap.first_hour.max(from));
             }
             for span in fold.incomplete.iter().filter(|span| span.last_hour >= from) {
-                note(span.first_hour.max(from), SUBTOTAL_UNREAD);
+                note(span.first_hour.max(from));
             }
+            for pair in query.timeline.stretches.windows(2) {
+                let (gap_first, gap_last) = (pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1));
+                if gap_first <= gap_last && gap_last >= from && gap_first <= clip {
+                    note(gap_first.max(from));
+                }
+            }
+            let mut unplaced: [i128; 2] = [0, 0];
+            for ((identity, dealt, ..), total) in &opened {
+                if identity.is_none() {
+                    unplaced[usize::from(*dealt)] += *total;
+                }
+            }
+            let mut changes: BTreeMap<i32, [i128; 2]> = BTreeMap::new();
             for (leaf, points) in &leaves {
-                if leaf.dealt != is_dealt || leaf.country.is_some() {
+                if leaf.country.is_some() {
                     continue;
                 }
                 let mut before = 0_i128;
                 for &(_, read_hour, total) in points {
-                    if total != before && read_hour >= from {
-                        note(read_hour, UNATTRIBUTED);
-                        break;
-                    }
+                    changes.entry(read_hour).or_default()[usize::from(leaf.dealt)] += total - before;
                     before = total;
                 }
+            }
+            let end = unread_from.map_or(clip, |at| at.saturating_sub(1)).min(clip);
+            let mut open: Option<i32> = (unplaced != [0, 0]).then_some(scan_first);
+            for (&hour, delta) in changes.range(..=end) {
+                unplaced = [unplaced[0] + delta[0], unplaced[1] + delta[1]];
+                if hour < scan_first {
+                    open = (unplaced != [0, 0]).then_some(scan_first);
+                    continue;
+                }
+                match (open, unplaced != [0, 0]) {
+                    (None, true) => open = Some(hour),
+                    (Some(first), false) => {
+                        partial.push((first, hour - 1, UNATTRIBUTED));
+                        open = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(first) = open
+                && first <= end
+            {
+                partial.push((first, end, UNATTRIBUTED));
+            }
+            if let Some(at) = unread_from.filter(|&at| at <= clip) {
+                partial.push((at, clip, SUBTOTAL_UNREAD));
             }
         }
 
@@ -499,9 +528,14 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
                 }
             }
             let mut missing = clip_missing(&missing_all, family.from_hour, within);
-            if let Some((at, reason)) = subtotal {
-                for piece in pieces.iter().filter(|piece| piece.last >= at) {
-                    push_missing(&mut missing, piece.first.max(at), piece.last, reason);
+            if !partial.is_empty() {
+                for piece in &pieces {
+                    for &(lo, hi, reason) in &partial {
+                        let (a, b) = (piece.first.max(lo), piece.last.min(hi));
+                        if a <= b {
+                            push_missing(&mut missing, a, b, reason);
+                        }
+                    }
                 }
                 missing.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
             }
@@ -611,6 +645,23 @@ mod tests {
         let reasons_at = |hour: i32| reply.lines[0].missing.iter().filter(|gap| gap.first_hour <= hour && hour <= gap.last_hour).map(|gap| gap.reason.as_str()).collect::<Vec<_>>();
         assert_eq!((bytes[10] & tile::PRESENT, reasons_at(10)), (tile::PRESENT, vec![]), "before the unplaced loss the total is whole");
         assert_eq!((bytes[18] & tile::PRESENT, reasons_at(18)), (tile::PRESENT, vec![UNATTRIBUTED]), "after it the line keeps its recorded subtotal and says it is one");
+        let dealt = tile(&src, &q, &serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "dealt" }, "binHours": 1, "index": 0, "countries": [7] }), &LoadContext { content: None }, &cancelled).unwrap();
+        assert!(dealt.lines[0].missing.iter().any(|gap| gap.first_hour <= 18 && 18 <= gap.last_hour && gap.reason == UNATTRIBUTED), "an unplaced loss on one side leaves both of a country's totals open, as the head says: {:?}", dealt.lines[0].missing);
+
+        let gapped: Vec<DecodedFrame> = (0..=30)
+            .filter(|hour| !(10..=19).contains(hour))
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }]);
+                set::<tables::AirLossEvents>(&mut frame, if hour == 5 { vec![loss(1, 5, 9001, false, 400_000, None)] } else { Vec::new() });
+                frame
+            })
+            .collect();
+        let rep = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, gapped)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let gap_src = Source::from_replay(SourceKey { source_id: "air-recording-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(rep), &cancelled).unwrap();
+        let gap_query = query(&gap_src, 1).unwrap();
+        let after = tile(&gap_src, &gap_query, &params, &LoadContext { content: None }, &cancelled).unwrap();
+        assert!(after.lines[0].missing.iter().any(|gap| gap.first_hour <= 20 && 20 <= gap.last_hour && gap.reason == SUBTOTAL_UNREAD), "hours unrecorded since the totals' start leave the later total a subtotal: {:?}", after.lines[0].missing);
     }
 
     #[test]

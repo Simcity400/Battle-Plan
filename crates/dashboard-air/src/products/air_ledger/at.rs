@@ -204,6 +204,7 @@ pub(super) fn answer_held(reply: &MilitaryAirReply, params: &MilitaryAirAtParams
         }
         out.valid_until = later.valid_until;
     }
+    out.valid_until = out.valid_until.min(reply.last_hour.max(params.hour));
     Ok(out)
 }
 

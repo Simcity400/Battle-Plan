@@ -186,7 +186,7 @@ test('a partial total is labelled and audited as at least its recorded subtotal,
     identity: fakeIdentity({ [k1]: { name: 'German Reich', color: '#6d7874' } }),
   });
   const model = airKillsLossesLinesProjection.project(readView, makeOptions({ rankMetric: 'taken' }));
-  assert.equal(model.series[1]!.endLabel?.value, '≥ 450 / 200');
+  assert.equal(model.series[1]!.endLabel?.value, '450 / 200 (partial)', 'a partial total is named as one, never as a bound: losses can be corrected downwards');
   const audited = model.auditRows?.find(row => row.key === `${k1}\u0000taken`);
   assert.ok(audited && String(audited.value).includes(reason), `the audit says the total is partial: ${JSON.stringify(audited)}`);
 });
