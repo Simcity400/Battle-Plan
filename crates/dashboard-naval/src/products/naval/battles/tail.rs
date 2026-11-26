@@ -80,8 +80,10 @@ pub struct NavalBattleLogRow {
     pub countries_hour: [i32; 2],
     pub read_hour: i32,
     pub ships_sunk: [Option<u32>; 2],
+    pub convoys_sunk: [Option<u32>; 2],
     pub ic_lost: [Option<f64>; 2],
     pub ships: [Option<u32>; 2],
+    pub convoys: [Option<u32>; 2],
     pub result: NavalBattleStatus,
 }
 
@@ -135,7 +137,9 @@ struct Snapshot {
     countries: [Vec<u32>; 2],
     countries_hour: [Option<i32>; 2],
     ships: [Option<u32>; 2],
+    convoys: [Option<u32>; 2],
     sunk: [Option<u32>; 2],
+    convoys_sunk: [Option<u32>; 2],
     ic: [Option<i64>; 2],
     result: NavalBattleStatus,
     result_id: Option<u64>,
@@ -301,17 +305,27 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
             let lost = lost_by.entry(first_hour).or_default();
             for hour in hours {
                 let mut ships = [complete(participants, hour).then_some(0); 2];
+                let mut convoys = [complete(participants, hour).then_some(0); 2];
                 let mut countries = [Vec::new(), Vec::new()];
                 for (key, reads) in roster {
                     let Some(cells) = at(reads, hour) else {
                         continue;
                     };
                     let side = ((key >> 32) & 1) as usize;
-                    if let Some(n) = &mut ships[side] {
-                        match number(cells, 0) {
-                            Some(0) => {}
-                            Some(_) => *n += 1,
-                            None => ships[side] = None,
+                    match number(cells, 0) {
+                        Some(0) => {
+                            if let Some(n) = &mut convoys[side] {
+                                *n += 1;
+                            }
+                        }
+                        Some(_) => {
+                            if let Some(n) = &mut ships[side] {
+                                *n += 1;
+                            }
+                        }
+                        None => {
+                            ships[side] = None;
+                            convoys[side] = None;
                         }
                     }
                     country(&mut countries[side], count(cells, 1).and_then(|raw| links.slot_at(raw, hour)));
@@ -320,15 +334,18 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                     }
                 }
                 let sunk = [count(cells, 1), count(cells, 2)];
+                let convoys_sunk = [count(cells, 3), count(cells, 4)];
                 push(
                     &mut line.reads,
                     hour,
                     Snapshot {
                         province: at(places, hour).and_then(|v| count(v, 0)),
                         ships,
+                        convoys,
                         countries,
                         countries_hour: [None; 2],
                         sunk,
+                        convoys_sunk,
                         ic: ic_lost(lost, sunk),
                         result: NavalBattleStatus::Ongoing,
                         result_id: None,
@@ -412,7 +429,8 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     sides[i].clone_from(&found[i]);
                     (!sides[i].is_empty()).then_some(named)
                 });
-                let sunk = [count(obs, 5), count(obs, 7)];
+                let sunk = [count(obs, 6), count(obs, 10)];
+                let convoys_sunk = [count(obs, 7), count(obs, 11)];
                 let observed = number(obs, 3).and_then(|h| i32::try_from(h).ok()).and_then(|end| line.reads.iter().rev().find(|(at, _)| *at <= end));
                 let ic = std::array::from_fn(|i| observed.filter(|(_, prior)| prior.sunk[i] == sunk[i]).and_then(|(_, prior)| prior.ic[i]));
                 let status = match number(cells, 2) {
@@ -427,8 +445,10 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         province: count(cells, 0),
                         countries: sides,
                         countries_hour,
-                        ships: [count(obs, 4), count(obs, 6)],
+                        ships: [count(obs, 4), count(obs, 8)],
+                        convoys: [count(obs, 5), count(obs, 9)],
                         sunk,
+                        convoys_sunk,
                         ic,
                         result: status,
                         result_id: Some(*key as u64),
@@ -503,7 +523,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             span,
             query.timeline.last,
             &links,
-            &history(TableId::NavalBattles, &[0, 3, 4])?,
+            &history(TableId::NavalBattles, &[0, 3, 4, 5, 6])?,
             &history(TableId::NavalCombats, &[0])?,
             &participants,
             &prices,
@@ -513,7 +533,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             span,
             &links,
             &history(TableId::NavalResults, &[0, 1, 8])?,
-            &history(TableId::NavalResultObservations, &[0, 1, 3, 4, 7, 9, 11, 13])?,
+            &history(TableId::NavalResultObservations, &[0, 1, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14])?,
             &history(TableId::NavalResultCountries, &[0])?,
         );
     }
@@ -528,11 +548,12 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let mut ships = Vec::new();
         let mut roles = Vec::new();
         let total = |[a, b]: [Option<u32>; 2]| Some(i64::from(a?) + i64::from(b?));
+        let vessels = |ships, convoys| total(ships).zip(total(convoys)).map(|(ships, convoys)| ships + convoys);
         for (at, read) in &line.reads {
             push(&mut states, *at, read.result as u8);
-            push(&mut sunk, *at, total(read.sunk));
+            push(&mut sunk, *at, vessels(read.sunk, read.convoys_sunk));
             push(&mut ic, *at, read.ic[0].zip(read.ic[1]).map(|(a, b)| a.saturating_add(b)));
-            push(&mut ships, *at, total(read.ships));
+            push(&mut ships, *at, vessels(read.ships, read.convoys));
             roles.extend(read.countries.iter().flatten().map(|slot| Role { slot: Some(*slot), at: *at }));
         }
         if let Some(joined) = line.joined {
@@ -617,8 +638,10 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
                 detail_id: read.result_id.map_or_else(|| line.key.clone(), |id| format!("result:{id}")),
                 detail_hour: read.detail_hour,
                 ships_sunk: read.sunk,
+                convoys_sunk: read.convoys_sunk,
                 ic_lost: read.ic.map(|raw| raw.map(|raw| raw as f64 / 100_000.0)),
                 ships: read.ships,
+                convoys: read.convoys,
                 countries: read.countries.clone(),
                 countries_hour: read.countries_hour.map(|h| h.unwrap_or(*at)),
                 read_hour: *at,
@@ -768,7 +791,9 @@ mod tests {
             countries: [Vec::new(), Vec::new()],
             countries_hour: [None; 2],
             ships: [Some(5); 2],
+            convoys: [Some(0); 2],
             sunk: sunk.map(Some),
+            convoys_sunk: [Some(0); 2],
             ic,
             result: NavalBattleStatus::Ongoing,
             result_id: None,
@@ -778,11 +803,53 @@ mod tests {
         lines.insert(Battle::Live(7, 10), Line { reads: vec![(10, read([1, 0], [Some(5), Some(0)])), (12, read([2, 0], [None, Some(0)]))], ..Line::default() });
         let observed = i64::from(NavalResultObservationRow::OBSERVED);
         let results = History { keys: vec![(99, vec![step(13, Some(&[1, 13, 1]))])], ..History::default() };
-        let observations = History { keys: vec![(99, vec![step(13, Some(&[observed, 7, 10, 11, 5, 1, 5, 0]))])], ..History::default() };
+        let observations = History { keys: vec![(99, vec![step(13, Some(&[observed, 7, 10, 11, 5, 0, 1, 0, 5, 0, 0, 0]))])], ..History::default() };
         let span = Stretch { run: 1, first: 10, last: 20, join: dashboard_query::timeline::Join::Start };
         result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
         let (hour, last) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
         assert_eq!((*hour, last.result, last.sunk, last.ic), (13, NavalBattleStatus::AttackerWon, [Some(1), Some(0)], [Some(5), Some(0)]));
+    }
+
+    #[test]
+    fn a_convoy_only_side_carries_its_convoy_counts_in_live_and_result_rows() {
+        let member = |side: u128, slot: u128| (7 << 33) | (side << 32) | slot;
+        let battles = History {
+            keys: vec![(7, vec![step(10, Some(&[10, 0, 0, 0, 0])), step(12, Some(&[10, 0, 0, 0, 2]))])],
+            ..History::default()
+        };
+        let participants = History {
+            keys: vec![
+                (member(0, 1), vec![step(10, Some(&[100, 1, 0]))]),
+                (member(0, 2), vec![step(10, Some(&[101, 1, 0]))]),
+                (member(1, 1), vec![step(10, Some(&[0, 2, 0]))]),
+                (member(1, 2), vec![step(10, Some(&[0, 2, 0])), step(12, Some(&[0, 2, SUNK]))]),
+                (member(1, 3), vec![step(10, Some(&[0, 2, 0])), step(12, Some(&[0, 2, SUNK]))]),
+            ],
+            statuses: vec![lanes::StatusRun { first: 10, last: 20, status: Status::Complete }],
+            ..History::default()
+        };
+        let span = Stretch { run: 1, first: 10, last: 20, join: dashboard_query::timeline::Join::Start };
+        let mut lines = BTreeMap::new();
+        live_lines(&mut lines, span, span.last, &RunLinks::default(), &battles, &History::default(), &participants, &Prices::default());
+        let reads = &lines[&Battle::Live(7, 10)].reads;
+        assert_eq!(reads[0].1.ships, [Some(2), Some(0)]);
+        assert_eq!(reads[0].1.convoys, [Some(0), Some(3)]);
+        assert_eq!(reads[0].1.sunk, [Some(0), Some(0)]);
+        assert_eq!(reads[0].1.convoys_sunk, [Some(0), Some(0)]);
+        assert_eq!(reads[1].1.convoys_sunk, [Some(0), Some(2)]);
+
+        let observed = i64::from(NavalResultObservationRow::OBSERVED);
+        let results = History { keys: vec![(99, vec![step(13, Some(&[1, 13, 1]))])], ..History::default() };
+        let observations = History { keys: vec![(99, vec![step(13, Some(&[observed, 7, 10, 12, 2, 0, 0, 0, 0, 3, 0, 2]))])], ..History::default() };
+        result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
+        let ended = &lines[&Battle::Live(7, 10)].reads.last().unwrap().1;
+        assert_eq!((ended.ships, ended.convoys, ended.sunk, ended.convoys_sunk), ([Some(2), Some(0)], [Some(0), Some(3)], [Some(0), Some(0)], [Some(0), Some(2)]));
+
+        let incomplete = History { keys: participants.keys.clone(), ..History::default() };
+        let mut unread = BTreeMap::new();
+        live_lines(&mut unread, span, span.last, &RunLinks::default(), &battles, &History::default(), &incomplete, &Prices::default());
+        let first = &unread[&Battle::Live(7, 10)].reads[0].1;
+        assert_eq!((first.ships, first.convoys), ([None, None], [None, None]));
     }
 
     #[test]
