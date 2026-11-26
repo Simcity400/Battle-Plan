@@ -7,7 +7,8 @@ import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { AirMissionsReply } from '../../generated/dashboard';
 import { airMissionsDeclaration, airMissionsProjection } from './airMissionsProjection.ts';
 import { encodeTableSettings, tableSettingsOf, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { TABLE_BASE } from './definition.ts';
+import { TABLE_BASE, definition } from './definition.ts';
+import { resolveWidgetScopedOptions } from '../manifest.ts';
 
 const reply: AirMissionsReply = {
   readHour: 6, missing: null, warnings: [],
@@ -37,6 +38,10 @@ test('a stored sort by a mission column and its width survive settings, which de
   assert.deepEqual([resolved.sort, resolved.columns.m4?.width], [{ column: 'm4', direction: 'ascending' }, 140]);
   const painted = project(reply, new Map()).columns.map(column => column.key);
   assert.ok(painted.every(key => key in resolved.columns), `${painted} are all settings keys (${TABLE_SETTINGS_KEY})`);
+  const form = resolveWidgetScopedOptions('air-missions', { [TABLE_SETTINGS_KEY]: stored }, definition).find(field => field.kind === 'table');
+  assert.ok(form?.kind === 'table', 'the Settings form shows the table field');
+  const inForm = tableSettingsOf(stored, form.columns, form.base);
+  assert.deepEqual([inForm.sort, inForm.columns.m4?.width], [{ column: 'm4', direction: 'ascending' }, 140], 'the Settings form decodes the same keys, so saving a row height keeps the mission sort');
 });
 
 test('missions not recorded at the hour are the body’s unavailable state', () => {
