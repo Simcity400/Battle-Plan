@@ -20,7 +20,7 @@ dashboard_base::register_products! {
 
     @hourly
     POLITICS_STATE_POLITICSSTATE => exact<crate::products::politics::state::PoliticsState>,
-    POLITICS_ELECTIONS_NEXTELECTIONS => whole_frame<crate::products::politics::elections::NextElections>,
-    STABILITY_COUNTRYSTABILITYBREAKDOWN => whole_frame<crate::products::stability::CountryStabilityBreakdown>,
-    STABILITY_STABILITYPARTNAMES => whole_frame<crate::products::stability::StabilityPartNames>,
+    POLITICS_ELECTIONS_NEXTELECTIONS => exact<crate::products::politics::elections::NextElections>,
+    STABILITY_COUNTRYSTABILITYBREAKDOWN => exact<crate::products::stability::CountryStabilityBreakdown>,
+    STABILITY_STABILITYPARTNAMES => exact<crate::products::stability::StabilityPartNames>,
 }
