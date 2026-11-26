@@ -809,10 +809,11 @@ pub(super) fn compute_stack(
     let last_complete = is_complete(input.aggregates_complete, last);
     let complete = input.aggregates_complete;
     let at = complete.partition_point(|span| span.0 <= last);
-    let rank_hour = if top_limit.is_some() || filter.is_some() {
+    let witnessed = complete[..at].last().map(|span| span.1.min(last)).filter(|&hour| hour >= first);
+    let rank_hour = if top_limit.is_some() {
         Some(last)
     } else {
-        complete[..at].last().map(|span| span.1.min(last)).filter(|&hour| hour >= first)
+        witnessed.or_else(|| filter.is_some().then_some(last))
     };
     let rank_complete = rank_hour.is_some_and(|hour| is_complete(complete, hour));
     let capped_end_raw_val = lookup_run(input.tension, last);
@@ -834,8 +835,8 @@ pub(super) fn compute_stack(
         {
             continue;
         }
-        let unrestricted = [(first, last)];
-        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, last));
+        let unrestricted = [(first, rank_hour)];
+        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, rank_hour));
         let member_at_rank = is_complete(spans, rank_hour);
         if spans.is_empty() || (top_limit.is_some() && !member_at_rank) {
             continue;
@@ -1145,7 +1146,7 @@ pub(super) fn compute_stack(
     });
     StackOutput {
         top_slots,
-        ranking_missing: rank_hour.is_none().then(|| reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN).to_owned()),
+        ranking_missing: rank_hour.is_none().then(|| reason_at(input.aggregates_missing, last).unwrap_or("Country threat contributions were not recorded at this hour.").to_owned()),
         refused: None,
         end_hour,
         capped_end_tension,
