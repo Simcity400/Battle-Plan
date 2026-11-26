@@ -11,7 +11,7 @@ pub fn occupation_modifier_description(
         graph: Rc::new(RefCell::new(scopes.clone())),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let localise = |key: &[u8]| {
@@ -25,11 +25,11 @@ pub fn occupation_modifier_description(
         Err(why) => renderer.refuse("occupation modifier name", why),
     }
     if !definition.on_disable.is_empty() {
-        let description = describe(&definition.on_disable, context, scopes);
-        for (why, count) in description.refusals {
-            *renderer.out.refusals.entry(why).or_default() += count;
+        let description = renderer.effect_section(&definition.on_disable, scopes);
+        if renderer.scripted.exhausted.is_some() {
+            return renderer.finish();
         }
-        if !description.text.is_empty() {
+        if !description.is_empty() {
             section_gap(&mut renderer.out.text);
             match localise(b"OCCUPATION_MODIFIERS_ON_DISABLE") {
                 Ok(header) => {
@@ -38,7 +38,7 @@ pub fn occupation_modifier_description(
                 }
                 Err(why) => renderer.refuse("occupation disable heading", why),
             }
-            renderer.out.text.push_str(&description.text);
+            renderer.out.text.push_str(&description);
         }
     }
     let modifiers = (|| {
@@ -82,7 +82,7 @@ pub fn occupation_modifier_description(
         Ok(_) => {}
         Err(why) => renderer.refuse("occupation modifier tooltip", why),
     }
-    renderer.out
+    renderer.finish()
 }
 
 fn section_gap(text: &mut String) {

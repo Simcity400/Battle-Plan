@@ -457,12 +457,10 @@ impl Renderer<'_, '_, '_> {
         }
         let mut text = String::new();
         for (child, branches) in body {
-            let line = if child.keyword_is("if") {
-                self.if_chain(child, &branches, selected, child_indent, false)
-                    .unwrap_or_default()
-            } else {
-                self.builder(child, selected, child_indent)
-            };
+            let line = self.group_item(child, &branches, selected, child_indent);
+            if self.scripted.exhausted.is_some() {
+                return String::new();
+            }
             text.push_str(&line);
         }
         if text.is_empty() {
@@ -1478,6 +1476,9 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|why| why.to_string())?;
                 text.push_str(&format!("({}):\n", self.label(target, scopes, true)?));
                 text.push_str(&self.group(&body, selected, indent + 1));
+                if self.scripted.exhausted.is_some() {
+                    return Ok(String::new());
+                }
             }
         } else {
             selected = self
