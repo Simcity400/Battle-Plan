@@ -104,15 +104,26 @@ test('missing equipment and quote names preserve variant tokens and missing reas
       sellerNotRecorded: false,
       buyer: 'FRA',
       buyerNotRecorded: false,
-      items: [{
-        variant: '99',
-        name: null,
-        nameMissing: 'Equipment design table was not read',
-        icon: null,
-        deliveredRaw: null,
-        contractedRaw: '50000000',
-        deliveryUnavailable: 'Deliveries were not recorded during an unread gap',
-      }],
+      items: [
+        {
+          variant: '99',
+          name: null,
+          nameMissing: 'Equipment design table was not read',
+          icon: null,
+          deliveredRaw: null,
+          contractedRaw: '50000000',
+          deliveryUnavailable: 'Deliveries were not recorded during an unread gap',
+        },
+        {
+          variant: '100',
+          name: 'Field Kit',
+          nameMissing: null,
+          icon: null,
+          deliveredRaw: null,
+          contractedRaw: '10000000',
+          deliveryUnavailable: null,
+        },
+      ],
       deliveryMissing: null,
       paidRaw: null,
       paidMissing: null,
@@ -123,7 +134,7 @@ test('missing equipment and quote names preserve variant tokens and missing reas
         priceRaw: '1200000',
       }],
       termsMissing: null,
-      eventsTotal: '2',
+      eventsTotal: '3',
     },
     {
       line: 'event',
@@ -155,16 +166,37 @@ test('missing equipment and quote names preserve variant tokens and missing reas
       amountNotRecorded: true,
       reason: 'Transfer count was not recorded',
     },
+    {
+      line: 'event',
+      key: 'd3',
+      contract: '42',
+      seller: 'GER',
+      buyer: 'FRA',
+      hour: 107,
+      kind: 'delivery',
+      variant: '100',
+      equipment: 'Field Kit',
+      equipmentMissing: null,
+      amountRaw: null,
+      amountNotRecorded: true,
+      reason: 'The contract of this event was not recorded.',
+    },
   ];
   const model = project(rows, ['group:42']);
-  const [contractRow, deliveryRow, unavailableRow] = model.rows;
+  const [contractRow, deliveryRow, unavailableRow, missingAmountRow] = model.rows;
   assert.deepEqual(contractRow!.cells.item?.value, { kind: 'notRecorded', reason: 'Equipment design table was not read' });
-  assert.equal(contractRow!.cells.item?.inlineSubtext, 'Design 99', 'contract item preserves variant token alongside missing reason');
+  assert.equal(contractRow!.cells.item?.inlineSubtext, 'Design 99 · +1 more', 'contract item preserves variant token alongside missing reason');
 
   assert.deepEqual(deliveryRow!.cells.item?.value, { kind: 'notRecorded', reason: 'Delivered equipment name not recorded' }, 'delivery event never fakes knownValue("Delivery") when equipment is missing');
   assert.equal(deliveryRow!.cells.item?.inlineSubtext, 'Design 99 · Delivery');
   assert.deepEqual(unavailableRow!.cells.item?.value, { kind: 'notRecorded', reason: 'Unavailable delivery equipment name not recorded' });
   assert.equal(unavailableRow!.cells.item?.inlineSubtext, 'Design 99 · Delivery');
+  assert.deepEqual(unavailableRow!.cells.delivered?.value, { kind: 'notRecorded', reason: 'Transfer count was not recorded' });
+  assert.deepEqual(
+    missingAmountRow!.cells.delivered?.value,
+    { kind: 'notRecorded', reason: 'The contract of this event was not recorded.' },
+    'delivery child with missing amount preserves event.reason',
+  );
 
   const extra = (typeof contractRow!.tooltipExtra === 'function' ? contractRow!.tooltipExtra() : contractRow!.tooltipExtra) ?? [];
   assert.ok(extra.some(r => r.label === 'Price (Design 99)' && r.value.kind === 'known'), 'quote price keeps variant token');
@@ -172,4 +204,6 @@ test('missing equipment and quote names preserve variant tokens and missing reas
   assert.ok(extra.some(r => r.label === 'Design 99 name' && r.value.kind === 'notRecorded' && r.value.reason === 'Equipment design table was not read'), 'item missing-name reason is preserved as notRecorded');
   const itemRow = extra.find(r => r.label === 'Design 99' && r.value.kind === 'notRecorded' && r.value.reason === 'Deliveries were not recorded during an unread gap');
   assert.ok(itemRow, 'item deliveryUnavailable uses notRecorded rather than knownValue("Not recorded (...)")');
+  const zeroDeliveredRow = extra.find(r => r.label === 'Field Kit' && r.value.kind === 'known' && r.value.value === '0 / 100 units');
+  assert.ok(zeroDeliveredRow, 'null deliveredRaw without deliveryUnavailable preserves #1152 zero-delivered progress');
 });

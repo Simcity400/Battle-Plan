@@ -129,8 +129,22 @@ test('event choices projection turns blank authored title or option text into no
   assert.equal(awaitingModel.titleSummary, '1 awaiting');
   assert.equal(awaitingModel.rows[0]?.live, true);
   assert.equal(awaitingModel.rows[1]?.live, false);
-  assert.equal(awaitingModel.rows[1]?.cells.choice?.value.kind, 'notRecorded');
+  assert.deepEqual(
+    awaitingModel.rows[1]?.cells.choice?.value,
+    { kind: 'notRecorded', reason: 'Choice not recorded' },
+    'a lost-read notRecorded choice without a recording pause does not claim recording paused',
+  );
   assert.equal((awaitingModel.rows[1]?.meta as EventDetailSubject).awaiting, false);
+
+  const pausedModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
+    { events: ['country'], awaiting: true, artwork: false, breaks: [{ firstHour: fired + 4, lastHour: fired + 8 }] },
+  );
+  assert.deepEqual(
+    pausedModel.rows[1]?.cells.choice?.value,
+    { kind: 'notRecorded', reason: 'Choice not recorded (recording paused)' },
+    'a recording break after firing retains the recording-paused reason',
+  );
 });
 
 test('an awaiting choice on a page frozen at an earlier hour counts its days open at that hour, and does not wake playback', () => {
@@ -158,4 +172,15 @@ test('an awaiting choice on a page frozen at an earlier hour counts its days ope
   const gapSlots = (model.slots ?? []).filter(s => s.kind === 'gap');
   assert.equal(gapSlots.length, 1, 'future gaps after the frozen page hour are excluded');
   assert.equal(gapSlots[0]!.lastHour, frozenAt, 'gaps overlapping the frozen page hour clip to readAt');
+  assert.equal(model.titleSummaryPartial, 'Count from recorded hours');
+
+  const futureOnlyReply = (at: number) => ({
+    ...reply(at),
+    missing: [{ firstHour: fired + 60, lastHour: fired + 90, reason: 'Future unread span after frozen hour' }],
+  });
+  const futurePages = { 0: { hour: frozenAt, offset: 0, limit: 256, raw: futureOnlyReply(frozenAt), reply: validateGenericTailReply(futureOnlyReply(frozenAt), frozenAt) } };
+  const futureSource = buildRowSourceFromHead('test:choices-frozen-future', futureOnlyReply(shownAt), undefined, shownAt, futurePages)!;
+  const futureModel = eventChoicesProjection.project(createBoundedReadView({ hour: shownAt, rows: new Map([['main', futureSource]]) }), { events: ['country'], awaiting: false, artwork: false, breaks: [] });
+  assert.equal((futureModel.slots ?? []).filter(s => s.kind === 'gap').length, 0);
+  assert.equal(futureModel.titleSummaryPartial, undefined, 'a frozen page with only future gaps does not mark its count partial');
 });

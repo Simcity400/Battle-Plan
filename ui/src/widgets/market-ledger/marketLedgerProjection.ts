@@ -195,7 +195,7 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
         };
     const qtyCell: TableCell = event.amountRaw !== null
       ? { value: knownValue(formatUnits(event.amountRaw)), unitSuffix: BigInt(event.amountRaw) === FIXED5 ? 'unit' : 'units' }
-      : { value: notRecorded('Delivery amount was not recorded') };
+      : { value: notRecorded(event.reason ?? 'Delivery amount was not recorded') };
     return {
       key: `ev:${event.key}`,
       name: label,
@@ -243,7 +243,7 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
   if (event.kind === 'payment') {
     const cicCell: TableCell = event.amountRaw !== null
       ? { value: knownValue(formatCic(event.amountRaw, sign)), unitSuffix: 'CIC' }
-      : { value: notRecorded('Payment amount was not recorded') };
+      : { value: notRecorded(event.reason ?? 'Payment amount was not recorded') };
     return {
       key: `ev:${event.key}`,
       name: 'Payment',

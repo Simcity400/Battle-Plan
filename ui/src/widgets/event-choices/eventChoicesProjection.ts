@@ -99,7 +99,7 @@ function buildChoiceRow(
     }
   } else {
     choiceCell = {
-      value: notRecorded(at.pause || page.notRecorded ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
+      value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
       missingFigure: 'Choice',
     };
   }
@@ -237,6 +237,8 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       ...(rawHead?.unavailable ?? []).map(u => `${u.label}: ${u.reason}`),
     ];
 
+    const hasMissing = source.missing.some(span => span.firstHour <= readAt);
+
     return {
       columns: EVENT_CHOICES_COLUMNS,
       rows,
@@ -251,7 +253,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       nextChangeAt: Math.min(boundary.next, nextAwaitingChange),
       rowTimeBoundaries: false,
       titleSummary,
-      ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
+      ...(hasMissing && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings.length ? { warnings } : {}),
       ...(slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
     };
