@@ -238,12 +238,13 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
   const missing = equipmentProducedLinesProjection.project(createBoundedReadView({
     hour: displayedHour(300), panels: new Map([['head', head]]),
     hovers: new Map([['hover', { hour: 295, data: { ...head, rows: [
-      { ...head.rows[0]!, value: 0, breakdown: { reason: 'observationRestarted' } },
+      { ...head.rows[0]!, value: 5, breakdown: { reason: 'unitsInexact' } },
     ] } }]]),
   }), opts).hoverDetail?.itemsBySeries?.get(ger);
-  assert.equal(missing?.length, 1);
-  assert.equal(missing[0]!.value, undefined);
-  assert.equal(missing[0]!.missingReason, 'Production counting began again inside the window.');
+  assert.deepEqual(missing?.map(item => [item.value, item.missingReason]), [
+    ['5', undefined],
+    [undefined, 'A production line left a delivery out of its count.'],
+  ]);
   const byTag = equipmentProducedLinesProjection.project(createBoundedReadView({ hour: displayedHour(300), panels: new Map([['head', head]]) }), { ...opts, tags: ['GER'], membership: null });
   assert.deepEqual(byTag.series.map(s => [s.id, s.headValue]), [['GER', 420]], 'a country chosen by its tag is one line, joined to its head row by tag');
   const renamed = { ...head, rows: [

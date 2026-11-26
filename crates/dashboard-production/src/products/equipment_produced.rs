@@ -271,18 +271,8 @@ fn ordered(types: &BTreeMap<u32, BTreeMap<u32, Typed>>) -> Vec<Typed> {
     out
 }
 
-fn reads_in(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<i32>> {
+fn reads_in(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<i32>> {
     let span = Span { run, first, last, id: 0, breaks: false };
-    type Reads = dashboard_base::queries::RunCache<EquipmentProducedAt, Vec<i32>>;
-    if let Ok(reads) = Reads::held(&source.state::<Reads>(), run, || {
-        let held = query.replay.recording().run(run)?;
-        spending::reads_of(query, &Span { first: held.first_hour, last: held.last_hour(), ..span }, TableId::ProductionLineOutput)
-    }) {
-        let within = &reads[reads.partition_point(|&at| at < first)..reads.partition_point(|&at| at <= last)];
-        if !within.is_empty() {
-            return Ok(within.to_vec());
-        }
-    }
     let reads = spending::reads_of(query, &span, TableId::ProductionLineOutput)?;
     if !reads.is_empty() {
         return Ok(reads);
@@ -512,6 +502,11 @@ struct ModelSnapshot {
 #[derive(Default)]
 struct ModelSnapshots(Vec<Arc<ModelSnapshot>>);
 
+pub(crate) fn forget(source: &Source) {
+    source.state::<ModelSnapshots>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
+    *source.state::<Option<Arc<DatedDesigns>>>().lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
 fn model_snapshot(source: &Source, query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>) -> io::Result<Arc<ModelSnapshot>> {
     let cache = source.state::<ModelSnapshots>();
     if let Some(hit) = cache.lock().unwrap_or_else(PoisonError::into_inner).0.iter().find(|s| s.run == run && s.hour == hour && ids.iter().all(|id| s.countries.contains_key(id))) {
@@ -595,7 +590,7 @@ fn details_at(source: &Source, query: &Query<'_>, params: DetailWindow<'_>, coun
         let first = stretch.first.max(run.first);
         let reads = match by_start.entry(first) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(reads_in(source, query, stretch.run, first, hour)?),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(reads_in(query, stretch.run, first, hour)?),
         };
         let Some(read) = measure::read_at(reads, hour) else { continue };
         let before = opening.hour().or_else(|| ranged.is_none().then(|| measure::back(params.measure, read)).flatten())
@@ -824,7 +819,7 @@ impl ProducedBreakdown {
             }
         }
         if models.iter().map(|model| i128::from(model.value)).sum::<i128>() != i128::from(total) {
-            return Self::Missing { reason: ProducedUnknown::NotRecorded };
+            return Self::Unavailable { unavailable: "Model amounts do not add up to the recorded total.".into() };
         }
         const MODEL_ROWS: usize = 9;
         models.sort_by(|a, b| b.value.cmp(&a.value));
@@ -1165,6 +1160,13 @@ pub(super) mod tests {
         let tag = hover.rows.iter().find(|row| row.counted == Country::Tag("DEU".into())).unwrap();
         assert_eq!(tag.unknown, Some(ProducedUnknown::WindowIncomplete));
         assert!(tag.breakdown.is_none());
+        let snapshots = src.state::<ModelSnapshots>();
+        let names = src.state::<Option<Arc<DatedDesigns>>>();
+        assert!(!snapshots.lock().unwrap().0.is_empty());
+        assert!(names.lock().unwrap().is_some());
+        crate::forget(&src);
+        assert!(snapshots.lock().unwrap().0.is_empty());
+        assert!(names.lock().unwrap().is_none());
     }
 
     #[test]
@@ -1179,6 +1181,9 @@ pub(super) mod tests {
             recorded: true, models: (1..=10).map(|i| model(i, "truck")).chain([model(20, "tank")]).collect(),
             ic_total: amount_of(Amount::Unknown(ProducedUnknown::SpendingUnavailable)), observation: Some(1), read: Some(1), warnings: vec![],
         };
+        assert_eq!(ProducedBreakdown::from_detail(detail.clone(), ProducedCount::Ic, &[], 55),
+            ProducedBreakdown::Missing { reason: ProducedUnknown::SpendingUnavailable });
+        assert!(matches!(ProducedBreakdown::from_detail(detail.clone(), ProducedCount::Units, &["truck".into()], 54), ProducedBreakdown::Unavailable { .. }));
         let ProducedBreakdown::Models { models, more, remainder } = ProducedBreakdown::from_detail(detail, ProducedCount::Units, &["truck".into()], 55)
             else { panic!("the unit counts are recorded") };
         assert_eq!(models.iter().map(|model| model.value).collect::<Vec<_>>(), (3..=10).rev().collect::<Vec<_>>());

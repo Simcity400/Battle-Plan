@@ -143,14 +143,11 @@ function buildHoverDetail(
     items.push({ ...total, divider: items.length > 0 });
     const detail = row?.breakdown;
     const line = [total];
-    if (detail && 'reason' in detail) {
-      itemsBySeries.set(key, [{ ...identity, missingReason: UNKNOWN_WORDS[detail.reason], tone: 'muted' }]);
-      continue;
-    } else if (detail && 'unavailable' in detail) {
-      line.push({ label: 'Model amounts', missingReason: detail.unavailable, tone: 'muted' });
-    } else if (detail) {
+    if (detail && 'models' in detail) {
       for (const model of detail.models) line.push({ label: model.name, value: formatExactAmount(model.value, options.count) });
       if (detail.more > 0) line.push({ label: `And ${detail.more} more`, value: formatExactAmount(detail.remainder, options.count) });
+    } else if (detail) {
+      line.push({ label: 'Model amounts', missingReason: 'reason' in detail ? UNKNOWN_WORDS[detail.reason] : detail.unavailable, tone: 'muted' });
     }
     itemsBySeries.set(key, line);
   }
