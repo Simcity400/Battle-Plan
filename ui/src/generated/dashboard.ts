@@ -3879,7 +3879,7 @@ finalRaw: string, dailyRaw: string,
  * The hour the game created it.
  */
 date: number, };
-export type WorldTensionReply = { values?: TensionValueMode,
+export type WorldTensionReply = {
 /**
  * Tension units a percentage point.
  */
@@ -3897,11 +3897,7 @@ ceilingRaw: string,
  * (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the
  * sum from slots no tag ever held), both in contribution units.
  */
-unnamed: boolean,
-/**
- * Every nonzero contribution, greatest first, ties by slot.
- */
-contributions: Array<TensionContribution>,
+unnamed: boolean, contributions: Array<TensionContribution>,
 /**
  * In the game's list order.
  */
