@@ -249,16 +249,16 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         });
     let province_modifiers = weather::ProvinceModifierContent::read(&content.layers, &save);
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
-    let recount = recounted_country.as_deref().map(|tag| {
-        let weights = surrender::recounted_weights(
+    let weights = |tag: &[u8]| {
+        surrender::recounted_weights(
             &save,
             tag,
             membership.as_ref().copied().map_err(invalid)?,
             &content.layers,
             defines.as_ref().map_err(|error| invalid(error.to_string()))?,
-        )?;
-        Ok::<_, io::Error>((tag, weights))
-    }).transpose()?;
+        )
+    };
+    let recount = recounted_country.as_deref().map(|tag| (tag, weights(tag)));
     let mut report = compare_core(
         &frame,
         session.sample_boundary,

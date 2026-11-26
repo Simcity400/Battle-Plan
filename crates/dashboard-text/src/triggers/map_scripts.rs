@@ -632,18 +632,39 @@ impl Evaluator<'_, '_> {
     pub(super) fn surrender_progress(&self, slot: u32) -> Result<i64, Failure> {
         use replay_data::rows::{CapitulationRow, CountryGameScoreInputRow};
         let world = self.world();
-        let raw = world.raw_country(slot).ok_or("Countries lacks the surrender scope country")?;
+        let raw = world
+            .raw_country(slot)
+            .ok_or("Countries lacks the surrender scope country")?;
         const INPUTS: u64 = mask::<CapitulationRow>(&[
-            "cached_held_core_weight", "cached_total_core_weight",
-            "cached_held_territory_weight", "cached_total_territory_weight",
-            "surrender_limit_modifier", "forced_surrender_limit_modifier",
-            "max_surrender_limit_offset", "selected_collaboration",
+            "cached_held_core_weight",
+            "cached_total_core_weight",
+            "cached_held_territory_weight",
+            "cached_total_territory_weight",
+            "surrender_limit_modifier",
+            "forced_surrender_limit_modifier",
+            "max_surrender_limit_offset",
+            "selected_collaboration",
         ]);
         const CONTROLLED: u64 = mask::<CountryGameScoreInputRow>(&["land_count", "land_error"]);
         let inputs = recorded_row::<tables::Capitulation>(world.tables(), INPUTS, raw.into())?
-            .ok_or_else(|| Failure::input(tables::Capitulation::ID, "", Some(Store::Country(slot)), "surrender inputs not recorded for the country"))?;
-        let territory = recorded_row::<tables::CountryGameScoreInputs>(world.tables(), CONTROLLED, raw.into())?
-            .ok_or_else(|| Failure::input(tables::CountryGameScoreInputs::ID, "land_count", Some(Store::Country(slot)), "controlled province count not recorded for the country"))?;
+            .ok_or_else(|| {
+                Failure::input(
+                    tables::Capitulation::ID,
+                    "",
+                    Some(Store::Country(slot)),
+                    "surrender inputs not recorded for the country",
+                )
+            })?;
+        let territory =
+            recorded_row::<tables::CountryGameScoreInputs>(world.tables(), CONTROLLED, raw.into())?
+                .ok_or_else(|| {
+                    Failure::input(
+                        tables::CountryGameScoreInputs::ID,
+                        "land_count",
+                        Some(Store::Country(slot)),
+                        "controlled province count not recorded for the country",
+                    )
+                })?;
         Ok(dashboard_query::surrender::progress(&inputs, &territory, world.recorded_defines()?)?.0)
     }
 

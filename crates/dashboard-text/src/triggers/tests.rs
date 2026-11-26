@@ -1359,12 +1359,18 @@ fn surrender_progress_uses_the_battle_hour_scope_country_and_names_missing_input
     let content = catalogue.scripted_content().unwrap();
     let mut frame = frame(&countries(), &[]);
     *frame.tables[TableId::CountryGameScoreInputs.index()] =
-        TableView::Complete(TableRows::CountryGameScoreInputs(vec![CountryGameScoreInputRow {
-            country: 104,
-            land_count: Some(5),
-            ..Default::default()
-        }]));
-    for (weight, above) in [(Some(63), Some(false)), (Some(42), Some(true)), (None, None)] {
+        TableView::Complete(TableRows::CountryGameScoreInputs(vec![
+            CountryGameScoreInputRow {
+                country: 104,
+                land_count: Some(5),
+                ..Default::default()
+            },
+        ]));
+    for (weight, above) in [
+        (Some(63), Some(false)),
+        (Some(42), Some(true)),
+        (None, None),
+    ] {
         frame.hour += 1;
         *frame.tables[TableId::Capitulation.index()] =
             TableView::Complete(TableRows::Capitulation(vec![CapitulationRow {
@@ -1381,8 +1387,13 @@ fn surrender_progress_uses_the_battle_hour_scope_country_and_names_missing_input
             }]));
         let world = content.recorded_world(&frame).unwrap();
         let evaluator = Evaluator::new(&world, Some(&CountrySide(4)));
-        for scope in [Scopes::of(Scope::Country(4)), Scopes::combat().with_this(Scope::Country(4))] {
-            let result = evaluator.evaluate(&items("surrender_progress > 0.57"), scope).decided();
+        for scope in [
+            Scopes::of(Scope::Country(4)),
+            Scopes::combat().with_this(Scope::Country(4)),
+        ] {
+            let result = evaluator
+                .evaluate(&items("surrender_progress > 0.57"), scope)
+                .decided();
             match above {
                 Some(expected) => assert_eq!(result, Ok(expected), "{weight:?} in {scope:?}"),
                 None => assert!(result.unwrap_err().contains("cached_held_core_weight")),

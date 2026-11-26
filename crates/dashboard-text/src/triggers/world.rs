@@ -1503,7 +1503,9 @@ impl<'a> World<'a> {
         self
     }
 
-    pub(super) fn recorded_defines(&self) -> Result<&'a content_reader_defines::defines::Defines, Failure> {
+    pub(super) fn recorded_defines(
+        &self,
+    ) -> Result<&'a content_reader_defines::defines::Defines, Failure> {
         if let Some(content) = self.prepared_content {
             return Ok(content.defines()?);
         }
