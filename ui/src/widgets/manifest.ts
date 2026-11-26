@@ -1,7 +1,6 @@
 import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
 import { resolveOptions, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
-  DEFAULT_VIEW,
   manifestViewSwitch,
   normalizeView,
   resolveActiveView,
@@ -9,13 +8,12 @@ import {
   viewKey,
   viewOwnedFields,
   type FamilyViewEntry,
-  type FamilyViewModule,
   type NativeWidgetEntry,
 } from '../families/manifest.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
 import type { ProjectionKey } from '../draw/laneMessages';
 
-export { DEFAULT_VIEW, FAMILY_VIEWS };
+export { FAMILY_VIEWS };
 
 export const NATIVE_WIDGETS: readonly NativeWidgetEntry[] = [
   { kind: 'map', renderer: 'native', load: () => import('./map') },
@@ -187,23 +185,6 @@ export function resolveWidgetActiveView(
   return resolveActiveView(storedOptions, meta, familyViewsForKind(kind));
 }
 
-export function activeFamilyView(
-  kind: string,
-  storedOptions?: WidgetOptions,
-  metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
-): FamilyViewEntry | undefined {
-  const view = resolveWidgetActiveView(kind, storedOptions, metaOverride);
-  return familyByPair.get(viewKey(kind, view));
-}
-
-export function isFamilyWidgetView(
-  kind: string,
-  storedOptions?: WidgetOptions,
-  metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
-): boolean {
-  return activeFamilyView(kind, storedOptions, metaOverride) !== undefined;
-}
-
 export function resolveWidgetScopedOptions(
   kind: string,
   storedOptions?: WidgetOptions,
@@ -223,35 +204,9 @@ export function resolveWidgetViewSwitch(
   return manifestViewSwitch(meta, familyViewsForKind(kind));
 }
 
-export function manifestKinds(): readonly string[] {
-  return [...new Set([...FAMILY_VIEWS, ...NATIVE_WIDGETS].map(entry => entry.kind))];
-}
-
 export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
   return ['render'];
 }
 
-const loadedSpecs = new Map<string, Promise<FamilyViewModule | undefined>>();
-const readySpecs = new Map<string, FamilyViewModule>();
-
-export function loadedFamilyViewSpec(kind: string, view?: string): FamilyViewModule | undefined {
-  return readySpecs.get(viewKey(kind, view));
-}
-
-export function loadFamilyViewSpec(kind: string, view?: string): Promise<FamilyViewModule | undefined> {
-  const key = viewKey(kind, normalizeView(view));
-  const entry = familyByPair.get(key);
-  if (!entry) return Promise.resolve(undefined);
-  let held = loadedSpecs.get(key);
-  if (!held) {
-    held = entry.loadSpec().then(mod => {
-      readySpecs.set(key, mod);
-      return mod;
-    });
-    loadedSpecs.set(key, held);
-    held.catch(() => { loadedSpecs.delete(key); });
-  }
-  return held;
-}

@@ -29,7 +29,6 @@ import { FAMILY_MANIFESTS, FAMILY_VIEWS } from './familyManifest.ts';
 import { drawnViews } from '../draw/views/drawn.ts';
 import {
   NATIVE_WIDGETS,
-  manifestKinds,
   resolveWidgetActiveView,
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
@@ -43,7 +42,7 @@ import type { WidgetSpec } from '../dashboard/model';
 
 test('manifest accounts for every widget kind across family and native entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
-  assert.deepEqual([...manifestKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
+  assert.deepEqual([...new Set([...FAMILY_VIEWS, ...NATIVE_WIDGETS].map(entry => entry.kind))].sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.ok(NATIVE_WIDGETS.some(entry => entry.kind === 'map'));
   for (const { kind } of NATIVE_WIDGETS) {
     assert.ok(!familyKinds.has(kind), `${kind} has its own native renderer`);

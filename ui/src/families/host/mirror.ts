@@ -305,17 +305,3 @@ export function syncListboxMirror(
   return { activeDescendantId: activeId, focusedPresent };
 }
 
-export function reconcileFocusedKey(
-  currentKey: string | null,
-  keys: readonly string[],
-  fallbackToFirst: boolean,
-): { readonly key: string | null; readonly present: boolean; readonly index: number } {
-  if (currentKey !== null) {
-    const idx = keys.indexOf(currentKey);
-    if (idx >= 0) return { key: currentKey, present: true, index: idx };
-  }
-  if (fallbackToFirst && keys.length > 0) {
-    return { key: keys[0]!, present: false, index: 0 };
-  }
-  return { key: null, present: false, index: -1 };
-}
