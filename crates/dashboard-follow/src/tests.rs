@@ -2085,3 +2085,30 @@ fn a_new_page_seek_while_paused_reads_again_a_product_whose_read_it_cancelled() 
     }
     drop(host);
 }
+
+#[test]
+fn a_followed_top_of_chosen_countries_is_not_recorded_where_their_holders_are_not_known() {
+    let pages = record(quiet);
+    let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
+    let mut holders = Holders::default();
+    holders.tags.insert("AAA".into(), vec![HolderRun { first: 0, last: 9, holder: Holder::Found { slot: 103, id: 103 }, starts_segment: true }]);
+    let reason = "Countries was not complete at these hours";
+    holders.unknown.push((10, HOURS as Hour - 1, reason.to_owned()));
+    let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
+    let chosen = Query::Series {
+        series: &POWER_SLOT,
+        measure: &POWER_SLOT.measures[0],
+        countries: vec![dashboard_query::identity::Country::from("AAA")],
+        mode: SeriesMode::Top { n: 3, least: false, population: false },
+        identity,
+    };
+    let mut harness = harness(&pages);
+    harness.follow.follow(5, chosen.clone()).unwrap();
+    harness.seek(0);
+    let played = harness.play(40);
+    let (_, hour, answer) = played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == 5).next_back().expect("an answer");
+    assert!(hour >= 10, "the last answer falls in the unknown hours");
+    let wanted = format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}");
+    assert_eq!(answer.not_recorded.as_deref(), Some(wanted.as_str()), "never a successful empty ranking");
+    assert_eq!(answer, harness.fresh(&chosen, hour), "the incremental ranking and the answer at the hour agree");
+}

@@ -246,6 +246,10 @@ impl Holders {
         self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last).map(|(_, _, reason)| reason.as_str())
     }
 
+    pub fn not_ranked(&self, hour: i32) -> Option<String> {
+        self.unknown_reason(hour).map(|reason| format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}"))
+    }
+
     pub fn not_known(&self, country: &Country, hour: i32) -> Option<String> {
         self.unknown_reason(hour).map(|reason| format!("Who holds {} is not known: {reason}", self.label(country, hour).unwrap_or_else(|| country.key().into_owned())))
     }
