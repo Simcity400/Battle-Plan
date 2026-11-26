@@ -17,9 +17,14 @@ import type { FamilyTheme } from '../families/contract.ts';
 import { registerFamilyProjection } from '../families/registry.ts';
 import { drawMeterModel, layoutMeterModel } from '../families/meter/painter.ts';
 import { createTablePicture, disposeTablePicture, drawFamilyTable, NO_GLIDE } from '../families/table/painter.ts';
-import { buildColumnLayouts, layoutFamilyTable } from '../families/table/layout.ts';
+import { buildColumnLayouts, computeRowLayout, layoutFamilyTable } from '../families/table/layout.ts';
 import { resolveTableRows, type TableColumnSpec } from '../families/table/model.ts';
 import { tableSettingsOf } from '../families/table/settings.ts';
+import { layoutCards } from '../families/card/layout.ts';
+import type { CardModel } from '../families/card/model.ts';
+import { drawCards } from '../families/card/painter.ts';
+import type { TimeChartModel } from '../families/time-chart/model.ts';
+import { layoutChartRows } from '../families/time-chart/rows.ts';
 
 const TEST_THEME: FamilyTheme = {
   surface: '#16181d',
@@ -486,4 +491,331 @@ test('counted meter headers preserve 400 11.5px title font, meter layout drops o
   assert.equal(wide, 'abc\u2026');
   assert.equal(narrow, 'ab\u2026', 'exact sub-pixel width budgets never reuse a stale floored fit');
   subPixelScope.release();
+});
+
+test('off-screen content, scrolling, pinned overlays, otherFits, and nested release/abort stay bounded', () => {
+  const makeTrackedCtx = () => {
+    let calls = 0;
+    const ctx = {
+      font: '400 12px Inter',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      globalAlpha: 1,
+      textAlign: 'left' as CanvasTextAlign,
+      textBaseline: 'alphabetic' as CanvasTextBaseline,
+      save() {},
+      restore() {},
+      beginPath() {},
+      rect() {},
+      clip() {},
+      clearRect() {},
+      fillRect() {},
+      strokeRect() {},
+      moveTo() {},
+      lineTo() {},
+      stroke() {},
+      fill() {},
+      roundRect() {},
+      translate() {},
+      fillText() {},
+      createLinearGradient() {
+        return { addColorStop() {} };
+      },
+      measureText(text: string) {
+        calls++;
+        return { width: text.length * 7 } as TextMetrics;
+      },
+    } as unknown as CanvasRenderingContext2D;
+    return { ctx, calls: () => calls };
+  };
+
+  clearTextWidthCache();
+  const wideCols: TableColumnSpec[] = Array.from({ length: 80 }, (_, i) => ({
+    key: `c${i}`,
+    label: `Col ${i}`,
+    as: 'plain' as const,
+    offered: ['plain' as const],
+    priority: i,
+    text: true,
+    minWidth: 60,
+    widest: [`Cell-${i}`],
+  }));
+  const wideSettings = tableSettingsOf(undefined, wideCols, { density: 'comfortable', sort: { column: 'c0', direction: 'ascending' } });
+  const wideLayout = layoutFamilyTable(buildColumnLayouts(wideCols, wideSettings), 260, { rankShown: false, rankWidth: 0 });
+  const wideRows = resolveTableRows({
+    columns: wideCols,
+    hour: 1,
+    rows: [{
+      key: 'row-0',
+      name: 'Row 0',
+      cells: Object.fromEntries(wideCols.map((c, i) => [c.key, { value: { kind: 'known' as const, value: `Cell-val-${i}` } }])),
+    }],
+  }, wideSettings);
+  const widePic = createTablePicture();
+  const { ctx: wideCtx } = makeTrackedCtx();
+  drawFamilyTable(wideCtx, {
+    layout: wideLayout,
+    rows: wideRows,
+    settings: wideSettings,
+    hour: 1,
+    width: 260,
+    height: 80,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+    dpr: 1,
+  }, widePic);
+  assert.ok(textWidthCacheStats().entries <= 12, `260px table with 80 columns retains only visible columns, got ${textWidthCacheStats().entries}`);
+  disposeTablePicture(widePic);
+  assert.equal(textWidthCacheStats().entries, 0);
+
+  clearTextWidthCache();
+  const detailCols: TableColumnSpec[] = [
+    { key: 'title', label: 'Title', as: 'plain', offered: ['plain'], priority: 0, text: true, minWidth: 160 },
+    { key: 'detail', label: 'Detail', as: 'plain', offered: ['plain'], priority: 1, text: true, minWidth: 160 },
+  ];
+  const detailSettings = tableSettingsOf(undefined, detailCols, { density: 'comfortable', sort: { column: 'title', direction: 'ascending' } });
+  const detailBase = buildColumnLayouts(detailCols, detailSettings);
+  const detailFlat = resolveTableRows({
+    columns: detailCols,
+    hour: 1,
+    rows: Array.from({ length: 300 }, (_, i) => ({
+      key: `d-${i}`,
+      name: `Detail ${i}`,
+      detailColumn: 'detail',
+      cells: {
+        title: { value: { kind: 'known' as const, value: `Detail ${i}` } },
+        detail: { value: { kind: 'known' as const, value: `Long detail text line number ${i} with unique content` } },
+      },
+    })),
+  }, detailSettings);
+  const detailLayoutScope = new TextMeasureScope();
+  const { ctx: detailCtx } = makeTrackedCtx();
+  detailLayoutScope.run(() => computeRowLayout(detailFlat, 'comfortable', 'standard', {
+    width: 260,
+    columns: detailBase,
+    theme: TEST_THEME,
+    measure: canvasMeasureText(detailCtx),
+  }));
+  assert.equal(textWidthCacheStats().entries, 0, 'table detail-row layout scan drops off-screen entries');
+  detailLayoutScope.release();
+
+  clearTextWidthCache();
+  const chartModel: TimeChartModel = {
+    kind: 'test-rows',
+    measureTitle: 'Balances',
+    mode: 'rows',
+    hour: 48,
+    extent: [0, 48],
+    yAxis: { format: 'number' },
+    series: [],
+    rows: Array.from({ length: 1500 }, (_, i) => ({
+      id: `r-${i}`,
+      name: `Resource Balance Name ${i}`,
+      color: TEST_THEME.accent,
+      valueText: String(i),
+      months: [{ firstHour: 0, lastHour: 47, value: i, valueText: String(i) }],
+    })),
+  };
+  const rowsScope = new TextMeasureScope();
+  const { ctx: rowsCtx } = makeTrackedCtx();
+  const rowsFrame = rowsScope.run(() => layoutChartRows(chartModel, 480, 100, false, canvasMeasureText(rowsCtx), 'Inter'));
+  assert.equal(rowsFrame.rows.rows.length, 1500);
+  assert.ok(textWidthCacheStats().entries <= 8, `100px time-chart retains only intersecting rows, got ${textWidthCacheStats().entries}`);
+  rowsScope.release();
+  assert.equal(textWidthCacheStats().entries, 0);
+
+  clearTextWidthCache();
+  const cardModel: CardModel = {
+    hour: 1,
+    rowHeight: 32,
+    columns: {},
+    rows: [{
+      kind: 'list',
+      key: 'mods',
+      label: 'Items',
+      name: 'Items',
+      items: Array.from({ length: 1500 }, (_, i) => `CandidateItem-${i}`),
+      none: 'None',
+    }],
+  };
+  const cardLayout = layoutCards(cardModel, 320, 80);
+  const cardScope = new TextMeasureScope();
+  const { ctx: cardCtx } = makeTrackedCtx();
+  cardScope.run(() => drawCards(cardCtx, { model: cardModel, layout: cardLayout, theme: TEST_THEME, scrollTop: 0 }));
+  assert.ok(textWidthCacheStats().entries <= 4, `card list retains only drawn string, not 1499 candidates, got ${textWidthCacheStats().entries}`);
+  cardScope.release();
+  assert.equal(textWidthCacheStats().entries, 0);
+
+  clearTextWidthCache();
+  const scrollCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, minWidth: 120 },
+    { key: 'val', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'integer', minWidth: 80 },
+  ];
+  const scrollSettings = tableSettingsOf(undefined, scrollCols, { density: 'comfortable', sort: { column: 'val', direction: 'descending' } });
+  const scrollLayout = layoutFamilyTable(buildColumnLayouts(scrollCols, scrollSettings), 260, { rankShown: false, rankWidth: 0 });
+  const scrollRows = resolveTableRows({
+    columns: scrollCols,
+    hour: 1,
+    rows: Array.from({ length: 20 }, (_, i) => ({
+      key: `s-${i}`,
+      name: `Country ${i}`,
+      cells: {
+        name: { value: { kind: 'known' as const, value: `Country ${i}` } },
+        val: { value: { kind: 'known' as const, value: 1000 - i }, format: 'integer' as const },
+      },
+    })),
+  }, scrollSettings);
+  const scrollPic = createTablePicture();
+  const scrollTracked = makeTrackedCtx();
+  const paintScroll = (scrollTop: number) => drawFamilyTable(scrollTracked.ctx, {
+    layout: scrollLayout,
+    rows: scrollRows,
+    settings: scrollSettings,
+    hour: 1,
+    width: 260,
+    height: 140,
+    scrollLeft: 0,
+    scrollTop,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+    dpr: 1,
+  }, scrollPic);
+  paintScroll(0);
+  const callsAfterFirst = scrollTracked.calls();
+  paintScroll(1);
+  paintScroll(2);
+  paintScroll(3);
+  assert.equal(scrollTracked.calls(), callsAfterFirst, 'full table paint during scroll reuses surviving visible cells without re-measuring');
+  disposeTablePicture(scrollPic);
+  assert.equal(textWidthCacheStats().entries, 0);
+
+  clearTextWidthCache();
+  const pinCols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true, minWidth: 100 },
+    { key: 'val', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'integer', minWidth: 100 },
+    { key: 'extra', label: 'Extra', as: 'plain', offered: ['plain'], priority: 2, text: true, minWidth: 180 },
+  ];
+  const pinSettings = tableSettingsOf(undefined, pinCols, { density: 'comfortable', sort: { column: 'val', direction: 'descending' } });
+  const pinLayout = layoutFamilyTable(buildColumnLayouts(pinCols, pinSettings, { name: 100, val: 100, extra: 180 }), 220, { rankShown: false, rankWidth: 0 });
+  assert.ok(pinLayout.scrollable && pinLayout.pinnedWidth > 0, 'test table has scrollable pinned column');
+  const pinPic = createTablePicture();
+  const outerPaintScope = new TextMeasureScope();
+  const { ctx: pinCtx } = makeTrackedCtx();
+  const paintPinned = (label: string, hour: number) => outerPaintScope.run(() => drawFamilyTable(pinCtx, {
+    layout: pinLayout,
+    rows: resolveTableRows({
+      columns: pinCols,
+      hour,
+      rows: [{
+        key: 'only',
+        name: label,
+        cells: {
+          name: { value: { kind: 'known' as const, value: label } },
+          val: { value: { kind: 'known' as const, value: 42 }, format: 'integer' as const },
+          extra: { value: { kind: 'known' as const, value: 'Right' } },
+        },
+      }],
+    }, pinSettings),
+    settings: pinSettings,
+    hour,
+    width: 220,
+    height: 80,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: hour,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+    dpr: 1,
+  }, pinPic));
+  paintPinned('Alpha', 1);
+  const pinnedBaseline = textWidthCacheStats().entries;
+  const pinPartial1 = paintPinned('Beta', 2);
+  assert.equal(pinPartial1.partial, true);
+  assert.equal(textWidthCacheStats().entries, pinnedBaseline, 'partial pinned repaint drops replaced pinned value from outer paint scope');
+  const pinPartial2 = paintPinned('Gamma', 3);
+  assert.equal(pinPartial2.partial, true);
+  assert.equal(textWidthCacheStats().entries, pinnedBaseline);
+  disposeTablePicture(pinPic);
+  outerPaintScope.release();
+  assert.equal(textWidthCacheStats().entries, 0);
+
+  clearTextWidthCache();
+  const fitTracked = makeTrackedCtx();
+  const font = '400 12px Inter';
+  const sharedLabel = 'Very long shared country label for fit slots';
+  const holder = new TextMeasureScope();
+  holder.run(() => measureCanvasText(fitTracked.ctx, sharedLabel, font));
+  for (let i = 0; i < 120; i++) {
+    const scopeA = new TextMeasureScope();
+    const scopeB = new TextMeasureScope();
+    scopeA.run(() => fitCanvasLine(fitTracked.ctx, sharedLabel, 40 + (i % 5) * 7, font));
+    scopeB.run(() => fitCanvasLine(fitTracked.ctx, sharedLabel, 80 + (i % 5) * 7, font));
+    scopeA.release();
+    scopeB.run(() => fitCanvasLine(fitTracked.ctx, sharedLabel, 120 + (i % 5) * 7, font));
+    scopeB.release();
+  }
+  const probeCallsBefore = fitTracked.calls();
+  const probe = new TextMeasureScope();
+  probe.run(() => fitCanvasLine(fitTracked.ctx, sharedLabel, 80, font));
+  assert.ok(fitTracked.calls() > probeCallsBefore, 'released scopes leave no orphan fit intervals in otherFits');
+  probe.release();
+  holder.release();
+  assert.equal(textWidthCacheStats().entries, 0);
+
+  clearTextWidthCache();
+  const nestTracked = makeTrackedCtx();
+  const outer = new TextMeasureScope();
+  const inner = new TextMeasureScope();
+  outer.run(() => {
+    measureCanvasText(nestTracked.ctx, 'outer-only', font);
+    inner.run(() => {
+      outer.release();
+      measureCanvasText(nestTracked.ctx, 'inner-only', font);
+    });
+  });
+  assert.equal(textWidthCacheStats().entries, 1, 'releasing outer scope inside inner run preserves inner scope ownership');
+  inner.release();
+  assert.equal(textWidthCacheStats().entries, 0, 'releasing inner scope cleans up entries measured after outer release');
+
+  clearTextWidthCache();
+  const abortTracked = makeTrackedCtx();
+  const abortScope = new TextMeasureScope();
+  abortScope.run(() => fitCanvasLine(abortTracked.ctx, 'Long label for abort check', 50, font));
+  const afterCommitCalls = abortTracked.calls();
+  assert.throws(() => {
+    abortScope.run(() => {
+      fitCanvasLine(abortTracked.ctx, 'Long label for abort check', 50, font);
+      throw new Error('aborted pass');
+    });
+  }, /aborted pass/);
+  abortScope.run(() => fitCanvasLine(abortTracked.ctx, 'Long label for abort check', 50, font));
+  assert.equal(abortTracked.calls(), afterCommitCalls, 'aborting a pass that hit a committed fit preserves that fit interval');
+  abortScope.release();
+  assert.equal(textWidthCacheStats().entries, 0);
 });

@@ -1,4 +1,4 @@
-import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, runTransientTextScope, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DATE_COLUMN_WIDTH,
   drawDateColumn,
@@ -122,7 +122,7 @@ function drawListRow(ctx: Canvas2D, row: CardListRow, top: number, height: numbe
     return;
   }
   const listFont = `400 12.5px ${theme.font}`;
-  const shown = fitItems(row.items, room, text => measureCanvasText(ctx, text, listFont));
+  const shown = runTransientTextScope(() => fitItems(row.items, room, text => measureCanvasText(ctx, text, listFont)));
   line(ctx, shown, x, middleY, room, listFont, theme.text);
 }
 

@@ -99,24 +99,29 @@ function storeWidthEntry(byText: Map<string, WidthEntry>, font: string, text: st
   return entry;
 }
 
-function pruneScopeFitSlot(entry: WidthEntry, scopeId: number, keptPass: number): void {
-  if (entry.fitScope === scopeId && entry.fitSlot !== null) {
-    if (entry.fitSlot.pass !== keptPass && entry.fitSlot.hitPass !== keptPass) {
-      entry.fitScope = 0;
-      entry.fitSlot = null;
-    }
-    return;
+type ReleaseMode = 'commit' | 'abort' | 'release';
+
+function pruneScopeFitSlot(entry: WidthEntry, scopeId: number, pass: number, mode: ReleaseMode): void {
+  const shouldDrop = (slot: ScopeFitSlot): boolean =>
+    mode === 'release'
+      ? true
+      : mode === 'abort'
+        ? slot.pass === pass
+        : slot.pass !== pass && slot.hitPass !== pass;
+  if (entry.fitScope === scopeId && entry.fitSlot !== null && shouldDrop(entry.fitSlot)) {
+    entry.fitScope = 0;
+    entry.fitSlot = null;
   }
   if (entry.otherFits !== null) {
     const slot = entry.otherFits.get(scopeId);
-    if (slot !== undefined && slot.pass !== keptPass && slot.hitPass !== keptPass) {
+    if (slot !== undefined && shouldDrop(slot)) {
       entry.otherFits.delete(scopeId);
       if (entry.otherFits.size === 0) entry.otherFits = null;
     }
   }
 }
 
-function releaseWidthEntry(entry: WidthEntry, scopeId: number, keptPass: number): void {
+function releaseWidthEntry(entry: WidthEntry, scopeId: number, pass: number, mode: ReleaseMode): void {
   if (--entry.refs <= 0) {
     if (entry.revision === revision) {
       const byText = widths.get(entry.font);
@@ -134,7 +139,7 @@ function releaseWidthEntry(entry: WidthEntry, scopeId: number, keptPass: number)
     }
     return;
   }
-  pruneScopeFitSlot(entry, scopeId, keptPass);
+  pruneScopeFitSlot(entry, scopeId, pass, mode);
 }
 
 function releaseGraphemeEntry(entry: GraphemeEntry): void {
@@ -228,7 +233,7 @@ export class TextMeasureScope {
     activeScope = scopeStack.pop() ?? null;
     if (--this.depth > 0) return;
     const oldWidths = this.heldWidths;
-    for (let i = 0; i < oldWidths.length; i++) releaseWidthEntry(oldWidths[i]!, this.id, this.pass);
+    for (let i = 0; i < oldWidths.length; i++) releaseWidthEntry(oldWidths[i]!, this.id, this.pass, 'commit');
     oldWidths.length = 0;
     this.heldWidths = this.nextWidths;
     this.nextWidths = oldWidths;
@@ -244,7 +249,7 @@ export class TextMeasureScope {
     activeScope = scopeStack.pop() ?? null;
     if (--this.depth > 0) return;
     const droppedWidths = this.nextWidths;
-    for (let i = 0; i < droppedWidths.length; i++) releaseWidthEntry(droppedWidths[i]!, this.id, -1);
+    for (let i = 0; i < droppedWidths.length; i++) releaseWidthEntry(droppedWidths[i]!, this.id, this.pass, 'abort');
     droppedWidths.length = 0;
     const droppedGraphemes = this.nextGraphemes;
     for (let i = 0; i < droppedGraphemes.length; i++) releaseGraphemeEntry(droppedGraphemes[i]!);
@@ -252,8 +257,24 @@ export class TextMeasureScope {
   }
 
   release(): void {
-    while (this.depth > 0) this.abort();
-    for (let i = 0; i < this.heldWidths.length; i++) releaseWidthEntry(this.heldWidths[i]!, this.id, -1);
+    if (this.depth > 0) {
+      scopeStack.push(activeScope);
+      let write = 0;
+      for (let i = 0; i < scopeStack.length; i++) {
+        const item = scopeStack[i]!;
+        if (item !== this) scopeStack[write++] = item;
+      }
+      scopeStack.length = write;
+      activeScope = scopeStack.length > 0 ? (scopeStack.pop() ?? null) : null;
+      this.depth = 0;
+      const droppedWidths = this.nextWidths;
+      for (let i = 0; i < droppedWidths.length; i++) releaseWidthEntry(droppedWidths[i]!, this.id, this.pass, 'release');
+      droppedWidths.length = 0;
+      const droppedGraphemes = this.nextGraphemes;
+      for (let i = 0; i < droppedGraphemes.length; i++) releaseGraphemeEntry(droppedGraphemes[i]!);
+      droppedGraphemes.length = 0;
+    }
+    for (let i = 0; i < this.heldWidths.length; i++) releaseWidthEntry(this.heldWidths[i]!, this.id, this.pass, 'release');
     this.heldWidths.length = 0;
     for (let i = 0; i < this.heldGraphemes.length; i++) releaseGraphemeEntry(this.heldGraphemes[i]!);
     this.heldGraphemes.length = 0;
@@ -269,6 +290,15 @@ export class TextMeasureScope {
       this.abort();
       throw error;
     }
+  }
+}
+
+export function runTransientTextScope<T>(fn: () => T): T {
+  const scope = new TextMeasureScope();
+  try {
+    return scope.run(fn);
+  } finally {
+    scope.release();
   }
 }
 
@@ -406,6 +436,18 @@ function findFitInterval(entry: WidthEntry, maxWidth: number, scopeId: number, s
 function storeFitInterval(entry: WidthEntry, min: number, max: number, fitted: FittedLine, scopeId: number, scopePass: number): void {
   const interval: FitInterval = { min, max, fitted };
   if (entry.fitSlot === null || entry.fitScope === scopeId) {
+    let promoted: ScopeFitSlot | undefined;
+    if (entry.otherFits !== null) {
+      promoted = entry.otherFits.get(scopeId);
+      if (promoted !== undefined) {
+        entry.otherFits.delete(scopeId);
+        if (entry.otherFits.size === 0) entry.otherFits = null;
+      }
+    }
+    if (entry.fitSlot === null && promoted !== undefined && promoted.pass === scopePass) {
+      entry.fitScope = scopeId;
+      entry.fitSlot = promoted;
+    }
     if (entry.fitSlot === null || entry.fitSlot.pass !== scopePass) {
       entry.fitScope = scopeId;
       entry.fitSlot = { pass: scopePass, hitPass: scopePass, first: interval, more: null };

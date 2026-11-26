@@ -1,6 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { readableColour } from '../../charts/palette.ts';
-import { TextMeasureScope, ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, runTransientTextScope, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawArtSlot,
   drawFlagSlot,
@@ -132,20 +132,15 @@ export function layoutMeterModel(
     const sectionGap = 14;
     let figureWidth = 0;
     let secondaryWidth = 0;
-    const scan = new TextMeasureScope();
-    try {
-      scan.run(() => {
-        for (const section of sections) {
-          for (const row of section.rows ?? []) {
-            if (!row.figure) continue;
-            figureWidth = Math.max(figureWidth, measureWithFont(ctx, FIGURE_FONT(theme), row.figure));
-            if (row.secondary) secondaryWidth = Math.max(secondaryWidth, measureWithFont(ctx, SECONDARY_FONT(theme), row.secondary));
-          }
+    runTransientTextScope(() => {
+      for (const section of sections) {
+        for (const row of section.rows ?? []) {
+          if (!row.figure) continue;
+          figureWidth = Math.max(figureWidth, measureWithFont(ctx, FIGURE_FONT(theme), row.figure));
+          if (row.secondary) secondaryWidth = Math.max(secondaryWidth, measureWithFont(ctx, SECONDARY_FONT(theme), row.secondary));
         }
-      });
-    } finally {
-      scan.release();
-    }
+      }
+    });
     figureWidth = Math.ceil(figureWidth);
     secondaryWidth = Math.min(SECONDARY_MAX_PX, Math.ceil(secondaryWidth));
 
