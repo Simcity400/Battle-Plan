@@ -474,22 +474,52 @@ impl<'q, 'a> Line<'q, 'a> {
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
             return Ok(ClockAt { read: None, since: None, since_from: None, next_change: None });
         };
-        let (read, since) = self.clock_values(stretch.run, running, &columns, hour)?;
-        let read = read.filter(|&at| at <= hour);
+        let observed = self.clock_values(stretch.run, running, &columns, hour)?;
+        let (read, since) = (observed.0.filter(|&at| at <= hour), observed.1);
         let recording = self.query.replay.recording();
-        let next = |column| match crate::cost::storage(|| replay_lanes::lanes::next(recording, stretch.run, self.series.table, column, running.clock, hour)) {
-            Err(error) if block_damage(&error) => Ok(hour.checked_add(1)),
-            result => result,
-        };
-        let next_change = [next(columns.as_of)?, next(columns.since)?].into_iter().flatten().min().filter(|&at| at <= stretch.last);
+        let run = recording.run(stretch.run)?;
+        let (block, _) = run.place(read::ordinal(recording, stretch.run, hour)?);
+        let block_hours = replay_columnar::unit::BLOCK as i32;
+        let block_first = run.block_first_hour(block);
+        let block_last = block_first.saturating_add(block_hours - 1).min(stretch.last);
         let start = read.unwrap_or(stretch.first).max(stretch.first);
-        let since_from = if start < hour {
-            match self.column_runs(stretch.run, columns.since, &[running.clock], start, hour) {
-                Ok(runs) => runs.get(&running.clock).and_then(|runs| runs.last()).map(|run| run.0),
-                Err(error) if block_damage(&error) => Some(hour),
-                Err(error) => return Err(error),
+        let stale = hour.saturating_sub(start) >= block_hours;
+        let mut first = if stale { block_first.max(stretch.first) } else { start };
+        let limit = if stale { block_last } else { hour.saturating_add(block_hours).min(stretch.last) };
+        let until = crate::cost::storage(|| {
+            let wanted = [columns.as_of, columns.since, columns.value, columns.reason];
+            let mut reader = replay_recording::cells::TableReader::new(recording, stretch.run, self.series.table, Some(&wanted))?;
+            reader.index_keys();
+            let mut at = first;
+            let mut seek = true;
+            loop {
+                let ordinal = read::ordinal(recording, stretch.run, at)?;
+                let verified = if seek || run.place(ordinal).1 == 0 {
+                    reader.seek(recording, ordinal)
+                } else {
+                    reader.step(recording).map(|_| ())
+                };
+                if let Err(error) = verified {
+                    if Damage::of(&error).is_none() { return Err(error); }
+                    if at > hour { return Ok(at - 1); }
+                    if at == hour { first = hour; return Ok(hour); }
+                    at = if at < block_first { block_first } else { hour };
+                    first = at;
+                    seek = true;
+                    continue;
+                }
+                let date = |col| read::number(&reader, running.clock, col).and_then(|v| i32::try_from(v).ok());
+                if (date(columns.as_of), date(columns.since)) != observed {
+                    if at > hour { return Ok(at - 1); }
+                    first = at.saturating_add(1).min(hour);
+                }
+                if at == limit { return Ok(if at < stretch.last { block_last } else { at }); }
+                at += 1;
+                seek = false;
             }
-        } else { None };
+        })?;
+        let since_from = (start < hour).then_some(first);
+        let next_change = (until < stretch.last).then(|| until + 1);
         Ok(ClockAt { read, since, since_from, next_change })
     }
 
@@ -620,24 +650,27 @@ mod tests {
         let opening = damaged_block as i32 * block - 1;
         let changed = opening + 2;
         let carried = (damaged_block as i32 + 1) * block + 3;
-        let restored = (restore_block as i32 + 1) * block + 3;
+        let restored_block_start = (restore_block as i32 + 1) * block;
+        let restored = restored_block_start + 3;
         let last = restored + 3;
-        let clean = crate::fixture::bare(0, last, |frame, hour| {
-            let read = [0, opening, changed, carried, restored, last].into_iter().take_while(|at| *at <= hour).last();
-            let mut rows = vec![ProducedValueRow { country: ProducedValueRow::CLOCK, since: Some(0), as_of: read, ..Default::default() }];
-            for (country, units) in [(7, if hour < changed { 9 } else { 16 }), (8, 11)] {
-                rows.push(ProducedValueRow { country, archetype: 1, units: Recorded::Value(units), ..Default::default() });
-            }
-            frame.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
-        }).unwrap();
-        let entry = |block| clean.recording().table_entry(0, block, table.index()).unwrap().unit;
-        let damaged_entry = entry(damaged_block);
-        assert!(damaged_entry.restore.is_none() && entry(restore_block).restore.is_some());
-        let units = unit::column_stream(dashboard_declare::field(table, "units").unwrap());
-        let frame = damaged_entry.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&units)).unwrap();
-        let mut bytes = clean.bytes().to_vec();
-        bytes[(frame.offset + u64::from(frame.stored / 2)) as usize] ^= 0x40;
-        let damaged = Replay::open(bytes).unwrap();
+        let recordings = |reads: &[i32]| {
+            let clean = crate::fixture::bare(0, last, |frame, hour| {
+                let read = reads.iter().copied().take_while(|at| *at <= hour).last();
+                let mut rows = vec![ProducedValueRow { country: ProducedValueRow::CLOCK, since: Some(0), as_of: read, ..Default::default() }];
+                for (country, units) in [(7, if hour < changed { 9 } else { 16 }), (8, 11)] {
+                    rows.push(ProducedValueRow { country, archetype: 1, units: Recorded::Value(units), ..Default::default() });
+                }
+                frame.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+            }).unwrap();
+            let entry = |block| clean.recording().table_entry(0, block, table.index()).unwrap().unit;
+            let damaged_entry = entry(damaged_block);
+            assert!(damaged_entry.restore.is_none() && entry(restore_block).restore.is_some());
+            let units = unit::column_stream(dashboard_declare::field(table, "units").unwrap());
+            let frame = damaged_entry.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&units)).unwrap();
+            let mut bytes = clean.bytes().to_vec();
+            bytes[(frame.offset + u64::from(frame.stored / 2)) as usize] ^= 0x40;
+            (clean, Replay::open(bytes).unwrap())
+        };
         let tags = ["AAA", "BBB"].map(Country::from);
         let held = |slot| vec![HolderRun { first: 0, last, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
         let holders = std::sync::Arc::new(Holders::new([("AAA".into(), held(7)), ("BBB".into(), held(8))].into(), vec![]));
@@ -648,6 +681,23 @@ mod tests {
             assert_eq!(Damage::of(&error).unwrap().scope, scope);
             error.to_string()
         };
+        let (clean, damaged) = recordings(&[0, opening, restored, last]);
+        let parts = |_| vec![1];
+        for (replay, corrupt) in [(&clean, false), (&damaged, true)] {
+            let query = crate::Query { replay, holders: holders.clone(), timeline: timeline.clone() };
+            let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+            let after = line.clock_at(restored - 1).unwrap();
+            assert_eq!((after.read, after.since), (Some(opening), Some(0)));
+            assert_eq!(after.since_from, Some(restored_block_start), "a stale read cannot extend validity behind this restore");
+            assert_eq!(line.totals_at(&tags, &parts, None, restored - 1).unwrap(), [Ok(16), Ok(11)]);
+            let before = line.clock_at(opening).unwrap();
+            assert_eq!((before.read, before.since), (Some(opening), Some(0)));
+            assert_eq!(before.next_change, Some(opening + 1), "a quiet clock cannot certify the next block");
+            if corrupt {
+                assert!(line.totals_at(&tags, &parts, None, changed).map_err(refusal).is_err());
+            }
+        }
+        let (clean, damaged) = recordings(&[0, opening, changed, carried, restored, last]);
         for (replay, corrupt) in [(&clean, false), (&damaged, true)] {
             let query = crate::Query { replay, holders: holders.clone(), timeline: timeline.clone() };
             let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
@@ -675,7 +725,7 @@ mod tests {
                         assert_eq!(country[..], [TotalRun { first: hour, last: hour, value: Ok(value), opens: false }]);
                     }
                     let clock = line.clock_at(hour).unwrap();
-                    let next = if read == changed { carried } else if read == carried { restored } else { last };
+                    let next = if read == changed { restore_block as i32 * block } else if read == carried { restored } else { last };
                     assert_eq!((clock.read, clock.since, clock.since_from, clock.next_change), (Some(read), Some(0), Some(read), Some(next)));
                 }
             }
