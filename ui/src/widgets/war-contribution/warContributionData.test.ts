@@ -490,6 +490,39 @@ test('warContributionSources plans no contribution reads when no eligible war ex
   assert.deepEqual(warEligibilityAt(sequentialWars, null, 2), { mode: 'ended', valid: [2, 3] });
   assert.deepEqual(warEligibilityAt(sequentialWars, null, 4), { mode: 'live', valid: [4, 5] });
 
+  let gapOverlapReads = 0;
+  const countedObs = (list: WarObservation[]) => new Proxy(list, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) gapOverlapReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const longGapWar = {
+    ...war('1', 0, 5000, [['AAA', 'C1', 'C2'], ['BBB', 'C3']]),
+    observations: countedObs([
+      observation(0, 1, ['AAA', 'C1', 'C2'], ['BBB', 'C3']),
+      observation(4998, 5000, ['AAA', 'C1', 'C2'], ['BBB', 'C3']),
+    ]),
+  } as unknown as WarTimeline;
+  const overlappingGapWars = {
+    available: true,
+    wars: [
+      longGapWar,
+      ...Array.from({ length: 1000 }, (_, i) => {
+        const start = 4 + i * 4;
+        const sides: [string[], string[]] = i === 500 ? [['AAA', 'C1', 'C2', 'C4'], ['BBB', 'C3', 'C5']] : [['AAA'], [`B${i}`]];
+        return {
+          ...war(String(i + 2), start, start + 1, sides),
+          observations: countedObs([observation(start, start + 1, ...sides)]),
+        } as unknown as WarTimeline;
+      }),
+    ],
+  } as unknown as WarsReply;
+  assert.deepEqual(warEligibilityAt(overlappingGapWars, null, 0), { mode: 'live', valid: [0, 1] });
+  assert.ok(gapOverlapReads < 10_000, `overlapping long gap + 1,000 short wars stays linear, not quadratic (reads=${gapOverlapReads})`);
+  assert.deepEqual(warEligibilityAt(overlappingGapWars, null, 6), { mode: 'none', valid: [6, 7] }, 'larger gapped war outranks smaller ended short war');
+  assert.deepEqual(warEligibilityAt(overlappingGapWars, null, 4 + 500 * 4 + 2), { mode: 'ended', valid: [4 + 500 * 4 + 2, 4 + 500 * 4 + 3] }, 'larger ended short war outranks smaller gapped war');
+
   const { createLaneView } = await import('../../families/laneRuntime.ts');
   const { barsLane } = await import('../../families/bars/laneView.ts');
   const { installRecordingCanvas, LANE_THEME, LaneTransport } = await import('../../families/laneRuntime.fixture.ts');

@@ -1,6 +1,6 @@
 import { entryAt } from '../../dashboard/reads.ts';
 import type { WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { labelObservationAt, observationAt } from '../wars/warsData.ts';
+import { labelObservationAt } from '../wars/warsData.ts';
 
 export const WAR_NOT_STARTED = 'The selected war has not started at this date.';
 export const WAR_UNAVAILABLE = 'War not recorded at this time.';
@@ -195,12 +195,53 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
 
 export type WarEligibilityMode = 'none' | 'live' | 'ended';
 
+interface InactiveRank {
+  readonly warIdx: number;
+  readonly version: number;
+  readonly count: number;
+  readonly last: number;
+  readonly id: number;
+  readonly inGap: boolean;
+}
+
+function betterInactive(a: InactiveRank, b: InactiveRank): boolean {
+  if (a.count !== b.count) return a.count > b.count;
+  if (a.last !== b.last) return a.last > b.last;
+  return a.id < b.id;
+}
+
+function heapPush(heap: InactiveRank[], item: InactiveRank): void {
+  let at = heap.push(item) - 1;
+  while (at > 0) {
+    const up = (at - 1) >> 1;
+    if (!betterInactive(heap[at]!, heap[up]!)) break;
+    [heap[at], heap[up]] = [heap[up]!, heap[at]!];
+    at = up;
+  }
+}
+
+function heapPop(heap: InactiveRank[]): void {
+  const last = heap.pop();
+  if (!heap.length || !last) return;
+  heap[0] = last;
+  for (let at = 0;;) {
+    const left = at * 2 + 1;
+    const right = left + 1;
+    let best = at;
+    if (left < heap.length && betterInactive(heap[left]!, heap[best]!)) best = left;
+    if (right < heap.length && betterInactive(heap[right]!, heap[best]!)) best = right;
+    if (best === at) return;
+    [heap[at], heap[best]] = [heap[best]!, heap[at]!];
+    at = best;
+  }
+}
+
 interface SweepEvent {
   readonly hour: number;
   readonly unobserved: number;
   readonly active: number;
-  readonly started: number;
-  readonly gap: number;
+  readonly warIdx: number;
+  readonly rank?: Omit<InactiveRank, 'warIdx' | 'version'>;
 }
 
 function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly EligibilitySegment[] {
@@ -216,26 +257,26 @@ function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly 
     const scope = explicit ? [explicit] : wars.wars;
     const events: SweepEvent[] = [];
     for (const span of wars.unobserved ?? []) {
-      events.push({ hour: span.firstHour, unobserved: 1, active: 0, started: 0, gap: 0 });
-      events.push({ hour: span.lastHour + 1, unobserved: -1, active: 0, started: 0, gap: 0 });
+      events.push({ hour: span.firstHour, unobserved: 1, active: 0, warIdx: -1 });
+      events.push({ hour: span.lastHour + 1, unobserved: -1, active: 0, warIdx: -1 });
     }
-    for (const war of scope) {
+    for (let warIdx = 0; warIdx < scope.length; warIdx++) {
+      const war = scope[warIdx]!;
       const obs = war.observations;
-      if (!obs.length) continue;
-      events.push({ hour: obs[0]!.firstHour, unobserved: 0, active: 0, started: 1, gap: 0 });
+      const id = Number(war.id);
       for (let i = 0; i < obs.length; i++) {
         const cur = obs[i]!;
-        events.push({ hour: cur.firstHour, unobserved: 0, active: 1, started: 0, gap: 0 });
-        events.push({ hour: cur.lastHour + 1, unobserved: 0, active: -1, started: 0, gap: 0 });
-        const next = obs[i + 1];
-        if (next && cur.lastHour + 1 < next.firstHour) {
-          events.push({ hour: cur.lastHour + 1, unobserved: 0, active: 0, started: 0, gap: 1 });
-          events.push({ hour: next.firstHour, unobserved: 0, active: 0, started: 0, gap: -1 });
-        }
-      }
-      const tail = obs[obs.length - 1]!;
-      if (tail.lastHour < war.lastHour) {
-        events.push({ hour: tail.lastHour + 1, unobserved: 0, active: 0, started: 0, gap: 1 });
+        const count = new Set([...cur.viewpointSide, ...cur.opposingSide]).size;
+        const isLast = i === obs.length - 1;
+        const inGap = !isLast || cur.lastHour < war.lastHour;
+        events.push({ hour: cur.firstHour, unobserved: 0, active: 1, warIdx });
+        events.push({
+          hour: cur.lastHour + 1,
+          unobserved: 0,
+          active: -1,
+          warIdx,
+          rank: { count, last: cur.lastHour, id, inGap },
+        });
       }
     }
     events.sort((a, b) => a.hour - b.hour);
@@ -251,38 +292,39 @@ function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly 
       }
     };
 
+    const version = new Int32Array(scope.length);
+    const inactive: InactiveRank[] = [];
     let unobservedCount = 0;
     let activeCount = 0;
-    let startedCount = 0;
-    let gapCount = 0;
     let cursor = -Infinity;
 
-    const modeAt = (sample: number): WarEligibilityMode => {
-      if (unobservedCount > 0 || startedCount === 0) return 'none';
+    const currentMode = (): WarEligibilityMode => {
+      if (unobservedCount > 0) return 'none';
       if (activeCount > 0) return 'live';
-      if (gapCount === 0) return 'ended';
-      const war = chosenWar(wars, explicit ? explicit.id : null, sample);
-      if (!war) return 'none';
-      return observationAt(war, readHourFor(war, sample)) !== null ? 'ended' : 'none';
+      while (inactive.length && inactive[0]!.version !== version[inactive[0]!.warIdx]) heapPop(inactive);
+      const top = inactive[0];
+      if (!top) return 'none';
+      return top.inGap ? 'none' : 'ended';
     };
 
     for (let i = 0; i < events.length;) {
       const hour = events[i]!.hour;
       if (cursor < hour) {
-        const sample = Number.isFinite(cursor) ? cursor : hour - 1;
-        push(cursor, hour - 1, modeAt(sample));
+        push(cursor, hour - 1, currentMode());
         cursor = hour;
       }
       while (i < events.length && events[i]!.hour === hour) {
         const ev = events[i]!;
         unobservedCount += ev.unobserved;
         activeCount += ev.active;
-        startedCount += ev.started;
-        gapCount += ev.gap;
+        if (ev.warIdx >= 0) {
+          const nextVer = ++version[ev.warIdx]!;
+          if (ev.rank) heapPush(inactive, { warIdx: ev.warIdx, version: nextVer, ...ev.rank });
+        }
         i++;
       }
     }
-    push(cursor, Infinity, modeAt(Number.isFinite(cursor) ? cursor : 0));
+    push(cursor, Infinity, currentMode());
 
     segments = built;
     byKey.set(cacheKey, segments);
