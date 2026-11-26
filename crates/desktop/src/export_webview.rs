@@ -218,6 +218,7 @@ struct StepEventPayload {
     css_height: u32,
     dpr: f64,
     scale: f64,
+    measure_text: bool,
 }
 
 #[derive(Default)]
@@ -536,6 +537,7 @@ fn step_payload_for_frame(
     kind: &FrameKind,
     request: &SurfaceVideoRequest,
     metrics: ViewportMetrics,
+    measure_text: bool,
 ) -> (StepEventPayload, Option<String>, Option<i32>) {
     let ref_offset = request.reference_offset;
     match kind {
@@ -571,6 +573,7 @@ fn step_payload_for_frame(
                 css_height: metrics.css_height,
                 dpr: metrics.dpr,
                 scale: metrics.scale,
+                measure_text,
             },
             None,
             Some(*hour),
@@ -616,6 +619,7 @@ fn step_payload_for_frame(
                     css_height: metrics.css_height,
                     dpr: metrics.dpr,
                     scale: metrics.scale,
+                    measure_text,
                 },
                 Some(key),
                 Some(*hour),
@@ -647,6 +651,7 @@ fn step_payload_for_frame(
                     css_height: metrics.css_height,
                     dpr: metrics.dpr,
                     scale: metrics.scale,
+                    measure_text,
                 },
                 Some(key),
                 Some(cut.to_hour),
@@ -1082,14 +1087,33 @@ fn encode_base64(input: &[u8]) -> String {
     out
 }
 
+fn embedded_map_render_size(rect: &ExportMapRect) -> (u32, u32) {
+    let rw = rect.width.max(1);
+    let rh = rect.height.max(1);
+    let min_dim = rw.min(rh);
+    let (scaled_w, scaled_h) = if min_dim < 16 {
+        let factor = 16.0 / f64::from(min_dim);
+        (
+            (f64::from(rw) * factor).round() as u32,
+            (f64::from(rh) * factor).round() as u32,
+        )
+    } else {
+        (rw, rh)
+    };
+    let even = |v: u32| {
+        let clamped = v.max(16);
+        if clamped % 2 == 0 { clamped } else { clamped + 1 }
+    };
+    (even(scaled_w), even(scaled_h))
+}
+
 fn map_request_for_embedded(
     spec: &EmbeddedMapSpec,
     rect: &ExportMapRect,
     req: &SurfaceVideoRequest,
     audio_enabled: bool,
 ) -> MapVideoRequest {
-    let w = (rect.width & !1).max(16);
-    let h = (rect.height & !1).max(16);
+    let (w, h) = embedded_map_render_size(rect);
     let advances = spec.advances(req.follow_pinned);
     let from = if advances {
         req.from_hour + spec.axis_offset
@@ -1246,6 +1270,7 @@ pub fn preview_surface_video(
         mount_ack.content_height,
     );
     let mut viewport_clip = mount_ack.viewport_clip;
+    let mut min_text_px = mount_ack.min_text_px;
     if metrics.css_width != initial.css_width
         || metrics.css_height != initial.css_height
         || (metrics.dpr - initial.dpr).abs() > 1e-4
@@ -1283,6 +1308,9 @@ pub fn preview_surface_video(
         if metrics_ack.viewport_clip.is_some() {
             viewport_clip = metrics_ack.viewport_clip;
         }
+        if metrics_ack.min_text_px.is_some() {
+            min_text_px = metrics_ack.min_text_px;
+        }
     }
 
     for seed in &preview.seed_frames {
@@ -1295,6 +1323,7 @@ pub fn preview_surface_video(
             &seed.kind,
             &request,
             metrics,
+            false,
         );
         window.emit(STEP_EVENT, seed_step).map_err(|e| {
             webview_state.unmount_window(app, &window);
@@ -1322,6 +1351,7 @@ pub fn preview_surface_video(
         &preview.frame.kind,
         &request,
         metrics,
+        true,
     );
     window.emit(STEP_EVENT, step).map_err(|e| {
         webview_state.unmount_window(app, &window);
@@ -1429,7 +1459,7 @@ pub fn preview_surface_video(
     webview_state.unmount_window(app, &window);
     Ok(SurfacePreviewResult {
         png_base64: final_base64,
-        min_text_px: step_ack.min_text_px.or(mount_ack.min_text_px),
+        min_text_px: step_ack.min_text_px.or(min_text_px),
         content_width: mount_ack.content_width,
         content_height: mount_ack.content_height,
         scale: metrics.scale * metrics.dpr,
@@ -1843,6 +1873,7 @@ pub fn run_surface_video_export(
             &scheduled.kind,
             &request,
             metrics,
+            false,
         );
 
         let mut frame_audio: Option<Vec<i16>> = None;
@@ -1864,8 +1895,7 @@ pub fn run_surface_video_export(
                             }
                         }
                         if let Some(rgba) = chunk.rgba {
-                            let mw = (rect.width & !1).max(16);
-                            let mh = (rect.height & !1).max(16);
+                            let (mw, mh) = embedded_map_render_size(rect);
                             embedded_frames.push((rect.clone(), rgba, mw, mh));
                         }
                     }
@@ -2178,6 +2208,16 @@ mod tests {
         assert_eq!(&dst[(7 * 16 + 9) * 4..(7 * 16 + 9) * 4 + 4], &[90, 90, 90, 90]);
         assert_eq!(&dst[(7 * 16 + 10) * 4..(7 * 16 + 10) * 4 + 4], &[0, 0, 0, 0]);
         assert_eq!(&dst[(8 * 16 + 2) * 4..(8 * 16 + 2) * 4 + 4], &[0, 0, 0, 0]);
+        assert_eq!(
+            embedded_map_render_size(&ExportMapRect {
+                widget_id: "m".into(),
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 12,
+            }),
+            (16, 96)
+        );
     }
 
     #[test]

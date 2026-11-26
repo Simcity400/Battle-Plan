@@ -73,6 +73,7 @@ interface StepPayload {
   cssHeight: number;
   dpr: number;
   scale: number;
+  measureText?: boolean;
 }
 
 export interface SurfaceMountData {
@@ -856,7 +857,7 @@ export default function ExportPresentationApp() {
           contentWidth: contentRef.current?.scrollWidth ?? null,
           contentHeight: contentRef.current?.scrollHeight ?? null,
           minTextPx:
-            payload.frameIndex === 0
+            payload.measureText || payload.frameIndex === 0
               ? measureMinTextPx(rootRef.current, payload.dpr * payload.scale)
               : null,
           mapRects,

@@ -368,6 +368,7 @@ impl FrameSchedule {
                             step_hours,
                             &self.stretches,
                             self.fps,
+                            self.hours_per_second,
                         )
                     };
                     return PreviewFrame {
@@ -424,6 +425,7 @@ impl FrameSchedule {
                     step_hours,
                     &self.stretches,
                     self.fps,
+                    self.hours_per_second,
                 )
             };
             PreviewFrame {
@@ -1163,19 +1165,34 @@ fn select_span_sample(first: i32, last: i32, target: i32, step_hours: f64) -> (u
         return (total_steps, last, 0.0);
     }
     let delta = (f64::from(clamped) - f64::from(first)).max(0.0);
-    let k_ceil = (delta / step_hours).ceil().max(0.0) as u64;
-    if k_ceil < total_steps {
-        let (w, f) = eval_span_step(first, last, k_ceil, step_hours);
-        if w == clamped {
-            return (k_ceil, w, f);
-        }
-    }
     let k_floor = (delta / step_hours)
         .floor()
         .max(0.0)
         .min((total_steps.saturating_sub(1)) as f64) as u64;
+    let mut k = k_floor;
+    while k < total_steps && eval_span_step(first, last, k, step_hours).0 < clamped {
+        k += 1;
+    }
+    if k < total_steps {
+        let (w, f) = eval_span_step(first, last, k, step_hours);
+        if w == clamped {
+            return (k, w, f);
+        }
+    }
     let (w, f) = eval_span_step(first, last, k_floor, step_hours);
     (k_floor, w, f)
+}
+
+fn export_glide_duration_ms(hours_per_second: f64, fps: u32) -> f64 {
+    let safe_fps = f64::from(fps.max(1));
+    if !hours_per_second.is_finite() || hours_per_second <= 0.0 {
+        return 0.0;
+    }
+    if hours_per_second < safe_fps {
+        ((1000.0 / hours_per_second) * 0.85).round().clamp(24.0, 180.0)
+    } else {
+        ((1000.0 / safe_fps) * 3.0).round().clamp(36.0, 120.0)
+    }
 }
 
 #[expect(
@@ -1191,22 +1208,29 @@ fn build_ease_seeds(
     step_hours: f64,
     stretches: &[RecordedStretch],
     fps: u32,
+    hours_per_second: f64,
 ) -> Vec<ScheduledFrame> {
     if selected_local == 0 || step_hours <= 0.0 {
         return Vec::new();
     }
-    let delta = (f64::from(selected_hour) - f64::from(span_first)).max(0.0);
-    let change_local = (delta / step_hours).ceil().max(0.0) as u64;
-    let change_local = change_local.min(selected_local);
-    if change_local == 0 {
-        return Vec::new();
-    }
-    let prior_local = change_local - 1;
-    let (prior_hour, prior_frac) = eval_span_step(span_first, span_last, prior_local, step_hours);
-    if has_discontinuity(stretches, prior_hour, selected_hour) {
-        return Vec::new();
-    }
     let safe_fps = fps.max(1);
+    let glide_ms = export_glide_duration_ms(hours_per_second, safe_fps);
+    let lookback = ((glide_ms * f64::from(safe_fps)) / 1000.0).ceil().max(1.0) as u64;
+    let window_min = selected_local.saturating_sub(lookback + 1);
+    let mut start = selected_local;
+    let mut probe = selected_local;
+    while probe > window_min {
+        let prev = probe - 1;
+        let (h, _) = eval_span_step(span_first, span_last, prev, step_hours);
+        if has_discontinuity(stretches, h, selected_hour) {
+            break;
+        }
+        start = prev;
+        probe = prev;
+    }
+    if start >= selected_local {
+        return Vec::new();
+    }
     let mk = |idx: u64, hour: i32, fraction: f64, reset_continuity: bool| ScheduledFrame {
         frame_index: idx,
         presentation_time: idx as f64 / f64::from(safe_fps),
@@ -1218,12 +1242,13 @@ fn build_ease_seeds(
             cut_banner: None,
         },
     };
-    let mut seeds = Vec::with_capacity(2);
-    seeds.push(mk(base_index + prior_local, prior_hour, prior_frac, true));
-    if change_local < selected_local {
-        let (ch_hour, ch_frac) = eval_span_step(span_first, span_last, change_local, step_hours);
-        if ch_hour == selected_hour {
-            seeds.push(mk(base_index + change_local, ch_hour, ch_frac, false));
+    let mut seeds = Vec::new();
+    let mut last_hour: Option<i32> = None;
+    for local in start..selected_local {
+        let (h, f) = eval_span_step(span_first, span_last, local, step_hours);
+        if last_hour != Some(h) {
+            seeds.push(mk(base_index + local, h, f, seeds.is_empty()));
+            last_hour = Some(h);
         }
     }
     seeds
@@ -1792,5 +1817,54 @@ mod tests {
         let first = page_schedule.first_recorded_covered(&map_stretches).unwrap();
         assert_eq!(first.0, 100);
         assert!(first.1.abs() < 1e-6);
+    }
+
+    #[test]
+    fn preview_frame_handles_float_rounding_and_multi_step_glide_seeding() {
+        let rounding_schedule = build_schedule(
+            &[
+                RecordedStretch { first: 0, last: 62, join: StretchJoin::Start },
+                RecordedStretch { first: 64, last: 70, join: StretchJoin::Break },
+            ],
+            &[UnheldGap { first: 63, last: 63, reason: "hour 63 missing".into() }],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 70,
+                fps: 60,
+                hours_per_second: 42.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let cursor_frames = rounding_schedule.collect_frames();
+        let preview = rounding_schedule.preview_frame(63);
+        assert_eq!(preview.frame.frame_index, 91);
+        assert_eq!(preview.frame.kind, cursor_frames[91].kind);
+
+        let fast_glide = build_schedule(
+            &[RecordedStretch { first: 0, last: 10, join: StretchJoin::Start }],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 10,
+                fps: 60,
+                hours_per_second: 120.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let glide_preview = fast_glide.preview_frame(4);
+        assert_eq!(glide_preview.frame.frame_index, 2);
+        assert_eq!(glide_preview.seed_frames.len(), 2);
+        assert!(matches!(
+            glide_preview.seed_frames[0].kind,
+            FrameKind::Recorded { hour: 0, reset_continuity: true, .. }
+        ));
+        assert!(matches!(
+            glide_preview.seed_frames[1].kind,
+            FrameKind::Recorded { hour: 2, reset_continuity: false, .. }
+        ));
     }
 }
