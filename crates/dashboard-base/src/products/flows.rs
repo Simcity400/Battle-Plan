@@ -11,7 +11,7 @@ pub struct FlowPart {
     pub key: String,
     pub name: Option<String>,
     pub name_missing: Option<String>,
-    #[doc = " The part's place in the recording's own order, for its colour."]
+    #[doc = " The part's recorded id, for a colour that stays with it from hour to hour."]
     pub ordinal: u32,
     pub icon: Option<String>,
 }
@@ -218,6 +218,14 @@ impl FlowGap {
     }
 }
 
+pub fn validate_chosen(subject: Option<&Country>, countries: &[Country], group: bool) -> Result<(), &'static str> {
+    match (subject.is_some(), !countries.is_empty(), group) {
+        (true, true, _) | (true, _, true) => Err("Ask one country, or a group or countries, never both"),
+        (_, true, true) => Err("Ask a group or countries, never both"),
+        _ => Ok(()),
+    }
+}
+
 pub struct FlowShape<'a> {
     pub subject: Option<u32>,
     pub chosen: Option<&'a HashSet<u32>>,
@@ -358,7 +366,7 @@ fn rank(by: BTreeMap<Key, Grouped>, parts: usize, shape: &FlowShape<'_>, missing
     let unproven = unproven.or_else(|| whole.total().is_none().then(|| whole.missing.clone().unwrap_or_else(|| shape.not_recorded.to_owned())));
     let shown = shape.limit.map_or(known.len(), |limit| if known.len() > limit + 1 { limit } else { known.len() });
     let keep = match (shape.top, &unproven) {
-        (Some(top), None) => top.min(shown),
+        (Some(top), None) => top.min(known.len()),
         _ => shown,
     };
     let unranked = shape.top.and(unproven);
@@ -603,6 +611,16 @@ mod tests {
     }
 
     #[test]
+    fn a_request_names_one_country_or_a_group_or_countries_never_two_of_them() {
+        let one = Country::Tag("GER".into());
+        assert!(validate_chosen(Some(&one), &[], true).is_err(), "a centre outside the group would silently drop the group");
+        assert!(validate_chosen(Some(&one), std::slice::from_ref(&one), false).is_err());
+        assert!(validate_chosen(None, std::slice::from_ref(&one), true).is_err());
+        assert!(validate_chosen(Some(&one), &[], false).is_ok());
+        assert!(validate_chosen(None, &[], true).is_ok());
+    }
+
+    #[test]
     fn a_country_sees_its_partners_both_ways_largest_first_and_the_rest_folded() {
         let edges = [
             edge(HOL, USA, 0, Some(26)),
@@ -688,6 +706,8 @@ mod tests {
         let reply = topped(&complete, 2);
         assert_eq!(rows(&reply, &reply.incoming, true), [(Some(Some(HOL)), Some("26".to_owned()), None), (Some(Some(TUR)), Some("12".to_owned()), None), (None, Some("9".to_owned()), Some(1))], "top 2 of 3 folds the third");
         assert_eq!(reply.incoming.unranked, None);
+        let wide = build(&complete, 1, &FlowShape { top: Some(3), ..shape(Some(USA), Some(1), false) });
+        assert_eq!(rows(&wide, &wide.incoming, true).len(), 3, "an explicit top of 3 names all three even where the viewport would fold after one");
         let unknown = [edge(HOL, USA, 0, Some(26)), edge(RAJ, USA, 0, None), edge(TUR, USA, 0, Some(12)), edge(IRN, USA, 0, Some(9))];
         let reply = topped(&unknown, 1);
         assert_eq!(

@@ -80,8 +80,8 @@ test('a country-centred flow: partners in the product\'s order, an unrecorded pa
   const ribbon = model.ribbons.find(item => item.from === 'left:s2')!;
   assert.deepEqual(ribbon.bands, [{ part: 0, numeric: 20 }, { part: 1, numeric: 6 }]);
   assert.equal(findFlowTooltip(model, 'ribbon:left:s3>centre:s1')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
-  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:s3' && (row.value ?? '').startsWith('Not recorded · Steel: Not recorded (')));
-  assert.equal(model.left[0]!.audit, '26 · Oil: 20; Steel: 6', 'the audit carries each part, so swapped bands differ');
+  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:s3' && (row.value ?? '').includes(' · Not recorded · Steel: Not recorded (')));
+  assert.equal(model.left[0]!.audit, 'Loading name… [HOL] · 26 · Oil: 20; Steel: 6', 'the audit carries each part, so swapped bands differ');
   assert.ok(deriveFlowNav(model).some(tuple => tuple[0] === 'ribbon:left:s2>centre:s1'), 'a ribbon takes keyboard focus');
   assert.deepEqual(model.notes, ['A deal\'s daily delivery was not recorded at this hour'], 'the side whose total is unproven says why');
   assert.match(model.centre!.audit, /Imports from Not recorded: .*Exports to 74/);
@@ -269,7 +269,7 @@ test('a recorded 0.04 a day is drawn as under one tenth and read exactly with it
   const model = projectCountryFlow(view(small), { ...TEXT, unit: 'per day' });
   const node = model.left[0]!;
   assert.equal(node.figure, '<0.1');
-  assert.equal(node.audit, '0.04 per day · Oil: 0.04 per day');
+  assert.equal(node.audit, 'Loading name… [HOL] · 0.04 per day · Oil: 0.04 per day');
   assert.equal(findFlowTooltip(model, 'node:left:s2')?.items?.[0]?.value, '0.04 per day');
 });
 
@@ -345,4 +345,151 @@ test('in a group, a sender whose total is unknown reserves the width of its know
   const end = Math.max(...out.map(box => box.a1));
   assert.ok(ita.height >= end - ita.y - 0.01, 'the unknown node holds all its ribbons');
   assert.ok(sov.slotTop >= end, 'the next node starts below them');
+});
+
+const UNREAD = 'A deal\'s daily delivery was not recorded at this hour';
+
+test('a link with one known part and one missing part paints its known width and hatches only the missing mark, and unknown partners never run off the body', () => {
+  const mixed: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL'), endpoint(6, 'ENG')],
+    subject: 0,
+    incoming: side([link(1, 0, [[0, 40], [1, null]])], null, UNREAD),
+    outgoing: side([link(0, 2, [[0, 10]])], amount(10)),
+    largest: amount(40),
+    largestLink: amount(10),
+  };
+  const model = projectCountryFlow(view(mixed), TEXT);
+  const layout = layoutFlow(model, 846, 360);
+  const box = layout.ribbons.find(item => item.ribbon.from === 'left:s2')!;
+  assert.ok(box.known > 0.5 && box.known < 1, 'the known 40 keeps its colour; only the missing mark is hatched');
+  const node = layout.nodes.find(item => item.node.key === 'left:s2')!;
+  assert.ok(node.height >= box.b1 - box.b0 - 0.01, 'the unknown node is as tall as its known and missing marks together');
+  assert.ok(Math.abs((box.b1 - box.b0) * box.known - 40 * layout.scale) < 0.01, 'the known part is on the same scale as every known amount');
+
+  const many = Array.from({ length: 14 }, (_, at) => endpoint(20 + at, `C${at}`));
+  const crowded: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), ...many],
+    subject: 0,
+    incoming: side(many.map((_, at) => link(at + 1, 0, [[0, 30], [1, null]])), null, UNREAD),
+    largest: amount(420),
+    largestLink: amount(30),
+  };
+  const tall = layoutFlow(projectCountryFlow(view(crowded), TEXT), 846, 200);
+  const bottom = Math.max(...tall.nodes.map(item => item.slotTop + item.slotHeight));
+  assert.ok(tall.height > 200, 'more partners than fit make the body scroll');
+  assert.ok(bottom <= tall.height, 'every partner is inside the scrolled body, none drawn off it');
+  const lefts = tall.nodes.filter(item => item.node.side === 'left');
+  for (let i = 1; i < lefts.length; i++) assert.ok(lefts[i]!.slotTop >= lefts[i - 1]!.slotTop + lefts[i - 1]!.slotHeight);
+});
+
+test('an unnamed resource keeps its reason beside its amount in hover and audit', () => {
+  const why = 'Resource 7 has no recorded definition at this hour';
+  const reply: CountryFlowReply = {
+    ...centred,
+    parts: [parts[0]!, { key: 'resource:7', name: null, nameMissing: why, ordinal: 7, icon: null }],
+  };
+  const model = projectCountryFlow(view(reply), TEXT);
+  assert.deepEqual(model.parts.map(part => [part.ordinal, part.missing ?? null]), [[0, null], [7, why]]);
+  const items = findFlowTooltip(model, 'node:left:s2')?.items ?? [];
+  assert.ok(items.some(item => item.label === why), 'hover says why the resource has no name');
+  assert.match(model.left[0]!.audit, /resource:7 \(Resource 7 has no recorded definition at this hour\): 6/);
+});
+
+test('hover gives the exact total where the drawn figure rounds, and counts carry their unit', () => {
+  const two: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL')],
+    subject: 0,
+    incoming: side([{ from: 1, to: 0, others: null, amounts: [{ part: 0, amount: '9000' }, { part: 1, amount: '9000' }], total: '18000', missing: null }], '18000'),
+    largest: '18000',
+    largestLink: '18000',
+  };
+  const model = projectCountryFlow(view(two), { ...TEXT, unit: 'per day' });
+  assert.equal(model.left[0]!.figure, '0.1');
+  const items = findFlowTooltip(model, 'node:left:s2')?.items ?? [];
+  assert.deepEqual([items[0]!.label, items[0]!.value], ['Total', '0.18 per day']);
+  const ribbon = findFlowTooltip(model, 'ribbon:left:s2>centre:s1')?.items ?? [];
+  assert.equal(ribbon[0]!.value, '0.18 per day');
+
+  const count = (n: number): CountryFlowReply => ({
+    ...base,
+    decimals: 0,
+    parts: [{ key: 'divisions', name: 'Divisions', nameMissing: null, ordinal: 0, icon: null }],
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL')],
+    subject: 0,
+    outgoing: side([{ from: 0, to: 1, others: null, amounts: [{ part: 0, amount: String(n) }], total: String(n), missing: null }], String(n)),
+    largest: String(n),
+    largestLink: String(n),
+  });
+  const units = { ...TEXT, unit: ['division', 'divisions'] as const };
+  assert.equal(projectCountryFlow(view(count(3)), units).right[0]!.audit, 'Loading name… [HOL] · 3 divisions · Divisions: 3 divisions');
+  assert.equal(projectCountryFlow(view(count(1)), units).right[0]!.audit, 'Loading name… [HOL] · 1 division · Divisions: 1 division');
+});
+
+test('the audit tells apart a changed number of folded partners, a proven-empty frame and an unavailable one', () => {
+  const folded = (others: number): CountryFlowReply => ({ ...centred, incoming: side([link(HOL, USA, [[0, 20], [1, 6]]), link(null, USA, [[0, 14]], others)], amount(40)) });
+  const rows = (reply: CountryFlowReply) => deriveFlowAudit(projectCountryFlow(view(reply), TEXT)).map(row => `${row.key}=${row.value}`);
+  assert.notDeepEqual(rows(folded(2)), rows(folded(3)));
+  const empty = rows({ ...base, endpoints: [endpoint(1, 'USA')], subject: 0 });
+  const unavailable = rows({ ...base, missing: 'Trade flows were not read at this hour' });
+  assert.equal(empty.length, 1);
+  assert.notDeepEqual(empty, unavailable);
+  const retagged: CountryFlowReply = { ...centred, endpoints: [centred.endpoints[0]!, endpoint(2, 'NED'), ...centred.endpoints.slice(2)] };
+  assert.notDeepEqual(rows(centred), rows(retagged), 'a partner that changes its tag with the same amounts audits differently');
+});
+
+test('a known node is as tall as its ribbons, and keyboard stops carry their place so focus can scroll to them', () => {
+  const reply: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(10, 'ITA'), endpoint(8, 'SOV'), endpoint(7, 'GER'), endpoint(11, 'SPD')],
+    senders: side([link(0, null, [[0, 1000]]), link(1, null, [[0, 0.01]]), link(2, null, [[0, 0.01]])], amount(1000.02)),
+    receivers: side([link(null, 3, [[0, 0.03]])], amount(0.03)),
+    links: [link(0, 3, [[0, 0.01]]), link(1, 3, [[0, 0.01]]), link(2, 3, [[0, 0.01]])],
+    largest: amount(1000),
+    largestLink: amount(0.01),
+  };
+  const model = projectCountryFlow(view(reply), TEXT);
+  const layout = layoutFlow(model, 846, 360);
+  const spd = layout.nodes.find(box => box.node.key === 'right:s11')!;
+  const into = layout.ribbons.filter(box => box.ribbon.to === 'right:s11');
+  assert.ok(Math.max(...into.map(box => box.b1)) <= spd.y + spd.height + 0.01, 'three two-pixel ribbons fit inside the receiver they reach');
+  const nav = deriveFlowNav(model, layout);
+  assert.ok(nav.every(tuple => typeof tuple[6] === 'number' && typeof tuple[7] === 'number'), 'every stop has a top and height');
+});
+
+test('keyboard and mirror walk ribbons in the painted order and skip a ribbon that paints nothing', async () => {
+  const { deriveFlowMirror } = await import('./model.ts');
+  const reply: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(10, 'ITA'), endpoint(8, 'SOV'), endpoint(11, 'SPD'), endpoint(9, 'SPR')],
+    senders: side([link(0, null, [[0, 9]]), link(1, null, [[0, 4]])], amount(13)),
+    receivers: side([link(null, 2, [[0, 5]]), link(null, 3, [[0, 8]])], amount(13)),
+    links: [link(0, 3, [[0, 4]]), link(0, 2, [[0, 5]]), link(1, 3, [[0, 4]]), link(1, 2, [[0, 0]])],
+    largest: amount(9),
+    largestLink: amount(5),
+  };
+  const model = projectCountryFlow(view(reply), TEXT);
+  const layout = layoutFlow(model, 846, 360);
+  const painted = layout.ribbons.filter(box => box.b1 > box.b0).map(box => `ribbon:${box.ribbon.key}`);
+  const walked = deriveFlowNav(model).filter(tuple => tuple[0].startsWith('ribbon:')).map(tuple => tuple[0]);
+  assert.deepEqual(walked, painted);
+  assert.ok(!walked.includes('ribbon:left:s8>right:s11'), 'a zero ribbon is no stop');
+  assert.deepEqual(deriveFlowMirror(model).rows.filter(row => row.key.startsWith('ribbon:')).map(row => row.key), painted);
+});
+
+test('one chosen country with "only between them" is not a centred view of its trade with anyone', async () => {
+  const { tradeFlowDeclaration } = await import('../../widgets/trade-flows/tradeFlowsProjection.ts');
+  const ctx = (between: string) => ({
+    track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: { between },
+    countryTag: null,
+    countries: { all: false, top: null, tags: ['GER'] },
+    widget: { countries: { kind: 'countries', tags: ['GER'] } },
+  }) as never;
+  const params = (between: string) => (tradeFlowDeclaration.sources(ctx(between), { following: true, staticSpan: null, height: 360 }).entries[0]!.read as unknown as { params: Record<string, unknown> }).params;
+  assert.deepEqual([params('between').subject, params('between').countries, params('between').between], [undefined, ['GER'], true]);
+  assert.equal(params('touching').subject, 'GER');
 });

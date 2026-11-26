@@ -26,6 +26,7 @@ export const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
       inspected: inspectedItem(frame.inspect),
       focused: frame.binding.focusedKey ?? null,
       artCache: frame.art,
+      scrollTop: frame.binding.scrollTop,
     });
     return false;
   },
@@ -45,7 +46,7 @@ export const flowLane: LaneFamily<FamilyFlowBinding, FlowModel, FlowLayout> = {
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },
-      nav: deriveFlowNav(model),
+      nav: deriveFlowNav(model, layout),
       extent: { width: layout.width, height: layout.height },
     };
   },

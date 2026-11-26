@@ -4093,7 +4093,7 @@ resource?: number,
 table: boolean, };
 export type FlowPart = { key: string, name: string | null, nameMissing: string | null,
 /**
- * The part's place in the recording's own order, for its colour.
+ * The part's recorded id, for a colour that stays with it from hour to hour.
  */
 ordinal: number, icon: string | null, };
 export type FlowAmount = {

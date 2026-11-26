@@ -2,7 +2,7 @@ import { unavailableArt } from '../../families/art/types.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY, unknownEndpointLabel } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide, flowViewSubject } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
@@ -47,7 +47,7 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its trade.',
   icon: 'flows',
   countries: { mode: 'multi' },
-  sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }),
+  sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }, flowViewSubject(ctx)),
   projection: tradeFlowProjection,
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,
