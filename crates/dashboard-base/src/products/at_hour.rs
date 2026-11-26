@@ -173,7 +173,7 @@ fn holder<P: AtHour>(holders: &Holders, params: &P::Params, hour: i32) -> io::Re
     let Some(country) = P::owner(params) else { return Ok(None) };
     match holders.at(country, hour).map(|run| run.holder) {
         Some(Holder::Found { slot, id }) => Ok(Some(Owner { slot, id })),
-        Some(Holder::Unresolved) | None => Err(dashboard_core::refused(format!("{} country is unavailable at this hour", P::TITLE))),
+        Some(Holder::Unresolved) | None => Err(dashboard_core::refused(holders.not_known(country, hour).unwrap_or_else(|| format!("{} country is unavailable at this hour", P::TITLE)))),
     }
 }
 

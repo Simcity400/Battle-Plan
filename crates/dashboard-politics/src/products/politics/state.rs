@@ -270,6 +270,9 @@ impl AtHour for PoliticsState {
             PoliticsView::Balances => at.context.catalogue.as_ref().map(|held| held.as_deref()),
             PoliticsView::Exiles => None,
         };
+        if let Some(reason) = params.country.as_ref().filter(|_| matches!(params.view, PoliticsView::Balances)).and_then(|country| at.holders.not_known(country, at.hour)) {
+            return Err(dashboard_core::refused(reason));
+        }
         let requested_slot = selected_slot(params.country.as_ref(), at.holders, at.hour);
         read_for(frame, params, catalogue, params.country.is_some(), requested_slot, at.live)
     }

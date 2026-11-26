@@ -839,7 +839,7 @@ impl Product for ProductionLineBreakdown {
         let query = dashboard_base::queries::query(source, branch)?;
         let stretch = query.timeline.within(hour, hour).next().ok_or_else(|| dashboard_core::refused("Production lines were not recorded at this hour"))?;
         let Some(Holder::Found { slot, .. }) = query.holders.at(&params.country, hour).map(|run| run.holder) else {
-            return Err(dashboard_core::refused("This country is not held by any country at this hour"));
+            return Err(dashboard_core::refused(query.holders.not_known(&params.country, hour).unwrap_or_else(|| "This country is not held by any country at this hour".to_owned())));
         };
         let recording = query.replay.recording();
         let format = recording.format();

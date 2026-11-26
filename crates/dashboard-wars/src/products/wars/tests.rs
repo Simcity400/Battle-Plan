@@ -257,3 +257,16 @@ fn a_countrys_naming_operands_at_an_hour_are_its_holders_look_with_every_overlor
     let (held, _) = naming.operands(&tags, &slots(&[1]), 135);
     assert_eq!(held.get(&1), Some(&Err(LOOKS_UNKNOWN.to_owned())), "an hour no look is known names why");
 }
+
+#[test]
+fn a_chosen_viewpoint_whose_holder_is_not_known_is_not_recorded_with_the_recorded_reason() {
+    let reason = "Countries was not complete at these hours";
+    let held = Holders::new(holders(&[("ONE", 1), ("TWO", 2)], 90, 109).tags, vec![(110, 120, reason.to_owned())]);
+    let names = SlotNames::new(&held);
+    let link = |raw: u32| Some(raw);
+    let state = at_war(&[2]);
+    let viewpoint = Country::from("ONE");
+    let refused = Hour::build(&state, &Resolved { links: &link, names: &names, holders: &held, hour: 115 }, Some(&viewpoint)).err();
+    assert_eq!(refused, Some(format!("Who holds ONE is not known: {reason}")), "never \"not in this recording\"");
+    assert!(Hour::build(&state, &Resolved { links: &link, names: &names, holders: &held, hour: 100 }, Some(&viewpoint)).is_ok(), "where its holder is known the viewpoint is read");
+}

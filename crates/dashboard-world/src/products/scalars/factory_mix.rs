@@ -462,7 +462,7 @@ impl AtHour for FactoryMix {
                         total: None,
                         values: vec![None; parts.len()],
                         shares: vec![None; parts.len()],
-                        missing: Some("This country is not present at this hour".to_owned()),
+                        missing: Some(at.holders.not_known(country, frame.hour).unwrap_or_else(|| "This country is not present at this hour".to_owned())),
                         parts_missing: None,
                     }),
                 }

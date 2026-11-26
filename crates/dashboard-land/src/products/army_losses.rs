@@ -798,7 +798,7 @@ impl AtHour for ArmyLosses {
         };
         let slot = match at.holders.at(&params.country, at.hour).map(|run| run.holder) {
             Some(Holder::Found { slot, .. }) => slot,
-            Some(Holder::Unresolved) => return Err(dashboard_core::refused(at.holders.say(&params.country, at.hour, |name| format!("{name} has no resolved country identity at this hour")))),
+            Some(Holder::Unresolved) => return Err(dashboard_core::refused(at.holders.not_known(&params.country, at.hour).unwrap_or_else(|| at.holders.say(&params.country, at.hour, |name| format!("{name} has no resolved country identity at this hour"))))),
             None => {
                 reply.absent = true;
                 return Ok(reply);

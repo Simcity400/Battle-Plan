@@ -298,6 +298,9 @@ fn validate_tags(tags: &[dashboard_base::products::Country]) -> Result<(), &'sta
 pub type RosterContext = Result<Arc<OperativeContent>, String>;
 
 pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Country], holders: &Holders, hour: i32, context: &RosterContext) -> io::Result<OperativesRosterReply> {
+    if let Some(reason) = countries.iter().find_map(|country| holders.not_known(country, hour)) {
+        return Err(io::Error::other(reason));
+    }
     let tags = Tags::read(frame)?;
     let rows = frame.complete::<tables::OperativeMemberships>()?;
     let tags_asked: Vec<String> = countries.iter().map(|country| country.key().into_owned()).collect();

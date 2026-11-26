@@ -731,7 +731,7 @@ impl Product for NavalSupremacy {
                         Err(error) => MissionRegisteredShips::refused(error.to_string()),
                     }
                 }
-                _ => MissionRegisteredShips::refused("The viewer's tag is held by no country at this hour".into()),
+                _ => MissionRegisteredShips::refused(query.holders.not_known(&params.country, ship_hour).unwrap_or_else(|| "The viewer's tag is held by no country at this hour".into())),
             },
         };
         let make_region = |id: u32, pinned: bool, runs_vec: Vec<SupremacyRun>| -> SupremacyRegion {

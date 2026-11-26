@@ -502,7 +502,10 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         return Ok(reply);
     };
     let Holder::Found { id, .. } = run.holder else {
-        return Ok(reply);
+        return match query.holders.not_known(&params.country, hour) {
+            Some(reason) => Err(dashboard_core::refused(reason)),
+            None => Ok(reply),
+        };
     };
     let first = stretch.first.max(run.first);
     let reads = reads_in(query, stretch.run, first, hour)?;

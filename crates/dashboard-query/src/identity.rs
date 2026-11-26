@@ -263,7 +263,11 @@ impl Holders {
     }
 
     pub fn not_known(&self, country: &Country, hour: i32) -> Option<String> {
-        self.unknown_reason(hour).map(|reason| format!("Who holds {} is not known: {reason}", self.label(country, hour).unwrap_or_else(|| country.key().into_owned())))
+        self.unknown_reason(hour).map(|reason| who_holds(&self.name(country, hour), reason))
+    }
+
+    pub fn not_known_as(&self, name: &str, hour: i32) -> Option<String> {
+        self.unknown_reason(hour).map(|reason| who_holds(name, reason))
     }
 
     pub fn unnamed(&self, country: &Country, hour: i32) -> String {
@@ -402,6 +406,10 @@ fn history(recording: &Recording, run: u32) -> io::Result<Vec<Row>> {
         out.push(Row { tag: Some(tag), reason: String::new(), holder, first, last });
     }
     Ok(out)
+}
+
+fn who_holds(name: &str, reason: &str) -> String {
+    format!("Who holds {name} is not known: {reason}")
 }
 
 pub fn holders(recording: &Recording, timeline: &Timeline) -> io::Result<Holders> {

@@ -250,7 +250,7 @@ pub(crate) fn assignment(histories: &Histories, owner: u32, index: u32, first: i
 fn reads(source: &Source, query: &Query<'_>, tag: &Country, part: &ResearchBreakdownPart, localise: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<ResearchSlotState>, Vec<ResearchProgress>), String> {
     let first = part.first_observed_hour;
     let run = query.holders.at(tag, first).ok_or("The country is not held at the assignment's first observation")?;
-    let Holder::Found { slot, .. } = run.holder else { return Err("The country is not resolved at the assignment's first observation".into()) };
+    let Holder::Found { slot, .. } = run.holder else { return Err(query.holders.not_known(tag, first).unwrap_or_else(|| "The country is not resolved at the assignment's first observation".into())) };
     let stretch = query.timeline.at(first).ok_or("The assignment's first observation is not recorded")?;
     let last = part.last_hour.min(stretch.last).min(run.last);
     let links = dashboard_base::queries::links(source, stretch.run).map_err(|error| error.to_string())?;

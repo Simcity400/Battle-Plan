@@ -428,6 +428,11 @@ impl AtHour for DiplomaticRelations {
         }
         let (mut owners, pairs, domain) = opinions_matrix(frame, &named(&ids));
         for owner in &mut owners {
+            if owner.country_id.is_none()
+                && let Some(reason) = at.holders.not_known_as(&owner.tag, at.hour)
+            {
+                owner.reason = Some(reason);
+            }
             if let Some((name, name_missing, color, faction_id, faction_name)) = metadata.remove(&owner.tag) {
                 owner.name = name;
                 owner.name_missing = name_missing;
@@ -437,7 +442,7 @@ impl AtHour for DiplomaticRelations {
             }
         }
         let unresolved = owners.iter().filter(|owner| owner.country_id.is_none()).count();
-        if unresolved > 0 {
+        if unresolved > 0 && at.holders.unknown_reason(at.hour).is_none() {
             warnings.push(format!("{unresolved} chosen countries have no holder at this hour; their opinions are not known."));
         }
         Ok(DiplomaticRelationsReply { chosen_missing, owners, pairs, domain, warnings })

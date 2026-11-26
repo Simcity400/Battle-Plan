@@ -185,7 +185,7 @@ impl AtHour for OccupationDetail {
                         row.collaboration.sort_by(|a, b| a.tag.cmp(&b.tag).then(a.slot.cmp(&b.slot)));
                     }
                 }
-                Some(Holder::Unresolved) | None => row.missing = Some("No country holds this tag at this hour".into()),
+                Some(Holder::Unresolved) | None => row.missing = Some(at.holders.not_known(tag, at.hour).unwrap_or_else(|| "No country holds this tag at this hour".into())),
             }
             occupiers.push(row);
         }

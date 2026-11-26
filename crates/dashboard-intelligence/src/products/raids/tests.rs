@@ -1041,3 +1041,48 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!(top_reuse.series.len(), 2, "reused tag keeps slots 7 and 9 separate");
     assert_eq!(top_reuse.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7, 9]);
 }
+
+#[test]
+fn a_chosen_country_tally_holds_only_while_its_holder_is_known_and_names_the_hours_it_is_not() {
+    use super::{RaidTallyAt, RaidTallyAtParams, RaidTallyMetric};
+
+    let countries = vec![(10, 7, b"AAA".as_slice()), (20, 9, b"BBB".as_slice())];
+    let scope = RaidScope { province: 10, ..Default::default() };
+    let ended = || TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(10))]));
+    let frame = |hour: i32, known: bool| {
+        let mut frame = make_frame(1, hour, countries.clone(), 20, ended(), vec![target_row(1, scope.clone(), 40)]);
+        if !known {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries unread".into() };
+        }
+        frame
+    };
+    let frames = vec![
+        make_frame(1, 10, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])), vec![target_row(1, scope.clone(), 40)]),
+        frame(11, true),
+        frame(12, false),
+        frame(13, false),
+        frame(14, true),
+        frame(15, true),
+    ];
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "raid-tally-unknown".into(), revision: "1".into() }, "memory.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let at = |hour: i32| {
+        RaidTallyAt::load(
+            &source,
+            &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+
+    let before = at(11);
+    assert_eq!(before.rows[0].missing, None);
+    assert!(before.last_hour <= 11, "a known count is not reused into the hours whose holders are not known: {}", before.last_hour);
+    let unknown = at(12);
+    assert!(unknown.rows[0].missing.as_deref().is_some_and(|reason| reason.contains("is not known")), "{:?}", unknown.rows[0].missing);
+    assert!(12 <= unknown.first_hour && unknown.last_hour <= 13, "the reason holds only over those hours: {}..={}", unknown.first_hour, unknown.last_hour);
+    let after = at(14);
+    assert_eq!(after.rows[0].missing, None);
+    assert!(after.first_hour >= 14, "the count after them does not reach back into them: {}", after.first_hour);
+}

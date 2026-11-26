@@ -194,6 +194,7 @@ fn read(frame: &DecodedFrame, branch_id: &str, asked: Option<&[Country]>, holder
         row.map(|row| row.owned_state_count > 0)
     };
     let mut unresolved = 0_u64;
+    let mut holder_unknown = None;
     let mut unwitnessed = 0_u32;
     let mut inspect = |slot: u32, tag: &str, row: &PoliticsRow| {
         let has = recorded(&row.has_elections);
@@ -219,6 +220,9 @@ fn read(frame: &DecodedFrame, branch_id: &str, asked: Option<&[Country]>, holder
             let mut seen = BTreeSet::new();
             for country in asked {
                 let Some(Holder::Found { slot, id }) = holders.at(country, hour).map(|run| run.holder) else {
+                    if holder_unknown.is_none() {
+                        holder_unknown = holders.not_known(country, hour);
+                    }
                     continue;
                 };
                 if !seen.insert((slot, id)) {
@@ -254,6 +258,7 @@ fn read(frame: &DecodedFrame, branch_id: &str, asked: Option<&[Country]>, holder
             }
         }
     }
+    reply.refused = reply.refused.take().or(holder_unknown);
     reply.unknown = reply.unknown.saturating_add(unwitnessed);
     reply.rows.sort_by(|a, b| (a.next.is_none(), a.next, &a.tag, &a.key).cmp(&(b.next.is_none(), b.next, &b.tag, &b.key)));
     if unresolved != 0 {

@@ -311,7 +311,7 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
     let query = dashboard_base::queries::query(source, branch)?;
     let hour = params.hour;
     let run = query.holders.at(&params.country, hour).copied().ok_or_else(|| dashboard_core::refused("Equipment stockpile country is unavailable at this hour"))?;
-    let Holder::Found { slot, id } = run.holder else { return Err(dashboard_core::refused("Equipment stockpile country is unavailable at this hour")) };
+    let Holder::Found { slot, id } = run.holder else { return Err(dashboard_core::refused(query.holders.not_known(&params.country, hour).unwrap_or_else(|| "Equipment stockpile country is unavailable at this hour".to_owned()))) };
     let replay = history::kept(source, &query, &params.country)?;
     dashboard_text::metadata::check_cancel(cancelled)?;
     let content = Content::load(source, context)?;
