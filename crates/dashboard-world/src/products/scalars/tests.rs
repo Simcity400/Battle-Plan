@@ -571,38 +571,71 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
 }
 
 #[test]
+fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_value() {
+    use dashboard_base::{Source, SourceKey, products::{Product, LoadContext}, test_fixtures};
+    use replay_data::rows::{CountryLinkRow, TableId, TableRows, ThreatCountryAggregateRow, ThreatSourceRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    use world_tension_stack::{WorldTensionStack, WorldTensionStackParams, TensionValueMode};
+
+    let frames = (100..=102).map(|hour| {
+        let mut frame = test_fixtures::source(1, hour, None);
+        if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+            links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
+        }
+        *frame.tables[TableId::ThreatSources.index()] = TableView::Complete(TableRows::ThreatSources(
+            [9001, 9002].into_iter().enumerate().map(|(index, country)| ThreatSourceRow {
+                ordinal: index as u32, country, date: 100, reason: b"fixture".to_vec(), final_raw: 4, ..Default::default()
+            }).collect()
+        ));
+        *frame.tables[TableId::ThreatCountryAggregates.index()] = if hour == 102 {
+            TableView::Unavailable { reason: "Fixture contributions unread".into() }
+        } else {
+            TableView::Complete(TableRows::ThreatCountryAggregates(
+                [(7, 3), (8, 6)].map(|(country_slot, peak)| ThreatCountryAggregateRow {
+                    country_slot, total_raw: if hour == 100 { peak } else { 0 },
+                }).to_vec()
+            ))
+        };
+        frame
+    }).collect();
+    let cancelled = AtomicBool::new(false);
+    let replay = test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "tension-top".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+    for (stack, events, mode) in [(true, true, TensionValueMode::Share), (true, false, TensionValueMode::Recorded), (false, true, TensionValueMode::Share)] {
+        let read = |last_hour| WorldTensionStack::load(&source, &WorldTensionStackParams {
+            branch_id: "1".into(), first_hour: 100, last_hour, layers: 1, values: mode, countries: None,
+            top: Some(1), group: None, width: None, include_stack: Some(stack), include_events: Some(events),
+        }, &LoadContext { content: None }, &cancelled).unwrap();
+        let ranked = read(101);
+        assert_eq!(ranked.refused, None);
+        if stack {
+            assert_eq!(ranked.bands.iter().map(|b| (b.slot, &b.tag)).collect::<Vec<_>>(), [(8, &None)]);
+        }
+        if events {
+            assert_eq!(ranked.events.iter().map(|e| e.slot).collect::<Vec<_>>(), [Some(8)]);
+        }
+        let unread = read(102);
+        assert_eq!(unread.refused.as_deref(), Some("Fixture contributions unread"));
+        assert!(unread.bands.is_empty() && unread.events.is_empty());
+    }
+}
+
+#[test]
 fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
-    use crate::products::groups::{CountryGroupReply, FactionGroup, MembershipRun, UnobservedHours};
-    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use crate::products::groups::MembershipRun;
+    use dashboard_query::{identity::{Holder, HolderRun, Holders}, series::ranked::GroupMembership};
     use std::collections::BTreeMap;
     use world_tension_stack::{DatedGroupFilter, StackInput, TensionValueMode, compute_stack};
 
-    let groups_reply = CountryGroupReply {
-        branch_id: "1".into(),
-        humans: Vec::new(),
-        factions: vec![FactionGroup {
-            id: "42".into(),
-            name: Some("Axis".into()),
-            name_reason: None,
-            names: Vec::new(),
-            recorded_name: "Axis".into(),
-            first_hour: 10,
-            last_hour: 40,
-            members: vec![
-                MembershipRun { tag: "GER".into(), first_hour: 10, last_hour: 40 },
-                MembershipRun { tag: "ITA".into(), first_hour: 25, last_hour: 40 },
-            ],
-            leaders: Vec::new(),
-            incomplete: Vec::new(),
-        }],
-        wars: Vec::new(),
-        war_starts: Vec::new(),
-        capitulations: Vec::new(),
-        identity_changes: Vec::new(),
-        country_identities: Vec::new(),
-        unobserved: UnobservedHours::default(),
-        warnings: Vec::new(),
-    };
+    let members = [
+        MembershipRun { tag: "GER".into(), first_hour: 10, last_hour: 27 },
+        MembershipRun { tag: "ITA".into(), first_hour: 25, last_hour: 40 },
+    ];
+    let holders = Holders::new([("GER", 1), ("ITA", 2)].map(|(tag, slot)| {
+        (tag.to_owned(), vec![HolderRun { first: 10, last: 40, holder: Holder::Found { slot, id: slot }, starts_segment: true }])
+    }).into(), Vec::new());
     let mut slots = BTreeMap::new();
     slots.insert(1, vec![(10, 40, Some(500_000))]);
     slots.insert(2, vec![(10, 40, Some(300_000))]);
@@ -622,14 +655,15 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
         3 => Some(("JAP".to_owned(), false)),
         _ => None,
     };
-    let sel = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
-    let gf = DatedGroupFilter::from_reply(&groups_reply, &sel, vec!["GER".into(), "ITA".into()], 30);
+    let gf = DatedGroupFilter::new(&members, GroupMembership::Hour, &holders);
     let out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, Some(&gf), None, 200, tag_of, |_, _| None);
     assert_eq!(out.bands.len(), 2);
-    assert_eq!(out.hours, [10, 25], "ITA joining at hour 25 introduces a step change");
+    assert_eq!(out.hours, [10, 25, 28]);
+    let former = out.bands.iter().find(|b| b.tag.as_deref() == Some("GER")).unwrap();
+    assert_eq!(former.values, [Some(5.0), Some(5.0), None]);
     let ita = out.bands.iter().find(|b| b.tag.as_deref() == Some("ITA")).unwrap();
-    assert_eq!(ita.values, [None, Some(3.0)], "ITA has no contribution before joining Axis at hour 25");
-    assert_eq!(out.total, [None, None], "the world line is the recorded world scalar, never the members' subtotal");
+    assert_eq!(ita.values, [None, Some(3.0), Some(3.0)]);
+    assert_eq!(out.total, [None, None, None], "the world line is the recorded world scalar, never the members' subtotal");
 
     let top_out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
     assert_eq!(top_out.bands.len(), 2);

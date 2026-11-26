@@ -1,7 +1,8 @@
 use super::{Named, rows};
-use crate::products::{group_members, groups::{self, CountryGroupReply}};
+use crate::products::{group_members, groups::{self, MembershipRun}};
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use dashboard_query::{
+    identity::{Holder, Holders},
     log::{self, Cell},
     read,
     series::{
@@ -698,88 +699,49 @@ fn reason_at(spans: &[MissingSpan], hour: i32) -> Option<&str> {
 }
 
 pub(super) struct DatedGroupFilter {
-    active_at_last: HashSet<String>,
-    runs_by_tag: HashMap<String, Vec<(i32, i32)>>,
+    runs_by_slot: HashMap<u32, Vec<(i32, i32)>>,
 }
 
 impl DatedGroupFilter {
-    pub(super) fn from_reply(reply: &CountryGroupReply, group: &GroupSelection, active_tags: Vec<String>, last: i32) -> Self {
-        let mut raw_runs: HashMap<String, Vec<(i32, i32)>> = HashMap::new();
-        let mut push = |tag: &str, first_hour: i32, last_hour: i32| {
-            raw_runs.entry(tag.to_owned()).or_default().push((first_hour, last_hour));
-        };
-        match group.kind {
-            GroupKind::Humans => {
-                for run in &reply.humans {
-                    push(&run.tag, run.first_hour, run.last_hour);
-                }
-            }
-            GroupKind::Faction => {
-                if let Some(id) = group.id.as_deref()
-                    && let Some(faction) = reply.factions.iter().find(|f| f.id == id)
-                {
-                    for run in &faction.members {
-                        push(&run.tag, run.first_hour, run.last_hour);
-                    }
-                }
-            }
-            GroupKind::War => {
-                if let Some(tag) = group.tag.as_deref() {
-                    for pair in &reply.wars {
-                        if pair.first == tag {
-                            push(&pair.second, pair.first_hour, pair.last_hour);
-                        } else if pair.second == tag {
-                            push(&pair.first, pair.first_hour, pair.last_hour);
-                        }
-                    }
+    pub(super) fn new(members: &[MembershipRun], membership: GroupMembership, holders: &Holders) -> Self {
+        let mut runs_by_slot = HashMap::<u32, Vec<(i32, i32)>>::new();
+        for member in members {
+            for held in holders.within(&member.tag, member.first_hour, member.last_hour) {
+                if let Holder::Found { slot, .. } = held.holder {
+                    let first = held.first.max(member.first_hour);
+                    let last = match membership {
+                        GroupMembership::Hour => held.last.min(member.last_hour),
+                        GroupMembership::Ever => i32::MAX,
+                    };
+                    runs_by_slot.entry(slot).or_default().push((first, last));
                 }
             }
         }
-        let mut runs_by_tag: HashMap<String, Vec<(i32, i32)>> = HashMap::new();
-        for (tag, mut runs) in raw_runs {
+        for runs in runs_by_slot.values_mut() {
             runs.sort_unstable();
-            match group.membership {
-                GroupMembership::Hour => {
-                    let mut merged: Vec<(i32, i32)> = Vec::new();
-                    for (lo, hi) in runs {
-                        if let Some(prev) = merged.last_mut()
-                            && i64::from(lo) <= i64::from(prev.1) + 1
-                        {
-                            prev.1 = prev.1.max(hi);
-                        } else {
-                            merged.push((lo, hi));
-                        }
-                    }
-                    runs_by_tag.insert(tag, merged);
-                }
-                GroupMembership::Ever => {
-                    if let Some(&(first_seen, _)) = runs.first()
-                        && first_seen <= last
-                    {
-                        runs_by_tag.insert(tag, vec![(first_seen, i32::MAX)]);
-                    }
-                }
+            for (first, last) in std::mem::take(runs) {
+                push_span(runs, first, last);
             }
         }
-        Self { active_at_last: active_tags.into_iter().collect(), runs_by_tag }
+        Self { runs_by_slot }
     }
 
-    pub(super) fn contains_at(&self, tag: &str, hour: i32) -> bool {
-        let Some(runs) = self.runs_by_tag.get(tag) else {
-            return false;
-        };
-        let at = runs.partition_point(|run| run.1 < hour);
-        runs.get(at).is_some_and(|&(lo, hi)| lo <= hour && hour <= hi)
+    fn spans(&self, slot: u32, first: i32, last: i32) -> &[(i32, i32)] {
+        let Some(runs) = self.runs_by_slot.get(&slot) else { return &[] };
+        &runs[runs.partition_point(|span| span.1 < first)..runs.partition_point(|span| span.0 <= last)]
     }
 
     fn collect_change_hours(&self, first: i32, last: i32, out: &mut Vec<i32>) {
-        for runs in self.runs_by_tag.values() {
+        for runs in self.runs_by_slot.values() {
             collect_span_change_hours(runs, first, last, out);
         }
     }
 }
 
+#[derive(Default)]
 pub(super) struct StackOutput {
+    top_slots: Option<HashSet<u32>>,
+    refused: Option<String>,
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
     pub capped_end_tension_raw: Option<String>,
@@ -805,7 +767,7 @@ pub(super) fn compute_stack(
     filter: Option<&HashSet<&str>>,
     group_filter: Option<&DatedGroupFilter>,
     top_limit: Option<usize>,
-    max_points: usize,
+    max_points: impl Into<Option<usize>>,
     slot_tag: impl Fn(u32, i32) -> Option<(String, bool)>,
     mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
 ) -> StackOutput {
@@ -836,85 +798,74 @@ pub(super) fn compute_stack(
         }
     }
     let last_complete = is_complete(input.aggregates_complete, last);
-    let has_contrib_at_last = last_complete
-        || input.slots.values().any(|runs| lookup_slot(Some(runs), false, last).is_some());
-    let rank_hour = if has_contrib_at_last {
-        last
-    } else {
-        let mut latest: Option<i32> = None;
-        let pos = input.aggregates_complete.partition_point(|span| span.0 <= last);
-        if let Some(&(s_first, s_last)) = input.aggregates_complete[..pos].last() {
-            let hi = s_last.min(last);
-            if hi >= first && s_first <= last {
-                latest = Some(hi);
-            }
-        }
-        for runs in input.slots.values() {
-            let pos = runs.partition_point(|run| run.0 <= last);
-            if let Some(hi) = runs[..pos].iter().rev().find_map(|&(r_first, r_last, val)| {
-                let hi = r_last.min(last);
-                (val.is_some() && hi >= first && r_first <= last).then_some(hi)
-            }) {
-                latest = Some(latest.map_or(hi, |held| held.max(hi)));
-            }
-        }
-        latest.unwrap_or(last)
-    };
-    let rank_complete = is_complete(input.aggregates_complete, rank_hour);
     let capped_end_raw_val = lookup_run(input.tension, last);
     let capped_end_tension = capped_end_raw_val.map(|raw| raw as f64 / tension_scale);
     let capped_end_tension_raw = capped_end_raw_val.map(|raw| raw.to_string());
     struct RankedSlot {
         slot: u32,
-        end_abs: u64,
-        end_signed: i64,
+        end: Option<i64>,
         peak_abs: u64,
         resolved: Option<(String, bool)>,
     }
     let mut ranked: Vec<RankedSlot> = Vec::new();
+    let mut unknown = !last_complete;
     for (&slot, runs) in input.slots {
         let resolved = slot_tag(slot, last);
-        if let Some(gf) = group_filter {
-            let keep = resolved.as_ref().is_some_and(|(tag, _)| gf.active_at_last.contains(tag.as_str()));
-            if !keep {
-                continue;
-            }
-        } else if let Some(wanted) = filter {
-            let keep = resolved.as_ref().is_some_and(|(tag, _)| wanted.contains(tag.as_str()));
-            if !keep {
-                continue;
+        if let Some(wanted) = filter
+            && !resolved.as_ref().is_some_and(|(tag, _)| wanted.contains(tag.as_str()))
+        {
+            continue;
+        }
+        let unrestricted = [(first, last)];
+        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, last));
+        if spans.is_empty() {
+            continue;
+        }
+        let end = spans.last().filter(|span| span.1 >= last)
+            .and_then(|_| lookup_slot(Some(runs), last_complete, last));
+        unknown |= end.is_none();
+        let mut peak_abs = 0;
+        for &(lo, hi) in spans {
+            let lo = lo.max(first);
+            let hi = hi.min(last);
+            let start = runs.partition_point(|run| run.1 < lo);
+            for &(_, _, val) in runs[start..].iter().take_while(|run| run.0 <= hi) {
+                if let Some(val) = val {
+                    peak_abs = peak_abs.max(val.unsigned_abs());
+                }
             }
         }
-        let end_opt = lookup_slot(Some(runs), rank_complete, rank_hour);
-        let end_signed = end_opt.unwrap_or(0);
-        let end_abs = end_signed.unsigned_abs();
-        let mut peak_abs = end_abs;
-        let start = runs.partition_point(|run| run.1 < first);
-        for &(r_first, _, value) in &runs[start..] {
-            if r_first > last {
-                break;
-            }
-            if let Some(val) = value {
-                peak_abs = peak_abs.max(val.unsigned_abs());
-            }
-        }
-        if end_abs > 0 || peak_abs > 0 {
-            ranked.push(RankedSlot { slot, end_abs, end_signed, peak_abs, resolved });
+        if peak_abs > 0 {
+            ranked.push(RankedSlot { slot, end, peak_abs, resolved });
         }
     }
-    ranked.sort_by(|a, b| {
-        b.end_abs
-            .cmp(&a.end_abs)
-            .then_with(|| b.end_signed.cmp(&a.end_signed))
-            .then_with(|| b.peak_abs.cmp(&a.peak_abs))
-            .then_with(|| a.slot.cmp(&b.slot))
-    });
-    let effective_layers = top_limit.map_or(layers, |n| layers.min(n));
-    let kept_count = ranked.len().min(effective_layers);
-    let top = &ranked[..kept_count];
-    let tail = &ranked[kept_count..];
+    if top_limit.is_some() && unknown {
+        for span in input.aggregates_missing {
+            if span.first_hour > last {
+                bump(&mut next_change, Some(span.first_hour));
+                break;
+            }
+            if span.last_hour >= last {
+                bump(&mut next_change, span.last_hour.checked_add(1));
+            }
+        }
+        let reason = reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN);
+        return StackOutput { refused: Some(reason.to_owned()), next_change_hour: next_change, ..Default::default() };
+    }
+    ranked.sort_unstable_by_key(|entry| (
+        std::cmp::Reverse(entry.end.map(i64::unsigned_abs)),
+        std::cmp::Reverse(entry.end),
+        std::cmp::Reverse(entry.peak_abs),
+        entry.slot,
+    ));
+    let kept_count = ranked.len().min(top_limit.unwrap_or(layers));
+    let (top, tail) = ranked.split_at(kept_count);
+    let top_slots = top_limit.map(|_| top.iter().map(|entry| entry.slot).collect());
+    let Some(max_points) = max_points.into() else {
+        return StackOutput { top_slots, next_change_hour: next_change, ..Default::default() };
+    };
     let restricted = filter.is_some() || group_filter.is_some() || top_limit.is_some();
-    let other_count = if restricted { 0 } else { tail.iter().filter(|entry| entry.end_abs > 0).count() as u32 };
+    let other_count = if restricted { 0 } else { tail.iter().filter(|entry| entry.end.is_some_and(|value| value != 0)).count() as u32 };
     let has_other = !restricted && !tail.is_empty();
     let mut raw_hours = Vec::new();
     raw_hours.push(first);
@@ -969,7 +920,7 @@ pub(super) fn compute_stack(
         other,
         other_raw,
     };
-    let member_at = |slot: u32, hour: i32| group_filter.is_none_or(|gf| slot_tag(slot, hour).is_some_and(|(tag, _)| gf.contains_at(&tag, hour)));
+    let member_at = |slot: u32, hour: i32| group_filter.is_none_or(|gf| !gf.spans(slot, hour, hour).is_empty());
     let evaluate = |hour: i32| -> Sample {
         let tension_raw = lookup_run(input.tension, hour);
         let total_pct = tension_raw.map(|raw| raw as f64 / tension_scale);
@@ -1184,6 +1135,8 @@ pub(super) fn compute_stack(
         end_missing: other_missing,
     });
     StackOutput {
+        top_slots,
+        refused: None,
         end_hour,
         capped_end_tension,
         capped_end_tension_raw,
@@ -1376,7 +1329,8 @@ impl Product for WorldTensionStack {
                 check_reply_budget(&reply)?;
                 return Ok(reply);
             }
-            Some(DatedGroupFilter::from_reply(&groups_reply, group, members.tags, last))
+            let runs = group_members::runs(&groups_reply, group)?.map_err(dashboard_core::refused)?;
+            Some(DatedGroupFilter::new(&runs.members, group.membership, &query.holders))
         } else {
             None
         };
@@ -1394,7 +1348,7 @@ impl Product for WorldTensionStack {
             TensionValueMode::Share => &held.tension_missing,
             TensionValueMode::Recorded => &held.aggregates_missing,
         };
-        let (computed, top_slots): (Option<StackOutput>, Option<HashSet<u32>>) = if include_stack {
+        let computed = if include_stack || top_limit.is_some() {
             let input = StackInput {
                 tension: &held.tension,
                 sum: &held.sum,
@@ -1412,31 +1366,17 @@ impl Product for WorldTensionStack {
                 filter.as_ref(),
                 group_filter.as_ref(),
                 top_limit,
-                max_points,
+                include_stack.then_some(max_points),
                 |slot, hour| named.slot(slot, hour).map(|(tag, remembered)| (tag.to_owned(), remembered)),
                 |slot, hour| named.next_change(slot, hour),
             );
             bump(&mut next_change_hour, out.next_change_hour);
-            let chosen = top_limit.map(|_| out.bands.iter().map(|b| b.slot).collect());
-            (Some(out), chosen)
-        } else if let Some(limit) = top_limit {
-            let last_complete = is_complete(&held.aggregates_complete, last);
-            let mut ranked: Vec<(u64, i64, u32)> = Vec::new();
-            for (&slot, runs) in &held.slots {
-                bump(&mut next_change_hour, next_opt_run_change(runs, last));
-                let val = lookup_slot(Some(runs), last_complete, last).unwrap_or(0);
-                if val != 0 {
-                    ranked.push((val.unsigned_abs(), val, slot));
-                }
-            }
-            ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)).then_with(|| a.2.cmp(&b.2)));
-            let chosen: HashSet<u32> = ranked.into_iter().take(limit).map(|(_, _, slot)| slot).collect();
-            (None, Some(chosen))
+            out
         } else {
-            (None, None)
+            StackOutput::default()
         };
         let mut events: Vec<TensionStackEvent> = Vec::new();
-        if include_events {
+        if include_events && computed.refused.is_none() {
             let ev_end = held.events.partition_point(|event| event.first_read <= last);
             if let Some(next_ev) = held.events.get(ev_end) {
                 bump(&mut next_change_hour, Some(next_ev.first_read));
@@ -1453,13 +1393,13 @@ impl Product for WorldTensionStack {
                 };
                 let ev_hour = event.first_read.min(last);
                 let resolved = event.slot.and_then(|slot| named.slot(slot, ev_hour));
-                if let Some(chosen) = &top_slots
+                if let Some(chosen) = &computed.top_slots
                     && !event.slot.is_some_and(|slot| chosen.contains(&slot))
                 {
                     continue;
                 }
                 if let Some(gf) = &group_filter {
-                    if !resolved.is_some_and(|(tag, _)| gf.contains_at(tag, ev_hour)) {
+                    if !event.slot.is_some_and(|slot| !gf.spans(slot, ev_hour, ev_hour).is_empty()) {
                         continue;
                     }
                 } else if let Some(wanted) = &filter
@@ -1511,19 +1451,19 @@ impl Product for WorldTensionStack {
             tension_scale,
             contribution_scale,
             ceiling_raw,
-            end_hour: computed.as_ref().and_then(|c| c.end_hour),
-            capped_end_tension: computed.as_ref().and_then(|c| c.capped_end_tension),
-            capped_end_tension_raw: computed.as_ref().and_then(|c| c.capped_end_tension_raw.clone()),
-            end_missing: computed.as_ref().and_then(|c| c.end_missing.clone()),
-            end_sum_raw: computed.as_ref().and_then(|c| c.end_sum_raw.clone()),
-            downsampled: computed.as_ref().is_some_and(|c| c.downsampled),
-            refused: None,
-            hours: computed.as_ref().map_or_else(Vec::new, |c| c.hours.clone()),
-            total: computed.as_ref().map_or_else(Vec::new, |c| c.total.clone()),
-            total_raw: computed.as_ref().map_or_else(Vec::new, |c| c.total_raw.clone()),
-            sum_raw: computed.as_ref().map_or_else(Vec::new, |c| c.sum_raw.clone()),
-            bands: computed.as_ref().map_or_else(Vec::new, |c| c.bands.clone()),
-            other: computed.and_then(|c| c.other),
+            end_hour: computed.end_hour,
+            capped_end_tension: computed.capped_end_tension,
+            capped_end_tension_raw: computed.capped_end_tension_raw,
+            end_missing: computed.end_missing,
+            end_sum_raw: computed.end_sum_raw,
+            downsampled: computed.downsampled,
+            refused: computed.refused,
+            hours: computed.hours,
+            total: computed.total,
+            total_raw: computed.total_raw,
+            sum_raw: computed.sum_raw,
+            bands: computed.bands,
+            other: computed.other,
             events,
             missing,
             next_change_hour,
