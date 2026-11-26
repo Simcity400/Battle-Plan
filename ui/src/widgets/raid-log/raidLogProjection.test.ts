@@ -330,9 +330,9 @@ test('played preparation reaches the canvas only when its row and column are on 
     const frozen = { ...scroll, pagedRows: { main: { 0: page } } };
     play(128, frozen);
     const frozenFrames = frames();
-    play(152, frozen);
+    const held = play(152, frozen);
     assert.equal(frames(), frozenFrames);
-    assert.equal(play(152, frozen).nextChangeAt, undefined, 'the scrolled snapshot has no preparation deadline');
+    assert.equal(held.nextChangeAt, undefined, 'the scrolled snapshot has no preparation deadline');
   } finally {
     recording.restore();
   }

@@ -2272,7 +2272,7 @@ test('a log scrolled deep into its rows numbers them from the top of the log, in
   }
 });
 
-test('a glide whose movers all stay below the viewport asks for no animation frame', () => {
+test('glides, figures and bars outside the displayed range leave the table canvas untouched', () => {
   type Row = { id: string; v: number };
   const columns: TableColumnSpec[] = [
     { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
@@ -2320,6 +2320,40 @@ test('a glide whose movers all stay below the viewport asks for no animation fra
     assert.equal(recording.canvases[0]!.frames.length, bars);
     lane.paint({ label: 'shorter visible bars', binding: largestBelow(5000), hour: 7, speed: 24 });
     assert.ok(recording.canvases[0]!.frames.length > bars);
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a focused action still paints where its label extends left of an off-screen column', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'pinned', label: 'Pinned', as: 'plain', offered: ['plain'], priority: 0 },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0 },
+    { key: 'action', label: 'Action', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'action' },
+  ];
+  const kind = 'test-overhanging-action';
+  registerFamilyProjection({
+    kind, family: 'table', theme: TEST_THEME,
+    project: view => ({
+      columns, hour: view.hour, nextChangeAt: view.hour + 1, unsorted: true,
+      rows: [{ key: 'r', name: 'Row', cells: { action: { value: knownValue('Open'), actionLabel: view.hour === 1 ? 'Show construction orders' : 'Show details' } } }],
+    }),
+  });
+  const surface = { width: 145, height: 32, dpr: 1 };
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  settings.columns.pinned!.width = 40;
+  settings.columns.name!.width = 100;
+  settings.columns.action!.width = 40;
+  const binding = { family: 'table', kind, theme: TEST_THEME, options: NO_OPTIONS, sources: NO_SOURCES, settings, ...surface, scrollTop: 0, scrollLeft: 0, focusedKey: 'r' };
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, surface);
+    lane.paint({ label: 'long button', binding, hour: 1, speed: 24 });
+    const frames = recording.canvases[0]!.frames;
+    const first = frames.length;
+    lane.paint({ label: 'shorter button', binding, hour: 2, speed: 24 });
+    assert.ok(frames.length > first);
+    assert.ok(frames.at(-1)!.includes('fillText("Show details")'));
   } finally {
     recording.restore();
   }

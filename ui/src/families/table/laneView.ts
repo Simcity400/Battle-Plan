@@ -1,4 +1,5 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
+import { BEHIND_BAR_MAX_WIDTH, BEHIND_BAR_OFFSET } from '../../draw/kit.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
@@ -27,7 +28,7 @@ import {
 } from './model.ts';
 import { barPixels, barPixelSpan, createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hasGlideCrossing, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
-import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
+import { CELL_INSET, MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'table';
@@ -55,6 +56,7 @@ interface TableShape {
   readonly hasGroups: boolean;
   readonly incremental: boolean;
   readonly hasTree: boolean;
+  readonly treeLevels: number | readonly number[];
   readonly panes: readonly ResolvedPane[] | null;
   readonly paneGeom: ReturnType<typeof paneGeometry> | null;
   readonly paneSpans: ReturnType<typeof combinedPaneGeometry> | null;
@@ -98,7 +100,7 @@ interface TableLayout {
   readonly focusedIndex: number;
   readonly height: number;
   readonly visibleRows: readonly { readonly first: number; readonly count: number }[];
-  readonly visibleColumns: readonly FamilyColumnLayout[];
+  readonly visibleColumns: readonly FamilyColumnLayout[] | null;
 }
 
 type TableFrame = LaneFrame<FamilyTableBinding, TableModel, TableLayout>;
@@ -308,10 +310,11 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
       : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys))
     : computeColumnMaxima(flatRows, columns.columns);
   const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
+  const treeLevels = inc && prev ? prev.treeLevels : panes ? panes.map(pane => treeLevelsOf(pane.rows)) : treeLevelsOf(flatRows);
   const shape: TableShape = {
     model, options: binding.options, settings, expanded, width, theme,
     flatRows, rowIndex, hasGroups, incremental: inc !== null,
-    hasTree: inc === null && flatRows.some(item => item.kind === 'data' && item.isTreeGroup),
+    treeLevels, hasTree: inc === null && (typeof treeLevels === 'number' ? treeLevels !== 0 : treeLevels.some(levels => levels !== 0)),
     panes, paneGeom, paneSpans: panes ? combinedPaneGeometry(panes) : null, paneStarts, rankShown, rankMarkersOn, rankWidth,
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
     windowOffset, totalCount, totalHeight, extents, maxima, maximaCols,
@@ -342,24 +345,38 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   const previous = step.previous?.layout;
   const columnWidth = shape.paneGeom?.width ?? surface.width;
   const left = Math.max(0, Math.min(binding.scrollLeft, shape.columns.totalWidth - columnWidth));
-  const visibleColumns = previous && previous.shape.columns === shape.columns && previous.scrollLeft === left
+  const visibleColumns = previous && previous.shape.columns === shape.columns && previous.scrollLeft === left && !!previous.shape.panes === !!panes
     ? previous.visibleColumns : columnsOnScreen(shape, columnWidth, left);
   const visibleRows = panes ? shownWindows : [visibleRange(shape, localScrollTop, surface.height)];
   return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height, visibleRows, visibleColumns, scrollLeft: left };
 }
 
-function columnsOnScreen(shape: TableShape, width: number, left: number): FamilyColumnLayout[] {
+function canSpillLeft(col: FamilyColumnLayout, x: number, width: number): boolean {
+  if (col.headerGroup || col.display === 'track' || col.display === 'meterBefore' || col.display === 'meterAfter') return true;
+  switch (col.cellKind) {
+    case undefined: case 'standard': case 'item': case 'country': case 'numeric': case 'status':
+      return !!col.numeric && x + col.width - (col.trailInset ?? 0) - CELL_INSET + BEHIND_BAR_OFFSET - BEHIND_BAR_MAX_WIDTH < width;
+    default:
+      return true;
+  }
+}
+
+function columnsOnScreen(shape: TableShape, width: number, left: number): FamilyColumnLayout[] | null {
   const layout = shape.columns;
   const shown: FamilyColumnLayout[] = [];
+  let inView = 0;
   let x = shape.rankShown && !shape.panes ? shape.rankWidth : 0;
   for (let i = 0; i < layout.columns.length; i++) {
     const col = layout.columns[i]!;
     const pinned = i < layout.pinnedCount;
     const start = pinned ? x : x - left;
-    if (col.width > 0 && start < width && start + col.width > (pinned ? 0 : layout.pinnedWidth)) shown.push(col);
+    if (col.width > 0) {
+      if (start < width && start + col.width > (pinned ? 0 : layout.pinnedWidth)) inView++;
+      if (start < width || canSpillLeft(col, start, width)) shown.push(col);
+    }
     x += col.width;
   }
-  return shown;
+  return shown.length - inView <= inView ? shown : null;
 }
 
 const NO_MOTION: TableMotion = { markers: new Map(), expiries: [], glide: NO_GLIDE, started: -Infinity };
@@ -458,7 +475,7 @@ function sameVisibleCell(a: TableCell | undefined, b: TableCell | undefined, col
     barPixels(cellBarFraction(b, b.value, b.maximum ?? newMax, magnitude), span);
 }
 
-function samePaintedRow(previous: TableLayout, layout: TableLayout, i: number, dpr: number, scaleChanged: boolean): boolean {
+function samePaintedRow(previous: TableLayout, layout: TableLayout, columns: readonly FamilyColumnLayout[], i: number, dpr: number, scaleChanged: boolean): boolean {
   const a = previous.shape.flatRows[i]!;
   const b = layout.shape.flatRows[i]!;
   if (a.kind !== 'data' || b.kind !== 'data') return sameFieldValue(a, b);
@@ -475,8 +492,8 @@ function samePaintedRow(previous: TableLayout, layout: TableLayout, i: number, d
   if (b.row.detailColumn && (!sameFieldValue(previous.shape.rowGeom?.detailRows?.get(i), layout.shape.rowGeom?.detailRows?.get(i)) ||
       !sameFieldValue(a.row.cells[b.row.detailColumn], b.row.cells[b.row.detailColumn]))) return false;
   if (a.row === b.row && !scaleChanged) return true;
-  for (let c = 0; c < layout.visibleColumns.length; c++) {
-    const col = layout.visibleColumns[c]!;
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]!;
     if (!sameVisibleCell(a.row.cells[col.key], b.row.cells[col.key], col, previous.shape.maxima.get(col.key), layout.shape.maxima.get(col.key), dpr)) return false;
     if (col.inlineFlags) for (let f = 0; f < col.inlineFlags.length; f++) {
       const key = col.inlineFlags[f]!;
@@ -496,13 +513,11 @@ function sameViewport(before: TableLayout, after: TableLayout, dpr: number): boo
       a.model.hideHeader !== b.model.hideHeader || a.model.empty !== b.model.empty || a.model.endNote !== b.model.endNote ||
       (b.model.endNote && (a.totalCount !== b.totalCount || a.totalHeight !== b.totalHeight || a.flatRows.length !== b.flatRows.length)) ||
       !sameFieldValue(a.model.clockSummary, b.model.clockSummary) || !sameFieldValue(a.paneGeom, b.paneGeom)) return false;
-  if (b.hasTree && treeLevelsOf(a.flatRows) !== treeLevelsOf(b.flatRows)) return false;
-  if (a.panes && b.panes) for (let p = 0; p < b.panes.length; p++) {
-    if (treeLevelsOf(a.panes[p]!.rows) !== treeLevelsOf(b.panes[p]!.rows)) return false;
-  }
+  const columns = after.visibleColumns;
+  if (!columns || !sameFieldValue(a.treeLevels, b.treeLevels)) return false;
   let scaleChanged = false;
-  for (let c = 0; c < after.visibleColumns.length && !scaleChanged; c++) {
-    const key = after.visibleColumns[c]!.key;
+  for (let c = 0; c < columns.length && !scaleChanged; c++) {
+    const key = columns[c]!.key;
     scaleChanged = a.maxima.get(key) !== b.maxima.get(key);
   }
   if (before.visibleRows.length !== after.visibleRows.length) return false;
@@ -510,7 +525,7 @@ function sameViewport(before: TableLayout, after: TableLayout, dpr: number): boo
     const win = after.visibleRows[w]!, old = before.visibleRows[w]!;
     if (win.first !== old.first || win.count !== old.count) return false;
     for (let i = win.first; i < win.first + win.count; i++) {
-      if (before.tops(i) !== after.tops(i) || before.heights(i) !== after.heights(i) || !samePaintedRow(before, after, i, dpr, scaleChanged)) return false;
+      if (before.tops(i) !== after.tops(i) || before.heights(i) !== after.heights(i) || !samePaintedRow(before, after, columns, i, dpr, scaleChanged)) return false;
     }
   }
   return true;

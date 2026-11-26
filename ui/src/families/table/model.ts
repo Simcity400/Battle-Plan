@@ -1007,7 +1007,7 @@ export function cellBarFraction(
   return num === undefined || top === undefined || top <= 0 || num <= 0 ? null : Math.max(0, Math.min(1, num / top));
 }
 
-export function barFractionOf(cell: TableCell, value: Value, top: number | undefined, magnitude = false): { readonly fraction: number | null; readonly alert: boolean } {
+function barFractionOf(cell: TableCell, value: Value, top: number | undefined, magnitude = false): { readonly fraction: number | null; readonly alert: boolean } {
   const fraction = cellBarFraction(cell, value, top, magnitude);
   return { fraction, alert: fraction !== null && cell.bar?.alert === true };
 }
