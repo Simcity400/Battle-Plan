@@ -43,8 +43,8 @@ type PortraitKey = (u32, Vec<u8>, u32, content_reader_layers::content::ArtworkMo
 
 pub struct PoliticsContent {
     pub catalogue: Arc<Catalogue>,
-    pub ideas: IdeaContent,
-    pub characters: Characters,
+    pub ideas: Arc<IdeaContent>,
+    pub characters: Arc<Characters>,
     pub traits: LeaderTraits,
     pub ideologies: Ideologies,
     pub modifier_definitions: ModifierDefinitions,
@@ -215,31 +215,30 @@ impl PoliticsContent {
             let names =
                 content_reader_layers::parallel::spawn(threads, || content_reader_politics::names::read(layers));
             let read = (|| {
-                let (ideas, advisors, idea_warnings) =
-                    content_reader_politics::ideas::read(layers, &officers)?;
-                let characters = content_reader_key_names::characters::read(layers, advisors)?;
-                io::Result::Ok((ideas, idea_warnings, characters))
+                let ideas = content_reader_politics::ideas::catalogue(layers, &officers)?;
+                let characters = content_reader_politics::ideas::characters(layers, &officers)?;
+                io::Result::Ok((ideas, characters))
             })();
             (read, traits.join(), definitions.join(), names.join())
         });
-        let (ideas, idea_warnings, (characters, character_warnings)) = read?;
+        let (ideas, characters) = read?;
         let (traits, trait_warnings) = settled(traits)?;
         let (modifier_definitions, definition_warnings) = settled(definitions)?;
         let names = settled(names)?;
         let mut warnings = catalogue.verification.clone();
         for list in [
-            idea_warnings,
-            character_warnings,
-            trait_warnings,
-            ideology_warnings,
-            definition_warnings,
+            &ideas.warnings,
+            &characters.warnings,
+            &trait_warnings,
+            &ideology_warnings,
+            &definition_warnings,
         ] {
-            warnings.extend(list.into_iter().map(|(_, message)| message));
+            warnings.extend(list.iter().map(|(_, message)| message.clone()));
         }
         Ok(Self {
             catalogue,
-            ideas,
-            characters,
+            ideas: Arc::clone(&ideas.ideas),
+            characters: Arc::clone(&characters.characters),
             traits,
             ideologies,
             modifier_definitions,

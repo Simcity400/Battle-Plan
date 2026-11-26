@@ -983,6 +983,46 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!((gap_reply.missing[0].first_hour, gap_reply.missing[0].last_hour), (11, 12));
     assert!(gap_reply.series[0].runs.iter().all(|r| r.last_hour < 11 || r.first_hour > 12), "runs never bridge unread Raids hours");
     assert_eq!(gap_reply.series[0].runs.last().map(|r| (r.launched, r.succeeded)), Some((2, 1)), "unread RaidTargets does not discard witnessed Raids counts");
+    assert_eq!(gap_reply.partial.len(), 1);
+    assert_eq!((gap_reply.partial[0].first_hour, gap_reply.partial[0].last_hour), (13, 14), "post-gap cumulative runs carry a partial span with the gap reason");
+    assert!(gap_reply.partial[0].reason.contains("raids unread"), "{:?}", gap_reply.partial[0].reason);
+
+    let top_after_gap = RaidTally::load(
+        &gap_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![], top: Some(3), metric: RaidTallyMetric::Both, hour: 14 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(top_after_gap.series.len(), 1, "top history proven before a later gap is retained");
+    assert_eq!(top_after_gap.series[0].slot, 7);
+    assert_eq!(
+        top_after_gap.series[0].runs.iter().map(|r| (r.first_hour, r.last_hour, r.launched, r.succeeded)).collect::<Vec<_>>(),
+        vec![(10, 10, 1, 0)],
+    );
+    assert_eq!(
+        top_after_gap.series[0].membership.as_deref().map(|spans| spans.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>()),
+        Some(vec![(10, 10)]),
+    );
+    assert_eq!(top_after_gap.rank_missing_from, Some(11));
+    assert!(top_after_gap.rank_missing.as_deref().is_some_and(|reason| reason.contains("raids unread")), "{:?}", top_after_gap.rank_missing);
+
+    let explicit_before_gap = RaidTallyAt::load(
+        &gap_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour: 10 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(explicit_before_gap.partial, None);
+    let explicit_after_gap = RaidTallyAt::load(
+        &gap_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour: 14 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(explicit_after_gap.partial.as_deref().is_some_and(|reason| reason.contains("raids unread")), "{:?}", explicit_after_gap.partial);
 
     let hover_gap = RaidTallyAt::load(
         &gap_source,
@@ -1040,6 +1080,81 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!(slot9.series[0].runs.last().map(|r| r.launched), Some(1));
     assert_eq!(top_reuse.series.len(), 2, "reused tag keeps slots 7 and 9 separate");
     assert_eq!(top_reuse.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7, 9]);
+
+    let unnamed_slot_frames = vec![
+        make_frame(
+            1,
+            10,
+            vec![(10, 7, b"AAA".as_slice())],
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 15, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])),
+            vec![target_row(1, RaidScope { province: 10, ..Default::default() }, 40)],
+        ),
+        make_frame(1, 11, vec![(10, 7, b"AAA".as_slice())], 20, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+    ];
+    let unnamed_source = make_source(unnamed_slot_frames);
+    let unnamed_lines = RaidTally::load(
+        &unnamed_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(15)], top: None, metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let unnamed_at = RaidTallyAt::load(
+        &unnamed_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(15)], group: None, top: None, metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let unnamed_top = RaidTallyAt::load(
+        &unnamed_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: None, top: Some(3), metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(unnamed_lines.unattributed, 0);
+    assert_eq!(unnamed_at.unattributed, 0);
+    assert_eq!(unnamed_at.partial, None);
+    assert_eq!(unnamed_at.rows.first().map(|row| (row.country.clone(), row.launched, row.missing.as_deref())), Some((Country::Slot(15), 1, None)));
+    assert_eq!(unnamed_top.missing, None);
+    assert_eq!(unnamed_top.rows.first().map(|row| (row.country.clone(), row.launched)), Some((Country::Slot(15), 1)));
+
+    let tie_frames = vec![
+        make_frame(
+            1,
+            10,
+            vec![(10, 7, b"ZZZ".as_slice()), (20, 9, b"AAA".as_slice())],
+            30,
+            TableView::Complete(TableRows::Raids(vec![
+                raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+                raid_row(2, 9, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+            ])),
+            vec![
+                target_row(1, RaidScope { province: 10, ..Default::default() }, 40),
+                target_row(2, RaidScope { province: 11, ..Default::default() }, 40),
+            ],
+        ),
+        make_frame(1, 11, vec![(10, 7, b"ZZZ".as_slice()), (20, 9, b"AAA".as_slice())], 30, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+    ];
+    let tie_source = make_source(tie_frames);
+    let tie_lines = RaidTally::load(
+        &tie_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![], top: Some(1), metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let tie_at = RaidTallyAt::load(
+        &tie_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: None, top: Some(1), metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(tie_lines.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7]);
+    assert_eq!(tie_at.rows.iter().map(|r| r.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(7)]);
 }
 
 #[test]
@@ -1085,4 +1200,113 @@ fn a_chosen_country_tally_holds_only_while_its_holder_is_known_and_names_the_hou
     let after = at(14);
     assert_eq!(after.rows[0].missing, None);
     assert!(after.first_hour >= 14, "the count after them does not reach back into them: {}", after.first_hour);
+}
+
+#[test]
+fn raid_tally_ever_group_uses_historical_slots() {
+    use super::{RaidTallyAt, RaidTallyAtParams, RaidTallyMetric};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use replay_data::rows::{FactionMemberRow, FactionRow};
+
+    let scope = RaidScope { province: 10, ..Default::default() };
+    let factions = vec![FactionRow { id: 10, name: b"Axis".to_vec(), ..FactionRow::default() }];
+    let frames: Vec<DecodedFrame> = (10..=13)
+        .map(|hour| {
+            let countries = if hour <= 11 {
+                vec![(10, 7, b"AAA".as_slice()), (20, 8, b"CCC".as_slice())]
+            } else {
+                vec![(10, 7, b"BBB".as_slice()), (20, 8, b"AAA".as_slice())]
+            };
+            let raids = match hour {
+                10 => vec![raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))],
+                11 => vec![raid_row(1, 7, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(10))],
+                12 => vec![
+                    raid_row(3, 8, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+                    raid_row(4, 8, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+                ],
+                _ => vec![],
+            };
+            let targets: Vec<RaidTargetRow> = raids.iter().map(|r| target_row(r.id, scope.clone(), 40)).collect();
+            let mut frame = make_frame(1, hour, countries, 20, TableView::Complete(TableRows::Raids(raids)), targets);
+            *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions.clone()));
+            let members = if hour <= 11 {
+                vec![FactionMemberRow { country: 10, faction: 10, ordinal: 0 }]
+            } else {
+                Vec::new()
+            };
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        SourceKey { source_id: "raid-ever-slots".into(), revision: "1".into() },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let ctx = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+
+    let ever = GroupSelection { kind: GroupKind::Faction, id: Some("10".into()), tag: None, membership: GroupMembership::Ever };
+    let race = RaidTallyAt::load(
+        &source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: Some(ever), top: None, metric: RaidTallyMetric::Both, hour: 13 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(race.missing, None);
+    assert_eq!(
+        race.rows.iter().map(|row| (&row.country, row.tag.as_str(), row.launched, row.succeeded)).collect::<Vec<_>>(),
+        vec![(&Country::Slot(7), "BBB", 1, 1)],
+        "an ever group keeps the historical member slot instead of resolving its former tag to a successor",
+    );
+    assert!(race.first_hour >= 12 && race.last_hour <= 13, "ever group reply respects member/holder interval: {}..={}", race.first_hour, race.last_hour);
+
+    let refused_frames: Vec<DecodedFrame> = (10..=12)
+        .map(|hour| {
+            let countries = vec![(10, 7, b"AAA".as_slice())];
+            let raids_view = if hour == 12 {
+                TableView::Unavailable { reason: "raids unread".into() }
+            } else {
+                TableView::Complete(TableRows::Raids(vec![]))
+            };
+            let mut frame = make_frame(1, hour, countries, 10, raids_view, vec![]);
+            *frame.tables[TableId::Factions.index()] = TableView::Unavailable { reason: "factions unread".into() };
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable { reason: "factions unread".into() };
+            frame
+        })
+        .collect();
+    let refused_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, refused_frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let refused_source = Source::from_replay(
+        SourceKey { source_id: "raid-ever-refused-interval".into(), revision: "1".into() },
+        "memory.battleplan".into(),
+        Arc::new(refused_replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let refused_race = RaidTallyAt::load(
+        &refused_source,
+        &RaidTallyAtParams {
+            branch_id: "1".into(),
+            countries: vec![],
+            group: Some(GroupSelection { kind: GroupKind::Faction, id: Some("10".into()), tag: None, membership: GroupMembership::Ever }),
+            top: None,
+            metric: RaidTallyMetric::Both,
+            hour: 10,
+        },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(refused_race.missing.is_some());
+    assert!(refused_race.last_hour <= 11, "refused ever group stops before a later unread Raids hour: {}..={}", refused_race.first_hour, refused_race.last_hour);
 }

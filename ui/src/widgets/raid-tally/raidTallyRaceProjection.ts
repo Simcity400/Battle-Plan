@@ -7,7 +7,7 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } f
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { GroupSelection, RaidTallyAtReply, RaidTallyAtRow, RaidTallyMetric } from '../../generated/dashboard';
 
@@ -38,6 +38,7 @@ export function validateRaidTallyAt(value: unknown): RaidTallyAtReply {
     || !Number.isSafeInteger(value.unattributedLaunched)
     || !Number.isSafeInteger(value.unattributedSucceeded)
     || !(value.missing === null || typeof value.missing === 'string')
+    || !(value.partial === undefined || value.partial === null || typeof value.partial === 'string')
     || !Array.isArray(value.warnings)
   ) {
     throw new Error('The raid tally reply is malformed.');
@@ -170,7 +171,26 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
       }
 
       const primary = options.metric === 'succeeded' ? item.succeeded : item.launched;
-      const value = primary === 0 ? zeroValue() : knownValue(primary);
+      const partialReason = reply.partial ?? null;
+      const isUnattributedOnly = partialReason !== null && reply.unattributed > 0 && partialReason.includes('unrecorded raider');
+      const gapPartial = partialReason !== null && !isUnattributedOnly ? partialReason : null;
+      const launchedPartial = gapPartial
+        ?? (reply.unattributedLaunched > 0
+          ? `${formatScalar(reply.unattributedLaunched, { decimals: 0 })} raid(s) up to this date have an unrecorded raider`
+          : null);
+      const succeededPartial = gapPartial
+        ?? (reply.unattributedSucceeded > 0
+          ? `${formatScalar(reply.unattributedSucceeded, { decimals: 0 })} raid(s) up to this date have an unrecorded raider`
+          : null);
+      const primaryPartial = options.metric === 'succeeded' ? succeededPartial : launchedPartial;
+      const allUnattributedMatched = gapPartial === null
+        && options.metric === 'both'
+        && reply.unattributed === reply.unattributedLaunched
+        && reply.unattributed === reply.unattributedSucceeded;
+      const otherPartial = allUnattributedMatched ? null : (launchedPartial ?? succeededPartial);
+      const value = primaryPartial
+        ? partialValue(primary, primaryPartial)
+        : primary === 0 ? zeroValue() : knownValue(primary);
       const barFill = pres.color ?? colour(options.surface, 0);
       let segments: BarsSegment[] | undefined;
       if (options.metric === 'both' && item.launched > 0) {
@@ -178,15 +198,15 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         const other = item.launched - succeeded;
         segments = [];
         if (succeeded > 0) {
-          segments.push({ key: 'succeeded', label: 'Succeeded', share: succeeded / item.launched, value: knownValue(succeeded), format: { decimals: 0 }, color: barFill });
+          segments.push({ key: 'succeeded', label: 'Succeeded', share: succeeded / item.launched, value: succeededPartial ? partialValue(succeeded, succeededPartial) : knownValue(succeeded), format: { decimals: 0 }, color: barFill });
         }
         if (other > 0) {
-          segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
+          segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: otherPartial ? partialValue(other, otherPartial) : knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
         }
       }
       const tooltipItems: TooltipListItem[] = [
-        { label: 'Launches', value: countText(item.launched) },
-        { label: 'Successes', value: countText(item.succeeded) },
+        { label: 'Launches', value: countText(item.launched), ...(launchedPartial ? { partialReason: launchedPartial } : {}) },
+        { label: 'Successes', value: countText(item.succeeded), ...(succeededPartial ? { partialReason: succeededPartial } : {}) },
       ];
       rows.push({
         kind: 'data',
@@ -203,6 +223,7 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
           primary: options.metric === 'both'
             ? `${countText(item.launched)} \u00b7 ${countText(item.succeeded)}`
             : countText(primary),
+          ...(partialReason ? { secondary: '(partial)' } : {}),
         },
         tooltip: {
           title: pres.labelMissing ? 'Name not recorded' : pres.label,
@@ -218,6 +239,16 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         ...baseModel,
         rows: [],
         empty: `${formatScalar(reply.unattributed, { decimals: 0 })} raid(s) recorded up to this date with an unrecorded raider.`,
+        emptyKind: 'unavailable',
+        warnings,
+      };
+    }
+
+    if (!rows.length && reply.partial) {
+      return {
+        ...baseModel,
+        rows: [],
+        empty: reply.partial,
         emptyKind: 'unavailable',
         warnings,
       };

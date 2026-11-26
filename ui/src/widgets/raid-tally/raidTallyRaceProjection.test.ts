@@ -114,4 +114,95 @@ test('raidTallyRaceProjection sends group to Rust, keys by slot, never claims em
   const read = plan.entries[0]!.read as unknown as { params: Record<string, unknown>; buildExactParams: (base: Record<string, unknown>, hour: number) => Record<string, unknown> | null };
   const exact = read.buildExactParams(read.params, 300);
   assert.deepEqual(exact?.group, { type: 'humans', membership: 'hour' }, 'group selection sent to Rust');
+
+  const partialReason = 'Raid history is incomplete up to this date: Raids were not recorded at these hours';
+  const partialModel = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, partial: partialReason }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+        [countryKey(9)]: { name: 'West Germany', color: '#4b5563', tag: 'GER' },
+        [countryKey(14)]: { name: 'France', color: '#2563eb', tag: 'FRA' },
+      }),
+    }),
+    { ...OPTS, top: null },
+  );
+  const partialRows = partialModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
+  assert.deepEqual(partialRows[0]!.value?.value, { kind: 'partial', value: 5, reason: partialReason });
+  assert.deepEqual(partialRows[1]!.value?.value, { kind: 'partial', value: 0, reason: partialReason }, 'post-gap zero is partial, never exact zero');
+  assert.equal(partialRows[0]!.readout?.secondary, '(partial)', 'displayed readout marks partial subtotal');
+  assert.equal(partialRows[1]!.readout?.secondary, '(partial)', 'displayed zero readout marks partial subtotal');
+  assert.equal(partialRows[0]!.tooltip?.items?.[0]?.partialReason, partialReason);
+  assert.equal(partialRows[2]!.value?.value.kind, 'notRecorded');
+
+  const emptyAfterGap = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, rows: [], partial: partialReason }]]),
+      identity: fakeIdentity({}),
+    }),
+    { ...OPTS, top: null, all: true },
+  );
+  assert.equal(emptyAfterGap.empty, partialReason, 'All countries with empty rows after a coverage gap reports the coverage reason');
+  assert.equal(emptyAfterGap.emptyKind, 'unavailable');
+
+  const unattrLaunchInSucceeded = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'succeeded', unattributed: 0, unattributedLaunched: 1, unattributedSucceeded: 0 }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'succeeded', top: null },
+  );
+  const succRow = unattrLaunchInSucceeded.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(succRow.value?.value.kind, 'known', 'Succeeded primary value is complete when only a launch is unattributed');
+  assert.equal(succRow.tooltip?.items?.[0]?.partialReason, '1 raid(s) up to this date have an unrecorded raider', 'Launches hover figure carries its own partial reason');
+  assert.equal(succRow.tooltip?.items?.[1]?.partialReason, undefined, 'Successes hover figure stays complete');
+
+  const unattrLaunchInLaunched = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'launched', unattributed: 1, unattributedLaunched: 1, unattributedSucceeded: 0, partial: '1 raid(s) up to this date have an unrecorded raider' }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'launched', top: null },
+  );
+  const launchRow = unattrLaunchInLaunched.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(launchRow.value?.value.kind, 'partial');
+  assert.equal(launchRow.tooltip?.items?.[0]?.partialReason, '1 raid(s) up to this date have an unrecorded raider');
+  assert.equal(launchRow.tooltip?.items?.[1]?.partialReason, undefined, 'Successes hover figure stays complete in Launched mode');
+
+  const unattrLaunchInBoth = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'both', unattributed: 1, unattributedLaunched: 1, unattributedSucceeded: 0, partial: '1 raid(s) up to this date have an unrecorded raider' }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'both', top: null },
+  );
+  const bothRow = unattrLaunchInBoth.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(bothRow.value?.value.kind, 'partial');
+  assert.equal(bothRow.segments?.find(s => s.key === 'succeeded')?.value.kind, 'known', 'Succeeded bar segment stays complete when all successes are attributed');
+  assert.equal(bothRow.segments?.find(s => s.key === 'other')?.value.kind, 'partial', 'Other launched segment reflects unattributed launches');
+
+  const unattrBothMatched = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'both', unattributed: 1, unattributedLaunched: 1, unattributedSucceeded: 1, partial: '1 raid(s) up to this date have an unrecorded raider' }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'both', top: null },
+  );
+  const matchedRow = unattrBothMatched.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(matchedRow.segments?.find(s => s.key === 'succeeded')?.value.kind, 'partial');
+  assert.equal(matchedRow.segments?.find(s => s.key === 'other')?.value.kind, 'known', 'launched - succeeded stays exact when every unattributed raid both launched and succeeded');
 });

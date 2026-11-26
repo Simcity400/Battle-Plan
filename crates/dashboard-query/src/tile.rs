@@ -90,6 +90,8 @@ pub struct TileLine {
     pub part: Option<String>,
     #[doc = " The tile's hours the tag holds no value in, with why."]
     pub missing: Vec<MissingSpan>,
+    #[serde(default)]
+    pub partial: Vec<MissingSpan>,
     pub parts: Vec<TilePart>,
     #[doc = " Asked with marks, for a series with drops."]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,6 +273,7 @@ pub fn tile(
             country: ask.country.clone(),
             part: line.part_text(ask),
             missing: line.missing_for_tile(&ask.country, first, last, &parts)?,
+            partial: Vec::new(),
             parts: parts
                 .iter()
                 .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })

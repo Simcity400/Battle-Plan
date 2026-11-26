@@ -32,6 +32,7 @@ export interface Tile {
   decimals: number;
   hours: Uint8Array | Uint16Array | Uint32Array;
   missing: readonly MissingSpan[];
+  partial: readonly MissingSpan[];
   parts: readonly TilePart[];
   marks?: { before: string; bins: readonly (readonly [number, number])[] };
   bytes: number;
@@ -72,9 +73,9 @@ export function tilesOf(reply: TileReply, tags: readonly string[], binHours: num
   const scale = reply.rawValues ? 10 ** reply.decimals : 1;
   const line = (at: number) => {
     const held = reply.lines[at];
-    if (!held || countryKey(held.country) !== tags[at] || !Array.isArray(held.missing) || !Array.isArray(held.parts)) throw malformed();
+    if (!held || countryKey(held.country) !== tags[at] || !Array.isArray(held.missing) || (held.partial !== undefined && !Array.isArray(held.partial)) || !Array.isArray(held.parts)) throw malformed();
     return { key: key(tags[at]), tag: tags[at], binHours, index, firstHour: reply.firstHour, immutable: reply.immutable, filled: reply.filled,
-      scale, decimals: reply.decimals, missing: held.missing, parts: held.parts, ...(held.marks ? { marks: held.marks } : {}) };
+      scale, decimals: reply.decimals, missing: held.missing, partial: held.partial ?? [], parts: held.parts, ...(held.marks ? { marks: held.marks } : {}) };
   };
   if (reply.hourBytes === 0) {
     if (binHours !== 1) throw malformed();

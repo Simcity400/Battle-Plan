@@ -515,18 +515,21 @@ export function boundTiledSeries(
   const bucketsSlice = createBoundedSlice(rawBuckets, closedBuckets, straddlingBucket);
   const runsResult = line.summary.runs ? sliceRuns(line.summary.runs, hour, counter) : undefined;
   const missingResult = sliceMissingSpans(line.missing, hour, counter);
+  const partialResult = line.partial?.length ? sliceMissingSpans(line.partial, hour, counter) : undefined;
   const approxResult = line.summary.approximate ? sliceSpansByHour(line.summary.approximate, hour, clipSingleHourSpan, counter) : undefined;
 
   const validLo = Math.max(
     bucketValidLo,
     runsResult?.validLo ?? -Infinity,
     missingResult.validLo,
+    partialResult?.validLo ?? -Infinity,
     approxResult?.validLo ?? -Infinity,
   );
   const validHi = Math.min(
     bucketValidHi,
     runsResult?.validHi ?? Infinity,
     missingResult.validHi,
+    partialResult?.validHi ?? Infinity,
     approxResult?.validHi ?? Infinity,
   );
 
@@ -541,6 +544,7 @@ export function boundTiledSeries(
     straddling,
     ...(options?.headValue ? { headValue: options.headValue } : {}),
     missing: missingResult.slice,
+    ...(partialResult ? { partial: partialResult.slice } : {}),
     ...(approxResult ? { approximate: approxResult.slice } : {}),
     validInterval: [validLo, Math.max(validLo, validHi)],
   };

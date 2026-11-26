@@ -644,12 +644,12 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
             let pieces = clip_pieces(pieces, within);
             let missing = clip_missing(&missing, within);
             drawn_lines.push(pieces);
-            tile_lines.push(TileLine { country, part: None, missing, parts: Vec::new(), marks: None });
+            tile_lines.push(TileLine { country, part: None, missing, partial: Vec::new(), parts: Vec::new(), marks: None });
         }
     } else {
         for country in keys {
             drawn_lines.push(Vec::new());
-            tile_lines.push(TileLine { country, part: None, missing: Vec::new(), parts: Vec::new(), marks: None });
+            tile_lines.push(TileLine { country, part: None, missing: Vec::new(), partial: Vec::new(), parts: Vec::new(), marks: None });
         }
     }
 
