@@ -83,13 +83,40 @@ fn markers_a_holder_hides_say_when_and_why() {
         vec![(100, 120, "Countries table unread".to_owned()), (700, 720, "Countries table unread".to_owned())],
     );
     let mut out = Markers { hour: 230, shown: Vec::new(), next: None };
-    let notes = holder_notes(&mut out, &holders, &Country::Tag("GER".into()), 0);
+    let notes = holder_notes(&mut out, &holders, &Country::Tag("GER".into()), (0, 1000), "War and faction markers");
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes[0].ends_with("Who holds GER is not known: Countries table unread"), "{notes:?}");
     assert!(notes[0].contains(" to "), "a span over by the hour asked has its end: {notes:?}");
     assert!(notes[1].ends_with(&format!("Who holds GER is not known: {TAG_UNLINKED}")) && !notes[1].contains(" to "), "a span still open says only its start: {notes:?}");
     assert_eq!(out.next, Some(261), "the open span's end is the next change; a later span starts after it");
     let mut early = Markers { hour: 50, shown: Vec::new(), next: None };
-    assert!(holder_notes(&mut early, &holders, &Country::Tag("GER".into()), 0).is_empty(), "nothing is said before it is known");
+    assert!(holder_notes(&mut early, &holders, &Country::Tag("GER".into()), (0, 1000), "War and faction markers").is_empty(), "nothing is said before it is known");
     assert_eq!(early.next, Some(100));
+    let mut last = Markers { hour: 720, shown: Vec::new(), next: None };
+    assert_eq!(holder_notes(&mut last, &holders, &Country::Tag("GER".into()), (0, 720), "War markers").len(), 3);
+    assert_eq!(last.next, None, "a span open to the branch's end has no later change");
+
+    let other = Holders::new(
+        [("GER".to_owned(), vec![held(0, 1000)]), ("ITA".to_owned(), vec![HolderRun { first: 200, last: 260, holder: Holder::Unresolved, starts_segment: false }])].into_iter().collect(),
+        Vec::new(),
+    );
+    let mut slot = Markers { hour: 230, shown: Vec::new(), next: None };
+    assert!(holder_notes(&mut slot, &other, &Country::Slot(7), (0, 1000), "Faction markers").is_empty(), "another tag's unresolved holder says nothing of a slot that kept its own");
+}
+
+#[test]
+fn an_unattributed_war_start_is_said_once_with_its_span_and_a_late_join_says_it_is_late() {
+    let mut out = Markers { hour: 300, shown: Vec::new(), next: None };
+    let note = unattributed_note(&mut out, &[150, 210, 400]).unwrap();
+    assert!(note.starts_with("2 war starts or capitulations from ") && note.contains(" to "), "{note}");
+    assert_eq!(out.next, Some(400));
+    assert!(unattributed_note(&mut Markers { hour: 100, shown: Vec::new(), next: None }, &[150]).is_none());
+
+    let mut groups = groups();
+    groups.unobserved.factions = serde_json::from_value(serde_json::json!([{ "firstHour": 299, "lastHour": 299 }])).unwrap();
+    let mut late = Markers { hour: 450, shown: Vec::new(), next: None };
+    let notes = faction_markers(&mut late, &|tag: &str, _| tag == "ITA", &groups, (0, 1000));
+    assert!(titles(&late).is_empty(), "a join right after an unobserved hour is not dated");
+    assert_eq!(notes.len(), 1, "but it is said: {notes:?}");
+    assert!(notes[0].starts_with("In Axis by "), "{notes:?}");
 }

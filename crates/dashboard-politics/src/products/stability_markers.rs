@@ -4,8 +4,10 @@ use super::party_history::{self, RulingParties};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, CountryParams, LoadContext, Product, check_reply_budget};
 use dashboard_base::span::HourSpan;
+use dashboard_base::queries::country_ids::Names;
 use dashboard_query::identity::{Holder, Holders, TAG_UNLINKED};
 use dashboard_text::division_history::date;
+use replay_data::temperature::EPOCH;
 use dashboard_world::products::groups::{self, CountryGroupReply};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -211,7 +213,8 @@ fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &Co
     }
 }
 
-fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, branch: (i32, i32)) {
+fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, branch: (i32, i32)) -> Vec<String> {
+    let mut notes = Vec::new();
     for faction in &groups.factions {
         let unknown: Vec<HourSpan> = groups.unobserved.factions.iter().chain(&faction.incomplete).cloned().collect();
         let founders = faction.members.iter().filter(|member| member.first_hour == faction.first_hour).count();
@@ -219,6 +222,13 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
         let name = faction.name.as_deref().unwrap_or(FACTION_UNNAMED);
         let member_at = |hour: i32| faction.members.iter().any(|other| other.first_hour <= hour && hour <= other.last_hour && holds(&other.tag, hour));
         for run in &faction.members {
+            if run.first_hour > branch.0 && within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) {
+                if run.first_hour <= out.hour {
+                    notes.push(format!("In {name} by {}: when it joined is not known, as membership was not observed the hour before", when(run.first_hour)));
+                } else {
+                    out.later(Some(run.first_hour));
+                }
+            }
             if run.first_hour > branch.0 && !within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) && !member_at(run.first_hour - 1) {
                 let verb = if run.first_hour == faction.first_hour && sole { StabilityMarkerVerb::Founded } else { StabilityMarkerVerb::Joined };
                 let word = if verb == StabilityMarkerVerb::Founded { "Founded" } else { "Joined" };
@@ -236,33 +246,67 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
             }
         }
     }
+    notes
 }
 
-fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, from: i32) -> Vec<String> {
-    let mut spans: Vec<(i32, i32, String)> = holders
-        .unknown
-        .iter()
-        .filter_map(|&(first, last, _)| holders.not_known_as(&holders.nearest_name(country, first), first).map(|reason| (first, last, reason)))
-        .collect();
-    let unlinked = |first: i32| format!("Who holds {} is not known: {TAG_UNLINKED}", holders.nearest_name(country, first));
-    match country {
-        Country::Tag(_) => spans.extend(holders.within(country, from, i32::MAX).into_iter().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last, unlinked(run.first)))),
-        Country::Slot(_) => spans.extend(holders.unlinked().iter().map(|&(first, last)| (first, last, unlinked(first)))),
+fn when(hour: i32) -> String {
+    format!("{} {:02}:00", date(hour), (i64::from(hour) - i64::from(EPOCH)).rem_euclid(24))
+}
+
+fn hidden(wars: bool, factions: bool) -> &'static str {
+    match (wars, factions) {
+        (true, true) => "War and faction markers",
+        (true, false) => "War markers",
+        _ => "Faction markers",
     }
-    spans.sort();
+}
+
+fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, (from, end): (i32, i32), kinds: &str) -> Vec<String> {
+    let names = Names::new(holders);
+    let named = |hour: i32| match country {
+        Country::Tag(tag) => tag.clone(),
+        Country::Slot(slot) => names.slot_tags(*slot, from, hour.saturating_sub(1)).iter().rev().find_map(|(tag, ..)| *tag).map_or_else(|| "the chosen country".to_owned(), str::to_owned),
+    };
+    let mut spans: Vec<(i32, i32, Option<&str>)> = holders.unknown.iter().map(|(first, last, reason)| (*first, *last, Some(reason.as_str()))).collect();
+    match country {
+        Country::Tag(_) => spans.extend(holders.within(country, from, i32::MAX).into_iter().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last, None))),
+        Country::Slot(slot) => {
+            for &(first, last) in holders.unlinked() {
+                spans.extend(names.slot_tags(*slot, first, last).into_iter().filter(|(tag, ..)| tag.is_none()).map(|(_, first, last)| (first, last, None)));
+            }
+        }
+    }
+    spans.sort_unstable_by_key(|&(first, last, _)| (first, last));
     let mut notes = Vec::new();
-    for (first, last, reason) in spans.into_iter().filter(|&(_, last, _)| last >= from) {
+    for (first, last, reason) in spans {
+        if last < from {
+            continue;
+        }
         let first = first.max(from);
         if first > out.hour {
             out.later(Some(first));
-        } else if last >= out.hour {
-            out.later(Some(last.saturating_add(1)));
-            notes.push(format!("War and faction markers are not shown from {}: {reason}", date(first)));
+            break;
+        }
+        let reason = format!("Who holds {} is not known: {}", named(first), reason.unwrap_or(TAG_UNLINKED));
+        if last >= out.hour {
+            if last < end {
+                out.later(Some(last + 1));
+            }
+            notes.push(format!("{kinds} are not shown from {}: {reason}", when(first)));
         } else {
-            notes.push(format!("War and faction markers are not shown from {} to {}: {reason}", date(first), date(last)));
+            notes.push(format!("{kinds} are not shown from {} to {}: {reason}", when(first), when(last)));
         }
     }
     notes
+}
+
+fn unattributed_note(out: &mut Markers, hours: &[i32]) -> Option<String> {
+    let seen = hours.partition_point(|&at| at <= out.hour);
+    out.later(hours.get(seen).copied());
+    let shown = &hours[..seen];
+    let (first, last) = (*shown.first()?, *shown.last()?);
+    let span = if first == last { format!("at {}", when(first)) } else { format!("from {} to {}", when(first), when(last)) };
+    Some(format!("{} war starts or capitulations {span} name a country no link resolved: any may be this country's, and none is marked", shown.len()))
 }
 
 pub struct StabilityMarkers;
@@ -308,10 +352,12 @@ impl Product for StabilityMarkers {
             if params.wars {
                 war_markers(&mut out, &holds, &groups);
             }
-            if params.factions {
-                faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last));
+            let joins = if params.factions { faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last)) } else { Vec::new() };
+            if params.wars {
+                warnings.extend(unattributed_note(&mut out, &groups.unobserved.unattributed));
             }
-            warnings.extend(holder_notes(&mut out, &query.holders, &params.country, query.timeline.first));
+            warnings.extend(holder_notes(&mut out, &query.holders, &params.country, (query.timeline.first, query.timeline.last), hidden(params.wars, params.factions)));
+            warnings.extend(joins);
         }
         out.shown.sort_by(|a, b| a.hour.cmp(&b.hour).then_with(|| a.id.cmp(&b.id)));
         warnings.sort();
