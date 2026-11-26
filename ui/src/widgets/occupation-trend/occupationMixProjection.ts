@@ -120,7 +120,6 @@ function project(readView: BoundedReadView, options: OccupationMixOptions): Time
     from: options.extent[0],
     surface: options.surface,
     withFlag: true,
-    recordedOrdinal: () => 0,
   });
   const look = looks.get(tag)!;
   const drawnMain = readView.series('main')?.get(tag) ?? null;

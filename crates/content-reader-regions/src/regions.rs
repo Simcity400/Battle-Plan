@@ -223,8 +223,10 @@ fn read_regions(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
     let mut database = StrategicRegions::default();
     let mut sources: BTreeMap<u32, String> = BTreeMap::new();
     for path in layers.directory_files("map/strategicregions", ".txt")? {
-        let regions = parse_file(&path.read(layers)?)
-            .map_err(|error| invalid(format!("{path}: {error}")))?;
+        let regions = parse_file(&path.read(layers)?).map_err(|error| {
+            let layer = layers.layer_index(path.as_bytes()).and_then(|at| layers.layers.get(at)).and_then(|layer| layer.display_name.as_deref()).unwrap_or("an unnamed layer");
+            invalid(format!("{path} (from {layer}): {error}"))
+        })?;
         for (id, region) in regions {
             if id < 1 {
                 database.notes.push(format!(

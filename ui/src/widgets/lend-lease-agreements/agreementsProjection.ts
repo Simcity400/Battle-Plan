@@ -39,6 +39,31 @@ const whole = (raw: bigint, denominator: bigint): Value => {
 
 const dateCell = (hour: number | null, none: Value): TableCell => (hour === null ? { value: none } : { value: knownValue(hour) });
 
+export function fuelDelivered(terms: Pick<LeaseTerms, 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): boolean {
+  const moved = (value: Value) => value.kind === 'known' || value.kind === 'partial';
+  return BigInt(terms.lastFuelDeliveredRaw) !== 0n || moved(fuelSent) || moved(fuelLost);
+}
+
+export function fuelUnits(value: Value): Value {
+  if (value.kind !== 'known') return value;
+  return whole(typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(Number(value.value))), FUEL_QUANTITY);
+}
+
+export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'sunk' | 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): Value {
+  if (terms.lastDelivery > 0) return knownValue(terms.lastDelivery);
+  const sent = [...terms.delivered, ...terms.sunk].some(item => BigInt(item.amountRaw) !== 0n);
+  if (fuelDelivered(terms, fuelSent, fuelLost) || sent) return notRecorded('The last delivery date was not recorded, though deliveries were');
+  const unread = [fuelSent, fuelLost].find(value => value.kind === 'notRecorded');
+  if (unread?.kind === 'notRecorded') return notRecorded(`The last delivery date was not recorded, and whether fuel was sent is not known: ${unread.reason}`);
+  return notApplicable('No delivery yet');
+}
+
+export function emptyAgreements(reply: Pick<MarketLendLeaseReply, 'unattributed' | 'agreementsMissing'>, direction: Direction): Pick<TableModel, 'empty' | 'emptyDetail' | 'emptyKind'> {
+  if (reply.agreementsMissing !== null) return { empty: 'Not recorded', emptyDetail: reply.agreementsMissing, emptyKind: 'unavailable' };
+  if (reply.unattributed) return { empty: 'Not recorded', emptyDetail: `Some agreements' ${direction === 'sent' ? 'givers' : 'receivers'} are not in this recording at this date`, emptyKind: 'unavailable' };
+  return { empty: direction === 'sent' ? 'No lend-lease sent' : 'No lend-lease received', emptyKind: 'empty' };
+}
+
 function amounts(list: readonly MarketItem[]): Map<string, bigint> {
   const out = new Map<string, bigint>();
   for (const item of list) out.set(item.variant, (out.get(item.variant) ?? 0n) + BigInt(item.amountRaw));
@@ -79,9 +104,16 @@ function agreementRows(
   const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
   const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
   const country: TableCell = { value: knownValue(pair), flags };
-  const last = dateCell(terms.lastDelivery > 0 ? terms.lastDelivery : null, notApplicable('No delivery yet'));
+  const sent = valueFromLive(live, liveKey(terms.key, 'fuelSent'));
+  const fuelLost = valueFromLive(live, liveKey(terms.key, 'fuelLost'));
+  const last: TableCell = { value: lastDelivery(terms, sent, fuelLost) };
   const since = dateCell(terms.activeSince, notRecorded('Start date not recorded'));
+  const unnamed: TooltipExtraRow[] = [
+    ...(terms.giverMissing !== null ? [{ label: 'Giver', value: notRecorded(terms.giverMissing) }] : []),
+    ...(terms.receiverMissing !== null ? [{ label: 'Receiver', value: notRecorded(terms.receiverMissing) }] : []),
+  ];
   const extra = (lost: Value, schedule: string | null): readonly TooltipExtraRow[] => [
+    ...unnamed,
     ...(schedule ? [{ label: 'Schedule', value: knownValue(schedule), divider: true }] : []),
     { label: 'Lost on the way', value: lost, format: 'integer' },
   ];
@@ -112,11 +144,8 @@ function agreementRows(
   }
   const daily = BigInt(terms.fuelDailyRaw);
   const share = BigInt(terms.fuelPercentageRaw);
-  if (daily !== 0n || share !== 0n) {
-    const schedule = [daily !== 0n ? `Daily ${fixedText(daily, FUEL_QUANTITY)}` : '', share !== 0n ? `Production share ${fixedText(share, SHARE)}%` : ''].filter(Boolean).join(' · ');
-    const sent = valueFromLive(live, liveKey(terms.key, 'fuelSent'));
-    const lost = valueFromLive(live, liveKey(terms.key, 'fuelLost'));
-    const scaled = (value: Value): Value => value.kind === 'known' ? whole(BigInt(Math.trunc(Number(value.value))), FUEL_QUANTITY) : value;
+  if (daily !== 0n || share !== 0n || fuelDelivered(terms, sent, fuelLost)) {
+    const schedule = [daily !== 0n ? `Daily ${fixedText(daily, FUEL_QUANTITY)}` : '', share !== 0n ? `Production share ${fixedText(share, SHARE)}%` : ''].filter(Boolean).join(' · ') || 'No fuel schedule';
     const meta: AgreementMeta = { terms, variant: null };
     rows.push({
       key: `${terms.key}:fuel`,
@@ -125,12 +154,30 @@ function agreementRows(
         country,
         equipment: { value: knownValue('Fuel') },
         monthly: { value: notApplicable(schedule) },
-        delivered: { value: scaled(sent), format: 'integer' },
+        delivered: { value: fuelUnits(sent), format: 'integer' },
         last,
         since,
       },
       tooltipTitle: pair,
-      tooltipExtra: () => extra(scaled(lost), schedule),
+      tooltipExtra: () => extra(fuelUnits(fuelLost), schedule),
+      meta,
+    });
+  }
+  if (rows.length === 0) {
+    const meta: AgreementMeta = { terms, variant: null };
+    rows.push({
+      key: `${terms.key}:terms`,
+      name: 'Agreement',
+      cells: {
+        country,
+        equipment: { value: notApplicable('Its terms list no equipment or fuel') },
+        monthly: { value: notApplicable('No schedule') },
+        delivered: { value: [sent, fuelLost].find(value => value.kind === 'notRecorded') ?? notApplicable('Nothing is listed to deliver') },
+        last,
+        since,
+      },
+      tooltipTitle: pair,
+      tooltipExtra: () => unnamed,
       meta,
     });
   }
@@ -158,8 +205,6 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
     const rows: TableRow[] = [];
     const lookups: Lookups = { variants: new Map(reply.variants.map(variant => [variant.id, variant])), images: new Map(reply.icons.map(icon => [icon.key, icon.image])) };
     for (const terms of reply.agreements) rows.push(...agreementRows(readView, lookups, terms, live, boundary));
-    const side = options.direction === 'sent' ? 'givers' : 'receivers';
-    const unattributed = reply.unattributed;
     const warnings = reply.warnings;
     return {
       columns: AGREEMENT_COLUMNS,
@@ -167,11 +212,7 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      ...(rows.length === 0
-        ? unattributed
-          ? { empty: 'Not recorded', emptyDetail: `Some agreements' ${side} are not in this recording at this date`, emptyKind: 'unavailable' as const }
-          : { empty: options.direction === 'sent' ? 'No lend-lease sent' : 'No lend-lease received', emptyKind: 'empty' as const }
-        : {}),
+      ...(rows.length === 0 ? emptyAgreements(reply, options.direction) : {}),
       warnings,
     };
   },

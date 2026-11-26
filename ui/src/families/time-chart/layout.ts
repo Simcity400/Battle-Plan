@@ -218,8 +218,11 @@ function seriesExtent(
   for (const pt of series.points) {
     if (pt.hour > end) break;
     if (pt.hour < xDomain[0] || pt.value === null || !Number.isFinite(pt.value)) continue;
-    if (pt.value < low) low = pt.value;
-    if (pt.value > high) high = pt.value;
+    for (const value of [pt.value, pt.min, pt.max]) {
+      if (value == null || !Number.isFinite(value)) continue;
+      if (value < low) low = value;
+      if (value > high) high = value;
+    }
   }
   return low <= high ? [low, high] : null;
 }

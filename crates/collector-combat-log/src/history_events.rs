@@ -420,7 +420,10 @@ pub(crate) fn copy_published(
     })
 }
 pub fn refusals() -> impl serde::Serialize {
-    crate::status::status!({"lost": WRITERS.lost.load(SeqCst), "first_loss": WRITERS.first_loss()})
+    crate::status::status!({
+        "lost": WRITERS.lost.load(SeqCst), "first_loss": WRITERS.first_loss(),
+        "last_sealed_equipment_month_changed_on_whole_read": crate::combat_log::last_sealed_month_difference()
+    })
 }
 pub fn status() -> impl serde::Serialize {
     crate::status::status!({

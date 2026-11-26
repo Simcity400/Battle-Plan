@@ -8,7 +8,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
-import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -43,7 +43,6 @@ import {
   stabilizeCanvasDimension,
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
-import { withSoFarMembership } from './membership.ts';
 import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -86,7 +85,6 @@ import {
   extractFactionData,
   freezeGate,
   planOwner,
-  selectionUnobservedReason,
   trackGate,
   type FrozenGate,
 } from '../sources.ts';
@@ -366,7 +364,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const effectiveMulti = useMemo(() => {
     if (!resolvedMulti) return null;
-    if (typeof singleSlotId !== 'number') return withSoFarMembership(resolvedMulti, widget.countries, groups.data, lastHour);
+    if (typeof singleSlotId !== 'number') return resolvedMulti;
     const runs = [...(slots?.tagRuns(singleSlotId) ?? [])];
     return {
       ...resolvedMulti,
@@ -451,11 +449,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
   const identitySnapshot = useSyncExternalStore(snapshots.subscribe, snapshots.read, snapshots.read);
 
-  const filterUnobserved = useMemo(
-    () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
-    [isFilter, widget.countries, groups.data],
-  );
-
   const selectedSlots = useMemo(() => {
     if (!isFilter && !isMulti) return undefined;
     if (widget.countries.kind !== 'tags' && widget.countries.kind !== 'selected') return undefined;
@@ -480,10 +473,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     factionUnobserved: factionData.unobserved,
     factionIncomplete: factionData.incomplete,
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
-    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
+    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
@@ -1037,6 +1030,25 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     ? compiledFollow.allowEmptyFollow
     : (plan?.allowEmptyFollow === true && !plan.refused && !plan.unavailable);
 
+  const everDates = useMemo(() => ((isMulti || isFilter) ? everBounds(widget.countries, groups.data) : null), [isMulti, isFilter, widget.countries, groups.data]);
+  const everClock = useMemo(() => {
+    const at = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : moment);
+    return {
+      subscribe: (changed: () => void) => (everDates && following && active
+        ? watchBoundary(runtime.clock, axis => {
+            const state = everStateAt(everDates, Math.floor(axis) + trackOffset);
+            return [state.from - trackOffset, state.until + 1 - trackOffset];
+          }, changed)
+        : () => {}),
+      read: () => (everDates ? everStateAt(everDates, at()).kind : null),
+    };
+  }, [everDates, following, active, runtime.clock, trackOffset, moment]);
+  const everKind = useSyncExternalStore(everClock.subscribe, everClock.read, everClock.read);
+  const everBody = useMemo<FamilyBodyStatus | null>(
+    () => (everKind === 'empty' ? { kind: 'no-members', reason: NO_MEMBERS.yet } : everKind === 'unrecorded' ? { kind: 'not-recorded', reason: EVER_UNRECORDED } : null),
+    [everKind],
+  );
+
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
     if (isSingle) {
@@ -1075,6 +1087,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (filterMatch?.reason) return { kind: 'refused', reason: filterMatch.reason };
       if (countriesState.reason) return { kind: 'refused', reason: countriesState.reason };
       if (!filterMatch?.ready || !groups.data) return { kind: 'loading', label: loadingLabel };
+      if (everBody) return everBody;
     }
 
     if (isMulti) {
@@ -1085,6 +1098,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         return { kind: 'loading', label: loadingLabel };
       }
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
+      if (everBody) return everBody;
       if (effectiveMulti && !following) {
         const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
         if (none) return { kind: 'no-members', reason: none.reason };
@@ -1161,6 +1175,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     following,
     widget.countries,
     moment,
+    everBody,
     lastHour,
     window,
     pinHour,

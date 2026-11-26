@@ -129,6 +129,56 @@ struct ShipRow {
     count: u32,
 }
 
+#[derive(Default)]
+struct ShipIndex {
+    hours: Vec<i32>,
+    variants: BTreeMap<Option<u32>, Vec<(i32, i128)>>,
+}
+
+impl ShipIndex {
+    fn of(rows: Vec<ShipRow>) -> Self {
+        let mut order: Vec<(i32, usize)> = rows.iter().enumerate().map(|(at, ship)| (ship.listed_hour.max(ship.sink_hour), at)).collect();
+        order.sort_unstable();
+        let mut most: HashMap<&str, (usize, Option<u32>, u32)> = HashMap::new();
+        let mut index = Self::default();
+        let add = |variants: &mut BTreeMap<Option<u32>, Vec<(i32, i128)>>, variant: Option<u32>, hour: i32, change: i128| {
+            let steps = variants.entry(variant).or_default();
+            let before = steps.last().map_or(0, |step| step.1);
+            match steps.last_mut() {
+                Some(step) if step.0 == hour => step.1 += change,
+                _ => steps.push((hour, before + change)),
+            }
+        };
+        for (visible, at) in order {
+            let ship = &rows[at];
+            let held = most.get(ship.signature.as_str()).copied();
+            if held.is_some_and(|(index, _, count)| ship.count < count || (ship.count == count && index < at)) {
+                continue;
+            }
+            if let Some((_, variant, count)) = held {
+                add(&mut index.variants, variant, visible, -i128::from(count));
+            }
+            add(&mut index.variants, ship.variant, visible, i128::from(ship.count));
+            most.insert(ship.signature.as_str(), (at, ship.variant, ship.count));
+            if index.hours.last() != Some(&visible) {
+                index.hours.push(visible);
+            }
+        }
+        index
+    }
+
+    fn next_after(&self, hour: i32) -> Option<i32> {
+        self.hours.get(self.hours.partition_point(|&at| at <= hour)).copied()
+    }
+
+    fn counts_at(&self, hour: i32) -> impl Iterator<Item = (Option<u32>, i128)> + '_ {
+        self.variants.iter().filter_map(move |(&variant, steps)| {
+            let count = steps[..steps.partition_point(|step| step.0 <= hour)].last().map_or(0, |step| step.1);
+            (count != 0).then_some((variant, count))
+        })
+    }
+}
+
 struct SegmentData {
     first: i32,
     last: i32,
@@ -136,7 +186,7 @@ struct SegmentData {
     total_pos: usize,
     incomplete_pos: usize,
     covered: Covered,
-    ships: Vec<ShipRow>,
+    ships: ShipIndex,
 }
 
 struct CauseMeta {
@@ -163,11 +213,27 @@ struct LossesIndex {
     content_warnings: Vec<String>,
 }
 
+pub(super) fn loss_amount(total: Option<i64>, issue: Option<&str>) -> Option<Amount> {
+    Some(match total {
+        Some(0) => Amount::NotRecorded(issue?.to_owned()),
+        Some(value) => match exact_loss(i128::from(value)) {
+            Amount::Known(exact) => match issue {
+                Some(reason) => Amount::Partial(exact, reason.to_owned()),
+                None => Amount::Known(exact),
+            },
+            other => other,
+        },
+        None => Amount::NotRecorded(issue.unwrap_or(NOT_OBSERVED).to_owned()),
+    })
+}
+
 impl LossesIndex {
     fn next_change(&self, hour: i32, segment: Option<&SegmentData>) -> i32 {
         let mut through = self.to.max(hour);
-        tighten(&mut through, next_span_edge(&self.unknown_holders, hour, |&(a, b, _)| (a, b)));
-        tighten(&mut through, next_span_edge(&self.unlinked_holders, hour, |&(a, b)| (a, b)));
+        if !covering(&self.holders, hour, |run| (run.first, run.last)).is_some_and(|run| matches!(run.holder, Holder::Found { .. })) {
+            tighten(&mut through, next_span_edge(&self.unknown_holders, hour, |&(a, b, _)| (a, b)));
+            tighten(&mut through, next_span_edge(&self.unlinked_holders, hour, |&(a, b)| (a, b)));
+        }
         tighten(&mut through, next_span_edge(&self.holders, hour, |run| (run.first, run.last)));
         tighten(&mut through, next_span_edge(&self.segments, hour, |seg| (seg.first, seg.last)));
         let Some(seg) = segment else {
@@ -187,12 +253,7 @@ impl LossesIndex {
                 tighten(&mut through, Some(next.hour));
             }
         }
-        for ship in &seg.ships {
-            let visible = ship.listed_hour.max(ship.sink_hour);
-            if visible > hour {
-                tighten(&mut through, Some(visible));
-            }
-        }
+        tighten(&mut through, seg.ships.next_after(hour));
         for &(a, b, _) in &seg.covered.run {
             if a > hour {
                 tighten(&mut through, Some(a));
@@ -258,23 +319,25 @@ impl LossesIndex {
         let segment = covering(&self.segments, hour, |seg| (seg.first, seg.last));
         let through = self.next_change(hour, segment);
         let reply = |breakdown: Breakdown, warnings: Vec<String>| EquipmentLossesReply {
-            from: self.from,
+            from: segment.map_or(self.from, |seg| seg.first),
             hour,
             through,
             land_source: self.land_source,
             breakdown,
             warnings,
         };
-        if let Some((_, _, reason)) = covering(&self.unknown_holders, hour, |&(a, b, _)| (a, b)) {
-            return reply(not_recorded(reason.clone()), self.content_warnings.clone());
-        }
-        if covering(&self.unlinked_holders, hour, |&(a, b)| (a, b)).is_some() {
-            return reply(not_recorded(TAG_UNLINKED), self.content_warnings.clone());
-        }
         match covering(&self.holders, hour, |run| (run.first, run.last)).map(|run| run.holder) {
-            Some(Holder::Unresolved) => return reply(not_recorded(HOLDER_UNRESOLVED), self.content_warnings.clone()),
-            None => return reply(not_recorded(NOT_PRESENT), self.content_warnings.clone()),
             Some(Holder::Found { .. }) => {}
+            held => {
+                if let Some((_, _, reason)) = covering(&self.unknown_holders, hour, |&(a, b, _)| (a, b)) {
+                    return reply(not_recorded(reason.clone()), self.content_warnings.clone());
+                }
+                if covering(&self.unlinked_holders, hour, |&(a, b)| (a, b)).is_some() {
+                    return reply(not_recorded(TAG_UNLINKED), self.content_warnings.clone());
+                }
+                let why = if held.is_some() { HOLDER_UNRESOLVED } else { NOT_PRESENT };
+                return reply(not_recorded(why), self.content_warnings.clone());
+            }
         }
         let Some(seg) = segment else {
             return reply(not_recorded(NOT_OBSERVED), self.content_warnings.clone());
@@ -368,23 +431,7 @@ impl LossesIndex {
             }
         }
 
-        let mut ship_counts: BTreeMap<Option<u32>, i128> = BTreeMap::new();
-        let mut most_ships: HashMap<&str, (Option<u32>, u32)> = HashMap::new();
-        for ship in &seg.ships {
-            if ship.listed_hour > hour || ship.sink_hour > hour {
-                continue;
-            }
-            match most_ships.get_mut(ship.signature.as_str()) {
-                Some(held) if ship.count > held.1 => *held = (ship.variant, ship.count),
-                Some(_) => {}
-                None => {
-                    most_ships.insert(ship.signature.as_str(), (ship.variant, ship.count));
-                }
-            }
-        }
-        for (variant, count) in most_ships.into_values() {
-            *ship_counts.entry(variant).or_default() += i128::from(count);
-        }
+        let ship_counts: Vec<(Option<u32>, i128)> = seg.ships.counts_at(hour).collect();
 
         let mut leaves: Vec<Leaf> = Vec::new();
         let mut destruction_qualified = false;
@@ -400,7 +447,7 @@ impl LossesIndex {
             }
             if meta.source == LossSource::SunkShips {
                 let mut had_ship = false;
-                for (&variant, &count) in &ship_counts {
+                for &(variant, count) in &ship_counts {
                     if count == 0 {
                         continue;
                     }
@@ -457,24 +504,7 @@ impl LossesIndex {
                     .as_deref()
                     .or(cause_issue)
                     .or_else(|| incomplete_from.filter(|&from| from <= hour).map(|_| "Some losses for this item were not recorded"));
-                let amount = match total {
-                    Some(0) if leaf_issue.is_none() => continue,
-                    Some(0) => {
-                        if let Some(reason) = unread_why {
-                            Amount::NotRecorded(reason.clone())
-                        } else {
-                            continue;
-                        }
-                    }
-                    Some(value) => match exact_loss(i128::from(value)) {
-                        Amount::Known(exact) => match leaf_issue {
-                            Some(reason) => Amount::Partial(exact, reason.to_owned()),
-                            None => Amount::Known(exact),
-                        },
-                        other => other,
-                    },
-                    None => Amount::NotRecorded(leaf_issue.unwrap_or(NOT_OBSERVED).to_owned()),
-                };
+                let Some(amount) = loss_amount(total, leaf_issue) else { continue };
                 emitted_for_cause = true;
                 if is_destruction && leaf_issue.is_some() {
                     destruction_qualified = true;
@@ -562,7 +592,7 @@ fn build_index(source: &Source, query: &Query<'_>, params: &EquipmentLossesParam
                 }
                 ship_rows.push(ShipRow { signature, listed_hour, sink_hour, variant, count });
             }
-            segments.push(SegmentData { first: seg_first, last: seg_last, totals, total_pos, incomplete_pos, covered, ships: ship_rows });
+            segments.push(SegmentData { first: seg_first, last: seg_last, totals, total_pos, incomplete_pos, covered, ships: ShipIndex::of(ship_rows) });
         }
     }
     segments.sort_by_key(|seg| seg.first);
@@ -616,4 +646,20 @@ pub(super) fn load(source: &Source, params: &EquipmentLossesParams, context: &Lo
     let reply = held.at(params.hour);
     check_reply_budget(&reply)?;
     Ok(reply)
+}
+
+#[cfg(test)]
+mod ship_tests {
+    use super::{ShipIndex, ShipRow};
+
+    #[test]
+    fn ship_counts_step_at_each_hour_a_ship_is_both_listed_and_sunk_and_a_ship_counts_once_at_its_largest_listing() {
+        let ship = |signature: &str, listed_hour: i32, sink_hour: i32, variant: u32, count: u32| ShipRow { signature: signature.into(), listed_hour, sink_hour, variant: Some(variant), count };
+        let index = ShipIndex::of(vec![ship("a", 10, 20, 1, 1), ship("b", 5, 8, 2, 1), ship("a", 30, 20, 1, 2), ship("c", 30, 25, 3, 1)]);
+        assert_eq!(index.hours, [8, 20, 30]);
+        assert_eq!((index.next_after(8), index.next_after(30)), (Some(20), None));
+        assert_eq!(index.counts_at(20).collect::<Vec<_>>(), [(Some(1), 1), (Some(2), 1)]);
+        assert_eq!(index.counts_at(30).collect::<Vec<_>>(), [(Some(1), 2), (Some(2), 1), (Some(3), 1)], "the larger listing replaces the smaller, never adds to it");
+        assert_eq!(index.variants[&Some(1)], [(20, 1), (30, 2)], "one entry per change of a design, not a copy of every count");
+    }
 }

@@ -751,41 +751,14 @@ pub fn cells(
     statuses: Option<&mut Vec<StatusRun>>,
     each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
 ) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
-    celled(recording, (run, table), columns, keys, (from, to), false, statuses, each)
-}
-
-pub fn witnessed_cells(
-    recording: &Recording,
-    run: u32,
-    table: TableId,
-    columns: &[usize],
-    keys: Keys<'_>,
-    from: i32,
-    to: i32,
-    statuses: Option<&mut Vec<StatusRun>>,
-    each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
-) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
-    celled(recording, (run, table), columns, keys, (from, to), true, statuses, each)
-}
-
-fn celled(
-    recording: &Recording,
-    at: (u32, TableId),
-    columns: &[usize],
-    keys: Keys<'_>,
-    span: (i32, i32),
-    initial_witness: bool,
-    statuses: Option<&mut Vec<StatusRun>>,
-    each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
-) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
     read(
         recording,
-        at,
+        (run, table),
         columns,
         keys,
-        span,
+        (from, to),
         |columns, kinds| Celled { columns, kinds, texts: Texts::default() },
-        initial_witness,
+        true,
         statuses,
         &mut |hour, key, cells: &Option<Box<[Cell]>>| each(hour, key, cells.as_deref()),
     )

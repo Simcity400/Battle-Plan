@@ -1,5 +1,5 @@
 import { icDecimals } from '../../dashboard/icDecimals.ts';
-import { breakdownAtHourModel, breakdownAtHourSource, validateBreakdownAtHour } from '../../families/breakdown/atHour.ts';
+import { breakdownAtHourModel, breakdownAtHourSource, breakdownRange, validateBreakdownAtHour } from '../../families/breakdown/atHour.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
 import type { BoundedReadView, FamilyPlanContext } from '../../families/plan.ts';
@@ -32,8 +32,8 @@ function projectSpending(kind: string): BreakdownProjection<ProductionSpendingOp
   };
 }
 
-function spendingParams(scope: ProductionSpendingScope, includeRefits?: boolean): Readonly<Record<string, unknown>> {
-  return includeRefits === undefined ? { scope } : { scope, includeRefits };
+function spendingParams(ctx: FamilyPlanContext, scope: ProductionSpendingScope, includeRefits?: boolean): Readonly<Record<string, unknown>> {
+  return { scope, ...(includeRefits === undefined ? {} : { includeRefits }), ...breakdownRange(ctx) };
 }
 
 function productionScope(ctx: FamilyPlanContext): ProductionSpendingScope {
@@ -59,7 +59,7 @@ export const productionSpendingBreakdown: BreakdownWidgetSpec<ProductionSpending
     nothing: ctx.options.factories === 'dockyards' ? 'dockyard spending' : 'military production spending',
     notRecorded: 'Production spending was not recorded.',
   }),
-  sources: ctx => breakdownAtHourSource(ctx, 'production-spending', spendingParams(productionScope(ctx), ctx.options.refits === true), validate),
+  sources: ctx => breakdownAtHourSource(ctx, 'production-spending', spendingParams(ctx, productionScope(ctx), ctx.options.refits === true), validate),
 };
 
 export const dockyardSpendingProjection = projectSpending('dockyard-spending');
@@ -77,7 +77,7 @@ export const dockyardSpendingBreakdown: BreakdownWidgetSpec<ProductionSpendingOp
     nothing: 'dockyard spending',
     notRecorded: 'Dockyard spending was not recorded.',
   }),
-  sources: ctx => breakdownAtHourSource(ctx, 'production-spending', spendingParams('dockyardPurposes'), validate),
+  sources: ctx => breakdownAtHourSource(ctx, 'production-spending', spendingParams(ctx, 'dockyardPurposes'), validate),
 };
 
 export const militaryFactorySpendingProjection = projectSpending('military-factory-spending');
@@ -95,5 +95,5 @@ export const militaryFactorySpendingBreakdown: BreakdownWidgetSpec<ProductionSpe
     nothing: ctx.options.equipment === 'land' ? 'land factory spending' : 'air factory spending',
     notRecorded: 'Military factory spending was not recorded.',
   }),
-  sources: ctx => breakdownAtHourSource(ctx, 'production-spending', spendingParams(factoryScope(ctx)), validate),
+  sources: ctx => breakdownAtHourSource(ctx, 'production-spending', spendingParams(ctx, factoryScope(ctx)), validate),
 };

@@ -222,6 +222,7 @@ export interface MosaicViewLayout {
   readonly contentHeight: number;
   readonly expanded: Readonly<Record<string, boolean>>;
   readonly items: readonly DrawnItem[];
+  readonly undrawn: string | null;
 }
 
 export type BreakdownLayout = PartsViewLayout | RingViewLayout | MosaicViewLayout;
@@ -263,6 +264,25 @@ function shareOf(part: BreakdownPart, total: BreakdownTotal): string {
 
 function positive(part: BreakdownPart): boolean {
   return !part.notRecorded && part.value !== null && part.value > 0;
+}
+
+function subdivision(shown: readonly BreakdownPart[]): readonly number[] | null {
+  if (!shown.length || !shown.every(child => child.parentShare != null)) return null;
+  const shares = shown.map(child => child.parentShare!);
+  return shares.reduce((sum, share) => sum + share, 0) <= 1 + 1e-9 ? shares : null;
+}
+
+function wholeOf(level: ResolvedBreakdownLevel, drawn: number): number {
+  return level.total.known && level.total.value !== null && level.total.value > drawn ? level.total.value : drawn;
+}
+
+function undrawnParts(parts: readonly BreakdownPart[], drawn: ReadonlySet<string>, total: BreakdownTotal): DrawnItem[] {
+  return parts.filter(part => !drawn.has(part.key)).map(part => ({ key: part.key, parentKey: null, depth: 0 as const, part, open: -1, shareText: shareOf(part, total) }));
+}
+
+function undrawnNote(parts: readonly BreakdownPart[], drawnCount: number, total: BreakdownTotal): string | null {
+  if (drawnCount > 0 || !parts.length) return null;
+  return total.reason ?? parts.find(part => part.missingReason)?.missingReason ?? 'Nothing here can be drawn to scale.';
 }
 
 function comparisonBox(
@@ -384,12 +404,13 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
     const isExpanded = hasChildren && expanded[part.key] === true;
     const barFillWidth = fill(part);
     const segments: PartsSegment[] = [];
-    if (drawnChildren(part).length && !isExpanded && barFillWidth > 0) {
-      const shown = drawnChildren(part).filter(positive);
+    const shown = drawnChildren(part).filter(positive);
+    const shares = !isExpanded && barFillWidth > 0 ? subdivision(shown) : null;
+    if (shares) {
       const usable = Math.max(0, barFillWidth - Math.max(0, shown.length - 1));
       let segX = barX;
-      for (const child of shown) {
-        const segW = (child.value! / part.value!) * usable;
+      for (const [at, child] of shown.entries()) {
+        const segW = shares[at]! * usable;
         if (segW >= 0.5) {
           const segColor = childTint(color, child, theme, SEGMENT_TINTS);
           const fullText = `${child.name} ${child.text}`;
@@ -570,8 +591,9 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
   let sumRecorded = 0;
   for (const part of recorded) sumRecorded += part.value!;
 
-  const gapRad = recorded.length > 1 ? 1.5 / Math.max(1, r1o) : 0;
-  const usableAngle = Math.max(0.01, Math.PI * 2 - gapRad * recorded.length);
+  const allocated = Math.PI * 2 * (sumRecorded > 0 ? sumRecorded / wholeOf(level, sumRecorded) : 1);
+  const gapRad = recorded.length > 1 ? Math.min(1.5 / Math.max(1, r1o), allocated / (2 * recorded.length)) : 0;
+  const usableAngle = allocated - gapRad * recorded.length;
   const hatchedRing = level.total.atLeast === true;
   const outerFont = `600 10.5px ${theme.font}`;
 
@@ -602,16 +624,17 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     innerSlices.push({ key: part.key, part, a0, a1, color, hatched: hatchedRing, label });
 
     const children = drawnChildren(part).filter(positive);
+    const shares = subdivision(children);
     if (w2 < 6) continue;
-    if (!children.length) {
+    if (!shares) {
       outerSlices.push({ key: part.key, parentKey: part.key, part, a0, a1, color: part.neutral ? color : tintColour(color, OUTER_TINTS[0]), hatched: hatchedRing, arcLabel: null });
       continue;
     }
-    const childGap = children.length > 1 ? 1 / Math.max(1, r2o) : 0;
-    const childUsable = Math.max(0.001, span - childGap * (children.length - 1));
+    const childGap = children.length > 1 ? Math.min(1 / Math.max(1, r2o), span / (2 * (children.length - 1))) : 0;
+    const childUsable = span - childGap * (children.length - 1);
     let bAngle = a0;
-    for (const child of children) {
-      const bSpan = (child.value! / part.value!) * childUsable;
+    for (const [at, child] of children.entries()) {
+      const bSpan = shares[at]! * childUsable;
       const b0 = bAngle;
       const b1 = bAngle + bSpan;
       bAngle = b1 + childGap;
@@ -685,12 +708,14 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
       items.push({ key: slice.key, parentKey: null, depth: 0, part: slice.part, open: -1, shareText: shareOf(slice.part, level.total) });
       for (const outer of outerOf.get(slice.key) ?? []) items.push({ key: outer.key, parentKey: slice.key, depth: 1, part: outer.part, open: -1, shareText: shareOf(outer.part, level.total) });
     }
+    items.push(...undrawnParts(level.parts, new Set(innerSlices.map(slice => slice.key)), level.total));
   }
 
   const partial = level.total.partial === true || level.total.atLeast === true;
   const centerVerb = narrow ? null : level.total.verb;
   const centerValueSize = narrow || R < 90 ? 16 : 22;
-  const centerUnitLine = narrow ? null : level.total.unit ? (partial ? `${level.total.unit} · Partial` : level.total.unit) : (partial ? 'Partial' : null);
+  const undrawn = undrawnNote(level.parts, innerSlices.length, level.total);
+  const centerUnitLine = undrawn ?? (narrow ? null : level.total.unit ? (partial ? `${level.total.unit} · Partial` : level.total.unit) : (partial ? 'Partial' : null));
   const valueY = centerVerb ? cy + 4 : cy;
   const valueHalf = measure(level.total.text, `600 ${centerValueSize}px ${theme.font}`) / 2;
   const centerTab = partial && !centerUnitLine ? { x: cx + valueHalf + 5, y: valueY - 6.5, width: 6, height: 13 } : null;
@@ -812,6 +837,8 @@ function squarify(items: readonly SquarifyItem[], bounds: Rect, gap: number): Sq
   return result;
 }
 
+const UNALLOCATED: BreakdownPart = { key: '__unallocated__', name: '', ordinal: 0, value: null, text: '' };
+
 function tileLabel(width: number, height: number): MosaicTile['labelMode'] {
   if (width >= 56 && height >= 40) return 'full';
   if (width >= 56 && height >= 22) return 'name';
@@ -834,17 +861,22 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
   level.parts.forEach((part, index) => {
     if (positive(part)) recordedItems.push({ part, weight: part.value!, index });
   });
+  const drawnSum = recordedItems.reduce((sum, item) => sum + item.weight, 0);
+  const unallocated = wholeOf(level, drawnSum) - drawnSum;
+  const placed = unallocated > 0 ? [...recordedItems, { part: UNALLOCATED, weight: unallocated, index: recordedItems.length }] : recordedItems;
 
   const hatchedAll = level.total.atLeast === true;
   const tiles: MosaicTile[] = [];
   const items: DrawnItem[] = [];
 
-  for (const rect of squarify(recordedItems, area, 3)) {
+  for (const rect of squarify(placed, area, 3)) {
+    if (rect.item.part === UNALLOCATED) continue;
     const part = rect.item.part;
     const baseColor = partColour(part, theme);
     const shareText = hatchedAll || part.share == null ? '' : formatShare(part.share);
     const children = drawnChildren(part).filter(positive);
-    const showGroup = children.length > 0 && rect.width > 70 && rect.height > 60;
+    const shares = subdivision(children);
+    const showGroup = shares !== null && rect.width > 70 && rect.height > 60;
     items.push({ key: part.key, parentKey: null, depth: 0, part, open: -1, shareText });
 
     if (!showGroup) {
@@ -877,9 +909,9 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
       width: Math.max(0, rect.width - 4),
       height: Math.max(0, rect.height - MOSAIC_GROUP_HEADER - 2),
     };
-    const weights: SquarifyItem[] = children.map((child, index) => ({ part: child, weight: child.value!, index }));
-    const rest = part.value! - children.reduce((sum, child) => sum + child.value!, 0);
-    if (rest > part.value! * 1e-9) weights.push({ part, weight: rest, index: weights.length });
+    const weights: SquarifyItem[] = children.map((child, index) => ({ part: child, weight: shares![index]!, index }));
+    const rest = 1 - shares!.reduce((sum, share) => sum + share, 0);
+    if (rest > 1e-9) weights.push({ part, weight: rest, index: weights.length });
     const childTiles: MosaicTile[] = [];
     for (const cr of squarify(weights, childArea, 1)) {
       if (cr.item.part === part) continue;
@@ -928,7 +960,8 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
     });
   }
 
-  return { view: 'mosaic', width, height, narrow, padX, totalLine, area, tiles, contentHeight: height, expanded: {}, items };
+  items.push(...undrawnParts(level.parts, new Set(tiles.map(tile => tile.key)), level.total));
+  return { view: 'mosaic', width, height, narrow, padX, totalLine, area, tiles, contentHeight: height, expanded: {}, items, undrawn: undrawnNote(level.parts, tiles.length, level.total) };
 }
 
 function inRect(r: Rect | null | undefined, x: number, y: number): boolean {

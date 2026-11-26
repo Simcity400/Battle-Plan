@@ -3,7 +3,7 @@ import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
 import { markCanvasPainted } from '../draw/laneDispatch.ts';
-import { LaneArtCache, type LaneArtFetcher } from './art/laneCache.ts';
+import { LaneArtCache, LaneArtPool, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
 import type { ArtProvider, BoundedReadView, FamilyProjection, FamilyTheme, IdentityProvider } from './contract.ts';
@@ -323,6 +323,8 @@ function retryOrThrow(failed: Map<number, number>, input: PaintInput, reason: st
   throw new Error(reason);
 }
 
+const laneArt = new LaneArtPool();
+
 export type LaneFamilyLoad = () => Promise<LaneFamily<any, any, any>>;
 
 export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
@@ -381,6 +383,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     && typeof (value as { kind?: unknown }).kind === 'string';
   const wakers = new Map<number, () => void>();
   const failedGenerations = new Map<number, number>();
+  const artPool = options?.fetchBitmap ? new LaneArtPool(options.fetchBitmap) : laneArt;
   const wakerOf = (widget: number): (() => void) => {
     let waker = wakers.get(widget);
     if (!waker) wakers.set(widget, waker = () => wake(widget));
@@ -412,7 +415,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     if (!ctx) return null;
     const art = new LaneArtCache({
       ...(options?.artMaxEntries !== undefined ? { maxEntries: options.artMaxEntries } : {}),
-      ...(options?.fetchBitmap ? { fetchBitmap: options.fetchBitmap } : {}),
+      pool: artPool,
     });
     const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
     const held: Held<TBinding, TModel, TLayout> = {

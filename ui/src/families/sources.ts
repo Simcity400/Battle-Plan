@@ -1,5 +1,6 @@
 import type { BoundTrack, CountrySelection, WidgetSpec } from '../dashboard/model';
 import { selectedCountryKeys } from '../dashboard/countrySelection.ts';
+import { everKnownBefore } from '../dashboard/groups.ts';
 import type { Gate } from '../dashboard/regionGate';
 import { coverageSpan, recordedHour, type BoundWindow, type GatedHour } from '../dashboard/regionTime.ts';
 import type { CountryGroupReply, HourSpan } from '../generated/dashboard';
@@ -52,20 +53,9 @@ export function effectiveCountryUnobserved(
   selection: CountrySelection,
   raw: readonly HourSpan[] | undefined,
 ): HourRanges {
-  if (!raw?.length) return [];
-  if (selection.kind !== 'group' || selection.membership !== 'hour') return [];
+  if (!raw?.length || selection.kind !== 'group') return [];
+  if (selection.membership === 'ever') return [[everKnownBefore(raw), Number.MAX_SAFE_INTEGER]];
   return raw.map(span => [span.firstHour, span.lastHour] as const);
-}
-
-export function selectionUnobservedReason(
-  selection: CountrySelection,
-  raw: readonly HourSpan[] | undefined,
-): string | null {
-  if (!raw?.length) return null;
-  if (selection.kind === 'group' && selection.membership === 'ever') {
-    return 'Group membership is incomplete for this campaign.';
-  }
-  return null;
 }
 
 export interface FamilyFactionData {

@@ -8,6 +8,7 @@ const CATEGORICAL = {
 } as const;
 export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
 export const MARK_CONTRAST = 3;
+export const DISTINCT_MARK_DISTANCE = 12;
 
 const MEASURE_COLOURS = {
   politicalPower: '#e3a83b',
@@ -143,6 +144,7 @@ class SurfacePalette {
   readonly tail: string;
   readonly marks = new ReadableColours();
   readonly fills = new ReadableColours();
+  readonly lineSets = new Map<string, readonly string[]>();
   custom?: { ratio: number; colours: ReadableColours };
   categories?: string[];
   variables?: Readonly<Record<string, string>>;
@@ -164,6 +166,7 @@ let surfaces = new WeakMap<Rgb, SurfacePalette>();
 let currentSurface: string | undefined;
 let currentPalette: SurfacePalette | undefined;
 let readableSolves = 0;
+let lineSolves = 0;
 
 function forSurface(surface: string): SurfacePalette {
   if (currentSurface === surface && currentPalette) return currentPalette;
@@ -176,6 +179,7 @@ function forSurface(surface: string): SurfacePalette {
 
 export const paletteCache = {
   get readableSolves() { return readableSolves; },
+  get lineSolves() { return lineSolves; },
   get surfaces() { return currentSurface === undefined ? 0 : 1; },
   clear(): void {
     surfaces = new WeakMap();
@@ -183,6 +187,7 @@ export const paletteCache = {
     currentPalette = undefined;
     hexByRgb.clear();
     readableSolves = 0;
+    lineSolves = 0;
   },
 };
 
@@ -471,7 +476,7 @@ export function reservedGrey(surface: string, identities: Iterable<string> = EMP
   return near;
 }
 
-export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = 12, avoid: readonly Rgb[] = []): Rgb[] {
+export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = DISTINCT_MARK_DISTANCE, avoid: readonly Rgb[] = []): Rgb[] {
   const darkSurface = isDark(background);
   const surfaceHex = toHex(background);
   const result: Rgb[] = [];
@@ -499,6 +504,67 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
     neighbours.add(chosen);
   }
   return result;
+}
+
+function distinctLineMark(original: Rgb, palette: SurfacePalette, placed: NearestColours): Rgb {
+  const clears = (rgb: Rgb) => placed.gap(rgb) >= DISTINCT_MARK_DISTANCE;
+  if (clears(original)) return original;
+  const start = rgbToOklch(original);
+  const readable = (rgb: Rgb) => contrast(rgb, palette.background) >= MARK_CONTRAST;
+  for (let step = 1; step <= 100; step++) {
+    for (const direction of [1, -1]) {
+      const l = Math.min(1, Math.max(0, start.l + direction * step / 100));
+      const candidate = roundRgb(oklchToRgb({ ...start, l }));
+      if (readable(candidate) && clears(candidate)) return candidate;
+    }
+  }
+  for (const stride of [17, 1]) {
+    let closest = Infinity;
+    let best: Rgb | undefined;
+    for (let r = 0; r <= 255; r += stride) {
+      for (let g = 0; g <= 255; g += stride) {
+        for (let b = 0; b <= 255; b += stride) {
+          const candidate = { r, g, b };
+          if (!readable(candidate)) continue;
+          const movement = colourDistance(original, candidate);
+          if (movement < closest && clears(candidate)) {
+            best = candidate;
+            closest = movement;
+          }
+        }
+      }
+    }
+    if (best) return best;
+  }
+  return original;
+}
+
+export function resolveLineColors<K extends number | string>(
+  lines: readonly { readonly key: K; readonly color: string | null }[],
+  surface: string,
+): ReadonlyMap<K, string> {
+  const ordered = [...lines].sort((a, b) => {
+    if (typeof a.key !== typeof b.key) return typeof a.key === 'number' ? -1 : 1;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
+  const bases = ordered.map((line, index) => readableColour(line.color ?? colour(surface, index), surface));
+  const palette = forSurface(surface);
+  const key = bases.join('');
+  let colors = palette.lineSets.get(key);
+  if (!colors) {
+    lineSolves++;
+    const placed = new NearestColours();
+    colors = bases.map(hex => {
+      const mark = distinctLineMark(parseColor(hex)!, palette, placed);
+      placed.add(mark);
+      return toHex(mark);
+    });
+    if (palette.lineSets.size >= 256) palette.lineSets.delete(palette.lineSets.keys().next().value!);
+  } else {
+    palette.lineSets.delete(key);
+  }
+  palette.lineSets.set(key, colors);
+  return new Map(ordered.map(({ key }, index) => [key, colors[index]!]));
 }
 
 export const SECONDARY_DASH: readonly number[] = [6, 4];

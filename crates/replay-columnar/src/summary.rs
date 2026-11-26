@@ -20,6 +20,8 @@ const VERSION: u8 = 4;
 pub const BASE_HOURS: i64 = 6;
 pub const FANOUT: i64 = 16;
 
+pub const MAX_LEVEL: u8 = 8;
+
 pub const fn bucket_hours(level: u8) -> i64 {
     BASE_HOURS * FANOUT.pow(level as u32)
 }
@@ -653,7 +655,7 @@ impl Directory {
         let keys = reader.varint_u32()?;
         let shape = reader.u8()?;
         let count = reader.count()?;
-        if count > body.len() || level > 8 || shape > 2 {
+        if count > body.len() || level > MAX_LEVEL || shape > 2 {
             return Err(invalid("A summary piece's directory is malformed"));
         }
         let mut columns = Vec::with_capacity(count);

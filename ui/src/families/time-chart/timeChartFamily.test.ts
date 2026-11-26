@@ -931,6 +931,14 @@ describe('time-chart picture authority', () => {
     assert.equal(project({ hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
     assert.equal(project({ hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
   });
+  it('skips a missing span when sampling a populated bin for a hover dot or hit', () => {
+    const from = H1936, until = from + 6;
+    const line = makeTiledLine('AAA', [makeBucket(from, until, 7)]);
+    const series = { id: 'AAA', key: 'AAA', name: 'North', color: '#111111', role: 'primary' as const,
+      bounded: boundTiledSeries(line, displayedHour(until)), missingSpans: [{ firstHour: from + 2, lastHour: from + 4, reason: 'Clock paused' }] };
+    const sample = (offset: number) => sampleSeriesValueAt(series, from + offset, until)?.value;
+    assert.deepEqual([1, 2, 3, 4, 5].map(sample), [7, undefined, undefined, undefined, 7]);
+  });
   it('shows a group member only from the hour it joins, and keeps colours by recorded order', () => {
     const base = Math.floor(H1936 / 96) * 96;
     const hour = base + 50;

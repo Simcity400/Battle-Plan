@@ -25,6 +25,10 @@ export function validateBreakdownAtHour<T extends BreakdownAtHour>(what: string)
   };
 }
 
+export function breakdownRange(ctx: FamilyPlanContext): Readonly<Record<string, unknown>> {
+  return ctx.staticSpan && ctx.widget.time.mode === 'range' ? { fromHour: ctx.staticSpan[0] } : {};
+}
+
 export function breakdownAtHourSource(
   ctx: FamilyPlanContext,
   product: DeclaredProduct,

@@ -1,4 +1,4 @@
-use super::{Fold, MilitaryAirFamily, building_name, scan};
+use super::{Fold, LeafKey, MilitaryAirFamily, building_name, scan};
 use dashboard_base::{
     Source, catalogue,
     products::{
@@ -34,12 +34,14 @@ const UNJOINED: &str = "Country links were not recorded at this hour; bombing ca
 const NOT_PRESENT: &str = "This country is not present at this hour";
 const HOLDER_UNRESOLVED: &str = "This country's holder was not recorded at this hour";
 const GAP_BEFORE: &str = "Bombing damage or country links had an unread gap before this hour";
-const INCOMPLETE_READ: &str = "Some bombing damage reads were incomplete or had an unsupported cause";
+const INCOMPLETE_READ: &str = "Some bombing damage reads were incomplete or named a country the recording cannot link";
+const UNSUPPORTED_CAUSE: &str = "Some of this country's building damage has an unsupported cause; whether it was aircraft bombing is not known";
 const UNATTRIBUTED_TAKEN: &str = "Some bombing damage had no resolved victim";
 const UNATTRIBUTED_DEALT: &str = "Some bombing damage had no recorded attacker";
 const CONTENT_UNAVAILABLE: &str = "Recorded content stack unavailable; choose matching game and user folders";
 const BUILDING_UNSPELLED: &str = "Building type is not spelled by the recorded lexical dictionary";
 const STATES_NOT_RECORDED: &str = "States table was not recorded at this hour";
+const STATES_IN_PART: &str = "States were read only in part at this hour; this state's row was not among them";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -109,6 +111,45 @@ struct StateStretch {
     by_state: HashMap<u32, usize>,
 }
 
+struct SharedFold {
+    fold: Fold,
+    by_holder: HashMap<(bool, String), Vec<LeafKey>>,
+    unattributed_first: [Option<i32>; 2],
+    unsupported: HashMap<(bool, Option<String>), i32>,
+}
+
+impl SharedFold {
+    fn new(fold: Fold) -> Self {
+        let mut by_holder: HashMap<(bool, String), Vec<LeafKey>> = HashMap::new();
+        let mut unattributed_first = [None, None];
+        for (leaf, deltas) in &fold.leaves {
+            match &leaf.country {
+                Some((_, identity)) => by_holder.entry((leaf.dealt, identity.clone())).or_default().push(leaf.clone()),
+                None => {
+                    if let Some(&(read_hour, _)) = deltas.keys().next() {
+                        let held: &mut Option<i32> = &mut unattributed_first[usize::from(leaf.dealt)];
+                        *held = Some(held.map_or(read_hour, |held| held.min(read_hour)));
+                    }
+                }
+            }
+        }
+        let mut unsupported: HashMap<(bool, Option<String>), i32> = HashMap::new();
+        for (hour, attacker, victim) in &fold.unsupported {
+            for key in [(true, attacker.clone()), (false, victim.clone())] {
+                unsupported.entry(key).and_modify(|held| *held = (*held).min(*hour)).or_insert(*hour);
+            }
+        }
+        Self { fold, by_holder, unattributed_first, unsupported }
+    }
+}
+
+#[derive(PartialEq)]
+struct FoldKey {
+    branch: u64,
+    first: i32,
+    last: i32,
+}
+
 struct BombingIndex {
     last: i32,
     from: i32,
@@ -118,6 +159,8 @@ struct BombingIndex {
     holder_runs: Vec<HolderSpan>,
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
+    unsupported: HashMap<Option<String>, i32>,
+    unread: Vec<(i32, i32, String)>,
     unjoined: Vec<HourSpan>,
     unattributed_first: Option<i32>,
     by_holder: HashMap<String, Vec<PartSeries>>,
@@ -228,33 +271,25 @@ fn text_bytes(history: &History, cell: Option<&Cell>) -> Vec<u8> {
 }
 
 impl BombingIndex {
-    fn build(source: &Source, query: &Query<'_>, country: &Country, direction: BombingDirection, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self> {
+    fn build(source: &Source, query: &Query<'_>, branch: u64, country: &Country, direction: BombingDirection, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self> {
         let (first, last) = (query.timeline.first, query.timeline.last);
         let dealt = direction.dealt();
-        let fold: Fold = scan(source, query, MilitaryAirFamily::Bombing, (first, last), cancelled)?;
+        let shared = breakdown::held(source, context, FoldKey { branch, first, last }, || scan(source, query, MilitaryAirFamily::Bombing, (first, last), cancelled).map(SharedFold::new))?;
+        let fold = &shared.fold;
         let from = fold.observed.first().map_or(first, |span| span.first_hour);
         let holder_runs = match country {
             Country::Slot(slot) => slot_runs(&query.holders, *slot),
             Country::Tag(tag) => tag_runs(&query.holders, tag),
         };
         let wanted_holders: BTreeSet<String> = holder_runs.iter().filter_map(|run| run.holder.clone()).collect();
-        let mut unattributed_first: Option<i32> = None;
+        let unattributed_first = shared.unattributed_first[usize::from(dealt)];
         let mut grouped: HashMap<String, BTreeMap<(u32, Option<String>, u32), BTreeMap<i32, i128>>> = HashMap::new();
         let mut buildings_needed: BTreeSet<String> = BTreeSet::new();
         let mut states_needed: BTreeSet<u32> = BTreeSet::new();
-        for (leaf, deltas) in &fold.leaves {
-            if leaf.dealt != dealt {
-                continue;
-            }
-            let Some((_, identity)) = leaf.country.as_ref() else {
-                if let Some(&(read_hour, _)) = deltas.keys().next() {
-                    unattributed_first = Some(unattributed_first.map_or(read_hour, |held| held.min(read_hour)));
-                }
-                continue;
-            };
-            if !wanted_holders.contains(identity) {
-                continue;
-            }
+        let wanted = wanted_holders.iter().flat_map(|identity| shared.by_holder.get(&(dealt, identity.clone())).into_iter().flatten());
+        for leaf in wanted {
+            let Some(deltas) = fold.leaves.get(leaf) else { continue };
+            let Some((_, identity)) = leaf.country.as_ref() else { continue };
             let Some((building_id, building_token)) = leaf.building.as_ref() else { continue };
             let Some(state) = leaf.state else { continue };
             if let Some(token) = building_token {
@@ -337,9 +372,15 @@ impl BombingIndex {
             unknown_holders: query.holders.unknown.clone(),
             unlinked: unlinked_spans(&query.holders),
             holder_runs,
-            observed: fold.observed,
-            incomplete: fold.incomplete,
-            unjoined: fold.unjoined,
+            observed: fold.observed.clone(),
+            incomplete: fold.in_part.clone(),
+            unsupported: wanted_holders
+                .iter()
+                .filter_map(|identity| Some((Some(identity.clone()), *shared.unsupported.get(&(dealt, Some(identity.clone())))?)))
+                .chain(shared.unsupported.get(&(dealt, None)).map(|&first| (None, first)))
+                .collect(),
+            unread: fold.unread.clone(),
+            unjoined: fold.unjoined.clone(),
             unattributed_first,
             by_holder,
             state_stretches,
@@ -384,8 +425,12 @@ impl BombingIndex {
         if !available(status) {
             return Node::new(key, fallback, state).name_missing(Some(STATES_NOT_RECORDED.to_owned()));
         }
+        let absent = || match status {
+            Status::Truncated { .. } => STATES_IN_PART.to_owned(),
+            _ => format!("Not in this recording: state {state} at this hour"),
+        };
         let Some(&entry_index) = stretch.by_state.get(&state) else {
-            return Node::new(key, fallback, state).name_missing(Some(format!("Not in this recording: state {state} at this hour")));
+            return Node::new(key, fallback, state).name_missing(Some(absent()));
         };
         let steps = &stretch.history.keys[entry_index].1;
         let at = steps.partition_point(|step| step.hour <= hour);
@@ -393,7 +438,7 @@ impl BombingIndex {
             tighten(through, Some(next_step.hour));
         }
         let Some(cells) = at.checked_sub(1).and_then(|index| steps.get(index)).and_then(|step| step.cells.as_deref()) else {
-            return Node::new(key, fallback, state).name_missing(Some(format!("Not in this recording: state {state} at this hour")));
+            return Node::new(key, fallback, state).name_missing(Some(absent()));
         };
         let (custom_name, owner_name) = (text_bytes(&stretch.history, cells.first()), text_bytes(&stretch.history, cells.get(1)));
         let row = StateRow { id: state, custom_name, owner_name, ..StateRow::default() };
@@ -455,6 +500,10 @@ impl BombingIndex {
                 return reply(not_recorded(UNJOINED), through);
             }
             tighten(&mut through, next_span_edge(&self.unjoined, hour, |span| (span.first_hour, span.last_hour)));
+            if let Some(&(_, last, ref reason)) = covering(&self.unread, hour, |&(first, last, _)| (first, last)) {
+                return reply(not_recorded(reason.clone()), through.min(last));
+            }
+            tighten(&mut through, next_span_edge(&self.unread, hour, |&(first, last, _)| (first, last)));
             return reply(not_recorded(NOT_OBSERVED), through);
         };
         through = through.min(observed_span.last_hour);
@@ -468,6 +517,11 @@ impl BombingIndex {
             partial_reasons.push(INCOMPLETE_READ);
         } else if let Some(next_incomplete) = self.incomplete.iter().find(|span| span.first_hour > hour) {
             tighten(&mut through, Some(next_incomplete.first_hour));
+        }
+        let first = [self.unsupported.get(&Some(holder.to_owned())), self.unsupported.get(&None)].into_iter().flatten().copied().min();
+        match first {
+            Some(read) if read <= hour => partial_reasons.push(UNSUPPORTED_CAUSE),
+            read => tighten(&mut through, read),
         }
         if let Some(first_unattributed) = self.unattributed_first {
             if first_unattributed <= hour {
@@ -546,7 +600,7 @@ impl Product for BombingDamageBreakdown {
             first: query.timeline.first,
             last: query.timeline.last,
         };
-        let index = breakdown::held(source, context, key, || BombingIndex::build(source, &query, &params.country, params.direction, context, cancelled))?;
+        let index = breakdown::held(source, context, key, || BombingIndex::build(source, &query, branch, &params.country, params.direction, context, cancelled))?;
         let reply = index.at(&params.country, params.direction, params.hour);
         check_reply_budget(&reply).map_err(|_| dashboard_core::invalid("Bombing damage breakdown reply exceeds transport budget; nothing was truncated"))?;
         Ok(reply)
@@ -653,11 +707,12 @@ mod tests {
                 let TableView::Complete(TableRows::Countries(countries)) = &*frame.tables[TableId::Countries.index()] else { unreachable!() };
                 let mut countries = countries.clone();
                 countries.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..countries[0].clone() });
+                countries.push(CountryRow { id: 9003, canonical_slot: 9, tag: b"HUN".to_vec(), ..countries[0].clone() });
                 set::<tables::Countries>(&mut frame, countries);
                 if hour == 203 {
                     *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links missing".into() };
                 } else {
-                    set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 }]);
+                    set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 }, CountryLinkRow { id: 9003, canonical_slot: 9 }]);
                 }
                 set::<tables::LexicalTokens>(&mut frame, vec![LexicalTokenRow { token: 9, literal: b"air_base".to_vec() }]);
                 let mut rows = Vec::new();
@@ -668,6 +723,9 @@ mod tests {
                     rows.push(bombing(2, 210, Some(9002), 9001, 42, 9, BuildingBombingDamageCause::Unknown, 5_000_000));
                 }
                 set::<tables::BuildingBombingDamage>(&mut frame, rows);
+                if hour == 214 {
+                    *frame.tables[TableId::BuildingBombingDamage.index()] = TableView::Unavailable { reason: "bombing hooks off".into() };
+                }
                 frame
             })
             .collect();
@@ -697,5 +755,12 @@ mod tests {
         assert_eq!(after_unknown_212.breakdown.total.state, BreakdownState::Partial);
         assert!(after_unknown_212.breakdown.total.reason.as_deref().unwrap().contains("unsupported cause"));
         assert!(after_unknown_212.breakdown.parts[0].share.is_none());
+
+        let bystander = BombingDamageBreakdown::load(&src, &BombingDamageBreakdownParams { branch_id: "1".into(), country: Country::Slot(9), hour: 212, direction: BombingDirection::Taken }, &ctx, &cancel).unwrap();
+        assert!(!bystander.breakdown.total.reason.as_deref().unwrap_or("").contains("unsupported cause"), "an unsupported event between two other known countries cannot change this one: {:?}", bystander.breakdown.total);
+
+        let withheld = BombingDamageBreakdown::load(&src, &BombingDamageBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 214, direction: BombingDirection::Taken }, &ctx, &cancel).unwrap();
+        assert!(withheld.breakdown.total.reason.as_deref().unwrap_or("").contains("bombing hooks off"), "a withheld read keeps its recorded reason: {:?}", withheld.breakdown.total);
+        assert_eq!(withheld.through, 214);
     }
 }

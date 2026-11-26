@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from xml.sax.saxutils import escape
 
 import yaml
@@ -697,10 +698,11 @@ class RestoredTarget(unittest.TestCase):
 
 class Local(unittest.TestCase):
     def test_every_job_that_compiles_or_tests_is_left_to_ci(self):
-        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
+        ctx = context([])
+        ctx.pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
         sent = []
         originals = ci.plan, ci.run_all, ci.report
-        ci.plan = lambda tier, base: (pipeline, {}, [ci.Decision(job, "run") for job in pipeline.jobs], "HEAD")
+        ci.plan = lambda tier, base: (ctx, {}, [ci.Decision(job, "run") for job in ctx.pipeline.jobs], "HEAD")
         ci.run_all = lambda runner, decisions: sent.extend(decisions) or []
         ci.report = lambda outcomes, label: 0
         try:
@@ -771,6 +773,20 @@ class Pipeline(unittest.TestCase):
             deps = root / ".cargo-target" / "ci" / "deps"
             for name in ci.SHADER_COMPILER:
                 self.assertEqual((deps / name).read_bytes(), name.encode("ascii"))
+
+    def test_windows_stages_dxc_for_the_shards_test_dependencies(self):
+        workspace = crates(**{"shader-pipeline": [], "renderer": ["shader-pipeline"], "consumer": ["fixture"], "other": []})
+        workspace["fixture"] = ci.Crate("fixture", "crates/fixture", frozenset({"renderer"}), frozenset())
+        pipeline = ci.load_pipeline(PIPELINE.replace('name = "test"', 'name = "rust-test"'))
+        job = next(job for job in pipeline.jobs if job.name == "rust-test")
+        with tempfile.TemporaryDirectory() as folder, patch.object(ci.sys, "platform", "win32"):
+            runner = ci.Runner(Path(folder), {}, workspace)
+            with patch.object(ci, "stage_shader_compiler", return_value=0) as stage, patch.object(runner, "execute", return_value=0):
+                for shard, expected in [(["shader-pipeline"], True), (["other", "fixture"], True), (["consumer"], False)]:
+                    with self.subTest(shard=shard):
+                        stage.reset_mock()
+                        self.assertEqual(runner.run(ci.Decision(job, "run", crates=shard)).state, "pass")
+                        self.assertEqual(stage.called, expected)
 
 
 if __name__ == "__main__":

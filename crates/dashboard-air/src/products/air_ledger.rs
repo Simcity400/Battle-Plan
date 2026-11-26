@@ -238,6 +238,9 @@ pub(crate) struct Span {
 pub(crate) struct Fold {
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
+    in_part: Vec<HourSpan>,
+    unsupported: Vec<(i32, Option<String>, Option<String>)>,
+    unread: Vec<(i32, i32, String)>,
     unjoined: Vec<HourSpan>,
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
     warnings: BTreeMap<String, usize>,
@@ -295,7 +298,10 @@ impl Fold {
                 append_hours(&mut self.unjoined, span.first, span.last);
                 return Ok(());
             }
-            Held::InPart => append_hours(&mut self.incomplete, span.first, span.last),
+            Held::InPart => {
+                append_hours(&mut self.incomplete, span.first, span.last);
+                append_hours(&mut self.in_part, span.first, span.last);
+            }
             Held::Observed => {}
         }
         match self.observed.last_mut() {
@@ -343,6 +349,11 @@ impl Fold {
                 self.begin_read("bombing", first, earliest)?;
                 if events.iter().any(|event| matches!(event, Event::Bombing { cause: BuildingBombingDamageCause::Unknown, .. })) {
                     append_hours(&mut self.incomplete, hour, hour);
+                }
+                for event in events {
+                    if let Event::Bombing { cause: BuildingBombingDamageCause::Unknown, attacker, victim, .. } = *event {
+                        self.unsupported.push((hour, name(attacker).map(|named| named.1), name(Some(victim)).map(|named| named.1)));
+                    }
                 }
                 for event in events {
                     let Event::Bombing { id, game_hour, attacker, victim, state, building, cause, amount } = *event else { continue };
@@ -498,7 +509,18 @@ fn scan(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, l
     for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= last && stretch.last >= first) {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let (from, to) = (stretch.first.max(first), stretch.last.min(last));
-        let spans = spans(from, to, &read::statuses(recording, stretch.run, log.table, from, to)?, &read::statuses(recording, stretch.run, TableId::CountryLinks, from, to)?);
+        let event_runs = read::statuses(recording, stretch.run, log.table, from, to)?;
+        let event_reasons = read::status_reasons(recording, stretch.run, log.table, &event_runs)?;
+        for run in event_runs.iter().filter(|run| !available(run.status)) {
+            let reason = match run.status {
+                Status::Unavailable { reason } => event_reasons.get(&reason).map(String::as_str),
+                _ => None,
+            };
+            if let Some(text) = dashboard_query::coverage::row_coverage(log.table, run.status, reason, false).into_missing() {
+                fold.unread.push((run.first.max(from), run.last.min(to), text));
+            }
+        }
+        let spans = spans(from, to, &event_runs, &read::statuses(recording, stretch.run, TableId::CountryLinks, from, to)?);
         let observed: Vec<(i32, i32)> = spans.iter().filter(|span| span.held.read()).map(|span| (span.first, span.last)).collect();
         let mut reads: Vec<(i32, Vec<Event>)> = Vec::new();
         for row in reader.inserted(stretch.run, &observed)? {
@@ -1024,6 +1046,7 @@ fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fol
     fold.observed[0].first_hour = since;
     let unknown = if family == MilitaryAirFamily::Bombing { latest_incomplete(query, (since, first - 1))? } else { None };
     if let Some(read) = unknown.max(latest_in_part(source, query, family, (since, first - 1))?) {
+        fold.in_part.insert(0, HourSpan { first_hour: read, last_hour: read });
         fold.incomplete.insert(0, HourSpan { first_hour: read, last_hour: read });
         if fold.incomplete.get(1).is_some_and(|next| next.first_hour == read + 1) {
             let next = fold.incomplete.remove(1);

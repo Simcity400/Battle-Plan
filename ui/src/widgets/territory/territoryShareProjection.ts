@@ -1,9 +1,11 @@
-import { countryKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { AREA_UNIT, measureOf, ruleOf, territorySeriesMeasure, type TerritoryMeasure, type TerritoryRule } from '../../dashboard/territoryMeasure.ts';
 import { flagChoiceArt } from '../../families/art/provider.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownPart, BreakdownProjection } from '../../families/breakdown/model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from '../../families/breakdown/product.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { identityNameOr } from '../../families/table/identityCell.ts';
 import { formatRational } from '../../families/valueFormat.ts';
@@ -43,7 +45,7 @@ export const territoryShareProjection: BreakdownProjection<TerritoryShareOptions
   kind: 'territory',
   project(readView: BoundedReadView, options: TerritoryShareOptions): BreakdownModel {
     const reply = readView.panel<TerritoryShareReply>('main');
-    const verb = options.rule === 'owned' ? 'Owned' : 'Controlled';
+    const verb = options.rule === 'owned' ? 'Owned' : options.rule === 'occupied' ? 'Occupied' : 'Controlled';
     const words: BreakdownWords = { unit: UNITS[options.measure], verb, format: (numerator, denominator) => formatRational(numerator, denominator, { maxDecimals: 0 }) };
     const hour = Math.floor(readView.hour);
     if (!reply) return { hour, rootLabel: verb, total: { known: false, value: null, text: '', unit: words.unit, verb }, parts: [] };
@@ -52,7 +54,7 @@ export const territoryShareProjection: BreakdownProjection<TerritoryShareOptions
     const model: BreakdownModel = {
       hour,
       rootLabel: verb,
-      periodLabel: `Share of world ${UNITS[options.measure]}`,
+      periodLabel: options.rule === 'occupied' ? `Share of all occupied ${UNITS[options.measure]}` : `Share of world ${UNITS[options.measure]}`,
       total,
       parts,
       ...(reply.warnings.length ? { warnings: reply.warnings } : {}),
@@ -65,20 +67,25 @@ export const territoryShareProjection: BreakdownProjection<TerritoryShareOptions
   },
 };
 
-function topLimit(ctx: FamilyPlanContext): number | undefined {
+function chosen(ctx: FamilyPlanContext): Readonly<Record<string, unknown>> {
   const selection = ctx.widget.countries;
-  if (selection.kind === 'all') return undefined;
-  return selection.kind === 'group' && selection.group.type === 'top' ? selection.group.count : 10;
+  if (selection.kind === 'all') return {};
+  if (selection.kind === 'group' && selection.group.type === 'top') return { top: selection.group.count };
+  const group = groupSelection(selection);
+  if (group) return { group };
+  return { countries: selectedCountryKeys(selection, ctx.track).map(countryFromKey) };
 }
 
 function sources(ctx: FamilyPlanContext): SourcePlan {
   const measure = measureOf(ctx.options.measure);
   const rule = ruleOf(ctx.options.rule);
-  const top = topLimit(ctx);
-  const params = { branchId: ctx.branch.id, measure: territorySeriesMeasure(measure, rule), ...(top !== undefined ? { top } : {}) };
+  const asked = chosen(ctx);
+  const params = { branchId: ctx.branch.id, measure: territorySeriesMeasure(measure, rule), ...asked };
+  const none = Array.isArray(asked.countries) && asked.countries.length === 0;
   return {
     owner: `territory-share:${ctx.track.source.id}:${ctx.track.source.revision}:${JSON.stringify(params)}`,
-    entries: rule === 'occupied' ? [] : [{
+    ...(none ? { allowEmptyFollow: true } : {}),
+    entries: none ? [] : [{
       name: 'main',
       source: ctx.track.source,
       branch: ctx.branch.id,
@@ -103,7 +110,14 @@ export const territoryShare: BreakdownWidgetSpec<TerritoryShareOptions> = {
   emptyCampaign: 'Load a campaign to see its territory.',
   icon: 'map',
   countries: { mode: 'none' },
-  unavailable: ctx => (ruleOf(ctx.options.rule) === 'occupied' ? 'World share is only available for controlled or owned territory.' : null),
+  unavailable: ctx => {
+    const selection = ctx.widget.countries;
+    if (selection.kind === 'factions') return 'World share shows countries; a faction’s combined share is in Race and Lines.';
+    if (selection.kind === 'group' && selection.aggregate) return 'World share shows each member; a group’s combined share is in Race and Lines.';
+    const asked = chosen(ctx).countries;
+    if (Array.isArray(asked) && asked.length === 0) return 'Choose a country to see its share of the world.';
+    return null;
+  },
   projection: territoryShareProjection,
   projectionOptions: ctx => ({
     measure: measureOf(ctx.options.measure),
