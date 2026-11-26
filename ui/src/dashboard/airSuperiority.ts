@@ -5,7 +5,8 @@ import { contentKey, contentSet, type OptionValue } from './options.ts';
 import { int, object } from './validation.ts';
 import { readRegionChoice, regionParams } from '../families/regions/regionChoice.ts';
 import { validActiveRegions, validNoRegions } from '../families/regions/regionRows.ts';
-import type { AirChoicesReply, AirSide, AirSuperiorityReply } from '../generated/dashboard';
+import { factionNameAt } from './factionNames.ts';
+import type { AirChoicesReply, AirSide, AirSuperiorityReply, FactionGroup } from '../generated/dashboard';
 
 export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
   const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
@@ -27,6 +28,26 @@ export function airParams(mode: AirModeSettings) {
 
 export function airPercent(score: number, total: number): string { return total > 0 ? `${Math.round(score * 100 / total)}%` : '—'; }
 export const airScore = (score: number, scale: number): string => formatAmount(rescale(BigInt(Math.trunc(score)), scale, 2), 2);
+
+export function factionNamer(dated: readonly FactionGroup[] | undefined, campaign: readonly FactionGroup[], own: ReadonlyMap<string, string>, shown: number | null, gap: boolean) {
+  const at = shown ?? (gap ? 'not-recorded' : null);
+  const datedById = new Map((dated ?? []).map(faction => [faction.id, faction]));
+  const campaignById = new Map(campaign.map(faction => [faction.id, faction]));
+  return (id: string) => {
+    const mine = own.get(id);
+    if (mine) return mine;
+    if (at === null) return campaignById.get(id)?.name ?? `Faction ${id}`;
+    const faction = datedById.get(id);
+    if (at === 'not-recorded' || !faction) return 'Name not recorded';
+    return factionNameAt(faction, at).name ?? 'Name not recorded';
+  };
+}
+
+export function factionNameChanges(factions: readonly FactionGroup[]): number[] {
+  const hours = new Set<number>();
+  for (const faction of factions) for (const run of faction.names) hours.add(run.firstHour).add(run.lastHour + 1);
+  return [...hours].sort((a, b) => a - b);
+}
 
 export function airSideName(side: AirSide, country: (tag: string) => string, factions: (id: string) => string): string {
   if (side.factions.length) return side.factions.map(factions).join(' / ');
