@@ -13,6 +13,44 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+#[derive(Debug)]
+struct ScriptError(String);
+
+impl std::fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
+fn script_error(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, ScriptError(message))
+}
+
+pub fn is_script_error(error: &io::Error) -> bool {
+    let mut inner: Option<&(dyn std::error::Error + 'static)> = error
+        .get_ref()
+        .map(|error| error as &(dyn std::error::Error + 'static));
+    while let Some(current) = inner {
+        if current.is::<ScriptError>() {
+            return true;
+        }
+        inner = if let Some(wrapped) = current.downcast_ref::<io::Error>() {
+            wrapped
+                .get_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static))
+        } else if let Some(wrapped) = current.downcast_ref::<Arc<io::Error>>() {
+            wrapped
+                .get_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static))
+        } else {
+            current.source()
+        };
+    }
+    false
+}
+
 const HOOK_INTERVAL: u32 = 1_000_000;
 const HOOK_LIMIT: u32 = 100;
 const BUDGET_SPENT: &str = "define script exceeded its instruction limit";
@@ -292,7 +330,7 @@ impl Defines {
             ));
         }
         self.run(path, source)
-            .map_err(|error| invalid(format!("defines unavailable in {path}: {error}")))
+            .map_err(|error| script_error(format!("defines unavailable in {path}: {error}")))
     }
 
     fn run(&self, name: &str, source: &[u8]) -> io::Result<()> {
@@ -1051,5 +1089,64 @@ mod tests {
         assert_eq!(fixed5(1000.00001).unwrap(), 100_000_000);
         assert!(fixed5(f64::NAN).is_err());
         assert!(fixed5(f64::MAX).is_err());
+    }
+
+    #[test]
+    fn script_error_marker_marks_script_loads_and_not_unreadable_or_changed_files() {
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "define-script-marker-{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("common/defines")).unwrap();
+        let script = root.join("common/defines/bad.lua");
+        fs::write(&script, b"error('marker probe')").unwrap();
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let unscoped = super::read(&layers).unwrap_err();
+        assert_eq!(unscoped.kind(), io::ErrorKind::InvalidData);
+        assert!(unscoped.to_string().contains("defines unavailable in common/defines/bad.lua:"), "{unscoped}");
+        assert!(super::is_script_error(&unscoped));
+        let scoped_layers =
+            content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let _generation = scoped_layers.enter_generation();
+        let scoped = super::read(&scoped_layers).unwrap_err();
+        assert_eq!(scoped.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(scoped.to_string(), unscoped.to_string());
+        assert!(super::is_script_error(&scoped));
+
+        fs::write(&script, b"NDefines={Synthetic={Value=1}}").unwrap();
+        let changed = super::read(&layers).unwrap_err();
+        assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
+        assert!(changed.to_string().contains("changed since verification"), "{changed}");
+        assert!(!super::is_script_error(&changed));
+
+        fs::write(&script, b"error('marker probe')").unwrap();
+        let unreadable = {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let _locked = fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&script)
+                    .unwrap();
+                super::read(&layers).unwrap_err()
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o000)).unwrap();
+                let error = super::read(&layers).unwrap_err();
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).unwrap();
+                error
+            }
+        };
+        assert!(!super::is_script_error(&unreadable), "{unreadable}");
+        assert_ne!(unreadable.kind(), io::ErrorKind::InvalidData, "{unreadable}");
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

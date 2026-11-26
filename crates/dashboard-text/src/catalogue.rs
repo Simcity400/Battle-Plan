@@ -714,14 +714,51 @@ impl replay_spool::Spooled for Catalogue {
 }
 
 #[derive(Default)]
-struct LayerDefines(Once<Result<Defines, ContentError>>);
+struct LayerDefines {
+    settled: std::sync::OnceLock<(Result<Defines, Arc<io::Error>>, Diagnostics)>,
+    reading: Mutex<()>,
+}
 
 impl LayerDefines {
+    fn entry(
+        (result, diagnostics): &(Result<Defines, Arc<io::Error>>, Diagnostics),
+    ) -> io::Result<&Defines> {
+        diagnostics.credit();
+        match result {
+            Ok(defines) => Ok(defines),
+            Err(error) => Err(io::Error::new(error.kind(), Arc::clone(error))),
+        }
+    }
+
     fn read(&self, layers: &ResolvedLayers) -> io::Result<&Defines> {
-        self.0
-            .get_or_init(|| content_reader_defines::defines::read(layers).map_err(ContentError::from))
-            .as_ref()
-            .map_err(ContentError::error)
+        if let Some(entry) = self.settled.get() {
+            return Self::entry(entry);
+        }
+        let _guard = self
+            .reading
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = self.settled.get() {
+            return Self::entry(entry);
+        }
+        let (result, diagnostics) =
+            diagnostics::capture(|| content_reader_defines::defines::read(layers));
+        match result {
+            Ok(defines) => {
+                let entry = self.settled.get_or_init(|| (Ok(defines), diagnostics));
+                Self::entry(entry)
+            }
+            Err(error) if content_reader_defines::defines::is_script_error(&error) => {
+                let entry = self
+                    .settled
+                    .get_or_init(|| (Err(Arc::new(error)), diagnostics));
+                Self::entry(entry)
+            }
+            Err(error) => {
+                diagnostics.credit();
+                Err(error)
+            }
+        }
     }
 }
 
@@ -2217,7 +2254,7 @@ pub mod tests {
             assert_eq!(parses(), 0);
             catalogue.read_readers();
             assert_eq!(parses(), 1);
-            assert!(catalogue.defines.0.peek().is_some());
+            assert!(catalogue.defines.settled.get().is_some());
             assert_eq!(defines_for_layers(layers).unwrap().int32("Probe", "Value").unwrap(), expected);
             assert_eq!(catalogue.defines().unwrap().int32("Probe", "Value").unwrap(), expected);
             assert_eq!(parses(), 1);
@@ -2226,14 +2263,75 @@ pub mod tests {
 
     #[test]
     fn shared_defines_keep_a_layers_first_script_error_for_the_catalogue() {
-        let (layers, _folder) = write_folder(&[("common/defines/refused.lua", "error('refused probe')")]);
-        let first = defines_for_layers(&layers).unwrap_err();
-        assert_eq!(first.kind(), io::ErrorKind::InvalidData);
-        let reason = first.to_string();
-        assert!(reason.contains("common/defines/refused.lua") && reason.contains("refused probe"), "{reason}");
-        let catalogue = layers_catalogue(layers);
-        assert_eq!(catalogue.read_defines().unwrap_err().kind(), first.kind());
-        assert_eq!(catalogue.defines().unwrap_err(), reason);
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for scoped in [false, true] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let count = Arc::clone(&reads);
+            let (layers, _folder) = write_folder(&[("common/defines/refused.lua", "error('refused probe')")]);
+            let layers = layers.with_read_trace(Arc::new(move |read| {
+                if read.path == b"common/defines/refused.lua" {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+            let _generation = scoped.then(|| layers.enter_generation());
+            let first = defines_for_layers(&layers).unwrap_err();
+            assert_eq!(first.kind(), io::ErrorKind::InvalidData);
+            assert!(content_reader_defines::defines::is_script_error(&first));
+            let reason = first.to_string();
+            assert!(reason.contains("common/defines/refused.lua") && reason.contains("refused probe"), "{reason}");
+            assert_eq!(reads.load(Ordering::Relaxed), 1);
+            let catalogue = layers_catalogue(layers.clone());
+            let again = catalogue.read_defines().unwrap_err();
+            assert_eq!(again.kind(), first.kind());
+            assert!(content_reader_defines::defines::is_script_error(&again));
+            assert_eq!(catalogue.defines().unwrap_err(), reason);
+            assert_eq!(defines_for_layers(&layers).unwrap_err().to_string(), reason);
+            assert_eq!(reads.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn shared_defines_retry_after_io_and_verification_failures_on_both_paths() {
+        let source = "NDefines={Probe={Value=42}}";
+        let (layers, folder) = write_folder(&[("common/defines/probe.lua", source)]);
+        let catalogue = layers_catalogue(layers.clone());
+        let file = folder.0.join("common/defines/probe.lua");
+
+        let (io_err, cat_err) = {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let _locked = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&file)
+                    .unwrap();
+                (defines_for_layers(&layers).unwrap_err(), catalogue.read_defines().unwrap_err())
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+                let first = defines_for_layers(&layers).unwrap_err();
+                let second = catalogue.read_defines().unwrap_err();
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+                (first, second)
+            }
+        };
+        assert_ne!(io_err.kind(), io::ErrorKind::InvalidData, "{io_err}");
+        assert!(!content_reader_defines::defines::is_script_error(&io_err), "{io_err}");
+        assert_ne!(cat_err.kind(), io::ErrorKind::InvalidData, "{cat_err}");
+
+        std::fs::write(&file, "NDefines={Probe={Value=99}}").unwrap();
+        let changed = catalogue.read_defines().unwrap_err();
+        assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
+        assert!(changed.to_string().contains("changed since verification"), "{changed}");
+        assert!(!content_reader_defines::defines::is_script_error(&changed));
+
+        std::fs::write(&file, source).unwrap();
+        assert_eq!(defines_for_layers(&layers).unwrap().int32("Probe", "Value").unwrap(), 42);
+        assert_eq!(catalogue.defines().unwrap().int32("Probe", "Value").unwrap(), 42);
     }
 
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
