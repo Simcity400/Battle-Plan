@@ -145,7 +145,7 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
     assert_eq!(national.national, expected.0.national);
     assert_eq!(*national.continuous, Store::default());
     assert!(std::ptr::eq(
-        national.get("SYN_DUPLICATE").unwrap().unwrap(),
+        national.get_in(Database::National, "SYN_DUPLICATE").unwrap().unwrap(),
         combined.0.get_in(Database::National, "SYN_DUPLICATE").unwrap().unwrap(),
     ));
     Ok(())
@@ -298,7 +298,7 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
     let national_notes: Vec<_> = expected.1.iter().filter(|(_, note)| note.contains("common/national_focus/")).cloned().collect();
     assert!(expected.1.len() > national_notes.len());
     assert_eq!(national.1, national_notes);
-    assert!(national.0.get_in(Database::Continuous, "UNDEFINED").unwrap().is_none());
+    assert_eq!(*national.0.continuous, Store::default());
     assert!(expected.0.get_in(Database::Continuous, "UNDEFINED").is_err());
     Ok(())
 }
