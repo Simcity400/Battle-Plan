@@ -209,11 +209,14 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    pub fn totals_ranked(&self, hour: i32, n: usize, parts: Parts<'_>, back: Back<'_>, keep: &dyn Fn(i64) -> bool) -> io::Result<Vec<String>> {
+    pub fn totals_ranked(&self, hour: i32, n: usize, parts: Parts<'_>, back: Back<'_>, keep: &dyn Fn(i64) -> bool) -> io::Result<Result<Vec<String>, String>> {
+        if let Some(reason) = self.query.holders.unknown_reason(hour) {
+            return Ok(Err(unranked(reason)));
+        }
         let running = self.running()?;
         let columns = self.total_columns(running)?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
-            return Ok(Vec::new());
+            return Ok(Ok(Vec::new()));
         };
         let recording = self.query.replay.recording();
         let table = self.series.table;
@@ -230,22 +233,25 @@ impl<'q, 'a> Line<'q, 'a> {
             let held = snapshot(at, &[columns.since, columns.as_of], read::Keys::These(&clock_keys))?;
             Ok(held.and_then(|rows| rows.get(&running.clock).map(|cells| (cells[0].and_then(|hour| i32::try_from(hour).ok()), cells[1].and_then(|hour| i32::try_from(hour).ok())))))
         };
-        let Some((since, Some(read))) = clock(hour)? else { return Ok(Vec::new()) };
+        let Some((since, Some(read))) = clock(hour)? else { return Ok(Ok(Vec::new())) };
         if read < stretch.first {
-            return Ok(Vec::new());
+            return Ok(Ok(Vec::new()));
         }
         let wanted = [columns.value, columns.reason];
-        let Some(now) = snapshot(read, &wanted, read::Keys::All)? else { return Ok(Vec::new()) };
+        let Some(now) = snapshot(read, &wanted, read::Keys::All)? else { return Ok(Ok(Vec::new())) };
         let start = match back {
             None => None,
             Some(back) => {
-                let Some(start) = back(read).filter(|&start| start >= stretch.first && since.is_none_or(|since| since <= start)) else { return Ok(Vec::new()) };
+                let Some(start) = back(read).filter(|&start| start >= stretch.first && since.is_none_or(|since| since <= start)) else { return Ok(Ok(Vec::new())) };
                 if clock(start)?.and_then(|(_, read)| read) != Some(start) {
-                    return Ok(Vec::new());
+                    return Ok(Ok(Vec::new()));
+                }
+                if let Some(reason) = self.query.holders.unknown_reason(start) {
+                    return Ok(Err(unranked(reason)));
                 }
                 match snapshot(start, &wanted, read::Keys::All)? {
                     Some(before) => Some((start, before)),
-                    None => return Ok(Vec::new()),
+                    None => return Ok(Ok(Vec::new())),
                 }
             }
         };
@@ -279,7 +285,7 @@ impl<'q, 'a> Line<'q, 'a> {
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-        Ok(scored.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect())
+        Ok(Ok(scored.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
     }
 
     pub fn clock(&self, from: i32, to: i32) -> io::Result<Clock> {
@@ -296,6 +302,10 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 }
 
+fn unranked(reason: &str) -> String {
+    format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}")
+}
+
 static EMPTY: Runs = Vec::new();
 
 fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, value: Result<i64, Gap>) {
@@ -308,6 +318,20 @@ fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ranking_at_an_hour_whose_holders_are_not_known_is_refused_with_the_recorded_reason() {
+        use crate::fixture::{Data, FIRST, Fixture};
+        let fixture = Fixture::new(Data::Power, FIRST..=FIRST + 40);
+        let query = fixture.query();
+        let reason = "Countries was not complete at these hours";
+        let holders = std::sync::Arc::new(crate::identity::Holders::new(query.holders.tags.clone(), vec![(FIRST + 10, FIRST + 12, reason.to_owned())]));
+        let query = crate::Query { holders, ..query };
+        let series = dashboard_declare::series("country-measure").unwrap();
+        let line = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
+        let ranked = line.totals_ranked(FIRST + 11, 5, &|_| Vec::new(), None, &|_| true).unwrap();
+        assert_eq!(ranked, Err(unranked(reason)), "no country is ranked, and the ranking says why, never an empty list");
+    }
 
     #[test]
     fn a_set_sums_its_parts_reads_the_rest_for_a_part_without_a_row_and_is_unknown_where_one_is() {

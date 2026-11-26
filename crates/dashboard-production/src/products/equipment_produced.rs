@@ -738,6 +738,7 @@ fn race_reply(
     let mut first_hour = read_hour.unwrap_or(stretch.first).max(stretch.first);
     let mut last_hour = next_read.map_or(stretch.last, |h| h - 1).min(stretch.last);
 
+    let mut missing = None;
     let (tags, is_population): (Vec<Country>, bool) = if let Some(group) = &params.group {
         let groups = GroupsAt::load(source, context, &params.branch_id, Some(group))?;
         let members = groups.members(group, hour)?;
@@ -765,7 +766,13 @@ fn race_reply(
         (params.countries.clone(), false)
     } else {
         let limit = params.top.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
-        (line.totals_ranked(hour, limit, &parts_of, back, &|value| value > 0)?.into_iter().map(Country::from).collect(), true)
+        match line.totals_ranked(hour, limit, &parts_of, back, &|value| value > 0)? {
+            Ok(ranked) => (ranked.into_iter().map(Country::from).collect(), true),
+            Err(reason) => {
+                missing = Some(reason);
+                (Vec::new(), true)
+            }
+        }
     };
     let runs = if tags.is_empty() { Vec::new() } else { line.totals(&tags, &parts_of, back, hour, hour)? };
     let mut rows = Vec::with_capacity(tags.len());
@@ -831,7 +838,7 @@ fn race_reply(
         rows,
         read_hour,
         observation_hour,
-        missing: None,
+        missing,
         warnings,
     };
     dashboard_base::products::check_reply_budget(&reply)?;
