@@ -132,8 +132,9 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const byLane = Map.groupBy(worker, r => r.lane ?? 0);
     const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) && seconds > 0 ? (byLane.get(lane).length - 1) / seconds : null);
     const displayedFrames = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
-    const pictured = page.filter(r => r.at > frames[0] && (r.pictures ?? 0) > 0);
-    const pictureFrames = seconds > 0 ? pictured.length / seconds : null;
+    const opened = page.filter(r => r.at > frames[0]);
+    const pictured = new Set(opened.filter(r => (r.pictures ?? 0) > 0).map(r => frames.findIndex(at => at >= r.at)));
+    const pictureFrames = seconds > 0 ? pictured.size / seconds : null;
     const expiredShare = page.length ? page.filter(r => r.expired?.length).length / page.length : null;
     const expiredByWidget = {};
     for (const r of page) for (const widget of r.expired ?? []) expiredByWidget[widget] = (expiredByWidget[widget] ?? 0) + 1 / page.length;
@@ -193,7 +194,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const changedWidgetMs = emptyMs === null ? null : mean(changing.map(r => (r.workMs - emptyMs) / r.changed));
     const structureBySource = {};
     for (const r of structural) for (const source of new Set(r.changes.filter(verified).map(c => c.source))) structureBySource[source] = (structureBySource[source] ?? 0) + 1;
-    metrics.push({ pictureFrames, picturesPerSecond: seconds > 0 ? page.reduce((sum, r) => sum + (r.pictures ?? 0), 0) / seconds : null, expiredShare, expiredByWidget, displayedFrames, pageFps, presents, hps: pace.hps, commitsPerSecond: commitCount / seconds, structureCommitsPerSecond: structural.length / seconds,
+    metrics.push({ pictureFrames, picturesPerSecond: seconds > 0 ? opened.reduce((sum, r) => sum + (r.pictures ?? 0), 0) / seconds : null, expiredShare, expiredByWidget, displayedFrames, pageFps, presents, hps: pace.hps, commitsPerSecond: commitCount / seconds, structureCommitsPerSecond: structural.length / seconds,
       inputCommitsPerSecond: input.length / seconds, unexplainedCommitsPerSecond: unexplained / seconds, structureBySource, frames: frames.length,
       compositorGapP95: p95(gaps(frames)), workerGapP95: p95(gaps(worker.map(r => r.at))), emptyMs, emptyFrames: idle.length,
       changedWidgetMs, changingFrames: changing.length, pressureMerges: w.pressureMerges, playLost: playLost.count, inputLost: inputLost.count, idleLost: idleLost.count });

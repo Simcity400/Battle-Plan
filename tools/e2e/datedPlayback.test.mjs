@@ -135,6 +135,10 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
   assert.deepEqual([Math.round(result.metrics[0].displayedFrames), Math.round(result.metrics[0].pageFps), result.metrics[0].pictureFrames, result.metrics[0].expiredShare, Math.round(result.metrics[0].expiredByWidget.w)], [60, 60, 0, 1, 1]);
   const oneMissed = served.map(r => r.t === 'frame' && r.at === presented[30] ? { ...r, pictures: 0 } : r);
   assert.ok(datedPlaybackVerdict([window], oneMissed).reasons.some(reason => reason.startsWith('frames with a new picture/s 59')), 'one refresh without a new picture is below 60');
+  const halfDisplayed = { ...window, presented: presented.filter((_, i) => i % 2 === 0) };
+  const doubled = datedPlaybackVerdict([halfDisplayed], served);
+  assert.deepEqual([doubled.metrics[0].pictureFrames, Math.round(doubled.metrics[0].picturesPerSecond), doubled.reasons.includes('frames with a new picture/s 30')], [30, 60, true],
+    'two page updates between two displayed frames show the user one new picture');
 });
 
 test('a scrub that presents an empty remount frame judges the held placement', () => {
