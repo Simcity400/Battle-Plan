@@ -88,7 +88,10 @@ const KILLS_UNKNOWN: &str = "A battle exit's losses or pending damage was not re
 
 pub(super) fn enemy_killed(frame: &DecodedFrame, division: u64) -> EnemyKilled {
     match frame.complete::<tables::DivisionKills>() {
-        Err(why) => EnemyKilled { killed: None, missing: Some(format!("Enemy killed is not recorded at this hour: {why}")) },
+        Err(_) => EnemyKilled {
+            killed: None,
+            missing: Some(dashboard_query::coverage::witnessed_rows::<tables::DivisionKills>(frame).missing.unwrap_or_else(|| "Enemy killed is not recorded at this hour".into())),
+        },
         Ok(rows) => match find(Some(rows), division, |row| row.division) {
             Some(row) if row.incomplete_from.is_some() => EnemyKilled { killed: None, missing: Some(KILLS_UNKNOWN.into()) },
             Some(row) => EnemyKilled { killed: Some(men(row.killed_raw)), missing: None },
