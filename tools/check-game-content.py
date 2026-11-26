@@ -340,12 +340,21 @@ def locate(args):
                     covered.add(folded)
                     roots.append((f"mod {target.name}", target, None))
     counts = Counter(key for key, _, _ in roots)
-    roots = [
-        (key if counts[key] == 1 else f"{key} ({hashlib.sha256(os.path.normcase(str(folder.resolve())).encode()).hexdigest()[:8]})",
-         folder, stamp)
-        for key, folder, stamp in roots
-    ]
-    return roots, None
+    used = {key for key, count in counts.items() if count == 1}
+    unique = []
+    for key, folder, stamp in roots:
+        if counts[key] > 1:
+            digest = hashlib.sha256(os.path.normcase(str(folder.resolve())).encode()).hexdigest()
+            width = 8
+            while True:
+                candidate = f"{key} ({digest[:width] if width <= len(digest) else f'{digest}-{width}'})"
+                if candidate not in used:
+                    key = candidate
+                    used.add(key)
+                    break
+                width += 2
+        unique.append((key, folder, stamp))
+    return unique, None
 
 
 def user_directory():
@@ -379,26 +388,19 @@ class Index:
             self.db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        schema = """
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS roots(id INTEGER PRIMARY KEY, key TEXT UNIQUE, folder TEXT, stamp TEXT);
-            CREATE TABLE IF NOT EXISTS files(root INTEGER, path TEXT, size INTEGER, head INTEGER);
-            CREATE INDEX IF NOT EXISTS files_by_head ON files(size, head);
-            CREATE TABLE IF NOT EXISTS segments(hash INTEGER, root INTEGER, PRIMARY KEY(hash, root)) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS defines(root INTEGER, key TEXT, value REAL);
-        """
+        self.db = sqlite3.connect(path)
         try:
-            self.db = sqlite3.connect(path)
-            self.db.executescript(schema)
-        except sqlite3.DatabaseError as error:
-            if type(error) is not sqlite3.DatabaseError:
-                raise
-            if hasattr(self, "db"):
-                self.db.close()
-            for suffix in ("", "-wal", "-shm"):
-                Path(f"{path}{suffix}").unlink(missing_ok=True)
-            self.db = sqlite3.connect(path)
-            self.db.executescript(schema)
+            self.db.executescript("""
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS roots(id INTEGER PRIMARY KEY, key TEXT UNIQUE, folder TEXT, stamp TEXT);
+                CREATE TABLE IF NOT EXISTS files(root INTEGER, path TEXT, size INTEGER, head INTEGER);
+                CREATE INDEX IF NOT EXISTS files_by_head ON files(size, head);
+                CREATE TABLE IF NOT EXISTS segments(hash INTEGER, root INTEGER, PRIMARY KEY(hash, root)) WITHOUT ROWID;
+                CREATE TABLE IF NOT EXISTS defines(root INTEGER, key TEXT, value REAL);
+            """)
+        except Exception:
+            self.db.close()
+            raise
 
     def current(self, key, folder, stamp):
         """(root id or None when the index is not of this stamp, full stamp, walked listing or None)."""
@@ -539,34 +541,37 @@ def compare_installation(args, files, rules, say):
         detail = f"no index at {cache}; run python tools/check-game-content.py"
         say(f"not run here: installation comparison ({detail})")
         return [f"installation comparison: {detail}"]
-    try:
-        index = Index(cache, readonly=bool(args.against))
-    except (sqlite3.Error, OSError) as error:
-        if not args.against:
-            raise
-        detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
-        say(f"not run here: installation comparison ({detail})")
-        return [f"installation comparison: {detail}"]
-    with closing(index.db):
-        if args.against:
-            try:
+    if args.against:
+        try:
+            index = Index(cache, readonly=True)
+            with closing(index.db):
                 index.db.execute("BEGIN")
                 checked = [(key, index.current(key, folder, stamp)[0]) for key, folder, stamp in roots]
                 stale = [key for key, root in checked if root is None]
                 active = {root for _, root in checked if root is not None}
                 findings = install_findings(index, files, rules, active) if active else []
-            except (sqlite3.Error, OSError) as error:
-                detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
-                say(f"not run here: installation comparison ({detail})")
-                return [f"installation comparison: {detail}"]
-            if stale:
-                missing = ", ".join(stale)
-                say(f"not run here: installation comparison for {missing} (index out of date; run python tools/check-game-content.py)")
-                findings.append(f"installation comparison: index out of date for {missing}; run python tools/check-game-content.py")
-        else:
-            active = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
-            index.drop_others(active)
-            findings = install_findings(index, files, rules, active) if active else []
+        except (sqlite3.Error, OSError) as error:
+            detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
+            say(f"not run here: installation comparison ({detail})")
+            return [f"installation comparison: {detail}"]
+        if stale:
+            missing = ", ".join(stale)
+            say(f"not run here: installation comparison for {missing} (index out of date; run python tools/check-game-content.py)")
+            findings.append(f"installation comparison: index out of date for {missing}; run python tools/check-game-content.py")
+    else:
+        for attempt in range(2):
+            try:
+                index = Index(cache)
+                with closing(index.db):
+                    active = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
+                    index.drop_others(active)
+                    findings = install_findings(index, files, rules, active) if active else []
+                break
+            except sqlite3.DatabaseError as error:
+                if attempt or type(error) is not sqlite3.DatabaseError:
+                    raise
+                for suffix in ("", "-wal", "-shm"):
+                    Path(f"{cache}{suffix}").unlink(missing_ok=True)
     say(f"installation comparison: {len(active)} game and mod folders, {len(files)} files"
         + (f" changed since {args.against}" if args.against else ""))
     return findings

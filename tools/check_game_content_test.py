@@ -1,10 +1,12 @@
 """Tests for tools/check-game-content.py: python tools/check_game_content_test.py"""
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -204,6 +206,7 @@ class Installation(unittest.TestCase):
         cache = self.folder / "cache"
         snippet = "fixture_script = { flag = violet }"
         self.write("game/trial.txt", snippet)
+        self.write("game/common/defines/00.lua", "NDefines = { NGame = { DEPTH = 30 } }\n")
         self.write("user/mod/extra/mod.txt", "mod_fixture = { tone = amber }")
         index_path = cache / f"index-v{cgc.INDEX_VERSION}.sqlite3"
         base_args = ["--against", "HEAD", "--game", str(game), "--user-dir", str(user), "--cache", str(cache)]
@@ -246,6 +249,20 @@ class Installation(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(index_path.is_file())
 
+        with contextlib.closing(sqlite3.connect(index_path)) as db:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            page_size = db.execute("PRAGMA page_size").fetchone()[0]
+            defines_page = db.execute("SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'defines'").fetchone()[0]
+        raw = bytearray(index_path.read_bytes())
+        start = (defines_page - 1) * page_size
+        raw[start:start + page_size] = b"\xff" * page_size
+        index_path.write_bytes(raw)
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("unreadable index at " in line and "python tools/check-game-content.py" in line for line in notes(out)))
+        code, _ = self.run_main(["--game", str(game), "--user-dir", str(user), "--cache", str(cache)])
+        self.assertEqual(code, 0)
+
         code, out = self.run_main(base_args)
         self.assertEqual(code, 0)
         self.assertEqual(notes(out), [])
@@ -281,11 +298,15 @@ class Installation(unittest.TestCase):
         cache = self.folder / "cache"
         first = self.folder / "mods_a" / "content"
         second = self.folder / "mods_b" / "content"
+        first_hash = hashlib.sha256(os.path.normcase(str(first.resolve())).encode()).hexdigest()[:8]
+        third = self.folder / "mods_c" / f"content ({first_hash})"
         self.write("game/trial.txt", "game_fixture = { value = 42 }")
         self.write("mods_a/content/a.txt", "first_mod_script = { flag = teal }")
         self.write("mods_b/content/b.txt", "second_mod_script = { flag = ochre }")
+        self.write(f"mods_c/content ({first_hash})/c.txt", "third_mod_script = { flag = sienna }")
         self.write("user/mod/first.mod", f'name="First"\npath="{first.as_posix()}"\n')
         self.write("user/mod/second.mod", f'name="Second"\npath="{second.as_posix()}"\n')
+        self.write("user/mod/third.mod", f'name="Third"\npath="{third.as_posix()}"\n')
         build_args = ["--game", str(game), "--user-dir", str(user), "--cache", str(cache)]
         push_args = ["--against", "HEAD", *build_args]
 
@@ -293,7 +314,7 @@ class Installation(unittest.TestCase):
         self.assertEqual(code, 0)
         code, out = self.run_main(push_args)
         self.assertEqual(code, 0)
-        self.assertIn("installation comparison: 3 game and mod folders", out)
+        self.assertIn("installation comparison: 4 game and mod folders", out)
 
         updated = "first_mod_script = { flag = teal, extra = cobalt }"
         self.write("mods_a/content/a.txt", updated)
