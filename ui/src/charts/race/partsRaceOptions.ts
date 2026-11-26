@@ -1,5 +1,5 @@
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, DRILL_OPTION } from '../drill/drillState.ts';
+import { breakdownOption } from '../drill/drillState.ts';
 import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption } from './options.ts';
 
 export function partsRaceOptions(part: string, breakdown = `By ${part}`): readonly OptionField[] {
@@ -17,6 +17,5 @@ export function partsRaceOptions(part: string, breakdown = `By ${part}`): readon
       visibleWhen: options => options.show === 'main' && options.view === 'lines' },
     ...[...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS].map(field => ({ ...field,
       visibleWhen: (options, countries) => field.visibleWhen?.({ ...options, view: options.show === 'breakdown' ? 'mix' : options.view }, countries) ?? true } satisfies OptionField)),
-    { ...DRILL_OPTION, visibleWhen: options => options.show === 'main' },
   ];
 }

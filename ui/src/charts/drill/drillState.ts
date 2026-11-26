@@ -46,11 +46,6 @@ export function opensFollowing(parent: Region, hour: number, playing: boolean, p
   return regionFollows(parent) && (playing || Math.abs(hour - playhead) <= FOLLOW_NEAR_HOURS);
 }
 
-export const DRILL_OPTION: OptionField = {
-  key: 'drill', section: 'interaction', label: 'Breakdown opens',
-  kind: 'choice', default: 'inline', choices: [{ value: 'inline', label: 'In the widget' }, { value: 'popout', label: 'Beside it' }],
-};
-
 export function breakdownOption(breakdowns: readonly Breakdown[], mainLabel: string): OptionField {
   return { key: 'show', section: 'options', label: 'Show', kind: 'choice', default: 'main',
     choices: [{ value: 'main', label: mainLabel }, ...breakdowns.map(item => ({ value: item.id, label: item.label }))] };
