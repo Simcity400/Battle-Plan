@@ -89,6 +89,7 @@ export default function WidgetHeader({
   const measuredHeader = useRef({
     measuredOnce: false,
     lastHeaderWidth: 0,
+    timeMode: '',
     probeKey: '',
     pillKey: '', pill: 0,
     viewFullKey: '', viewFull: 0,
@@ -196,12 +197,14 @@ export default function WidgetHeader({
     const playing = !readOnly && (runtime.clock.getSnapshot?.().playing ?? false);
     const cache = measuredHeader.current;
     const headerResized = cache.measuredOnce && header.clientWidth !== cache.lastHeaderWidth;
-    if (playing && cache.measuredOnce && !headerResized) {
+    const timeModeChanged = cache.measuredOnce && cache.timeMode !== widget.time.mode;
+    if (playing && cache.measuredOnce && !headerResized && !timeModeChanged) {
       pendingMeasure.current = true;
       return;
     }
     cache.measuredOnce = true;
     cache.lastHeaderWidth = header.clientWidth;
+    cache.timeMode = widget.time.mode;
     const available = header.clientWidth - 16;
     const widthOf = (el: HTMLElement | null) => el ? Math.ceil(el.getBoundingClientRect().width) : 0;
     const iconEl = header.querySelector<HTMLElement>('.dash-widget-icon');
@@ -339,7 +342,7 @@ export default function WidgetHeader({
             {timeInfo.mode === 'follow' ? <span className="dash-time-dot" aria-hidden="true" />
               : timeInfo.mode === 'pin' ? <span className="dash-time-dot is-pinned" aria-hidden="true" />
               : <Icon name="clock" className="dash-time-icon" />}
-            {!effectiveDrop.compactTime && <span className="dash-time-label">{timeInfo.label}</span>}
+            {effectiveDrop.compactTime ? <span className="sr-only">{timeInfo.label}</span> : <span className="dash-time-label">{timeInfo.label}</span>}
           </span>
         : <WidgetTimeChip widget={widget} effective={effective} reference={campaignTrack} runtime={runtime}
             modes={definition!.timeModes} compact={effectiveDrop.compactTime}

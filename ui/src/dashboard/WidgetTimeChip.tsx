@@ -86,7 +86,7 @@ export default function WidgetTimeChip({ widget, effective, reference, runtime, 
   if (!interactive) {
     return <span className={`dash-time-chip is-static${compact ? ' is-compact' : ''}`} data-time-mode={summary.mode}
       data-tooltip={summary.tooltip} onPointerEnter={event => refreshTooltip(event.currentTarget)}>
-      {indicator}{!compact && <span className="dash-time-label">{summary.label}</span>}
+      {indicator}{compact ? <span className="sr-only">{summary.label}</span> : <span className="dash-time-label">{summary.label}</span>}
     </span>;
   }
 
