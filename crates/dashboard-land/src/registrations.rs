@@ -2,7 +2,7 @@ use crate::products::leaders::career::LeaderHour;
 use dashboard_base::products::{PanelKind, PanelReader, at_hour::exact_panel};
 
 const LEADER_HOUR: PanelReader = PanelReader {
-    kind: PanelKind::ExactHourlyFor(&["reference", "all", "countries"]),
+    kind: PanelKind::ExactHourlyWhen(&["reference", "all", "countries"]),
     open: |source, load, asked| {
         if asked.get("branchId").is_none() {
             return Err("Invalid unit-leader-hour panel: missing field branchId".into());

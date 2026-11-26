@@ -37,6 +37,12 @@ macro_rules! register_products {
         };
     };
     (@hour custom $product:ty, $panel:expr) => { $panel };
+    (@hour exact $product:ty, $conditions:expr) => {
+        $crate::products::PanelReader {
+            kind: $crate::products::PanelKind::ExactHourlyWhen($conditions),
+            ..$crate::products::at_hour::exact::<$product>()
+        }
+    };
     (@hour $reader:ident $product:ty) => { $crate::products::at_hour::$reader::<$product>() };
     (@ interval $product:ty, $date:expr, $through:expr) => {
         $crate::products::PanelReader {
@@ -59,7 +65,7 @@ macro_rules! register_products {
 pub enum PanelKind {
     Exact,
     ExactHourly,
-    ExactHourlyFor(&'static [&'static str]),
+    ExactHourlyWhen(&'static [&'static str]),
     Interval,
     DayThroughHour,
     LogTail,

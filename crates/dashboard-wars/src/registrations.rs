@@ -19,7 +19,7 @@ dashboard_base::register_products! {
     CASUALTY_MATRIX_CASUALTYMATRIX => whole_frame<crate::products::casualty_matrix::CasualtyMatrix>,
     WARGOALS_WARGOALS => whole_frame<crate::products::wargoals::Wargoals>,
     OCCUPATION_RESERVE_OCCUPATIONRESERVE => exact<crate::products::occupation_reserve::OccupationReserve>,
-    OCCUPATION_STATES_OCCUPIEDSTATES => exact<crate::products::occupation::states::OccupiedStates>,
+    OCCUPATION_STATES_OCCUPIEDSTATES => exact<crate::products::occupation::states::OccupiedStates>(&["occupation law reads a timed or undeclared world condition"]),
     OCCUPATION_DETAIL_OCCUPATIONDETAIL => whole_frame<crate::products::occupation::detail::OccupationDetail>,
     FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => whole_frame<crate::products::faction_state::country_goals::CountryFactionGoals>,
     FACTION_STATE_DETAILS_FACTIONDETAILS => whole_frame<crate::products::faction_state::details::FactionDetails>,

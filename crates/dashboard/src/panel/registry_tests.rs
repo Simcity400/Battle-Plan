@@ -151,7 +151,7 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
         "faction-details", "factory-parts", "minefields", "naval-management", "naval-refits", "naval-repairs",
         "naval-supremacy", "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
         "production-licences", "resource-balance", "special-project-details", "special-project-effects",
-        "special-project-iteration", "stability-part-names", "stockpile-artwork",
+        "special-project-iteration", "special-projects", "stability-part-names", "stockpile-artwork",
         "technology-effects", "template-roster", "territory-breakdown", "trade-flow",
         "training-queue", "unit-leaders", "volunteer-flow", "war-contributions",
         "wargoals", "world-tension",
@@ -160,10 +160,13 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
         matches!(reader.kind, PanelKind::WholeFrame { every_frame: true } | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
     }).collect();
     assert_eq!(READERS.iter().filter_map(|(&key, reader)| (reader.kind == PanelKind::WholeFrame { every_frame: false }).then_some(key)).collect::<Vec<_>>(), ["content-entity-stats"]);
-    let selections: Vec<_> = READERS.iter().filter_map(|(&key, reader)| match reader.kind {
-        PanelKind::ExactHourlyFor(selections) => Some((key, selections)),
+    let conditional: Vec<_> = READERS.iter().filter_map(|(&key, reader)| match reader.kind {
+        PanelKind::ExactHourlyWhen(conditions) => Some((key, conditions)),
         _ => None,
     }).collect();
-    assert_eq!(selections, [("unit-leader-hour", ["reference", "all", "countries"].as_slice())]);
+    assert_eq!(conditional, [
+        ("occupied-states", ["occupation law reads a timed or undeclared world condition"].as_slice()),
+        ("unit-leader-hour", ["reference", "all", "countries"].as_slice()),
+    ]);
     assert_eq!(actual, allowed, "Remove a name when its reader no longer needs whole frames or hourly refreshes");
 }
