@@ -69,7 +69,7 @@ export function planQueryKey(
 function readSignature(read: SourceTimeShape): unknown {
   switch (read.shape) {
     case 'point':
-      return ['point', read.channel, read.coverage, read.product, read.exactProduct ?? '', read.hourParam ?? 'hour', read.followQuery, read.params, read.dynamicKeys ?? []];
+      return ['point', read.channel, read.coverage, read.product, read.exactProduct ?? '', read.hourParam ?? 'hour', read.followQuery, read.params, read.dynamicKeys ?? [], read.preserveDisplayHour === true];
     case 'range':
       return ['range', read.coverage, read.product, read.firstHour, read.lastHour, read.params, read.dynamicKeys ?? []];
     case 'branch-to-hour':
@@ -463,6 +463,10 @@ export function playbackIdleInterval(
   const unrecorded = (): readonly [number, number] => (gap ? options.gate.recordedRun?.(raw) : undefined) ?? [raw, raw];
   if (read.shape === 'point') {
     if (gap) return unrecorded();
+    if (read.idleInterval) {
+      const idle = read.idleInterval(raw);
+      if (idle && idle[0] <= raw && raw <= idle[1]) return idle;
+    }
     return read.params && read.buildExactParams ? [raw, raw] : [-Infinity, Infinity];
   }
   if (read.shape !== 'branch-to-hour' && read.shape !== 'trailing-window' && read.shape !== 'range') return [-Infinity, Infinity];
@@ -701,7 +705,16 @@ export async function readPlanExact(
   const recorded = options.gate.recorded(wantedHour);
   if (recorded === null) return null;
   const entries = exactEntries(plan);
-  if (!entries.length) return null;
+  if (!entries.length) {
+    if (plan.allowEmptyFollow && !plan.refused && !plan.unavailable) {
+      return createBoundedReadView({
+        hour: displayedHour(recorded),
+        ...(options.identity ? { identity: options.identity } : {}),
+        ...(options.art ? { art: options.art } : {}),
+      });
+    }
+    return null;
+  }
 
   const fetchRaw = async (request: ProductRequest): Promise<unknown> => {
     const load = async () => (await options.client.product(request, new AbortController().signal)).data;

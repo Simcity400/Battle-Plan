@@ -6,7 +6,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply } from '../../generated/dashboard';
-import { chosenGroup, leadOf, savedWar, sideCountries, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
+import { chosenGroup, leadOf, savedWar, sideCountries, warContributionNextChange, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
 import { resolveName } from '../../families/table/identityCell.ts';
 
 export const SIDES_VIEW = 'sides';
@@ -142,6 +142,9 @@ function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: Wa
 export const warContributionSidesProjection: TableProjection<SidesOptions> = registerFamilyProjection({
   kind: 'war-contribution',
   family: 'table',
+  nextChange(readView, options) {
+    return warContributionNextChange(readView.hour, options);
+  },
   project(readView, options): TableModel {
     const hour = readView.hour;
     const chosen = chosenGroup(readView, options);

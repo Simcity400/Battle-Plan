@@ -7,7 +7,7 @@ import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '..
 import { formatDateOnly, formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarsReply } from '../../generated/dashboard';
 import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
-import { chosenGroup, leadOf, savedWar, sideCountries, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
+import { chosenGroup, leadOf, savedWar, sideCountries, warContributionNextChange, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
 
 export const MEASURE_VIEW = 'measure';
 
@@ -97,6 +97,9 @@ function captionSides(readView: BoundedReadView, group: WarContributionGroup, me
 export const warContributionMeasureProjection: BarsProjection<MeasureOptions> = registerFamilyProjection({
   kind: 'war-contribution',
   family: 'bars' as const,
+  nextChange(readView, options) {
+    return warContributionNextChange(readView.hour, options);
+  },
   project(readView, options): BarsModel {
     const hour = readView.hour;
     const chosen = chosenGroup(readView, options);

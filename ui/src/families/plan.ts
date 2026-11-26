@@ -49,6 +49,8 @@ export interface PointSourceRead {
     mode: 'static' | 'exact',
   ) => Readonly<Record<string, unknown>> | null;
   readonly provenInterval?: (data: unknown, hour: number) => readonly [number, number] | null;
+  readonly idleInterval?: (hour: number) => readonly [number, number] | null;
+  readonly preserveDisplayHour?: boolean;
   readonly dynamicKeys?: readonly string[];
   readonly validate?: (raw: unknown) => unknown;
 }
@@ -157,6 +159,7 @@ export interface SourcePlan {
   readonly staticEntry?: SourceEntry | null;
   readonly exactEntry?: SourceEntry | null;
   readonly allowEmptyFollow?: boolean;
+  readonly valid?: readonly [number, number];
   readonly unavailable?: string | null;
   readonly refused?: string | null;
 }
@@ -425,6 +428,7 @@ export interface FamilyPlanContext<TAux = unknown> {
   readonly countries: DeclaredCountryState;
   readonly gateSpan: (first: number, last: number) => BoundWindow | null;
   readonly staticSpan: readonly [number, number] | null;
+  readonly planHour?: number;
 }
 
 export type FamilyBodyStatus =

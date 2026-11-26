@@ -181,7 +181,7 @@ function answeredHour(unit: ReadUnit, data: unknown): number {
   const spec = unit.spec!;
   const read = unit.entry.read;
   if (spec.span) return spec.span[1] - unit.shift;
-  if (read.shape === 'point' && !(read.channel === 'panel' && !read.exactProduct)) {
+  if (read.shape === 'point' && !read.preserveDisplayHour && !(read.channel === 'panel' && !read.exactProduct)) {
     const hour = (data as { hour?: unknown } | null)?.hour;
     if (typeof hour === 'number') return hour - unit.shift;
   }
