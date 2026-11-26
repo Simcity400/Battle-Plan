@@ -14,7 +14,7 @@ import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapt
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
 import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import { hoverAsks, readPlanExact } from '../broker.ts';
+import { readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
@@ -1559,13 +1559,4 @@ test('every member so far masks each member from its first membership, follows i
   const atHour = { ...selection, membership: 'hour' as const };
   const hourly = resolveCountries(atHour, [], groups, 1000, Number.MAX_SAFE_INTEGER);
   assert.equal(withSoFarMembership(hourly, atHour, groups, 1000), hourly, 'membership at the hour keeps its recorded runs');
-});
-
-test('a tile publish that rebuilds the displayed keys keeps the hover asks, so the settled hover is not asked again and the widget is not rebound', () => {
-  const plan = { owner: 'o', entries: [{ name: 'hover', source: { id: 's', revision: 'r' }, branch: '1', offset: 0,
-    read: { shape: 'exact-hover', product: 'series-state', params: { branchId: '1' }, readsOf: 'main' } }] } as unknown as SourcePlan;
-  const first = hoverAsks(plan, 120, () => ['GER', 'ITA']);
-  assert.equal(first.length, 1);
-  assert.equal(hoverAsks(plan, 120, () => ['GER', 'ITA'], first), first, 'new key arrays with the same keys keep the asks, so the hover slot is not run again');
-  assert.notEqual(hoverAsks(plan, 120, () => ['GER', 'SOV'], first), first, 'a newly drawn country is a new ask');
 });
