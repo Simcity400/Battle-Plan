@@ -635,6 +635,8 @@ pub struct StartSurfaceVideoExportArgs {
 #[serde(rename_all = "camelCase")]
 pub struct TrackTimelineAsk {
     pub path: String,
+    #[serde(default)]
+    pub revision: Option<String>,
     pub branch: u64,
     pub axis_offset: i32,
 }
@@ -646,10 +648,19 @@ pub async fn surface_export_timelines(
     tauri::async_runtime::spawn_blocking(move || {
         let mut out = Vec::with_capacity(tracks.len());
         for track in tracks {
-            let (mut stretches, mut unheld) = viewer::video_export::branch_schedule_inputs(
-                std::path::Path::new(&track.path),
-                track.branch,
-            )?;
+            let source_path = std::path::Path::new(&track.path);
+            if let Some(expected_rev) = track.revision.as_deref().filter(|r| !r.is_empty()) {
+                let actual_rev = dashboard_core::protocol::replay_revision(source_path)
+                    .map_err(|e| format!("Couldn’t verify recording revision: {e}"))?;
+                if actual_rev != expected_rev {
+                    return Err(
+                        "The recording changed on disk while preparing this export. Re-open the export dialog to retry."
+                            .to_owned(),
+                    );
+                }
+            }
+            let (mut stretches, mut unheld) =
+                viewer::video_export::branch_schedule_inputs(source_path, track.branch)?;
             for s in &mut stretches {
                 s.first -= track.axis_offset;
                 s.last -= track.axis_offset;

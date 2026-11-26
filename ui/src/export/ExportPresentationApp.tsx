@@ -78,7 +78,7 @@ interface StepPayload {
 export interface SurfaceMountData {
   template: DashboardTemplate;
   widget?: WidgetSpec;
-  campaigns: { id: string; path: string; label: string }[];
+  campaigns: { id: string; path: string; label: string; revision?: string }[];
   selectedCountries: Record<string, CountryChoice | null>;
   selectedBranches: Record<string, string>;
   observed: Record<string, number>;
@@ -119,16 +119,29 @@ interface StepOverlay {
 
 const noop = () => undefined;
 
-function nextAnimationFrames(count = 2): Promise<void> {
-  return new Promise(resolve => {
-    let remaining = Math.max(1, count);
-    const tick = () => {
-      remaining -= 1;
-      if (remaining <= 0) resolve();
-      else requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
+function scheduleFrameTick(run: () => void): () => void {
+  const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  if (typeof requestAnimationFrame !== 'function' || hidden) {
+    const timer = window.setTimeout(run, 16);
+    return () => window.clearTimeout(timer);
+  }
+  let done = false;
+  let rafId = 0;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    window.clearTimeout(fallbackTimer);
+    if (rafId) cancelAnimationFrame(rafId);
+    run();
+  };
+  const fallbackTimer = window.setTimeout(finish, 32);
+  rafId = requestAnimationFrame(finish);
+  return () => {
+    if (done) return;
+    done = true;
+    window.clearTimeout(fallbackTimer);
+    if (rafId) cancelAnimationFrame(rafId);
+  };
 }
 
 function ancestorZoom(element: HTMLElement | null, root: HTMLElement): number {
@@ -367,6 +380,38 @@ export default function ExportPresentationApp() {
     for (const wake of [...statusWaitersRef.current]) wake();
   }, []);
 
+  const nextAnimationFrames = useCallback(async (count = 2, opGen?: number): Promise<void> => {
+    let remaining = Math.max(1, count);
+    while (remaining > 0) {
+      if (opGen !== undefined && opGenRef.current !== opGen) {
+        throw new Error('cancelled');
+      }
+      await new Promise<void>(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          cancelTick();
+          statusWaitersRef.current.delete(onWake);
+          resolve();
+        };
+        const onWake = () => {
+          if (opGen !== undefined && opGenRef.current !== opGen) {
+            finish();
+          }
+        };
+        const cancelTick = scheduleFrameTick(finish);
+        if (opGen !== undefined) {
+          statusWaitersRef.current.add(onWake);
+        }
+      });
+      remaining -= 1;
+    }
+    if (opGen !== undefined && opGenRef.current !== opGen) {
+      throw new Error('cancelled');
+    }
+  }, []);
+
   const releaseOpenedSources = useCallback(async () => {
     const ids = openedSourcesRef.current.splice(0, openedSourcesRef.current.length);
     for (const id of ids) {
@@ -526,7 +571,7 @@ export default function ExportPresentationApp() {
       const openedThisMount: string[] = [];
       try {
         setSession(null);
-        await nextAnimationFrames(1);
+        await nextAnimationFrames(1, opGen);
         await releaseOpenedSources();
         if (opGenRef.current !== opGen) throw new Error('cancelled');
         widgetStatusesRef.current.clear();
@@ -539,6 +584,11 @@ export default function ExportPresentationApp() {
           if (opGenRef.current !== opGen) throw new Error('cancelled');
           const source = await nativeDashboardClient.openSource(campaign.path, new AbortController().signal);
           openedThisMount.push(source.id);
+          if (campaign.revision && source.revision !== campaign.revision) {
+            throw new Error(
+              'The recording changed on disk while preparing this export. Re-open the export dialog to retry.',
+            );
+          }
           openedSources.set(campaign.id, source);
         }
         openedSourcesRef.current = openedThisMount;
@@ -560,22 +610,30 @@ export default function ExportPresentationApp() {
               : data.widget)
           : null;
         const activeWidgets = targetWidget ? [targetWidget] : template.widgets;
+        const tracks = bindTracks(template, openedSources, data.selectedBranches);
+        const boundTrackIds = new Set(tracks.map(t => t.id));
         const loadedRenderers = await Promise.all(
           activeWidgets.map(async w => {
-            if (w.kind === 'map') return { id: w.id, isFamily: false };
+            if (w.kind === 'map') {
+              await loadWidgetRenderer('map');
+              const resolved = resolveWidgetCampaign(w, template, data.defaultRoleId);
+              return {
+                id: w.id,
+                expected: resolved.trackIds.some(id => boundTrackIds.has(id)),
+              };
+            }
             const viewOpt = typeof w.options?.view === 'string' ? w.options.view : undefined;
             const renderer =
               (viewOpt !== undefined ? await loadWidgetRenderer(w.kind, viewOpt) : undefined) ??
               (await loadWidgetRenderer(w.kind));
             return {
               id: w.id,
-              isFamily: Boolean(renderer && 'declaration' in renderer && renderer.declaration),
+              expected: Boolean(renderer && 'declaration' in renderer && renderer.declaration),
             };
           }),
         );
         if (opGenRef.current !== opGen) throw new Error('cancelled');
-        expectedFamilyIdsRef.current = loadedRenderers.filter(r => r.isFamily).map(r => r.id);
-        const tracks = bindTracks(template, openedSources, data.selectedBranches);
+        expectedFamilyIdsRef.current = loadedRenderers.filter(r => r.expected).map(r => r.id);
         clock.setBounds(clockBounds(tracks), true);
         clock.stepExport(payload.initialHour, payload.hoursPerSecond, true);
 
@@ -616,9 +674,9 @@ export default function ExportPresentationApp() {
           speed: payload.hoursPerSecond,
         });
         setSession(nextSession);
-        await nextAnimationFrames(4);
+        await nextAnimationFrames(4, opGen);
         await waitForWidgetsSettled(new Map(), expectedTargetsFor(nextSession, payload.initialHour), opGen, 15000);
-        await nextAnimationFrames(2);
+        await nextAnimationFrames(2, opGen);
         const contentNode = contentRef.current;
         const contentWidth = contentNode ? contentNode.scrollWidth : payload.cssWidth;
         const contentHeight = contentNode ? contentNode.scrollHeight : payload.cssHeight;
@@ -660,6 +718,7 @@ export default function ExportPresentationApp() {
     };
 
     const handleMetrics = async (payload: MetricsPayload) => {
+      const opGen = ++opGenRef.current;
       try {
         setSession(prev =>
           prev
@@ -672,7 +731,7 @@ export default function ExportPresentationApp() {
               }
             : null,
         );
-        await nextAnimationFrames(3);
+        await nextAnimationFrames(3, opGen);
         const pixelFactor = payload.dpr * payload.scale;
         await sendVideoExportPageAck({
           seq: payload.seq,
@@ -740,7 +799,7 @@ export default function ExportPresentationApp() {
         if (payload.mode === 'card') {
           lastModeRef.current = 'card';
           lastSignatureRef.current = '';
-          await nextAnimationFrames(2);
+          await nextAnimationFrames(2, opGen);
           await sendVideoExportPageAck({
             seq: payload.seq,
             kind: 'step',
@@ -774,9 +833,9 @@ export default function ExportPresentationApp() {
             payload.resetContinuity,
           );
         }
-        await nextAnimationFrames(1);
+        await nextAnimationFrames(1, opGen);
         await waitForWidgetsSettled(expectedBindings, expectedTargetsFor(curSession, payload.hour), opGen, 15000);
-        await nextAnimationFrames(2);
+        await nextAnimationFrames(2, opGen);
 
         const sig = computeSignature(payload);
         const mapRects = measureMapRects(rootRef.current, payload.dpr);
@@ -895,7 +954,7 @@ export default function ExportPresentationApp() {
       for (const stop of unlisteners) stop();
       void releaseOpenedSources();
     };
-  }, [clock, waitForWidgetsSettled, computeSignature, releaseOpenedSources, wakeWaiters]);
+  }, [clock, waitForWidgetsSettled, computeSignature, releaseOpenedSources, wakeWaiters, nextAnimationFrames]);
 
   const tracks = useMemo(() => {
     if (!session) return [];

@@ -529,42 +529,6 @@ fn build_surface_schedule(req: &SurfaceVideoRequest) -> Result<FrameSchedule, St
     .map_err(|e| e.to_string())
 }
 
-fn preview_frame_kind(schedule: &FrameSchedule, preview_hour: i32) -> FrameKind {
-    if schedule
-        .stretches
-        .iter()
-        .any(|s| s.first <= preview_hour && preview_hour <= s.last)
-    {
-        return FrameKind::Recorded {
-            hour: preview_hour,
-            fraction: 0.0,
-            reset_continuity: true,
-            cut_banner: None,
-        };
-    }
-    let (gap_first, gap_last, reason) = schedule
-        .gaps
-        .iter()
-        .find(|g| g.first <= preview_hour && preview_hour <= g.last)
-        .map_or_else(
-            || {
-                (
-                    schedule.summary.from_hour.min(preview_hour),
-                    schedule.summary.to_hour.max(preview_hour),
-                    "Not recorded".to_owned(),
-                )
-            },
-            |g| (g.first, g.last, g.reason.clone()),
-        );
-    FrameKind::GapCard {
-        hour: preview_hour,
-        gap_first,
-        gap_last,
-        reason,
-        crossed_gap: None,
-    }
-}
-
 fn step_payload_for_frame(
     seq: u64,
     frame_index: u64,
@@ -1176,7 +1140,11 @@ pub fn preview_surface_video(
     let first_recorded_hour = schedule
         .first_recorded()
         .map_or(request.from_hour, |(hour, _)| hour);
-    let frame_kind = preview_frame_kind(&schedule, preview_hour);
+    let frame_kind = schedule.preview_frame_kind(preview_hour);
+    let preview_recorded_hour = match &frame_kind {
+        FrameKind::Recorded { hour, .. } => *hour,
+        _ => preview_hour,
+    };
     let window = webview_state.ensure_window(app, &cancel)?;
     let initial = initial_metrics(&request);
     set_device_metrics(&window, initial, &cancel)?;
@@ -1316,7 +1284,7 @@ pub fn preview_surface_video(
                 && rect.height >= 16
             {
                 let map_hour = if spec.advances(request.follow_pinned) {
-                    Some(preview_hour + spec.axis_offset)
+                    Some(preview_recorded_hour + spec.axis_offset)
                 } else {
                     spec.fixed_hour
                 };
@@ -1675,6 +1643,7 @@ pub fn run_surface_video_export(
     let mut last_progress = started;
     let total_frames = schedule.summary.total_frames;
     let mut last_recorded_hour: Option<i32> = None;
+    let mut warnings: Vec<String> = Vec::new();
     let mut cached_page_rgba: Option<(Vec<u8>, Vec<ExportMapRect>)> = None;
     let mut cached_card: Option<(String, Vec<u8>)> = None;
 
@@ -1792,6 +1761,11 @@ pub fn run_surface_video_export(
                     Ok(chunk) => {
                         if *audio {
                             frame_audio = Some(chunk.audio);
+                            for warning in chunk.warnings {
+                                if !warnings.contains(&warning) {
+                                    warnings.push(warning);
+                                }
+                            }
                         }
                         if let Some(rgba) = chunk.rgba {
                             let mw = (rect.width & !1).max(16);
@@ -2036,7 +2010,7 @@ pub fn run_surface_video_export(
                 frames: finished.frames,
                 audio_frames: finished.audio_frames,
                 backend: finished.backend,
-                warnings: Vec::new(),
+                warnings,
             }
         }
         Err(error)

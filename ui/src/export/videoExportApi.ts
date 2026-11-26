@@ -293,7 +293,7 @@ export interface SurfacePreviewResult {
 }
 
 export function getSurfaceExportTimelines(
-  tracks: { path: string; branch: number; axisOffset: number }[],
+  tracks: { path: string; revision?: string | null; branch: number; axisOffset: number }[],
 ): Promise<SurfaceTrackCoverage[]> {
   requireDesktop();
   return invoke<SurfaceTrackCoverage[]>('surface_export_timelines', { tracks });

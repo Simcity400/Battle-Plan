@@ -14,6 +14,7 @@ export interface SurfaceExportTrackSnapshot {
   id: string;
   roleId: string;
   path: string;
+  revision: string;
   branchId: string;
   axisOffset: number;
   firstHour: number;
@@ -38,7 +39,7 @@ export interface SurfaceExportMapWidget {
 }
 
 export interface SurfaceExportContextSnapshot {
-  campaigns: { id: string; path: string; label: string }[];
+  campaigns: { id: string; path: string; label: string; revision: string }[];
   selectedCountries: Record<string, CountryChoice | null>;
   selectedBranches: Record<string, string>;
   observed: Record<string, number>;

@@ -152,6 +152,91 @@ impl FrameSchedule {
         None
     }
 
+    pub fn preview_frame_kind(&self, target_hour: i32) -> FrameKind {
+        let step_hours = self.hours_per_second / f64::from(self.fps.max(1));
+        let target = target_hour.clamp(self.summary.from_hour, self.summary.to_hour);
+        if self.skip_gaps {
+            if let Some(stretch) = stretch_at(&self.stretches, target) {
+                let (whole, fraction) = sample_in_span(stretch.first, stretch.last, target, step_hours);
+                return FrameKind::Recorded {
+                    hour: whole,
+                    fraction,
+                    reset_continuity: true,
+                    cut_banner: None,
+                };
+            }
+            let idx = self.stretches.partition_point(|s| s.last < target);
+            if idx == 0 {
+                let first = self
+                    .stretches
+                    .first()
+                    .map_or(self.summary.from_hour, |s| s.first);
+                return FrameKind::Recorded {
+                    hour: first,
+                    fraction: 0.0,
+                    reset_continuity: true,
+                    cut_banner: None,
+                };
+            }
+            if idx >= self.stretches.len() {
+                let last = self
+                    .stretches
+                    .last()
+                    .map_or(self.summary.to_hour, |s| s.last);
+                return FrameKind::Recorded {
+                    hour: last,
+                    fraction: 0.0,
+                    reset_continuity: true,
+                    cut_banner: None,
+                };
+            }
+            let prev = &self.stretches[idx - 1];
+            let next = &self.stretches[idx];
+            if self.cut_frames > 0 {
+                let gap_first = i64::from(prev.last) + 1;
+                let gap_last = i64::from(next.first) - 1;
+                let omitted = (gap_last - gap_first + 1).clamp(0, i64::from(u32::MAX)) as u32;
+                let reason = gap_reason_at(&self.gaps, gap_first as i32);
+                return FrameKind::SkipCutCard(CutNotice {
+                    from_hour: prev.last,
+                    to_hour: next.first,
+                    omitted_hours: omitted,
+                    reason,
+                });
+            }
+            return FrameKind::Recorded {
+                hour: next.first,
+                fraction: 0.0,
+                reset_continuity: true,
+                cut_banner: None,
+            };
+        }
+        let (whole, fraction, prev_whole) =
+            sample_linear_with_prev(self.summary.from_hour, self.summary.to_hour, target, step_hours);
+        if stretch_at(&self.stretches, whole).is_some() {
+            let cut_banner = prev_whole
+                .and_then(|prev| traversed_gap_notice(&self.gaps, prev, whole, &[]));
+            FrameKind::Recorded {
+                hour: whole,
+                fraction,
+                reset_continuity: true,
+                cut_banner,
+            }
+        } else {
+            let (gap_first, gap_last, reason) =
+                gap_bounds_at(&self.gaps, whole, self.summary.from_hour, self.summary.to_hour);
+            let crossed_gap = prev_whole
+                .and_then(|prev| traversed_gap_notice(&self.gaps, prev, whole, &[gap_first]));
+            FrameKind::GapCard {
+                hour: whole,
+                gap_first,
+                gap_last,
+                reason,
+                crossed_gap,
+            }
+        }
+    }
+
     pub fn cursor(&self) -> FrameCursor<'_> {
         FrameCursor::new(self)
     }
@@ -806,6 +891,52 @@ pub fn build_schedule(
     })
 }
 
+fn sample_in_span(first: i32, last: i32, target: i32, step_hours: f64) -> (i32, f64) {
+    let clamped = target.clamp(first, last);
+    let span = f64::from(last) - f64::from(first);
+    if span <= 0.0 || step_hours <= 0.0 {
+        return (first, 0.0);
+    }
+    let local = ((f64::from(clamped) - f64::from(first)) / step_hours)
+        .floor()
+        .max(0.0);
+    let pos = (f64::from(first) + local * step_hours).min(f64::from(last));
+    let whole = pos.floor() as i32;
+    if clamped == last && whole < last {
+        (last, 0.0)
+    } else {
+        (whole, (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON))
+    }
+}
+
+fn sample_linear_with_prev(
+    from: i32,
+    to: i32,
+    target: i32,
+    step_hours: f64,
+) -> (i32, f64, Option<i32>) {
+    let clamped = target.clamp(from, to);
+    let span = f64::from(to) - f64::from(from);
+    if span <= 0.0 || step_hours <= 0.0 {
+        return (from, 0.0, None);
+    }
+    let local = ((f64::from(clamped) - f64::from(from)) / step_hours)
+        .floor()
+        .max(0.0);
+    let pos = (f64::from(from) + local * step_hours).min(f64::from(to));
+    let whole = pos.floor() as i32;
+    if clamped == to && whole < to {
+        return (to, 0.0, Some(whole));
+    }
+    let prev = if local >= 1.0 {
+        let prev_pos = (f64::from(from) + (local - 1.0) * step_hours).min(f64::from(to));
+        Some(prev_pos.floor() as i32)
+    } else {
+        None
+    };
+    (whole, (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON), prev)
+}
+
 fn stretch_at(stretches: &[RecordedStretch], hour: i32) -> Option<&RecordedStretch> {
     let idx = stretches.partition_point(|s| s.last < hour);
     stretches.get(idx).filter(|s| s.first <= hour)
@@ -1025,6 +1156,8 @@ mod tests {
                 vec![UnheldGap { first: 51, last: 99, reason: "track A gap".into() }],
                 vec![],
             ],
+            0,
+            200,
         );
         assert_eq!(union.len(), 1);
         assert!(union_gaps.is_empty());
@@ -1230,5 +1363,67 @@ mod tests {
         assert_eq!(gaps.len(), 2);
         assert_eq!((gaps[0].first, gaps[0].last, gaps[0].reason.as_str()), (0, 9, "before start"));
         assert_eq!((gaps[1].first, gaps[1].last, gaps[1].reason.as_str()), (91, 100, "after end"));
+    }
+
+    #[test]
+    fn preview_frame_kind_matches_linear_and_skip_gaps_for_both_cut_durations() {
+        let (stretches, gaps) = sample_stretches();
+        let linear = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 399,
+                fps: 4,
+                hours_per_second: 1.0,
+                skip_gaps: false,
+                cut_card_seconds: 1.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            linear.preview_frame_kind(270),
+            FrameKind::GapCard { hour: 270, gap_first: 250, gap_last: 299, .. }
+        ));
+        assert!(matches!(
+            linear.preview_frame_kind(110),
+            FrameKind::Recorded { hour: 110, fraction, .. } if fraction.abs() < 1e-6
+        ));
+
+        let skip_with_card = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 399,
+                fps: 30,
+                hours_per_second: 30.0,
+                skip_gaps: true,
+                cut_card_seconds: 1.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            skip_with_card.preview_frame_kind(270),
+            FrameKind::SkipCutCard(CutNotice { from_hour: 249, to_hour: 300, omitted_hours: 50, .. })
+        ));
+
+        let skip_zero_card = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 399,
+                fps: 30,
+                hours_per_second: 30.0,
+                skip_gaps: true,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            skip_zero_card.preview_frame_kind(270),
+            FrameKind::Recorded { hour: 300, fraction, .. } if fraction.abs() < 1e-6
+        ));
     }
 }

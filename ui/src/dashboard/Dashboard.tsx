@@ -664,6 +664,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           id: track.id,
           roleId: track.roleId,
           path: track.source.path,
+          revision: track.source.revision,
           branchId: track.branch.id,
           axisOffset: track.axisOffset,
           firstHour: track.branch.firstHour - track.axisOffset,
@@ -691,7 +692,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       const hasPagedRowsWidgets = widgetsToCheck.some(w => pagedKinds.has(w.kind));
       const scrollEl = viewport.current;
       return {
-        campaigns: campaignsRef.current.filter(c => !c.loading).map(c => ({ id: c.id, path: c.path, label: c.label })),
+        campaigns: campaignsRef.current
+          .filter(c => !c.loading)
+          .map(c => ({ id: c.id, path: c.path, label: c.label, revision: sourceMap.get(c.id)?.revision ?? '' })),
         selectedCountries,
         selectedBranches,
         observed,

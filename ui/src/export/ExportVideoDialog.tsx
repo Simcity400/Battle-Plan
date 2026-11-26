@@ -183,6 +183,7 @@ export default function ExportVideoDialog({
         ? getSurfaceExportTimelines(
             ctx.tracks.map(t => ({
               path: t.path,
+              revision: t.revision || null,
               branch: Number.isFinite(Number(t.branchId)) ? Number(t.branchId) : 0,
               axisOffset: t.axisOffset,
             })),

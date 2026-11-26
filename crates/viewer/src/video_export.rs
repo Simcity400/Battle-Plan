@@ -716,6 +716,7 @@ pub(crate) enum VideoMode {
 pub struct MapFrameChunk {
     pub rgba: Option<Vec<u8>>,
     pub audio: Vec<i16>,
+    pub warnings: Vec<String>,
 }
 
 pub struct MapFrameStream {
@@ -1082,7 +1083,11 @@ impl VideoSession {
             Vec::new()
         };
         if let VideoMode::Frames { tx, .. } = &self.mode {
-            tx.send(Ok(MapFrameChunk { rgba: None, audio }))
+            tx.send(Ok(MapFrameChunk {
+                rgba: None,
+                audio,
+                warnings: std::mem::take(&mut self.warnings),
+            }))
                 .map_err(|_| "Embedded map consumer closed".to_owned())?;
         }
         Ok(())
@@ -1145,6 +1150,7 @@ impl VideoSession {
                 tx.send(Ok(MapFrameChunk {
                     rgba: Some(rgba.to_vec()),
                     audio,
+                    warnings: std::mem::take(&mut self.warnings),
                 }))
                 .map_err(|_| "Embedded map consumer closed".to_owned())?;
                 let _ = hour;

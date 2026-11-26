@@ -248,6 +248,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
+  readonly blockedLoading?: boolean;
   readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
@@ -312,6 +313,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onDiagnostics,
   extraWarnings,
   blockedState = null,
+  blockedLoading = false,
   held = false,
   loadingLabel,
   className = '',
@@ -449,7 +451,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     exportSurface.reportWidget(key, {
       widgetId: widget.id,
       pipe: null,
-      mode: 'unavailable',
+      mode: blockedLoading ? 'reading' : 'unavailable',
       target: null,
       binding: 0,
       installedBinding: 0,
@@ -461,7 +463,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return () => {
       exportSurface.reportWidget?.(key, null);
     };
-  }, [exportSurface.active, exportSurface.reportWidget, active, prepared, enabled, widget.id, instanceId]);
+  }, [exportSurface.active, exportSurface.reportWidget, active, prepared, enabled, blockedLoading, widget.id, instanceId]);
 
   const tooltips = useFamilyTooltip(tooltipOwner, dataContextKey);
   useFamilyHold(frameRef, held, tooltips);
