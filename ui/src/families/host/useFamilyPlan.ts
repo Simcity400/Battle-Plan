@@ -10,6 +10,7 @@ import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
+import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
@@ -40,6 +41,8 @@ import {
   readPlanExact,
   stabilizeCanvasDimension,
 } from '../broker.ts';
+import { identitySnapshots } from './identitySnapshots.ts';
+import { withSoFarMembership } from './membership.ts';
 import { plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -362,7 +365,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const effectiveMulti = useMemo(() => {
     if (!resolvedMulti) return null;
-    if (typeof singleSlotId !== 'number') return resolvedMulti;
+    if (typeof singleSlotId !== 'number') return withSoFarMembership(resolvedMulti, widget.countries, groups.data, lastHour);
     const runs = [...(slots?.tagRuns(singleSlotId) ?? [])];
     return {
       ...resolvedMulti,
@@ -370,7 +373,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       membership: new Map([['', runs]]),
       known: (from: number, to?: number) => !!slots && resolvedMulti.known(from, to),
     };
-  }, [resolvedMulti, singleSlotId, slots, slotRevision]);
+  }, [resolvedMulti, singleSlotId, slots, slotRevision, widget.countries, groups.data, lastHour]);
 
   const holders = useMemo<Readonly<Record<string, readonly HolderRun[]>> | null>(() => {
     if (!isMulti || !effectiveMulti || effectiveMulti.top != null || !slots) return null;
@@ -417,7 +420,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const wantsIdentity = laneDemands.length > 0;
-  const identityState = useIdentities(runtime.client, track?.source, wantsIdentity ? identityScope : null, laneDemands, {
+  useIdentities(runtime.client, track?.source, wantsIdentity ? identityScope : null, laneDemands, {
     active: active && wantsIdentity,
     needFlags: true,
     flagSize: 'panel',
@@ -441,10 +444,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => createDomArtProvider(sharedDomArtCache, { broker, scope: identityScope, recording: track?.source }),
     [broker, identityScope, track?.source],
   );
-  const identitySnapshot = useMemo<IdentitySnapshot | null>(() => {
-    void identityState.version;
-    return identityScope ? broker.snapshotOf(identityScope, track?.source, branchBounds) : null;
-  }, [broker, identityScope, track?.source, branchBounds, identityState.version]);
+  const snapshots = useMemo(
+    () => identitySnapshots(broker, identityScope, track?.source, branchBounds),
+    [broker, identityScope, track?.source, branchBounds],
+  );
+  const identitySnapshot = useSyncExternalStore(snapshots.subscribe, snapshots.read, snapshots.read);
 
   const filterUnobserved = useMemo(
     () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
@@ -1084,7 +1088,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         if (none) return { kind: 'no-members', reason: none.reason };
         if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
           const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
-          return { kind: 'refused', reason: why ?? 'No countries available for this selection.' };
+          return { kind: 'refused', reason: why ?? (widget.countries.kind === 'group' ? NO_MEMBERS.date : 'No countries available for this selection.') };
         }
       }
     }
