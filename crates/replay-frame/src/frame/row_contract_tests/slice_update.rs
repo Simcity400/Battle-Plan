@@ -131,6 +131,7 @@ fn a_shared_or_stale_baseline_and_a_foreign_row_are_refused_or_copied() {
         ranges: Vec::new(),
         keys: Vec::new(),
         owners: vec![1],
+        kept_masks: Vec::new(),
         rows: TableRows::ResearchInputs(vec![row(2, 0, 9)]),
     };
     assert!(!update.fits(&start));
@@ -244,6 +245,7 @@ fn certified_key_ranges_encode_insert_edit_and_delete_exactly_like_complete_hist
             owners: Vec::new(),
             ranges: vec![key..key + 1],
             keys: Vec::new(),
+            kept_masks: Vec::new(),
             rows: TableRows::DivisionHistory(replacement.into_iter().collect()),
         };
         let actual = sparse

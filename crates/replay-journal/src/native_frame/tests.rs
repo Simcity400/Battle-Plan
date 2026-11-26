@@ -501,6 +501,7 @@ fn every_conversion_form_walks_to_the_row_recordings_views() {
         ranges: vec![input(3, 0, 0).key()..input(4, 0, 0).key()],
         owners: Vec::new(),
         keys: Vec::new(),
+        kept_masks: Vec::new(),
         rows: TableRows::ResearchInputs(vec![input(3, 0, 31), input(3, 1, 32)]),
     };
     paths.check(
@@ -1496,6 +1497,7 @@ fn slice_updates_without_row_changes_match_recorded_changes() {
                 ranges: vec![1..3, 4..5],
                 owners: Vec::new(),
                 keys: Vec::new(),
+                kept_masks: Vec::new(),
                 rows: TableRows::Divisions(vec![division(1, 2_000_000), division(2, 3_000_000)]),
             },
             _ => SliceUpdate::keyed(

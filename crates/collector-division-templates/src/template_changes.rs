@@ -65,7 +65,7 @@ static HQ_GROUPS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Watches {
     registry: WatchRegistry,
-    calls: [AtomicU64; SITES],
+    calls: collector_timing::hook_timing::CallCounters<SITES>,
     unchanged_unit_type_writes: AtomicU64,
     unchanged_ai_role_rebuilds: AtomicU64,
 }
@@ -74,14 +74,14 @@ impl Watches {
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::new().with_synchronous(),
-            calls: [const { AtomicU64::new(0) }; SITES],
+            calls: collector_timing::hook_timing::CallCounters::new(),
             unchanged_unit_type_writes: AtomicU64::new(0),
             unchanged_ai_role_rebuilds: AtomicU64::new(0),
         }
     }
 
     pub fn notify(&self, template: usize, site: usize) -> Notification<'_> {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         self.registry.notify(template)
     }
 
@@ -91,7 +91,7 @@ impl Watches {
         data: usize,
         value: usize,
     ) -> Option<Notification<'_>> {
-        self.calls[UNIT_TYPE_SITE].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(UNIT_TYPE_SITE);
         let template = data.checked_sub(DATA).filter(|&pointer| pointer != 0);
         let unchanged = template.is_some()
             && data
@@ -462,7 +462,7 @@ fn notification<'a>(
     let template = match selected {
         Some(at) => watches.notify(at, site),
         None => {
-            watches.calls[site].fetch_add(1, Ordering::Relaxed);
+            watches.calls.increment(site);
             watches.registry.notify_every()
         }
     };
@@ -561,7 +561,7 @@ unsafe extern "system-unwind" fn rebuild_template_ai_role(
         unsafe { std::mem::transmute(ORIGINAL[AI_ROLE_SITE].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
     if before.is_some() && before == read() {
-        WATCHES.calls[AI_ROLE_SITE].fetch_add(1, Ordering::Relaxed);
+        WATCHES.calls.increment(AI_ROLE_SITE);
         WATCHES
             .unchanged_ai_role_rebuilds
             .fetch_add(1, Ordering::Relaxed);
@@ -856,7 +856,7 @@ mod tests {
                 watches.registry.sequence(0x2000) == Some(other),
                 template.is_some()
             );
-            assert_eq!(watches.calls[UNIT_TYPE_SITE].load(Ordering::Relaxed), 1);
+            assert_eq!(watches.calls.total(UNIT_TYPE_SITE), 1);
             assert_eq!(
                 watches.unchanged_unit_type_writes.load(Ordering::Relaxed),
                 u64::from(unchanged)
@@ -931,7 +931,7 @@ mod tests {
                 unchanged
             );
         }
-        assert_eq!(WATCHES.calls[UNIT_TYPE_SITE].load(Ordering::Relaxed), 2);
+        assert_eq!(WATCHES.calls.total(UNIT_TYPE_SITE), 2);
         assert_eq!(
             WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
             1
@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(Changes::sequence(&watches, 0x1000), Some(first));
         assert_ne!(Changes::sequence(&watches, 0x2000), Some(second));
         assert_ne!(Changes::quiet(&watches), Some(quiet));
-        assert_eq!(watches.calls[0].load(Ordering::Relaxed), 1);
+        assert_eq!(watches.calls.total(0), 1);
         assert_eq!(receiver(MUTATIONS[3].1, 0x1000), 0x1000);
         let running = watches.notify(0x1000, 3);
         assert!(Changes::sequence(&watches, 0x1000).is_none());
@@ -1216,7 +1216,7 @@ mod tests {
             assert_ne!(Changes::sequence(&watches, receiver), Some(before));
         }
         assert_ne!(Changes::quiet(&watches), Some(quiet));
-        assert_eq!(watches.calls[site].load(Ordering::Relaxed), 1);
+        assert_eq!(watches.calls.total(site), 1);
         assert!(!watches.poisoned());
     }
 
@@ -1273,7 +1273,7 @@ mod tests {
             for index in 1..receivers.len() {
                 assert_eq!(after[index], Some(before[index]), "{name}");
             }
-            assert_eq!(watches.calls[site].load(Ordering::Relaxed), 1);
+            assert_eq!(watches.calls.total(site), 1);
             drop(notification(&watches, &memory, base, site, 0xe0, unlinked));
             assert!(
                 receivers[1..]

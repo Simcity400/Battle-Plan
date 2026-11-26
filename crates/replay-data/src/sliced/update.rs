@@ -13,6 +13,8 @@ pub struct SliceUpdate {
     pub owners: Vec<u32>,
     pub keys: Vec<u128>,
     #[doc(hidden)]
+    pub kept_masks: Vec<u64>,
+    #[doc(hidden)]
     pub rows: TableRows,
 }
 
@@ -235,6 +237,17 @@ impl SliceUpdate {
             ranges: Vec::new(),
             owners: Vec::new(),
             keys,
+            kept_masks: Vec::new(),
+            rows,
+        }
+    }
+
+    pub fn keyed_masked(keys: Vec<u128>, rows: TableRows, kept_masks: Vec<u64>) -> Self {
+        Self {
+            ranges: Vec::new(),
+            owners: Vec::new(),
+            keys,
+            kept_masks,
             rows,
         }
     }
@@ -244,6 +257,7 @@ impl SliceUpdate {
             ranges,
             owners: Vec::new(),
             keys: Vec::new(),
+            kept_masks: Vec::new(),
             rows,
         }
     }
@@ -296,6 +310,7 @@ impl SliceUpdate {
             owners,
             ranges: Vec::new(),
             keys: Vec::new(),
+            kept_masks: Vec::new(),
             rows: fresh,
         })
     }
@@ -400,6 +415,7 @@ impl SliceUpdate {
             owners: Vec::new(),
             ranges: Vec::new(),
             keys,
+            kept_masks: Vec::new(),
             rows,
         })
     }
@@ -483,6 +499,7 @@ impl SliceUpdate {
                 owners: replaced,
                 ranges: Vec::new(),
                 keys,
+                kept_masks: Vec::new(),
                 rows: fresh,
             },
             next,
@@ -510,7 +527,9 @@ impl SliceUpdate {
     }
 
     pub fn fits_meta(&self, table: TableId) -> bool {
-        if self.rows.table() != table {
+        if self.rows.table() != table
+            || (!self.kept_masks.is_empty() && self.kept_masks.len() != self.rows.len())
+        {
             return false;
         }
         if !self.ranges.is_empty() {
@@ -601,6 +620,9 @@ impl SliceUpdate {
     }
 
     pub fn fits(&self, previous: &TableRows) -> bool {
+        if !self.kept_masks.is_empty() {
+            return false;
+        }
         if !self.ranges.is_empty() {
             return self.owners.is_empty() && self.rows.range_update_fits(previous, &self.ranges);
         }
@@ -1129,6 +1151,7 @@ mod tests {
                             ranges: Vec::new(),
                             owners: vec![row.owner()],
                             keys: Vec::new(),
+                            kept_masks: Vec::new(),
                             rows: TableRows::empty(table),
                         };
                         assert!(update.replaces(table, key), "{table:?}");
@@ -1375,6 +1398,7 @@ mod tests {
             owners: vec![1, 2],
             keys: vec![input(1, 1, 25).key()],
             ranges: Vec::new(),
+            kept_masks: Vec::new(),
             rows: TableRows::ResearchInputs(vec![input(1, 1, 25)]),
         };
         assert!(!overlapping.fits_meta(TableId::ResearchInputs));

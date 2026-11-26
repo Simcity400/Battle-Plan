@@ -5585,9 +5585,9 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         }
         let reclaim_interval = |followups: u8| {
             if followups > 0 {
-                Duration::from_secs(5)
+                Duration::from_secs(15)
             } else {
-                Duration::from_secs(30)
+                Duration::from_secs(60)
             }
         };
         if reclaim_now || last_reclaim.elapsed() >= reclaim_interval(followup_reclaims) {

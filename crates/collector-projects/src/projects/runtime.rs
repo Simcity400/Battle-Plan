@@ -47,6 +47,11 @@ impl PendingRaw {
     }
 }
 
+fn next_runtime_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Default)]
 struct Held {
     pointer: usize,
@@ -62,6 +67,7 @@ struct Held {
     pending_ordinal: Option<u32>,
     pending_stamp: Option<(u64, u64)>,
     iterations: i32,
+    runtime_serial: u64,
 }
 
 impl Held {
@@ -69,6 +75,7 @@ impl Held {
         if !std::mem::take(&mut self.freeze_pending) {
             return;
         }
+        self.runtime_serial = next_runtime_serial();
         let Some(raw) = self.pending_raw.take() else {
             self.variables_known = false;
             return;
@@ -227,6 +234,14 @@ impl Runtime {
                 continue;
             }
             self.heap_bytes -= held.allocated_bytes();
+            let prev_state = (
+                held.pointer,
+                held.pending_known,
+                held.pending,
+                held.pending_ordinal,
+                held.variables_known,
+                held.freeze_pending,
+            );
             (|| {
                 if pointer != held.pointer {
                     *held = Held {
@@ -376,6 +391,19 @@ impl Runtime {
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                 }
             })();
+            if held.runtime_serial == 0
+                || prev_state
+                    != (
+                        held.pointer,
+                        held.pending_known,
+                        held.pending,
+                        held.pending_ordinal,
+                        held.variables_known,
+                        held.freeze_pending,
+                    )
+            {
+                held.runtime_serial = next_runtime_serial();
+            }
             self.heap_bytes += held.allocated_bytes();
         }
         drop(reader);
@@ -405,6 +433,13 @@ impl Runtime {
             keep
         });
         project_variable_changes::retain_live(|owner, id| self.held.contains_key(&(owner, id)));
+    }
+
+    pub(super) fn runtime_serial(&self, row: &nproject_cproject::Row) -> u64 {
+        self.held
+            .get(&(row.owner, row.local_id))
+            .filter(|held| held.pointer == row.source_pointer && !held.freeze_pending)
+            .map_or(0, |held| held.runtime_serial)
     }
 
     pub(super) fn value(

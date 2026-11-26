@@ -27,7 +27,7 @@ const SURPLUS_CAP: usize = STEADY + 2;
 
 const SURPLUS_STREAK: u32 = 48;
 
-const STEADY_IDLE_STREAK: u32 = 4;
+const STEADY_IDLE_STREAK: u32 = 64;
 
 const STEADY_PARK_STREAK: u32 = 720;
 

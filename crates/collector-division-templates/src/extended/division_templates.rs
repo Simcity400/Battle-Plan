@@ -2,7 +2,9 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
 };
-use collector_projection::projection::{Projection, Witness, held_input, ledger_table, project_table};
+use collector_projection::projection::{
+    Projection, Witness, held_input, ledger_table_masked, project_table,
+};
 use collector_projection::table_conversion::{table, unavailable};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_native_memory::{Memory, walk::Outcome};
@@ -137,6 +139,61 @@ struct CountryRow {
     garrisons: Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>,
     garrison_failure: Option<&'static str>,
 }
+struct RawClean {
+    rows: Vec<native::Row>,
+    bytes: Vec<u8>,
+    icon_rows: Vec<native::IconRow>,
+    icon_bytes: Vec<u8>,
+    name_bytes: Vec<u8>,
+    counts: Vec<native::SubunitCount>,
+    variants: Vec<u64>,
+    sample_hour: Option<i32>,
+    payloads: Vec<Payload>,
+    speed_keys: Vec<u32>,
+    speed_spans: Vec<(u64, Option<(usize, usize)>)>,
+}
+
+impl RawClean {
+    fn materialize(&self) -> Option<[std::sync::Arc<replay_data::rows::TableRows>; 2]> {
+        engine_allocation::advisory(|| {
+            let dictionary = match build_templates(&self.rows, &self.bytes, None) {
+                TableInput::Sampled(TableView::Complete(rows)) => Some(std::sync::Arc::new(rows)),
+                _ => None,
+            }?;
+            let names = dictionary.rows::<tables::DivisionTemplates>();
+            let icons = match build_icons(
+                &self.icon_rows,
+                &self.icon_bytes,
+                &self.name_bytes,
+                &self.counts,
+                &self.variants,
+                self.sample_hour,
+                &self.payloads,
+                &self.speed_keys,
+                &self.speed_spans,
+                None,
+                names,
+            ) {
+                TableInput::Sampled(TableView::Complete(rows)) => Some(std::sync::Arc::new(rows)),
+                _ => None,
+            }?;
+            Some([dictionary, icons])
+        })
+    }
+}
+
+struct LazyClean {
+    raw: RawClean,
+    country: std::sync::Arc<replay_data::rows::TableRows>,
+    tables: std::sync::OnceLock<Option<[std::sync::Arc<replay_data::rows::TableRows>; 2]>>,
+}
+
+impl LazyClean {
+    fn tables(&self) -> Option<&[std::sync::Arc<replay_data::rows::TableRows>; 2]> {
+        self.tables.get_or_init(|| self.raw.materialize()).as_ref()
+    }
+}
+
 #[derive(Clone)]
 struct CleanState {
     tokens: ((u64, u64), (u64, u64)),
@@ -147,7 +204,7 @@ struct CleanState {
     generation: u64,
     model_failures: ModelFailures,
     required: [usize; 8],
-    snapshots: [std::sync::Arc<replay_data::rows::TableRows>; N],
+    clean: std::sync::Arc<LazyClean>,
 }
 
 #[derive(Default)]
@@ -178,6 +235,7 @@ pub fn home_allocated_bytes(home: &Home) -> usize {
         .bytes
 }
 
+#[derive(Clone)]
 struct Payload {
     key: (u64, usize, u32),
     layout: Option<std::sync::Arc<TemplateLayout>>,
@@ -958,36 +1016,50 @@ impl Captured {
                     digest.roster,
                 ])
             });
-            let snapshots = match self
+            let clean = match self
                 .prev_clean
                 .take()
                 .filter(|prev| prev.generation == self.generation && prev.digest == digest)
             {
-                Some(prev) => Some(prev.snapshots),
+                Some(prev) => Some(prev.clean),
                 None => engine_allocation::advisory(|| {
-                    let dictionary = match self.templates(None) {
-                        TableInput::Sampled(TableView::Complete(rows)) => {
-                            Some(std::sync::Arc::new(rows))
-                        }
-                        _ => None,
+                    let country = self.country_snapshot.clone()?;
+                    let dict_rows = self.rows.rows.get(..self.rows.outcome.len())?;
+                    let dict_bytes = self.bytes.first.get(..self.bytes.len)?;
+                    let icon_rows = self.icon_rows.rows.get(..self.icon_rows.outcome.len())?;
+                    let icon_bytes = self.icon_bytes.first.get(..self.icon_bytes.len)?;
+                    let name_bytes = self.name_bytes.first.get(..self.name_bytes.len)?;
+                    let counts = self.counts.first.get(..self.counts.len)?;
+                    let variants = self.variants.first.get(..self.variants.len)?;
+                    if !template_spans_valid(dict_rows, dict_bytes)
+                        || !icon_spans_valid(icon_rows, icon_bytes, counts, variants)
+                    {
+                        return None;
+                    }
+                    let mut payloads = Vec::new();
+                    engine_allocation::reserve(&mut payloads, self.payloads.len()).ok()?;
+                    payloads.extend(self.payloads.iter().cloned());
+                    let raw = RawClean {
+                        rows: copy_vec(dict_rows).ok()?,
+                        bytes: copy_vec(dict_bytes).ok()?,
+                        icon_rows: copy_vec(icon_rows).ok()?,
+                        icon_bytes: copy_vec(icon_bytes).ok()?,
+                        name_bytes: copy_vec(name_bytes).ok()?,
+                        counts: copy_vec(counts).ok()?,
+                        variants: copy_vec(variants).ok()?,
+                        sample_hour: self.sample_hour,
+                        payloads,
+                        speed_keys: copy_vec(&self.speed_keys).ok()?,
+                        speed_spans: copy_vec(&self.speed_spans).ok()?,
                     };
-                    let icons = dictionary.as_ref().and_then(|dict| {
-                        let names = dict.rows::<tables::DivisionTemplates>();
-                        match self.icons(None, names) {
-                            TableInput::Sampled(TableView::Complete(rows)) => {
-                                Some(std::sync::Arc::new(rows))
-                            }
-                            _ => None,
-                        }
-                    });
-                    let country = self.country_snapshot.clone();
-                    dictionary
-                        .zip(icons)
-                        .zip(country)
-                        .map(|((d, i), c)| [d, i, c])
+                    Some(std::sync::Arc::new(LazyClean {
+                        raw,
+                        country,
+                        tables: std::sync::OnceLock::new(),
+                    }))
                 }),
             };
-            snapshots.map(|snapshots| CleanState {
+            clean.map(|clean| CleanState {
                 tokens: clean_tokens,
                 base,
                 state,
@@ -1005,7 +1077,7 @@ impl Captured {
                     self.globals.required,
                     self.locals.required,
                 ],
-                snapshots,
+                clean,
             })
         } else {
             self.prev_clean = None;
@@ -1028,33 +1100,6 @@ impl Captured {
         }
     }
 
-    fn payload(
-        &self,
-        row: &native::IconRow,
-    ) -> (
-        Option<&std::sync::Arc<TemplateLayout>>,
-        Option<&std::sync::Arc<TemplateSettings>>,
-    ) {
-        self.payloads
-            .binary_search_by_key(&(row.template, row.pointer, row.owner), |payload| {
-                payload.key
-            })
-            .map_or((None, None), |at| {
-                let payload = &self.payloads[at];
-                (payload.layout.as_ref(), payload.settings.as_ref())
-            })
-    }
-
-    fn payload_serials(&self, row: &native::IconRow) -> (u64, u64) {
-        self.payloads
-            .binary_search_by_key(&(row.template, row.pointer, row.owner), |payload| {
-                payload.key
-            })
-            .map_or((0, 0), |at| {
-                let payload = &self.payloads[at];
-                (payload.layout_serial, payload.settings_serial)
-            })
-    }
     fn capture_speed_keys(
         &mut self,
         memory: &impl Memory,
@@ -1138,20 +1183,6 @@ impl Captured {
         (&self.speed_keys, &self.speed_spans)
     }
 
-    fn speed_keys(&self, template: u64) -> Option<Vec<u32>> {
-        self.speed_key_slice(template)
-            .map(|keys| owned_vec(copy_vec(keys)))
-    }
-
-    fn speed_key_slice(&self, template: u64) -> Option<&[u32]> {
-        let at = self
-            .speed_spans
-            .binary_search_by_key(&template, |entry| entry.0)
-            .ok()?;
-        let (start, len) = self.speed_spans[at].1?;
-        self.speed_keys.get(start..start.checked_add(len)?)
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn model_failures(&self) -> ModelFailures {
         self.model_failures
@@ -1188,7 +1219,10 @@ impl Captured {
             projection.as_deref_mut(),
             witness,
             |projection| match &self.fast_clean {
-                Some(fast) => TableInput::SharedComplete(std::sync::Arc::clone(&fast.snapshots[0])),
+                Some(fast) => match fast.clean.tables() {
+                    Some(tables) => TableInput::SharedComplete(std::sync::Arc::clone(&tables[0])),
+                    None => unavailable("template clean snapshot allocation failed").into(),
+                },
                 None => self.templates(projection),
             },
         );
@@ -1214,13 +1248,16 @@ impl Captured {
             projection.as_deref_mut(),
             witness,
             |projection| match &self.fast_clean {
-                Some(fast) => TableInput::SharedComplete(std::sync::Arc::clone(&fast.snapshots[1])),
+                Some(fast) => match fast.clean.tables() {
+                    Some(tables) => TableInput::SharedComplete(std::sync::Arc::clone(&tables[1])),
+                    None => unavailable("template clean snapshot allocation failed").into(),
+                },
                 None => self.icons(projection, names),
             },
         );
         let country = held_input::<tables::CountryTemplateState>(projection, witness, |_| {
             if let Some(fast) = &self.fast_clean {
-                TableInput::SharedComplete(std::sync::Arc::clone(&fast.snapshots[2]))
+                TableInput::SharedComplete(std::sync::Arc::clone(&fast.clean.country))
             } else if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
                 self.country_snapshot
                     .as_ref()
@@ -1235,7 +1272,7 @@ impl Captured {
 
     pub fn country_state(&self) -> TableView {
         if let Some(fast) = &self.fast_clean {
-            return match fast.snapshots[2].try_clone() {
+            return match fast.clean.country.try_clone() {
                 Ok(rows) => TableView::Complete(rows),
                 Err(_) => unavailable("country template snapshot clone failed"),
             };
@@ -1262,10 +1299,7 @@ impl Captured {
         let Some(rows) = self.rows.rows.get(..outcome.len()) else {
             return unavailable("template row length invalid").into();
         };
-        if rows
-            .iter()
-            .any(|r| span(bytes, r.name).is_none() || span(bytes, r.name_key).is_none())
-        {
+        if !template_spans_valid(rows, bytes) {
             return unavailable("template row spans outside captured arenas").into();
         }
         project_table::<tables::DivisionTemplates, _>(
@@ -1315,167 +1349,402 @@ impl Captured {
         let Some(rows) = self.icon_rows.rows.get(..outcome.len()) else {
             return unavailable("template icon row length invalid").into();
         };
-        if rows.iter().any(|r| {
-            span(bytes, r.priority_unit_name).is_none()
-                || span(bytes, r.model_entity).is_none()
-                || span(counts, r.counts).is_none()
-                || r.grids.iter().any(|grid| span(counts, *grid).is_none())
-                || r.cells.iter().any(|grid| span(counts, *grid).is_none())
-                || span(variants, r.excluded_variants).is_none()
-                || span(variants, r.forbidden_equipment).is_none()
-        }) {
+        if !icon_spans_valid(rows, bytes, counts, variants) {
             return unavailable("template icon row spans outside captured arenas").into();
         }
-        let entries = |range: native::Span| {
-            owned_vec(engine_allocation::collect_vec(
-                span(counts, range)
-                    .unwrap()
-                    .iter()
-                    .map(|unit| TemplateSubunit {
-                        token: unit.token,
-                        local: u8::from(unit.local),
-                        count: unit.count,
-                    }),
-            ))
-        };
-        let base_width = |r: &native::IconRow| {
-            (r.model_failure.is_none())
-                .then(|| {
-                    span(counts, r.counts)?.iter().try_fold(0_i64, |sum, unit| {
-                        Some(
-                            sum.wrapping_add(
-                                i64::from(unit.count)
-                                    .wrapping_mul(100_000)
-                                    .wrapping_mul(unit.width?)
-                                    / 100_000,
-                            ),
-                        )
-                    })
-                })
-                .flatten()
-        };
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        struct IconFixed {
-            priority_unit: u32,
-            custom_icon: i32,
-            custom_icon_nato: u8,
-            representative: u32,
-            representative_local: u8,
-            country: i32,
-            foreign_country: i32,
-            model_category: Option<u64>,
-            model_unreadable: u8,
-            formation_division_count: Option<i32>,
-            manpower_exile: bool,
-            base_width: Option<i64>,
-            name_state: u8,
-            layout_serial: u64,
-            settings_serial: u64,
-        }
-        let record_entries =
-            |range: native::Span, record: &mut collector_projection::projection::Record<'_>| {
-                let slice = span(counts, range).unwrap();
-                record.word(slice.len() as i64);
-                for unit in slice {
-                    record.word(
-                        i64::from(unit.token) | (i64::from(u8::from(unit.local)) << 32),
-                    );
-                    record.word(i64::from(unit.count));
-                }
-            };
-        ledger_table::<tables::DivisionTemplateIcons, _, IconFixed>(
-            projection,
+        build_icons_with_outcome(
             outcome,
             &self.icon_rows.rows,
-            |r| u128::from(r.template),
-            |_, r, record| {
-                record.bytes(Some(span(bytes, r.priority_unit_name).unwrap()));
-                record.bytes(Some(span(bytes, r.model_entity).unwrap()));
-                let excluded = span(variants, r.excluded_variants).unwrap();
-                record.word(excluded.len() as i64);
-                for &variant in excluded {
-                    record.word(variant as i64);
+            bytes,
+            names,
+            counts,
+            variants,
+            self.sample_hour,
+            &self.payloads,
+            &self.speed_keys,
+            &self.speed_spans,
+            projection,
+            dictionary,
+        )
+    }
+}
+
+fn template_spans_valid(rows: &[native::Row], bytes: &[u8]) -> bool {
+    !rows
+        .iter()
+        .any(|r| span(bytes, r.name).is_none() || span(bytes, r.name_key).is_none())
+}
+
+fn icon_spans_valid(
+    rows: &[native::IconRow],
+    bytes: &[u8],
+    counts: &[native::SubunitCount],
+    variants: &[u64],
+) -> bool {
+    !rows.iter().any(|r| {
+        span(bytes, r.priority_unit_name).is_none()
+            || span(bytes, r.model_entity).is_none()
+            || span(counts, r.counts).is_none()
+            || r.grids.iter().any(|grid| span(counts, *grid).is_none())
+            || r.cells.iter().any(|grid| span(counts, *grid).is_none())
+            || span(variants, r.excluded_variants).is_none()
+            || span(variants, r.forbidden_equipment).is_none()
+    })
+}
+
+fn build_templates(
+    rows: &[native::Row],
+    bytes: &[u8],
+    projection: Option<&mut Projection<'_>>,
+) -> TableInput {
+    project_table::<tables::DivisionTemplates, _>(
+        projection,
+        Outcome::Rows { len: rows.len() },
+        rows,
+        |r| u128::from(r.template),
+        |r, previous| {
+            r.owner == previous.owner
+                && r.unit_type == previous.unit_type
+                && span(bytes, r.name).unwrap() == previous.name
+                && match &previous.name_key {
+                    Recorded::Value(key) => span(bytes, r.name_key).unwrap() == key,
+                    Recorded::NotRecorded => false,
                 }
-                record_entries(r.counts, record);
-                for grid in r.grids {
-                    record_entries(grid, record);
-                }
-                let name_state = match name_value(r, names, dictionary, self.sample_hour) {
-                    None => 0,
-                    Some(NameValue::Same) => 1,
-                    Some(NameValue::Changed {
-                        literal,
-                        fallback_key,
-                    }) => {
-                        record.bytes(Some(literal));
-                        record.bytes(fallback_key);
-                        2
-                    }
-                };
-                record.ids(self.speed_key_slice(r.template));
-                let (layout_serial, settings_serial) = self.payload_serials(r);
-                Some(IconFixed {
-                    priority_unit: r.priority_unit,
-                    custom_icon: r.custom_icon,
-                    custom_icon_nato: r.custom_icon_nato,
-                    representative: r.representative.token,
-                    representative_local: u8::from(r.representative.local),
-                    country: r.country,
-                    foreign_country: r.foreign_country,
-                    model_category: r.model_category,
-                    model_unreadable: u8::from(r.model_failure.is_some()),
-                    formation_division_count: r.formation_division_count,
-                    manpower_exile: r.manpower_exile,
-                    base_width: base_width(r),
-                    name_state,
-                    layout_serial,
-                    settings_serial,
+        },
+        |r| DivisionTemplateRow {
+            template: r.template,
+            owner: r.owner,
+            name: owned_vec(copy_vec(span(bytes, r.name).unwrap())),
+            name_key: replay_data::rows::Recorded::Value(owned_vec(copy_vec(
+                span(bytes, r.name_key).unwrap(),
+            ))),
+            unit_type: r.unit_type,
+        },
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared icon row builder takes flat arenas for both live and lazy clean snapshots"
+)]
+fn build_icons(
+    rows: &[native::IconRow],
+    bytes: &[u8],
+    names: &[u8],
+    counts: &[native::SubunitCount],
+    variants: &[u64],
+    sample_hour: Option<i32>,
+    payloads: &[Payload],
+    speed_keys: &[u32],
+    speed_spans: &[(u64, Option<(usize, usize)>)],
+    projection: Option<&mut Projection<'_>>,
+    dictionary: Option<&[DivisionTemplateRow]>,
+) -> TableInput {
+    build_icons_with_outcome(
+        Outcome::Rows { len: rows.len() },
+        rows,
+        bytes,
+        names,
+        counts,
+        variants,
+        sample_hour,
+        payloads,
+        speed_keys,
+        speed_spans,
+        projection,
+        dictionary,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared icon row builder takes flat arenas for both live and lazy clean snapshots"
+)]
+fn build_icons_with_outcome(
+    outcome: Outcome,
+    rows: &[native::IconRow],
+    bytes: &[u8],
+    names: &[u8],
+    counts: &[native::SubunitCount],
+    variants: &[u64],
+    sample_hour: Option<i32>,
+    payloads: &[Payload],
+    speed_keys: &[u32],
+    speed_spans: &[(u64, Option<(usize, usize)>)],
+    projection: Option<&mut Projection<'_>>,
+    dictionary: Option<&[DivisionTemplateRow]>,
+) -> TableInput {
+    let payload_refs = |row: &native::IconRow| {
+        payloads
+            .binary_search_by_key(&(row.template, row.pointer, row.owner), |payload| {
+                payload.key
+            })
+            .map_or((None, None), |at| {
+                let payload = &payloads[at];
+                (payload.layout.as_ref(), payload.settings.as_ref())
+            })
+    };
+    let payload_serials = |row: &native::IconRow| {
+        payloads
+            .binary_search_by_key(&(row.template, row.pointer, row.owner), |payload| {
+                payload.key
+            })
+            .map_or((0, 0), |at| {
+                let payload = &payloads[at];
+                (payload.layout_serial, payload.settings_serial)
+            })
+    };
+    let speed_key_slice = |template: u64| {
+        let at = speed_spans
+            .binary_search_by_key(&template, |entry| entry.0)
+            .ok()?;
+        let (start, len) = speed_spans[at].1?;
+        speed_keys.get(start..start.checked_add(len)?)
+    };
+    let entries = |range: native::Span| {
+        owned_vec(engine_allocation::collect_vec(
+            span(counts, range)
+                .unwrap()
+                .iter()
+                .map(|unit| TemplateSubunit {
+                    token: unit.token,
+                    local: u8::from(unit.local),
+                    count: unit.count,
+                }),
+        ))
+    };
+    let base_width = |r: &native::IconRow| {
+        (r.model_failure.is_none())
+            .then(|| {
+                span(counts, r.counts)?.iter().try_fold(0_i64, |sum, unit| {
+                    Some(
+                        sum.wrapping_add(
+                            i64::from(unit.count)
+                                .wrapping_mul(100_000)
+                                .wrapping_mul(unit.width?)
+                                / 100_000,
+                        ),
+                    )
                 })
-            },
-            |r| {
-                let [regiments, support, regimental_support] = r.grids;
-                let (layout, settings) = self.payload(r);
-                let (layout, settings) = (
-                    Recorded::Value(layout.cloned()),
-                    Recorded::Value(settings.cloned()),
-                );
-                DivisionTemplateIconRow {
-                    manpower_exile: Recorded::Value(r.manpower_exile),
-                    template: r.template,
-                    base_width: Recorded::Value(base_width(r)),
-                    priority_unit: r.priority_unit,
-                    priority_unit_name: owned_vec(copy_vec(
-                        span(bytes, r.priority_unit_name).unwrap(),
-                    )),
-                    custom_icon: r.custom_icon,
-                    custom_icon_nato: r.custom_icon_nato,
-                    representative: r.representative.token,
-                    representative_local: u8::from(r.representative.local),
-                    subunits: entries(r.counts),
-                    country: r.country,
-                    foreign_country: r.foreign_country,
-                    model_category: r.model_category,
-                    model_entity: owned_vec(copy_vec(span(bytes, r.model_entity).unwrap())),
-                    excluded_variants: owned_vec(copy_vec(
-                        span(variants, r.excluded_variants).unwrap(),
-                    )),
-                    model_unreadable: u8::from(r.model_failure.is_some()),
-                    formation_division_count: replay_data::rows::Recorded::Value(
-                        r.formation_division_count,
-                    ),
-                    display_name: name_inputs(r, names, dictionary, self.sample_hour),
-                    grids: Recorded::Value(TemplateGrids {
+            })
+            .flatten()
+    };
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct IconFixed {
+        priority_unit: u32,
+        custom_icon: i32,
+        custom_icon_nato: u8,
+        representative: u32,
+        representative_local: u8,
+        country: i32,
+        foreign_country: i32,
+        model_category: Option<u64>,
+        model_unreadable: u8,
+        formation_division_count: Option<i32>,
+        manpower_exile: bool,
+        base_width: Option<i64>,
+        name_state: u8,
+        layout_serial: u64,
+        settings_serial: u64,
+    }
+    impl IconFixed {
+        fn keep_mask(prev: &Self, cur: &Self, same_bytes: bool) -> u64 {
+            let mut mask = 0_u64;
+            if prev.priority_unit == cur.priority_unit {
+                mask |= 1 << 0;
+            }
+            if same_bytes {
+                mask |= (1 << 1) | (1 << 6) | (1 << 10) | (1 << 11) | (1 << 15) | (1 << 20);
+            }
+            if prev.custom_icon == cur.custom_icon {
+                mask |= 1 << 2;
+            }
+            if prev.custom_icon_nato == cur.custom_icon_nato {
+                mask |= 1 << 3;
+            }
+            if prev.representative == cur.representative {
+                mask |= 1 << 4;
+            }
+            if prev.representative_local == cur.representative_local {
+                mask |= 1 << 5;
+            }
+            if prev.country == cur.country {
+                mask |= 1 << 7;
+            }
+            if prev.foreign_country == cur.foreign_country {
+                mask |= 1 << 8;
+            }
+            if prev.model_category == cur.model_category {
+                mask |= 1 << 9;
+            }
+            if prev.model_unreadable == cur.model_unreadable {
+                mask |= 1 << 12;
+            }
+            if prev.formation_division_count == cur.formation_division_count {
+                mask |= 1 << 13;
+            }
+            if prev.name_state == cur.name_state && (cur.name_state != 2 || same_bytes) {
+                mask |= 1 << 14;
+            }
+            if prev.manpower_exile == cur.manpower_exile {
+                mask |= 1 << 16;
+            }
+            if prev.base_width == cur.base_width {
+                mask |= 1 << 17;
+            }
+            if prev.layout_serial == cur.layout_serial {
+                mask |= 1 << 18;
+            }
+            if prev.settings_serial == cur.settings_serial {
+                mask |= 1 << 19;
+            }
+            mask
+        }
+    }
+    let record_entries =
+        |range: native::Span, record: &mut collector_projection::projection::Record<'_>| {
+            let slice = span(counts, range).unwrap();
+            record.word(slice.len() as i64);
+            for unit in slice {
+                record.word(i64::from(unit.token) | (i64::from(u8::from(unit.local)) << 32));
+                record.word(i64::from(unit.count));
+            }
+        };
+    ledger_table_masked::<tables::DivisionTemplateIcons, _, IconFixed>(
+        projection,
+        outcome,
+        rows,
+        |r| u128::from(r.template),
+        |_, r, record| {
+            record.bytes(Some(span(bytes, r.priority_unit_name).unwrap()));
+            record.bytes(Some(span(bytes, r.model_entity).unwrap()));
+            let excluded = span(variants, r.excluded_variants).unwrap();
+            record.word(excluded.len() as i64);
+            for &variant in excluded {
+                record.word(variant as i64);
+            }
+            record_entries(r.counts, record);
+            for grid in r.grids {
+                record_entries(grid, record);
+            }
+            let name_state = match name_value(r, names, dictionary, sample_hour) {
+                None => 0,
+                Some(NameValue::Same) => 1,
+                Some(NameValue::Changed {
+                    literal,
+                    fallback_key,
+                }) => {
+                    record.bytes(Some(literal));
+                    record.bytes(fallback_key);
+                    2
+                }
+            };
+            record.ids(speed_key_slice(r.template));
+            let (layout_serial, settings_serial) = payload_serials(r);
+            Some(IconFixed {
+                priority_unit: r.priority_unit,
+                custom_icon: r.custom_icon,
+                custom_icon_nato: r.custom_icon_nato,
+                representative: r.representative.token,
+                representative_local: u8::from(r.representative.local),
+                country: r.country,
+                foreign_country: r.foreign_country,
+                model_category: r.model_category,
+                model_unreadable: u8::from(r.model_failure.is_some()),
+                formation_division_count: r.formation_division_count,
+                manpower_exile: r.manpower_exile,
+                base_width: base_width(r),
+                name_state,
+                layout_serial,
+                settings_serial,
+            })
+        },
+        IconFixed::keep_mask,
+        |r, kept| {
+            let [regiments, support, regimental_support] = r.grids;
+            let (layout, settings) = if kept & ((1 << 18) | (1 << 19)) == ((1 << 18) | (1 << 19)) {
+                (Recorded::Value(None), Recorded::Value(None))
+            } else {
+                let (layout, settings) = payload_refs(r);
+                (
+                    Recorded::Value(if kept & (1 << 18) != 0 {
+                        None
+                    } else {
+                        layout.cloned()
+                    }),
+                    Recorded::Value(if kept & (1 << 19) != 0 {
+                        None
+                    } else {
+                        settings.cloned()
+                    }),
+                )
+            };
+            DivisionTemplateIconRow {
+                manpower_exile: Recorded::Value(r.manpower_exile),
+                template: r.template,
+                base_width: Recorded::Value(if kept & (1 << 17) != 0 {
+                    None
+                } else {
+                    base_width(r)
+                }),
+                priority_unit: r.priority_unit,
+                priority_unit_name: if kept & (1 << 1) != 0 {
+                    Vec::new()
+                } else {
+                    owned_vec(copy_vec(span(bytes, r.priority_unit_name).unwrap()))
+                },
+                custom_icon: r.custom_icon,
+                custom_icon_nato: r.custom_icon_nato,
+                representative: r.representative.token,
+                representative_local: u8::from(r.representative.local),
+                subunits: if kept & (1 << 6) != 0 {
+                    Vec::new()
+                } else {
+                    entries(r.counts)
+                },
+                country: r.country,
+                foreign_country: r.foreign_country,
+                model_category: r.model_category,
+                model_entity: if kept & (1 << 10) != 0 {
+                    Vec::new()
+                } else {
+                    owned_vec(copy_vec(span(bytes, r.model_entity).unwrap()))
+                },
+                excluded_variants: if kept & (1 << 11) != 0 {
+                    Vec::new()
+                } else {
+                    owned_vec(copy_vec(span(variants, r.excluded_variants).unwrap()))
+                },
+                model_unreadable: u8::from(r.model_failure.is_some()),
+                formation_division_count: replay_data::rows::Recorded::Value(
+                    r.formation_division_count,
+                ),
+                display_name: if kept & (1 << 14) != 0 {
+                    Recorded::Value(None)
+                } else {
+                    name_inputs(r, names, dictionary, sample_hour)
+                },
+                grids: if kept & (1 << 15) != 0 {
+                    Recorded::Value(TemplateGrids::default())
+                } else {
+                    Recorded::Value(TemplateGrids {
                         regiments: entries(regiments),
                         support: entries(support),
                         regimental_support: entries(regimental_support),
-                    }),
-                    layout,
-                    settings,
-                    speed_keys: Recorded::Value(self.speed_keys(r.template)),
-                }
-            },
-        )
-    }
+                    })
+                },
+                layout,
+                settings,
+                speed_keys: if kept & (1 << 20) != 0 {
+                    Recorded::Value(None)
+                } else {
+                    Recorded::Value(
+                        speed_key_slice(r.template).map(|keys| owned_vec(copy_vec(keys))),
+                    )
+                },
+            }
+        },
+    )
 }
 
 enum NameValue<'a> {

@@ -4,7 +4,7 @@ use collector_primitives::{
 };
 use collector_production::production::Sources;
 use collector_projection::{
-    projection::{Projection, ledger_table, project_table, scalar_table},
+    projection::{Projection, ledger_table, ledger_table_masked, project_table, scalar_table},
     table_conversion::unavailable,
 };
 use engine_allocation::{copy_vec, owned_vec};
@@ -221,6 +221,163 @@ impl StatusInputs {
     const F_OFFICER: u32 = 1 << 9;
     const F_CAREER: u32 = 1 << 10;
     const F_PANEL_SOURCE: u32 = 1 << 11;
+
+    fn keep_mask(prev: &Self, cur: &Self, same_bytes: bool) -> u64 {
+        let diff_flags = prev.flags ^ cur.flags;
+        let naming_bytes_same = (cur.naming_held_stamp != 0
+            && cur.naming_held_stamp == prev.naming_held_stamp)
+            || (cur.naming_held_stamp == 0 && prev.naming_held_stamp == 0 && same_bytes);
+        let supply_same = (cur.supply_sample_id != 0
+            && cur.supply_sample_id == prev.supply_sample_id)
+            || (cur.supply_sample_id == 0 && prev.supply_sample_id == 0 && same_bytes);
+        let attack_same = (cur.attack_stamp != 0 && cur.attack_stamp == prev.attack_stamp)
+            || (cur.attack_stamp == 0 && prev.attack_stamp == 0 && same_bytes);
+        let org_present_same =
+            (prev.movement_organisation_state == 2) == (cur.movement_organisation_state == 2);
+        let mut mask = (1_u64 << 2) | (1_u64 << 10) | (1_u64 << 11) | (1_u64 << 16) | (1_u64 << 22);
+        if prev.entrenchment == cur.entrenchment {
+            mask |= 1 << 0;
+        }
+        if prev.entrenchment_cap == cur.entrenchment_cap {
+            mask |= 1 << 1;
+        }
+        if prev.attrition_value == cur.attrition_value {
+            mask |= 1 << 3;
+        }
+        if prev.attrition_threshold == cur.attrition_threshold {
+            mask |= 1 << 4;
+        }
+        if prev.exercising == cur.exercising {
+            mask |= 1 << 5;
+        }
+        if prev.has_order == cur.has_order {
+            mask |= 1 << 6;
+        }
+        if prev.invalid_orders == cur.invalid_orders {
+            mask |= 1 << 7;
+        }
+        if prev.strength_factor == cur.strength_factor {
+            mask |= 1 << 8;
+        }
+        if prev.model_number == cur.model_number {
+            mask |= 1 << 9;
+        }
+        if prev.move_flags == cur.move_flags
+            && prev.movement_organisation_state == cur.movement_organisation_state
+        {
+            mask |= 1 << 12;
+        }
+        if (diff_flags & Self::F_BORDER_COMBAT_STATS) == 0
+            && prev.border_combat_stats == cur.border_combat_stats
+        {
+            mask |= 1 << 13;
+        }
+        if (diff_flags & Self::F_NAMING) == 0
+            && prev.naming_kind == cur.naming_kind
+            && prev.naming_order == cur.naming_order
+            && prev.naming_ordered == cur.naming_ordered
+            && prev.naming_programmatic == cur.naming_programmatic
+            && naming_bytes_same
+        {
+            mask |= 1 << 14;
+        }
+        if prev.supply_grace_maximum == cur.supply_grace_maximum {
+            mask |= 1 << 15;
+        }
+        if (diff_flags & Self::F_COUNTRY_ORDINAL) == 0
+            && prev.country_ordinal == cur.country_ordinal
+        {
+            mask |= 1 << 17;
+        }
+        if (diff_flags & Self::F_INVALID_ORDERS_REASON) == 0
+            && prev.invalid_orders_reason == cur.invalid_orders_reason
+        {
+            mask |= 1 << 18;
+        }
+        if supply_same {
+            mask |= 1 << 19;
+        }
+        if (diff_flags & Self::F_DIG_IN) == 0 && prev.dig_in == cur.dig_in {
+            mask |= 1 << 20;
+        }
+        if naming_bytes_same {
+            mask |= 1 << 21;
+        }
+        if prev.camouflage_state == cur.camouflage_state
+            && prev.camouflage_category == cur.camouflage_category
+        {
+            mask |= 1 << 23;
+        }
+        if attack_same {
+            mask |= (1 << 24) | (1 << 27);
+        }
+        if (diff_flags & Self::F_WEATHER_FACTOR) == 0 && prev.weather_factor == cur.weather_factor {
+            mask |= 1 << 25;
+        }
+        if (diff_flags & Self::F_NAMING) == 0 && prev.naming_template == cur.naming_template {
+            mask |= 1 << 26;
+        }
+        if (diff_flags & Self::F_OUT_OF_SUPPLY_DAYS) == 0
+            && prev.out_of_supply_days == cur.out_of_supply_days
+        {
+            mask |= 1 << 28;
+        }
+        if ((prev.commander_mask ^ cur.commander_mask) & !0x08) == 0
+            && prev.commander[0] == cur.commander[0]
+            && prev.commander[1] == cur.commander[1]
+            && prev.commander[2] == cur.commander[2]
+            && prev.commander[4] == cur.commander[4]
+            && prev.commander[5] == cur.commander[5]
+        {
+            mask |= 1 << 29;
+        }
+        if prev.supply_ratio == cur.supply_ratio {
+            mask |= 1 << 30;
+        }
+        if prev.supply_grace_remaining == cur.supply_grace_remaining {
+            mask |= 1 << 31;
+        }
+        if (diff_flags & Self::F_EXPERIENCE) == 0 && prev.experience == cur.experience {
+            mask |= 1 << 32;
+        }
+        if (diff_flags & Self::F_PENDING_TEMPLATE) == 0
+            && prev.pending_template == cur.pending_template
+        {
+            mask |= 1 << 33;
+        }
+        if (diff_flags & Self::F_OFFICER) == 0 && prev.officer == cur.officer {
+            mask |= 1 << 34;
+        }
+        if (diff_flags & Self::F_CAREER) == 0 && prev.career == cur.career {
+            mask |= 1 << 35;
+        }
+        if (diff_flags & Self::F_PANEL_SOURCE) == 0 && prev.panel_source == cur.panel_source {
+            mask |= 1 << 36;
+        }
+        if prev.combat_movement_state == cur.combat_movement_state
+            && prev.combat_movement == cur.combat_movement
+        {
+            mask |= 1 << 37;
+        }
+        if org_present_same
+            && (prev.movement_organisation_state != 2
+                || prev.movement_organisation[0] == cur.movement_organisation[0])
+        {
+            mask |= 1 << 38;
+        }
+        if org_present_same
+            && (prev.movement_organisation_state != 2
+                || prev.movement_organisation[1] == cur.movement_organisation[1])
+        {
+            mask |= 1 << 39;
+        }
+        if ((prev.commander_mask ^ cur.commander_mask) & ((1 << 7) | (1 << 3))) == 0
+            && prev.commander[3] == cur.commander[3]
+        {
+            mask |= 1 << 40;
+        }
+        mask
+    }
 }
 
 fn unique(keys: &mut Vec<u64>, divisions: impl ExactSizeIterator<Item = u64>) -> bool {
@@ -2387,7 +2544,7 @@ impl Captured {
             };
         }
         let status_outcome = status;
-        let status = ledger_table::<tables::DivisionStatus, _, StatusInputs>(
+        let status = ledger_table_masked::<tables::DivisionStatus, _, StatusInputs>(
             projection.as_deref_mut(),
             status,
             &self.status.rows,
@@ -2612,39 +2769,122 @@ impl Captured {
                     naming_programmatic,
                 })
             },
-            |r| {
+            StatusInputs::keep_mask,
+            |r, kept| {
                 let at = position(&self.status.rows, r);
-                let attack = self.attack.view_at(at, r.division);
-                let index = self.status_index_at(at, r.division);
-                let supply = self.supply_sample_at(r, index);
+                let need_attack = (kept
+                    & ((1 << 22)
+                        | (1 << 24)
+                        | (1 << 27)
+                        | (1 << 32)
+                        | (1 << 33)
+                        | (1 << 34)
+                        | (1 << 35)
+                        | (1 << 36)))
+                    != ((1 << 22)
+                        | (1 << 24)
+                        | (1 << 27)
+                        | (1 << 32)
+                        | (1 << 33)
+                        | (1 << 34)
+                        | (1 << 35)
+                        | (1 << 36));
+                let attack = need_attack.then(|| self.attack.view_at(at, r.division));
+                let need_index = (kept
+                    & ((1 << 19) | (1 << 20) | (1 << 21) | (1 << 29) | (1 << 40)))
+                    != ((1 << 19) | (1 << 20) | (1 << 21) | (1 << 29) | (1 << 40));
+                let index = if need_index {
+                    self.status_index_at(at, r.division)
+                } else {
+                    0
+                };
                 status_fields!(
                     r,
                     project_status_fields,
                     [
                         r,
-                        r.naming.map(|n| NameOperands {
-                            kind: n.kind,
-                            order: n.order,
-                            ordered: n.ordered,
-                            programmatic: n.programmatic,
-                            custom: owned_vec(copy_vec(name_span(n.custom).unwrap())),
-                            group: owned_vec(copy_vec(name_span(n.group).unwrap())),
-                        }),
-                        collector_division_parts::supply_inputs::project_division(
-                            supply.0, supply.2
-                        ),
-                        self.dig_in.factor(r.division, index),
-                        self.commander_modifiers(r.division, index),
-                        cached_name(r, index).map(|name| owned_vec(copy_vec(name))),
-                        attack.stats(),
-                        attack.witness(r.weather_factor),
-                        attack.movement(),
-                        attack.experience(),
-                        attack.pending_template(),
-                        attack.officer(),
-                        attack.career(),
-                        attack.panel_source(),
-                        self.speed_terms.combat_movement_at(at, r.division),
+                        if kept & (1 << 14) != 0 {
+                            None
+                        } else {
+                            r.naming.map(|n| NameOperands {
+                                kind: n.kind,
+                                order: n.order,
+                                ordered: n.ordered,
+                                programmatic: n.programmatic,
+                                custom: owned_vec(copy_vec(name_span(n.custom).unwrap())),
+                                group: owned_vec(copy_vec(name_span(n.group).unwrap())),
+                            })
+                        },
+                        if kept & (1 << 19) != 0 {
+                            None
+                        } else {
+                            let supply = self.supply_sample_at(r, index);
+                            collector_division_parts::supply_inputs::project_division(
+                                supply.0, supply.2,
+                            )
+                        },
+                        if kept & (1 << 20) != 0 {
+                            None
+                        } else {
+                            self.dig_in.factor(r.division, index)
+                        },
+                        if kept & ((1 << 29) | (1 << 40)) == ((1 << 29) | (1 << 40)) {
+                            None
+                        } else {
+                            self.commander_modifiers(r.division, index)
+                        },
+                        if kept & (1 << 21) != 0 {
+                            None
+                        } else {
+                            cached_name(r, index).map(|name| owned_vec(copy_vec(name)))
+                        },
+                        if kept & (1 << 24) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.stats())
+                        },
+                        if kept & (1 << 22) != 0 {
+                            None
+                        } else {
+                            attack
+                                .as_ref()
+                                .and_then(|attack| attack.witness(r.weather_factor))
+                        },
+                        if kept & (1 << 27) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.movement())
+                        },
+                        if kept & (1 << 32) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.experience())
+                        },
+                        if kept & (1 << 33) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.pending_template())
+                        },
+                        if kept & (1 << 34) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.officer())
+                        },
+                        if kept & (1 << 35) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.career())
+                        },
+                        if kept & (1 << 36) != 0 {
+                            None
+                        } else {
+                            attack.as_ref().and_then(|attack| attack.panel_source())
+                        },
+                        if kept & (1 << 37) != 0 {
+                            None
+                        } else {
+                            self.speed_terms.combat_movement_at(at, r.division)
+                        },
                     ],
                 )
             },

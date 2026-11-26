@@ -193,6 +193,10 @@ enum Slice {
         owners: Vec<u32>,
         keys: Owners,
     },
+    Ranged {
+        ranges: Vec<std::ops::Range<u128>>,
+        keys: Owners,
+    },
     Keyed {
         added: Owners,
         removed: Owners,
@@ -488,13 +492,30 @@ impl FrameWriter {
             });
             slices.push(match table {
                 TableInput::SliceUpdate { update, .. }
-                    if update.ranges.is_empty()
-                        && previous.get(index).copied().flatten().is_none()
+                    if (previous.get(index).copied().flatten().is_none()
+                        || !update.kept_masks.is_empty())
                         && complete_status =>
                 {
                     let check = slice_same[index];
                     let id = TableId::ALL[index];
-                    if update.owners.is_empty() {
+                    if !update.ranges.is_empty() {
+                        if !update.owners.is_empty() || !update.keys.is_empty() {
+                            None
+                        } else if owners[index].is_none() {
+                            Some(Slice::Rebuild)
+                        } else if check.same {
+                            Some(Slice::Same)
+                        } else if check.keys_valid {
+                            let mut ranges = engine_allocation::vec(update.ranges.len())?;
+                            ranges.extend(update.ranges.iter().cloned());
+                            Some(Slice::Ranged {
+                                ranges,
+                                keys: Owners::from_rows(id, update.rows())?,
+                            })
+                        } else {
+                            Some(Slice::Rebuild)
+                        }
+                    } else if update.owners.is_empty() {
                         if owners[index].is_none() {
                             None
                         } else if check.same {
@@ -797,6 +818,10 @@ impl FrameWriter {
                             hold_slice(&mut known, &slice_owners, &keys, id)?;
                             Some(known)
                         }
+                        (Some(Slice::Ranged { ranges, keys }), Some(mut known)) => {
+                            hold_ranged(&mut known, &ranges, &keys)?;
+                            Some(known)
+                        }
                         (Some(Slice::Keyed { added, removed }), Some(mut known)) => {
                             hold_keyed(&mut known, &added, &removed)?;
                             Some(known)
@@ -1017,7 +1042,7 @@ impl Part<'_> {
         if let TableInput::SliceUpdate { update, .. }
         | TableInput::UniformOptionalI32 { update, .. } = input
             && written.is_none()
-            && previous.is_none()
+            && (previous.is_none() || !update.kept_masks.is_empty())
         {
             let check = removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
             *slice_same = if known {
@@ -1105,21 +1130,29 @@ impl Part<'_> {
                 },
                 None => rows.visit(held.with(Form::Changes(&[]))),
             },
-            TableInput::SliceUpdate { update, .. } => match (previous, written) {
-                (Some(last), Some(written)) => {
-                    Self::written(&update.rows, last, held, written, &mut lane.pairs)
+            TableInput::SliceUpdate { update, .. } => {
+                if !update.kept_masks.is_empty() {
+                    update.rows.visit(
+                        held.with(Form::ChangesMasked(&lane.removed, &update.kept_masks)),
+                    )
+                } else {
+                    match (previous, written) {
+                        (Some(last), Some(written)) => {
+                            Self::written(&update.rows, last, held, written, &mut lane.pairs)
+                        }
+                        (Some(last), None) => Self::slice_diff(
+                            id,
+                            update,
+                            last,
+                            held,
+                            &mut lane.pairs,
+                            &mut lane.removed,
+                            None,
+                        ),
+                        (None, _) => update.rows.visit(held.with(Form::Changes(&lane.removed))),
+                    }
                 }
-                (Some(last), None) => Self::slice_diff(
-                    id,
-                    update,
-                    last,
-                    held,
-                    &mut lane.pairs,
-                    &mut lane.removed,
-                    None,
-                ),
-                (None, _) => update.rows.visit(held.with(Form::Changes(&lane.removed))),
-            },
+            }
             TableInput::UniformOptionalI32 {
                 column,
                 value,
@@ -1327,34 +1360,45 @@ fn keyed_delta(
     writer: &TableWriter,
     update: &SliceUpdate,
 ) -> io::Result<(Owners, Owners)> {
-    let table = writer.table();
-    let mut added_count = 0_usize;
-    let mut removed_count = 0_usize;
-    for &key in &update.keys {
-        let present = update.rows.contains_key(key);
-        let existed = table.slot(key).is_some();
-        added_count += usize::from(present && !existed);
-        removed_count += usize::from(!present && existed);
+    struct Delta<'a> {
+        id: TableId,
+        table: &'a replay_columnar::state::Table,
+        keys: &'a [u128],
     }
-    let added = Owners::from_keys(
+    impl RowsVisit for Delta<'_> {
+        type Output = io::Result<(Owners, Owners)>;
+
+        fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+            let mut added_keys = Vec::new();
+            let mut removed_keys = Vec::new();
+            let mut ri = 0_usize;
+            for &key in self.keys {
+                while ri < rows.len() && rows[ri].key() < key {
+                    ri += 1;
+                }
+                let present = rows.get(ri).is_some_and(|row| row.key() == key);
+                if present {
+                    ri += 1;
+                }
+                let existed = self.table.slot(key).is_some();
+                if present && !existed {
+                    engine_allocation::reserve(&mut added_keys, 1)?;
+                    added_keys.push(key);
+                } else if !present && existed {
+                    engine_allocation::reserve(&mut removed_keys, 1)?;
+                    removed_keys.push(key);
+                }
+            }
+            let added = Owners::from_keys(self.id, added_keys.len(), added_keys.into_iter())?;
+            let removed = Owners::from_keys(self.id, removed_keys.len(), removed_keys.into_iter())?;
+            Ok((added, removed))
+        }
+    }
+    update.rows.visit(Delta {
         id,
-        added_count,
-        update
-            .keys
-            .iter()
-            .copied()
-            .filter(|&key| update.rows.contains_key(key) && table.slot(key).is_none()),
-    )?;
-    let removed = Owners::from_keys(
-        id,
-        removed_count,
-        update
-            .keys
-            .iter()
-            .copied()
-            .filter(|&key| !update.rows.contains_key(key) && table.slot(key).is_some()),
-    )?;
-    Ok((added, removed))
+        table: writer.table(),
+        keys: &update.keys,
+    })
 }
 
 fn merge_keyed_keys<T: Copy + Ord>(
@@ -1477,6 +1521,140 @@ fn hold_keyed(owners: &mut Owners, added: &Owners, removed: &Owners) -> io::Resu
     }
 }
 
+fn merge_ranged_keys<T: Copy + Eq>(
+    owners: &mut Vec<T>,
+    ranges: &[std::ops::Range<u128>],
+    slice_keys: &[T],
+    widen: impl Fn(T) -> u128,
+) -> io::Result<()> {
+    let mut old_at = 0usize;
+    let mut replaced_old = 0usize;
+    let mut same = true;
+    let mut check_keys = slice_keys;
+    for range in ranges {
+        let start = owners[old_at..].partition_point(|&key| widen(key) < range.start) + old_at;
+        let end = owners[start..].partition_point(|&key| widen(key) < range.end) + start;
+        replaced_old += end - start;
+        if same {
+            let (own, rest) =
+                check_keys.split_at(check_keys.partition_point(|&key| widen(key) < range.end));
+            check_keys = rest;
+            if &owners[start..end] != own {
+                same = false;
+            }
+        }
+        old_at = end;
+    }
+    if same && check_keys.is_empty() {
+        return Ok(());
+    }
+    let final_len = owners.len() - replaced_old + slice_keys.len();
+    let mut out = engine_allocation::vec(final_len)?;
+    old_at = 0;
+    let mut keys = slice_keys;
+    for range in ranges {
+        let start = owners[old_at..].partition_point(|&key| widen(key) < range.start) + old_at;
+        let end = owners[start..].partition_point(|&key| widen(key) < range.end) + start;
+        out.extend_from_slice(&owners[old_at..start]);
+        let (own, rest) = keys.split_at(keys.partition_point(|&key| widen(key) < range.end));
+        keys = rest;
+        out.extend_from_slice(own);
+        old_at = end;
+    }
+    out.extend_from_slice(&owners[old_at..]);
+    *owners = out;
+    Ok(())
+}
+
+fn hold_ranged(
+    owners: &mut Owners,
+    ranges: &[std::ops::Range<u128>],
+    slice_keys: &Owners,
+) -> io::Result<()> {
+    match (owners, slice_keys) {
+        (Owners::U64(known), Owners::U64(incoming)) => {
+            merge_ranged_keys(known, ranges, incoming, u128::from)
+        }
+        (Owners::U128(known), Owners::U128(incoming)) => {
+            merge_ranged_keys(known, ranges, incoming, |key| key)
+        }
+        (Owners::U128(known), Owners::U64(incoming)) => {
+            let widened = engine_allocation::collect_vec(incoming.iter().copied().map(u128::from))?;
+            merge_ranged_keys(known, ranges, &widened, |key| key)
+        }
+        (slot @ Owners::U64(_), Owners::U128(incoming)) => {
+            let Owners::U64(old) = std::mem::replace(slot, Owners::U128(Vec::new())) else {
+                unreachable!();
+            };
+            let mut widened = engine_allocation::collect_vec(old.into_iter().map(u128::from))?;
+            merge_ranged_keys(&mut widened, ranges, incoming, |key| key)?;
+            *slot = Owners::U128(widened);
+            Ok(())
+        }
+    }
+}
+
+fn scan_ranged_removed<T: Copy, R: RowCodec>(
+    old_keys: &[T],
+    ranges: &[std::ops::Range<u128>],
+    rows: &[R],
+    widen: impl Fn(T) -> u128,
+    out: &mut Vec<u128>,
+) -> io::Result<Option<bool>> {
+    if !rows.windows(2).all(|pair| pair[0].key() < pair[1].key()) {
+        return Ok(None);
+    }
+    let mut same_keys = true;
+    let mut old_at = 0usize;
+    let mut new_at = 0usize;
+    let mut matched_rows = 0usize;
+    for range in ranges {
+        let start = old_keys[old_at..].partition_point(|&key| widen(key) < range.start) + old_at;
+        let end = old_keys[start..].partition_point(|&key| widen(key) < range.end) + start;
+        old_at = end;
+        while new_at < rows.len() && rows[new_at].key() < range.start {
+            new_at += 1;
+        }
+        let new_start = new_at;
+        while new_at < rows.len() && rows[new_at].key() < range.end {
+            new_at += 1;
+        }
+        matched_rows += new_at - new_start;
+        let old_slice = &old_keys[start..end];
+        let new_slice = &rows[new_start..new_at];
+        let (mut oi, mut ni) = (0usize, 0usize);
+        while oi < old_slice.len() && ni < new_slice.len() {
+            let ok = widen(old_slice[oi]);
+            let nk = new_slice[ni].key();
+            if ok == nk {
+                oi += 1;
+                ni += 1;
+            } else if ok < nk {
+                same_keys = false;
+                engine_allocation::reserve(out, 1)?;
+                out.push(ok);
+                oi += 1;
+            } else {
+                same_keys = false;
+                ni += 1;
+            }
+        }
+        while oi < old_slice.len() {
+            same_keys = false;
+            engine_allocation::reserve(out, 1)?;
+            out.push(widen(old_slice[oi]));
+            oi += 1;
+        }
+        if ni < new_slice.len() {
+            same_keys = false;
+        }
+    }
+    if matched_rows != rows.len() {
+        return Ok(None);
+    }
+    Ok(Some(same_keys))
+}
+
 fn hold_slice(
     owners: &mut Owners,
     slice_owners: &[u32],
@@ -1588,6 +1766,56 @@ fn removed(
     if !update.keys.is_empty() && update.owners.is_empty() && update.ranges.is_empty() {
         let table = writer.table();
         let keys_asc = update.keys.windows(2).all(|pair| pair[0] < pair[1]);
+        struct KeyedRemoved<'a> {
+            table: &'a replay_columnar::state::Table,
+            keys: &'a [u128],
+            out: &'a mut Vec<u128>,
+        }
+        impl RowsVisit for KeyedRemoved<'_> {
+            type Output = io::Result<Option<(bool, usize)>>;
+
+            fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+                if !rows.windows(2).all(|pair| pair[0].key() < pair[1].key()) {
+                    return Ok(None);
+                }
+                let mut keys_same = true;
+                let mut matched_present = 0_usize;
+                let mut ri = 0_usize;
+                for &key in self.keys {
+                    while ri < rows.len() && rows[ri].key() < key {
+                        ri += 1;
+                    }
+                    let present = rows.get(ri).is_some_and(|row| row.key() == key);
+                    if present {
+                        ri += 1;
+                    }
+                    let existed = self.table.slot(key).is_some();
+                    if !present && existed {
+                        engine_allocation::reserve(self.out, 1)?;
+                        self.out.push(key);
+                    }
+                    matched_present += usize::from(present);
+                    keys_same &= present == existed;
+                }
+                Ok(Some((keys_same, matched_present)))
+            }
+        }
+        if keys_asc
+            && let Some((keys_same, matched_present)) = update.rows.visit(KeyedRemoved {
+                table,
+                keys: &update.keys,
+                out,
+            })?
+        {
+            let valid = matched_present == update.rows.len();
+            let unchanged = valid && keys_same;
+            return Ok(SliceCheck {
+                same: unchanged,
+                keys_unchanged: unchanged,
+                keys_valid: valid,
+            });
+        }
+        out.clear();
         let mut keys_same = true;
         let mut matched_present = 0_usize;
         for &key in &update.keys {
@@ -1785,6 +2013,48 @@ fn removed(
             keys_valid: true,
         });
     }
+    if let Some(owners) = owners
+        && !update.ranges.is_empty()
+        && update.owners.is_empty()
+        && update.keys.is_empty()
+        && update.ranges.iter().all(|range| range.start < range.end)
+        && update
+            .ranges
+            .windows(2)
+            .all(|pair| pair[0].end <= pair[1].start)
+    {
+        struct RangedRemoved<'a> {
+            owners: &'a Owners,
+            ranges: &'a [std::ops::Range<u128>],
+            out: &'a mut Vec<u128>,
+        }
+        impl RowsVisit for RangedRemoved<'_> {
+            type Output = io::Result<Option<bool>>;
+
+            fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
+                match self.owners {
+                    Owners::U64(keys) => {
+                        scan_ranged_removed(keys, self.ranges, rows, u128::from, self.out)
+                    }
+                    Owners::U128(keys) => {
+                        scan_ranged_removed(keys, self.ranges, rows, |key| key, self.out)
+                    }
+                }
+            }
+        }
+        if let Some(same) = update.rows.visit(RangedRemoved {
+            owners,
+            ranges: &update.ranges,
+            out,
+        })? {
+            return Ok(SliceCheck {
+                same,
+                keys_unchanged: true,
+                keys_valid: true,
+            });
+        }
+        out.clear();
+    }
     let table = writer.table();
     let live = table.live();
     for slot in 0..table.slots() as u32 {
@@ -1808,6 +2078,7 @@ enum Form<'a> {
     Complete,
     Truncated(u32),
     Changes(&'a [u128]),
+    ChangesMasked(&'a [u128], &'a [u64]),
     Keyed(Changed<'a>),
 }
 
@@ -1930,6 +2201,13 @@ impl RowsVisit for Rows<'_, '_> {
             },
             Form::Changes(removed) => Native::Changes {
                 rows,
+                removed,
+                read,
+                sample,
+            },
+            Form::ChangesMasked(removed, kept_masks) => Native::ChangesMasked {
+                rows,
+                kept_masks,
                 removed,
                 read,
                 sample,

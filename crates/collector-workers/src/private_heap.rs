@@ -39,14 +39,15 @@ const COLD_OFFSET: usize = 256;
 const COLD_STRIDE: usize = 16;
 const SUBPAGE_START: usize = 512;
 const WARM_PAGE_BLOCKS: usize = 24;
-const WARM_SUBPAGE_PAGES: usize = 16;
+const WARM_SUBPAGE_PAGES: usize = 24;
+const WARM_EMPTY_SLABS: usize = 2;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
 const _: () = assert!(RECORD_BYTES <= COLD_OFFSET);
 const _: () = assert!(SUBPAGE_START % HEAP_ALIGNMENT == 0);
 const _: () = assert!(COLD_OFFSET + ((GRANULARITY - PAGE) / PAGE) * COLD_STRIDE <= SUBPAGE_START);
 const _: () = assert!(SUBPAGE_START + 2048 <= PAGE);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 96 * 1024 * 1024;
+const KEPT_BYTES: usize = 256 * 1024 * 1024;
 const SMALL_LARGE_LISTS: usize = 5;
 const TRIM_SLACK: usize = 256 * 1024;
 const _: () = assert!(slab_bytes(CLASSES - 1) == GRANULARITY);
@@ -1047,7 +1048,11 @@ impl PrivateHeap {
         }
         let base = record.cast::<u8>();
         let offset = (base as usize + RECORD_BYTES).next_multiple_of(align) - base as usize;
-        let end = page_end(offset + size);
+        let end = if list_index == 0 {
+            GRANULARITY
+        } else {
+            page_end(offset + size)
+        };
         if end > committed
             && self
                 .virtual_alloc(base.wrapping_add(committed), end - committed, MEM_COMMIT)
@@ -1120,7 +1125,10 @@ impl PrivateHeap {
         let previous = self.pages.kept.fetch_add(reclaimable, Ordering::Relaxed);
         if side() == OTHER && previous + reclaimable > KEPT_BYTES {
             if list_index < SMALL_LARGE_LISTS {
-                self.evict_larger_warm(SMALL_LARGE_LISTS);
+                self.evict_larger_warm(SMALL_LARGE_LISTS, usize::MAX);
+                if self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES {
+                    self.evict_larger_warm(0, list_index);
+                }
             }
             if list_index >= SMALL_LARGE_LISTS
                 || self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES
@@ -1140,8 +1148,11 @@ impl PrivateHeap {
         self.pages.free[list_index].push(record.cast());
     }
 
-    fn evict_larger_warm(&self, min_list: usize) {
+    fn evict_larger_warm(&self, min_list: usize, skip_list: usize) {
         for list in (min_list..RESERVATIONS).rev() {
+            if list == skip_list {
+                continue;
+            }
             while self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES {
                 let base = self.pages.free[list].pop();
                 if base.is_null() {
@@ -1346,6 +1357,7 @@ impl PrivateHeap {
             let batch_len = batch(class) as usize;
             let mut kept_end = 0usize;
             let mut warm_pages_kept = 0usize;
+            let mut empty_slabs_kept = 0usize;
             let mut at = 0usize;
             while at < blocks.len() {
                 let slab = (blocks[at] & !1) & !(GRANULARITY - 1);
@@ -1363,25 +1375,44 @@ impl PrivateHeap {
                 };
                 let mut freed = false;
                 if run_len == total && !oom {
-                    let base = slab as *mut u8;
-                    #[expect(
-                        clippy::cast_ptr_alignment,
-                        reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
-                    )]
-                    let record = base.cast::<Record>();
-                    // SAFETY: every block in this 64 KiB slab has been exclusively popped out of
-                    // the depot, so no live allocation or thread cache references this slab.
-                    let reserved = unsafe { (*record).reserved };
-                    if reserved == GRANULARITY
-                        && self.page_call(|| unsafe {
-                            VirtualFree(base.add(PAGE).cast(), GRANULARITY - PAGE, MEM_DECOMMIT)
-                        }) != 0
-                    {
-                        // SAFETY: page 0 stays committed and we hold exclusive ownership of slab.
-                        let previous = unsafe { (*record).committed.swap(PAGE, Ordering::Relaxed) };
-                        self.pages.cold[0].push(base);
-                        reclaimed += previous.saturating_sub(PAGE);
+                    let all_warm = blocks[at..end].iter().all(|&entry| entry & 1 == 0);
+                    if all_warm && empty_slabs_kept < WARM_EMPTY_SLABS {
+                        empty_slabs_kept += 1;
+                        if page_class {
+                            for pos in at..end {
+                                blocks[kept_end] = blocks[pos];
+                                kept_end += 1;
+                            }
+                        } else if runs.try_reserve(1).is_ok() {
+                            runs.push((end - at, at, end));
+                        } else {
+                            for index in at..end {
+                                self.depot.keep_single(class, blocks[index] as *mut u8);
+                            }
+                        }
                         freed = true;
+                    } else {
+                        let base = slab as *mut u8;
+                        #[expect(
+                            clippy::cast_ptr_alignment,
+                            reason = "reservations and slabs start on 64 KiB allocation-granularity boundaries"
+                        )]
+                        let record = base.cast::<Record>();
+                        // SAFETY: every block in this 64 KiB slab has been exclusively popped out of
+                        // the depot, so no live allocation or thread cache references this slab.
+                        let reserved = unsafe { (*record).reserved };
+                        if reserved == GRANULARITY
+                            && self.page_call(|| unsafe {
+                                VirtualFree(base.add(PAGE).cast(), GRANULARITY - PAGE, MEM_DECOMMIT)
+                            }) != 0
+                        {
+                            // SAFETY: page 0 stays committed and we hold exclusive ownership of slab.
+                            let previous =
+                                unsafe { (*record).committed.swap(PAGE, Ordering::Relaxed) };
+                            self.pages.cold[0].push(base);
+                            reclaimed += previous.saturating_sub(PAGE);
+                            freed = true;
+                        }
                     }
                 }
                 if !freed {

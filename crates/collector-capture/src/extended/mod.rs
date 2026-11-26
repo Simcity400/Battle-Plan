@@ -177,6 +177,9 @@ macro_rules! spool_inputs {
         // SAFETY: Owning spool publication path converts this frame's nuclear-strike events once.
         unsafe { $captured.table_inputs() }
     };
+    (projects, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
     (naval_bases, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
@@ -2294,6 +2297,10 @@ impl Captured {
 
     pub fn technology_carried_owners(&self) -> Option<&[u32]> {
         self.governance.technology_carried_owners()
+    }
+
+    pub fn project_row_owners(&self) -> std::io::Result<Vec<u32>> {
+        self.projects.project_row_owners()
     }
 
     #[expect(
