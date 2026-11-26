@@ -8,6 +8,7 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
 };
 
 mod changes;
@@ -157,8 +158,12 @@ pub enum SeekResult {
 use replay_recording::columnar_frames::Open;
 pub use replay_columnar::container::Revision;
 
+type RowLifetimes = Arc<Vec<(u128, i64, i64)>>;
+type LifetimeSlot = Arc<OnceLock<RowLifetimes>>;
+
 pub struct Replay {
     recording: Recording,
+    lifetimes: Mutex<HashMap<(u32, replay_data::rows::TableId), LifetimeSlot>>,
     path: Option<PathBuf>,
     pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
@@ -315,6 +320,7 @@ impl Replay {
         let format = FormatVersion::read(recording.format())?;
         Ok(Self {
             recording,
+            lifetimes: Mutex::default(),
             path,
             format,
             campaign_id,
@@ -347,6 +353,21 @@ impl Replay {
 
     pub fn recording(&self) -> &Recording {
         &self.recording
+    }
+
+    pub fn row_lifetimes<G>(&self, run: u32, table: replay_data::rows::TableId, on_read: impl FnOnce() -> G) -> io::Result<RowLifetimes> {
+        let slot = Arc::clone(self.lifetimes.lock().unwrap_or_else(PoisonError::into_inner).entry((run, table)).or_default());
+        if let Some(rows) = slot.get() {
+            return Ok(Arc::clone(rows));
+        }
+        let _read = on_read();
+        let mut rows = replay_lanes::lanes::lifetimes(&self.recording, run, table)?;
+        rows.shrink_to_fit();
+        Ok(Arc::clone(slot.get_or_init(|| Arc::new(rows))))
+    }
+
+    pub fn forget_row_lifetimes(&self) {
+        self.lifetimes.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     pub fn cursor(&self, source: &str, capture: u32) -> Option<&Cursor> {

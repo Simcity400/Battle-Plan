@@ -1,7 +1,7 @@
 
 use replay_recording::columnar_frames::Recording;
-use replay_data::rows::TableId;
-use std::{cell::Cell, io, time::Instant};
+use replay_data::rows::{TABLE_COUNT, TableId};
+use std::{cell::Cell, io, sync::{Arc, LazyLock}, time::Instant};
 
 thread_local! {
     static STORAGE: Cell<u64> = const { Cell::new(0) };
@@ -10,20 +10,33 @@ thread_local! {
     static CALLS: Cell<u64> = const { Cell::new(0) };
 }
 
-pub fn storage<T>(read: impl FnOnce() -> T) -> T {
+struct StorageRead {
+    depth: u32,
+    started: Option<Instant>,
+}
+
+impl Drop for StorageRead {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            STORAGE.set(STORAGE.get().wrapping_add(started.elapsed().as_nanos() as u64));
+        }
+        DEPTH.set(self.depth);
+    }
+}
+
+fn storage_read() -> StorageRead {
     let depth = DEPTH.get();
     DEPTH.set(depth + 1);
     #[cfg(test)]
     if depth == 0 {
         CALLS.set(CALLS.get().wrapping_add(1));
     }
-    let started = (depth == 0).then(Instant::now);
-    let out = read();
-    if let Some(started) = started {
-        STORAGE.set(STORAGE.get().wrapping_add(started.elapsed().as_nanos() as u64));
-    }
-    DEPTH.set(depth);
-    out
+    StorageRead { depth, started: (depth == 0).then(Instant::now) }
+}
+
+pub fn storage<T>(read: impl FnOnce() -> T) -> T {
+    let _read = storage_read();
+    read()
 }
 
 pub fn outside<T>(work: impl FnOnce() -> T) -> T {
@@ -54,13 +67,25 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
     storage(|| replay_lanes::lanes::lifetimes(recording, run, table))
 }
 
+pub fn recorded_lifetimes(replay: &replay::campaign::Replay, run: u32, table: TableId) -> io::Result<Arc<Vec<(u128, i64, i64)>>> {
+    declared(table)?;
+    replay.row_lifetimes(run, table, storage_read)
+}
+
 pub fn presences(recording: &Recording, run: u32, table: TableId, keys: (u128, u128), from: i64, to: i64) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
     declared(table)?;
     storage(|| replay_lanes::lanes::presences(recording, run, table, keys, from, to))
 }
 
 pub fn declared(table: TableId) -> io::Result<()> {
-    if dashboard_declare::summaries()?.iter().any(|(held, _)| *held == table.index()) {
+    static DECLARED: LazyLock<io::Result<[bool; TABLE_COUNT]>> = LazyLock::new(|| {
+        let mut tables = [false; TABLE_COUNT];
+        for (table, _) in dashboard_declare::summaries()? {
+            tables[table] = true;
+        }
+        Ok(tables)
+    });
+    if DECLARED.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))?[table.index()] {
         return Ok(());
     }
     Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{table:?} keeps no lifetimes: no series, log or lifetimes declaration summarizes it")))

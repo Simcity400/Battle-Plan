@@ -665,6 +665,14 @@ fn a_reader_while_its_recording_is_appended_reads_its_own_revision() {
     let folder = Folder::new("appended");
     let mut records = vec![session(), branch(1, 100)];
     records.extend(hours(1, 100..=1_539, 19));
+    for record in &mut records {
+        if let Spooled::Frame(frame) = record
+            && frame.hour >= 820
+        {
+            let country = replay_data::rows::CountryRow { id: 71, canonical_slot: 7, tag: b"AAA".to_vec(), ..Default::default() };
+            frame.tables[TableId::Countries.index()] = TableUpdate::Snapshot(TableRows::Countries(vec![country]));
+        }
+    }
     records.push(detach(1_539));
     fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records.clone()], true).unwrap();
     let taken = std::cell::Cell::new(0_u32);
@@ -677,6 +685,9 @@ fn a_reader_while_its_recording_is_appended_reads_its_own_revision() {
     assert_eq!(progress, Progress::Paused);
     drop(writer);
     let early = saved(&folder.recording());
+    let early_replay = crate::campaign::Replay::open_path(&folder.recording()).unwrap();
+    let early_rows = early_replay.row_lifetimes(0, TableId::Countries, || ()).unwrap();
+    assert!(early_rows.is_empty());
     assert_eq!(recorded(&early), 720);
     let first_block = early.block(0, 0).unwrap();
     let (_, _, progress) = folder.write(0, &mut Deciding::everything(true));
@@ -684,6 +695,14 @@ fn a_reader_while_its_recording_is_appended_reads_its_own_revision() {
     assert_eq!(early.run(0).unwrap().directory().blocks(), 1);
     assert_eq!(early.block(0, 0).unwrap(), first_block);
     let later = saved(&folder.recording());
+    let later_replay = crate::campaign::Replay::open_path(&folder.recording()).unwrap();
+    let mut nested = None;
+    let later_rows = later_replay.row_lifetimes(0, TableId::Countries, || {
+        nested = Some(later_replay.row_lifetimes(0, TableId::Countries, || ()).unwrap());
+    }).unwrap();
+    assert_eq!(*later_rows, [(71, 820, 1_539)]);
+    assert!(Arc::ptr_eq(&later_rows, &nested.unwrap()));
+    assert!(Arc::ptr_eq(&early_rows, &early_replay.row_lifetimes(0, TableId::Countries, || panic!("old revision was already read")).unwrap()));
     assert_eq!(recorded(&later), 1_440);
     assert_eq!(later.block(0, 0).unwrap(), first_block);
 }
