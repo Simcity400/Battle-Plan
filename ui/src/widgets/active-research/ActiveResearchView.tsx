@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import type { FamilyViewProps } from '../../dashboard/definitions';
-import type { WidgetBase } from '../../dashboard/model';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useGate } from '../../dashboard/regionGate';
+import { at, SPEC } from '../../dashboard/regionTime';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import { useArtResolutions } from '../../families/art/react.ts';
@@ -22,14 +22,14 @@ const NO_HANDLES: readonly ArtHandle[] = [];
 export default function ActiveResearchView(props: FamilyViewProps) {
   const { widget, runtime, active } = props;
   const hostRef = useRef<HTMLDivElement>(null);
-  const history = useResearchReply(widget, runtime, active);
-  const { track, tag, data } = history;
   const [opened, setOpened] = useState<{
     readonly on: string;
     readonly key: string;
     readonly meta: ActiveResearchRowMeta;
     readonly hour: number;
   } | null>(null);
+  const history = useResearchReply(widget, runtime, active, true, opened?.meta.country);
+  const { track, tag, data } = history;
 
   const onActivate = useCallback((action: InstalledAction) => {
     if (!track || !tag || !action.meta || typeof action.meta !== 'object') return;
@@ -39,12 +39,9 @@ export default function ActiveResearchView(props: FamilyViewProps) {
   }, [track, tag]);
 
   const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
-  const detailWidget = useMemo<WidgetBase>(() => {
-    if (!shown || !track) return widget;
-    const offset = shown.hour - track.branch.firstHour;
-    return { ...widget, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
-  }, [shown, track, widget]);
-  const gate = useGate(runtime, widget);
+  const detailTag = shown ? shown.meta.country ?? tag : null;
+  const action = useMemo(() => shown ? at(shown.hour) : SPEC, [shown?.hour]);
+  const gate = useGate(runtime, widget, action, active && !!shown);
   const detailSlots = useMemo(
     () => (shown && data ? researchAt(data.history, shown.hour) : []),
     [shown, data],
@@ -69,14 +66,14 @@ export default function ActiveResearchView(props: FamilyViewProps) {
       onActivate={onActivate}
     /> : null}
     <DetailWindowHost
-      open={Boolean(shown && track && tag)}
-      subject={shown ? `${tag}:${shown.meta.token}` : null}
+      open={Boolean(shown && track && detailTag)}
+      subject={shown && detailTag ? `${detailTag}:${shown.meta.token}` : null}
       hour={shown?.hour ?? null}
       title={shown?.meta.name ?? 'Research'}
       anchor={hostRef}
       onClose={() => setOpened(null)}
     >
-      {shown && track && tag && (
+      {shown && track && detailTag && (
         <div className="dossier">
           <header className="dossier-hero">
             <span className="dossier-art">{detailIcon ? <img src={detailIcon} alt="" /> : <ArtFallback icon="flask" />}</span>
@@ -87,8 +84,9 @@ export default function ActiveResearchView(props: FamilyViewProps) {
           <div className="dossier-body">
             <TechnologyEffects
               runtime={runtime}
-              widget={detailWidget}
-              tag={tag}
+              widget={widget}
+              tag={detailTag}
+              hour={shown.hour}
               token={shown.meta.token}
               databaseIndex={shown.meta.databaseIndex}
               active={active}
@@ -100,7 +98,7 @@ export default function ActiveResearchView(props: FamilyViewProps) {
                     client={runtime.client}
                     gate={gate}
                     track={track}
-                    tag={tag}
+                    tag={detailTag}
                     hour={shown.hour}
                     history={data.history}
                     slots={detailSlots}

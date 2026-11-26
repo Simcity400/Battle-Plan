@@ -20,9 +20,10 @@ function researchTarget(widget: WidgetBase, runtime: WidgetRuntime) {
   return { track, tag };
 }
 
-export function useResearchReply(widget: WidgetBase, runtime: WidgetRuntime, active: boolean, covered = true) {
+export function useResearchReply(widget: WidgetBase, runtime: WidgetRuntime, active: boolean, covered = true, countryOverride?: string | null) {
   const { track, tag } = researchTarget(widget, runtime);
-  const request = track && tag && covered ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, country: countryFromKey(tag) } }) : null;
+  const country = countryOverride ?? tag;
+  const request = track && country && covered ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, country: countryFromKey(country) } }) : null;
   return { track, tag, ...useProduct<ResearchData>(runtime.client, request, active, validateResearchReply, track?.source) };
 }
 

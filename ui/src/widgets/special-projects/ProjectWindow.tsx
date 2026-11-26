@@ -1,5 +1,6 @@
 import { productRequest } from '../../dashboard/request.ts';
 import { useGate, type Gate } from '../../dashboard/regionGate';
+import { at as atHour } from '../../dashboard/regionTime';
 import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
@@ -99,7 +100,8 @@ function Rewards({ hour, match, run, ...asked }: Asked & { hour: number; match: 
   const read = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effectsRead(hour, project, effects.data);
   const state = read ?? (effects.data?.output ? null : effects.data?.unavailable ?? null);
   const options = read ?? (effects.data ? optionEffects(project, effects.data) : 'Loading effects…');
-  const [opened, setOpened] = useState<EntityLink | null>(null);
+  const [opened, setOpened] = useState<{ link: EntityLink; hour: number } | null>(null);
+  const openAtRead = (link: EntityLink) => setOpened({ link, hour: asked.readHour });
   const at = `j:${project.owner}:${project.id}`;
   return <div className="project-window-sections">
     {!done && <section className="dossier-section">
@@ -109,13 +111,13 @@ function Rewards({ hour, match, run, ...asked }: Asked & { hour: number; match: 
         {project.pending.description && <p className="dossier-note">{project.pending.description}</p>}
         {project.pending.unavailable && <p className="dossier-missing">{project.pending.unavailable}</p>}
         <div className="project-page-options">{project.pending.options.map((option, index) => <div className="project-page-option" key={index}>
-          <h5><Name label={option.label} /></h5><Output value={typeof options === 'string' ? null : options[index]} state={typeof options === 'string' ? options : null} onOpen={setOpened} /></div>)}</div>
+          <h5><Name label={option.label} /></h5><Output value={typeof options === 'string' ? null : options[index]} state={typeof options === 'string' ? options : null} onOpen={openAtRead} /></div>)}</div>
       </>}
     </section>}
-    <Iterations {...asked} project={project} choices={match.choices} run={run} onOpen={setOpened} />
+    <Iterations {...asked} project={project} choices={match.choices} run={run} onOpen={(link, iterationHour) => setOpened({ link, hour: iterationHour })} />
     <section className="dossier-section">
       <h4>Project output</h4>
-      <Output value={effects.data?.output} state={state} onOpen={setOpened} />
+      <Output value={effects.data?.output} state={state} onOpen={openAtRead} />
     </section>
     <details className="dossier-section project-page-variables">
       <summary>Project variables <Painted at={`${at}:read`} /></summary>
@@ -123,14 +125,15 @@ function Rewards({ hour, match, run, ...asked }: Asked & { hour: number; match: 
         : <dl>{project.variables.map((variable, index) => <div key={index}><dt>{variable.name}</dt><dd><Painted at={`${at}:var:${index}`} /></dd></div>)}</dl>}
       {project.seed !== null && <p className="dossier-note">Variable random seed <Painted at={`${at}:seed`} /></p>}
     </details>
-    <OpenedLink runtime={runtime} widget={widget} tag={tag} active={active} opened={opened} onClose={() => setOpened(null)} />
+    <OpenedLink runtime={runtime} widget={widget} tag={tag} hour={opened?.hour ?? asked.readHour} active={active} opened={opened?.link ?? null} onClose={() => setOpened(null)} />
   </div>;
 }
 
-function Iterations({ runtime, widget, tag, active, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: ProjectStatus;
-  onOpen: (link: EntityLink) => void }) {
+function Iterations({ runtime, widget, tag, active, readHour, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: ProjectStatus;
+  onOpen: (link: EntityLink, hour: number) => void }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const gate = useGate(runtime, widget);
+  const action = useMemo(() => atHour(readHour), [readHour]);
+  const gate = useGate(runtime, widget, action, active);
   const listed = (shown: readonly ProjectChoice[]) => <ol className="project-window-timeline">{shown.map(choice => <li key={choice.ordinal}>
     <time>{dayLabel(choice.date)}</time>
     <p className="project-window-choice-name"><Name label={choice.reward} /><span className="project-window-option"> · <Name label={choice.option} /></span></p>
@@ -148,16 +151,15 @@ function Iterations({ runtime, widget, tag, active, project, choices, run, onOpe
 }
 
 function IterationOutput({ runtime, gate, track, tag, active, project, choice, onOpen }: Pick<Asked, 'runtime' | 'tag' | 'active'> & {
-  gate: Pick<Gate, 'recorded'>; track: BoundTrack | undefined; project: ProjectRuntimeDetails; choice: ProjectChoice; onOpen: (link: EntityLink) => void;
+  gate: Pick<Gate, 'recorded'>; track: BoundTrack | undefined; project: ProjectRuntimeDetails; choice: ProjectChoice; onOpen: (link: EntityLink, hour: number) => void;
 }) {
   const at = gate.recorded(choice.date), read = gate.recorded(project.historyReadHour);
-  const recorded = !!track && at !== null;
   const request = useMemo(() => track && at !== null && read !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'special-project-iteration',
     params: { branchId: track.branch.id, hour: at, country: countryFromKey(tag), owner: project.owner, project: project.id, ordinal: choice.ordinal, read } }) : null,
   [track, at, read, choice.ordinal, tag, project.owner, project.id]);
   const validate = useMemo(() => (value: unknown) => validateProjectIteration(value, choice.date), [choice.date]);
   const { data, error } = useProduct<SpecialProjectIteration>(runtime.client, request, active, validate, track?.source);
-  if (!recorded) return <p className="project-window-withheld" title="This iteration's hour is not recorded in this branch.">Not recorded</p>;
+  if (!track || at === null) return <p className="project-window-withheld" title="This iteration's hour is not recorded in this branch.">Not recorded</p>;
   if (error) return <p className="project-window-withheld" title={error.message}>Not recorded</p>;
   if (!data) return null;
   const refusals = Object.keys(data.refusals);
@@ -165,9 +167,9 @@ function IterationOutput({ runtime, gate, track, tag, active, project, choice, o
   if (data.noChanges) return <div className="project-window-output"><p className="game-text">No changes</p></div>;
   return <>
     {data.sections.length > 0 && <GameIcons runs={data.sections.flatMap(section => [...section.heading ?? [], ...section.runs])}>
-      <div className="project-window-output">{data.sections.map((section, at) => <div key={at}>
+      <div className="project-window-output">{data.sections.map((section, index) => <div key={index}>
         {section.heading && <span className="project-window-output-label"><GameRuns runs={trimLabel(section.heading)} /></span>}
-        <GameText runs={trimValue(section.runs)} onOpen={onOpen} />
+        <GameText runs={trimValue(section.runs)} onOpen={link => onOpen(link, at)} />
       </div>)}</div></GameIcons>}
     {refusals.length > 0 && <p className="project-window-withheld" title={refusals.join('\n')}>Part of this reward can't be shown</p>}
   </>;

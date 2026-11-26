@@ -15,10 +15,12 @@ import { activeSlots, openedResearch, type OpenedResearch } from './activeResear
 export interface ActiveResearchProjectionOptions {
   readonly history: ResearchData | undefined;
   readonly countryName: string;
+  readonly country?: string | null;
 }
 
 export interface ActiveResearchRowMeta {
   readonly opened: OpenedResearch;
+  readonly country: string | null;
   readonly name: string;
   readonly slot: number;
   readonly token: string;
@@ -209,6 +211,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
       const opened = openedResearch(item);
       const meta: ActiveResearchRowMeta = {
         opened,
+        country: options.country ?? null,
         name,
         slot: item.slot.index,
         token: item.token,
@@ -326,6 +329,7 @@ export const activeResearchDeclaration: MeterWidgetDeclaration<ActiveResearchPro
   projectionOptions: ctx => ({
     history: ctx.aux,
     countryName: ctx.countryName,
+    country: ctx.countrySubject ?? ctx.countryTag,
   }),
   jumpToDate: true,
 };
