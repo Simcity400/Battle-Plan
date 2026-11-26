@@ -37,10 +37,14 @@ pub fn character_script_token_in<'a>(
     lexical: Rowset<'a, LexicalTokenRow>,
 ) -> Option<&'a str> {
     let token = u32::try_from(character.name_token_id).ok()?;
+    character_script_literal(token, spelling(&lexical, token))
+}
+
+pub fn character_script_literal(token: u32, literal: Option<&[u8]>) -> Option<&str> {
     let missing = || {
         crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None)
     };
-    let literal = crate::triggers::refusal::reference(spelling(&lexical, token), token != 0, missing)?;
+    let literal = crate::triggers::refusal::reference(literal, token != 0, missing)?;
     crate::triggers::refusal::reference(std::str::from_utf8(literal).ok(), token != 0, missing)
 }
 
