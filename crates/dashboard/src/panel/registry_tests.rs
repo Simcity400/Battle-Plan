@@ -109,6 +109,11 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
             assert!(read.fresh || !seek, "{name}: a seed reads its live values at its hour");
             let packet = delivery.packet((0, 1, 1), 1, hour, seek, &read.value);
             let mut expected = shown(&cold, read.fresh);
+            if name == "special-projects" && let Ok(data) = &*read.value {
+                let through = i32::try_from(data["shown"]["through"].as_i64().unwrap()).unwrap();
+                assert!(through >= hour);
+                expected = (exact.cold)(through, &false.into());
+            }
             if name == "territory-share" && hour == 101 {
                 assert!(!packet.changed, "unchanged ownership confirms the hour 100 reply");
                 let reply = expected.as_mut().unwrap();

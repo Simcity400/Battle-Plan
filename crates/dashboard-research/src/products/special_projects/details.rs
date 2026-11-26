@@ -366,9 +366,9 @@ impl Reads<'_, '_> {
     }
 
     fn held_since(&self, owner: u32, from: i32) -> Result<(), Withheld> {
-        let held_from = super::held_from(self.query, self.tag, self.holder.slot, self.holder.id, self.hour).filter(|&since| since <= from).ok_or(Withheld::Tag)?;
+        super::held_from(self.query, self.tag, self.holder.slot, self.holder.id, self.hour).filter(|&since| since <= from).ok_or(Withheld::Tag)?;
         let links = self.run_links().ok_or(Withheld::Owner)?;
-        super::Custody::new(&links, self.holder.slot, held_from, self.hour).held(owner, from, self.hour).then_some(()).ok_or(Withheld::Owner)
+        (from <= self.hour && links.within(owner, from, self.hour).all(|(slot, _, _)| slot == Some(self.holder.slot))).then_some(()).ok_or(Withheld::Owner)
     }
 
 
