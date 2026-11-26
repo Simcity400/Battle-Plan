@@ -344,6 +344,51 @@ fn the_feed_index_warmed_at_open_holds_the_branch_until_forgotten() {
 }
 
 #[test]
+fn a_family_failing_for_other_than_damage_or_a_refusal_is_read_again_at_the_next_request_and_panel_read() {
+    use super::{event_feed_dated_panel, index::{FAULT, Feed, feed_for}};
+    use dashboard_base::{products::LoadContext, test_fixtures::{CAMPAIGN, records, source}};
+    use replay::campaign::Replay;
+    use std::{io::ErrorKind, sync::{Arc, atomic::AtomicBool}};
+    let frames = (100..=104).map(|hour| source(1, hour, Some(1))).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "feed-unsettled".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let (context, cancel) = (LoadContext { content: None }, AtomicBool::new(false));
+    let feed = || feed_for(&source, &query, 1, &context, None, &cancel).unwrap();
+    let refused = |feed: &Feed| feed.notices.iter().map(|notice| notice.1.clone()).collect::<Vec<_>>();
+    let failing = |fault: Option<ErrorKind>| {
+        FAULT.with(|held| held.set(fault.map(|kind| ("subjects", kind))));
+        crate::forget(&source);
+    };
+
+    let settled = feed();
+    assert_eq!(refused(&settled), ["projectFinished", "nuclearTypeNames"], "with no content stack, special projects refuse by name");
+    assert!(Arc::ptr_eq(&settled, &feed()), "an explicit refusal is settled, so the feed is kept");
+
+    failing(Some(ErrorKind::InvalidData));
+    let damaged = feed();
+    assert_eq!(refused(&damaged), ["subjects", "projectFinished", "nuclearTypeNames"]);
+    assert!(Arc::ptr_eq(&damaged, &feed()), "recorded damage is settled, so the feed is kept");
+
+    failing(Some(ErrorKind::Interrupted));
+    let interrupted = feed();
+    assert_eq!(refused(&interrupted), ["subjects", "projectFinished", "nuclearTypeNames"], "any other failure refuses that family by name for this reply");
+    assert!(!Arc::ptr_eq(&interrupted, &feed()), "and the feed is not kept, so the next request reads it again");
+
+    let panel = event_feed_dated_panel(&source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["diplomacy"] })).unwrap();
+    let exact = panel.exact().unwrap();
+    let kinds = |hour: i32, seed: bool| {
+        let read = (exact.advance)(hour, seed, &cancel, None);
+        let reply = read.value.as_ref().as_ref().unwrap().clone();
+        (reply["unavailable"].as_array().unwrap().iter().map(|notice| notice["kind"].as_str().unwrap().to_owned()).collect::<Vec<_>>(), reply["nextChange"].as_i64())
+    };
+    assert_eq!(kinds(103, true), (vec!["contentStack".to_owned(), "subjects".to_owned()], Some(104)), "a panel opened on a failed read refuses the family, valid for its own hour only");
+    failing(None);
+    assert_eq!(kinds(102, true).0, ["contentStack"], "after a seek back, the panel prepares the feed again and the family is read");
+    assert_eq!(kinds(103, true).0, ["contentStack"]);
+}
+
+#[test]
 fn incomplete_reads_raise_the_notices_a_walk_of_the_reads_asked_raises() {
     let reads = [(100, 1, 0), (101, 0, 0b11), (102, 2, 0b100), (103, 0, 0), (104, 1, 0b1), (105, 2, 0b1), (106, 0, 0b10000), (107, 0, 0b1)];
     let rows: Vec<(i32, u128, FeedEvent)> = reads
@@ -938,13 +983,15 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         .unwrap()
         .into_timelines(&Default::default())
         .unwrap();
-    let replay_source = dashboard_base::Source::from_replay(
-        dashboard_base::SourceKey { source_id: "feed-tails".into(), revision: "1".into() },
-        "synthetic.battleplan".into(),
-        Arc::new(replay),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    let replay_source = Arc::new(
+        dashboard_base::Source::from_replay(
+            dashboard_base::SourceKey { source_id: "feed-tails".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
     let cancel = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let selection = |tag: &str| Some(vec![Country::Tag(tag.into())]);
