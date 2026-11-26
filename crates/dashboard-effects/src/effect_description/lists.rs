@@ -175,7 +175,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Option<String> {
         let class = self.effect_class(item)?;
         let result = match class.vtable {
-            0x142A31900 => self.scripted_effect(item, scopes, indent),
+            effect_identity::SCRIPTED => self.scripted_effect(item, scopes, indent),
             0x142A321B0 => self.random_effect(item, scopes, indent),
             0x142A32320 => self
                 .random_list(item, scopes)

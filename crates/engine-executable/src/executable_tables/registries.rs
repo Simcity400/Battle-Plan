@@ -1718,15 +1718,24 @@ pub(super) fn pinned_source(image: &PeImage, keywords: &KeywordTables) -> io::Re
         writeln!(text, "    ({class:#018x}, {slot}, {address:#x}),").unwrap();
     }
     text.push_str("];\n\n/// Class-name hashes and virtual tables of the effect classes.\n#[rustfmt::skip]\npub(super) const CLASSES: &[(u64, u64)] = &[\n");
-    for (class, address) in classes {
-        writeln!(text, "    ({class:#018x}, {address:#x}),").unwrap();
-    }
+    write_class_rows(&mut text, classes);
     text.push_str("];\n\n/// Trigger scope masks, by keyword.\n#[rustfmt::skip]\npub(super) const SCOPE_MASKS: &[(u32, u32)] = &[\n");
     for (token, mask) in masks {
         writeln!(text, "    ({token:#x}, {mask:#x}),").unwrap();
     }
     text.push_str("];\n");
     Ok(text)
+}
+
+fn write_class_rows(text: &mut String, classes: impl IntoIterator<Item = (u64, u64)>) {
+    for (class, address) in classes {
+        let identity = match address {
+            super::effect_identity::CONTEXT => "super::super::effect_identity::CONTEXT".to_owned(),
+            super::effect_identity::SCRIPTED => "super::super::effect_identity::SCRIPTED".to_owned(),
+            _ => format!("{address:#x}"),
+        };
+        writeln!(text, "    ({class:#018x}, {identity}),").unwrap();
+    }
 }
 
 fn constant_return(image: &PeImage, function: u32) -> io::Result<u32> {
