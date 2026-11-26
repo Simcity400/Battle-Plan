@@ -438,7 +438,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             let members = groups.members(group, hour)?;
             window = Some((members.from, members.until));
             if let Some(reason) = members.refused {
-                let (first_hour, last_hour) = bounds(None, window)?;
+                let (first_hour, last_hour) = bounds(Some(&[]), window)?;
                 return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(reason), warnings: Vec::new() });
             }
             members.tags.into_iter().map(Country::from).collect()
