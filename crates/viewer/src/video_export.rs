@@ -22,8 +22,8 @@ use std::{
 use video_export::{
     AudioConfig, BackendChoice, Quality, VideoConfig, VideoSink,
     schedule::{
-        CutNotice, FrameKind, OwnedFrameCursor, RecordedStretch, ScheduleRequest, ScheduledFrame,
-        StretchJoin, UnheldGap, build_schedule,
+        CutNotice, FrameKind, FrameSchedule, OwnedFrameCursor, RecordedStretch, ScheduleRequest,
+        ScheduledFrame, StretchJoin, UnheldGap, build_schedule,
     },
 };
 use viewer_foundation::perspective::Choice;
@@ -1095,7 +1095,7 @@ impl VideoSession {
         } else {
             Vec::new()
         };
-        if let VideoMode::Frames { tx, .. } = &self.mode {
+        if matches!(self.mode, VideoMode::Frames { .. }) {
             let warnings = self.drain_frame_warnings();
             let VideoMode::Frames { tx, .. } = &self.mode else {
                 unreachable!()
@@ -1105,7 +1105,7 @@ impl VideoSession {
                 audio,
                 warnings,
             }))
-                .map_err(|_| "Embedded map consumer closed".to_owned())?;
+            .map_err(|_| "Embedded map consumer closed".to_owned())?;
         }
         Ok(())
     }

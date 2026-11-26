@@ -1177,8 +1177,7 @@ fn select_span_sample(first: i32, last: i32, target: i32, step_hours: f64) -> (u
     let delta = (f64::from(clamped) - f64::from(first)).max(0.0);
     let k_floor = (delta / step_hours)
         .floor()
-        .max(0.0)
-        .min((total_steps.saturating_sub(1)) as f64) as u64;
+        .clamp(0.0, (total_steps.saturating_sub(1)) as f64) as u64;
     let mut k = k_floor;
     while k < total_steps && eval_span_step(first, last, k, step_hours).0 < clamped {
         k += 1;
@@ -1232,9 +1231,7 @@ fn build_ease_seeds(
         } else {
             2500.0
         };
-        if rank_hold_ms > history_ms {
-            history_ms = rank_hold_ms;
-        }
+        history_ms = history_ms.max(rank_hold_ms);
     }
     let lookback = ((history_ms * f64::from(safe_fps)) / 1000.0).ceil().max(1.0) as u64;
     let window_min = selected_local.saturating_sub(lookback + 1);

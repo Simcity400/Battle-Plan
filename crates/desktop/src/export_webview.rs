@@ -1104,7 +1104,7 @@ fn embedded_map_render_size(rect: &ExportMapRect) -> (u32, u32) {
     };
     let even = |v: u32| {
         let clamped = v.max(16);
-        if clamped % 2 == 0 { clamped } else { clamped + 1 }
+        if clamped.is_multiple_of(2) { clamped } else { clamped + 1 }
     };
     (even(scaled_w), even(scaled_h))
 }
