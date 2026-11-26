@@ -1652,7 +1652,7 @@ mod tests {
             }]),
         );
         let defines = content_reader_defines::defines::Defines::new().unwrap();
-        defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_MIN_INTEL_TO_SHOW_BASIC_TEMPLATE_INFO=0.3,ARMY_MIN_INTEL_RATIO_NEEDED_FOR_DISPLAYING_FAKE_ENEMY_INTEL_IN_LEDGER=0.7,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.4,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=0.5}} ").unwrap();
+        defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_MIN_INTEL_TO_SHOW_BASIC_TEMPLATE_INFO=0.35,ARMY_MIN_INTEL_RATIO_NEEDED_FOR_DISPLAYING_FAKE_ENEMY_INTEL_IN_LEDGER=0.7,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.4,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=0.5}} ").unwrap();
         let units = units::Content::load(
             &defines,
             Ok(&content_reader_script::sub_units::SubUnits::default()),

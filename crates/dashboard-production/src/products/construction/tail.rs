@@ -1045,7 +1045,7 @@ mod tests {
             defines.load("common/defines/00_defines.lua", text.as_bytes()).unwrap();
             defines
         };
-        assert_eq!(factory_cap(Ok(&defines("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }"))), Ok(20), "a mod's cap, not a built-in one");
+        assert_eq!(factory_cap(Ok(&defines("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 37 } }"))), Ok(37), "a mod's cap, not a built-in one");
         for (text, why) in [
             ("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 2.5 } }", "is 2.5, not a whole number from 1 to 2147483647"),
             ("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 0 } }", "is 0, not a whole number from 1 to 2147483647"),

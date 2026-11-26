@@ -16,9 +16,9 @@ fn naval_hitmiss_keeps_declared_rows_separate_from_events_and_entity_data() {
             state = { name = attack
                 event = { time = 9 particle = muzzle }
                 game_data = {
-                    hitmiss_effect = { time = 0.6 type = big }
-                    hitmiss_effect = { time = 0.1 type = small }
-                    hitmiss_effect = { time = 0.1 type = small }
+                    hitmiss_effect = { time = 0.731 type = big }
+                    hitmiss_effect = { time = 0.243 type = small }
+                    hitmiss_effect = { time = 0.243 type = small }
                 }
                 game_data = { hitmiss_effect = { type = big } }
             }
@@ -29,9 +29,9 @@ fn naval_hitmiss_keeps_declared_rows_separate_from_events_and_entity_data() {
     assert_eq!(
         state.naval_hitmiss_effects,
         [
-            NavalHitMissEffect { time: 0.6, kind: 1 },
-            NavalHitMissEffect { time: 0.1, kind: 0 },
-            NavalHitMissEffect { time: 0.1, kind: 0 },
+            NavalHitMissEffect { time: 0.731, kind: 1 },
+            NavalHitMissEffect { time: 0.243, kind: 0 },
+            NavalHitMissEffect { time: 0.243, kind: 0 },
             NavalHitMissEffect { time: 0., kind: 1 },
         ]
     );

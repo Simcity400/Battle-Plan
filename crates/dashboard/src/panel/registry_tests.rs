@@ -40,7 +40,7 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
     let root = std::env::temp_dir().join(format!("dated-products-{}", uuid::Uuid::new_v4()));
     let defines = root.join("common/defines");
     std::fs::create_dir_all(&defines).unwrap();
-    std::fs::write(defines.join("test.lua"), "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MAX_RAILWAY_LEVEL=5}}").unwrap();
+    std::fs::write(defines.join("test.lua"), "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NGame={MAX_SCRIPTED_LOC_RECURSION=23},NSupply={MAX_RAILWAY_LEVEL=7}}").unwrap();
     let frames = [100, 101, 102, 103, 110, 111].map(|hour| {
         let mut frame = source(1, hour, None);
         for table in TableId::ALL {

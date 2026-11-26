@@ -233,7 +233,7 @@ fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
     let (mut catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MIN_TRAIN_REQUIREMENT=2}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NSupply={MIN_TRAIN_REQUIREMENT=3}}",
         ),
         ("common/terrain/test.txt", "categories={zeta={} alpha={}}"),
     ]);
@@ -789,7 +789,7 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
     let (_, base) = folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/units/names_divisions/a.txt",

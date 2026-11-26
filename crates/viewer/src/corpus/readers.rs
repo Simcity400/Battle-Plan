@@ -1565,7 +1565,7 @@ mod tests {
         defines
             .load(
                 "fixture.lua",
-                b"NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 } }",
+                b"NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 13 } }",
             )
             .unwrap();
         let mut reads = 0;

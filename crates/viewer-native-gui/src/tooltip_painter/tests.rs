@@ -325,11 +325,11 @@ fn negative_delays_follow_the_native_comparisons() {
             b"NDefines = {
                 NInterface = { TOOLTIP_SCREEN_LEFT_OFFSET_X = 0, TOOLTIP_SCREEN_TOP_OFFSET_Y = 0,
                     TOOLTIP_SCREEN_RIGHT_OFFSET_X = 0, TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 0 },
-                NGraphics = { TOOLTIP_SHOW_DELAY = -1, TOOLTIP_DELAYED_DELAY = -0.5, TOOLTIP_HIDE_DELAY = 0.05 } }",
+                NGraphics = { TOOLTIP_SHOW_DELAY = -1, TOOLTIP_DELAYED_DELAY = -0.5, TOOLTIP_HIDE_DELAY = 0.04 } }",
         )
         .unwrap();
     let timing = TooltipDefines::read(&defines).unwrap().timing;
-    assert_eq!(timing, [-1.0, -0.5, 0.05]);
+    assert_eq!(timing, [-1.0, -0.5, 0.04]);
     let clock = Instant::now();
     let start = clock + Duration::from_secs(2);
     let mut hover = HoverState::default();

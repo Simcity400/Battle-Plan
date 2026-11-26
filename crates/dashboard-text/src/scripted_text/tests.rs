@@ -84,7 +84,7 @@ const LOCALISATION: &str = concat!(
     " fascism:0 \"Fascism\"\n",
     " fascism_noun:0 \"Fascist\"\n",
     " GER_fascism_party:0 \"Fixture Party\"\n",
-    " GER_fascism_party_long:0 \"National Socialist Party\"\n",
+    " GER_fascism_party_long:0 \"Long Fixture Party Name\"\n",
     " MOD_idea:0 \"[ROOT.GetAdjectiveCap] spirit of [Root.Overlord.GetNameDef]\"\n",
 );
 
@@ -106,7 +106,7 @@ pub(super) fn catalogue_with(
         ("localisation/replace/extra_l_english.yml", extra.as_str()),
         (
             "common/defines/00_defines.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
         ("common/scripted_localisation/mod.txt", scripted),
     ];
@@ -139,7 +139,7 @@ fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cache
             ),
             (
                 "common/defines/map.lua",
-                "NDefines.NBuildings = { MAX_BUILDING_LEVELS = 15 }",
+                "NDefines.NBuildings = { MAX_BUILDING_LEVELS = 13 }",
             ),
             (
                 "history/states/mod.txt",
@@ -467,7 +467,7 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
     );
     assert_eq!(
         expand("[ROOT.GetRulingPartyLong]", &ger).as_deref(),
-        Ok("National Socialist Party")
+        Ok("Long Fixture Party Name")
     );
     assert_eq!(expand("[ROOT.GetFlag]", &ger).as_deref(), Ok("\u{12}GER"));
     assert_eq!(
@@ -679,7 +679,7 @@ fn a_tag_alias_is_resolved_or_refused_by_name() {
         ("localisation/mod_l_english.yml", LOCALISATION),
         (
             "common/defines/00_defines.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
         ("common/scripted_localisation/mod.txt", SCRIPTED),
         (
@@ -885,7 +885,7 @@ fn scripted_faction_names_use_the_recorded_template_and_copy_literals() {
         ),
         (
             "common/defines/00_defines.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
     ]);
     let mut frame = frame();
@@ -1026,7 +1026,7 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
         ("localisation/mod_l_english.yml", LOCALISATION),
         (
             "common/defines/synthetic.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/ideologies/synthetic.txt",

@@ -183,13 +183,13 @@ mod tests {
         let english = loc(
             "english",
             &[
-                ("FLEET_DOCTRINE", "Fleet in Being"),
+                ("FLEET_DOCTRINE", "Copperline watch"),
                 ("WEATHER_RAIN", "Rain"),
                 ("WEATHER_RAIN_LIGHT", "Rain"),
                 ("TERRAIN_A", "Coast"),
                 ("TERRAIN_B", "Coast"),
                 ("NAMED", "$NAME$ Navy"),
-                ("SMOKE", "Smoke Generators"),
+                ("SMOKE", "Copperline haze"),
                 ("STORMFRONT", "\u{13}weather Stormfront"),
                 ("SQUALL_ICON", "\u{13}weather Squall"),
                 ("SQUALL", "Squall"),
@@ -200,12 +200,12 @@ mod tests {
         let french = loc(
             "french",
             &[
-                ("FLEET_DOCTRINE", "Flotte de dissuasion"),
+                ("FLEET_DOCTRINE", "Vigie du cuivre"),
                 ("WEATHER_RAIN", "Pluie"),
                 ("WEATHER_RAIN_LIGHT", "Pluie"),
                 ("TERRAIN_A", "Côte"),
                 ("TERRAIN_B", "Littoral"),
-                ("SMOKE", "Générateurs de fumée"),
+                ("SMOKE", "Brume du cuivre"),
                 ("STORMFRONT", "\u{13}weather Front orageux"),
                 ("SQUALL_ICON", "\u{13}weather Grain"),
                 ("SQUALL", "Rafale"),
@@ -216,8 +216,8 @@ mod tests {
         let labels = RecordedLabels::from_localisation(&english);
         let text = |label: &str| labels.text(&french, label.as_bytes(), "naval modifier source");
         assert_eq!(
-            text("Fleet in Being").as_deref(),
-            Ok("Flotte de dissuasion")
+            text("Copperline watch").as_deref(),
+            Ok("Vigie du cuivre")
         );
         assert_eq!(text("Rain").as_deref(), Ok("Pluie"));
         assert!(
@@ -226,8 +226,8 @@ mod tests {
                 .contains("2 english localisation readings")
         );
         assert_eq!(
-            text("\u{13}tech_mod Smoke Generators").as_deref(),
-            Ok("\u{13}tech_mod Générateurs de fumée")
+            text("\u{13}tech_mod Copperline haze").as_deref(),
+            Ok("\u{13}tech_mod Brume du cuivre")
         );
         assert_eq!(text("\u{13}tech_mod ").as_deref(), Ok("\u{13}tech_mod "));
         assert!(text("\u{13}tech_mod German Navy").is_err());

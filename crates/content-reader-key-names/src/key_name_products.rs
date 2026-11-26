@@ -177,7 +177,7 @@ mod tests {
         synthetic_game::Installation::new("key-names")
             .file(
                 "common/defines/00_defines.lua",
-                "NDefines = { NMilitary = { MAX_DIVISION_BRIGADE_WIDTH = 5,                  MAX_DIVISION_SUPPORT_WIDTH = 1, MAX_REGIMENTAL_SUPPORT_WIDTH = 2 } }",
+                "NDefines = { NMilitary = { MAX_DIVISION_BRIGADE_WIDTH = 7,                  MAX_DIVISION_SUPPORT_WIDTH = 1, MAX_REGIMENTAL_SUPPORT_WIDTH = 2 } }",
             )
             .file(
                 "common/scripted_triggers/00_base.txt",

@@ -52,7 +52,9 @@ for the workspace crates of a test build, which compile incrementally as a check
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 import hashlib
+import importlib.util
 import io
 import json
 import msvcrt
@@ -923,9 +925,26 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
     raise Failure("Could not claim a VM after three attempts")
 
 
+@cache
+def content_guard():
+    spec = importlib.util.spec_from_file_location("check_game_content", TOOLS / "check-game-content.py")
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    return guard
+
+
+def refuse_content(findings):
+    if findings:
+        raise Refused("Boat would send files that may be game content:\n" + "\n".join(sorted(findings)))
+
+
 def source_manifest(worktree, cache=None):
-    """Hashes of the files Git would send; `cache` keeps them for files whose size and mtime stay put."""
-    names = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
+    """Hashes of the files Git would send. Check new files before claiming a VM."""
+    command = ["git", "-C", str(worktree), "ls-files", "-t", "-z", "--cached", "--others", "--exclude-standard"]
+    names = subprocess.run(command, capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
+    guard = content_guard()
+    rules = guard.allow_rules(worktree)
+    findings = []
     try:
         known = json.loads(cache.read_text()) if cache else {}
     except (FileNotFoundError, ValueError):
@@ -933,7 +952,8 @@ def source_manifest(worktree, cache=None):
     settled = time.time_ns() - 2_000_000_000
     files, kept = {}, {}
     safe_dirs = {worktree}
-    for raw in set(names.split(b"\0")) - {b""}:
+    for entry in set(names.split(b"\0")) - {b""}:
+        tag, _, raw = entry.partition(b" ")
         name = os.fsdecode(raw).replace("\\", "/")
         path = worktree / name
         try:
@@ -950,9 +970,15 @@ def source_manifest(worktree, cache=None):
             parent = parent.parent
         stamp = [status.st_size, status.st_mtime_ns]
         previous = known.get(name)
-        files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
+        if tag == b"?":
+            data = path.read_bytes()
+            findings.extend(guard.offenders([(name, data)], rules))
+            files[name] = hashlib.sha256(data).hexdigest()
+        else:
+            files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
         if status.st_mtime_ns < settled:
             kept[name] = [*stamp, files[name]]
+    refuse_content(findings)
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
         atomic_json(cache, kept)
@@ -1013,14 +1039,22 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     changed = [name for name, digest in manifest.items() if old.get(name) != digest]
     deleted = sorted(old.keys() - manifest.keys())
     say(f"Source: {len(manifest)} files; uploading {len(changed)} changed, removing {len(deleted)}")
+    guard = content_guard()
+    rules = guard.allow_rules(worktree)
+    findings = []
     bundle = io.BytesIO()
     with tarfile.open(fileobj=bundle, mode="w:xz", preset=2) as archive:
         for name in changed:
             data = (worktree / name).read_bytes()
+            issues = guard.offenders([(name, data)], rules)
+            if issues:
+                findings.extend(issues)
+                continue
             manifest[name] = hashlib.sha256(data).hexdigest()
             entry = tarfile.TarInfo("files/" + name)
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
+        refuse_content(findings)
         delta = json.dumps({"changed": {name: manifest[name] for name in changed}, "deleted": deleted, "digest": manifest_digest(manifest)}).encode()
         entry = tarfile.TarInfo("delta.json")
         entry.size = len(delta)

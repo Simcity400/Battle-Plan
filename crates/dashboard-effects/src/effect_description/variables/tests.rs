@@ -510,9 +510,9 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
         ("truck", true, 0, 0),
         ("truck", true, i64::MAX, 70_231_305_300_000),
         ("truck", true, i64::MIN, 70_231_305_300_000),
-        ("train", true, 1, 0),
         ("train", true, 2, 0),
-        ("train", true, 3, 300_000),
+        ("train", true, 3, 0),
+        ("train", true, 4, 400_000),
     ] {
         let TableView::Complete(TableRows::TrainInventory(rows)) =
             &mut *fixture.frame.tables[TableId::TrainInventory.index()]

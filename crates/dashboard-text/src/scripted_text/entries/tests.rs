@@ -6,7 +6,7 @@ pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::cata
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/fixture.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 }, NMilitary = { RIVER_SMALL_START_INDEX = 0, RIVER_SMALL_STOP_INDEX = 6, RIVER_LARGE_STOP_INDEX = 11 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, NBuildings = { MAX_BUILDING_LEVELS = 13 }, NMilitary = { RIVER_SMALL_START_INDEX = 0, RIVER_SMALL_STOP_INDEX = 7, RIVER_LARGE_STOP_INDEX = 12 } }",
         ),
         (
             "common/ideologies/fixture.txt",
@@ -464,7 +464,7 @@ fn state_templates_accept_synthesized_unclaimed_bmp_provinces() {
     stack.write(
         &base,
         "common/defines/fixture.lua",
-        "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 } }",
+        "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 13 } }",
     );
     stack.write(
         &base,

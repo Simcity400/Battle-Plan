@@ -45,7 +45,7 @@ fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
     defines
         .load(
             "test.lua",
-            b"NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+            b"NDefines={NBuildings={MAX_BUILDING_LEVELS=13}}",
         )
         .unwrap();
     let (states, notes) = read(&layers, &defines, &BTreeMap::new()).unwrap();
@@ -114,7 +114,7 @@ fn state_field_recovery_causes_keep_offline_notes() {
         input,
         &Context {
             resource: &|_| Resource::Null,
-            max_building_levels: 15,
+            max_building_levels: 13,
             province_count: 100,
             names: &KeyNames::default(),
         },
@@ -135,7 +135,7 @@ fn attributed(input: &[u8]) -> ParsedStates {
         input,
         &Context {
             resource: &|_| Resource::Null,
-            max_building_levels: 15,
+            max_building_levels: 13,
             province_count: 100,
             names: &KeyNames::default(),
         },
@@ -325,7 +325,7 @@ fn resources_resolve_by_token() {
     assert!(matches!(resources.find(b"bogus"), Resource::Unknown(_)));
     let context = Context {
         resource: &|name| resources.find(name),
-        max_building_levels: 15,
+        max_building_levels: 13,
         province_count: 10_000,
         names: &KeyNames::default(),
     };
@@ -374,7 +374,7 @@ fn parse(input: &[u8]) -> io::Result<(Vec<StateDefinition>, Vec<String>)> {
                     Resource::Null
                 }
             },
-            max_building_levels: 15,
+            max_building_levels: 13,
             province_count: 10_000,
             names: &KeyNames::default(),
         },
@@ -684,7 +684,7 @@ fn history_commands_keep_what_the_game_keeps() {
     let (states, _) =
         parse(b"state = { id = 1 name = N history = { buildings = { infrastructure = 99 } } }")
             .unwrap();
-    assert_eq!(states[0].buildings["infrastructure"].level, 15);
+    assert_eq!(states[0].buildings["infrastructure"].level, 13);
 }
 
 #[test]

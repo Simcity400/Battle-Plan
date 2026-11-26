@@ -17,7 +17,7 @@ pub fn fixture(
         ),
         (
             "common/defines/test.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
         ("common/units/synthetic.txt", "sub_units={syn_unit={}}"),
         (
@@ -203,7 +203,7 @@ fn balance_definition_and_side_names_use_empty_event_scope_while_active_range_us
         ),
         (
             "common/defines/test.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
         (
             "common/scripted_localisation/synthetic.txt",

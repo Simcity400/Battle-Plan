@@ -53,7 +53,7 @@ mod reply {
     fn shared_defines_give_the_garrison_its_mod_threshold_or_name_the_missing_value() {
         let read = |value| {
             let (_machine, source, load) = dashboard_base::test_fixtures::recorded_mod_defines(
-                "NDefines={NInterface={GARRISON_STRENGTH_TO_SHOW_RED=0.25}}",
+                "NDefines={NInterface={GARRISON_STRENGTH_TO_SHOW_RED=0.4375}}",
                 &format!("NDefines.NInterface.GARRISON_STRENGTH_TO_SHOW_RED={value}"),
                 &[],
             );

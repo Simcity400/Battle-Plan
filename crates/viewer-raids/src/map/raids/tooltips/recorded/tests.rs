@@ -296,7 +296,7 @@ fn scripted_content_with_files(
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+        "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
     )
     .unwrap();
     for (relative, contents) in files {

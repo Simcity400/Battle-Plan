@@ -610,12 +610,12 @@ mod tests {
         defines
             .load(
                 "organisation.lua",
-                b"NDefines.NMilitary.LOW_ORG_FOR_ATTACK = 0.3 NDefines.NMilitary.ZERO_ORG_MOVEMENT_MODIFIER = -0.8",
+                b"NDefines.NMilitary.LOW_ORG_FOR_ATTACK = 0.35 NDefines.NMilitary.ZERO_ORG_MOVEMENT_MODIFIER = -0.7",
             )
             .unwrap();
         assert_eq!(
             MovementDefines::read(&defines).unwrap().organisation,
-            Ok((30_000, -80_000))
+            Ok((35_000, -70_000))
         );
     }
 
@@ -623,10 +623,10 @@ mod tests {
     fn noncore_supply_and_combat_movement_defines_load_by_name() {
         content_reader_script::test_game::enter();
         let defines = Defines::new().unwrap();
-        defines.load("fixture.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2, NON_CORE_SUPPLY_SPEED = -0.5 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
+        defines.load("fixture.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2, NON_CORE_SUPPLY_SPEED = -0.45 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
         let movement = MovementDefines::read(&defines).unwrap();
         assert_eq!(movement.outer_scale, 100_000);
-        assert_eq!(movement.noncore_supply[0], Ok(-50_000));
+        assert_eq!(movement.noncore_supply[0], Ok(-45_000));
         assert!(
             movement.noncore_supply[1]
                 .as_ref()
@@ -642,14 +642,14 @@ mod tests {
         defines
             .load(
                 "noncore.lua",
-                b"NDefines.NMilitary.NON_CORE_SUPPLY_AIR_SPEED = -0.25 NDefines.NMilitary.COMBAT_MOVEMENT_SPEED = 0.33",
+                b"NDefines.NMilitary.NON_CORE_SUPPLY_AIR_SPEED = -0.35 NDefines.NMilitary.COMBAT_MOVEMENT_SPEED = 0.37",
             )
             .unwrap();
         let movement = MovementDefines::read(&defines).unwrap();
-        assert_eq!(movement.noncore_supply, [Ok(-50_000), Ok(-25_000)]);
-        assert_eq!(movement.combat_movement, Ok(33_000));
+        assert_eq!(movement.noncore_supply, [Ok(-45_000), Ok(-35_000)]);
+        assert_eq!(movement.combat_movement, Ok(37_000));
         let air_only = Defines::new().unwrap();
-        air_only.load("air-only.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2, NON_CORE_SUPPLY_AIR_SPEED = -0.25 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
+        air_only.load("air-only.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2, NON_CORE_SUPPLY_AIR_SPEED = -0.35 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
         let movement = MovementDefines::read(&air_only).unwrap();
         assert!(
             movement.noncore_supply[0]
@@ -657,7 +657,7 @@ mod tests {
                 .unwrap_err()
                 .contains("NON_CORE_SUPPLY_SPEED")
         );
-        assert_eq!(movement.noncore_supply[1], Ok(-25_000));
+        assert_eq!(movement.noncore_supply[1], Ok(-35_000));
     }
 
     #[test]

@@ -546,7 +546,7 @@ test('planSignature compares plans without invoking closures, and FamilySourceBr
     'a ranked chart’s hover asks for the lines it displays at the hovered hour, not the top there');
   assert.equal(hoverAsks(displayedPlan, 40, () => undefined).length, 0, 'nothing displayed, nothing asked');
   assert.notEqual(hoverAsks(displayedPlan, 40, () => ['SOV'])[0]!.key, displayed[0]!.key, 'other displayed lines are another ask');
-  assert.equal(hoverAsks(displayedPlan, 40, () => ['GER', ' 7'], displayed), displayed, 'a tile publish rebuilding the same displayed keys keeps the asks, so the settled hover is not asked again and the widget is not rebound');
+  assert.equal(hoverAsks(displayedPlan, 40, () => ['GER', '\x007'], displayed), displayed, 'a tile publish rebuilding the same displayed keys keeps the asks, so the settled hover is not asked again and the widget is not rebound');
   assert.notEqual(hoverAsks(displayedPlan, 40, () => ['GER', 'SOV'], displayed), displayed, 'a newly drawn country is a new ask');
 
   let abortOnDispose = false;

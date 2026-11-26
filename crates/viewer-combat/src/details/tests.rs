@@ -317,23 +317,23 @@ fn a_missing_panel_row_hides_each_bar_by_its_own_maximum() {
 
 #[test]
 fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
-    let name = || "144ya Strelkovaya Diviziya".to_owned();
+    let name = || "144th Fixture Rifle Group".to_owned();
     let flag = "SOV_communism".to_string();
     assert_eq!(
         entry_name(name(), 0, true, Some(&flag)),
-        format!("144ya Strelkovaya Diviziya {INLINE_FLAG}SOV_communism")
+        format!("144th Fixture Rifle Group {INLINE_FLAG}SOV_communism")
     );
     assert_eq!(
         entry_name(name(), 0, false, Some(&flag)),
-        "144ya Strelkovaya Diviziya"
+        "144th Fixture Rifle Group"
     );
     assert_eq!(
         entry_name(name(), 1, true, Some(&flag)),
-        format!("{INLINE_FLAG}SOV_communism 144ya Strelkovaya Diviziya")
+        format!("{INLINE_FLAG}SOV_communism 144th Fixture Rifle Group")
     );
     assert_eq!(
         entry_name(name(), 1, true, None),
-        "144ya Strelkovaya Diviziya"
+        "144th Fixture Rifle Group"
     );
 }
 
@@ -343,7 +343,7 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
     let mut localisation = Localisation::default();
     localisation.language = "english".into();
     let names = content_reader_division_names::division_names::parse(
-        br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
+        br#"SOV_INF_01 = { ordered = { 144 = { "%dth Fixture Rifle Group" } } }"#,
         &content_reader_script::key_names::KeyNames::default(),
     )
     .unwrap();
@@ -361,7 +361,7 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
     };
     assert_eq!(
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
-        Ok("144ya Strelkovaya Diviziya")
+        Ok("144th Fixture Rifle Group")
     );
     row.own.as_mut().unwrap().naming.custom = b"Guards".to_vec();
     assert_eq!(
@@ -372,13 +372,13 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
     row.own.as_mut().unwrap().naming.custom = b"Ignored programmatic text".to_vec();
     assert_eq!(
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
-        Ok("144ya Strelkovaya Diviziya")
+        Ok("144th Fixture Rifle Group")
     );
     row.own.as_mut().unwrap().naming.group.clear();
-    row.own.as_mut().unwrap().naming.custom = b"1-ya Strelkovaya".to_vec();
+    row.own.as_mut().unwrap().naming.custom = b"1st Fixture Rifles".to_vec();
     assert_eq!(
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
-        Ok("1-ya Strelkovaya")
+        Ok("1st Fixture Rifles")
     );
     localisation.language = "french".into();
     let refused = division_name(&member(&row), &names, &localisation, "english").unwrap_err();
@@ -393,7 +393,7 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
     row.own.as_mut().unwrap().naming.programmatic = 0;
     assert_eq!(
         division_name(&member(&row), &names, &localisation, "english").as_deref(),
-        Ok("1-ya Strelkovaya")
+        Ok("1st Fixture Rifles")
     );
     row.own.as_mut().unwrap().naming.custom.clear();
     assert_eq!(
