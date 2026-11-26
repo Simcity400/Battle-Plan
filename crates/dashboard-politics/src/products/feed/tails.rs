@@ -471,6 +471,14 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 for item in row.as_mut().and_then(|row| row.item.as_mut()).into_iter().chain(choice.as_mut().and_then(|choice| choice.row.item.as_mut())) {
                     chosen_names(item, chosen);
                 }
+                let listed_options = row.as_ref().and_then(|row| row.item.as_ref()).is_some_and(|item| item.options.as_ref().is_some_and(|options| !options.is_empty()));
+                if let Some(choice) = choice.as_mut() {
+                    choice.row.cause = None;
+                    choice.row.window = None;
+                    if listed_options {
+                        choice.row.item = None;
+                    }
+                }
             }
             EventFeedPageRow {
                 key,

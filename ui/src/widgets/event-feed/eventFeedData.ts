@@ -37,8 +37,8 @@ const roles = (row: Record<string, unknown>): boolean => {
 const cause = (row: Record<string, unknown>): boolean => {
   const value = row.cause;
   if (value === undefined) return true;
-  return CAUSED_KINDS.has(row.kind as string) && object(value) && text(value.how) && text(value.within) && text(value.conference) && text(value.reason)
-    && (value.state === null || (int(value.state) && value.state > 0)) && (value.ally === null || opaqueTag(value.ally))
+  return CAUSED_KINDS.has(row.kind as string) && object(value) && optionalText(value.how) && optionalText(value.within) && optionalText(value.conference) && optionalText(value.reason)
+    && (value.state === null || value.state === undefined || (int(value.state) && value.state > 0)) && (value.ally === null || value.ally === undefined || opaqueTag(value.ally))
     && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string')
     && (value.selectedOption === undefined || int(value.selectedOption)) && typeof value.targetRecorded === 'boolean';
 };

@@ -299,16 +299,28 @@ pub struct EventFeedStrike {
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedCause {
     #[doc = " The native operation the event happened in."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub how: Option<String>,
     #[doc = " The operation that one ran inside."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub within: Option<String>,
     #[doc = " The peace conference starting or applying, as its reference in decimal."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub conference: Option<String>,
     #[doc = " A state whose owner changed."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub state: Option<u32>,
     #[doc = " A join's ally."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub ally: Option<String>,
     #[doc = " A join's hostility reason."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub reason: Option<String>,
     #[doc = " The native operands that change what the event means; empty in a list row, read with the opened row."]
     pub notes: Vec<String>,

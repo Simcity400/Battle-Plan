@@ -13,8 +13,7 @@ const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Par
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
 
 test('a feed row is validated, an icon the dashboard cannot draw dropped, and malformed rows refused', () => {
-  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', within: null, conference: null, state: null,
-    ally: null, reason: null, notes: [], targetRecorded: false } });
+  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', notes: [], targetRecorded: false } });
   assert.deepEqual(validateFeedRow(event), event);
   const scripted = row('scriptEventFired', 100, ['GER', 'GER'], { category: 'politics',
     item: { token: 'news.1', name: 'News', icon: 'javascript:bad', description: null, options: [{ ordinal: 0, name: 'Fine' }] } });
@@ -38,7 +37,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   const chosenRow = row('eventOptionSelected', 100, ['GER'], {
     category: 'politics',
     participants: ['GER', null],
-    cause: { how: null, within: null, conference: null, state: null, ally: null, reason: null, notes: [], selectedOption: 1, targetRecorded: false },
+    cause: { notes: [], selectedOption: 1, targetRecorded: false },
     item: { token: 'ev.1', name: 'Cabinet Crisis', icon: null, description: 'Body', options: [{ ordinal: 0, name: 'Stay' }, { ordinal: 1, name: 'Resign' }] },
   });
   const unknownRecipient = row('scriptEventFired', 100, ['GER'], {
