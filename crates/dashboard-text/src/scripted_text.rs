@@ -31,7 +31,6 @@ pub(super) const APPEARANCE: u64 = mask::<CountryAppearanceRow>(&[
 pub(super) const STATE: u64 = mask::<StateRow>(&[
     "owner",
     "controller",
-    "manpower_available",
     "custom_name",
     "owner_name",
     "continent",
@@ -40,7 +39,6 @@ pub(super) const STATE: u64 = mask::<StateRow>(&[
 pub(super) const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
 const PLAYER: u64 = mask::<LocalPlayerRow>(&["country", "observer_country"]);
 pub(super) const PARTY: u64 = mask::<PoliticalPartyRow>(&[
-    "popularity",
     "token",
     "tag",
     "name_default",

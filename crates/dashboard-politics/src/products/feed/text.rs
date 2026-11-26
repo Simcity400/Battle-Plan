@@ -3,13 +3,15 @@ use super::{EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable,
 use dashboard_base::{catalogue::{self, Catalogue}, products::artwork};
 use dashboard_effects::{ScriptedEffects, effect_description};
 use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeName, ScriptedText}};
+use content_reader_layers::content::diagnostics::Diagnostics;
 use dashboard_query::Query;
-use replay_lanes::at::{Cursor, Read, Readers};
-use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, HourFrame, TableView};
+use replay_lanes::{at::Read, dated::Dated, lanes::Keys};
+use replay_recording::columnar_frames::Recording;
+use replay_data::rows::{CountryAppearanceRow, CountryRow, PoliticalPartyRow, PoliticsRow, ReservedCountryNamingRow, StateRow, TableId, mask, tables};
+use replay_frame::frame::{DecodedFrame, HourFrame, Metrics, SharedView, TableView, discovering_fields, not_selected};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io,
     rc::Rc,
     sync::{Arc, Mutex, PoisonError},
@@ -27,7 +29,7 @@ pub(super) const NAMING: [TableId; 9] = [
     TableId::States,
 ];
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Notices {
     list: Vec<EventFeedUnavailable>,
     keys: HashMap<(String, String, Option<String>, bool), (usize, Vec<String>)>,
@@ -68,6 +70,9 @@ impl Notices {
     }
 }
 
+const LINK_COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot"]);
+const LINK_SLOT: u64 = mask::<replay_data::rows::CountryLinkRow>(&["canonical_slot"]);
+
 struct Links<'f> {
     countries: &'f [replay_data::rows::CountryRow],
     links: &'f [replay_data::rows::CountryLinkRow],
@@ -75,7 +80,7 @@ struct Links<'f> {
 
 impl<'f> Links<'f> {
     fn of(frame: &'f DecodedFrame) -> Option<Self> {
-        Some(Self { countries: frame.complete::<tables::Countries>().ok()?, links: frame.complete::<tables::CountryLinks>().ok()? })
+        Some(Self { countries: frame.complete_fields::<tables::Countries>(LINK_COUNTRY).ok()?, links: frame.complete_fields::<tables::CountryLinks>(LINK_SLOT).ok()? })
     }
 
     fn canonical(&self, reference: u32) -> Option<u32> {
@@ -305,54 +310,142 @@ fn presents_event(kind: EventFeedKind) -> bool {
 pub(crate) struct Presenter<'q> {
     query: &'q Query<'q>,
     catalogue: Option<Arc<Catalogue>>,
-    frames: RefCell<Frames<'q>>,
+    frames: RefCell<Frames>,
     kept: Arc<Mutex<KeptNaming>>,
 }
 
+const HELD: [(TableId, u64); 8] = [
+    (TableId::Countries, mask::<CountryRow>(&["canonical_slot", "tag"])),
+    (TableId::CountryLinks, u64::MAX),
+    (
+        TableId::CountryAppearance,
+        mask::<CountryAppearanceRow>(&[
+            "cosmetic_tag",
+            "name_tag",
+            "leader_ideology",
+            "overlord",
+            "graphical_culture",
+            "old_name",
+            "old_adjective",
+            "old_definite_name",
+            "graphical_culture_2d",
+            "subjects",
+            "original_tag",
+            "original_tag_reference",
+        ]),
+    ),
+    (TableId::Politics, mask::<PoliticsRow>(&["last_election", "election_frequency", "elections_allowed", "capital", "ruling_party", "original_capital", "has_elections"])),
+    (TableId::PoliticalParties, mask::<PoliticalPartyRow>(&["is_ruling", "token", "tag", "name_default", "name", "long_name"])),
+    (TableId::PartyLeaders, u64::MAX),
+    (
+        TableId::ReservedCountryNaming,
+        mask::<ReservedCountryNamingRow>(&[
+            "tag",
+            "name_tag",
+            "cosmetic_tag",
+            "leader_ideology",
+            "group",
+            "overlord",
+            "autonomy",
+            "built",
+            "original_tag",
+            "original_tag_reference",
+            "original_tag_buckets",
+            "country_array",
+            "owned_state_count",
+            "dynamic_tag_boundary",
+            "faction",
+            "movement",
+            "land_theatre_count",
+            "attack",
+        ]),
+    ),
+    (TableId::States, mask::<StateRow>(&["owner", "controller", "custom_name", "owner_name", "continent", "category", "best_vp_index", "infrastructure"])),
+];
+
+pub(crate) struct RunNaming {
+    branch: u64,
+    whole: Vec<(Dated, u64)>,
+    lexical: Option<(SharedView, Vec<(i32, i32)>)>,
+}
+
+fn complete_spans(recording: &Recording, run: u32) -> Option<Vec<(i32, i32)>> {
+    let table = TableId::LexicalTokens;
+    if recording.predates(table.index()).is_some() || !matches!(recording.table_coverage(table.index(), run), replay_recording::columnar_frames::TableCoverage::Valid) {
+        return None;
+    }
+    let statuses = replay_lanes::lanes::table_statuses(recording, run, table).ok()?;
+    Some(statuses.into_iter().filter(|held| matches!(held.status, replay_columnar::manifest::Status::Complete)).map(|held| (held.first, held.last)).collect())
+}
+
+impl RunNaming {
+    fn read(recording: &Recording, run: u32) -> io::Result<Self> {
+        let held = recording.run(run)?;
+        let last = held.first_hour + held.ordinals as i32 - 1;
+        let (whole, lexical) = std::thread::scope(|scope| {
+            let lexical = scope.spawn(|| replay_lanes::at::frame(recording, run, last, &[Read::all(TableId::LexicalTokens)]));
+            let whole = HELD.iter().map(|&(table, fields)| Dated::read(recording, run, table, fields, Keys::All).map(|dated| (dated, fields))).collect::<io::Result<Vec<_>>>();
+            (whole, lexical.join().unwrap_or_else(|_| Err(io::Error::other("A lexical dictionary read panicked"))))
+        });
+        let lexical = lexical
+            .ok()
+            .map(|frame| frame.tables[TableId::LexicalTokens.index()].clone())
+            .filter(|lexical| matches!(lexical.held(), TableView::Complete(_)))
+            .and_then(|lexical| complete_spans(recording, run).map(|spans| (lexical, spans)));
+        Ok(Self { branch: held.branch, whole: whole?, lexical })
+    }
+}
+
 #[derive(Default)]
-pub(crate) struct KeptNaming(Vec<(u32, i32, Readers)>);
+pub(crate) struct KeptNaming {
+    runs: BTreeMap<u32, Arc<RunNaming>>,
+    drawn: Option<(Arc<Catalogue>, HashMap<(String, String), Arc<std::sync::OnceLock<(catalogue::Drawn<Result<String, String>>, Diagnostics)>>>)>,
+}
 
-const KEPT_NAMING: usize = 4;
+pub(super) struct Art<'a> {
+    catalogue: &'a Arc<Catalogue>,
+    kept: &'a Mutex<KeptNaming>,
+}
 
-impl KeptNaming {
-    pub(super) fn take(&mut self, run: u32, hour: i32) -> Option<Readers> {
-        let at = (0..self.0.len()).filter(|&at| self.0[at].0 == run && self.0[at].1 <= hour).max_by_key(|&at| self.0[at].1)?;
-        Some(self.0.remove(at).2)
+impl Art<'_> {
+    fn drawn(&self, key: (&str, &str), draw: impl FnOnce() -> catalogue::Drawn<Result<String, String>>) -> Result<String, String> {
+        let once = {
+            let mut held = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+            if !held.drawn.as_ref().is_some_and(|(catalogue, _)| Arc::ptr_eq(catalogue, self.catalogue)) {
+                held.drawn = Some((Arc::clone(self.catalogue), HashMap::new()));
+            }
+            let Some((_, drawn)) = held.drawn.as_mut() else { return draw().get().clone() };
+            Arc::clone(drawn.entry((key.0.to_owned(), key.1.to_owned())).or_default())
+        };
+        let (drawn, noted) = once.get_or_init(|| content_reader_layers::content::diagnostics::capture(draw));
+        noted.credit();
+        drawn.get().clone()
     }
-
-    pub(super) fn put(&mut self, run: u32, hour: i32, readers: Readers) {
-        if self.0.len() >= KEPT_NAMING {
-            self.0.remove(0);
-        }
-        self.0.push((run, hour, readers));
-    }
-
 }
 
 pub(crate) fn kept_naming(source: &dashboard_base::Source) -> Arc<Mutex<KeptNaming>> {
     source.state::<KeptNaming>()
 }
 
+fn run_naming(kept: &Mutex<KeptNaming>, recording: &Recording, run: u32) -> io::Result<Arc<RunNaming>> {
+    let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(found) = held.runs.get(&run) {
+        return Ok(Arc::clone(found));
+    }
+    let made = Arc::new(dashboard_query::cost::storage(|| RunNaming::read(recording, run))?);
+    held.runs.insert(run, Arc::clone(&made));
+    Ok(made)
+}
+
 pub fn warm_naming(source: &dashboard_base::Source, branch: u64) -> io::Result<()> {
     let query = dashboard_base::queries::query(source, branch)?;
     let Some(stretch) = query.timeline.stretches.last().copied() else { return Ok(()) };
-    let kept = kept_naming(source);
-    let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
-    if !held.0.is_empty() {
-        return Ok(());
-    }
-    let mut cursor = Cursor::resume(query.replay.recording(), &NAMING.map(Read::all), None)?;
-    dashboard_query::cost::storage(|| cursor.frame(stretch.run, stretch.last))?;
-    if let Some(readers) = cursor.into_readers() {
-        held.put(stretch.run, stretch.last, readers);
-    }
-    Ok(())
+    run_naming(&kept_naming(source), query.replay.recording(), stretch.run).map(drop)
 }
 
 #[derive(Default)]
-struct Frames<'q> {
-    cursor: Option<Cursor<'q, 'static>>,
-    at: Option<(u32, i32)>,
+struct Frames {
+    views: BTreeMap<(u32, usize), (i32, SharedView)>,
     last: Option<(i32, Result<Rc<DecodedFrame>, String>)>,
 }
 
@@ -365,6 +458,34 @@ impl<'q> Presenter<'q> {
         self.catalogue.as_deref()
     }
 
+    fn dated(&self, run: u32, hour: i32, frames: &mut Frames) -> io::Result<DecodedFrame> {
+        let recording = self.query.replay.recording();
+        let naming = run_naming(&self.kept, recording, run)?;
+        let mut frame = DecodedFrame { branch: naming.branch, hour, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        for (dated, fields) in &naming.whole {
+            let table = dated.table();
+            let epoch = dated.epoch(hour);
+            let held = |view: SharedView| if *fields & table.full_mask() == table.full_mask() { view } else { view.with_fields(*fields) };
+            let view = match frames.views.get(&(run, table.index())) {
+                _ if !dated.covers(hour) => held(dated.view(recording, hour)?),
+                Some((at, view)) if *at == epoch => view.clone(),
+                _ => {
+                    let view = dated.view(recording, hour)?;
+                    let view = held(view);
+                    frames.views.insert((run, table.index()), (epoch, view.clone()));
+                    view
+                }
+            };
+            frame.tables[table.index()] = view;
+        }
+        let complete = |spans: &[(i32, i32)]| spans.get(spans.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour);
+        frame.tables[TableId::LexicalTokens.index()] = match &naming.lexical {
+            Some((lexical, spans)) if complete(spans) => lexical.clone(),
+            _ => dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[Read::all(TableId::LexicalTokens)]))?.tables[TableId::LexicalTokens.index()].clone(),
+        };
+        Ok(frame)
+    }
+
     pub(super) fn frame(&self, hour: i32) -> io::Result<Result<Rc<DecodedFrame>, String>> {
         let mut frames = self.frames.borrow_mut();
         if let Some((held, frame)) = &frames.last
@@ -374,52 +495,58 @@ impl<'q> Presenter<'q> {
         }
         let read = match self.query.timeline.at(hour) {
             None => Err(format!("the recording holds no hour {hour} on this timeline")),
-            Some(stretch) => {
-                let mut cursor = match frames.cursor.take() {
-                    Some(cursor) => cursor,
-                    None => {
-                        let left = self.kept.lock().unwrap_or_else(PoisonError::into_inner).take(stretch.run, hour);
-                        Cursor::resume(self.query.replay.recording(), &NAMING.map(Read::all), left)?
-                    }
-                };
-                let frame = dashboard_query::cost::storage(|| cursor.frame(stretch.run, hour));
-                frames.cursor = Some(cursor);
-                frames.at = Some((stretch.run, hour));
-                Ok(Rc::new(frame?))
-            }
+            Some(stretch) => Ok(Rc::new(self.dated(stretch.run, hour, &mut frames)?)),
         };
         frames.last = Some((hour, read.clone()));
         Ok(read)
     }
 
+    fn exact(&self, frame: &DecodedFrame, tables: &[TableId]) -> io::Result<DecodedFrame> {
+        let Some(stretch) = self.query.timeline.at(frame.hour) else { return Ok(frame.clone()) };
+        let reads: Vec<Read<'_>> = tables.iter().map(|&table| Read::all(table)).collect();
+        let read = dashboard_query::cost::storage(|| replay_lanes::at::frame(self.query.replay.recording(), stretch.run, frame.hour, &reads))?;
+        let mut exact = frame.clone();
+        for &table in tables {
+            exact.tables[table.index()] = read.tables[table.index()].clone();
+        }
+        Ok(exact)
+    }
+
     pub fn picture(&self, token: &str, key: &str, notices: &mut Notices) -> Option<String> {
-        draw_picture(notices, self.catalogue.as_deref()?, token, key)
+        draw_picture(notices, &Art { catalogue: self.catalogue.as_ref()?, kept: &self.kept }, token, key)
     }
 
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
         let mut item = EventFeedItem { token, ..Default::default() };
-        let Some(catalogue) = self.catalogue.as_deref() else {
+        let Some(shown) = self.catalogue.as_ref() else {
             item.name_missing = Some("the recorded content stack could not be read".into());
             return Ok(item);
         };
-        let frame = self.frame(event.hour)?;
-        let inputs = Inputs::of(event, frame.as_ref().ok().map(|frame| &**frame));
-        let frame = frame.as_ref().map(|frame| HourFrame::from(&**frame)).map_err(Clone::clone);
-        presentation(notices, catalogue, kind, &mut item, &inputs, frame)?;
-        Ok(item)
-    }
-}
-
-impl Drop for Presenter<'_> {
-    fn drop(&mut self) {
-        let frames = self.frames.get_mut();
-        if let (Some((run, hour)), Some(readers)) = (frames.at, frames.cursor.take().and_then(Cursor::into_readers)) {
-            self.kept.lock().unwrap_or_else(PoisonError::into_inner).put(run, hour, readers);
+        let present = |frame: Result<&DecodedFrame, String>, notices: &mut Notices| -> io::Result<EventFeedItem> {
+            let mut item = item.clone();
+            let inputs = Inputs::of(event, frame.as_ref().ok().copied());
+            presentation(notices, &Art { catalogue: shown, kept: &self.kept }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
+            Ok(item)
+        };
+        let dated = match self.frame(event.hour)? {
+            Ok(dated) => dated,
+            Err(why) => return present(Err(why), notices),
+        };
+        let before = notices.clone();
+        let (presented, missed) = discovering_fields(|| present(Ok(&dated), notices));
+        let mut missed: Vec<TableId> = missed.into_iter().map(|(table, _)| table).filter(|table| NAMING.contains(table)).collect();
+        missed.sort_unstable();
+        missed.dedup();
+        if missed.is_empty() {
+            return presented;
         }
+        *notices = before;
+        present(Ok(&self.exact(&dated, &missed)?), notices)
     }
 }
 
-fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs, frame: Result<HourFrame<'_>, String>) -> io::Result<()> {
+fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs, frame: Result<HourFrame<'_>, String>) -> io::Result<()> {
+    let catalogue: &Catalogue = art.catalogue;
     if !presents_event(kind) {
         if names_decision(kind) {
             let token = item.token.clone().unwrap_or_else(|| "unidentified decision".to_owned());
@@ -436,9 +563,9 @@ fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKin
                     item.name_missing = Some(reason);
                 }
             }
-            let icon = catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token));
-            match icon.get() {
-                Ok(url) => item.icon = Some(url.clone()),
+            let icon = art.drawn(("decision", &token), || catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token)));
+            match icon {
+                Ok(url) => item.icon = Some(url),
                 Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
             }
         }
@@ -493,7 +620,7 @@ fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKin
     if event.picture.is_empty() {
         notices.unavailable("scriptEventPicture", "Event picture", format!("Event {token}: default picture selection has no recorded presentation result"), Some(1));
     } else if let Ok(picture) = std::str::from_utf8(&event.picture) {
-        item.icon = draw_picture(notices, catalogue, &token, picture);
+        item.icon = draw_picture(notices, art, &token, picture);
     } else {
         notices.unavailable("scriptEventPicture", "Event picture", format!("Event {token}: picture key is not UTF-8"), Some(1));
     }
@@ -540,8 +667,9 @@ fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKin
     effects(notices, catalogue, kind, item, inputs)
 }
 
-fn draw_picture(notices: &mut Notices, catalogue: &Catalogue, token: &str, picture: &str) -> Option<String> {
-    let image = catalogue::draw(
+fn draw_picture(notices: &mut Notices, art: &Art<'_>, token: &str, picture: &str) -> Option<String> {
+    let catalogue: &Catalogue = art.catalogue;
+    let image = art.drawn((token, picture), || catalogue::draw(
         || format!("event {token} picture"),
         catalogue,
         |catalogue| {
@@ -550,11 +678,11 @@ fn draw_picture(notices: &mut Notices, catalogue: &Catalogue, token: &str, pictu
                 .into_result()?
                 .ok_or_else(|| format!("Event {token}: picture {picture} is unavailable"))
         },
-    );
-    match image.get() {
-        Ok(icon) => Some(icon.clone()),
+    ));
+    match image {
+        Ok(icon) => Some(icon),
         Err(reason) => {
-            notices.unavailable("scriptEventPicture", "Event picture", reason.clone(), Some(1));
+            notices.unavailable("scriptEventPicture", "Event picture", reason, Some(1));
             None
         }
     }

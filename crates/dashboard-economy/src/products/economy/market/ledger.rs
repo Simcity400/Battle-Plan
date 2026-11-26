@@ -514,12 +514,16 @@ fn variant_names(
         return Ok(out);
     }
     let mut icons: HashMap<String, String> = HashMap::new();
+    let mut sessions: BTreeMap<u32, names::NamingSession<'_>> = BTreeMap::new();
     for ((run, hour), variants) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let naming = namings.get(&run).ok_or_else(|| invalid(format!("Run {run} has no design names")))?;
+        let session = match sessions.entry(run) {
+            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+            std::collections::btree_map::Entry::Vacant(slot) => slot.insert(namings.get(&run).ok_or_else(|| invalid(format!("Run {run} has no design names")))?.session()),
+        };
         let variants: Vec<u64> = variants.into_iter().collect();
         let mut named = Named::default();
-        naming.name_variants(query.replay.recording(), hour, &variants, context, &mut named)?;
+        session.name_variants(query.replay.recording(), hour, &variants, context, &mut named)?;
         for icon in named.icons() {
             icons.insert(icon.key, icon.image);
         }

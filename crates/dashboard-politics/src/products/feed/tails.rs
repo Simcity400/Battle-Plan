@@ -651,7 +651,7 @@ impl Product for EventFeedTail {
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
         let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
-        load_feed_at(&prepared, &query, params, hour, cancelled)
+            load_feed_at(&prepared, &query, params, hour, cancelled)
     }
 }
 

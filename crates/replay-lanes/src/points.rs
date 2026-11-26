@@ -503,6 +503,18 @@ fn push_status(out: &mut Vec<StatusRun>, first: i32, last: i32, status: Status) 
     }
 }
 
+pub(crate) fn table_statuses(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<StatusRun>> {
+    let held = recording.run(run)?;
+    let mut out = Vec::new();
+    for block in 0..held.pages() as u32 {
+        let entry = recording.table_entry(run, block, table.index())?.unit;
+        replay_columnar::unit::reader::statuses(&entry, held.block(block as usize).1 as u16, held.block_first_hour(block), &mut |first, last, status| {
+            push_status(&mut out, first, last, status);
+        })?;
+    }
+    Ok(out)
+}
+
 fn read<L: Look>(
     recording: &Recording,
     (run, table): (u32, TableId),
@@ -739,14 +751,41 @@ pub fn cells(
     statuses: Option<&mut Vec<StatusRun>>,
     each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
 ) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
+    celled(recording, (run, table), columns, keys, (from, to), false, statuses, each)
+}
+
+pub fn witnessed_cells(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    columns: &[usize],
+    keys: Keys<'_>,
+    from: i32,
+    to: i32,
+    statuses: Option<&mut Vec<StatusRun>>,
+    each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
+) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
+    celled(recording, (run, table), columns, keys, (from, to), true, statuses, each)
+}
+
+fn celled(
+    recording: &Recording,
+    at: (u32, TableId),
+    columns: &[usize],
+    keys: Keys<'_>,
+    span: (i32, i32),
+    initial_witness: bool,
+    statuses: Option<&mut Vec<StatusRun>>,
+    each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
+) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
     read(
         recording,
-        (run, table),
+        at,
         columns,
         keys,
-        (from, to),
+        span,
         |columns, kinds| Celled { columns, kinds, texts: Texts::default() },
-        false,
+        initial_witness,
         statuses,
         &mut |hour, key, cells: &Option<Box<[Cell]>>| each(hour, key, cells.as_deref()),
     )
