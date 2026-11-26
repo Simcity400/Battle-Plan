@@ -350,3 +350,24 @@ fn depth_limit_applies_to_anonymous_and_tagged_blocks() {
         Document::default()
     );
 }
+
+#[test]
+fn the_save_grammar_reads_an_empty_key_and_an_empty_value_as_written() {
+    let text = b"HOI4txt\nassets={\n\t={ alpha beta }\n\tGER={ gamma }\n}\nconveyor={\n\trole=\n\tclosed=yes\n\tlast=\n}\ntail=yes\n";
+    let items = parse_save(text).unwrap().items;
+    let key = |item: &Item| item.key.clone();
+    assert_eq!(items.iter().map(key).collect::<Vec<_>>(), [None, Some(b"assets".to_vec()), Some(b"conveyor".to_vec()), Some(b"tail".to_vec())]);
+    let assets = items[1].value.items().unwrap();
+    assert_eq!(assets.iter().map(key).collect::<Vec<_>>(), [Some(Vec::new()), Some(b"GER".to_vec())]);
+    let teams = assets[0].value.items().unwrap();
+    assert_eq!(teams.iter().map(|item| item.value.scalar().unwrap().to_vec()).collect::<Vec<_>>(), [b"alpha".to_vec(), b"beta".to_vec()]);
+    let conveyor = items[2].value.items().unwrap();
+    assert_eq!(
+        conveyor.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
+        [(Some(b"role".to_vec()), Some(Vec::new())), (Some(b"closed".to_vec()), Some(b"yes".to_vec())), (Some(b"last".to_vec()), Some(Vec::new()))]
+    );
+    assert_eq!(items[3].value.scalar(), Some(b"yes".as_slice()));
+    assert!(parse(text).is_err());
+    assert!(parse(b"a={ ={ b } }").is_err());
+    assert!(parse(b"a={ b= c=d }").is_err());
+}

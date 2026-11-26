@@ -119,7 +119,7 @@ pub(super) fn compare_doctrines(
             expected_equipment.push((
                 slot,
                 ordinal(i)?,
-                bonus.id,
+                bonus.id.clone(),
                 bonus.index,
                 bonus.equipment_bonus,
             ));
@@ -241,16 +241,8 @@ pub(super) fn compare_doctrines(
         .collect::<io::Result<Vec<_>>>()?;
     let actual_equipment = equipment
         .iter()
-        .map(|row| {
-            (
-                row.slot,
-                row.ordinal,
-                row.id,
-                row.index,
-                row.equipment_bonus,
-            )
-        })
-        .collect();
+        .map(|row| Ok((row.slot, row.ordinal, token(tokens, row.id)?, row.index, row.equipment_bonus)))
+        .collect::<io::Result<Vec<_>>>()?;
     equal(
         report,
         "doctrine.countries",
@@ -409,7 +401,7 @@ mod tests {
             folder={{folder=mod_folder grand_doctrine=mod_grand tracks={{sub_doctrine=mod_sub rewards=2 mastery=1.25 mastery_bank=-0.00001 daily_mastery=0.5 leaders_daily_mastery={{leader={id=4294967295 type=4713} mastery=-0.25}}}} completed_subdoctrines={mod_sub mod_sub}}}
             cost_reduction={{uses=2 name="" cost_factor=-0.35 folder=mod_folder} {}}
             daily_mastery={{name=grant relevant_tracks={folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track=mod_track track_index=0} daily_mastery=0.125 bonus=-0.5 days=5} {}}
-            equipment_bonus={{id=4294967295 index=-1 equipment_bonus=4}}
+            equipment_bonus={{id=mod_sub index=-1 equipment_bonus=4}}
         }}}"#;
         let pack = saved::parse(&content_reader_parser::parser::parse(save).unwrap().items).unwrap();
         let tokens = BTreeMap::from([
@@ -493,7 +485,7 @@ mod tests {
             ]),
             TableRows::DoctrineEquipmentBonuses(vec![DoctrineEquipmentBonusRow {
                 slot: 1,
-                id: u32::MAX,
+                id: 3,
                 index: -1,
                 equipment_bonus: 4,
                 ..Default::default()
