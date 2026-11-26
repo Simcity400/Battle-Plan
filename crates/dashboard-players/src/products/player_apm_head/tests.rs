@@ -386,3 +386,55 @@ fn apm_head_advances_incrementally_across_sliding_window_and_skips_unchanged_hou
     }
     assert!(step_visits < 20, "single-hour incremental slide should visit O(participants), got {step_visits}");
 }
+
+fn coverage_fixture() -> Index {
+    let mut session = dashboard_base::test_fixtures::session(7);
+    session.qpc_frequency = 1;
+    let packet = |capture, start, hours: &[i32]| {
+        let spans: Vec<_> = hours.iter().enumerate().map(|(i, &hour)| {
+            let from_qpc = start + i as u64 * 60;
+            Span { from_qpc, to_qpc: from_qpc + 60, hour, complete: true, paused: hour == 1 }
+        }).collect();
+        let end = spans.last().unwrap().to_qpc;
+        let actor = Actor { id: 1, player: 1, country: 1, since_qpc: start, at_qpc: start,
+            user: vec![], name: b"Sender".to_vec(), tag: b"AAA".to_vec() };
+        let batch = Batch { kinds: vec![Kind { id: 1, token: 1, name: "synthetic order".into(), category: Category::Army }], actors: vec![actor], spans, ..Default::default() };
+        ControlRecord::PlayerCommands { session: 7, packet: Packet::pack(4, capture, 2, 0, start, end, 0, &batch).unwrap() }
+    };
+    commands::index(&[session], &[packet(1, 0, &[0, 1, 2, 3]), packet(2, 600, &[3, 4, 5, 12])], 4).unwrap()
+}
+
+fn coverage_tile(index: &Index) -> SeriesTileReply {
+    let family = TileFamily { group: ApmGroup::Country, tags: None, membership: None, players: vec![], value: "apm".into() };
+    let ask = TileAsk { bin_hours: 4, index: 0, countries: vec!["AAA".into(), "BBB".into()] };
+    let (first, last) = tile::hours(ask.bin_hours, ask.index).unwrap();
+    tile_from_index(index, 4, 12, &family, &ask, first, last).unwrap()
+}
+
+#[test]
+fn apm_tile_coverage_names_a_completely_uncovered_bin() {
+    for line in coverage_tile(&coverage_fixture()).lines {
+        assert!(line.missing.iter().any(|m| m.first_hour == 6 && m.last_hour == 11 && m.reason == GAP_REASON), "{:?}", line.missing);
+    }
+}
+
+#[test]
+fn apm_tile_coverage_preserves_a_paused_hour_between_active_hours() {
+    let tile = coverage_tile(&coverage_fixture());
+    assert!(tile.lines[0].missing.iter().any(|m| m.first_hour == 1 && m.last_hour == 1 && m.reason == "No unpaused time was observed in this period."));
+    assert!(!tile.lines[0].missing.iter().any(|m| m.first_hour <= 2 && m.last_hour >= 2));
+}
+
+#[test]
+fn apm_tile_coverage_marks_the_same_reattachment_hour_as_the_exact_product() {
+    let index = coverage_fixture();
+    let tile = coverage_tile(&index);
+    for hour in 2..=4 {
+        let reply = query(&index, &ApmParams {
+            branch_id: "4".into(), group: ApmGroup::Country, registry: false, hour: Some(hour), first_hour: None, last_hour: None,
+            tags: None, membership: None, players: vec![], buckets: 1,
+        }, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.series[0].summary.gaps, hour == 3);
+        assert_eq!(tile.lines[0].missing.iter().any(|m| m.first_hour <= hour && hour <= m.last_hour && m.reason == GAP_REASON), reply.series[0].summary.gaps, "hour {hour}");
+    }
+}
