@@ -291,14 +291,19 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
     const VARIANT: u64 = 77;
+    const TAGGED: u64 = 78;
     let frames: Vec<_> = (100..=110)
         .map(|hour| {
             let mut frame = base_frame(1, hour, Some(1));
-            let rows = if hour >= 109 {
-                Vec::new()
-            } else {
-                vec![VariantDefinitionRow { id: VARIANT, creator_link: 9001, display_name: if hour < 105 { b"Old".to_vec() } else { b"New".to_vec() }, ..VariantDefinitionRow::default() }]
-            };
+            if hour >= 103
+                && let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows[0].tag = b"DEU".to_vec();
+            }
+            let mut rows = vec![VariantDefinitionRow { id: TAGGED, creator_link: 9001, ..VariantDefinitionRow::default() }];
+            if hour < 109 {
+                rows.insert(0, VariantDefinitionRow { id: VARIANT, creator_link: 9001, display_name: if hour < 105 { b"Old".to_vec() } else { b"New".to_vec() }, ..VariantDefinitionRow::default() });
+            }
             *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(rows));
             frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
             frame
@@ -310,7 +315,9 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
     let run = query.timeline.stretches[0].run;
     let content = super::Content { catalogue: None, units: None };
     let mut notes = BTreeSet::new();
-    let named = super::designs(&query, &Span { run, first: 100, last: 110, id: 9001, breaks: false }, &BTreeMap::from([(VARIANT, 0)]), &content, &mut notes).unwrap();
+    let named = super::designs(&query, &Span { run, first: 100, last: 110, id: 9001, breaks: false }, &BTreeMap::from([(VARIANT, 0), (TAGGED, 0)]), &content, &mut notes).unwrap();
+    let tagged: Vec<i32> = named[&TAGGED].names.iter().map(|entry| entry.first_hour).collect();
+    assert!(tagged.contains(&103), "a name taken from the creator's tag is dated again when that country changes tag: {tagged:?}");
     let names: Vec<(i32, bool)> = named[&VARIANT].names.iter().map(|entry| (entry.first_hour, entry.known)).collect();
     assert_eq!(names, [(100, true), (105, true), (109, false)], "a name per recorded change, not known once the definition is gone");
 }

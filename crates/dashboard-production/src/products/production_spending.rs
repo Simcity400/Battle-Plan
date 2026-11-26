@@ -505,30 +505,72 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     let empty = Tags::new(&[], &[], None);
     let texts = content.catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
     let base = |variant: u64| definitions.get(&variant).cloned().unwrap_or_else(|| VariantDefinitionRow { id: variant, ..VariantDefinitionRow::default() });
-    let links: HashMap<u32, u32> = frame.complete::<tables::CountryLinks>().map(|rows| rows.iter().map(|row| (row.id, row.canonical_slot)).collect()).unwrap_or_default();
-    let mut entries: HashMap<u64, Vec<(i32, Option<NameFields>)>> = HashMap::new();
-    for &variant in variants.keys() {
-        let mut held: Vec<(i32, Option<NameFields>)> = match (dated.get(&variant).filter(|dates| !dates.names.is_empty()), definitions.get(&variant)) {
-            (Some(dates), _) => dates.names.clone(),
-            (None, Some(definition)) => vec![(span.last, Some(NameFields::from(definition)))],
-            (None, None) => continue,
-        };
+    let naming_link = |fields: &NameFields| if (fields.origin_link as i32) >= 1 { fields.origin_link } else { fields.creator_link };
+    let mut entries: HashMap<u64, Vec<(i32, Option<NameFields>)>> = variants
+        .keys()
+        .filter_map(|&variant| {
+            let held = match (dated.get(&variant).filter(|dates| !dates.names.is_empty()), definitions.get(&variant)) {
+                (Some(dates), _) => dates.names.clone(),
+                (None, Some(definition)) => vec![(span.last, Some(NameFields::from(definition)))],
+                (None, None) => return None,
+            };
+            Some((variant, held))
+        })
+        .collect();
+    let wanted: Vec<u128> = entries
+        .values()
+        .flatten()
+        .filter_map(|(_, fields)| fields.as_ref())
+        .filter(|fields| fields.display_name.is_empty())
+        .map(|fields| u128::from(naming_link(fields)))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut mapped: HashMap<u32, Vec<(i32, i32, Option<u32>)>> = HashMap::new();
+    if !wanted.is_empty() {
+        let column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
+        let history = cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], Keys::These(&wanted), span.first, span.last))?;
+        for (key, steps) in &history.keys {
+            let pieces = steps
+                .iter()
+                .enumerate()
+                .map(|(at, step)| {
+                    let last = steps.get(at + 1).map_or(history.to, |next| next.hour - 1);
+                    let slot = step.cells.as_deref().and_then(|cells| match cells.first() {
+                        Some(Cell::Number(value)) => u32::try_from(*value).ok(),
+                        _ => None,
+                    });
+                    (step.hour, last, slot)
+                })
+                .collect();
+            mapped.insert(*key as u32, pieces);
+        }
+    }
+    for held in entries.values_mut() {
         let mut retagged: Vec<(i32, Option<NameFields>)> = Vec::new();
         for (at, (hour, fields)) in held.iter().enumerate() {
             let Some(fields) = fields.as_ref().filter(|fields| fields.display_name.is_empty()) else { continue };
             let until = held.get(at + 1).map_or(span.last, |next| next.0 - 1);
-            let link = if (fields.origin_link as i32) >= 1 { fields.origin_link } else { fields.creator_link };
-            let Some(&slot) = links.get(&link) else { continue };
-            for run in query.holders.runs(&Country::Slot(slot)) {
-                if run.first > *hour && run.first <= until {
-                    retagged.push((run.first, Some(fields.clone())));
+            let mut edges: BTreeSet<i32> = BTreeSet::new();
+            for &(from, to, slot) in mapped.get(&naming_link(fields)).map_or(&[][..], Vec::as_slice) {
+                let (low, high) = (from.max(*hour), to.min(until));
+                if low > high {
+                    continue;
+                }
+                if from > *hour {
+                    edges.insert(from);
+                }
+                if let Some(slot) = slot {
+                    for (first, last) in query.holders.naming_spans(&Country::Slot(slot)) {
+                        edges.extend([first, last.saturating_add(1)].into_iter().filter(|&edge| edge > low && edge <= high));
+                    }
                 }
             }
+            retagged.extend(edges.into_iter().map(|edge| (edge, Some(fields.clone()))));
         }
         held.extend(retagged);
         held.sort_by_key(|entry| entry.0);
         held.dedup_by_key(|entry| entry.0);
-        entries.insert(variant, held);
     }
     let mut by_hour: BTreeMap<i32, Vec<(u64, usize)>> = BTreeMap::new();
     for (&variant, held) in &entries {
