@@ -321,7 +321,14 @@ impl Viewer {
         }
     }
 
-    pub(super) fn find_view_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2], now: f32) -> bool {
+    pub(super) fn find_view_keys(
+        &mut self,
+        ui: &egui::Ui,
+        document: &Document,
+        extent: [f32; 2],
+        now: f32,
+        free_mode: bool,
+    ) -> bool {
         if !self.picker.find.open {
             return false;
         }
@@ -340,10 +347,10 @@ impl Viewer {
                 }
                 egui::Event::Key {
                     key,
+                    physical_key,
                     pressed: true,
                     repeat,
                     modifiers,
-                    ..
                 } => {
                     let edit = match key {
                         egui::Key::Backspace => Some(EditKey::Backspace),
@@ -363,6 +370,9 @@ impl Viewer {
                     let types = !(modifiers.ctrl || modifiers.alt || modifiers.command)
                         && (key.symbol_or_name().chars().count() == 1 || key == egui::Key::Space);
                     if repeat || (find.field.focused && types) {
+                        continue;
+                    }
+                    if free_mode && super::is_free_camera_key(physical_key.unwrap_or(key)) {
                         continue;
                     }
                     if let Some((control, _)) = shortcuts

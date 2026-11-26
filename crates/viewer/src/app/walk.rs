@@ -40,6 +40,7 @@ impl Walk {
 
     pub(super) fn leave(&mut self) {
         self.walker = None;
+        self.eye = None;
     }
 
     pub(super) fn standing(&self) -> Option<[f32; 2]> {
@@ -49,6 +50,15 @@ impl Walk {
     }
 
     pub(super) fn eye_pose(&self) -> Option<([f32; 3], f32, f32)> {
+        if let Some(eye) = self.eye
+            && let viewer_gpu::camera::Pose::Free(free) = eye.pose
+        {
+            return Some((
+                [eye.center[0], eye.height, eye.center[1]],
+                free.yaw,
+                free.pitch,
+            ));
+        }
         let walker = self.walker.as_ref()?;
         Some((
             walker.eye_position(self.height()),
@@ -66,13 +76,14 @@ impl Walk {
     }
 
     pub(super) fn figure_missing(&self) -> bool {
-        matches!(&self.figure, Some((_, Err(_))))
+        !matches!(&self.figure, Some((_, Ok(_))))
     }
 
     pub(super) fn reset(&mut self) {
         self.walker = None;
         self.figure = None;
         self.clock = None;
+        self.eye = None;
     }
 
     pub(super) fn forget_figure(&mut self) {

@@ -91,7 +91,13 @@ impl Viewer {
         self.click(document, super::held_clicks::Click::AirOrder { region, wings, shift, order }, None, ctx);
     }
 
-    pub(super) fn confirmation_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
+    pub(super) fn confirmation_keys(
+        &mut self,
+        ui: &egui::Ui,
+        document: &Document,
+        extent: [f32; 2],
+        free_mode: bool,
+    ) {
         if !self.air_orders.open {
             return;
         }
@@ -100,9 +106,20 @@ impl Viewer {
         };
         let pressed = ui.input(|input| {
             input.events.iter().any(|event| match event {
-                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => shortcuts.iter().any(|(_, text)| {
-                    super::picker::parse_shortcut(text).is_some_and(|(wanted, wanted_key)| wanted_key == *key && modifiers.matches_exact(wanted))
-                }),
+                egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                } => {
+                    !(free_mode && super::is_free_camera_key(physical_key.unwrap_or(*key)))
+                        && shortcuts.iter().any(|(_, text)| {
+                            super::picker::parse_shortcut(text).is_some_and(|(wanted, wanted_key)| {
+                                wanted_key == *key && modifiers.matches_exact(wanted)
+                            })
+                        })
+                }
                 _ => false,
             })
         });

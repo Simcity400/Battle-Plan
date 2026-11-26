@@ -405,36 +405,26 @@ pub(crate) fn map_overlay(
         });
 }
 
-fn free_camera_key_pressed(ui: &egui::Ui) -> bool {
-    ui.input(|input| {
-        input.events.iter().any(|event| match event {
-            egui::Event::Key {
-                key,
-                physical_key,
-                pressed: true,
-                ..
-            } => matches!(
-                physical_key.unwrap_or(*key),
-                egui::Key::W
-                    | egui::Key::A
-                    | egui::Key::S
-                    | egui::Key::D
-                    | egui::Key::Space
-                    | egui::Key::Equals
-                    | egui::Key::Plus
-                    | egui::Key::Minus
-                    | egui::Key::Num0
-                    | egui::Key::V
-                    | egui::Key::C
-                    | egui::Key::ArrowLeft
-                    | egui::Key::ArrowRight
-                    | egui::Key::ArrowUp
-                    | egui::Key::ArrowDown
-                    | egui::Key::Escape
-            ),
-            _ => false,
-        })
-    })
+pub(super) fn is_free_camera_key(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::W
+            | egui::Key::A
+            | egui::Key::S
+            | egui::Key::D
+            | egui::Key::Space
+            | egui::Key::Equals
+            | egui::Key::Plus
+            | egui::Key::Minus
+            | egui::Key::Num0
+            | egui::Key::V
+            | egui::Key::C
+            | egui::Key::ArrowLeft
+            | egui::Key::ArrowRight
+            | egui::Key::ArrowUp
+            | egui::Key::ArrowDown
+            | egui::Key::Escape
+    )
 }
 
 pub(crate) fn capture_mode_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
@@ -701,6 +691,7 @@ pub struct Viewer {
     free_cam: Option<crate::controls::walker::Walker>,
     free_cam_speed: Option<f32>,
     fly_view: crate::controls::flight::View,
+    last_fly_eye: Option<([f32; 3], f32, f32)>,
     mode_handover: Option<([f32; 3], f32, f32)>,
     hud: hud::Hud,
     flying: Option<(usize, viewer_models::ModelInstance)>,
@@ -1240,6 +1231,7 @@ impl Viewer {
             free_cam: None,
             free_cam_speed: None,
             fly_view: Default::default(),
+            last_fly_eye: None,
             mode_handover: None,
             hud: hud::Hud::default(),
             flying: None,
@@ -2960,6 +2952,7 @@ impl Viewer {
             self.walk.reset();
             self.flight = None;
             self.free_cam = None;
+            self.last_fly_eye = None;
             self.mode_handover = None;
             self.hud.leave();
             if self.start_pick.at().is_some() {
@@ -4235,7 +4228,7 @@ impl Viewer {
                 ui.input(|input| (input.events.clone(), input.focused, input.modifiers));
             self.input.frame(crate::controls::Window {
                 events: &events,
-                focused,
+                focused: focused && !self.picker.find.typing(),
                 modifiers,
                 now: Instant::now(),
             })
@@ -4352,9 +4345,9 @@ impl Viewer {
                 held,
             }
         }).unwrap_or_default());
-        if takes_keys && (!free_mode || (!self.input.captured() && !free_camera_key_pressed(ui))) {
-            self.confirmation_keys(ui, document, extent);
-            self.picker_keys(ui, document, extent);
+        if takes_keys && (!free_mode || !self.input.captured()) {
+            self.confirmation_keys(ui, document, extent, free_mode);
+            self.picker_keys(ui, document, extent, free_mode);
         }
         let picker_controls = match &self.picker_controls {
             Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => {
@@ -4487,15 +4480,16 @@ impl Viewer {
             self.secondary_on = None;
             self.air_orders.release();
         }
-        let picker_hit = point.and_then(picker_at);
+        let picker_hit = point.filter(|_| reaches).and_then(picker_at);
         let over_picker = picker_hit.is_some();
-        if response.drag_started() && !over_picker {
+        if reaches && response.drag_started() && !over_picker {
             self.combat.start_drag(combat_geometry.as_ref(), point);
         }
         if response.drag_stopped() {
             self.combat.dragging = false;
         }
-        let over_combat = self.combat.dragging || over_picker || point.is_some_and(&over_window);
+        let over_combat =
+            reaches && (self.combat.dragging || over_picker || point.is_some_and(&over_window));
         self.combat.set_modifiers(frame_modifiers.shift, frame_modifiers.ctrl);
         if over_combat {
             if response.dragged() && self.combat.dragging {
@@ -4629,7 +4623,18 @@ impl Viewer {
             .iter()
             .map(|&(order, pos, pressed)| (interface_at(pos), pressed, modifiers_at(order)))
             .collect();
-        let map_pinged = self.map_windows_pointer(ui, document, camera, &floor, &picker_controls, point, &presses, held, extent, &over_window);
+        let map_pinged = self.map_windows_pointer(
+            ui,
+            document,
+            camera,
+            &floor,
+            if reaches { &picker_controls } else { &[] },
+            point.filter(|_| reaches),
+            &presses,
+            held && reaches,
+            extent,
+            &over_window,
+        );
         let law = &document.camera_law;
         let (lines, zoom_keys, keys) = ui.input(|input| {
             let mut lines = Vec::new();
@@ -6520,7 +6525,7 @@ impl Viewer {
         }
         if pinned.is_none() {
             let hud_rect = rect.intersect(ui.clip_rect());
-            let hud_now = Instant::now();
+            let hud_now = self.started.elapsed().as_secs_f64();
             if self.start_pick.choosing() {
                 self.hud.paint(
                     ui,
@@ -6534,13 +6539,26 @@ impl Viewer {
                 );
             } else if free_mode {
                 let active = match self.camera_mode {
-                    CameraMode::Walk => self.walk.state().map(|walker| hud::ActiveHud::Walk {
-                        view: walker.view,
-                        gait: walker.gait,
-                        scale: walker.scale,
-                        scale_limit: walker
-                            .at_scale_limit(self.walk.figure_height(), defines.heights[1]),
-                        figure_missing: self.walk.figure_missing(),
+                    CameraMode::Walk => self.walk.state().map(|walker| {
+                        let field = viewer_gpu::province_map::HeightField {
+                            width: document.map.width,
+                            height: document.map.height,
+                            values: document.assets.heightmap_texels(),
+                        };
+                        let local_floor = field
+                            .surface_height(walker.feet[0], walker.feet[2])
+                            .max(viewer_gpu::camera::WATER_HEIGHT);
+                        hud::ActiveHud::Walk {
+                            view: walker.view,
+                            gait: walker.gait,
+                            scale: walker.scale,
+                            scale_limit: walker.at_scale_limit(
+                                self.walk.figure_height(),
+                                local_floor,
+                                defines.heights[1],
+                            ),
+                            figure_missing: self.walk.figure_missing(),
+                        }
                     }),
                     CameraMode::Fly => {
                         if let Some(free) = &self.free_cam {
@@ -6555,6 +6573,7 @@ impl Viewer {
                                 speed: free.speed_multiplier(),
                                 speed_limit: free.at_scale_limit(
                                     crate::controls::walker::FALLBACK_FIGURE,
+                                    viewer_gpu::camera::WATER_HEIGHT,
                                     defines.heights[1],
                                 ),
                                 aircraft,
@@ -6671,6 +6690,7 @@ impl Viewer {
         self.walk.leave();
         self.flight = None;
         self.free_cam = None;
+        self.last_fly_eye = None;
         self.mode_handover = handover;
         if mode == CameraMode::Map {
             self.hud.leave();

@@ -146,10 +146,14 @@ impl Viewer {
                         &world,
                     )
                 } else if let Some(flight) = self.flight.take() {
-                    let g = floor(flight.position[0], flight.position[2]).max(WATER_HEIGHT);
-                    let base = default_free_speed(flight.position[1], g, world.ceiling);
+                    let (eye, yaw, pitch) = self
+                        .last_fly_eye
+                        .take()
+                        .unwrap_or((flight.position, flight.yaw, 0.0));
+                    let g = floor(eye[0], eye[2]).max(WATER_HEIGHT);
+                    let base = default_free_speed(eye[1], g, world.ceiling);
                     let speed = self.free_cam_speed.unwrap_or(base);
-                    Walker::free_camera(flight.position, flight.yaw, 0.0, base, speed, &world)
+                    Walker::free_camera(eye, yaw, pitch, base, speed, &world)
                 } else if let Some((eye, yaw, pitch)) = self.mode_handover.take() {
                     let g = floor(eye[0], eye[2]).max(WATER_HEIGHT);
                     let base = default_free_speed(eye[1], g, world.ceiling);
@@ -185,9 +189,9 @@ impl Viewer {
             Some(scripted) => scripted.flight(),
             None => {
                 let mut flight = if let Some(free) = self.free_cam.take() {
-                    Flight::new(free.feet, free.view_yaw, 0.0, 0.0)
+                    Flight::handover(free.feet, free.view_yaw, &map, &floor, &airframe)
                 } else if let Some((eye, yaw, _)) = self.mode_handover.take() {
-                    Flight::new(eye, yaw, 0.0, 0.0)
+                    Flight::handover(eye, yaw, &map, &floor, &airframe)
                 } else {
                     Flight::from_map(
                         &start.map_or(map, |center| Camera { center, ..map }),
@@ -214,6 +218,10 @@ impl Viewer {
         );
         self.fly_view = flight.view;
         let sight = flight.sight(map, &floor, &airframe);
+        self.last_fly_eye = sight
+            .camera
+            .free()
+            .map(|free| (sight.camera.eye(), free.yaw, free.pitch));
         self.flying = placed(ready, sight.aircraft);
         sight.camera
     }

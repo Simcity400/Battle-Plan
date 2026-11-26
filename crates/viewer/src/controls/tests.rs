@@ -367,8 +367,43 @@ fn a_focus_lost_and_regained_in_one_frame_keeps_a_newer_handoff() {
     assert!(pad_frame.pad.pressed(GamepadButton::South));
     device_input.suppress_pad(GamepadButton::South);
     assert!(!device_input.frame(window(&[], true, now)).pad.held(GamepadButton::South));
+    device_input.gamepad(GamepadMessage::State {
+        owner: OWNER,
+        state: GamepadState {
+            buttons: south,
+            ..GamepadState::default()
+        },
+        pressed: south,
+    });
+    let repressed = device_input.frame(window(&[], true, now));
+    assert!(repressed.pad.pressed(GamepadButton::South));
+    assert!(repressed.pad.held(GamepadButton::South));
     update(&mut device_input, OWNER, GamepadState::default());
     assert!(!device_input.frame(window(&[], true, now)).pad.held(GamepadButton::South));
+    let wheel = device_input.frame(window(
+        &[egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        true,
+        now,
+    ));
+    assert_eq!(wheel.device, Device::Keyboard);
+    update(
+        &mut device_input,
+        OWNER,
+        GamepadState {
+            buttons: south,
+            ..GamepadState::default()
+        },
+    );
+    assert_eq!(
+        device_input.frame(window(&[], true, now)).device,
+        Device::Controller
+    );
+    update(&mut device_input, OWNER, GamepadState::default());
     let kbm = device_input.frame(window(&[key(egui::Key::W, true)], true, now));
     assert_eq!(kbm.device, Device::Keyboard);
     assert!(kbm.moved_or_looked());

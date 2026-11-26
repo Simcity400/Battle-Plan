@@ -392,11 +392,11 @@ fn the_scale_grows_and_shrinks_the_figure_its_pace_and_its_view() {
         walker.feet[1] - 20.0
     };
     assert!(close(rise(4.0), 4.0 * rise(1.0), 1e-2));
-    let [smallest, largest] = scale_limits(FIGURE, MapDefines::test().heights[1]);
+    let [smallest, largest] = scale_limits(FIGURE, 20.0, MapDefines::test().heights[1]);
     assert!(close(smallest * FIGURE, HEIGHT_SCALE, 1e-6));
     assert!(close(
         largest * FIGURE,
-        MapDefines::test().heights[1] - WATER_HEIGHT,
+        MapDefines::test().heights[1] - 20.0,
         1e-2
     ));
     run(&mut walker, &frame(&[egui::Key::Minus]), 10.0, &world);
@@ -404,6 +404,20 @@ fn the_scale_grows_and_shrinks_the_figure_its_pace_and_its_view() {
     run(&mut walker, &frame(&[egui::Key::Plus]), 20.0, &world);
     assert_eq!(walker.scale, largest);
     assert_eq!(walker.instance(FIGURE).scale, largest);
+    assert!(walker.feet[1] + walker.scale * FIGURE <= MapDefines::test().heights[1] + 1e-3);
+
+    let hill = |x: f32, _: f32| if x > 20.0 { 2500.0 } else { 20.0 };
+    let hill_world = World::of(&base(), &hill);
+    let mut uphill = Walker::standing([18.0, 100.0], std::f32::consts::FRAC_PI_2, largest, &hill_world);
+    run(&mut uphill, &frame(&[egui::Key::W]), 0.5, &hill_world);
+    assert!(uphill.feet[0] > 20.0);
+    assert!(
+        uphill.feet[1] + uphill.scale * FIGURE <= hill_world.ceiling + 1e-2,
+        "feet {} + height {} > ceiling {}",
+        uphill.feet[1],
+        uphill.scale * FIGURE,
+        hill_world.ceiling
+    );
 }
 
 #[test]
@@ -541,6 +555,19 @@ fn jumping_keeps_relative_apex_across_scales_and_double_tap_mid_jump_flies() {
     let large = apex(4.0);
     assert!(close(small, JUMP_HEIGHT, 0.06), "{small}");
     assert!(close(small, large, 1e-3), "{small} {large}");
+
+    let mut quick = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
+    quick.update(
+        &Frame {
+            pressed: vec![egui::Key::Space],
+            ..frame(&[])
+        },
+        0.0,
+        FIGURE,
+        &world,
+    );
+    assert_eq!(quick.gait, Gait::Falling);
+    assert!(quick.feet[1] > 20.0);
 
     let mut walker = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
     walker.update(&frame(&[egui::Key::Space]), 0.0, FIGURE, &world);

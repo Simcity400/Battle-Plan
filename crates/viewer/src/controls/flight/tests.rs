@@ -847,3 +847,25 @@ fn fly_with(
         flight.step(frame, &base(), floor, airframe);
     }
 }
+
+#[test]
+fn handover_from_low_free_camera_clears_sloped_ground_and_contact_offset() {
+    let slope = |x: f32, _: f32| WATER_HEIGHT + (x - 2995.0).max(0.0) * 1.5;
+    let offset_plane = Airframe {
+        ground: GroundContact {
+            offset: 2.0,
+            explosion: 0.6,
+        },
+        ..PLANE
+    };
+    let mut flight = Flight::handover(
+        [3000.0, slope(3000.0, 1000.0) + 0.01, 1000.0],
+        0.0,
+        &base(),
+        &slope,
+        &offset_plane,
+    );
+    assert!(!flight.strikes(&slope, base().map.x(), &offset_plane));
+    flight.step(&idle(), &base(), &slope, &offset_plane);
+    assert_eq!(flight.phase, Phase::Flying);
+}

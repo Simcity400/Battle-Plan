@@ -76,11 +76,11 @@ impl World<'_> {
     }
 }
 
-pub fn scale_limits(figure: f32, ceiling: f32) -> [f32; 2] {
+pub fn scale_limits(figure: f32, floor: f32, ceiling: f32) -> [f32; 2] {
     let figure = figure.max(f32::EPSILON);
     let smallest = HEIGHT_SCALE / figure;
-    let largest = (ceiling - WATER_HEIGHT) / figure;
-    [smallest, largest.max(smallest)]
+    let largest = ((ceiling - floor.max(WATER_HEIGHT)).max(0.0) / figure).max(smallest);
+    [smallest, largest]
 }
 
 pub fn free_speed_limits(ceiling: f32) -> [f32; 2] {
@@ -178,11 +178,11 @@ impl Walker {
         self.scale / self.base_scale.max(f32::EPSILON)
     }
 
-    pub fn at_scale_limit(&self, figure: f32, ceiling: f32) -> Option<bool> {
+    pub fn at_scale_limit(&self, figure: f32, floor: f32, ceiling: f32) -> Option<bool> {
         let [smallest, largest] = if self.free_camera {
             free_speed_limits(ceiling)
         } else {
-            scale_limits(figure, ceiling)
+            scale_limits(figure, floor, ceiling)
         };
         if self.scale <= smallest * (1.0 + 1e-4) {
             Some(false)
@@ -239,10 +239,11 @@ impl Walker {
         ) + f32::from(
             i8::from(pad.held(GamepadButton::DpadUp)) - i8::from(pad.held(GamepadButton::DpadDown)),
         );
+        let floor_here = world.floor(self.feet[0], self.feet[2]);
         let [smallest, largest] = if self.free_camera {
             free_speed_limits(world.ceiling)
         } else {
-            scale_limits(figure, world.ceiling)
+            scale_limits(figure, floor_here, world.ceiling)
         };
         if frame.pressed(Key::Num0) || pad.pressed(GamepadButton::West) {
             self.scale = self.base_scale.clamp(smallest, largest);
@@ -335,9 +336,18 @@ impl Walker {
         self.feet[0] = (self.feet[0] + self.velocity[0] * dt).rem_euclid(world.map[0].max(1.0));
         self.feet[2] = (self.feet[2] + self.velocity[1] * dt).clamp(0.0, world.map[1]);
         let floor = world.floor(self.feet[0], self.feet[2]);
+        if !self.free_camera {
+            let [min_here, max_here] = scale_limits(figure, floor, world.ceiling);
+            self.scale = self.scale.clamp(min_here, max_here);
+        }
+        let height = self.height(figure);
         match self.gait {
             Gait::Ground => {
-                if frame.held(Key::Space) || pad.held(GamepadButton::South) {
+                if frame.held(Key::Space)
+                    || frame.pressed(Key::Space)
+                    || pad.held(GamepadButton::South)
+                    || pad.pressed(GamepadButton::South)
+                {
                     self.climb = height * (2.0 * GRAVITY * JUMP_HEIGHT).sqrt();
                     self.gait = Gait::Falling;
                     self.feet[1] = (floor + self.climb * dt).max(floor);

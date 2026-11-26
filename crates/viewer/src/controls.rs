@@ -283,6 +283,9 @@ impl Input {
                 egui::Event::PointerButton { pressed: true, .. } => {
                     kbm_activity = true;
                 }
+                egui::Event::MouseWheel { delta, .. } if delta.x != 0.0 || delta.y != 0.0 => {
+                    kbm_activity = true;
+                }
                 _ => {}
             }
         }
@@ -298,9 +301,10 @@ impl Input {
             frame.modifiers = window.modifiers;
         }
         if let Some(state) = &self.pad {
-            self.pad_suppressed &= state.buttons;
+            let edges = std::mem::take(&mut self.pad_pressed);
+            self.pad_suppressed &= state.buttons & !edges;
             frame.pad = Pad::from_state(state, self.pad_buttons);
-            frame.pad.pressed |= std::mem::take(&mut self.pad_pressed);
+            frame.pad.pressed |= edges;
             self.pad_buttons = state.buttons;
             frame.pad.held &= !self.pad_suppressed;
             frame.pad.pressed &= !self.pad_suppressed;

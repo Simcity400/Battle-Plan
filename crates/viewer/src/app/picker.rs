@@ -707,8 +707,14 @@ impl Viewer {
         }
     }
 
-    pub(crate) fn picker_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
-        if self.find_view_keys(ui, document, extent, self.picker_now()) {
+    pub(crate) fn picker_keys(
+        &mut self,
+        ui: &egui::Ui,
+        document: &Document,
+        extent: [f32; 2],
+        free_mode: bool,
+    ) {
+        if self.find_view_keys(ui, document, extent, self.picker_now(), free_mode) {
             return;
         }
         let minimap = viewer_combat::minimap::handle_shortcut(&document.combat, extent)
@@ -717,8 +723,19 @@ impl Viewer {
             .and_then(|text| parse_shortcut(&text));
         let toggles = ui.input(|input| {
             input.events.iter().any(|event| {
-                matches!(event, egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-                    if minimap.is_some_and(|(wanted, wanted_key)| wanted_key == *key && modifiers.matches_exact(wanted)))
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key,
+                        physical_key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    } if !(free_mode && super::is_free_camera_key(physical_key.unwrap_or(*key)))
+                        && minimap.is_some_and(|(wanted, wanted_key)| {
+                            wanted_key == *key && modifiers.matches_exact(wanted)
+                        })
+                )
             })
         });
         if toggles {
@@ -736,15 +753,19 @@ impl Viewer {
                 .filter_map(|event| match event {
                     egui::Event::Key {
                         key,
+                        physical_key,
                         pressed: true,
                         repeat: false,
                         modifiers,
-                        ..
-                    } => shortcuts.iter().find_map(|(control, text)| {
-                        let (wanted, wanted_key) = parse_shortcut(text)?;
-                        (wanted_key == *key && modifiers.matches_exact(wanted))
-                            .then(|| control.clone())
-                    }),
+                    } if !(free_mode
+                        && super::is_free_camera_key(physical_key.unwrap_or(*key))) =>
+                    {
+                        shortcuts.iter().find_map(|(control, text)| {
+                            let (wanted, wanted_key) = parse_shortcut(text)?;
+                            (wanted_key == *key && modifiers.matches_exact(wanted))
+                                .then(|| control.clone())
+                        })
+                    }
                     _ => None,
                 })
                 .collect()

@@ -1,12 +1,11 @@
 use crate::controls::{Device, Frame, flight, walker};
 use dashboard_core::protocol::{CameraMode, GamepadButton};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2};
-use std::time::{Duration, Instant};
 
-const CARD_AUTO_HIDE: Duration = Duration::from_secs(3);
-const PILL_HOLD: Duration = Duration::from_millis(1200);
-const FADE_IN: f32 = 0.12;
-const FADE_OUT: f32 = 0.3;
+const CARD_AUTO_HIDE: f64 = 3.0;
+const PILL_HOLD: f64 = 1.2;
+const FADE_IN: f64 = 0.12;
+const FADE_OUT: f64 = 0.3;
 
 const GLASS_FILL: [u8; 4] = [14, 16, 20, 204];
 const BORDER_ALPHA: u8 = 28;
@@ -58,8 +57,8 @@ pub(super) enum HudState {
 struct Pill {
     text: String,
     warning: bool,
-    shown_at: Instant,
-    hold_until: Instant,
+    shown_at: f64,
+    hold_until: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -118,10 +117,22 @@ fn scan_label(_scan: u32, fallback: &str) -> String {
     fallback.to_owned()
 }
 
+#[cfg(windows)]
+fn current_layout() -> isize {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    // SAFETY: `GetKeyboardLayout(0)` queries the calling thread's current keyboard layout handle.
+    unsafe { GetKeyboardLayout(0) as isize }
+}
+
+#[cfg(not(windows))]
+fn current_layout() -> isize {
+    0
+}
+
 #[derive(Default)]
 pub(super) struct Hud {
     card_open: bool,
-    card_dismiss_at: Option<Instant>,
+    card_dismiss_at: Option<f64>,
     pill: Option<Pill>,
     was_captured: bool,
     last_walk_view: Option<walker::View>,
@@ -130,10 +141,21 @@ pub(super) struct Hud {
     last_fly_view: Option<flight::View>,
     last_free_speed: Option<f32>,
     last_aircraft: Option<AircraftHud>,
-    key_names: Option<KeyNames>,
+    key_names: Option<(isize, KeyNames)>,
 }
 
 impl Hud {
+    fn key_names(&mut self) -> KeyNames {
+        let layout = current_layout();
+        match &self.key_names {
+            Some((cached, names)) if *cached == layout => names.clone(),
+            _ => {
+                let names = KeyNames::detect();
+                self.key_names = Some((layout, names.clone()));
+                names
+            }
+        }
+    }
     pub(super) fn enter_mode(&mut self) {
         self.card_open = true;
         self.card_dismiss_at = None;
@@ -155,11 +177,11 @@ impl Hud {
         };
     }
 
-    fn show_pill(&mut self, text: String, warning: bool, now: Instant) {
+    fn show_pill(&mut self, text: String, warning: bool, now: f64) {
         let shown_at = self
             .pill
             .as_ref()
-            .filter(|pill| now < pill.hold_until + Duration::from_secs_f32(FADE_OUT))
+            .filter(|pill| !pill_expired(pill, now))
             .map_or(now, |pill| pill.shown_at);
         self.pill = Some(Pill {
             text,
@@ -169,7 +191,7 @@ impl Hud {
         });
     }
 
-    pub(super) fn observe(&mut self, active: &ActiveHud, controls: &Frame, now: Instant) {
+    pub(super) fn observe(&mut self, active: &ActiveHud, controls: &Frame, now: f64) {
         if self.was_captured && !controls.captured {
             self.card_open = true;
             self.card_dismiss_at = None;
@@ -310,7 +332,7 @@ impl Hud {
         rect: Rect,
         points: f32,
         state: &HudState,
-        now: Instant,
+        now: f64,
     ) {
         if rect.width() < 80.0 || rect.height() < 60.0 {
             return;
@@ -346,35 +368,39 @@ impl Hud {
                 device,
             } => {
                 let mut bottom = rect.bottom() - 20.0 * p;
-                let brief = self.pill.as_ref().and_then(|pill| {
-                    let alpha = pill_alpha(pill, now);
-                    (alpha > 0.0).then_some((pill.text.as_str(), pill.warning, alpha))
-                });
-                let pill_height = if let Some((text, warning, alpha)) = brief {
-                    let h = paint_pill(&painter, rect, bottom, text, warning, alpha, p);
-                    ui.ctx().request_repaint();
-                    h
-                } else {
+                if self
+                    .pill
+                    .as_ref()
+                    .is_some_and(|pill| pill_expired(pill, now))
+                {
                     self.pill = None;
-                    if !self.card_open && !captured && *device == Device::Keyboard {
-                        paint_pill(
-                            &painter,
-                            rect,
-                            bottom,
-                            "Click the map to look around",
-                            false,
-                            1.0,
-                            p,
-                        )
+                }
+                let pill_height = if let Some(pill) = &self.pill {
+                    let alpha = pill_alpha(pill, now);
+                    ui.ctx().request_repaint();
+                    if alpha > 0.0 {
+                        paint_pill(&painter, rect, bottom, &pill.text, pill.warning, alpha, p)
                     } else {
                         0.0
                     }
+                } else if !self.card_open && !captured && *device == Device::Keyboard {
+                    paint_pill(
+                        &painter,
+                        rect,
+                        bottom,
+                        "Click the map to look around",
+                        false,
+                        1.0,
+                        p,
+                    )
+                } else {
+                    0.0
                 };
                 if pill_height > 0.0 {
                     bottom -= pill_height + 8.0 * p;
                 }
                 if self.card_open {
-                    let names = self.key_names.get_or_insert_with(KeyNames::detect).clone();
+                    let names = self.key_names();
                     paint_card(&painter, rect, bottom, active, *captured, *device, &names, p);
                     if self.card_dismiss_at.is_some() {
                         ui.ctx().request_repaint();
@@ -385,13 +411,15 @@ impl Hud {
     }
 }
 
-fn pill_alpha(pill: &Pill, now: Instant) -> f32 {
+fn pill_expired(pill: &Pill, now: f64) -> bool {
+    now >= pill.hold_until + FADE_OUT
+}
+
+fn pill_alpha(pill: &Pill, now: f64) -> f32 {
     if now < pill.hold_until {
-        let elapsed = now.saturating_duration_since(pill.shown_at).as_secs_f32();
-        (elapsed / FADE_IN).clamp(0.0, 1.0)
+        (((now - pill.shown_at).max(0.0)) / FADE_IN).clamp(0.0, 1.0) as f32
     } else {
-        let elapsed = now.saturating_duration_since(pill.hold_until).as_secs_f32();
-        (1.0 - elapsed / FADE_OUT).clamp(0.0, 1.0)
+        (1.0 - ((now - pill.hold_until).max(0.0)) / FADE_OUT).clamp(0.0, 1.0) as f32
     }
 }
 
@@ -562,9 +590,21 @@ fn paint_card(
     let title_w = title_galley.size().x;
     painter.galley(Pos2::new(left, y), title_galley, white(235, 1.0));
 
+    let metric_galley = metric.map(|metric| {
+        painter.layout_no_wrap(metric, FontId::proportional(12.0 * p), white(175, 1.0))
+    });
+    let metric_reserve = metric_galley
+        .as_ref()
+        .map_or(0.0, |galley| galley.size().x + 10.0 * p);
+    if let Some(m_galley) = metric_galley {
+        let mx = rect.right() - pad - m_galley.size().x;
+        painter.galley(Pos2::new(mx, y + 1.0 * p), m_galley, white(175, 1.0));
+    }
+
     if !subtitle.is_empty() {
         let mut sx = left + title_w + 6.0 * p;
-        if warn_sub {
+        let max_right = rect.right() - pad - metric_reserve;
+        if warn_sub && sx + 10.0 * p < max_right {
             painter.circle_filled(
                 Pos2::new(sx + 3.0 * p, y + 7.5 * p),
                 3.0 * p,
@@ -572,22 +612,12 @@ fn paint_card(
             );
             sx += 10.0 * p;
         }
-        let sub_galley = painter.layout_no_wrap(
-            subtitle,
-            FontId::proportional(12.0 * p),
-            white(150, 1.0),
-        );
-        painter.galley(Pos2::new(sx, y + 1.0 * p), sub_galley, white(150, 1.0));
-    }
-
-    if let Some(metric) = metric {
-        let m_galley = painter.layout_no_wrap(
-            metric,
-            FontId::proportional(12.0 * p),
-            white(175, 1.0),
-        );
-        let mx = rect.right() - pad - m_galley.size().x;
-        painter.galley(Pos2::new(mx, y + 1.0 * p), m_galley, white(175, 1.0));
+        let avail = (max_right - sx).max(0.0);
+        if avail >= 16.0 * p {
+            let sub_font = FontId::proportional(12.0 * p);
+            let sub_galley = fit_single_line(painter, &subtitle, sub_font, white(150, 1.0), avail);
+            painter.galley(Pos2::new(sx, y + 1.0 * p), sub_galley, white(150, 1.0));
+        }
     }
 
     y += head_h + 8.0 * p;
@@ -614,6 +644,41 @@ fn paint_card(
     );
     y += 8.0 * p;
     painter.galley(Pos2::new(left, y), foot_galley, white(150, 1.0));
+}
+
+fn fit_single_line(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
+    if full.size().x <= max_width {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut low, mut high) = (0usize, chars.len());
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let candidate = format!("{}…", chars[..mid].iter().collect::<String>().trim_end());
+        if painter
+            .layout_no_wrap(candidate, font.clone(), color)
+            .size()
+            .x
+            <= max_width
+        {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let fitted = if low == 0 {
+        "…".to_owned()
+    } else {
+        format!("{}…", chars[..low].iter().collect::<String>().trim_end())
+    };
+    painter.layout_no_wrap(fitted, font, color)
 }
 
 fn paint_row(
@@ -869,5 +934,34 @@ mod tests {
         );
         assert_eq!(model_label("jet_mesh"), "Jet");
         assert_eq!(model_label("_entity"), "Aircraft");
+    }
+
+    #[test]
+    fn new_status_pill_survives_its_initial_frame_and_expires_after_fade_out() {
+        let mut hud = Hud::default();
+        let active = ActiveHud::Walk {
+            view: walker::View::First,
+            gait: walker::Gait::Ground,
+            scale: 1.0,
+            scale_limit: None,
+            figure_missing: false,
+        };
+        hud.observe(&active, &Frame::default(), 10.0);
+        assert!(hud.pill.is_none());
+        let toggled = ActiveHud::Walk {
+            view: walker::View::Third,
+            gait: walker::Gait::Ground,
+            scale: 1.0,
+            scale_limit: None,
+            figure_missing: false,
+        };
+        hud.observe(&toggled, &Frame::default(), 10.0);
+        let pill = hud.pill.as_ref().expect("view change creates a pill");
+        assert_eq!(pill.text, "Third person");
+        assert!(!pill_expired(pill, 10.0));
+        assert_eq!(pill_alpha(pill, 10.0), 0.0);
+        assert!(pill_alpha(pill, 10.06) > 0.0);
+        assert!(!pill_expired(pill, 10.0 + PILL_HOLD));
+        assert!(pill_expired(pill, 10.0 + PILL_HOLD + FADE_OUT));
     }
 }
