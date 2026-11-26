@@ -555,7 +555,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &AtomicBool) -> io::Result<Tail> {
+fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &AtomicBool, cap: impl FnOnce() -> Result<i32, String>) -> io::Result<Tail> {
     let (first, last) = (query.timeline.first, query.timeline.last);
     let recorded = super::recorded(query)?;
     let mut tokens: BTreeMap<u32, Option<String>> = BTreeMap::new();
@@ -698,16 +698,20 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         chips,
         types,
         repair_icon: named.repair_icon,
-        factory_cap: match content.catalogue() {
-            Ok(catalogue) => match catalogue.defines() {
-                Ok(defines) => factory_cap(Ok(defines)),
-                Err(_) => factory_cap(content_reader_defines::defines::read(&catalogue.content.layers).as_ref().map_err(|why| why.to_string())),
-            },
-            Err(why) => factory_cap(Err(why.to_owned())),
-        },
+        factory_cap: cap(),
         unavailable: (!recorded).then(|| "Construction was not recorded.".to_owned()),
         warnings,
     })
+}
+
+fn recorded_factory_cap(content: &Content) -> Result<i32, String> {
+    match content.catalogue() {
+        Ok(catalogue) => match catalogue.defines() {
+            Ok(defines) => factory_cap(Ok(defines)),
+            Err(_) => factory_cap(content_reader_defines::defines::read(&catalogue.content.layers).as_ref().map_err(|why| why.to_string())),
+        },
+        Err(why) => factory_cap(Err(why.to_owned())),
+    }
 }
 
 fn factory_cap(defines: Result<&content_reader_defines::defines::Defines, String>) -> Result<i32, String> {
@@ -728,7 +732,10 @@ fn tail(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, can
     {
         return Ok(Arc::clone(found));
     }
-    let built = Arc::new(scan(source, query, &content, cancelled)?);
+    let built = Arc::new(std::thread::scope(|scope| {
+        let cap = scope.spawn(|| recorded_factory_cap(&content));
+        scan(source, query, &content, cancelled, || cap.join().unwrap_or_else(|_| Err("The most factories a construction line takes is not recorded: its read failed".to_owned())))
+    })?);
     kept.lock().unwrap_or_else(PoisonError::into_inner).0.insert(branch, (made, Arc::clone(&built)));
     Ok(built)
 }
