@@ -480,7 +480,7 @@ pub struct Terrain {
     programs: BTreeMap<Mode, viewer_scene_base::shader_scene::Program>,
     texel_reads: BTreeMap<Mode, String>,
     positions: wgpu::Buffer,
-    bytes: Vec<u8>,
+    bytes: content_reader_image::Bytes,
     map: [u32; 2],
     slabs: Vec<wgpu::Buffer>,
     sampled_slabs: usize,
@@ -610,7 +610,7 @@ impl Terrain {
     pub fn new(
         device: &wgpu::Device,
         effect: &Arc<Effect>,
-        bytes: &[u8],
+        bytes: &content_reader_image::Bytes,
         map: [u32; 2],
         samples: u32,
         workers: &Workers,
@@ -690,7 +690,7 @@ impl Terrain {
             programs: BTreeMap::new(),
             texel_reads: BTreeMap::new(),
             positions,
-            bytes: bytes.to_vec(),
+            bytes: bytes.clone(),
             map,
             slabs,
             sampled_slabs,
@@ -2202,7 +2202,7 @@ mod tests {
         let map = [512, 256];
         let (_serial, device, _queue) = viewer_gpu::test_support::gpu::device();
         let arena = gpu::Arena::new(&device);
-        let bytes = vec![200u8; (map[0] * map[1]) as usize];
+        let bytes = content_reader_image::Bytes::from(vec![200u8; (map[0] * map[1]) as usize]);
         let mut terrain = Terrain::new(&device, &effect, &bytes, map, 1, &Workers::default()).unwrap();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,

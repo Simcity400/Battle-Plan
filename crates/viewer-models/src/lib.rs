@@ -211,8 +211,9 @@ pub struct ModelLibrary {
     pub palette: Vec<PaletteJoint>,
     pub meshes: Vec<ModelMesh>,
     pub materials: Vec<ModelMaterial>,
-    pub textures: Vec<dds::Texture>,
+    pub textures: Vec<ModelTexture>,
     pub spaces: Vec<ColorSpace>,
+    uploads: Arc<Uploads>,
     pub index: BTreeMap<String, usize>,
     paths: BTreeMap<(String, ColorSpace), usize>,
     animations: BTreeMap<String, Option<Arc<mesh::Animation>>>,
@@ -226,6 +227,98 @@ pub struct ModelLibrary {
     alternative: bool,
     asset_namespace: Option<Arc<[identity::ContentLayer]>>,
 }
+
+pub struct ModelTexture {
+    path: Option<String>,
+    layers: Option<Arc<ResolvedLayers>>,
+    held: std::sync::Mutex<Option<dds::Texture>>,
+}
+
+impl ModelTexture {
+    pub fn held(texture: dds::Texture) -> Self {
+        Self {
+            path: None,
+            layers: None,
+            held: std::sync::Mutex::new(Some(texture)),
+        }
+    }
+
+    fn read(path: String, texture: dds::Texture) -> Self {
+        Self {
+            path: Some(path),
+            ..Self::held(texture)
+        }
+    }
+
+    pub fn source(&self) -> Option<dds::Texture> {
+        self.held.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+
+    fn upload(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        space: ColorSpace,
+        decode: Decode,
+    ) -> io::Result<Bound> {
+        let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
+        let bound = match (held.as_ref(), &self.path, &self.layers) {
+            (Some(texture), ..) => upload(device, queue, label, texture, space)?,
+            (None, Some(path), Some(layers)) => {
+                let texture = load_file(path, &|path| layers.read_uncovered_path(path), decode)
+                    .map_err(|error| invalid(format!("{path} could not be read again for this map: {error}")))?;
+                upload(device, queue, label, &texture, space)?
+            }
+            (None, ..) => return Err(invalid(format!("{label} has no source left to upload"))),
+        };
+        if self.path.is_some() && self.layers.is_some() {
+            *held = None;
+        }
+        Ok(bound)
+    }
+}
+
+#[cfg(test)]
+impl Clone for ModelTexture {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            layers: self.layers.clone(),
+            held: std::sync::Mutex::new(self.source()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for ModelTexture {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.source() == other.source()
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<dds::Texture> for ModelTexture {
+    fn eq(&self, other: &dds::Texture) -> bool {
+        self.source().as_ref() == Some(other)
+    }
+}
+
+impl std::fmt::Debug for ModelTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelTexture")
+            .field("path", &self.path)
+            .field("held", &self.source().map(|texture| (texture.width, texture.height, texture.format)))
+            .finish()
+    }
+}
+
+#[derive(Default)]
+struct Uploads(std::sync::Mutex<Vec<(wgpu::Device, std::sync::Weak<DeviceTextures>)>>);
+
+#[derive(Default)]
+pub struct DeviceTextures(std::sync::Mutex<Vec<Option<Arc<Bound>>>>);
+
 debug_fields!(ModelLibrary(this) {
     decode, palette, meshes, materials, textures, spaces, index, paths, animations, rigs, attachment_refusals, failed
 } {
@@ -684,12 +777,15 @@ impl ModelLibrary {
         }
         let textures = std::mem::take(&mut shard.textures);
         let mut texture_map = Vec::with_capacity(textures.len());
-        for (slot, texture) in textures.into_iter().enumerate() {
+        for (slot, mut texture) in textures.into_iter().enumerate() {
             let key = texture_keys[slot].expect("every texture has its path key");
             texture_map.push(match self.paths.get(key) {
                 Some(&global) => global,
                 None => {
                     let global = self.textures.len();
+                    if texture.layers.is_none() {
+                        texture.layers = self.layers.clone().or_else(|| shard.layers.clone());
+                    }
                     self.textures.push(texture);
                     self.spaces.push(shard.spaces[slot]);
                     self.paths.insert(key.clone(), global);
@@ -1348,7 +1444,7 @@ impl ModelLibrary {
             &|path| layers.read_uncovered_path(path),
             self.decode,
         )?;
-        self.textures.push(texture);
+        self.textures.push(ModelTexture::read(key.0.clone(), texture));
         self.spaces.push(space);
         let slot = self.textures.len() - 1;
         self.paths.insert(key, slot);
@@ -1360,15 +1456,49 @@ impl ModelLibrary {
         if let Some(slot) = self.paths.get(&key) {
             return *slot;
         }
-        self.textures.push(dds::Texture::from_rgba8(Rgba8Image {
+        self.textures.push(ModelTexture::held(dds::Texture::from_rgba8(Rgba8Image {
             width: 1,
             height: 1,
             pixels: vec![0, 0, 0, 0],
-        }));
+        })));
         self.spaces.push(space);
         let slot = self.textures.len() - 1;
         self.paths.insert(key, slot);
         slot
+    }
+
+    pub fn device_textures(&self, device: &wgpu::Device) -> Arc<DeviceTextures> {
+        let mut entries = self.uploads.0.lock().unwrap_or_else(|error| error.into_inner());
+        entries.retain(|(_, textures)| textures.strong_count() != 0);
+        if let Some(shared) = entries
+            .iter()
+            .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
+        {
+            return shared;
+        }
+        let shared = Arc::new(DeviceTextures::default());
+        entries.push((device.clone(), Arc::downgrade(&shared)));
+        shared
+    }
+
+    fn gpu_texture(
+        &self,
+        shared: &DeviceTextures,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        slot: usize,
+    ) -> io::Result<Arc<Bound>> {
+        let mut slots = shared.0.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(Some(bound)) = slots.get(slot) {
+            return Ok(Arc::clone(bound));
+        }
+        let bound = Arc::new(self.textures[slot].upload(device, queue, label, self.spaces[slot], self.decode)?);
+        if slots.len() <= slot {
+            slots.resize(slot + 1, None);
+        }
+        slots[slot] = Some(Arc::clone(&bound));
+        Ok(bound)
     }
 }
 
@@ -2009,7 +2139,8 @@ pub struct ModelPass {
     native_walk: native::walk::Layout,
     layers: Option<Arc<ResolvedLayers>>,
     decode: Decode,
-    textures: Vec<Option<Bound>>,
+    textures: Vec<Option<Arc<Bound>>>,
+    shared_textures: Option<Arc<DeviceTextures>>,
     materials: Vec<ModelMaterial>,
     ready: Vec<bool>,
     resident: Vec<bool>,
@@ -2720,6 +2851,7 @@ impl ModelPass {
             layers: library.layers.clone(),
             decode: library.decode,
             textures: (0..library.textures.len()).map(|_| None).collect(),
+            shared_textures: None,
             materials: library.materials.clone(),
             ready: vec![false; library.materials.len()],
             resident: Vec::new(),
@@ -2998,14 +3130,18 @@ impl ModelPass {
             normal,
             ..
         } = self.materials[material];
+        let shared = Arc::clone(
+            self.shared_textures
+                .get_or_insert_with(|| library.device_textures(device)),
+        );
         for slot in [diffuse, specular, normal] {
             if self.textures[slot].is_none() {
-                self.textures[slot] = Some(upload(
+                self.textures[slot] = Some(library.gpu_texture(
+                    &shared,
                     device,
                     queue,
                     &format!("{} texture {slot}", self.label),
-                    &library.textures[slot],
-                    library.spaces[slot],
+                    slot,
                 )?);
             }
         }

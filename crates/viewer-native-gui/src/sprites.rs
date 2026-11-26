@@ -683,7 +683,6 @@ impl IconTextures {
         &self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
     ) -> Vec<wgpu::BindGroup> {
         self.bound
             .iter()
@@ -693,16 +692,10 @@ impl IconTextures {
                     &wgpu::BindGroupDescriptor {
                         label: Some("icon page"),
                         layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&texture.view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(sampler),
-                            },
-                        ],
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&texture.view),
+                        }],
                     },
                 )
             })
@@ -771,7 +764,7 @@ pub struct SpritePass {
     _pipelines: Arc<SpritePipelines>,
     bind_groups: Vec<wgpu::BindGroup>,
     layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
+    sampler: wgpu::BindGroup,
     views: Vec<shader_pipeline::gpu::TextureBinding>,
     empty: Bound,
     lazy: Arc<LazyTextures>,
@@ -824,6 +817,7 @@ const INITIAL_VERTICES: u64 = 6 * 4096;
 
 struct SpritePipelines {
     layout: wgpu::BindGroupLayout,
+    samplers: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     fade_legacy: wgpu::RenderPipeline,
 }
@@ -838,8 +832,11 @@ impl SpritePipelines {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::TextureViewDimension::D2,
                 ),
-                sampler_entry(1),
             ],
+        });
+        let samplers = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sprite sampler"),
+            entries: &[sampler_entry(0)],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sprites"),
@@ -847,7 +844,7 @@ impl SpritePipelines {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sprites"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&samplers)],
             immediate_size: 0,
         });
         let target = |blend| {
@@ -930,6 +927,7 @@ impl SpritePipelines {
         });
         Self {
             layout,
+            samplers,
             pipeline,
             fade_legacy,
         }
@@ -948,7 +946,18 @@ impl SpritePass {
             SpritePipelines::new(device, format)
         });
         let layout = pipelines.layout.clone();
-        let bind_groups = textures.bind_all(device, &layout, textures.screen_clamp());
+        let bind_groups = textures.bind_all(device, &layout);
+        let sampler = shader_pipeline::gpu::stats::create_bind_group(
+            device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("sprite sampler"),
+                layout: &pipelines.samplers,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(textures.screen_clamp()),
+                }],
+            },
+        );
         let pipeline = pipelines.pipeline.clone();
         let fade_legacy = pipelines.fade_legacy.clone();
         let empty = upload(
@@ -985,7 +994,7 @@ impl SpritePass {
             _pipelines: pipelines,
             bind_groups,
             layout,
-            sampler: textures.screen_clamp().clone(),
+            sampler,
             views: textures.bound.iter().map(GuiTexture::binding).collect(),
             empty,
             lazy: Arc::clone(lazy),
@@ -1132,16 +1141,10 @@ impl SpritePass {
                 &wgpu::BindGroupDescriptor {
                     label: Some("lazy icon"),
                     layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&texture.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                    ],
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture.view),
+                    }],
                 },
             );
             self.dynamic.insert(
@@ -1961,6 +1964,8 @@ impl SpritePass {
                             pass.set_pipeline(&self.fade_legacy);
                             shader_pipeline::gpu::stats::state();
                             pass.set_vertex_buffer(0, self.fade_vertices.slice());
+                            shader_pipeline::gpu::stats::bind();
+                            pass.set_bind_group(1, &self.sampler, &[]);
                             bound = true;
                         }
                         shader_pipeline::gpu::stats::bind();
@@ -2015,6 +2020,8 @@ impl SpritePass {
                         pass.set_pipeline(&self.pipeline);
                         shader_pipeline::gpu::stats::state();
                         pass.set_vertex_buffer(0, self.vertices.slice());
+                        shader_pipeline::gpu::stats::bind();
+                        pass.set_bind_group(1, &self.sampler, &[]);
                     }
                     Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),
                 }
@@ -2839,7 +2846,7 @@ struct SpriteFragment {
 }
 
 @group(0) @binding(0) var sprite_texture: texture_2d<f32>;
-@group(0) @binding(1) var sprite_sampler: sampler;
+@group(1) @binding(0) var sprite_sampler: sampler;
 
 @vertex
 fn vertex_main(vertex: SpriteVertex) -> SpriteFragment {

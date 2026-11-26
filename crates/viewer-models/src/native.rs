@@ -760,10 +760,10 @@ struct ResourceIdentities {
 impl ResourceIdentities {
     fn observe(
         &mut self,
-        local: &[Option<Bound>],
+        local: &[Option<std::sync::Arc<Bound>>],
         globals: Option<[&wgpu::TextureView; 10]>,
     ) -> ResourceStamp {
-        let kept = |old: &Option<wgpu::TextureView>, new: &Option<Bound>| match (old, new) {
+        let kept = |old: &Option<wgpu::TextureView>, new: &Option<std::sync::Arc<Bound>>| match (old, new) {
             (None, _) => true,
             (Some(old), Some(new)) => *old == new.view,
             (Some(_), None) => false,

@@ -872,7 +872,7 @@ impl Scene {
             compiled_terrain: viewer_terrain::terrain_shader::Terrain::new(
                 device,
                 &assets.terrain_shader,
-                assets.heightmap_texels(),
+                &assets.heightmap.indices,
                 [assets.map.width, assets.map.height],
                 samples,
                 workers,

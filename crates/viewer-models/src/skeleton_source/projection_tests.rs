@@ -55,13 +55,13 @@ fn expected_add(
                 .insert((String::new(), space), library.textures.len());
             library
                 .textures
-                .push(content_reader_image::dds::Texture::from_rgba8(
+                .push(crate::ModelTexture::held(content_reader_image::dds::Texture::from_rgba8(
                     content_reader_image::Rgba8Image {
                         width: 1,
                         height: 1,
                         pixels: vec![0; 4],
                     },
-                ));
+                )));
             library.spaces.push(space);
         }
         library.materials.push(ModelMaterial {

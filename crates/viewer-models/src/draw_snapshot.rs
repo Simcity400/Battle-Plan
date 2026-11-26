@@ -97,11 +97,11 @@ mod tests {
             &mut Vec::new(),
         )
         .unwrap();
-        library.textures.push(dds::Texture::from_rgba8(Rgba8Image {
+        library.textures.push(crate::ModelTexture::held(dds::Texture::from_rgba8(Rgba8Image {
             width: 1,
             height: 1,
             pixels: vec![color, 0, 0, 255],
-        }));
+        })));
         library.spaces.push(ColorSpace::Linear);
         library
             .paths
@@ -180,7 +180,7 @@ mod tests {
             .textures
             .iter()
             .zip(&library.spaces)
-            .map(|(texture, space)| format!("{space:?}:{texture:?}"))
+            .map(|(texture, space)| format!("{space:?}:{:?}", texture.source()))
             .collect();
         library
             .meshes
