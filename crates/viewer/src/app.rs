@@ -4309,7 +4309,7 @@ impl Viewer {
         };
         let extent = ui_scale_extent(pixels, ui_scale);
         self.window_layout = if interface {
-            let viewport = viewer_native_gui::native_shader::draw::gui_viewport(pixels, ui_scale);
+            let viewport = extent.map(|value| value as u32);
             Some(document.icons.counters.window_cache.at(viewport).map_err(|error| error.to_string())?)
         } else {
             None
