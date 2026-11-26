@@ -1964,6 +1964,7 @@ impl SpritePass {
                             pass.set_pipeline(&self.fade_legacy);
                             shader_pipeline::gpu::stats::state();
                             pass.set_vertex_buffer(0, self.fade_vertices.slice());
+                            shader_pipeline::gpu::stats::bind();
                             pass.set_bind_group(1, &self.sampler, &[]);
                             bound = true;
                         }
@@ -2019,6 +2020,7 @@ impl SpritePass {
                         pass.set_pipeline(&self.pipeline);
                         shader_pipeline::gpu::stats::state();
                         pass.set_vertex_buffer(0, self.vertices.slice());
+                        shader_pipeline::gpu::stats::bind();
                         pass.set_bind_group(1, &self.sampler, &[]);
                     }
                     Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),

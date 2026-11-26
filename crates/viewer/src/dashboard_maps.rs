@@ -162,7 +162,7 @@ pub struct DashboardMaps {
     visual_reports: Vec<crate::visual_fallback::Report>,
     limits: MapLimits,
     waiting_source: Option<PathBuf>,
-    seeded: Option<(SourceKey, std::sync::Weak<Content>)>,
+    seeded: Option<(SourceKey, std::sync::Weak<Content>, Config)>,
     diagnostics: bool,
     muted: bool,
     audio_owner: Option<String>,
@@ -275,6 +275,7 @@ impl DashboardMaps {
     }
 
     pub fn seed_content(&mut self, source: Arc<Source>, content: Arc<Content>, config: &Config) {
+        self.seeded = None;
         if !same_config(&self.config, config)
             || source.path() != content.source_path.as_path()
             || content.visual_mods != self.service.map_settings(&source.replay()).visual_mods
@@ -294,7 +295,7 @@ impl DashboardMaps {
         {
             return;
         }
-        self.seeded = Some((source.key().clone(), Arc::downgrade(&content)));
+        self.seeded = Some((source.key().clone(), Arc::downgrade(&content), config.clone()));
         for (key, entry) in &mut self.sources {
             if key.recording == *source.key()
                 && entry.content.is_none()
@@ -311,9 +312,10 @@ impl DashboardMaps {
     }
 
     fn seeded(&self, key: &MapSourceKey) -> Option<Arc<Content>> {
-        let (recording, content) = self.seeded.as_ref()?;
+        let (recording, content, config) = self.seeded.as_ref()?;
         let content = content.upgrade()?;
-        (*recording == key.recording
+        (same_config(config, &self.config)
+            && *recording == key.recording
             && content.texture_quality == key.texture_quality
             && content.visual_mods == key.visual_mods)
             .then_some(content)

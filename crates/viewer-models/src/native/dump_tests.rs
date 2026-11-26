@@ -472,6 +472,7 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
         );
     }
 
+    drop(model);
     let mut oversized = library.textures[blank].source().unwrap();
     oversized.width = device.limits().max_texture_dimension_2d + 1;
     library.textures[blank] = crate::ModelTexture::held(oversized);

@@ -180,7 +180,7 @@ mod tests {
             .textures
             .iter()
             .zip(&library.spaces)
-            .map(|(texture, space)| format!("{space:?}:{texture:?}"))
+            .map(|(texture, space)| format!("{space:?}:{:?}", texture.source()))
             .collect();
         library
             .meshes
