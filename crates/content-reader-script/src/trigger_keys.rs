@@ -685,6 +685,7 @@ pub fn frame(template: &Template) -> Vec<u8> {
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> synthetic_game::Executable {
     use crate::scope::ScopeKind::{Character, Combat, Country, State};
+    let (flag, flag_fields) = crate::test_game::TriggerShape::Flag.readers();
     let country = Country.bit();
     let state = State.bit();
     let combat = Combat.bit();
@@ -712,12 +713,12 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
         .trigger("hardness", combat, Reader::Comparison, 0)
         .trigger("has_any_captured_general", country, Reader::Assign, 0)
         .trigger("has_artillery_ratio", combat, Reader::Comparison, 0)
-        .trigger("has_character_flag", character, Reader::Assign, 0)
+        .trigger("has_character_flag", character, flag, flag_fields)
         .trigger("has_civil_war", country, Reader::Assign, 0)
         .trigger("has_combat_modifier", combat, Reader::Assign, 0)
         .trigger("has_completed_focus", country, Reader::Assign, 0)
         .trigger("has_cosmetic_tag", country, Reader::Assign, 0)
-        .trigger("has_country_flag", country, Reader::Assign, 0)
+        .trigger("has_country_flag", country, flag, flag_fields)
         .trigger("has_country_leader", country, Reader::Body, 0x140457AE0)
         .trigger("has_country_leader_ideology", country, Reader::Assign, 0)
         .trigger("has_country_leader_with_trait", country, Reader::Assign, 0)
@@ -728,7 +729,7 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
             Reader::Own(0x140454140),
             0x140457B50,
         )
-        .trigger("has_global_flag", 0, Reader::Assign, 0)
+        .trigger("has_global_flag", 0, flag, flag_fields)
         .trigger("has_government", country, Reader::Assign, 0)
         .trigger("has_idea", country, Reader::Assign, 0)
         .trigger(

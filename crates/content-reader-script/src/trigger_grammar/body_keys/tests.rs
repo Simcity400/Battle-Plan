@@ -102,7 +102,9 @@ fn province_filter_and_building_lookup_use_their_own_readers() {
 
 #[test]
 fn variable_blocks_use_the_expression_reader() {
-    triggers(&[(0x20_0021, "synthetic_expression", 0x14045AC70)]);
+    crate::test_game::with(|game| {
+        crate::test_game::TriggerShape::VariableExpression.register(game, "synthetic_expression", 0)
+    });
     for class in ["synthetic_expression"] {
         let result = read(
             &format!(
