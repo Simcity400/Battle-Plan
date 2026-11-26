@@ -176,4 +176,19 @@ test('raidTallyRaceProjection sends group to Rust, keys by slot, never claims em
   assert.equal(launchRow.value?.value.kind, 'partial');
   assert.equal(launchRow.tooltip?.items?.[0]?.partialReason, '1 raid(s) up to this date have an unrecorded raider');
   assert.equal(launchRow.tooltip?.items?.[1]?.partialReason, undefined, 'Successes hover figure stays complete in Launched mode');
+
+  const unattrLaunchInBoth = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, metric: 'both', unattributed: 1, unattributedLaunched: 1, unattributedSucceeded: 0, partial: '1 raid(s) up to this date have an unrecorded raider' }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+      }),
+    }),
+    { ...OPTS, metric: 'both', top: null },
+  );
+  const bothRow = unattrLaunchInBoth.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.equal(bothRow.value?.value.kind, 'partial');
+  assert.equal(bothRow.segments?.find(s => s.key === 'succeeded')?.value.kind, 'known', 'Succeeded bar segment stays complete when all successes are attributed');
+  assert.equal(bothRow.segments?.find(s => s.key === 'other')?.value.kind, 'partial', 'Other launched segment reflects unattributed launches');
 });

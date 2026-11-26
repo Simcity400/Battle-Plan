@@ -1110,6 +1110,41 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!(unnamed_at.rows.first().map(|row| (row.country.clone(), row.launched, row.missing.as_deref())), Some((Country::Slot(15), 1, None)));
     assert_eq!(unnamed_top.missing, None);
     assert_eq!(unnamed_top.rows.first().map(|row| (row.country.clone(), row.launched)), Some((Country::Slot(15), 1)));
+
+    let tie_frames = vec![
+        make_frame(
+            1,
+            10,
+            vec![(10, 7, b"ZZZ".as_slice()), (20, 9, b"AAA".as_slice())],
+            30,
+            TableView::Complete(TableRows::Raids(vec![
+                raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+                raid_row(2, 9, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+            ])),
+            vec![
+                target_row(1, RaidScope { province: 10, ..Default::default() }, 40),
+                target_row(2, RaidScope { province: 11, ..Default::default() }, 40),
+            ],
+        ),
+        make_frame(1, 11, vec![(10, 7, b"ZZZ".as_slice()), (20, 9, b"AAA".as_slice())], 30, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+    ];
+    let tie_source = make_source(tie_frames);
+    let tie_lines = RaidTally::load(
+        &tie_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![], top: Some(1), metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let tie_at = RaidTallyAt::load(
+        &tie_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: None, top: Some(1), metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(tie_lines.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7]);
+    assert_eq!(tie_at.rows.iter().map(|r| r.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(7)]);
 }
 
 #[test]

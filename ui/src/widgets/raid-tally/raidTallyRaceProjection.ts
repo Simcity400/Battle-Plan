@@ -172,22 +172,6 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
 
       const primary = options.metric === 'succeeded' ? item.succeeded : item.launched;
       const partialReason = reply.partial ?? null;
-      const value = partialReason
-        ? partialValue(primary, partialReason)
-        : primary === 0 ? zeroValue() : knownValue(primary);
-      const barFill = pres.color ?? colour(options.surface, 0);
-      let segments: BarsSegment[] | undefined;
-      if (options.metric === 'both' && item.launched > 0) {
-        const succeeded = Math.min(item.launched, item.succeeded);
-        const other = item.launched - succeeded;
-        segments = [];
-        if (succeeded > 0) {
-          segments.push({ key: 'succeeded', label: 'Succeeded', share: succeeded / item.launched, value: partialReason ? partialValue(succeeded, partialReason) : knownValue(succeeded), format: { decimals: 0 }, color: barFill });
-        }
-        if (other > 0) {
-          segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: partialReason ? partialValue(other, partialReason) : knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
-        }
-      }
       const isUnattributedOnly = partialReason !== null && reply.unattributed > 0 && partialReason.includes('unrecorded raider');
       const gapPartial = partialReason !== null && !isUnattributedOnly ? partialReason : null;
       const launchedPartial = gapPartial
@@ -198,6 +182,24 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         ?? (reply.unattributedSucceeded > 0
           ? `${formatScalar(reply.unattributedSucceeded, { decimals: 0 })} raid(s) up to this date have an unrecorded raider`
           : null);
+      const primaryPartial = options.metric === 'succeeded' ? succeededPartial : launchedPartial;
+      const otherPartial = launchedPartial ?? succeededPartial;
+      const value = primaryPartial
+        ? partialValue(primary, primaryPartial)
+        : primary === 0 ? zeroValue() : knownValue(primary);
+      const barFill = pres.color ?? colour(options.surface, 0);
+      let segments: BarsSegment[] | undefined;
+      if (options.metric === 'both' && item.launched > 0) {
+        const succeeded = Math.min(item.launched, item.succeeded);
+        const other = item.launched - succeeded;
+        segments = [];
+        if (succeeded > 0) {
+          segments.push({ key: 'succeeded', label: 'Succeeded', share: succeeded / item.launched, value: succeededPartial ? partialValue(succeeded, succeededPartial) : knownValue(succeeded), format: { decimals: 0 }, color: barFill });
+        }
+        if (other > 0) {
+          segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: otherPartial ? partialValue(other, otherPartial) : knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
+        }
+      }
       const tooltipItems: TooltipListItem[] = [
         { label: 'Launches', value: countText(item.launched), ...(launchedPartial ? { partialReason: launchedPartial } : {}) },
         { label: 'Successes', value: countText(item.succeeded), ...(succeededPartial ? { partialReason: succeededPartial } : {}) },

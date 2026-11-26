@@ -1857,8 +1857,8 @@ impl Product for RaidTallyAt {
                     RaidTallyMetric::Both => b.succeeded.cmp(&a.succeeded),
                     RaidTallyMetric::Launched | RaidTallyMetric::Succeeded => std::cmp::Ordering::Equal,
                 })
-                .then_with(|| a.tag.cmp(&b.tag))
                 .then_with(|| a.country.cmp(&b.country))
+                .then_with(|| a.tag.cmp(&b.tag))
         });
         if let Some(limit) = params.top {
             rows_out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
