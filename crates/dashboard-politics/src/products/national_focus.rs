@@ -69,8 +69,11 @@ impl Product for NationalFocus {
             .collect::<BTreeSet<_>>();
         let continuous_tokens = fold.segments.iter().filter_map(|segment| segment.order.continuous.as_deref()).collect::<BTreeSet<_>>();
         let (static_text, _) = national.text_catalogue(national_tokens.clone(), cancelled)?;
-        let (continuous_static_text, _) = continuous.text_catalogue(continuous_tokens, cancelled)?;
-        let (artwork, warnings) = national.focus_metadata(national_tokens, cancelled)?;
+        let (continuous_static_text, continuous_warnings) = continuous.text_catalogue(continuous_tokens, cancelled)?;
+        let (artwork, mut warnings) = national.focus_metadata(national_tokens, cancelled)?;
+        warnings.extend(continuous_warnings);
+        warnings.sort();
+        warnings.dedup();
         let reply = FocusReply { history: fold.history(), missing: fold.missing.clone(), artwork, static_text: Some(static_text), continuous_static_text, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)

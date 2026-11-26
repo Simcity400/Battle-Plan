@@ -12,7 +12,7 @@ use crate::{
 };
 use content_reader_parser::coverage::{Coverage, Gap};
 use content_reader_layers::script_files::ScriptPath;
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
 
@@ -20,8 +20,8 @@ pub type Definitions = BTreeMap<String, FocusDefinition>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Focuses {
-    national: Store,
-    continuous: Store,
+    national: Arc<Store>,
+    continuous: Arc<Store>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -109,8 +109,8 @@ impl Focuses {
 
     fn store_mut(&mut self, database: Database) -> &mut Store {
         match database {
-            Database::National => &mut self.national,
-            Database::Continuous => &mut self.continuous,
+            Database::National => Arc::make_mut(&mut self.national),
+            Database::Continuous => Arc::make_mut(&mut self.continuous),
         }
     }
 
@@ -553,18 +553,34 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    read_databases(layers, true)
+    let national = read_store(layers, Database::National)?;
+    let continuous = read_store(layers, Database::Continuous)?;
+    let mut files: Vec<_> = national.notes.iter().chain(&continuous.notes).collect();
+    files.sort_by(|a, b| (a.layer, &a.path).cmp(&(b.layer, &b.path)));
+    let warnings = files.into_iter().flat_map(|file| file.notes.iter().cloned()).collect();
+    Ok((Focuses { national: Arc::clone(&national.store), continuous: Arc::clone(&continuous.store) }, warnings))
 }
 
 pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    read_databases(layers, false)
+    read_database(layers, Database::National)
+}
+
+pub fn read_database(layers: &ResolvedLayers, database: Database) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+    let read = read_store(layers, database)?;
+    let warnings = read.notes.iter().flat_map(|file| file.notes.iter().cloned()).collect();
+    let store = Arc::clone(&read.store);
+    let definitions = match database {
+        Database::National => Focuses { national: store, ..Default::default() },
+        Database::Continuous => Focuses { continuous: store, ..Default::default() },
+    };
+    Ok((definitions, warnings))
 }
 
 fn focus_database(path: &[u8]) -> Option<Database> {
-    let lower = path.to_ascii_lowercase();
-    if lower.starts_with(b"common/national_focus/") {
+    let starts = |prefix: &[u8]| path.get(..prefix.len()).is_some_and(|part| part.eq_ignore_ascii_case(prefix));
+    if starts(b"common/national_focus/") {
         Some(Database::National)
-    } else if lower.starts_with(b"common/continuous_focus/") {
+    } else if starts(b"common/continuous_focus/") {
         Some(Database::Continuous)
     } else {
         None
@@ -573,14 +589,12 @@ fn focus_database(path: &[u8]) -> Option<Database> {
 
 fn database_paths(
     layers: &ResolvedLayers,
-    continuous: bool,
+    database: Option<Database>,
 ) -> io::Result<Vec<(usize, ScriptPath)>> {
     let mut paths = layers
         .effective_paths()?
         .filter(|(path, _)| {
-            focus_database(path)
-                .is_some_and(|database| continuous || database == Database::National)
-                && path.ends_with(b".txt")
+            path.ends_with(b".txt") && focus_database(path).is_some_and(|found| database.is_none_or(|wanted| wanted == found))
         })
         .map(|(path, layer)| (layer, ScriptPath::new(path.to_vec())))
         .collect::<Vec<_>>();
@@ -588,26 +602,45 @@ fn database_paths(
     Ok(paths)
 }
 
-fn read_databases(
-    layers: &ResolvedLayers,
-    continuous: bool,
-) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    let paths = database_paths(layers, continuous)?;
-    let names = layers.key_names()?;
-    let workers = std::thread::available_parallelism().map_or(1, usize::from);
-    read_files(&paths, &names, workers, |path| path.read(layers), parse)
+struct FileNotes {
+    layer: usize,
+    path: ScriptPath,
+    notes: Vec<crate::Diagnostic>,
+}
+
+struct ReadStore {
+    store: Arc<Store>,
+    notes: Vec<FileNotes>,
+}
+
+fn read_store(layers: &ResolvedLayers, database: Database) -> io::Result<Arc<ReadStore>> {
+    let product = match database {
+        Database::National => "national focus definitions",
+        Database::Continuous => "continuous focus definitions",
+    };
+    layers.retained_product(product, 1, &[], |layers| {
+        let paths = database_paths(layers, Some(database))?;
+        let names = layers.key_names()?;
+        let workers = std::thread::available_parallelism().map_or(1, usize::from);
+        let (definitions, notes) = parse_files(&paths, &names, workers, |path| path.read(layers), parse)?;
+        let store = match database {
+            Database::National => definitions.national,
+            Database::Continuous => definitions.continuous,
+        };
+        Ok(ReadStore { store, notes })
+    })
 }
 
 type ParsedFile =
     Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
 
-fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
+fn parse_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
     paths: &[(usize, ScriptPath)],
     names: &KeyNames,
     workers: usize,
     mut read: impl FnMut(&ScriptPath) -> io::Result<B>,
     parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
-) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+) -> io::Result<(Focuses, Vec<FileNotes>)> {
     let mut result = Focuses::default();
     let mut warnings = Vec::new();
     for wave in paths.chunks(workers.max(1)) {
@@ -646,23 +679,19 @@ fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
                     .collect::<Vec<_>>()
             })
         };
-        for ((path, _), parsed) in files.into_iter().zip(parsed) {
-            match parsed {
+        for ((layer, path), parsed) in wave.iter().zip(parsed) {
+            let notes = match parsed {
                 Ok((definitions, notes)) => {
                     result.read_file(database_of(path), definitions);
-                    warnings.extend(
-                        notes
-                            .into_iter()
-                            .map(|(kind, note)| (kind, format!("{path}: {note}"))),
-                    );
+                    notes.into_iter().map(|(kind, note)| (kind, format!("{path}: {note}"))).collect()
                 }
                 Err((kind, error)) => {
-                    warnings.push((
-                        kind,
-                        format!("Focus definitions unavailable in {path}: {error}"),
-                    ));
                     result.refuse_file(database_of(path), &path.to_string(), error.to_string());
+                    vec![(kind, format!("Focus definitions unavailable in {path}: {error}"))]
                 }
+            };
+            if !notes.is_empty() {
+                warnings.push(FileNotes { layer: *layer, path: path.clone(), notes });
             }
         }
     }

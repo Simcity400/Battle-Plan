@@ -198,7 +198,8 @@ fn technology_children(
 
 #[derive(Default)]
 struct PreparedContent {
-    focus: CachedResult<Preparation>,
+    national: CachedResult<Preparation>,
+    continuous: CachedResult<Preparation>,
     technology: CachedResult<Preparation>,
 }
 
@@ -220,8 +221,8 @@ impl Preparation {
         let mut folder_warnings = Vec::new();
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
             match kind {
-                Kind::Focus(_) => {
-                    let (definitions, definition_warnings) = content_reader_focus::focus::read(layers)?;
+                Kind::Focus(database) => {
+                    let (definitions, definition_warnings) = content_reader_focus::focus::read_database(layers, focus_database(database))?;
                     warnings.extend(
                         definition_warnings
                             .iter()
@@ -571,7 +572,8 @@ impl Context {
         let layers = &catalogue.content.layers;
         let prepared = layers.derived::<PreparedContent>();
         let slot = match kind {
-            Kind::Focus(_) => &prepared.focus,
+            Kind::Focus(FocusDatabase::National) => &prepared.national,
+            Kind::Focus(FocusDatabase::Continuous) => &prepared.continuous,
             Kind::Technology => &prepared.technology,
         };
         let prepared = slot
@@ -620,7 +622,7 @@ impl Context {
     #[cfg(any(test, feature = "test-support"))]
     pub fn content_loads(catalogue: &Catalogue) -> usize {
         let prepared = catalogue.content.layers.derived::<PreparedContent>();
-        prepared.focus.loads() + prepared.technology.loads() + catalogue.content_loads()
+        prepared.national.loads() + prepared.continuous.loads() + prepared.technology.loads() + catalogue.content_loads()
     }
 
     pub fn research_folders(
@@ -2053,7 +2055,6 @@ mod tests {
                     .unwrap();
             let continuous =
                 Context::load(catalogue, Kind::Focus(FocusDatabase::Continuous)).unwrap();
-            assert!(Arc::ptr_eq(&national.definitions, &continuous.definitions));
             (national, continuous, folders)
         };
         let texts = |context: &Context| {
@@ -2105,6 +2106,8 @@ mod tests {
         );
 
         let (mut national, mut continuous, _folders) = contexts(true);
+        assert!(national.tokens().1.iter().all(|(_, note)| !note.contains("continuous_focus/")));
+        assert!(continuous.tokens().1.iter().any(|(_, note)| note.contains("continuous_focus/zz_refused.txt")));
         assert_eq!(
             texts(&national),
             [

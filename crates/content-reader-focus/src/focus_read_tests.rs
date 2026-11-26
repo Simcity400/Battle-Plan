@@ -7,7 +7,18 @@ use std::sync::{
 };
 
 fn paths(layers: &ResolvedLayers) -> Vec<(usize, ScriptPath)> {
-    database_paths(layers, true).unwrap()
+    database_paths(layers, None).unwrap()
+}
+
+fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
+    paths: &[(usize, ScriptPath)],
+    names: &KeyNames,
+    workers: usize,
+    read: impl FnMut(&ScriptPath) -> io::Result<B>,
+    parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
+) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+    let (definitions, files) = parse_files(paths, names, workers, read, parser)?;
+    Ok((definitions, files.into_iter().flat_map(|file| file.notes).collect()))
 }
 
 fn serial(
@@ -47,6 +58,9 @@ fn serial(
 fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io::Result<()> {
     content_reader_script::test_game::enter();
     let stack = Stack::new("parallel_focus_precedence");
+    let empty = stack.layers(&[]);
+    let names = empty.key_names()?;
+    assert_eq!(read(&empty)?, serial(&empty, &names)?);
     for (layer, path, title) in [
         (
             stack.base(),
@@ -125,10 +139,15 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
             expected,
         );
     }
-    assert_eq!(read(&layers)?, expected);
+    let combined = read(&layers)?;
+    assert_eq!(combined, expected);
     let (national, _) = read_national(&layers)?;
     assert_eq!(national.national, expected.0.national);
-    assert_eq!(national.continuous, Store::default());
+    assert_eq!(*national.continuous, Store::default());
+    assert!(std::ptr::eq(
+        national.get_in(Database::National, "SYN_DUPLICATE").unwrap().unwrap(),
+        combined.0.get_in(Database::National, "SYN_DUPLICATE").unwrap().unwrap(),
+    ));
     Ok(())
 }
 
@@ -191,6 +210,10 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
 {
     content_reader_script::test_game::enter();
     let stack = Stack::new("parallel_focus_diagnostics");
+    for layer in [stack.base(), stack.addon()] {
+        let name = if layer == stack.base() { "base" } else { "mod" };
+        stack.write(&layer, &format!("common/continuous_focus/{name}.txt"), "continuous_focus_palette={focus={text=MISSING_ID}}");
+    }
     for (file, text) in [
         ("a", "shared_focus=9 id=RECOVERED text=RECOVERED_TITLE }"),
         (
@@ -271,6 +294,12 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
         );
     }
     assert_eq!(read(&layers)?, expected);
+    let national = read_national(&layers)?;
+    let national_notes: Vec<_> = expected.1.iter().filter(|(_, note)| note.contains("common/national_focus/")).cloned().collect();
+    assert!(expected.1.len() > national_notes.len());
+    assert_eq!(national.1, national_notes);
+    assert_eq!(*national.0.continuous, Store::default());
+    assert!(expected.0.get_in(Database::Continuous, "UNDEFINED").is_err());
     Ok(())
 }
 
