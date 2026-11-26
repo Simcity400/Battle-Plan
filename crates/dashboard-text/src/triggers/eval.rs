@@ -58,12 +58,39 @@ impl Count {
     }
 }
 
+enum EvaluationState {
+    Idle,
+    Running,
+    Diverged(Failure),
+}
+
+pub(super) struct Evaluation<'e> {
+    state: &'e RefCell<EvaluationState>,
+    outermost: bool,
+}
+
+impl Evaluation<'_> {
+    pub(super) fn divergence(&self) -> Option<Failure> {
+        match &*self.state.borrow() {
+            EvaluationState::Diverged(why) => Some(why.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl Drop for Evaluation<'_> {
+    fn drop(&mut self) {
+        if self.outermost {
+            self.state.replace(EvaluationState::Idle);
+        }
+    }
+}
+
 pub struct Evaluator<'e, 'a> {
     pub(super) world: &'e World<'a>,
     combat: Option<&'e dyn Combat>,
     stack: RefCell<Vec<Vec<u8>>>,
-    pub(super) diverged: RefCell<Option<Failure>>,
-    pub(super) evaluations: Cell<usize>,
+    evaluation: RefCell<EvaluationState>,
     pub(super) aliases: RefCell<Vec<super::aliases::Entry>>,
     temps: Temps,
     pub(super) local_temps: RefCell<BTreeMap<Vec<u8>, Result<Value, Failure>>>,
@@ -149,8 +176,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             world,
             combat,
             stack: RefCell::default(),
-            diverged: RefCell::default(),
-            evaluations: Cell::new(0),
+            evaluation: RefCell::new(EvaluationState::Idle),
             aliases: RefCell::default(),
             temps: Temps::Fresh,
             local_temps: RefCell::default(),
@@ -600,18 +626,22 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.stack.borrow_mut().pop();
     }
 
-    pub(super) fn diverge(&self, why: Failure) -> Eval {
-        self.diverged.replace(Some(why.clone()));
-        Eval::unknown(why)
+    pub(super) fn begin_evaluation(&self) -> Evaluation<'_> {
+        let mut state = self.evaluation.borrow_mut();
+        let outermost = matches!(*state, EvaluationState::Idle);
+        if outermost {
+            *state = EvaluationState::Running;
+        }
+        Evaluation {
+            state: &self.evaluation,
+            outermost,
+        }
     }
 
-    pub(super) fn divergence(&self) -> Option<Failure> {
-        self.diverged.borrow().clone()
-    }
-
-    pub(super) fn begin_composition(&self) {
-        if self.evaluations.get() == 0 {
-            self.diverged.replace(None);
+    pub(super) fn record_divergence(&self, why: &Failure) {
+        let mut state = self.evaluation.borrow_mut();
+        if !matches!(*state, EvaluationState::Idle) {
+            *state = EvaluationState::Diverged(why.clone());
         }
     }
 

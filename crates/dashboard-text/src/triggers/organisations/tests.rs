@@ -383,6 +383,21 @@ fn a_window_asks_a_traits_visibility_and_availability_by_token() {
 }
 
 #[test]
+fn a_cyclic_trait_does_not_change_an_absent_traits_visibility() {
+    with_organisations(&organisations(), |world| {
+        let evaluator = Evaluator::new(world, None);
+        assert!(matches!(
+            evaluator.trait_condition(MIO, "loop_trait", OrganisationCondition::Available),
+            Err(Undecided::Diverged(_))
+        ));
+        assert_eq!(
+            evaluator.trait_condition(MIO, "absent_trait", OrganisationCondition::Visible),
+            Ok(false)
+        );
+    });
+}
+
+#[test]
 fn equipment_types_and_research_categories() {
     with_organisations(&organisations(), |world| {
         assert_cases(

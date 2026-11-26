@@ -106,7 +106,7 @@ impl Evaluator<'_, '_> {
                     }
             });
             if endless {
-                self.diverged.replace(Some(why.clone()));
+                self.record_divergence(&why);
             }
             return Err(why);
         }

@@ -319,6 +319,7 @@ impl Evaluator<'_, '_> {
         token: &str,
         condition: OrganisationCondition,
     ) -> Result<bool, Undecided> {
+        let evaluation = self.begin_evaluation();
         let value = match condition {
             OrganisationCondition::Available => {
                 self.trait_availability(reference, token.as_bytes(), true, true)
@@ -341,7 +342,7 @@ impl Evaluator<'_, '_> {
             })(),
         };
         let decided = value.unwrap_or_else(|why| Eval::unknown(why)).decided();
-        match self.divergence() {
+        match evaluation.divergence() {
             Some(why) => Err(Undecided::Diverged(why.to_string())),
             None => decided.map_err(Undecided::Unknown),
         }
@@ -409,8 +410,9 @@ impl Evaluator<'_, '_> {
         reference: u64,
         order: &[(OrganisationCondition, &[Item])],
     ) -> Result<bool, Undecided> {
+        let evaluation = self.begin_evaluation();
         let decided = self.organisation_conditions_value(reference, order).decided();
-        match self.divergence() {
+        match evaluation.divergence() {
             Some(why) => Err(Undecided::Diverged(why.to_string())),
             None => decided.map_err(Undecided::Unknown),
         }
@@ -440,11 +442,11 @@ impl Evaluator<'_, '_> {
         reference: u64,
         parts: impl IntoIterator<Item = (String, &'b [Item])>,
     ) -> Eval {
-        self.begin_composition();
+        let evaluation = self.begin_evaluation();
         let mut result = Eval::True;
         for (what, body) in parts {
             let value = self.organisation_condition(reference, body, what);
-            if let Some(why) = self.divergence() {
+            if let Some(why) = evaluation.divergence() {
                 if let Eval::Unknown(reasons) = &result {
                     for failure in reasons {
                         failure.consumed();
@@ -468,7 +470,9 @@ impl Evaluator<'_, '_> {
             let world = self.world();
             let owner = world.slot(world.industrial_organisation(reference)?.owner);
             if let Some(why) = self.enter_frame(what.clone().into_bytes()) {
-                return Ok(self.diverge(refused(why)));
+                let why = refused(why);
+                self.record_divergence(&why);
+                return Ok(Eval::unknown(why));
             }
             let graph = Rc::new(RefCell::new(EventScopes::organisation(reference, owner)));
             let _bound = self.bind_event_scopes(graph);
