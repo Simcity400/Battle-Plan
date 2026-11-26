@@ -611,7 +611,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const won = paintModel.value.kind === 'known' || paintModel.value.kind === 'zero' ? Number(paintModel.value.value) : null;
     const sec = cell?.secondaryValue;
     const lost = sec && (sec.kind === 'known' || sec.kind === 'zero') ? Number(sec.value) : null;
-    if (formatted.kind === 'notRecorded') {
+    if (formatted.kind === 'notRecorded' || paintModel.value.kind === 'partial' || sec?.kind === 'notRecorded' || sec?.kind === 'partial') {
       drawMissingMark(ctx, left, middle, Math.max(0, right - left), theme, { align: 'right' });
       return;
     }

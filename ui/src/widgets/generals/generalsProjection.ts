@@ -116,9 +116,13 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
     { ...LOST!, priority: 2, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
       value: row => count(row.leader.lost ?? 0, row.leader.foughtPartial) },
     { ...WIN_RATE!, priority: 1, numeric: true, cellKind: 'winRate', barEligible: false,
-      extra: row => ({ secondaryValue: count(row.leader.lost ?? 0, false) }),
-      sortValue: row => row.leader.winRate === null ? notApplicable('No battles with known results') : knownValue(row.leader.winRate),
-      value: row => count(row.leader.won ?? 0, false) },
+      extra: row => ({ secondaryValue: row.leader.foughtPartial ? notRecorded(PARTIAL) : count(row.leader.lost ?? 0, false) }),
+      sortValue: row => row.leader.foughtPartial
+        ? notRecorded(PARTIAL)
+        : row.leader.winRate === null
+          ? notApplicable('No battles with known results')
+          : knownValue(row.leader.winRate),
+      value: row => row.leader.foughtPartial ? notRecorded(PARTIAL) : count(row.leader.won ?? 0, false) },
     { ...FOUGHT!, priority: 6, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
       value: row => count(row.leader.fought, row.leader.foughtPartial) },
     { ...UNRESOLVED!, priority: 6, numeric: true, format: 'integer', barEligible: true, widest: ['9,999'],
