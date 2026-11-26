@@ -253,7 +253,8 @@ impl GroupsAt {
         let Some(group) = group else { return Ok(Ok((!countries.is_empty()).then(|| countries.iter().filter_map(slot).collect()))) };
         let members = self.members(group, hour)?;
         if let Some(refused) = members.refused {
-            return Ok(Err(holders.chosen_not_known(hour, hour).into_iter().next().map_or(refused, |(_, _, reason)| reason)));
+            let gap = (refused == UNKNOWN).then(|| holders.chosen_not_known(hour, hour).into_iter().next()).flatten();
+            return Ok(Err(gap.map_or(refused, |(_, _, reason)| reason)));
         }
         if group.membership == GroupMembership::Hour {
             if let Some(reason) = members.tags.iter().map(|tag| Country::Tag(tag.clone())).find(|country| slot(country).is_none()).and_then(|country| holders.not_known(&country, hour)) {
@@ -386,6 +387,9 @@ mod tests {
         unobserved.factions[0].incomplete.push(HourSpan { first_hour: 800, last_hour: 900 });
         let unobserved = GroupsAt::new(Arc::new(unobserved), 0);
         assert_eq!(unobserved.chosen_slots(Some(&group), &[], &gap, 850).unwrap(), Err("Who holds the chosen countries is not known: holders not read".to_owned()), "a roster withheld for the holder gap names the gap's reason");
+        let absent = GroupSelection { id: Some("7".into()), ..faction(GroupMembership::Hour) };
+        let refused = unobserved.chosen_slots(Some(&absent), &[], &gap, 850).unwrap().unwrap_err();
+        assert!(!refused.starts_with("Who holds"), "a group that is not in the history says so, whatever the hour: {refused}");
         assert_eq!(groups.chosen_slots(None, &[Country::Tag("ITA".into())], &gap, 950).unwrap(), Ok(Some([8].into_iter().collect())));
     }
 

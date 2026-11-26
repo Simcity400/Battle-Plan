@@ -580,8 +580,11 @@ fn a_licence_subject_whose_holder_is_not_known_is_not_recorded_with_the_reason_t
     let frames = (FIRST..=LAST).map(gapped).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "production-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let recorded = dashboard_base::queries::query(&source, 1).unwrap().holders.unknown_reason(1_215).map(str::to_owned).expect("the fixture's unread Countries hours are a holder gap");
     let during = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_215, "subject": "GER" }));
-    assert!(during["missing"].as_str().is_some_and(|missing| missing.starts_with("Who holds GER is not known")), "{}", during["missing"]);
+    assert_eq!(during["missing"].as_str(), Some(format!("Who holds GER is not known: {recorded}").as_str()), "the holder reason, never the licence table's");
     let after = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_230, "subject": "GER" }));
-    assert!(after["missing"].as_str().is_none_or(|missing| !missing.contains("is not known")), "{}", after["missing"]);
+    let incoming = after["incoming"]["links"].as_array().unwrap();
+    assert_eq!(incoming.len(), 1, "after the gap the licence from ITA reads again");
+    assert_eq!(after["endpoints"][incoming[0]["from"].as_u64().unwrap() as usize]["tag"].as_str(), Some("ITA"));
 }

@@ -325,7 +325,10 @@ impl Scope {
             }
         }
         for gap in &set.unobserved {
-            unknown |= span(gap.first_hour, gap.last_hour);
+            if span(gap.first_hour, gap.last_hour) {
+                unknown = true;
+                not_known = not_known.or_else(|| query.holders.chosen_not_known(hour, hour).into_iter().next().map(|(_, _, reason)| reason));
+            }
         }
         Self { slots: Some(slots), unknown, not_known, next }
     }
