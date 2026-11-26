@@ -206,7 +206,8 @@ impl Counts {
             }
         }
         let what = if kind == Row::SHIPS { "ship sinkings" } else { "convoy losses" };
-        Some(format!("Some {what} may be missing from hour {from}: hours went unread long enough for the game to forget sinkings, or its retention is not known."))
+        let date = i32::try_from(from).map(dashboard_text::division_history::date).unwrap_or_else(|_| "an unknown date".into());
+        Some(format!("Some {what} may be missing from {date}: hours went unread long enough for the game to forget sinkings, or its retention is not known."))
     }
 
     fn refused_count(&self, kind: u8, key: u128, hour: i32, period: NavalPeriod) -> i64 {
@@ -811,7 +812,7 @@ mod at_tests {
         let refused = counts.partial(kind, key, open + 4, NavalPeriod::Month).unwrap();
         assert!(refused.starts_with("1 ship sinking"));
         let resumed = counts.partial(kind, key, last, NavalPeriod::Month).unwrap();
-        assert!(resumed.contains("may be missing") && resumed.contains(&refused));
+        assert!(resumed.contains(&dashboard_text::division_history::date(prior + 1)) && resumed.contains(&refused));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertBarsModelValid, type BarsDataRow } from './model.ts';
+import { assertBarsModelValid, deriveBarsMirror, type BarsDataRow } from './model.ts';
 import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { IdentityProvider } from '../plan.ts';
 import type { ForceAtReply } from '../../generated/dashboard';
@@ -39,6 +39,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
       { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, partial: 'Uncounted ship', values: [25, 75], partsPartial: ['Uncounted ship', null], partsMissing: null },
       { country: 'GER', slot: null, tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
       { country: 'ITA', slot: null, tag: 'ITA', total: 40, missing: null, values: [12, 20], partsMissing: 'Part breakdown does not reconcile with the recorded total at this hour' },
+      ...[0, 8].map(total => ({ country: total, slot: total, tag: String(total), total, missing: null, partial: 'Uncounted ship', values: [0, total], partsPartial: ['Uncounted ship', null], partsMissing: null })),
     ],
     missing: null,
     warnings: [],
@@ -64,7 +65,8 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
   assert.equal(model.scaleUnit, 'Ships & convoys');
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.label, s.share]), [['Ships', 0.25], ['Convoys', 0.75]]);
-  assert.equal(rows[0]!.readout?.primary, '100, partial: Uncounted ship');
+  assert.equal(rows[0]!.readout?.primary, '100 (partial)');
+  assert.equal(deriveBarsMirror(model).rows[0]!.cells.find(cell => cell.column === 'readout')?.spoken, '100, partial: Uncounted ship');
   assert.deepEqual(rows[0]!.tooltip?.items?.map(item => item.partialReason), ['Uncounted ship', 'Uncounted ship', undefined]);
   const race = projectForceAtReply(view, reply, { surface: '#1e1e1e', top: 10, group: false, split: true }, {
     decimals: 0, valueFormat: 'integer', scaleFormat: 'integer', scaleUnit: 'Losses',
@@ -73,6 +75,15 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
   const first = race.rows.find((row): row is BarsDataRow => row.kind === 'data')!;
   assert.deepEqual(first.value?.value, { kind: 'partial', value: 100, reason: 'Uncounted ship', atLeast: true });
   assert.deepEqual(first.tooltip?.items?.map(item => item.partialReason), ['Uncounted ship', 'Uncounted ship', undefined]);
+  for (const bars of [model, race]) {
+    for (const row of bars.rows.slice(-2)) {
+      assert.ok(row.kind === 'data');
+      const ships = row.tooltip?.items?.find(item => item.label === 'Ships');
+      assert.equal(ships?.partialReason, 'Uncounted ship');
+      assert.match(ships.value!, /^0(?: |$)/);
+      assert.ok(!row.segments?.some(segment => segment.key === 'ships'));
+    }
+  }
   assert.equal(rows[1]!.segments?.length, 0);
   assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
   assert.deepEqual(model.legend?.map(l => l.label), ['Ships', 'Convoys']);

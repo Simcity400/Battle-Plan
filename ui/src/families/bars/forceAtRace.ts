@@ -225,6 +225,7 @@ export function projectForceAtReply(
     }
 
     if (value.kind === 'notRecorded' && item.values.some(raw => raw !== null)) tooltipItems.push(...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
+    if (options.split && numeric === 0 && item.partsPartial) tooltipItems.push(...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
     let segments: BarsSegment[] | undefined;
     if (options.split && numeric !== null && numeric > 0) {
       if (item.partsMissing !== null) {
@@ -239,8 +240,9 @@ export function projectForceAtReply(
             anyMissing = true;
             break;
           }
-          if (rawPart <= 0) continue;
-          const scaled = forceReading(rawPart, config.decimals, null, item.partsPartial?.[i] ?? (reply.parts.length === 1 ? item.partial : undefined));
+          const reason = item.partsPartial?.[i] ?? (reply.parts.length === 1 ? item.partial : undefined);
+          if (rawPart <= 0 && !reason) continue;
+          const scaled = forceReading(rawPart, config.decimals, null, reason);
           partEntries.push({ part: reply.parts[i]!, color: colours[i]!, scaled });
         }
         if (anyMissing) {
@@ -249,7 +251,7 @@ export function projectForceAtReply(
           for (const entry of partEntries) {
             const partNum = entry.scaled.numeric ?? 0;
             const partName = forcePartLabel(entry.part);
-            built.push({
+            if (partNum > 0) built.push({
               key: entry.part.key,
               label: partName,
               share: partNum / numeric,

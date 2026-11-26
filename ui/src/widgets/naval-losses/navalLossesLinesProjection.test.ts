@@ -178,6 +178,13 @@ test('naval losses lines projects slot-keyed series, whole-number axis, and end 
   ]);
   assert.equal(model.series[1]!.id, k2);
   assert.equal(model.series[1]!.endLabel?.value, '18');
+  const unavailable = navalReply();
+  unavailable.rows[0] = { ...unavailable.rows[0]!, total: null, values: [null, null], missing: 'Holder unknown' };
+  const missing = navalLossesLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(150), panels: new Map([['head', unavailable]]),
+    hovers: new Map([['hover', { hour: 150, data: unavailable }]]),
+  }), makeOptions());
+  assert.deepEqual(missing.hoverDetail?.items.map(item => item.missingReason ?? item.value), ['Holder unknown', '18', '5', '13']);
 });
 
 test('unrecorded naval losses stay not recorded with their reason, never zero or blank', () => {

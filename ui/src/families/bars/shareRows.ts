@@ -3,7 +3,7 @@ import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
 import type { ValueFormat } from '../valueFormat.ts';
-import type { BarsDataRow, BarsLegendItem, BarsModel, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
+import type { BarsDataRow, BarsLegendItem, BarsModel, BarsReadout, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
   readonly key: string;
@@ -15,7 +15,7 @@ export interface ShareRowEntry {
   readonly group?: 'picked' | 'auto';
   readonly region?: number;
   readonly segments: readonly BarsSegment[];
-  readonly countText?: string;
+  readonly countText?: string | BarsReadout;
   readonly missing?: Value;
   readonly format?: ValueFormat;
   readonly tooltip?: FamilyTooltipPayload;
@@ -55,7 +55,7 @@ function toShareDataRow(entry: ShareRowEntry, group?: 'picked' | 'auto'): BarsDa
     ...(entry.region !== undefined ? { region: entry.region } : {}),
     segments: entry.segments,
     ...(entry.missing ? { value: { value: entry.missing, format: entry.format } } : {}),
-    ...(entry.countText !== undefined ? { readout: { primary: entry.countText } } : {}),
+    ...(entry.countText !== undefined ? { readout: typeof entry.countText === 'string' ? { primary: entry.countText } : entry.countText } : {}),
     ...(entry.tooltip ? { tooltip: entry.tooltip } : {}),
     ...(entry.meta !== undefined ? { meta: entry.meta } : {}),
   };

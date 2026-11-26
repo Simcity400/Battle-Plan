@@ -102,6 +102,7 @@ export interface BarsOppositeRow {
 
 export interface BarsReadout {
   readonly primary: string;
+  readonly spoken?: string;
   readonly secondary?: string;
   readonly tone?: 'default' | 'shortage' | 'muted';
   readonly shortfall?: string;
@@ -472,7 +473,8 @@ export function deriveBarsMirror(
       });
     }
     if (item.readout?.primary) {
-      cells.push({ column: 'readout', spoken: item.readout.secondary ? `${item.readout.primary} ${item.readout.secondary}` : item.readout.primary });
+      const { primary, secondary, spoken } = item.readout;
+      cells.push({ column: 'readout', spoken: spoken ?? (secondary ? `${primary} ${secondary}` : primary) });
     }
     rows.push({ key: item.key, name, rowIndex: index, cells });
   };
@@ -525,8 +527,8 @@ export function deriveBarsAudit(
       }
     }
     if (item.readout) {
-      const { primary, secondary, shortfall, tone } = item.readout;
-      cell(item.key, 'readout', JSON.stringify([primary, secondary ?? null, shortfall ?? null, tone ?? 'default']));
+      const { primary, spoken, secondary, shortfall, tone } = item.readout;
+      cell(item.key, 'readout', JSON.stringify([spoken ?? primary, secondary ?? null, shortfall ?? null, tone ?? 'default']));
     }
   }
   return rows;

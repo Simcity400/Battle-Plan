@@ -55,7 +55,8 @@ export function projectForceAtMix(
   for (const item of reply.rows) {
     const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);
     const { value, numeric } = forceReading(item.total, config.decimals, item.missing, item.partial);
-    const countText = value.kind === 'notRecorded' ? undefined : formatValueState(value, config.valueFormat).audit;
+    const formatted = formatValueState(value, config.valueFormat);
+    const countText = formatted.kind === 'partial' ? { primary: `${formatted.text} (partial)`, spoken: formatted.spoken } : formatted.audit;
     const totalItem: TooltipListItem = value.kind === 'notRecorded'
       ? { label: config.valueLabel, missingReason: value.reason }
       : { label: config.valueLabel, value: formatScaled(value, config.valueFormat), ...(item.partial ? { partialReason: item.partial } : {}) };
@@ -94,6 +95,7 @@ export function projectForceAtMix(
     }
 
     if (numeric === 0) {
+      if (item.partsPartial) tooltipItems.push(...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       rows.push({
         key,
         subject: displayTag,
@@ -147,8 +149,9 @@ export function projectForceAtMix(
           anyMissing = true;
           break;
         }
-        if (rawPart <= 0) continue;
-        rawParts.push({ index: i, part: reply.parts[i]!, scaled: forceReading(rawPart, config.decimals, null, item.partsPartial?.[i] ?? (reply.parts.length === 1 ? item.partial : undefined)) });
+        const reason = item.partsPartial?.[i] ?? (reply.parts.length === 1 ? item.partial : undefined);
+        if (rawPart <= 0 && !reason) continue;
+        rawParts.push({ index: i, part: reply.parts[i]!, scaled: forceReading(rawPart, config.decimals, null, reason) });
       }
     }
 
@@ -184,16 +187,18 @@ export function projectForceAtMix(
         const share = partNum / denom;
         const label = forcePartLabel(partItem.part);
         const color = colours[partItem.index]!;
-        usedParts.add(partItem.index);
-        segments.push({
-          key: partItem.part.key,
-          label,
-          share,
-          value: partItem.scaled.value,
-          format: config.valueFormat,
-          color,
-          inlineLabel: `${label} ${sharePct(share)}`,
-        });
+        if (share > 0) {
+          usedParts.add(partItem.index);
+          segments.push({
+            key: partItem.part.key,
+            label,
+            share,
+            value: partItem.scaled.value,
+            format: config.valueFormat,
+            color,
+            inlineLabel: `${label} ${sharePct(share)}`,
+          });
+        }
         tooltipItems.push({
           label,
           swatch: color,

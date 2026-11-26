@@ -3,7 +3,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
-import { forceReading, forceSelection, validateNavalLossesAtReply, type ForceSelection } from '../../families/bars/forceAtRace.ts';
+import { forceSelection, validateNavalLossesAtReply, type ForceSelection } from '../../families/bars/forceAtRace.ts';
 import {
   FutureDataError,
   type BoundedReadView,
@@ -38,7 +38,7 @@ import {
   lineChartSettings,
   type LineChartSettings,
 } from '../../families/time-chart/settings.ts';
-import { formatCompactScalar, formatScalar, formatValueState, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatCompactScalar, formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type {
   ForceAtRow,
   NavalAttribution,
@@ -159,7 +159,7 @@ function buildHoverDetail(
         divider: items.length > 0,
       });
     }
-    if (reply.parts.length > 1) {
+    if (reply.parts.length > 1 && (row.total !== null || row.values.some(value => value !== null))) {
       reply.parts.forEach((part, index) => {
         const value = row.values[index] ?? null;
         const partialReason = row.partsPartial?.[index];
@@ -280,8 +280,8 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
           : null;
 
       if (present && row) {
-        const reading = forceReading(row.total, 0, row.missing, row.partial);
-        auditRows.push(auditRow(key, row.total === null ? (row.missing ?? notRecordedLabel()) : formatValueState(reading.value, 'integer').audit));
+        const count = row.total === null ? (row.missing ?? notRecordedLabel()) : formatCompactCount(row.total);
+        auditRows.push(auditRow(key, row.partial ? `${count}, partial: ${row.partial}` : count));
       } else if (present && head) {
         auditRows.push(auditRow(key, 'This country is not present at this date.'));
       }
