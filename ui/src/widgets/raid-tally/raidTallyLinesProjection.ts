@@ -320,12 +320,11 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
     };
     const effectiveMissing = extendSpans(reply.missing);
     const effectivePartial = extendSpans(reply.partial ?? []);
-    const hasSplitPartial = reply.partialLaunched != null || reply.partialSucceeded != null;
-    const effectiveLaunchedPartial = options.metric === 'both' && hasSplitPartial
-      ? extendSpans(reply.partialLaunched ?? [])
+    const effectiveLaunchedPartial = options.metric === 'both' && reply.partialLaunched != null
+      ? extendSpans(reply.partialLaunched)
       : effectivePartial;
-    const effectiveSucceededPartial = options.metric === 'both' && hasSplitPartial
-      ? extendSpans(reply.partialSucceeded ?? [])
+    const effectiveSucceededPartial = options.metric === 'both' && reply.partialSucceeded != null
+      ? extendSpans(reply.partialSucceeded)
       : effectivePartial;
     const hasEarlierGap = effectiveMissing.some(span => span.firstHour < floorHour);
     const warnings = [

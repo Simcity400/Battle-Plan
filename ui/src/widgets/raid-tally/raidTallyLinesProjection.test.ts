@@ -520,4 +520,19 @@ test('R3-S6 & raid labels: post-gap totals carry partial state across end labels
   const splitExactSucc = splitExactRows.find(r => r.label === 'Alpha Republic · Succeeded');
   assert.equal(splitExactSucc?.value, '2');
   assert.equal(splitExactSucc?.valueState, undefined);
+
+  const partialOnlyLaunchedSupplied = raidTallyLinesProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(130),
+      panels: new Map<string, unknown>([['tally', { ...reply, partialLaunched: reply.partial }]]),
+      identity,
+    }),
+    baseOpts,
+  );
+  const fallbackSucc = partialOnlyLaunchedSupplied.series.find(s => s.id === `${countryKey(7)}\u0000succeeded`)!;
+  assert.equal(fallbackSucc.partialSpans?.length, 1, 'omitted partialSucceeded falls back to combined partial rather than falsely exact');
+  assert.equal(
+    partialOnlyLaunchedSupplied.auditRows?.find(r => r.row === `${countryKey(7)}\u0000succeeded`)?.value,
+    `2 (recorded subtotal: ${partialReason})`,
+  );
 });

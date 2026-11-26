@@ -1694,8 +1694,8 @@ impl Product for RaidTallyAt {
                     return Ok(RaidTallyAtReply {
                         branch_id: params.branch_id.clone(),
                         hour,
-                        first_hour: members.from.max(cached.first_hour).min(hour),
-                        last_hour: members.until.min(cached.last_hour).max(hour),
+                        first_hour: first_hour.max(members.from).min(hour),
+                        last_hour: last_hour.min(members.until).max(hour),
                         metric: params.metric,
                         available: cached.available,
                         unavailable: cached.unavailable.clone(),

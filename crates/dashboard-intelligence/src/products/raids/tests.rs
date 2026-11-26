@@ -1267,4 +1267,46 @@ fn raid_tally_ever_group_uses_historical_slots() {
         "an ever group keeps the historical member slot instead of resolving its former tag to a successor",
     );
     assert!(race.first_hour >= 12 && race.last_hour <= 13, "ever group reply respects member/holder interval: {}..={}", race.first_hour, race.last_hour);
+
+    let refused_frames: Vec<DecodedFrame> = (10..=12)
+        .map(|hour| {
+            let countries = vec![(10, 7, b"AAA".as_slice())];
+            let raids_view = if hour == 12 {
+                TableView::Unavailable { reason: "raids unread".into() }
+            } else {
+                TableView::Complete(TableRows::Raids(vec![]))
+            };
+            let mut frame = make_frame(1, hour, countries, 10, raids_view, vec![]);
+            *frame.tables[TableId::Factions.index()] = TableView::Unavailable { reason: "factions unread".into() };
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable { reason: "factions unread".into() };
+            frame
+        })
+        .collect();
+    let refused_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, refused_frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let refused_source = Source::from_replay(
+        SourceKey { source_id: "raid-ever-refused-interval".into(), revision: "1".into() },
+        "memory.battleplan".into(),
+        Arc::new(refused_replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let refused_race = RaidTallyAt::load(
+        &refused_source,
+        &RaidTallyAtParams {
+            branch_id: "1".into(),
+            countries: vec![],
+            group: Some(GroupSelection { kind: GroupKind::Faction, id: Some("10".into()), tag: None, membership: GroupMembership::Ever }),
+            top: None,
+            metric: RaidTallyMetric::Both,
+            hour: 10,
+        },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(refused_race.missing.is_some());
+    assert!(refused_race.last_hour <= 11, "refused ever group stops before a later unread Raids hour: {}..={}", refused_race.first_hour, refused_race.last_hour);
 }

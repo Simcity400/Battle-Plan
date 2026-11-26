@@ -644,6 +644,9 @@ fn unattributed_for_metric(
     (count, first)
 }
 
+const UNATTRIBUTED_TOP_WITHHELD: &str =
+    "Some raids up to this date have an unrecorded raider, so the top ranking is withheld.";
+
 fn metric_partial_spans(
     metric: RaidTallyMetric,
     segments: &[(i32, i32)],
@@ -767,12 +770,7 @@ impl Product for RaidTally {
             let first_unattr = (unattributed > 0)
                 .then_some(first_unattributed)
                 .flatten()
-                .map(|u_hour| {
-                    (
-                        u_hour,
-                        format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld"),
-                    )
-                });
+                .map(|u_hour| (u_hour, UNATTRIBUTED_TOP_WITHHELD.to_owned()));
             let rank_uncertain = match (first_gap, first_unattr) {
                 (Some(g), Some(u)) => Some(if g.0 <= u.0 { g } else { u }),
                 (Some(g), None) => Some(g),
