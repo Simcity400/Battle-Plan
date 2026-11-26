@@ -1,7 +1,7 @@
 
 use super::{Named, rows, world_tension_stack::TensionValueMode};
 use crate::products::group_members::GroupsAt;
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt, before, field_columns, field_mask, warnings_through}}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::{
     Query,
@@ -157,6 +157,22 @@ impl AtHour for WorldTension {
         vec![TableId::WorldTension, TableId::ThreatCountryAggregates, TableId::ThreatSources, TableId::ThreatTotals, TableId::CountryLinks]
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::WorldTension => Some(field_columns(table, &["total_raw"])),
+            TableId::ThreatSources => Some(field_columns(table, &["country", "current_raw", "final_raw", "daily_raw", "date", "reason"])),
+            _ => None,
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        match table {
+            TableId::WorldTension => Some(Vec::new()),
+            TableId::ThreatSources => Some(field_columns(table, &["country", "final_raw", "daily_raw", "date", "reason"])),
+            _ => Self::columns(table),
+        }
+    }
+
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(GroupsAt::default())
     }
@@ -166,15 +182,66 @@ impl AtHour for WorldTension {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.valid_through(params.group.as_ref(), at.hour)
+        before(at.holders.next_change(at.hour)).min(at.context.slots_until(params.group.as_ref(), at.holders, at.hour))
     }
 
-    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
-        if step != 0 { return Vec::new(); }
-        Self::tables(params).into_iter().map(|table| match (&params.countries, table) {
-            (Some(slots), TableId::ThreatCountryAggregates) => Read::these(table, slots.iter().copied().map(u128::from)),
-            _ => Read::all(table),
-        }).collect()
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        let reasons = reply.missing.as_deref().into_iter().chain(reply.warnings.iter().map(String::as_str));
+        Self::valid_through(frame, params, at).min(warnings_through(frame.hour, reasons))
+    }
+
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match step {
+            0 => {
+                let mut out = vec![Read::all(TableId::WorldTension), Read::all(TableId::ThreatSources)];
+                match &params.countries {
+                    None => out.push(Read::all(TableId::ThreatCountryAggregates)),
+                    Some(slots) => {
+                        let keys: Vec<u128> = match at.context.chosen_slots(params.group.as_ref(), &[], at.holders, at.hour) {
+                            Ok(Ok(None)) => slots.iter().copied().map(u128::from).collect(),
+                            Ok(Ok(Some(members))) => slots.iter().copied().filter(|slot| members.contains(slot)).map(u128::from).collect(),
+                            _ => Vec::new(),
+                        };
+                        if !keys.is_empty() {
+                            out.push(Read::these(TableId::ThreatCountryAggregates, keys));
+                        }
+                    }
+                }
+                out
+            }
+            1 => match held.complete::<tables::ThreatSources>() {
+                Ok(sources) if !sources.is_empty() => vec![Read::these(TableId::CountryLinks, sources.iter().map(|source| u128::from(source.country)))],
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let until = if stage == 0 && params.countries.is_some() && params.group.is_some() {
+            before(at.holders.next_change(at.hour)).min(at.context.slots_until(params.group.as_ref(), at.holders, at.hour))
+        } else {
+            i32::MAX
+        };
+        (Self::reads_in(params, owner, stage, held, at), until)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1 && edits.fields(TableId::ThreatSources, field_mask(TableId::ThreatSources, &["country"]))
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if params.countries.is_some() || !edits.only_columns(TableId::ThreatCountryAggregates, u64::MAX) {
+            return Ok(false);
+        }
+        let aggregates = frame.complete::<tables::ThreatCountryAggregates>()?;
+        let mut held: Vec<_> = aggregates.iter().filter(|row| row.total_raw != 0).collect();
+        held.sort_unstable_by(|a, b| b.total_raw.cmp(&a.total_raw).then(a.country_slot.cmp(&b.country_slot)));
+        let Some(contributions) = data.get("contributions").and_then(serde_json::Value::as_array) else {
+            return Ok(false);
+        };
+        Ok(contributions.len() == held.len()
+            && contributions.iter().zip(&held).all(|(item, row)| item["slot"].as_u64() == Some(u64::from(row.country_slot))))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -233,10 +300,10 @@ impl AtHour for WorldTension {
                 }
             }
         }
-        let links = rows::<tables::CountryLinks>(frame).ok();
         match rows::<tables::ThreatSources>(frame) {
             Err(reason) => reply.warnings.push(format!("Threat sources are not known at this hour: {reason}")),
             Ok(sources) => {
+                let links = (!sources.is_empty()).then(|| rows::<tables::CountryLinks>(frame).ok()).flatten();
                 for source in sources {
                     let slot = links.and_then(|links| link_slot(links, source.country));
                     let tag = slot.and_then(|slot| named.slot(slot, frame.hour));
