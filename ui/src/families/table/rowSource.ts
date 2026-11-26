@@ -259,6 +259,12 @@ function pageAt<TRow extends DatedLogRow>(pages: SnapshotPages<TRow>, ordinal: n
   return pages[Math.floor(ordinal / pageSize) * pageSize];
 }
 
+export function frozenAnswer<TRow extends DatedLogRow>(pages: SnapshotPages<TRow> | undefined, hour: number): Extract<SnapshotPage<TRow>, { reply: unknown }> | undefined {
+  const held = pages ? Object.values(pages) : [];
+  if (held.length === 0 || held.some(page => page.hour > hour)) return undefined;
+  return held.find((page): page is Extract<SnapshotPage<TRow>, { reply: unknown }> => 'reply' in page);
+}
+
 export function buildRowSourceFromHead(
   identity: string,
   headRaw: unknown,
@@ -268,7 +274,7 @@ export function buildRowSourceFromHead(
 ): TableRowSource<DatedLogRow> | null {
   const held = Object.values(pages);
   const shown = held.length > 0 && held.every(page => page.hour <= hour) ? pages : NO_PAGES;
-  const answered = Object.values(shown).find((page): page is Extract<SnapshotPage, { reply: unknown }> => 'reply' in page);
+  const answered = frozenAnswer(shown, hour);
   if (answered) {
     const { reply, hour: at, limit } = answered;
     return {
@@ -443,6 +449,8 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   #hour: number | null = null;
   #pages = new Map<number, SnapshotPage<TRow>>();
   #inFlight = new Set<number>();
+  #keep = new Set<number>();
+  #header: number | null = null;
   #published: SnapshotPages<TRow> = NO_PAGES as SnapshotPages<TRow>;
   #dirty = false;
 
@@ -476,8 +484,9 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     const keep = new Set(wanted);
     keep.add(wanted[0]! - this.#pageSize);
     keep.add(wanted[wanted.length - 1]! + this.#pageSize);
+    this.#keep = keep;
     for (const offset of this.#pages.keys()) {
-      if (keep.has(offset)) continue;
+      if (keep.has(offset) || offset === this.#header) continue;
       this.#pages.delete(offset);
       this.#dirty = true;
     }
@@ -514,6 +523,10 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   #settle(ask: PageFetchAsk, page: SnapshotPage<TRow>): boolean {
     if (ask.hour !== this.#hour || !this.#inFlight.delete(ask.offset)) return false;
     this.#pages.set(ask.offset, page);
+    if ('reply' in page) {
+      if (this.#header !== null && this.#header !== ask.offset && !this.#keep.has(this.#header)) this.#pages.delete(this.#header);
+      this.#header = ask.offset;
+    }
     this.#dirty = true;
     return true;
   }
@@ -524,6 +537,8 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     this.#hour = null;
     this.#pages.clear();
     this.#inFlight.clear();
+    this.#keep.clear();
+    this.#header = null;
     return cancel;
   }
 }

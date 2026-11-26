@@ -9,7 +9,7 @@ import { artHandleKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
-import { buildRowSourceFromHead, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, frozenAnswer, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource } from './table/rowSource.ts';
 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
@@ -114,7 +114,7 @@ function readScene(
         if (head.kind === 'answer') answers.set(name, head.answer);
         else if (head.kind === 'panel') {
           if (head.refused === null) panels.set(name, head.data);
-          else refused.set(name, head.refused);
+          else if (!frozenAnswer(sources.pagedRows?.[name], hour)) refused.set(name, head.refused);
         }
       }
       return { panels, answers, refused };
