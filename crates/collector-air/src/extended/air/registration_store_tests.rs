@@ -1,7 +1,7 @@
 use super::air_bases_test_kit as kit;
+use super::bases::CarryRun;
 use super::*;
 use crate::extended::fog;
-#[cfg(test)]
 use collector_observers::air_base_carry_changes::Watches;
 use engine_native_parts::cair_wing_pool;
 use std::cell::RefCell;
@@ -30,7 +30,6 @@ impl Memory for Reads<'_> {
     }
 }
 
-#[cfg(test)]
 fn job(watches: &'static Watches) -> AirBasesJob {
     let mut job = AirBasesJob::fixture();
     job.registration_store = Some(Box::new(RegistrationStore::new()));
@@ -261,8 +260,9 @@ fn a_base_without_a_reported_segment_is_walked() {
     assert_same(&walked, &direct(&bytes));
 }
 
-#[test]
-fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
+type BasePacket = rows::Recorded<Option<rows::AirBaseCarrierInputs>>;
+
+pub fn state_orders_across_refresh(authenticated: bool) -> (BasePacket, BasePacket) {
     const DENSE: usize = 0x68000;
     let mut bytes = fixture();
     kit::put64(
@@ -289,19 +289,34 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
     let decode = |job: &AirBasesJob| {
         let mut output = carrier::Bases::new(8);
         output.prepare_states(job).unwrap();
-        output.decode_states(job, kit::BASE, &source, &mut [None; 16]).unwrap();
+        output
+            .decode_states(job, kit::BASE, &source, &mut [None; 16])
+            .unwrap();
         output.packet(B0_HANDLE)
     };
-    let acquire = |job: &mut AirBasesJob| {
+    let acquire = |job: &mut AirBasesJob, force_full| {
         let memory = Reads {
             inner: kit::memory(&bytes),
             reads: RefCell::default(),
         };
+        let reader = ccountry::Reader::new(&memory.inner, kit::BASE, kit::GAME_STATE).unwrap();
+        let slots: Vec<_> = std::iter::once(None)
+            .chain((1..reader.count()).map(|slot| reader.read_physical_at(slot).unwrap()))
+            .collect();
+        let roster = engine_native_memory::country_identity::AuthenticatedRoster::new(
+            &slots,
+            reader.arrays(),
+        );
+        let world = crate::extended::roster_replay::RosterReplay {
+            inner: &memory,
+            roster: authenticated.then_some((kit::BASE, kit::GAME_STATE, roster)),
+            reserved: None,
+        };
         let report = copy_air_bases_fixture(
-            &memory,
+            &world,
             AirBasesCopyContext {
                 hour: 0,
-                force_full: false,
+                force_full,
                 base: kit::BASE,
                 game_state: kit::GAME_STATE,
             },
@@ -310,7 +325,7 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
         assert!(report.raw_ok);
         memory.reads.into_inner()
     };
-    acquire(&mut job);
+    acquire(&mut job, false);
     let first = decode(&job);
     assert_eq!(
         first
@@ -324,11 +339,17 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
             .len(),
         2
     );
-    let reads = acquire(&mut job);
+    let reads = acquire(&mut job, true);
     assert_eq!(job.registration_store.as_ref().unwrap().counts().carried, 2);
     assert!(!reads.contains(&DENSE));
     assert!(!reads.contains(&(kit::B0 + cair_base::REGISTERED_CONTAINERS)));
-    assert_eq!(decode(&job), first);
+    (first, decode(&job))
+}
+
+#[test]
+fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
+    let (first, refreshed) = state_orders_across_refresh(false);
+    assert_eq!(refreshed, first);
 }
 
 #[test]

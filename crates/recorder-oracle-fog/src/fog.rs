@@ -1116,10 +1116,16 @@ states={} provinces={}"#,
 
     #[test]
     fn state_fuel_save_comparison_keeps_exact_signed_fractional_values_and_zero_omission() {
-        let (country, _) = links();
-        let links = BTreeMap::from([(12, &country)]);
+        use collector_air::extended::air::registration_store_tests::state_orders_across_refresh;
+
+        let (mut country, _) = links();
+        country.id = 1;
+        let links = BTreeMap::from([(country.id, &country)]);
         let mut frame = carrier_frame();
+        let (_, refreshed) = state_orders_across_refresh(true);
+        carrier_base(&mut frame).carrier = refreshed;
         carrier_base(&mut frame).state = Some(4);
+        carrier_packet(&mut frame).country = country.id;
         carrier_registration(&mut frame).fuel_demand_raw = Recorded::Value(Some(-3));
         carrier_registration(&mut frame).fuel_allocated_raw = Recorded::Value(Some(123456));
         let mut save = saved();
@@ -1141,6 +1147,12 @@ states={} provinces={}"#,
         let mut report = Report::default();
         compare_state_container_fuel(&frame, &save, &links, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(
+            report
+                .compared_tables
+                .get("AirBases.registered_countries (save)"),
+            Some(&2)
+        );
         assert_eq!(
             report.compared_tables["AirBaseRegistrations.fuel (save)"],
             4
