@@ -616,4 +616,36 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
   assert.deepEqual([textWidthCacheStats().fonts, paletteCache.readableSolves], [0, 2],
     'R2-K13: a theme change on the same surface clears the bounded text and palette tables; only the new theme refills them (its two mark inks)');
   assert.ok(colorCache.parses < parsesBefore, 'and the colour tables, which only the new theme refills');
+
+  const mutable: { -readonly [K in keyof FamilyTheme]: FamilyTheme[K] } = { ...THEME, rowHover: '\u0001', gridLine: '#223344' };
+  const initialTokens = resolveKitTokens(mutable);
+  assert.equal(initialTokens.rowHover, '\u0001');
+  assert.equal(initialTokens.gridLine, '#223344');
+  readableColour('#2a4b8c', mutable.surface);
+  assert.ok(paletteCache.readableSolves > 2);
+
+  delete mutable.rowHover;
+  const deletedTokens = resolveKitTokens(mutable);
+  assert.notEqual(deletedTokens, initialTokens, 'R3-S13: deleting a token-only override invalidates cached tokens without sentinel collision');
+  assert.equal(deletedTokens.rowHover, resolveKitTokens({ ...THEME }).rowHover);
+  resolveKitTokens(mutable);
+  readableColour('#2a4b8c', mutable.surface);
+  readableColour('#8c3b2a', mutable.surface);
+  readableColour('#2a7c4b', mutable.surface);
+  assert.ok(paletteCache.readableSolves >= 3);
+
+  mutable.rowHover = '#445566';
+  const mutatedTokens = resolveKitTokens(mutable);
+  assert.notEqual(mutatedTokens, deletedTokens, 'R3-S13: mutating a token-only override invalidates the cached tokens');
+  assert.equal(mutatedTokens.rowHover, '#445566');
+  assert.equal(paletteCache.readableSolves, 2, 'R3-S13: changing a token-only override clears shared caches');
+
+  readableColour('#2a4b8c', mutable.surface);
+  assert.ok(paletteCache.readableSolves > 2);
+  const clonedOverride: FamilyTheme = { ...mutable, gridLine: '#556677', hoverTabBg: '#778899' };
+  const clonedTokens = resolveKitTokens(clonedOverride);
+  assert.equal(clonedTokens.gridLine, '#556677');
+  assert.equal(clonedTokens.hoverTabBg, '#778899');
+  assert.equal(paletteCache.readableSolves, 2, 'R3-S13: cloned theme changing only token overrides clears shared caches');
+  assert.equal(resolveKitTokens(clonedOverride), clonedTokens, 'unchanged theme with overrides still hits cache');
 });
