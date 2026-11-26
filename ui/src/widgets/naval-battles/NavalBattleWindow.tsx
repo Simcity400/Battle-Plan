@@ -19,6 +19,7 @@ export interface OpenedNavalBattle {
 const ROLES = ['Attacker', 'Defender'] as const;
 const VIEWS: readonly BattleView[] = ['battle'];
 const NO_RESULT = 'The game keeps a winner only for battles a player takes part in.';
+const NO_LIVE: readonly (readonly [number, number])[] = [];
 
 function Side({ runtime, track, index, slots, hour }: {
   readonly runtime: WidgetRuntime;
@@ -58,35 +59,39 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const { subject } = opened;
   const { row } = subject;
   const ongoing = row.result === 'ongoing';
+  const decided = row.result === 'attackerWon' || row.result === 'defenderWon';
   const first = Math.max(row.hour, track.branch.firstHour);
-  const end = ongoing ? opened.hour : row.detailHour;
+  const ending = ongoing || row.detailHour === null ? null : decided ? row.detailHour : row.detailHour + 1;
+  const end = ongoing ? opened.hour : ending;
   const span = useMemo<BattleSpan | null>(() => end === null ? null : { first, last: Math.max(first, Math.min(end, opened.hour, track.branch.lastHour)) },
     [end, first, opened.hour, track.branch.lastHour]);
   const leadSlot = row.countries[0][0];
   const leadKeys = useMemo(() => leadSlot === undefined ? [] : [countryKey(leadSlot)], [leadSlot]);
   const leadHour = useCallback(() => row.countriesHour[0], [row]);
   const leadTag = useKeyTagsAt(runtime, track, leadKeys, leadHour, false, true)[0];
+  const leadLabel = useKeyLabelsAt(runtime, track, leadKeys, leadHour, false, true)[0];
   const lead = leadSlot !== undefined && leadTag ? { slot: leadSlot, tag: leadTag } : null;
   const combat = row.key.startsWith('combat:') ? row.key.split(':')[1] ?? null : null;
   const result = row.result === 'attackerWon' ? 'Attacker won' : row.result === 'defenderWon' ? 'Defender won' : null;
-  const day = <span className="bv-when"><time>{ongoing ? formatDateRange(row.hour, opened.hour) : end !== null ? formatDateRange(row.hour, end) : formatDay(row.hour)}</time></span>;
+  const day = <span className="bv-when"><time>{ongoing ? formatDateRange(row.hour, opened.hour) : ending !== null ? formatDateRange(row.hour, ending) : formatDay(row.hour)}</time></span>;
   const unplayable = <span className="bv-missing" data-tooltip="The recording does not give this battle's last hour." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />End not recorded</span>;
 
   const battle = (hour: number, clock: BattleClock | null): ReactNode => {
-    const until = ongoing || !span ? null : span.last;
-    const ended = until !== null && hour >= until ? <div className="bv-battle"><div className="bv-battle-note">
-      <strong>{`The battle ended on ${formatDay(until)}.`}</strong>
+    const finished = !ongoing && span !== null && ending !== null && ending <= span.last;
+    const until = finished ? Math.max(span.first, ending - 1) : null;
+    const ended = finished && hour >= ending ? <div className="bv-battle"><div className="bv-battle-note">
+      <strong>{decided ? `The battle had ended by ${formatDay(ending)}, when its result was read.` : `The battle ended on ${formatDay(ending)}.`}</strong>
       {result ? <span>{result}</span> : <span className="bv-missing" data-tooltip={NO_RESULT} tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Result not recorded</span>}
     </div></div> : null;
     if (!combat || !lead || !clock) return ended ?? <div className="bv-battle"><div className="bv-battle-note">
       <strong>Battle window not available</strong>
       <span>{!combat ? 'The recording holds this battle only as a result, so there are no live hours to replay.'
         : leadSlot === undefined ? 'The recording does not name the battle’s attacker, so the game’s window cannot be opened as that country.'
-          : leadTag === undefined ? 'Reading the attacker’s country…'
+          : !leadTag && leadLabel?.known === undefined ? 'Reading the attacker’s country…'
             : !clock ? 'The recording has no hours of this battle to play.'
               : 'The recording does not name the attacker’s country, so the game’s window cannot be opened as it.'}</span>
     </div></div>;
-    return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} kind="naval" combat={combat} lead={lead} live={[]} until={until} ended={ended} />;
+    return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} kind="naval" combat={combat} lead={lead} live={NO_LIVE} until={until} ended={ended} />;
   };
 
   return <BattleViewer subject={row.key} title={subject.title} day={day} closeLabel="Close battle viewer" anchor={anchor}

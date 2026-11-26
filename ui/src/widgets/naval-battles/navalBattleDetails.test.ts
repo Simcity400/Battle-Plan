@@ -58,7 +58,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const row = project(true);
   assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
   assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
-  assert.equal(model(true).rows[2]!.cells.action, undefined, 'a battle held only as a result has no live hours to watch');
+  assert.equal(model(true).rows[2]!.cells.action?.blank, true, 'a battle held only as a result has no live hours to watch, so its action cell stays blank');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
   assert.match(model(true).columns.find(column => column.key === 'icLost')!.partialReason!, /lower bound/);
   const ended = model(true).rows[1]!.cells.status!;

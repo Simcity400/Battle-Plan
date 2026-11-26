@@ -8,7 +8,7 @@ import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type Id
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 import { NAVAL_BATTLES_COLUMNS } from './definition.ts';
 
@@ -135,7 +135,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
       shipsSunk: { ...shipsSunk, tooltipRows: [] }, icLost: { ...icLost, tooltipRows: [] }, ships: { ...ships, tooltipRows: [] }, status,
-      ...(row.key.startsWith('combat:') ? { action: logWatchCell() } : {}),
+      action: row.key.startsWith('combat:') ? logWatchCell() : { value: notApplicable('No live hours to watch'), blank: true },
     },
   };
 }

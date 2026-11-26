@@ -501,6 +501,7 @@ impl Held {
         self.asked = None;
         self.refused = None;
         self.at = None;
+        self.closed = None;
         self.start = played_from.filter(|from| *from <= target.hour).unwrap_or(target.hour);
         self.next = Some(self.start);
     }
