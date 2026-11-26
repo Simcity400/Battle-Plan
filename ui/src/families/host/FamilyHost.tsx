@@ -50,6 +50,7 @@ import {
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
 import { boundDated, ownProof, StaticSupply } from './dated.ts';
+import { serializeTiledBySource } from '../sceneTiles.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
   handleFamilyGridKeyDown,
@@ -193,7 +194,6 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly staticProof?: FamilyStaticProof;
   readonly pagedRows?: PagedRows;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
-  readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly laneArt?: LaneArtResolutions;
   readonly extent?: readonly [number, number] | null;
@@ -257,7 +257,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   staticProof,
   pagedRows,
   tiledSeries,
-  tiledRevision = 0,
   hovers,
   laneArt,
   extent = null,
@@ -603,7 +602,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       settings: cur.settings,
       sources: sourceIdsRef.current,
       ...(cur.pagedRows && Object.keys(cur.pagedRows).length ? { pagedRows: cur.pagedRows } : {}),
-      ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
       ...(cur.laneArt?.resolutions ? { artResolutions: cur.laneArt.resolutions } : {}),
       extent: cur.extent,
@@ -1186,8 +1184,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     pagedRows,
-    tiledSeries,
-    tiledRevision,
     hovers,
     laneArt,
     extent,
@@ -1199,6 +1195,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     audit.captureActive,
     settings,
   ]);
+
+  const tiledBySource = useMemo(() => (tiledSeries ? serializeTiledBySource(tiledSeries) : undefined), [tiledSeries]);
+  useLayoutEffect(() => {
+    supply?.tiles(tiledBySource);
+  }, [supply, tiledBySource]);
 
   useLayoutEffect(() => {
     supply?.statics(staticSources, datedNow());

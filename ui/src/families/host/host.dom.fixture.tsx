@@ -28,6 +28,7 @@ import DeclaredFamilyWidget, { type DeclaredFamilyWidgetProps } from './Declared
 import type { FamilyPlanContext, SourcePlan } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyStaticSources } from './adapter.ts';
+import type { TiledLine } from '../../dashboard/tiles/view.ts';
 import '../../styles.css';
 
 const NATIVE = 9;
@@ -236,6 +237,7 @@ let currentState = {
   genericBlocked: false,
   genericBodyFocus: false,
   statics: null as FamilyStaticSources | null,
+  tiled: undefined as Readonly<Record<string, ReadonlyMap<string, TiledLine>>> | undefined,
   spanMounted: false,
 };
 
@@ -440,6 +442,7 @@ function renderApp() {
                   active
                   subscriptions={NO_SUBSCRIPTIONS}
                   staticSources={currentState.statics}
+                  {...currentState.tiled ? { tiledSeries: currentState.tiled } : {}}
                   identitySnapshot={identity}
                   offset={0}
                   pin={null}
@@ -820,6 +823,41 @@ window.hostDom = {
       mode: `${pipeline.view(pipeS)?.mode} ${pipeline.view(pipeS)?.reason ?? ''}`,
     };
     currentState = { ...currentState, statics: null };
+    renderApp();
+    return result;
+  },
+
+  async testTilesSupplied() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    const tiledLine = (round: number) => ({ tag: 'GER', head: `GER:${round}`, decimals: 0, summary: { from: 0, to: 100 + round, width: 10, buckets: [] }, missing: [], parts: [], marks: null }) as unknown as TiledLine;
+    currentState = { ...currentState, statics: { stamp: {}, proof: null, panels: { unread: { round: 0 } }, hour: 40 }, tiled: { main: new Map([['GER', tiledLine(0)]]) } };
+    renderApp();
+    let pipeS = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="static"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeS = Number(canvas.dataset.placement);
+      return pipeS > 0;
+    });
+    await frames(4);
+    const generation = pipeline.binding(pipeS);
+    bindCount = 0;
+    staticSupplies = [];
+    const rounds = 10;
+    for (let round = 1; round <= rounds; round++) {
+      currentState = { ...currentState, tiled: { main: new Map([['GER', tiledLine(round)]]) } };
+      renderApp();
+      await frames(2);
+    }
+    const result = {
+      rounds,
+      binds: bindCount,
+      tilesSupplied: staticSupplies.filter(item => item.id === pipeS && item.statics).length,
+      generationKept: pipeline.binding(pipeS) === generation,
+    };
+    currentState = { ...currentState, statics: null, tiled: undefined };
     renderApp();
     return result;
   },

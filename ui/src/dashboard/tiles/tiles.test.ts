@@ -131,12 +131,18 @@ test('a top of tiles takes its countries from the ranked reply, keeps them while
   view.setHour(4999);
   await settle();
   assert.equal(ranks.length, 1, 'an hour inside the proof asks nothing');
-  const before = base.asked.length;
+  const before = base.asked.length, germany = view.current!.get('GER');
   view.setHour(6000);
   await settle();
   assert.equal(ranks.length, 2);
   assert.deepEqual([...view.current!.keys()], ['SOV', 'GER']);
   assert.ok(base.asked.slice(before).every(ask => ask.tags.every(tag => tag === 'SOV')), 'a country already held keeps its tiles; only the newcomer is asked');
+  assert.equal(view.current!.get('GER'), germany, 'a country still ranked keeps its line object, so the lane is not sent it again');
+  const shown = view.current, drawn = renders;
+  view.retry();
+  await settle();
+  assert.equal(view.current, shown, 'assembling unchanged tiles keeps the lines');
+  assert.equal(renders, drawn, 'and publishes nothing');
 });
 
 test('a failing top-rank read does not re-ask the same hour when setHour runs again, retries on retry(), and asks a new hour', async () => {

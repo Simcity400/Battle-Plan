@@ -30,6 +30,7 @@ const sameDated = (a: BoundDated | null, b: BoundDated | null) => a === b || (!!
 export class StaticSupply {
   private readonly send: (change: SupplyChange) => void;
   private held: FamilyStaticSources | null | undefined = undefined;
+  private tiled: object | undefined = undefined;
   private dated: BoundDated | null = null;
 
   constructor(send: (change: SupplyChange) => void) {
@@ -39,11 +40,23 @@ export class StaticSupply {
   statics(sources: FamilyStaticSources | null, dated: BoundDated | null): void {
     this.held = sources;
     this.dated = dated;
-    this.send({
+    this.send({ ...this.payload(), dated });
+  }
+
+  tiles(tiledBySource: object | undefined): void {
+    if (tiledBySource === this.tiled) return;
+    this.tiled = tiledBySource;
+    if (this.held !== undefined) this.send(this.payload());
+  }
+
+  private payload(): SupplyChange {
+    const sources = this.held ?? null, tiled = this.tiled;
+    return {
       ...sources ? { stamp: revisionOf(sources.stamp) } : {},
-      statics: sources ? { staticPanels: sources.panels, staticAnswers: sources.answers, ...(sources.shifts ? { staticShifts: sources.shifts } : {}) } : null,
-      dated,
-    });
+      statics: sources || tiled
+        ? { ...sources ? { staticPanels: sources.panels, staticAnswers: sources.answers, ...(sources.shifts ? { staticShifts: sources.shifts } : {}) } : {}, ...tiled ? { tiledBySource: tiled } : {} }
+        : null,
+    };
   }
 
   date(sources: FamilyStaticSources | null, dated: BoundDated | null): void {
