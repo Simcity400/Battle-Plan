@@ -3498,25 +3498,27 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
     with_world(&frame, "", Ok(&placed), |world| {
         let (visibility, verdict) = withheld("this recording predates the record of its role's visibility");
         decides(world, &generated(101, Recorded::NotRecorded, None), visibility, verdict);
-        let no_role = generated(101, Recorded::Value(UnitLeaderRow::NO_ROLE), None);
+        let no_role = generated(101, Recorded::Value(Some(UnitLeaderRow::NO_ROLE)), None);
         decides(world, &no_role, LeaderVisibility::Decided(Eval::True), Eval::True);
-        let always = generated(101, Recorded::Value(UnitLeaderRow::EMPTY_VISIBLE), None);
+        let always = generated(101, Recorded::Value(Some(UnitLeaderRow::EMPTY_VISIBLE)), None);
         decides(world, &always, LeaderVisibility::Unconditioned, Eval::True);
         let (visibility, verdict) = withheld("its role's visible has no recorded source");
-        decides(world, &generated(101, Recorded::Value(UnitLeaderRow::VISIBLE), None), visibility, verdict);
+        decides(world, &generated(101, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), None), visibility, verdict);
+        let (visibility, verdict) = withheld("its role could not be read when it was recorded");
+        decides(world, &generated(101, Recorded::Value(None), role), visibility, verdict);
         for (owner, verdict) in [(101, Eval::True), (102, Eval::False)] {
-            let row = generated(owner, Recorded::Value(UnitLeaderRow::VISIBLE), role);
+            let row = generated(owner, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), role);
             decides(world, &row, LeaderVisibility::Conditioned(3), verdict);
         }
         let (visibility, verdict) = withheld("no unit leader role's visible opens at events/generated.txt:4");
-        decides(world, &generated(101, Recorded::Value(UnitLeaderRow::VISIBLE), Some((role_file, 4))), visibility, verdict);
+        decides(world, &generated(101, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), Some((role_file, 4))), visibility, verdict);
         let (visibility, verdict) = withheld("its role's visibility state 7 is not known");
-        decides(world, &generated(101, Recorded::Value(7), None), visibility, verdict);
+        decides(world, &generated(101, Recorded::Value(Some(7)), None), visibility, verdict);
     });
     std::fs::remove_dir_all(&folder).unwrap();
     with_world(&frame, "", Ok(&roles), |world| {
         let (visibility, verdict) = withheld("the recorded mod stack's content is not open");
-        decides(world, &generated(101, Recorded::Value(UnitLeaderRow::VISIBLE), role), visibility, verdict);
+        decides(world, &generated(101, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), role), visibility, verdict);
     });
 }
 

@@ -1913,17 +1913,14 @@ fn leader_reference(id: u32) -> u64 {
     (u64::from(id) << 32) | u64::from(cunit_leader::REFERENCE_TYPE)
 }
 
-fn visible_state(row: &LeaderRow) -> replay_data::rows::Recorded<u8> {
-    row.visible_state.map_or(replay_data::rows::Recorded::NotRecorded, replay_data::rows::Recorded::Value)
+fn visible_state(row: &LeaderRow) -> replay_data::rows::Recorded<Option<u8>> {
+    replay_data::rows::Recorded::Value(row.visible_state)
 }
 
 fn visible_origin(row: &LeaderRow, bytes: &[u8]) -> replay_data::rows::Recorded<Option<replay_data::rows::ScientistTemplateOrigin>> {
-    match row.visible_state {
-        None => replay_data::rows::Recorded::NotRecorded,
-        Some(_) => replay_data::rows::Recorded::Value(row.visible_origin.map(|((start, len), line)| {
-            replay_data::rows::ScientistTemplateOrigin { file: owned(bytes, start, len), line }
-        })),
-    }
+    replay_data::rows::Recorded::Value(row.visible_origin.map(|((start, len), line)| {
+        replay_data::rows::ScientistTemplateOrigin { file: owned(bytes, start, len), line }
+    }))
 }
 
 fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {

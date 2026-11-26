@@ -696,7 +696,7 @@ impl LeaderRoles {
                     .layers
                     .as_ref()
                     .ok_or_else(|| "the recorded mod stack's content is not open".to_owned())
-                    .and_then(|layers| layers.read(&name).map_err(|error| format!("{name} cannot be read: {error}")))
+                    .and_then(|layers| layers.read_path(file).map_err(|error| format!("{name} cannot be read: {error}")))
                     .and_then(|bytes| {
                         content_reader_key_names::characters::parse_leader_visibility_templates(&bytes)
                             .map(Arc::new)
@@ -3681,16 +3681,17 @@ impl<'a> World<'a> {
             )))
         };
         match (row.visible_state, row.visible_origin) {
-            (Recorded::Value(UnitLeaderRow::NO_ROLE), _) => LeaderVisibility::Decided(Eval::True),
-            (Recorded::Value(UnitLeaderRow::EMPTY_VISIBLE), _) => LeaderVisibility::Unconditioned,
-            (Recorded::Value(UnitLeaderRow::VISIBLE), Recorded::Value(Some(origin))) => {
+            (Recorded::Value(Some(UnitLeaderRow::NO_ROLE)), _) => LeaderVisibility::Decided(Eval::True),
+            (Recorded::Value(Some(UnitLeaderRow::EMPTY_VISIBLE)), _) => LeaderVisibility::Unconditioned,
+            (Recorded::Value(Some(UnitLeaderRow::VISIBLE)), Recorded::Value(Some(origin))) => {
                 match self.leader_roles.map_err(str::to_owned).and_then(|roles| roles.placed(&origin.file, origin.line)) {
                     Ok(index) => LeaderVisibility::Conditioned(index),
                     Err(why) => refused(why),
                 }
             }
-            (Recorded::Value(UnitLeaderRow::VISIBLE), _) => refused("its role's visible has no recorded source".into()),
-            (Recorded::Value(state), _) => refused(format!("its role's visibility state {state} is not known")),
+            (Recorded::Value(Some(UnitLeaderRow::VISIBLE)), _) => refused("its role's visible has no recorded source".into()),
+            (Recorded::Value(Some(state)), _) => refused(format!("its role's visibility state {state} is not known")),
+            (Recorded::Value(None), _) => refused("its role could not be read when it was recorded".into()),
             _ => refused("this recording predates the record of its role's visibility".into()),
         }
     }

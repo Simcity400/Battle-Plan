@@ -17,7 +17,7 @@ pub struct Leader<'a> {
     pub inherited_text_b: &'a Vec<u8>,
     pub exile_country: &'a Recorded<i32>,
     pub codename: &'a Recorded<Option<NameOperands>>,
-    pub visible_state: &'a Recorded<u8>,
+    pub visible_state: &'a Recorded<Option<u8>>,
     pub visible_origin: &'a Recorded<Option<ScientistTemplateOrigin>>,
 }
 

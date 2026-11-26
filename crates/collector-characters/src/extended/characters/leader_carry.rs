@@ -23,7 +23,7 @@ fn take(
 
 impl Held for LeaderRow {
     fn can_hold(&self) -> bool {
-        self.training_reason.is_none()
+        self.training_reason.is_none() && self.visible_state.is_some()
     }
     fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Option<Self> {
         let (text_a_start, _) = take(bytes, (self.text_a_start, self.text_a_len), text, start)?;

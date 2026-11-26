@@ -4605,10 +4605,20 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
             generated: true,
             ..recorded(501, 2)
         };
+        let older = replay_data::rows::UnitLeaderRow {
+            visible_state: replay_data::rows::Recorded::NotRecorded,
+            visible_origin: replay_data::rows::Recorded::NotRecorded,
+            ..leader(10, 1, 1)
+        };
         undecided(
-            visible(&leader(10, 1, 1), Some(generated)),
-            "generate_character",
+            visible(&older, Some(generated.clone())),
+            "predates the record of its role's visibility",
         );
+        let no_role = replay_data::rows::UnitLeaderRow {
+            visible_state: replay_data::rows::Recorded::Value(Some(replay_data::rows::UnitLeaderRow::NO_ROLE)),
+            ..leader(10, 1, 1)
+        };
+        assert_eq!(visible(&no_role, Some(generated)), script::Eval::True);
         undecided(visible(&leader(10, 1, 1), None), "no template");
     }
     let reference = (5_u64 << 32) | 7;

@@ -478,7 +478,7 @@ pub fn movement(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Moveme
 
 pub fn leader_roles(layers: &ResolvedLayers) -> Result<Arc<LeaderRoles>, String> {
     content_reader_key_names::characters::leader_templates(layers)
-        .map(LeaderRoles::new)
+        .map(|templates| LeaderRoles::read_through(templates, layers.clone()))
         .map(Arc::new)
 }
 
