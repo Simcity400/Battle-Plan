@@ -3882,6 +3882,31 @@ test('flag columns widen for multi-country coalitions past row 40, preserve two-
   assert.ok(['AA', 'CC', 'BB', 'DD'].every(code => wideTexts.includes(code)), 'all four coalition flags paint in the widened flag column');
   assert.equal(wideTexts.filter(text => text === 'No ships waiting').length, 2, 'inline status paints beside both a missing-name hatch and a long named row');
 
+  const resizedLayout = layoutFamilyTable(buildColumnLayouts(columns, settings, { country: 68, name: 220 }), 300, { rhythm: 'log' });
+  const resizedGrid = gridContext(300, 120);
+  drawFamilyTable(resizedGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout: resizedLayout,
+    rows: resolveTableRows({ ...model, rows: [model.rows[0]!] }, settings),
+    settings,
+    hour: 1,
+    width: 300,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+    rhythm: 'log',
+  });
+  const resizedTexts = [...resizedGrid.marks.values()];
+  assert.ok(resizedTexts.includes('AA') && resizedTexts.includes('CC'), 'leading coalition flags fit inside a resized 68px column');
+  assert.equal(resizedTexts.includes('BB') || resizedTexts.includes('DD'), false, 'coalition flags stop at the resized column edge instead of overlapping the next column');
+
   const rows45 = Array.from({ length: 45 }, (_, idx) => ({
     key: `r${idx}`,
     name: `Battle ${idx}`,
@@ -3919,8 +3944,9 @@ test('flag columns widen for multi-country coalitions past row 40, preserve two-
       model: { family: 'table' as const, kind: lateKind, options: transport.carry({}), settings, sources: {}, staticPanels: { main: { at: 1 } }, width: 480, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
       hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 480, height: 200, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
     }, state, () => 'c1');
+    const twoFlagLaidOut = layout.columns.find(col => col.key === 'country')!.width;
     const countryW = (painted.fields.widths?.value as { widths: Record<string, number> }).widths.country!;
-    assert.ok(countryW > 52, `row 42 coalition widens the country column beyond 52px (got ${countryW})`);
+    assert.ok(countryW > twoFlagLaidOut, `row 42 coalition widens the country column beyond the two-flag laid-out width ${twoFlagLaidOut}px (got ${countryW}px)`);
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }

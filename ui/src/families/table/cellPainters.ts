@@ -786,9 +786,10 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (cell?.flags && cell.flags.length > 0) {
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+    const boundCoalition = column.display === 'flag' && cell.flags.length > 2;
     for (const fl of cell.flags) {
       if (fl.separator && fx > left) {
-        if (column.narrow === 'flag' && fx + 7 + FLAG_SLOT_WIDTH > right) break;
+        if ((column.narrow === 'flag' || boundCoalition) && fx + 7 + FLAG_SLOT_WIDTH > right) break;
         ctx.save();
         ctx.fillStyle = theme.gridLine ?? theme.muted;
         ctx.fillRect(fx, fy + 1, 1, FLAG_SLOT_HEIGHT - 2);
@@ -796,6 +797,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
         fx += 7;
       }
       if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
+      if (boundCoalition && fx > left && fx + FLAG_SLOT_WIDTH > right) break;
       const state = slotOf(fl.art, fl.artName ?? (fl.tag.startsWith('\u0000') ? '?' : fl.tag), rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
