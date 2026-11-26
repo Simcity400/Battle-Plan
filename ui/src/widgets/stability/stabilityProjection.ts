@@ -420,7 +420,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
       showStability: ctx.options.stability !== false,
       showWarSupport: ctx.options.warSupport !== false,
       zoom: ctx.options.scale === 'zoom',
-      windowHours: lineChartSettings(ctx.options).windowHours,
+      windowHours: lineChartSettings(ctx.options, ctx.following).windowHours,
     };
   },
 };

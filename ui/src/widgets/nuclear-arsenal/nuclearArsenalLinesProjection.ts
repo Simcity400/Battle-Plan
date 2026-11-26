@@ -44,7 +44,7 @@ export function nuclearHoverItems(reply: NuclearArsenalReply, lines: readonly Co
       divider: items.length > 0,
     });
     for (const count of row.counts) {
-      if (count.value <= 0) continue;
+      if (count.value <= 0 && count.ready <= 0) continue;
       const label = typeByOrdinal.get(count.ordinal) ?? `Unnamed nuclear type ${count.ordinal}`;
       const value = count.ready > 0
         ? `${formatScalar(count.value, 'integer')} (${formatScalar(count.ready, 'integer')} ready)`

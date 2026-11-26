@@ -33,8 +33,13 @@ import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts'
 import { timeAxisLabels } from '../../draw/kit.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
-import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
-import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
+import { navyLinesDeclaration, navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
+import { gameScoreLinesProjection } from '../../widgets/game-score/gameScoreLinesProjection.ts';
+import { armyLinesDeclaration, armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
+import { factoriesLinesDeclaration } from '../../widgets/factories/factoriesLinesProjection.ts';
+import { airForceLinesDeclaration } from '../../widgets/air-force-size/airForceLinesProjection.ts';
+import { resolveWidgetScopedOptions } from '../../widgets/manifest.ts';
+import { MEASURE_OPTIONS } from '../../widgets/country-measure/options.ts';
 import { occupationLinesDeclaration } from '../../widgets/occupation-trend/occupationLinesProjection.ts';
 import { supplyHealthDeclaration, supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { readPlanExact } from '../broker.ts';
@@ -204,6 +209,26 @@ describe('time-chart BoundedSeries & Foundation C integration', () => {
     assert.deepEqual(res.colour, { status: 'ready', value: '#454545' });
     assert.equal(res.flagChoice?.status, 'ready');
     if (res.flagChoice?.status === 'ready') assert.ok(res.flagChoice.value.includes('GER_fascism'));
+  });
+});
+
+describe('percent axes', () => {
+  const base = Math.floor(H1936 / 96) * 96;
+  const model = (head: number, axis: Partial<TimeChartModel['yAxis']> = {}): TimeChartModel => ({
+    kind: 'pct', measureTitle: 'Fuel received', mode: 'lines', hour: base + 50, extent: [base, base + 95],
+    yAxis: { format: 'percent', ...axis },
+    series: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', role: 'primary', headValue: head, headHour: base + 50 }],
+  });
+  it('grows past 100% to the highest recorded share and never clips it, keeping 100% as the least top', () => {
+    assert.deepEqual(layoutTimeChart(model(60), 600, 220, FONT, measure).yDomain, [0, 100]);
+    assert.ok(layoutTimeChart(model(120), 600, 220, FONT, measure).yDomain[1] >= 120, 'a share of 120% stays on the axis');
+  });
+  it('draws a log percent axis from its lowest recorded value, never from zero', () => {
+    const layout = layoutTimeChart(model(60, { log: true }), 600, 220, FONT, measure);
+    assert.ok(layout.yDomain[0] > 0 && Number.isFinite(layout.toY(60)), `log domain ${layout.yDomain}`);
+  });
+  it('honours the axis bounds the settings give', () => {
+    assert.deepEqual(layoutTimeChart(model(60, { min: 20, max: 80 }), 600, 220, FONT, measure).yDomain, [20, 80]);
   });
 });
 
@@ -438,6 +463,20 @@ describe('time-chart legend art', () => {
     assert.equal(small.legendTop, null);
     assert.deepEqual(collectVisibleChartArt(model, small, fitTimeChartLegend(model, small, LANE_THEME, measure)), [], 'a hidden legend asks for no art');
   });
+
+  it('draws a line-style legend sample with no series colour in the secondary text colour, never black', () => {
+    const model: TimeChartModel = { kind: 'legend-style', measureTitle: 'Legend', mode: 'lines', hour: H1936 + 2000, extent: [H1936, H1936 + 2000], yAxis: { format: 'number' }, series: [],
+      legend: [{ id: 'dealt', label: 'Solid: enemy losses' }, { id: 'taken', label: 'Dashed: own losses', dash: [4, 3] }] };
+    const { ctx } = mockCanvas(958, 314);
+    const strokes: string[] = [];
+    (ctx as unknown as { stroke: () => void }).stroke = function (this: { strokeStyle: string }) { strokes.push(this.strokeStyle); };
+    const layout = layoutTimeChart(model, 958, 314, FONT, measure);
+    for (const fit of [undefined, fitTimeChartLegend(model, layout, LANE_THEME, measure)]) {
+      strokes.length = 0;
+      drawTimeChart(ctx, model, layout, LANE_THEME, null, 1, fit);
+      assert.ok(strokes.length >= 2 && strokes.every(style => style !== '' && style !== '#000000' && style !== 'black'), `legend samples: ${strokes.join(', ')}`);
+    }
+  });
 });
 
 describe('time-chart laneView integration', () => {
@@ -630,6 +669,13 @@ describe('time-chart laneView integration', () => {
       [H1936 + 120, [`Unknown: Cost not recorded · Paid ${formatDateOnly(H1936 + 120)}`]],
     ], 'one marker per hour a payment was made, never one at a bin’s closing hour');
     assert.equal(model.warnings?.length, 1, 'an hour whose spending was not recorded is said');
+
+    const allUnknown = { ...reply, markers: [spend(H1936 + 20, 'Mobilise', { chargeRaw: '0', unknown: 2, payments: 2, since: H1936 + 10 })],
+      unrecorded: [{ firstHour: H1936 + 150, lastHour: until + 500, reason: 'The ledger was not read' }] };
+    const unknownModel = politicalPowerProjection.project(createBoundedReadView({ hour: until, panels: new Map([['spending', allUnknown]]) }),
+      { tags: ['GER'], extent: [H1936, until], gaps: [], surface: '#111111' });
+    assert.equal(unknownModel.markers?.[0]?.items?.[0]?.detail?.startsWith('Cost not recorded'), true, 'an amount of which nothing was recorded prints no figure');
+    assert.match(unknownModel.warnings?.[0] ?? '', new RegExp(`to ${formatDateOnly(until)}:`), 'an open gap is said through the displayed hour, never past it');
 
     const ctx = (spendTicks: boolean) => ({
       track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1' }, following: false,
@@ -1224,6 +1270,59 @@ describe('several countries, one measure', () => {
     assert.equal(model.series[0]!.endLabel?.value, '7,000');
   });
 
+  it('hovers and audits an exact reading at its recorded precision whatever the label digits', () => {
+    const hovers = new Map([['hover', { hour: base + 10, data: { decimals: 5, states: [{ country: 'A07', hour: base + 10, run: { valueRaw: '1025000' }, missing: null }] } }]]);
+    const answer = parseFollowed(message(hour, [{ id: 1, answer: { keys: [7n], columns: 1, values: [1025000n], names: ['A07'] } }])).answers[0]!.answer;
+    const model = gameScoreLinesProjection.project(createBoundedReadView({ hour, hovers, answers: new Map([['main', answer]]) }),
+      { tags: ['A07'], top: null, membership: null, decimals: 5, unavailable: null, digits: 0, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    const layout = layoutTimeChart(model, 600, 220, FONT, measure);
+    assert.equal(deriveTimeChartTooltip(model, layout, `plot:${base + 10}`)?.payload?.items?.find(item => item.value !== undefined)?.value, '10.25');
+    assert.equal(model.series[0]!.endLabel?.value, '10', 'the label keeps its chosen digits');
+    assert.deepEqual(model.auditRows?.map(row => row.value), ['10.25'], 'the audit compares the recorded figure');
+  });
+
+  it('says a refused head ranking with its reason, and never reads a second measure from a one-column answer', () => {
+    const options = { tags: [], top: 2, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
+    const refusedAnswer = parseFollowed(message(hour, [{ id: 1, answer: { notRecorded: 'Navy size was not read for a contender' } }])).answers[0]!.answer;
+    const refused = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['main', refusedAnswer]]) }), options);
+    assert.deepEqual(refused.empty, { message: 'Navy size was not read for a contender', kind: 'unavailable' }, 'never the older tile ranking');
+    const exactRefused = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', { hour, measures: [{ name: 'm', decimals: 0 }], rows: [], refused: 'Navy size was not read for a contender', from: hour, until: hour }]]) }), options);
+    const exactEmpty = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', { hour, measures: [{ name: 'm', decimals: 0 }], rows: [], refused: null, from: hour, until: hour }]]) }), options);
+    const audit = (model: TimeChartModel) => model.auditRows?.map(row => `${row.row}=${row.value}`);
+    assert.deepEqual(audit(refused), ['__rank__=Navy size was not read for a contender'], 'a refused ranking is audited with its reason');
+    assert.deepEqual(audit(exactRefused), audit(refused), 'and the exact read refuses it the same way');
+    assert.deepEqual(audit(exactEmpty), [], 'a ranking proved empty audits no row, so the two never agree by accident');
+    const one = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n], columns: 1, values: [9000n], names: ['A09'] } }])).answers[0]!.answer;
+    const view = createBoundedReadView({ hour, series: new Map([['main', new Map([['A09', lines.get('A09')!]])]]), answers: new Map([['main', one]]) });
+    assert.deepEqual(headReading(view, 'main', { tag: 'A09', reading: 1 }, 0), { missing: 'Not recorded at this hour' }, 'the second reading is missing until evidence holding it arrives');
+    assert.equal(headValueOf(headReading(view, 'main', { tag: 'A09' }, 0)), 9000);
+  });
+
+  it('audits a compact measure at its full recorded figure, and honours a declared precision at every magnitude', () => {
+    const army = createBoundedReadView({ hour, panels: new Map([['main', { decimals: 0, states: [{ country: 'A07', hour, run: { valueRaw: '12399' }, missing: null }] }]]) });
+    const audited = armyLinesProjection.project(army, { tags: ['A07'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(audited.auditRows?.map(row => row.value), ['12,399'], 'never 12.4K, which a reading of 12,350 would share');
+    const big = { ...audited, yAxis: { format: 'number' as const, decimals: 0, exactDecimals: 5 },
+      series: [{ ...audited.series[0]!, exact: { hour: base + 10, value: 1000.25 } }] };
+    const layout = layoutTimeChart(big, 600, 220, FONT, measure);
+    assert.equal(deriveTimeChartTooltip(big, layout, `plot:${base + 10}`)?.payload?.items?.find(item => item.value !== undefined)?.value, '1,000.25');
+  });
+
+  it('orders and audits a top by the dated head ranking, not by an older tile ranking, so it agrees with the exact read', () => {
+    const stale = new Map(['A01', 'A02', 'A03'].map(tag => [tag, lines.get(tag)!]));
+    const answer = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n, 3n], columns: 1, values: [9000n, 3000n], names: ['A09', 'A03'] } }])).answers[0]!.answer;
+    const options = { tags: [], top: 2, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
+    const shown = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', stale]]), answers: new Map([['main', answer]]) }), options);
+    const reading = (raw: string) => ({ hour, run: { valueRaw: raw }, missing: null });
+    const ranked = { hour, measures: [{ name: 'm', decimals: 0 }], rows: [{ country: 'A09', readings: [reading('9000')] }, { country: 'A03', readings: [reading('3000')] }], refused: null, from: hour, until: hour };
+    const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', ranked]]) }), options);
+    const rows = (model: TimeChartModel) => model.auditRows?.map(row => `${row.row}=${row.value}`);
+    assert.deepEqual(rows(shown), ['A09=9,000', 'A03=3,000']);
+    assert.deepEqual(rows(shown), rows(exact));
+    assert.deepEqual(shown.series.map(s => s.id), ['A09', 'A03'], 'the lines of the top at the displayed hour, in its order');
+    assert.ok(shown.series.find(s => s.id === 'A03')!.bounded, 'a ranked country keeps its drawn history');
+  });
+
   it('draws a second measure dashed beside each country in the same colour, keyed apart, with a legend naming both', () => {
     const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named], ['second', named]]) }),
@@ -1273,6 +1372,9 @@ describe('several countries, one measure', () => {
     const main = plan.entries.find(entry => entry.name === 'main')!;
     assert.ok(((main.read as { params?: { measures?: readonly string[] } }).params?.measures ?? []).length === 1, 'the ranked exact read asks the second measure too');
     assert.ok(!plan.entries.some(entry => entry.name === 'rank'), 'a ranked top takes its order from its own ranked read, not a second rank request');
+    const fresh = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: [], membership: null, top: null, all: true, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
+      { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
+    assert.ok(((fresh.entries.find(entry => entry.name === 'main')!.read as { top?: { n: number } }).top?.n ?? 0) >= 1500, 'All countries before the country list loads asks the whole population, never a top of one');
     const keyed = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: ['A07', 'A01'], membership: null, top: null, all: false, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
       { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
     assert.deepEqual(keyed.entries.filter(entry => entry.read.shape === 'pixel-binned').map(entry => (entry.read as { headQuery: { coverage?: string } }).headQuery.coverage), ['row', 'row'], 'keyed heads ask row coverage');
@@ -1324,6 +1426,34 @@ describe('several countries, one measure', () => {
     (ctx as unknown as { stroke: () => void }).stroke = function (this: { strokeStyle: string }) { strokes.push(this.strokeStyle); };
     drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
     assert.ok(strokes.includes(early.swatch!) && strokes.includes(now.swatch!), 'the line is drawn in each stretch’s own colour');
+
+    const zoomed = { ...model, view: { x: [base, base + 20] as const } };
+    strokes.length = 0;
+    drawTimeChart(ctx, zoomed, layoutTimeChart(zoomed, 600, 220, FONT, measure), LANE_THEME, null, 1);
+    assert.ok(strokes.includes(early.swatch!) && !strokes.includes(now.swatch!), 'a view wholly inside the earlier stretch paints its colour, not the current one');
+
+    const signed = { ...model, series: model.series.map(s => ({ ...s, negRed: true })), yAxis: { ...model.yAxis, min: -5000 } };
+    strokes.length = 0;
+    drawTimeChart(ctx, signed, layoutTimeChart(signed, 600, 220, FONT, measure), LANE_THEME, null, 1);
+    assert.ok(strokes.includes(early.swatch!) && strokes.includes(now.swatch!), 'with negatives on the axis the positive part still takes each stretch’s colour');
+  });
+
+  it('ends an identity that holds for one hour at that hour, and takes up the next one after it', () => {
+    const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [base, base + 95]);
+    index.setFacts({
+      branchId: 'b',
+      known: [[base, base + 95]],
+      names: ['Germany', 'German Reich', 'Greater Germany'],
+      reasons: [],
+      flags: [{ keys: ['GER', null, null], reasons: [null, null, null] }],
+      countries: [{ tag: 'A07', runs: [[base, 0, 0x3366cc, -1, 0], [base + 30, 1, 0x3366cc, -1, 0], [base + 31, 2, 0x3366cc, -1, 0]] }],
+      warnings: [],
+    });
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', new Map([['A07', lines.get('A07')!]])]]), identity: createSnapshotIdentityProvider(index) }),
+      { tags: ['A07'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series[0]!.identities?.map(run => [run.firstHour - base, run.lastHour - base, run.name]),
+      [[0, 29, 'Germany'], [30, 30, 'German Reich'], [31, 50, 'Greater Germany']]);
+    assert.equal(model.series[0]!.endLabel?.name, 'Greater Germany');
   });
 });
 
@@ -1521,6 +1651,15 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       'Democratic=30%',
       'Fascist (ruling)=70%',
     ], 'the hover lists the parties that existed at the hovered hour, each from its own part');
+    const markerLayout = layoutTimeChart(model, 720, 260, FONT, measure);
+    const markerTip = deriveTimeChartTooltip(model, markerLayout, `marker:0`);
+    assert.ok(markerTip?.payload?.items?.length, 'the election marker has a tooltip');
+    assert.ok(!markerTip!.payload!.items!.some(item => item.label.startsWith('Communist') || item.label.startsWith('Non-aligned')),
+      'a party with no part at the marker’s hour is left out, never shown as 0%');
+
+    const bare = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: { ...history, parties: [] } });
+    assert.deepEqual(bare.markers?.map(marker => marker.hour), [base + 48], 'witnessed elections are drawn without a popularity plot');
+    assert.equal(layoutTimeChart(bare, 720, 260, FONT, measure).markers.length, 1, 'and placed on the chart');
 
     const exact = (raw: string, part: string) => ({ country: 7, part, hour, run: { valueRaw: raw }, missing: null });
     const audited = rulingPartyProjection.project(createBoundedReadView({ hour, panels: new Map([['popularity', { decimals: 5, states: [exact('7000000', '1'), exact('3000000', '0')] }]]) }), options);
@@ -1777,9 +1916,69 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       }]]),
     }), { tags: ['GER'], top: null, decimals: 5, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(armyModel.series[0]!.endLabel?.value, '9.99T');
-    assert.equal(armyModel.auditRows?.find(r => r.row === 'GER')?.value, '9.99T');
+    assert.equal(armyModel.auditRows?.find(r => r.row === 'GER')?.value, '9,999,999,999,999.99999', 'the audit compares the recorded figure, not the label');
     const armyHover = deriveTimeChartTooltip(armyModel, layoutTimeChart(armyModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
-    assert.equal(armyHover?.payload?.items?.[0]?.value, '9,999,999,999,999');
+    assert.equal(armyHover?.payload?.items?.[0]?.value, '9,999,999,999,999.99999', 'the hover keeps the recorded precision at any magnitude');
+  });
+});
+
+describe('settings a Lines view shows', () => {
+  const ctxOf = (kind: string, options: Record<string, unknown>, following = true, aux: unknown = undefined) => ({
+    track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1', gaps: [] }, following, aux,
+    widget: { kind, time: { mode: following ? 'follow' : 'campaign' } },
+    countries: { tags: ['GER', 'ITA'], membership: null, top: null, all: false, every: [] }, options,
+  }) as unknown as Parameters<typeof armyLinesDeclaration.sources>[0];
+  const VIEW = { width: 800, height: 300 } as Parameters<typeof armyLinesDeclaration.sources>[1];
+  const measureOf = (plan: ReturnType<typeof armyLinesDeclaration.sources>) =>
+    (plan.entries.find(entry => entry.name === 'main')?.read as { family?: { measure?: string } } | undefined)?.family?.measure;
+  const army = { branchId: '1', available: true, measures: ['manpower', 'divisions'], warnings: [] };
+
+  it('offers each size and factory Lines view its own controls, and every one changes the request or the drawing', () => {
+    const cases: readonly [string, typeof armyLinesDeclaration | typeof factoriesLinesDeclaration, readonly string[], Record<string, unknown>, unknown][] = [
+      ['army-size', armyLinesDeclaration, ['measure', 'countFor'], { measure: 'manpower', countFor: 'host' }, army],
+      ['navy-size', navyLinesDeclaration, ['measure', 'ownership'], { measure: 'strength', ownership: 'logical' }, undefined],
+      ['air-force-size', airForceLinesDeclaration, ['measure', 'ownership'], { measure: 'wings', ownership: 'effective' }, undefined],
+      ['factories', factoriesLinesDeclaration, ['count', 'types'], { count: 'built' }, undefined],
+    ];
+    for (const [kind, declaration, own, changed, aux] of cases) {
+      const keys = resolveWidgetScopedOptions(kind, { view: 'lines' }).map(field => field.key);
+      for (const key of [...own, 'endLabels', 'yMin', 'yMax', 'log', 'playback', 'windowDays']) assert.ok(keys.includes(key), `${kind} Lines shows ${key}`);
+      const before = measureOf((declaration as typeof armyLinesDeclaration).sources(ctxOf(kind, { view: 'lines' }, true, aux), VIEW));
+      const after = measureOf((declaration as typeof armyLinesDeclaration).sources(ctxOf(kind, { view: 'lines', ...changed }, true, aux), VIEW));
+      assert.notEqual(after, before, `${kind}: a shown choice changes what is read`);
+      const drawn = (declaration as typeof armyLinesDeclaration).projectionOptions(ctxOf(kind, { view: 'lines', endLabels: false, yMax: 10, log: true }, true, aux), { extent: [0, 10], surface: '#111111' });
+      assert.equal(drawn.endLabels, false);
+      assert.deepEqual([drawn.settings?.yMax, drawn.settings?.log], [10, true]);
+    }
+  });
+
+  it('names an army measure the recording lacks through the host, never an empty plan that loads for ever', () => {
+    const ctx = ctxOf('army-size', { view: 'lines', measure: 'strength' }, true, army);
+    assert.equal(armyLinesDeclaration.unavailable?.(ctx, 0), 'Combined strength (hit points) is not recorded in this recording.');
+    assert.equal(armyLinesDeclaration.unavailable?.(ctxOf('army-size', { view: 'lines', measure: 'manpower' }, true, army), 0), null);
+  });
+
+  it('offers spending markers and area fill only for one country, and the playback window only while following', () => {
+    const fields = MEASURE_OPTIONS;
+    const shown = (key: string, countries: Parameters<NonNullable<typeof fields[number]['visibleWhen']>>[1], time: Parameters<NonNullable<typeof fields[number]['visibleWhen']>>[2]) =>
+      fields.find(field => field.key === key)?.visibleWhen?.({ playback: 'window' }, countries, time) ?? true;
+    for (const key of ['spendTicks', 'areaFill']) {
+      assert.equal(shown(key, { kind: 'selected' }, 'follow'), true);
+      assert.equal(shown(key, { kind: 'tags', tags: ['GER'] }, 'follow'), true);
+      assert.equal(shown(key, { kind: 'tags', tags: ['GER', 'ITA'] }, 'follow'), false, `${key} applies to one country only`);
+      assert.equal(shown(key, { kind: 'all' }, 'follow'), false);
+    }
+    for (const key of ['playback', 'windowDays']) {
+      assert.equal(shown(key, { kind: 'selected' }, 'follow'), true);
+      assert.equal(shown(key, { kind: 'selected' }, 'campaign'), false, `${key} acts only while following`);
+    }
+  });
+
+  it('crops to the recent window only while following playback', () => {
+    const options = { view: 'lines', playback: 'window', windowDays: 30 };
+    assert.equal(navyLinesDeclaration.projectionOptions(ctxOf('navy-size', options, true), { extent: [0, 10], surface: '#111111' }).settings?.windowHours, 720);
+    assert.equal(navyLinesDeclaration.projectionOptions(ctxOf('navy-size', options, false), { extent: [0, 10], surface: '#111111' }).settings?.windowHours, null,
+      'a whole-campaign or pinned chart is never cropped to the final window');
   });
 });
 

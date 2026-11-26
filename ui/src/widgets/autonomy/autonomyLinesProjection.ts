@@ -6,6 +6,7 @@ import {
   FutureDataError,
   type BoundedReadView,
   type FamilyPlanContext,
+  type SourceEntry,
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { DeclaredCountryFilter } from '../../families/plan.ts';
@@ -25,6 +26,7 @@ import {
   branchGapsOf,
   countrySeriesLooks,
   missingSpansOf,
+  ALL_POPULATION_TOP,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject } from '../../generated/dashboard';
@@ -350,7 +352,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       },
       series: seriesList,
       gaps,
-      note: 'Progress within each subject’s current autonomy level',
+      summaryText: 'Progress within each subject’s current autonomy level',
       warnings: reply.warnings.length > 0 ? reply.warnings : undefined,
       hoverDetail,
       auditRows,
@@ -368,8 +370,22 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
   countries: { mode: 'filter' },
   sources: (ctx: FamilyPlanContext): SourcePlan => {
     const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+    const head: SourceEntry = {
+      name: 'head',
+      ...common,
+      read: {
+        shape: 'point',
+        channel: 'panel',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'autonomy-levels',
+        followQuery: { panel: 'autonomy-levels', branchId: ctx.branch.id },
+        params: { branchId: ctx.branch.id },
+        validate: validateAutonomyLevels,
+      },
+    };
     return {
       owner: `autonomy:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      exactEntry: head,
       entries: [
         {
           name: 'main',
@@ -379,23 +395,11 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
             coverage: { mode: 'population', form: 'all' },
             family: { kind: 'autonomy-lines' },
             tags: [],
-            top: { n: 1500 },
+            top: { n: ALL_POPULATION_TOP },
             headQuery: null,
           },
         },
-        {
-          name: 'head',
-          ...common,
-          read: {
-            shape: 'point',
-            channel: 'panel',
-            coverage: { mode: 'population', form: 'all' },
-            product: 'autonomy-levels',
-            followQuery: { panel: 'autonomy-levels', branchId: ctx.branch.id },
-            params: { branchId: ctx.branch.id },
-            validate: validateAutonomyLevels,
-          },
-        },
+        head,
         {
           name: 'hover',
           ...common,

@@ -74,7 +74,7 @@ function occupationHoverDetail(readView: BoundedReadView, lines: readonly Countr
   }
   if (!hover) return null;
   const at = hover.hour;
-  const settings = { shown: shownOf(options.options), rank: rankOf(options.options), collaboration: options.options.collaboration === true, digits: options.digits ?? 5 };
+  const settings = { shown: shownOf(options.options), rank: rankOf(options.options), collaboration: options.options.collaboration === true, digits: 5 };
   const items = occupationHoverItems(hover.data, repliedCells(hover.data).read(), lines, settings, tag => countryNameAt(readView, tag, at));
   return { hour: at, items, replacesSeries: true };
 }

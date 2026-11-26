@@ -126,7 +126,7 @@ test('nuclear-arsenal lines ranks chosen slots, preserves missing readings, and 
       { ordinal: 1, token: 'thermonuclear_bomb', name: null },
     ],
     countries: [
-      { tag: 'USA', countryId: 2, slot: 2, total: 7, counts: [{ ordinal: 0, value: 5, ready: 2 }, { ordinal: 1, value: 2, ready: 0 }] },
+      { tag: 'USA', countryId: 2, slot: 2, total: 7, counts: [{ ordinal: 0, value: 5, ready: 2 }, { ordinal: 1, value: 2, ready: 0 }, { ordinal: 2, value: 0, ready: 1 }] },
     ],
   };
   const readView = createBoundedReadView({
@@ -153,6 +153,7 @@ test('nuclear-arsenal lines ranks chosen slots, preserves missing readings, and 
   assert.equal(model.hoverDetail?.hour, 480);
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'Nuclear Bomb' && item.value === '5 (2 ready)'));
   assert.ok(model.hoverDetail?.items.some(item => item.label === 'thermonuclear_bomb' && item.value === '2'));
+  assert.ok(model.hoverDetail?.items.some(item => item.label === 'Unnamed nuclear type 2' && item.value === '0 (1 ready)'), 'a type with none in stock and one ready keeps its row');
   assert.throws(() => readView.who('country', slot2, displayedHour(501)), FutureDataError);
 
   const emptyTopView = createBoundedReadView({

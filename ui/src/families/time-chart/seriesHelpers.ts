@@ -2,7 +2,7 @@ import { rankSource } from '../seriesRank.ts';
 import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
 import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import { answerRowOf } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
@@ -72,6 +72,29 @@ export function rankedPanelKeys(readView: BoundedReadView, name: string): readon
   return panel?.rows?.map(row => countryKey(row.country)) ?? [];
 }
 
+export const ALL_POPULATION_TOP = 10_000;
+
+export function chartTopOf(countries: FamilyPlanContext['countries']): number | null {
+  return countries.top ?? (countries.all ? Math.max(ALL_POPULATION_TOP, countries.every.length) : null);
+}
+
+export function rowsBySelectedKey<R extends { readonly tag: string | null }>(rows: readonly R[], slotKey: (row: R) => string): (key: string) => R | undefined {
+  const bySlot = new Map(rows.map(row => [slotKey(row), row]));
+  const byTag = new Map(rows.flatMap(row => (row.tag ? [[row.tag, row] as const] : [])));
+  return key => bySlot.get(key) ?? byTag.get(key);
+}
+
+export function rankedHeadKeys(readView: BoundedReadView, name: string): readonly string[] | null {
+  const answer = readView.answer(name);
+  if (!answer || answer.kind === 'notRecorded') return null;
+  const keys: string[] = [];
+  for (let row = 0; row < answer.rows; row++) {
+    const key = rowName(answer, row);
+    if (key !== null) keys.push(key);
+  }
+  return keys;
+}
+
 export function headReading(
   readView: BoundedReadView,
   name: string,
@@ -82,13 +105,15 @@ export function headReading(
   const bounded = readView.series(name)?.get(key.part === undefined ? key.tag : keyId({ tag: key.tag, part: key.part }));
   const places = bounded?.decimals ?? decimals;
   const answer = readView.answer(name);
+  const column = key.reading ?? 0;
   if (answer) {
     if (answer.kind === 'notRecorded') return { missing: answer.reason };
     const row = key.part === undefined
       ? answerRowOf(answer, key.tag)
       : followedRow(answer, { tag: key.tag, part: key.part }, key.partBits ?? 0);
     if (row >= 0) {
-      const at = row * answer.columns;
+      if (column >= answer.columns) return { missing: NOT_READ_AT_HOUR };
+      const at = row * answer.columns + column;
       if (row >= answer.rows || cellState(answer, at) !== CELL.value) {
         return { missing: rowReason(answer, row) ?? NOT_READ_AT_HOUR };
       }
@@ -108,7 +133,7 @@ export function headReading(
     if (!state.run) return { missing: state.missing ?? NOT_READ_AT_HOUR };
     return scaledReading(BigInt(state.run.valueRaw), panel?.decimals ?? places, scale) ?? { missing: NOT_READ_AT_HOUR };
   }
-  const head = bounded?.headValue;
+  const head = column === 0 ? bounded?.headValue : undefined;
   if (!head) return null;
   if (head.kind === 'notRecorded' || head.kind === 'notApplicable') return { missing: head.reason };
   if (typeof head.value === 'bigint') {
@@ -270,7 +295,8 @@ function identityStretches(
     const run = holderRunAt(holders, at);
     const identityTag = run?.tag ?? key;
     const who = readView.who('country', identityTag, at);
-    let last = who.validInterval[1] > at && who.name.status !== 'pending' ? Math.min(hour, who.validInterval[1]) : hour;
+    const settled = who.name.status === 'ready' || who.name.status === 'absent';
+    let last = settled && who.validInterval[1] >= at ? Math.min(hour, who.validInterval[1]) : hour;
     if (run) last = Math.min(last, run.lastHour);
     else if (holders) {
       for (const next of holders) {
@@ -428,7 +454,7 @@ const formatSpend = (value: number) => `−${formatScalar(Math.abs(value), { dec
 
 function spendDetail(marker: PowerSpendMarker, decimals: number): string {
   const parts: string[] = [];
-  if (marker.chargeRaw !== null) parts.push(formatSpend(Number(marker.chargeRaw) / 10 ** decimals));
+  if (marker.chargeRaw !== null && marker.unknown < marker.payments) parts.push(formatSpend(Number(marker.chargeRaw) / 10 ** decimals));
   if (marker.unknown > 0) parts.push(marker.unknown === marker.payments ? 'Cost not recorded' : `${marker.unknown} costs not recorded`);
   if (marker.since !== null) parts.push(`${marker.payments} payments from ${formatDateOnly(marker.since)} to ${formatDateOnly(marker.hour)}`);
   if (!marker.dated) parts.push(`Paid ${formatDateOnly(marker.hour)}`);
@@ -450,7 +476,10 @@ export function spendMarkersOf(readView: BoundedReadView, title: string, extentS
     if (hour < extentStart || hour > readView.hour) continue;
     markers.push({ id: `spend:${hour}`, hour, title: day.length === 1 ? day[0]!.title : title, items: day });
   }
-  const warnings = reply.unrecorded.map(gap => `${title} not recorded ${gap.firstHour === gap.lastHour ? `on ${formatDateOnly(gap.firstHour)}` : `from ${formatDateOnly(gap.firstHour)} to ${formatDateOnly(gap.lastHour)}`}: ${gap.reason}`);
+  const warnings = reply.unrecorded.filter(gap => gap.firstHour <= readView.hour).map(gap => {
+    const last = Math.min(gap.lastHour, readView.hour);
+    return `${title} not recorded ${gap.firstHour === last ? `on ${formatDateOnly(gap.firstHour)}` : `from ${formatDateOnly(gap.firstHour)} to ${formatDateOnly(last)}`}: ${gap.reason}`;
+  });
   return { markers, warnings };
 }
 
@@ -646,6 +675,7 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
   if (hourSet.size > 0 || inputs.some(input => input.head)) hourSet.add(hour);
   const hours = [...hourSet].filter(h => h <= hour).sort((a, b) => a - b);
   const valuesByBand: (number | null)[][] = inputs.map(() => new Array<number | null>(hours.length).fill(null));
+  const outsideByBand: (boolean[] | null)[] = inputs.map(() => null);
   const row = new Array<number>(inputs.length);
 
   for (let i = 0; i < hours.length; i++) {
@@ -657,6 +687,7 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
       const owned = input.parts.filter(part => covers(part, h));
       if (owned.length === 0) {
         row[b] = 0;
+        (outsideByBand[b] ??= new Array<boolean>(hours.length).fill(false))[i] = true;
         continue;
       }
       present++;
@@ -684,6 +715,7 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
     color: input.color,
     ...(input.opacity !== undefined ? { opacity: input.opacity } : {}),
     values: valuesByBand[idx]!,
+    ...(outsideByBand[idx] ? { outside: outsideByBand[idx]! } : {}),
     ...(input.endLabel !== undefined ? { endLabel: input.endLabel } : {}),
     ...(input.flag ? { flag: input.flag } : {}),
   }));

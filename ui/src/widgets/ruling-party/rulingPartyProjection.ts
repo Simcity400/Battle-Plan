@@ -163,12 +163,11 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
     const summaryText = leaderParts.length > 0 ? leaderParts.join(' · ') : null;
 
     if (!list.length) {
-      return {
-        ...base,
-        summaryText,
-        warnings: history.warnings,
-        empty: { message: history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.', kind: 'unavailable' },
-      };
+      const witnessed = buildRulingMarkers(history, list, options, hour);
+      const message = history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.';
+      return witnessed.length
+        ? { ...base, summaryText, markers: witnessed, warnings: [...history.warnings, message], empty: null }
+        : { ...base, summaryText, warnings: history.warnings, empty: { message, kind: 'unavailable' } };
     }
 
     const heads = list.map(band => bandHead(band, subject, readView, hour, history.decimals));

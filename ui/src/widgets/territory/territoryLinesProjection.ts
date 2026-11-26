@@ -54,7 +54,7 @@ export const territoryLinesProjection: TimeChartProjection<TerritoryLinesOptions
     return {
       ...base,
       measureTitle: options.measureLabel,
-      ...(options.note ? { note: options.note } : {}),
+      ...(options.note ? { summaryText: options.note } : {}),
     };
   },
 }, 'lines');
@@ -115,12 +115,13 @@ export const territoryLinesDeclaration: TimeChartWidgetDeclaration<TerritoryLine
 export function territoryLinesDeclarationWithStyles(
   styles: FactionTotalsLinesOptions['styles'],
   shared: FactionTotalsLinesOptions['shared'],
+  identities?: FactionTotalsLinesOptions['identities'],
 ): TimeChartWidgetDeclaration<TerritoryLinesOptions> {
   return {
     ...territoryLinesDeclaration,
     projectionOptions: (ctx, extra) => {
       const base = territoryLinesDeclaration.projectionOptions(ctx, extra);
-      return { ...base, factions: { ...base.factions, styles, shared } };
+      return { ...base, factions: { ...base.factions, styles, shared, ...(identities ? { identities } : {}) } };
     },
   };
 }

@@ -28,6 +28,8 @@ import {
   memberAt,
   missingSpansOf,
   withinMapOf,
+  chartTopOf,
+  rowsBySelectedKey,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -76,9 +78,6 @@ export interface EquipmentProducedLinesOptions {
   readonly surface: string;
 }
 
-function topOf(countries: FamilyPlanContext['countries']): number | null {
-  return countries.top ?? (countries.all ? Math.max(1, countries.every.length) : null);
-}
 
 function rowKeyOf(row: Pick<EquipmentProducedRaceRow, 'country'>): string {
   return countryKey(row.country);
@@ -92,8 +91,8 @@ function formatCompactAmount(value: number, count: ProducedCount): string {
   return formatCompactScalar(value, count === 'ic' ? { decimals: 0, maxDecimals: 1 } : { decimals: 0, maxDecimals: 0 }).text;
 }
 
-function formatExactAmount(value: number, count: ProducedCount): string {
-  return formatScalar(value, count === 'ic' ? { decimals: 0, maxDecimals: 2 } : { decimals: 0 });
+function formatExactAmount(raw: number, count: ProducedCount): string {
+  return count === 'ic' ? formatScalar(BigInt(raw), { decimals: 5, maxDecimals: 5 }) : formatScalar(raw, { decimals: 0 });
 }
 
 function buildHoverDetail(
@@ -121,8 +120,7 @@ function buildHoverDetail(
   const eligible = orderedKeys.filter(key => memberAt(options.membership, key, hour));
   if (eligible.length === 0) return null;
 
-  const rowByKey = new Map(reply.rows.map(row => [rowKeyOf(row), row]));
-  const scale = scaleOf(options.count);
+  const rowFor = rowsBySelectedKey(reply.rows, rowKeyOf);
   const items: TooltipListItem[] = [];
   for (const key of eligible) {
     const look = looks.get(key);
@@ -130,7 +128,7 @@ function buildHoverDetail(
     const label = atHour ? atHour.name : identityName(readView, 'country', key, hour);
     const who = readView.who('country', key, hour);
     const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
-    const row = rowByKey.get(key);
+    const row = rowFor(key);
     if (!row) {
       items.push({
         label,
@@ -155,7 +153,7 @@ function buildHoverDetail(
     }
     items.push({
       label,
-      value: formatExactAmount(row.value / scale, options.count),
+      value: formatExactAmount(row.value, options.count),
       ...(atHour ? { swatch: atHour.color } : {}),
       ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
       divider: items.length > 0,
@@ -256,16 +254,12 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       }
     };
 
-    const rowByKey = new Map<string, EquipmentProducedRaceRow>();
-    for (const row of headPanel.rows) {
-      rowByKey.set(rowKeyOf(row), row);
-    }
+    const rowFor = rowsBySelectedKey(headPanel.rows, rowKeyOf);
 
     if (options.top !== null) {
       for (const row of headPanel.rows) addKey(rowKeyOf(row));
     } else {
       for (const key of options.tags) addKey(key);
-      for (const row of headPanel.rows) addKey(rowKeyOf(row));
     }
 
     const scale = scaleOf(options.count);
@@ -283,7 +277,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
 
     for (let i = 0; i < orderedKeys.length; i++) {
       const key = orderedKeys[i]!;
-      const row = rowByKey.get(key);
+      const row = rowFor(key);
       const tile = mainTiles?.get(key) ?? null;
       const look = looks.get(key)!;
       const isTail = i >= COLOURED;
@@ -325,7 +319,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
 
       auditRows.push(auditRow(
         key,
-        headValue !== null ? formatExactAmount(headValue, options.count) : (absentReason ?? notRecordedLabel()),
+        rawValue !== null ? formatExactAmount(rawValue, options.count) : (absentReason ?? notRecordedLabel()),
       ));
     }
 
@@ -383,7 +377,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
   },
   sources(ctx: FamilyPlanContext<ProducedTypesReply>): SourcePlan {
     const { count, measure, refits, shownTypes, noDataMessage } = resolvedEquipment(ctx);
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     const all = ctx.countries.all;
     const group = top === null && !all ? groupSelection(ctx.widget.countries) : null;
     const tags = top === null ? ctx.countries.tags : [];
@@ -475,12 +469,12 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
         validate: validateEquipmentProducedRace,
       },
     };
-    return { owner, entries: [tileEntry, headEntry, hoverEntry] };
+    return { owner, exactEntry: headEntry, entries: [tileEntry, headEntry, hoverEntry] };
   },
   projection: equipmentProducedLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
     const { count, measure, equipmentLabel, noDataMessage } = resolvedEquipment(ctx);
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     const fromHour = measure === 'total' && ctx.widget.time.mode === 'range' && ctx.staticSpan ? ctx.staticSpan[0] : null;
     return {
       tags: top === null ? ctx.countries.tags : [],
@@ -493,7 +487,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
       holders: ctx.countries.holders,
       membership: top === null ? ctx.countries.membership : null,
       endLabels: ctx.options.endLabels !== false,
-      settings: lineChartSettings(ctx.options),
+      settings: lineChartSettings(ctx.options, ctx.following),
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,

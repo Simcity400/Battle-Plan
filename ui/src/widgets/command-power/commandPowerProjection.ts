@@ -268,7 +268,7 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
-      settings: powerChartSettings(ctx.options),
+      settings: powerChartSettings(ctx.options, ctx.following),
       showCeiling: ctx.options.ceiling !== false,
     };
   },

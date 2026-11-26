@@ -28,7 +28,9 @@ import {
   countrySeriesLooks,
   memberAt,
   missingSpansOf,
+  rowsBySelectedKey,
   withinMapOf,
+  chartTopOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -78,9 +80,6 @@ const filtersOf = (ctx: FamilyPlanContext): MilitaryAirFilters => ({
   causes: numbers(ctx.options.causes),
 });
 
-function topOf(countries: FamilyPlanContext['countries']): number | null {
-  return countries.top ?? (countries.all ? Math.max(1, countries.every.length) : null);
-}
 
 function rankMetricOf(raw: OptionValue | undefined): MilitaryAirMetric {
   return raw === 'dealt' ? 'dealt' : 'taken';
@@ -96,7 +95,7 @@ function formatAirCompact(raw: string): string {
 }
 
 function formatAirExact(raw: string): string {
-  return formatScalar(BigInt(raw), { decimals: 5, maxDecimals: 2 });
+  return formatScalar(BigInt(raw), { decimals: 5, maxDecimals: 5 });
 }
 
 function rawToPlot(raw: string): number {
@@ -146,7 +145,7 @@ function buildHoverDetail(
   const eligible = orderedKeys.filter(key => memberAt(options.membership, key, hour));
   if (eligible.length === 0) return null;
 
-  const rowByKey = new Map(reply.rows.map(row => [slotKeyOf(row), row]));
+  const rowOf = rowsBySelectedKey(reply.rows, slotKeyOf);
   const items: TooltipListItem[] = [];
   for (const key of eligible) {
     const look = looks.get(key);
@@ -154,7 +153,7 @@ function buildHoverDetail(
     const label = atHour ? atHour.name : identityName(readView, 'country', key, hour);
     const who = readView.who('country', key, hour);
     const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
-    const row = rowByKey.get(key);
+    const row = rowOf(key);
     if (!row) {
       items.push({
         label,
@@ -268,14 +267,15 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         yAxis,
         series: [],
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
-        ...(note ? { note: `${AIR_LEDGER_NOTE} ${note}` } : { note: AIR_LEDGER_NOTE }),
+        summaryText: AIR_LEDGER_NOTE,
+        ...(note ? { note } : {}),
         warnings: head.warnings,
         empty: { message: head.rankMissing, kind: 'unavailable' },
         auditRows: [auditRow('__rank__', head.rankMissing)],
       };
     }
 
-    const rowByKey = new Map((head?.rows ?? []).map(row => [slotKeyOf(row), row]));
+    const rowOfKey = rowsBySelectedKey(head?.rows ?? [], slotKeyOf);
     const orderedKeys: string[] = [];
     const seen = new Set<string>();
     const addKey = (key: string) => {
@@ -292,7 +292,6 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         for (const key of takenSeries?.keys() ?? []) addKey(key);
       }
     } else {
-      for (const row of head?.rows ?? []) addKey(slotKeyOf(row));
       for (const key of options.tags) addKey(key);
     }
 
@@ -311,8 +310,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       ...(head?.warnings ?? []),
       ...(!top && head?.rankMissing ? [head.rankMissing] : []),
     ];
-    const unattr = head ? unattributedNote(head) : null;
-    const note = unattr ? `${AIR_LEDGER_NOTE} ${unattr}` : AIR_LEDGER_NOTE;
+    const note = head ? unattributedNote(head) : null;
     const legend: ChartLegendEntry[] = [
       { id: 'dealt', label: 'Solid: enemy losses' },
       { id: 'taken', label: 'Dashed: own losses', dash: SECONDARY_DASH },
@@ -324,7 +322,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
     orderedKeys.forEach((key, rank) => {
       const isTail = rank >= COLOURED;
       const look = looks.get(key)!;
-      const row = rowByKey.get(key);
+      const row = rowOfKey(key);
       const present = memberAt(options.membership, key, hour);
       const dealtBounded = dealtSeries?.get(key) ?? null;
       const takenBounded = takenSeries?.get(key) ?? null;
@@ -333,20 +331,19 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       const takenValue = present && row ? rawToPlot(row.taken) : null;
 
       if (present && row) {
-        auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, formatAirCompact(row.dealt)));
-        auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, formatAirCompact(row.taken)));
+        auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, formatAirExact(row.dealt)));
+        auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, formatAirExact(row.taken)));
       } else if (present && head) {
         auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, 'This country is not present at this date.'));
         auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, 'This country is not present at this date.'));
       }
 
       const labelOnDealt = options.rankMetric === 'dealt';
-      const dealtEndLabel = !isTail && options.endLabels && labelOnDealt && row && present
-        ? { flag: look.flag, name: look.name, fullName: look.name, value: formatAirCompact(row.dealt) }
+      const bothFigures = !isTail && options.endLabels && row && present
+        ? { flag: look.flag, name: look.name, fullName: look.name, value: `${formatAirCompact(row.dealt)} / ${formatAirCompact(row.taken)}` }
         : null;
-      const takenEndLabel = !isTail && options.endLabels && !labelOnDealt && row && present
-        ? { flag: look.flag, name: look.name, fullName: look.name, value: formatAirCompact(row.taken) }
-        : null;
+      const dealtEndLabel = labelOnDealt ? bothFigures : null;
+      const takenEndLabel = labelOnDealt ? null : bothFigures;
 
       series.push({
         id: `${key}${DEALT_SUFFIX}`,
@@ -395,7 +392,8 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         legend,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         hoverDetail,
-        note,
+        summaryText: AIR_LEDGER_NOTE,
+        ...(note ? { note } : {}),
         warnings,
         empty: {
           message: options.rankMetric === 'dealt'
@@ -419,7 +417,8 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       legend,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail,
-      note,
+      summaryText: AIR_LEDGER_NOTE,
+      ...(note ? { note } : {}),
       warnings,
       auditRows,
     };
@@ -435,7 +434,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
   icon: 'target',
   countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     const tags = top === null ? ctx.countries.tags : [];
     const rankMetric = rankMetricOf(ctx.options.measure);
     const filters = filtersOf(ctx);
@@ -485,27 +484,29 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       : group
         ? { mode: 'population' as const, form: 'all' as const }
         : { mode: 'keyed' as const, keys: tags };
+    const head: SourceEntry = {
+      name: 'head',
+      ...common,
+      read: {
+        shape: 'point',
+        channel: 'followed',
+        coverage: headCoverage,
+        product: 'military-air-at',
+        exactProduct: 'military-air-at',
+        followQuery: null,
+        params: headParams,
+        dynamicKeys: ['hour'],
+        provenInterval: airKillsLossesProvenInterval,
+        validate: validateMilitaryAirAt,
+      },
+    };
     return {
       owner,
+      exactEntry: head,
       entries: [
         tileEntry('dealt'),
         tileEntry('taken'),
-        {
-          name: 'head',
-          ...common,
-          read: {
-            shape: 'point',
-            channel: 'followed',
-            coverage: headCoverage,
-            product: 'military-air-at',
-            exactProduct: 'military-air-at',
-            followQuery: null,
-            params: headParams,
-            dynamicKeys: ['hour'],
-            provenInterval: airKillsLossesProvenInterval,
-            validate: validateMilitaryAirAt,
-          },
-        },
+        head,
         {
           name: 'hover',
           ...common,
@@ -523,7 +524,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
   },
   projection: airKillsLossesLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     return {
       tags: top === null ? ctx.countries.tags : [],
       top,
@@ -531,7 +532,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
       holders: ctx.countries.holders,
       membership: top === null ? ctx.countries.membership : null,
       endLabels: ctx.options.endLabels !== false,
-      settings: lineChartSettings(ctx.options),
+      settings: lineChartSettings(ctx.options, ctx.following),
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,

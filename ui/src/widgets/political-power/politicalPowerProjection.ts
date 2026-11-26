@@ -214,7 +214,7 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
       extent,
       gaps,
       surface,
-      settings: powerChartSettings(ctx.options),
+      settings: powerChartSettings(ctx.options, ctx.following),
     };
   },
 };

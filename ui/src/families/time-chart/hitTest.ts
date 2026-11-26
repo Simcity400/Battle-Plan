@@ -215,7 +215,7 @@ export function hitTestTimeChart(
       let negAcc = 0;
       for (const band of model.stack.bands) {
         const v = band.values[at];
-        if (v == null || !Number.isFinite(v)) continue;
+        if (v == null || !Number.isFinite(v) || band.outside?.[at]) continue;
         const base = v >= 0 ? posAcc : negAcc;
         const yBot = layout.toY(base);
         const yTop = layout.toY(base + v);
@@ -241,9 +241,9 @@ function formatExactFigure(value: number, model: TimeChartModel, format: ChartVa
       if (raw === 0n) return '0';
       return formatRational(raw, denominator, { maxDecimals: 2, signed: true });
     }
-    const decimals = model.yAxis.decimals ?? 0;
+    const decimals = model.yAxis.exactDecimals ?? model.yAxis.decimals ?? 0;
     const absWhole = (raw < 0n ? -raw : raw) / denominator;
-    if (decimals > 0 && (format === 'number' || absWhole < 1000n)) {
+    if (decimals > 0 && (format === 'number' || absWhole < 1000n || model.yAxis.exactDecimals !== undefined)) {
       return formatRational(raw, denominator, { maxDecimals: decimals });
     }
     return formatRational(raw, denominator, { maxDecimals: 0 });
@@ -256,8 +256,8 @@ function formatExactFigure(value: number, model: TimeChartModel, format: ChartVa
     if (value === 0) return '0';
     return formatScalar(value, { decimals: 0, maxDecimals: 2, signed: true });
   }
-  const decimals = model.yAxis.decimals ?? 0;
-  if (decimals > 0 && Math.abs(value) < 1000) {
+  const decimals = model.yAxis.exactDecimals ?? model.yAxis.decimals ?? 0;
+  if (decimals > 0 && (Math.abs(value) < 1000 || model.yAxis.exactDecimals !== undefined)) {
     return formatScalar(value, { decimals: 0, maxDecimals: decimals });
   }
   return formatScalar(value, 'integer');
@@ -284,7 +284,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
       for (const band of model.stack.bands) {
         if (only !== undefined && band.id !== only) continue;
         const v = band.values[at];
-        if (v === null || v === undefined || !Number.isFinite(v)) continue;
+        if (v === null || v === undefined || !Number.isFinite(v) || band.outside?.[at]) continue;
         const bandExact = band.exact?.[at];
         const flagUrl = artUrlOf(band.flag);
         entries.push({

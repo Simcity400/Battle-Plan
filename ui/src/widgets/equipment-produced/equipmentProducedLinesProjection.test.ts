@@ -3,6 +3,7 @@ import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { createBoundedReadView, createBoundedSlice, displayedHour } from '../../families/boundedView.ts';
+import { readPlanExact } from '../../families/broker.ts';
 import { planFamilySources } from '../../families/host/planSources.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
@@ -206,6 +207,26 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
   assert.equal(model.summaryText, 'Infantry Equipment · per day', 'selection line moves beside the title');
   assert.equal(model.note, undefined, 'selection line never uses a body note');
   assert.deepEqual(model.hoverDetail?.items?.map(item => item.label), ['German Reich'], 'hover excludes non-member ITA at hour 295');
+
+  const icHead = { ...head, count: 'ic' as const, decimals: 5, rows: [{ country: 7, tag: 'GER', value: 123456, unknown: null }] };
+  const ic = equipmentProducedLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([['head', icHead]]),
+    hovers: new Map([['hover', { hour: 295, data: icHead }]]),
+  }), { ...opts, tags: [ger], count: 'ic', membership: null });
+  assert.equal(ic.hoverDetail?.items?.[0]?.value, '1.23456', 'inspection carries the recorded five decimals of IC');
+  const byTag = equipmentProducedLinesProjection.project(createBoundedReadView({ hour: displayedHour(300), panels: new Map([['head', head]]) }), { ...opts, tags: ['GER'], membership: null });
+  assert.deepEqual(byTag.series.map(s => [s.id, s.headValue]), [['GER', 420]], 'a country chosen by its tag is one line, joined to its head row by tag');
+  assert.deepEqual(ic.auditRows?.map(row => row.value), ['1.23456'], 'and so does the audit');
+});
+
+test('the exact audit reads the dated head, so a correct picture has an exact read to agree with', async () => {
+  const asked: string[] = [];
+  const client = { product: async (request: { product: string }) => { asked.push(request.product); return { data: {} }; } } as never;
+  const plan = equipmentProducedLinesDeclaration.sources(makeCtx({ options: { measure: 'day', count: 'units' } }), { following: false, staticSpan: null });
+  const exact = await readPlanExact(plan, 300, { client, following: false, timeMode: 'pin', branch: { firstHour: 100, lastHour: 600 }, window: null, staticSpan: null, gate: { recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as never });
+  assert.ok(exact, 'an exact read exists');
+  assert.deepEqual(asked, ['equipment-produced-race']);
 });
 
 test('a quiet stretch of played hours makes zero extra equipment-produced-race requests', async () => {

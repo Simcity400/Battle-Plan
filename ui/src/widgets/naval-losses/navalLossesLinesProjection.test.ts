@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import { hoverAsks } from '../../families/broker.ts';
+import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { ReadTarget, type TargetClock, type TargetConfig } from '../../families/readUnits.ts';
 import type { FrozenGate } from '../../families/sources.ts';
@@ -233,6 +233,22 @@ test('hover detail scopes requests and rows to dated eligible slots and preserve
   assert.equal(model.hoverDetail.items.length, 1);
   assert.equal(model.hoverDetail.items[0]!.label, 'German Reich');
   assert.equal(model.hoverDetail.items[0]!.missingReason, 'This country is not present at this date.');
+});
+
+test('a country chosen by its tag is one line, joined to its head row by tag or slot, never two', () => {
+  const model = navalLossesLinesProjection.project(createBoundedReadView({ hour: displayedHour(200), panels: new Map([['head', navalReply()]]) }),
+    makeOptions({ top: null, tags: ['GER'], membership: null }));
+  assert.deepEqual(model.series.map(s => [s.id, s.headValue]), [['GER', 42]]);
+});
+
+test('the exact audit reads the dated head, so a correct picture has an exact read to agree with', async () => {
+  const asked: string[] = [];
+  const client = { product: async (request: { product: string }) => { asked.push(request.product); return { data: navalReply() }; } } as never;
+  const exact = await readPlanExact(navalLossesLinesDeclaration.sources(makeCtx(), { following: false, staticSpan: null }), 200,
+    { client, following: false, timeMode: 'pin', branch: { firstHour: 100, lastHour: 600 }, window: null, staticSpan: null, gate: { recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as never });
+  assert.ok(exact, 'an exact read exists');
+  assert.deepEqual(asked, ['naval-losses-at']);
+  assert.equal(navalLossesLinesProjection.project(exact, makeOptions()).auditRows?.length, 2, 'both ranked countries, from the head');
 });
 
 test('a quiet stretch of played hours makes no extra naval-losses-at request', async () => {

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { createBoundedReadView, createBoundedSlice, displayedHour } from '../../families/boundedView.ts';
-import { compileFollowPlan } from '../../families/broker.ts';
+import { compileFollowPlan, readPlanExact } from '../../families/broker.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import type { AutonomyLevelsReply, AutonomySubject } from '../../generated/dashboard';
@@ -112,7 +112,7 @@ test('autonomy lines registers in TIME_CHART_VIEWS and uses autonomy-lines tiles
   assert.equal(main?.shape, 'pixel-binned');
   if (main?.shape === 'pixel-binned') {
     assert.equal(main.family.kind, 'autonomy-lines');
-    assert.deepEqual(main.top, { n: 1500 });
+    assert.ok((main.top?.n ?? 0) > 1500, 'every subject the recording holds, with no cap below the population');
     assert.equal(main.headQuery, null);
   }
   assert.equal(head?.shape, 'point');
@@ -222,6 +222,14 @@ test('autonomy lines keys by slot, preserves missing progress with reason, filte
   assert.ok(hovered.hoverDetail?.items?.some(item => item.label === 'Dominion of Canada' && item.value === '82%'));
   assert.ok(hovered.hoverDetail?.items?.some(item => item.label === 'British Raj' && item.missingReason === 'No autonomy range'));
   assert.ok(!hovered.hoverDetail?.items?.some(item => item.label === 'Slovakia'));
+});
+
+test('the exact audit reads the dated autonomy levels, so a correct picture has an exact read to agree with', async () => {
+  const asked: string[] = [];
+  const client = { product: async (request: { product: string }) => { asked.push(request.product); return { data: {} }; } } as never;
+  const exact = await readPlanExact(autonomyLinesDeclaration.sources(makeCtx(), { following: false, staticSpan: null }), 300, { client, following: false, timeMode: 'pin', branch: { firstHour: 100, lastHour: 600 }, window: null, staticSpan: null, gate: { recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as never });
+  assert.ok(exact, 'an exact read exists');
+  assert.equal(asked.length, 1);
 });
 
 test('a quiet stretch of played hours makes zero extra requests for autonomy lines', async () => {

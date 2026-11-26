@@ -199,7 +199,7 @@ export const fuelDeclaration: TimeChartWidgetDeclaration<FuelOptions> = {
       capacity: ctx.options.capacity !== false,
       area: ctx.options.areaFill !== false,
       digits: fuelDecimals(ctx.options),
-      windowHours: lineChartSettings(ctx.options).windowHours,
+      windowHours: lineChartSettings(ctx.options, ctx.following).windowHours,
       extent,
       gaps: branchGapsOf(ctx.branch),
     };

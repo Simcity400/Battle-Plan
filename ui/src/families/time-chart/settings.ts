@@ -11,10 +11,10 @@ export interface LineChartSettings {
 
 const finite = (value: OptionValue | undefined): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
-export function lineChartSettings(options: Readonly<Record<string, OptionValue>>): LineChartSettings {
+export function lineChartSettings(options: Readonly<Record<string, OptionValue>>, following: boolean): LineChartSettings {
   const days = finite(options.windowDays);
   return {
-    windowHours: options.playback === 'window' ? Math.max(1, Math.round((days ?? 365) * 24)) : null,
+    windowHours: following && options.playback === 'window' ? Math.max(1, Math.round((days ?? 365) * 24)) : null,
     yMin: finite(options.yMin),
     yMax: finite(options.yMax),
     log: options.log === true,
@@ -41,13 +41,13 @@ export interface PowerChartSettings extends LineChartSettings {
   readonly area: boolean;
 }
 
-export function powerChartSettings(options: Readonly<Record<string, OptionValue>>): PowerChartSettings {
+export function powerChartSettings(options: Readonly<Record<string, OptionValue>>, following: boolean): PowerChartSettings {
   return {
-    ...lineChartSettings(options),
+    ...lineChartSettings(options, following),
     decimals: powerDecimals(options),
     endLabels: options.endLabels !== false,
     area: options.areaFill !== false,
   };
 }
 
-export const DEFAULT_POWER_SETTINGS: PowerChartSettings = powerChartSettings({});
+export const DEFAULT_POWER_SETTINGS: PowerChartSettings = powerChartSettings({}, false);

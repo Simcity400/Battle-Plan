@@ -6,12 +6,14 @@ import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
+import { auditRow } from '../auditRow.ts';
 import { formatChartAxisValue } from './layout.ts';
 import { chartAxis, chartWindow, DEFAULT_LINE_SETTINGS, lineChartSettings, type LineChartSettings } from './settings.ts';
 import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
 import { seriesLookAt } from './model.ts';
 import {
   branchGapsOf,
+  chartTopOf,
   countrySeriesLooks,
   auditReading,
   exactHoverByCountry,
@@ -20,6 +22,7 @@ import {
   memberAt,
   missingSpansOf,
   rankEntry,
+  rankedHeadKeys,
   rankedOrder, unnamedLooks,
   rankedPanelKeys,
   withinMapOf,
@@ -101,9 +104,6 @@ function hoverHourOf(readView: BoundedReadView, name: string): number | null {
 }
 const COLOURED = 8;
 
-function topOf(countries: FamilyPlanContext['countries']): number | null {
-  return countries.top ?? (countries.all ? Math.max(1, countries.every.length) : null);
-}
 const SECOND_SUFFIX = '\u0000second';
 
 export function formatCountryValue(value: number, format: CountryLinesSpec['format'], digits: number | null = null): string {
@@ -154,7 +154,12 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       }
       const top = options.top !== null;
       if (top) {
-        const refused = readView.refused('main');
+        const answered = readView.answer('main');
+        const ranked = answered ? undefined : readView.panel<{ readonly refused?: string | null }>('main');
+        const refused = readView.refused('main')
+          ?? (answered?.kind === 'notRecorded' ? answered.reason : undefined)
+          ?? ranked?.refused
+          ?? undefined;
         if (refused) {
           return {
             kind: spec.kind,
@@ -165,15 +170,15 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
             yAxis: { format: spec.format },
             series: [],
             empty: { message: refused, kind: 'unavailable' },
-            auditRows: [],
+            auditRows: [auditRow('__rank__', refused)],
           };
         }
       }
       const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
       const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
-      const tags = top ? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main')) : options.tags;
-      if (top && drawn !== undefined && tags.length === 0) {
+      const tags = top ? (rankedHeadKeys(readView, 'main') ?? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main'))) : options.tags;
+      if (top && (drawn !== undefined || readView.answer('main') !== undefined) && tags.length === 0) {
         return {
           kind: spec.kind,
           measureTitle: spec.title,
@@ -181,7 +186,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
           hour,
           extent: options.extent,
           ...(view ? { view } : {}),
-          yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, ...chartAxis(settings) },
+          yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, exactDecimals: options.decimals, ...chartAxis(settings) },
           series: [],
           empty: { message: `No ${spec.subject} recorded at this date.`, kind: 'empty' },
           auditRows: [],
@@ -206,6 +211,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const lines: CountryLine[] = [];
       const readings: [string, HeadReading | null][] = [];
       const format = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, options.digits);
+      const recorded = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format === 'percent' ? 'percent' : 'number', spec.format === 'percent' ? null : options.decimals);
       const series: TimeChartSeriesModel[] = ordered.flatMap((tag, rank) => {
         const isTail = rank >= COLOURED;
         const bounded = drawn?.get(tag) ?? null;
@@ -274,13 +280,13 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         hour,
         extent: options.extent,
         ...(view ? { view } : {}),
-        yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, ...chartAxis(settings) },
+        yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, exactDecimals: options.decimals, ...chartAxis(settings) },
         series,
         ...(legend ? { legend } : {}),
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         ...(ranking.warnings.length > 0 ? { warnings: ranking.warnings } : {}),
         hoverDetail: spec.hover ? spec.hover.detail(readView, lines, options) : undefined,
-        auditRows: readings.map(([row, reading]) => auditReading(row, reading, format)),
+        auditRows: readings.map(([row, reading]) => auditReading(row, reading, recorded)),
       };
     },
   };
@@ -295,7 +301,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     countries: { mode: 'multi', allowSlots: true },
     ...(spec.aux ? { aux: spec.aux } : {}),
     sources(ctx: FamilyPlanContext<TAux>): SourcePlan {
-      const top = topOf(ctx.countries);
+      const top = chartTopOf(ctx.countries);
       const tags = top === null ? ctx.countries.tags : [];
       const measure = measureOf(spec.measure(ctx.options, ctx.aux));
       const second = spec.second?.(ctx.options) ?? null;
@@ -407,12 +413,16 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       return { owner, entries };
     },
     projection,
+    unavailable(ctx) {
+      const chosen = spec.measure(ctx.options, ctx.aux);
+      return chosen && 'unavailable' in chosen ? chosen.unavailable : null;
+    },
     projectionOptions(ctx, { extent, surface }) {
       return {
-        tags: topOf(ctx.countries) === null ? ctx.countries.tags : [],
-        top: topOf(ctx.countries),
+        tags: chartTopOf(ctx.countries) === null ? ctx.countries.tags : [],
+        top: chartTopOf(ctx.countries),
         holders: ctx.countries.holders,
-        membership: topOf(ctx.countries) === null ? ctx.countries.membership : null,
+        membership: chartTopOf(ctx.countries) === null ? ctx.countries.membership : null,
         decimals: measureOf(spec.measure(ctx.options, ctx.aux))?.decimals ?? 0,
         unavailable: (() => {
           const chosen = spec.measure(ctx.options, ctx.aux);
@@ -425,7 +435,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         extent,
         gaps: branchGapsOf(ctx.branch),
         surface,
-        settings: lineChartSettings(ctx.options),
+        settings: lineChartSettings(ctx.options, ctx.following),
       };
     },
   };

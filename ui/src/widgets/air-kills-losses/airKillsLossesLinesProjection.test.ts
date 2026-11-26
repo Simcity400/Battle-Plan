@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import { hoverAsks } from '../../families/broker.ts';
+import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { ReadTarget, type TargetClock, type TargetConfig } from '../../families/readUnits.ts';
 import type { FrozenGate } from '../../families/sources.ts';
@@ -170,9 +170,9 @@ test('air kills & losses lines projects slot-keyed dual lines, whole-number axis
   assert.equal(model.series[1]!.id, `${k1}\u0000taken`);
   assert.equal(model.series[1]!.headValue, 200);
   assert.equal(model.series[1]!.endLabel?.name, 'German Reich');
-  assert.equal(model.series[1]!.endLabel?.value, '200');
+  assert.equal(model.series[1]!.endLabel?.value, '450 / 200', 'the one end label carries enemy losses and own losses');
   assert.equal(model.series[3]!.endLabel?.name, 'Soviet Union');
-  assert.equal(model.series[3]!.endLabel?.value, '100');
+  assert.equal(model.series[3]!.endLabel?.value, '120 / 100');
   assert.deepEqual(model.legend?.map(l => l.label), ['Solid: enemy losses', 'Dashed: own losses']);
 });
 
@@ -231,6 +231,38 @@ test('hover detail scopes requests and rows to dated eligible slots and preserve
   assert.equal(model.hoverDetail.items.length, 1);
   assert.equal(model.hoverDetail.items[0]!.label, 'German Reich');
   assert.equal(model.hoverDetail.items[0]!.missingReason, 'This country is not present at this date.');
+
+  const precise = airKillsLossesLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(200),
+    panels: new Map([['head', airReply({ hour: 200 })]]),
+    hovers: new Map([['hover', { hour: 150, data: airReply({ hour: 150, rows: [{ ...airReply().rows[0]!, taken: '123456' }] }) }]]),
+    identity,
+  }), makeOptions({ top: null, tags: [k1], membership: null }));
+  assert.equal(precise.hoverDetail?.items.find(item => item.label === 'Own losses')?.value, '1.23456', 'inspection carries the recorded five decimals');
+});
+
+test('a country chosen by its tag is one line, joined to its head row by tag or slot, never two', () => {
+  const model = airKillsLossesLinesProjection.project(createBoundedReadView({ hour: displayedHour(200), panels: new Map([['head', airReply({ hour: 200 })]]) }),
+    makeOptions({ top: null, tags: ['GER'], membership: null }));
+  assert.deepEqual(model.series.map(s => s.id.replace(/\u0000/g, '|')), ['GER|dealt', 'GER|taken']);
+  assert.equal(model.series[0]!.headValue, 450);
+  assert.equal(model.summaryText, 'Loss totals include corrections.', 'a description is plain text beside the title');
+  assert.equal(model.note, undefined, 'the partial-data note is kept for losses no country is recorded for');
+});
+
+test('the exact audit reads the dated head, so a correct picture has an exact read to agree with', async () => {
+  const asked: string[] = [];
+  const client = { product: async (request: { product: string }) => { asked.push(request.product); return { data: airReply() }; } } as never;
+  for (const countries of [makeCtx().countries, { ...makeCtx().countries, top: null, tags: [countryKey(1), countryKey(2)] }]) {
+    const ctx = makeCtx({ countries });
+    asked.length = 0;
+    const exact = await readPlanExact(airKillsLossesLinesDeclaration.sources(ctx, { following: false, staticSpan: null }), 100,
+      { client, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 500 }, window: null, staticSpan: null, gate: GATE });
+    assert.ok(exact, 'an exact read exists');
+    assert.deepEqual(asked, ['military-air-at']);
+    const model = airKillsLossesLinesProjection.project(exact, makeOptions({ top: countries.top, tags: countries.tags }));
+    assert.deepEqual(model.auditRows?.map(row => row.value), ['450', '200', '120', '100'], 'both countries, both measures, from the head');
+  }
 });
 
 test('a quiet stretch of played hours makes no extra military-air-at request', async () => {

@@ -28,6 +28,8 @@ import {
   memberAt,
   missingSpansOf,
   withinMapOf,
+  chartTopOf,
+  rowsBySelectedKey,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -79,9 +81,6 @@ function buildHeadParams(base: Readonly<Record<string, unknown>>, hour: GatedHou
   return { branchId: cfg.branchId, hour, ...cfg.selection, attribution: cfg.attribution, kind: cfg.kind, period: cfg.period };
 }
 
-function topOf(countries: FamilyPlanContext['countries']): number | null {
-  return countries.top ?? (countries.all ? Math.max(1, countries.every.length) : null);
-}
 
 function rowKeyOf(row: Pick<ForceAtRow, 'slot' | 'country'>): string {
   return row.slot != null ? countryKey(row.slot) : countryKey(row.country);
@@ -120,7 +119,7 @@ function buildHoverDetail(
   const eligible = orderedKeys.filter(key => memberAt(options.membership, key, hour));
   if (eligible.length === 0) return null;
 
-  const rowByKey = new Map(reply.rows.map(row => [rowKeyOf(row), row]));
+  const rowFor = rowsBySelectedKey(reply.rows, rowKeyOf);
   const items: TooltipListItem[] = [];
   for (const key of eligible) {
     const look = looks.get(key);
@@ -128,7 +127,7 @@ function buildHoverDetail(
     const label = atHour ? atHour.name : identityName(readView, 'country', key, hour);
     const who = readView.who('country', key, hour);
     const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
-    const row = rowByKey.get(key);
+    const row = rowFor(key);
     if (!row) {
       items.push({
         label,
@@ -203,7 +202,7 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
         yAxis,
         series: [],
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
-        note: NAVAL_NOTE,
+        summaryText: NAVAL_NOTE,
         empty: { message: refused, kind: 'unavailable' },
         auditRows: [],
       };
@@ -224,14 +223,14 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
         yAxis,
         series: [],
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
-        note: NAVAL_NOTE,
+        summaryText: NAVAL_NOTE,
         warnings: head.warnings,
         empty: { message: head.missing, kind: 'unavailable' },
         auditRows: [auditRow('__head__', head.missing)],
       };
     }
 
-    const rowByKey = new Map((head?.rows ?? []).map(row => [rowKeyOf(row), row]));
+    const rowFor = rowsBySelectedKey(head?.rows ?? [], rowKeyOf);
     const orderedKeys: string[] = [];
     const seen = new Set<string>();
     const addKey = (key: string) => {
@@ -247,7 +246,6 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
         for (const key of tiles?.keys() ?? []) addKey(key);
       }
     } else {
-      for (const row of head?.rows ?? []) addKey(rowKeyOf(row));
       for (const key of options.tags) addKey(key);
     }
 
@@ -266,7 +264,7 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
     const series: TimeChartSeriesModel[] = orderedKeys.map((key, rank) => {
       const isTail = rank >= COLOURED;
       const look = looks.get(key)!;
-      const row = rowByKey.get(key);
+      const row = rowFor(key);
       const present = memberAt(options.membership, key, hour);
       const bounded = tiles?.get(key) ?? null;
       const headValue = present && row && row.total !== null ? row.total : null;
@@ -314,7 +312,7 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
         series: [],
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         hoverDetail,
-        note: NAVAL_NOTE,
+        summaryText: NAVAL_NOTE,
         warnings: head.warnings,
         empty: {
           message: options.period === 'month' ? 'No known naval losses this month.' : 'No known naval losses yet.',
@@ -335,7 +333,7 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail,
-      note: NAVAL_NOTE,
+      summaryText: NAVAL_NOTE,
       ...(head?.warnings.length ? { warnings: head.warnings } : {}),
       auditRows,
     };
@@ -359,7 +357,7 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
     const kind = navalKind(ctx.options);
     const attribution = navalAttribution(ctx.options);
     const period = navalPeriod(ctx.options);
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     const tags = top === null ? ctx.countries.tags : [];
     const selection = forceSelection(ctx);
     const owner = `naval-losses:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${kind}:${attribution}:${period}`;
@@ -434,14 +432,14 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
         },
       },
     ];
-    return { owner, entries };
+    return { owner, exactEntry: entries[1]!, entries };
   },
   projection: navalLossesLinesProjection,
   projectionOptions(ctx, { extent, surface }) {
     const kind = navalKind(ctx.options);
     const attribution = navalAttribution(ctx.options);
     const period = navalPeriod(ctx.options);
-    const top = topOf(ctx.countries);
+    const top = chartTopOf(ctx.countries);
     return {
       tags: top === null ? ctx.countries.tags : [],
       top,
@@ -452,7 +450,7 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
       holders: ctx.countries.holders,
       membership: top === null ? ctx.countries.membership : null,
       endLabels: ctx.options.endLabels !== false,
-      settings: lineChartSettings(ctx.options),
+      settings: lineChartSettings(ctx.options, ctx.following),
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
