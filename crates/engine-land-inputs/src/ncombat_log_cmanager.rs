@@ -29,6 +29,40 @@ pub enum Months {
 
 pub const WINDOW_ENTRIES: u32 = 2;
 
+#[derive(Default)]
+pub struct SealedMonths {
+    pools: std::collections::HashMap<(u32, u8, u16), SealedPool>,
+    pub audit_difference: Option<(u32, u8, i32)>,
+}
+
+struct SealedPool {
+    identity: PoolIdentity,
+    rows: Vec<Row>,
+    seen: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PoolIdentity {
+    entry: usize,
+    items: Array,
+    date: i32,
+    reason: i32,
+}
+
+pub struct MonthRead<'a> {
+    pub months: Months,
+    pub sealed: Option<&'a mut SealedMonths>,
+}
+
+impl From<Months> for MonthRead<'_> {
+    fn from(months: Months) -> Self {
+        Self {
+            months,
+            sealed: None,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
@@ -483,7 +517,7 @@ pub fn walk_prepared_observed<T>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the caller's prepare and select callbacks share its state, visit_group observes separately, and the rows buffer and memo are caller-owned"
+    reason = "prepare and select share state, group observation is independent, and counting and bounded callers supply different buffers"
 )]
 fn walk_prepared_buffer<T>(
     memory: &impl Memory,
@@ -492,6 +526,56 @@ fn walk_prepared_buffer<T>(
     state: &mut T,
     prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
     mut select: impl FnMut(&mut T, u32) -> Result<Option<Months>, &'static str>,
+    rows: Buffer<'_, Row>,
+    memo: Option<&mut VariantMemo>,
+    visit_group: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
+) -> Outcome {
+    walk_selected_buffer(
+        memory,
+        base,
+        game_state,
+        state,
+        prepare,
+        |state, country| select(state, country).map(|months| months.map(Into::into)),
+        rows,
+        memo,
+        visit_group,
+    )
+}
+
+pub fn walk_retaining<T>(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    state: &mut T,
+    select: impl FnMut(&mut T, u32) -> Result<Option<MonthRead<'_>>, &'static str>,
+    rows: &mut Vec<Row>,
+    memo: &mut VariantMemo,
+) -> Outcome {
+    walk_selected_buffer(
+        memory,
+        base,
+        game_state,
+        state,
+        |_, _| Ok(()),
+        select,
+        Buffer::Growing(rows),
+        Some(memo),
+        &mut |_, _, _, _| Ok(()),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the caller's prepare and select callbacks share its state, and the rows buffer and memo are caller-owned"
+)]
+fn walk_selected_buffer<T>(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    state: &mut T,
+    prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
+    mut select: impl FnMut(&mut T, u32) -> Result<Option<MonthRead<'_>>, &'static str>,
     rows: Buffer<'_, Row>,
     mut memo: Option<&mut VariantMemo>,
     visit_group: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
@@ -509,19 +593,14 @@ fn walk_prepared_buffer<T>(
         },
     };
     let read = |state: &mut T, memory: &_, vtables: &Vtables, country, groups| {
-        let Some(months) = select(state, country)? else {
+        let Some(mut read) = select(state, country)? else {
             return Ok(());
         };
         let (start, unread) = (output.len, output.unread_rows);
-        read_groups_observed(
-            memory,
-            vtables,
-            country,
-            groups,
-            months,
-            &mut output,
-            visit_group,
-        )?;
+        read_groups_observed(memory, vtables, country, groups, &mut read, &mut output, visit_group)?;
+        if let Some(cache) = read.sealed {
+            cache.pools.retain(|_, pool| std::mem::take(&mut pool.seen));
+        }
         if output.unread_rows != unread {
             let partial = u32::try_from(output.len - start)
                 .map_err(|_| "combat log unread row count exceeds u32")?;
@@ -639,7 +718,7 @@ fn read_groups_observed(
     vtables: &Vtables,
     country: u32,
     groups: Array,
-    months: Months,
+    months: &mut MonthRead<'_>,
     output: &mut Output<'_>,
     visit: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
@@ -660,7 +739,7 @@ fn read_group(
     country: u32,
     bytes: &[u8],
     reference: u64,
-    months: Months,
+    read: &mut MonthRead<'_>,
     output: &mut Output<'_>,
 ) -> Result<(), &'static str> {
     {
@@ -673,21 +752,21 @@ fn read_group(
             };
             let entries = Array::from_header(bytes[at..at + 16].try_into().unwrap(), 8)
                 .ok_or("combat log month array invalid")?;
-            let entries = match months {
-                Months::All => entries,
-                Months::Window => {
+            let entries = match (&read.sealed, read.months) {
+                (None, Months::Window) => {
                     let first = entries.count.saturating_sub(WINDOW_ENTRIES);
                     entries
                         .slice(first, entries.count - first, 8)
                         .map_err(|_| "combat log month window invalid")?
                 }
+                _ => entries,
             };
             let key = Key {
                 country,
                 group,
                 kind: kind as u8,
             };
-            read_entries(memory, vtables, key, entries, output)?;
+            read_entries(memory, vtables, key, entries, read, output)?;
         }
         Ok(())
     }
@@ -753,6 +832,7 @@ fn read_entries(
     vtables: &Vtables,
     key: Key,
     entries: Array,
+    read: &mut MonthRead<'_>,
     output: &mut Output<'_>,
 ) -> Result<(), &'static str> {
     let mut pointer_bytes = [0_u8; BATCH * 8];
@@ -806,7 +886,49 @@ fn read_entries(
                 equipment_entry::STRIDE,
             )
             .ok_or("combat log pool entry array invalid")?;
+            let identity = PoolIdentity {
+                entry: pointers[index],
+                items,
+                date,
+                reason: i32_at(bytes, loss::REASON),
+            };
+            let pool_key = (key.group, key.kind, month);
+            let sealed = first + (index as u32) < entries.count.saturating_sub(WINDOW_ENTRIES);
+            if sealed
+                && read.months == Months::Window
+                && items.count != 0
+                && let Some(pool) = read
+                    .sealed
+                    .as_deref_mut()
+                    .and_then(|cache| cache.pools.get_mut(&pool_key))
+                && pool.identity == identity
+            {
+                let end = output
+                    .len
+                    .checked_add(pool.rows.len())
+                    .ok_or("combat log row demand overflow")?;
+                if !output.rows.ensure(output.len, end)? {
+                    return Err("combat log sealed month exceeds capture buffer");
+                }
+                output.rows.slice_mut()[output.len..end].copy_from_slice(&pool.rows);
+                output.len = end;
+                pool.seen = true;
+                continue;
+            }
+            let start = output.len;
             read_pool(memory, vtables, key, month, date, items, output)?;
+            if let Some(cache) = read.sealed.as_deref_mut() {
+                let written = &output.rows.slice_mut()[start..output.len];
+                if read.months == Months::All
+                    && let Some(previous) = cache.pools.get(&pool_key)
+                    && previous.rows != written
+                {
+                    cache.audit_difference = Some((key.group, key.kind, date));
+                }
+                if sealed {
+                    cache.remember(pool_key, identity, written)?;
+                }
+            }
         }
         first += count as u32;
     }
@@ -911,6 +1033,32 @@ fn read_pool(
         return Err("combat log pool names a variant twice");
     }
     Ok(())
+}
+
+impl SealedMonths {
+    fn remember(
+        &mut self,
+        pool_key: (u32, u8, u16),
+        identity: PoolIdentity,
+        written: &[Row],
+    ) -> Result<(), &'static str> {
+        if !self.pools.contains_key(&pool_key) {
+            crate::allocation::reserve_map(&mut self.pools, 1)
+                .map_err(|_| "combat log sealed month allocation failed")?;
+        }
+        let pool = self.pools.entry(pool_key).or_insert_with(|| SealedPool {
+            identity,
+            rows: Vec::new(),
+            seen: false,
+        });
+        pool.rows.clear();
+        crate::allocation::reserve(&mut pool.rows, written.len())
+            .map_err(|_| "combat log sealed rows allocation failed")?;
+        pool.rows.extend_from_slice(written);
+        pool.identity = identity;
+        pool.seen = true;
+        Ok(())
+    }
 }
 
 const BUCKET_FIELDS: [RecordField; 1] = [RecordField {
@@ -1102,7 +1250,7 @@ fn deleted_logs_into(
                 country,
                 &group_bytes,
                 references[index],
-                Months::All,
+                &mut Months::All.into(),
                 &mut output,
             )?;
         }

@@ -28,6 +28,47 @@ fn a_month_reads_its_listed_rows_then_the_rows_the_game_dropped_then_says_why_it
 }
 
 #[test]
+fn recording_the_retained_months_keeps_their_values_without_growing_the_replay() {
+    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+    use replay::campaign::{Replay, SeekResult};
+    use replay_data::rows::TableRows;
+
+    let dates = [1, 2, 3, 4].map(|month| month_hours(month).0);
+    let first = dates[3] + 1;
+    let record = |keep_older| {
+        let frames = (0..3).map(|step| {
+            let mut frame = source(1, first + step, None);
+            let rows = dates.iter().enumerate()
+                .filter(|(i, _)| keep_older || step != 1 || *i >= 2)
+                .map(|(i, &date)| CombatLogEquipmentRow {
+                    month: month_bucket(date) as u16,
+                    ..line(1, 0, date, 7, 125 + i as i64)
+                }).collect();
+            frame.tables[TableId::CombatLogEquipment.index()] = TableView::Complete(TableRows::CombatLogEquipment(rows)).into();
+            frame
+        }).collect();
+        Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+    };
+    let previous = record(false);
+    let retained = record(true);
+    for (replay, count) in [(&previous, 2), (&retained, 4)] {
+        let SeekResult::Frame(frame) = replay.seek_selected(1, first + 1, Some(&[TableId::CombatLogEquipment])).unwrap() else {
+            panic!("missing ordinary hour");
+        };
+        let rows = frame.complete::<tables::CombatLogEquipment>().unwrap();
+        assert_eq!(rows.len(), count);
+        match witness(&month(1, 0, dates[0]), Some(frame.hour), rows, &[], &dates) {
+            Witness::Listed(older) if count == 4 => assert_eq!(older[0].amount_raw, 125),
+            Witness::Unknown(UNWITNESSED) if count == 2 => (),
+            other => panic!("unexpected witness: {other:?}"),
+        }
+    }
+    let sizes = (previous.bytes().len(), retained.bytes().len());
+    eprintln!("three-hour equipment fixture: {} bytes with window replacements, {} bytes with retained months", sizes.0, sizes.1);
+    assert!(sizes.1 <= sizes.0, "{sizes:?}");
+}
+
+#[test]
 fn a_months_witness_reads_its_own_arrays_run_of_the_hours_rows() {
     let mut rows = vec![line(1, 0, 300, 7, 500), line(1, 1, 300, 7, 2), line(2, 0, 300, 7, 3), line(1, 0, 200, 8, 900)];
     rows.sort_by_key(|row| (row.country, row.group, row.kind, row.month, row.variant));

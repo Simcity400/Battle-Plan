@@ -37,7 +37,10 @@ pub const TABLES: [TableId; N] = [
 ];
 
 pub(crate) fn release_retained_history() {
-    with_store(|store| store.retained = crate::history_capture::State::new());
+    with_store(|store| {
+        store.retained = crate::history_capture::State::new();
+        store.countries = Vec::new();
+    });
     crate::history_capture::release_conversion();
 }
 
@@ -57,40 +60,61 @@ struct Store {
     signal: Option<i64>,
     hour: Option<i32>,
     finals: Vec<Final>,
-    read_hour: Vec<(u32, i32)>,
+    countries: Vec<CountryRead>,
+    last_difference: Option<AuditDifference>,
+}
+
+struct CountryRead {
+    country: u32,
+    last_whole: i32,
+    visited: i32,
+    sealed: native::SealedMonths,
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+pub(crate) struct AuditDifference {
+    hour: i32,
+    country: u32,
+    group: u32,
+    kind: u8,
+    date: i32,
+}
+
+pub(crate) fn last_sealed_month_difference() -> Option<AuditDifference> {
+    with_store(|store| store.last_difference)
 }
 
 impl Store {
     #[cfg(test)]
     fn last_read(&self, country: u32) -> i32 {
-        self.read_hour
-            .binary_search_by_key(&country, |&(owner, _)| owner)
-            .map(|index| self.read_hour[index].1)
+        self.countries
+            .binary_search_by_key(&country, |read| read.country)
+            .map(|index| self.countries[index].last_whole)
             .unwrap_or(NEVER)
     }
 
-    fn remember_reads(&mut self, countries: &[u32], hour: i32) -> Result<(), &'static str> {
-        let new = countries
-            .iter()
-            .filter(|&&country| {
-                self.read_hour
-                    .binary_search_by_key(&country, |&(owner, _)| owner)
-                    .is_err()
-            })
-            .count();
-        allocation::reserve(&mut self.read_hour, new)
-            .map_err(crate::allocation::io)
-            .map_err(|_| "combat log read-hour allocation failed")?;
-        for &country in countries {
-            match self
-                .read_hour
-                .binary_search_by_key(&country, |&(owner, _)| owner)
-            {
-                Ok(index) => self.read_hour[index].1 = hour,
-                Err(index) => self.read_hour.insert(index, (country, hour)),
+    fn country(&mut self, country: u32) -> Result<&mut CountryRead, &'static str> {
+        let index = match self
+            .countries
+            .binary_search_by_key(&country, |read| read.country)
+        {
+            Ok(i) => i,
+            Err(i) => {
+                allocation::reserve(&mut self.countries, 1)
+                    .map_err(|_| "combat log country history allocation failed")?;
+                self.countries.insert(
+                    i,
+                    CountryRead {
+                        country,
+                        last_whole: NEVER,
+                        visited: NEVER,
+                        sealed: native::SealedMonths::default(),
+                    },
+                );
+                i
             }
-        }
-        Ok(())
+        };
+        Ok(&mut self.countries[index])
     }
 }
 
@@ -99,7 +123,8 @@ const EMPTY_STORE: Store = Store {
     signal: None,
     hour: None,
     finals: Vec::new(),
-    read_hour: Vec::new(),
+    countries: Vec::new(),
+    last_difference: None,
 };
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -213,7 +238,6 @@ pub struct Captured {
     memo: native::VariantMemo,
     signal: i64,
     drained: Vec<native::Row>,
-    visited: Vec<u32>,
 }
 
 const VIEWING_UNREAD: &str = "viewing country unreadable";
@@ -238,7 +262,6 @@ impl Captured {
             memo: native::VariantMemo::default(),
             signal: 0,
             drained: Vec::new(),
-            visited: Vec::new(),
         }
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -252,7 +275,6 @@ impl Captured {
             memo: native::VariantMemo::default(),
             signal: 0,
             drained: Vec::new(),
-            visited: Vec::new(),
         }
     }
     pub fn reset(&mut self) {
@@ -268,7 +290,6 @@ impl Captured {
             + self.lend_lease.allocated_bytes()
             + self.memo.allocated_bytes()
             + self.drained.capacity() * size_of::<native::Row>()
-            + self.visited.capacity() * size_of::<u32>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -341,12 +362,13 @@ impl Captured {
     /// Caller holds hourly capture admission as the sole combat-log consumer while prune storage
     /// stays live.
     unsafe fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
-        let new_session =
-            store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last);
+        let new_session = store.signal != Some(self.signal)
+            || store.hour.and_then(|last| last.checked_add(1)) != Some(hour);
         if new_session {
             store.signal = Some(self.signal);
             store.finals.clear();
-            store.read_hour.clear();
+            store.countries.clear();
+            store.last_difference = None;
         }
         store.hour = Some(hour);
         let forget = take_forget();
@@ -354,9 +376,7 @@ impl Captured {
             .retained
             .begin(self.signal, force_full || forget || new_session);
         if forget {
-            for (_, last) in &mut store.read_hour {
-                *last = NEVER;
-            }
+            store.countries.clear();
         }
         if forget || force_full {
             for kept in &mut store.finals {
@@ -409,42 +429,47 @@ impl Captured {
             };
         }
         let selection = &self.selection;
-        let read_hour = &store.read_hour;
-        let visited = &mut self.visited;
-        visited.clear();
-        let outcome = native::walk_prepared_observed(
+        let outcome = native::walk_retaining(
             memory,
             base,
             game_state,
-            visited,
-            |_, _| Ok(()),
-            |visited, country| {
+            store,
+            |store, country| {
                 if !selection.contains(country) {
                     return Ok(None);
                 }
-                if visited.len() == visited.capacity() {
-                    allocation::reserve_push_batch(visited, 1)
-                        .map_err(crate::allocation::io)
-                        .map_err(|_| "collector allocation failed")?;
-                }
-                visited.push(country);
-                let last = read_hour
-                    .binary_search_by_key(&country, |&(owner, _)| owner)
-                    .map(|index| read_hour[index].1)
-                    .unwrap_or(NEVER);
-                Ok(Some(if force_full || needs_all(last, hour) {
+                let read = store.country(country)?;
+                read.visited = hour;
+                let months = if force_full || needs_all(read.last_whole, hour) {
+                    read.last_whole = hour;
                     native::Months::All
                 } else {
                     native::Months::Window
+                };
+                Ok(Some(native::MonthRead {
+                    months,
+                    sealed: Some(&mut read.sealed),
                 }))
             },
             &mut self.rows.rows,
             &mut self.memo,
-            &mut |_, _, _, _| Ok(()),
         );
         let Outcome::Rows { len } = outcome else {
+            store.countries.clear();
             return outcome;
         };
+        store.countries.retain_mut(|read| {
+            if let Some((group, kind, date)) = read.sealed.audit_difference.take() {
+                store.last_difference = Some(AuditDifference {
+                    hour,
+                    country: read.country,
+                    group,
+                    kind,
+                    date,
+                });
+            }
+            read.visited == hour || !selection.contains(read.country)
+        });
         let pending = store
             .finals
             .iter()
@@ -458,9 +483,6 @@ impl Captured {
         if let Err(reason) =
             engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(required)
         {
-            return Outcome::Unavailable { reason };
-        }
-        if let Err(reason) = store.remember_reads(&self.visited, hour) {
             return Outcome::Unavailable { reason };
         }
         let mut at = len;
@@ -678,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn visited_capacity_follows_selected_country_pushes() {
+    fn country_history_follows_selected_managers() {
         use engine_land_inputs::ncombat_log_corders_group_logs as groups;
 
         let mut bytes = logged_state();
@@ -739,14 +761,18 @@ mod tests {
             );
             assert_eq!(outcome, Outcome::Rows { len: 0 });
             assert_eq!(captured.rows.outcome, outcome);
-            assert_eq!(captured.visited, original_visited);
-            assert_eq!(captured.visited.capacity(), original_visited.capacity());
-            assert_eq!(
-                captured.allocated_bytes(),
-                before + original_visited.capacity() * size_of::<u32>()
-            );
+            let visited = with_store(|store| {
+                store
+                    .countries
+                    .iter()
+                    .filter(|read| read.visited == hour)
+                    .map(|read| read.country)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(visited, original_visited);
+            assert_eq!(captured.allocated_bytes(), before);
             if !force_full {
-                assert!(captured.visited.len() < 40);
+                assert!(visited.len() < 40);
             }
         }
     }
@@ -845,12 +871,15 @@ mod tests {
         let [mut a, mut b, ..] = buffers();
         crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
         assert_eq!(capture(&mut a, &bytes, SIGNAL, 5, false), [row(29, 7)]);
-        assert_eq!(capture(&mut b, &bytes, SIGNAL, 9, true), [row(29, 7)]);
+        assert_eq!(capture(&mut b, &bytes, SIGNAL, 6, true), [row(29, 7)]);
+        assert!(capture(&mut a, &bytes, SIGNAL, 9, true).is_empty());
     }
 
     fn day(year: i32, day: i32) -> i32 {
         43_800_000 + year * 8760 + day * 24
     }
+
+    mod equipment_month_tests;
 
     #[test]
     fn a_country_is_read_whole_unless_read_this_or_last_month() {
@@ -873,13 +902,13 @@ mod tests {
         let [mut a, ..] = buffers();
         capture(&mut a, &bytes, SIGNAL, 5, false);
         let last = |country| with_store(|store| store.last_read(country));
-        with_store(|store| store.remember_reads(&[29], 5).unwrap());
+        with_store(|store| store.country(29).unwrap().last_whole = 5);
         capture(&mut a, &bytes, SIGNAL, 6, false);
         assert_eq!(last(29), 5, "kept while nothing went unpublished");
         forget_reads();
         capture(&mut a, &bytes, SIGNAL, 7, false);
         assert_eq!(last(29), NEVER);
-        with_store(|store| store.remember_reads(&[29], 7).unwrap());
+        with_store(|store| store.country(29).unwrap().last_whole = 7);
         capture(&mut a, &bytes, SIGNAL + 1, 8, true);
         assert_eq!(last(29), NEVER, "a load");
     }

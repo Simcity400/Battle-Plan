@@ -430,6 +430,7 @@ pub fn status() -> impl serde::Serialize {
         "active_demand": ACTIVE_DEMAND.load(SeqCst), "noncombat_demand": NONCOMBAT_DEMAND.load(SeqCst),
         "seed_demand": SEED_DEMAND.load(SeqCst), "escaped_unwind": WRITERS.escaped.load(SeqCst),
         "recovery": crate::history_capture::recovery_status(),
+        "last_sealed_equipment_month_changed_on_whole_read": crate::combat_log::last_sealed_month_difference(),
         "scope": "incremental native writer occurrences; loss requires exact retained-state recovery at the first quiet acquisition"
     })
 }
