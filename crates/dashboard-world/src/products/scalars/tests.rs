@@ -159,6 +159,14 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
         }
         visits.push(total);
     }
+    for hour in [136, 133, 141, 132] {
+        let reply = WorldTensionStack::load(&source, &WorldTensionStackParams {
+            branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers: 2, values: TensionValueMode::Recorded,
+            countries: None, top: None, group: None, width: None, include_stack: Some(false), include_events: Some(true),
+        }, &load, &cancelled).unwrap();
+        assert_eq!(reply.events.iter().map(|e| e.hour).collect::<Vec<_>>(), (hour - 10..=hour).collect::<Vec<_>>());
+        assert_eq!(reply.events.iter().find(|e| e.hour == 130).map(|e| &e.added_raw), (hour <= 140).then(|| hour.to_string()).as_ref());
+    }
     println!("slot and event edit visits: {visits:?}");
     assert!(visits.iter().all(|&count| count <= 15 * 6), "stack and event visits for fifteen entry and expiry steps: {visits:?}");
 }

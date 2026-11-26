@@ -198,8 +198,7 @@ impl Ranking {
             let within = group.is_none_or(|group| !group.spans(slot, rank, rank).is_empty());
             let raw = lookup_slot(input.slots.get(&slot).map(Vec::as_slice), window.complete, rank);
             let nonzero = raw.is_some_and(|raw| raw != 0);
-            let eligible = filter
-                .is_none_or(|wanted| named(slot, window.last).is_some_and(|(tag, _)| wanted(&tag)))
+            let eligible = filter.is_none_or(|wanted| named(slot, window.last).is_some_and(|(tag, _)| wanted(&tag)))
                 && group.is_none_or(|group| !group.spans(slot, window.first, window.last).is_empty())
                 && (!top || within);
             let end = within.then_some(raw).flatten();
@@ -253,6 +252,10 @@ impl EventIndex {
                 index.changes.add(at, id);
             }
         }
+        for ids in index.changes.0.values_mut() {
+            ids.sort_unstable_by_key(|&id| (events[id as usize].hour, id));
+            ids.dedup();
+        }
         index
     }
 
@@ -279,17 +282,24 @@ impl EventWindow {
         last: i32,
         mut row_at: impl FnMut(&CachedEvent) -> Option<TensionStackEvent>,
     ) {
-        let mut changed = HashSet::new();
+        let mut changed = HashSet::<u32>::new();
         if let Some((old_first, old_last)) = self.bounds.filter(|(a, b)| *a <= last && first <= *b) {
-            index.changes.crossed(old_last, last, &mut changed);
+            let latest = old_last.max(last);
+            for (_, ids) in index.changes.0.range((Excluded(old_last.min(last)), Included(latest))) {
+                let from = ids.partition_point(|&id| events[id as usize].hour < first);
+                let to = ids.partition_point(|&id| events[id as usize].hour <= latest);
+                changed.extend(&ids[from..to]);
+            }
             for (_, ids) in index.by_date.range(old_first.min(first)..old_first.max(first)) {
-                changed.extend(ids);
+                let known = ids.partition_point(|&id| events[id as usize].first_read <= latest);
+                changed.extend(&ids[..known]);
             }
         } else {
             self.rows.clear();
             self.by_slot.clear();
             for (_, ids) in index.by_date.range(first..=last) {
-                changed.extend(ids);
+                let known = ids.partition_point(|&id| events[id as usize].first_read <= last);
+                changed.extend(&ids[..known]);
             }
         }
         self.bounds = Some((first, last));
