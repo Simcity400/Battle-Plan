@@ -32,13 +32,13 @@ fn joined(spans: impl IntoIterator<Item = MissingSpan>) -> Vec<MissingSpan> {
 const LONG_SECOND: i32 = FIRST + 17 * UNIT_HOURS + GAP;
 const LONG_LAST: i32 = LONG_SECOND + 2 * UNIT_HOURS - 1;
 
-fn long_campaign() -> Fixture {
-    Fixture::with_gap(Data::Power, FIRST..=LONG_LAST, LONG_SECOND - GAP..=LONG_SECOND - 1)
+fn long_campaign(data: Data) -> Fixture {
+    Fixture::with_gap(data, FIRST..=LONG_LAST, LONG_SECOND - GAP..=LONG_SECOND - 1)
 }
 
 #[test]
 fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::Power);
     let query = fixture.query();
     let line = line(&query);
     let mut compared = 0;
@@ -295,7 +295,7 @@ fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
 
 #[test]
 fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::Power);
     let query = fixture.query();
     let line = line(&query);
     let held = |tag: &str, hour: i32| query.holders.at(tag, hour).is_some() && query.timeline.at(hour).is_some();
@@ -332,7 +332,7 @@ fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
             .iter()
             .map(|request| {
                 assert!(request.get("from").is_none() && request.get("width").is_none() && request["withMarks"] == true);
-                serde_json::from_value(serde_json::to_value(reply(&line, "1", request).unwrap()).unwrap()).unwrap()
+                serde_json::from_value(serde_json::to_value(reply(&line, "1", request, &|| Ok(())).unwrap()).unwrap()).unwrap()
             })
             .collect();
         let assembled = view::assemble(asked, &replies).unwrap();
@@ -430,7 +430,7 @@ fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
 
 #[test]
 fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_earlier_holder_of_its_tag() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::Power);
     let mut query = fixture.query();
     let change = ITA_FROM + 5 * 97 + (91 - ITA_FROM.rem_euclid(97)).rem_euclid(97);
     let (ger, ita) = (query.holders.slot_at(&Country::from("GER"), change).unwrap(), query.holders.slot_at(&Country::from("ITA"), change).unwrap());
@@ -443,7 +443,7 @@ fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_ear
     let line = line(&query);
     let (bin_hours, hour) = (96, change + 5);
     let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
-    let (top, ranked_reads) = replay_recording::cells::count_reads(|| reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 1, "hour": hour })).unwrap());
+    let (top, ranked_reads) = replay_recording::cells::count_reads(|| reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 1, "hour": hour }), &|| Ok(())).unwrap());
     assert_eq!(top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(ita)], "the winning slot keys its whole history");
     let (country, selected_reads) = replay_recording::cells::count_reads(|| tile(&line, "1", &[Ask::whole(Country::Slot(ita))], None, bin_hours, index, false).unwrap());
     let restores = |counts: &replay_recording::cells::ReadCounts| counts.get(&replay_data::rows::TableId::Countries).map_or(0, |stats| stats.restores);
@@ -457,11 +457,11 @@ fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_ear
 
 #[test]
 fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_the_top() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::RankedPower);
     let query = fixture.query();
     let line = line(&query);
     let bin_hours = 96;
-    let ask = |hour: i32| reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": i64::from(hour).div_euclid(BINS as i64 * bin_hours), "top": 1, "hour": hour })).unwrap();
+    let ask = |hour: i32| reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": i64::from(hour).div_euclid(BINS as i64 * bin_hours), "top": 1, "hour": hour }), &|| Ok(())).unwrap();
     let mut proven = 0;
     for hour in (FIRST + 24..LONG_SECOND - GAP).step_by(37) {
         let top = ask(hour);
@@ -479,8 +479,11 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
         for at in ranking.from..=ranking.until {
             assert_eq!(line.rank_at(at, 1, false).unwrap().unwrap(), ranked, "the same top through its proven hours ({at} for {hour})");
         }
-        if ranking.from > FIRST && hour - ranking.from < RANK_PROOF_HOURS {
+        if ranking.from > FIRST {
             assert_ne!(line.rank_at(ranking.from - 1, 1, false).unwrap(), Ok(ranked.clone()), "the hour before the proof is another top");
+        }
+        if ranking.until < LONG_LAST {
+            assert_ne!(line.rank_at(ranking.until + 1, 1, false).unwrap(), Ok(ranked), "the ranking holds until the winner changes or a contender is unread");
         }
         proven += usize::try_from(ranking.until - ranking.from).unwrap();
     }
@@ -488,16 +491,50 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     let refused = ask(LONG_SECOND - 2);
     assert!(refused.lines.is_empty(), "no line in a gap");
     assert!(refused.ranking.unwrap().refused.is_some(), "a gap's top is refused with its reason");
-    assert!(reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": 0, "top": 1, "hour": FIRST, "countries": ["GER"] })).is_err());
+    assert!(reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": 0, "top": 1, "hour": FIRST, "countries": ["GER"] }), &|| Ok(())).is_err());
     let series = dashboard_declare::series("country-measure").unwrap();
     let other = Line::new(&query, series, series.measure("commandPower").unwrap()).unwrap();
+    for (asked_at, expected) in [(FIRST + 2 * UNIT_HOURS, (FIRST, ITA_FROM - 1)), (ITA_FROM + 2 * UNIT_HOURS, (ITA_FROM, LONG_SECOND - GAP - 1))] {
+        let request = serde_json::json!({ "binHours": bin_hours, "index": i64::from(asked_at).div_euclid(BINS as i64 * bin_hours), "top": 2, "hour": asked_at });
+        let ranking = reply(&other, "1", &request, &|| Ok(())).unwrap().ranking.unwrap();
+        assert_eq!((ranking.from, ranking.until), expected, "the set holds through measured zeroes and a reordering until a country enters or the recording stops");
+    }
+    for least in [false, true] {
+        let change = if least { COMMAND_TIE + 1 } else { COMMAND_TIE };
+        for (at, expected) in [
+            (change - 2 * UNIT_HOURS, (if least { FIRST } else { COMMAND_FROM }, change - 1)),
+            (change + 2 * UNIT_HOURS, (change, LONG_SECOND - GAP - 1)),
+        ] {
+            let request = serde_json::json!({ "binHours": bin_hours, "index": i64::from(at).div_euclid(BINS as i64 * bin_hours), "top": 1, "least": least, "hour": at });
+            let ranking = reply(&other, "1", &request, &|| Ok(())).unwrap().ranking.unwrap();
+            assert_eq!((ranking.from, ranking.until), expected, "the one-hour tie at the bucket edge belongs to the first tag (least {least}, asked {at})");
+            let winner = other.rank_at(at, 1, least).unwrap().unwrap();
+            for hour in expected.0..=expected.1 {
+                assert_eq!(other.rank_at(hour, 1, least).unwrap().unwrap(), winner, "rank at {hour}, least {least}");
+            }
+        }
+    }
     let hour = FIRST + 24;
     let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
-    let by = reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "politicalPower" })).unwrap();
+    for asked_at in [FIRST, hour] {
+        let request = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" },
+            "binHours": bin_hours, "index": index, "top": 1, "hour": asked_at });
+        let polls = std::cell::Cell::new(0);
+        let interrupted = crate::series::answer(&query, PRODUCT, &request, &|| {
+            polls.set(polls.get() + 1);
+            match polls.get() {
+                1..=3 => Ok(()),
+                4 => Err(io::Error::from(io::ErrorKind::Interrupted)),
+                _ => panic!("a superseded proof kept reading"),
+            }
+        });
+        assert!(matches!(interrupted, Err(ref error) if error.kind() == io::ErrorKind::Interrupted));
+    }
+    let by = reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "politicalPower" }), &|| Ok(())).unwrap();
     let ranked = line.rank_at(hour, 2, false).unwrap().unwrap();
     assert_eq!(by.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked.iter().map(|country| Country::Slot(query.holders.slot_at(country, hour).unwrap())).collect::<Vec<_>>(), "ranked by the named measure");
     let plain = tile(&other, "1", &ranked.iter().map(Ask::whole).collect::<Vec<_>>(), None, bin_hours, index, false).unwrap();
     assert_eq!(by.bins, plain.bins, "the tiles are of the asked measure");
     assert_eq!(by.measure, "commandPower");
-    assert!(reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "noSuchMeasure" })).is_err());
+    assert!(reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "noSuchMeasure" }), &|| Ok(())).is_err());
 }

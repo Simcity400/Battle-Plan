@@ -133,7 +133,8 @@ pub fn follows(product: &str) -> bool {
 }
 
 pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
-    dashboard_text::metadata::check_cancel(cancelled)?;
+    let check_cancel = || dashboard_text::metadata::check_cancel(cancelled);
+    check_cancel()?;
     if follows(product) {
         return dashboard_follow::registry::for_session(params).answer_heads(
             source.path(),
@@ -192,7 +193,7 @@ pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &Loa
         if kind(params) == Some(dashboard_land::products::army::SERIES) {
             if product == dashboard_query::tile::PRODUCT {
                 let line = dashboard_land::products::army::tile_line(&query, params)?;
-                return Ok(serde_json::to_value(dashboard_query::tile::reply(&line, &dashboard_query::branch(params)?.to_string(), params)?)?);
+                return Ok(serde_json::to_value(dashboard_query::tile::reply(&line, &dashboard_query::branch(params)?.to_string(), params, &check_cancel)?)?);
             }
             return dashboard_land::products::army::series(source, &query, product, params, context);
         }
@@ -202,10 +203,10 @@ pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &Loa
         if product == dashboard_query::series::ranked::PRODUCT && params.get("group").is_some_and(|group| !group.is_null()) {
             let groups = dashboard_world::products::group_members::GroupsAt::for_query(source, &query, context, cancelled)?;
             let resolve = |group: &dashboard_query::series::ranked::GroupSelection, hour: i32| groups.slots_at(group, &query.holders, hour);
-            return dashboard_query::series::answer_grouped(&query, product, params, &resolve)?
+            return dashboard_query::series::answer_grouped(&query, product, params, &resolve, &check_cancel)?
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));
         }
-        return dashboard_query::series::answer(&query, product, params)?
+        return dashboard_query::series::answer(&query, product, params, &check_cancel)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));
     }
     let registered = crate::products::find(product).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Unknown data product: {product}")))?;

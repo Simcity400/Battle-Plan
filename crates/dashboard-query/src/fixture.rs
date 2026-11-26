@@ -29,6 +29,8 @@ pub const SECOND: i32 = FIRST + FIRST_HOURS + GAP;
 pub const SECOND_HOURS: i32 = UNIT_HOURS;
 pub const LAST: i32 = SECOND + SECOND_HOURS - 1;
 pub const ITA_FROM: i32 = FIRST + 5_000;
+pub const COMMAND_FROM: i32 = ITA_FROM + UNIT_HOURS;
+pub const COMMAND_TIE: i32 = (ITA_FROM / 96 + 30) * 96 - 1;
 pub const GAP_REASON: &str = "The game was not recorded here";
 pub const TAGS: [&str; 2] = ["GER", "ITA"];
 
@@ -122,6 +124,7 @@ pub fn receiver(country: u32, kind: u8, hour: i32) -> u32 {
 
 pub enum Data {
     Power,
+    RankedPower,
     Resources,
     Market,
     DenseMarket(i32, u64),
@@ -133,7 +136,7 @@ fn sample<R: RowCodec>(frame: &mut Synthetic, table: TableId, rows: &[R]) -> io:
     frame.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit })
 }
 
-fn country_rows(frame: &mut Synthetic, hour: i32, with_power: bool) -> io::Result<()> {
+fn country_rows(frame: &mut Synthetic, hour: i32, data: &Data) -> io::Result<()> {
     let countries: Vec<_> = [(9001, 7), (9002, 8)]
         .into_iter()
         .filter(|&(id, _)| exists(id, hour))
@@ -141,7 +144,13 @@ fn country_rows(frame: &mut Synthetic, hour: i32, with_power: bool) -> io::Resul
             id,
             canonical_slot,
             tag: tag_of(id).as_bytes().to_vec(),
-            political_power_raw: if with_power { power(id, hour) } else { None },
+            political_power_raw: if matches!(data, Data::Power | Data::RankedPower) { power(id, hour) } else { None },
+            command_power_raw: match (id, hour) {
+                _ if !matches!(data, Data::RankedPower) || hour < COMMAND_FROM => 0,
+                (9001, _) | (_, COMMAND_TIE) => 1,
+                _ if hour < COMMAND_TIE => 2,
+                _ => 0,
+            },
             ..CountryRow::default()
         })
         .collect();
@@ -271,12 +280,12 @@ impl Fixture {
         let replay = Replay::from_synthetic_runs(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), runs, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
-            country_rows(frame, hour, matches!(data, Data::Power))?;
+            country_rows(frame, hour, &data)?;
             if not_recorded_factories {
                 frame.table::<CountryFactoriesRow>(TableId::CountryFactories, Input::NotRecorded { read: false, sample: Sample::FromReadBit })?;
             }
             match data {
-                Data::Power => Ok(()),
+                Data::Power | Data::RankedPower => Ok(()),
                 Data::Resources => resource_rows(frame, hour),
                 Data::Market => market_rows(frame, hour),
                 Data::DenseMarket(dense_hour, dense_count) => {

@@ -215,7 +215,9 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         }
     }
     let (from, until) = if let Some(n) = top {
-        line.rank_holds(hour, n, ask.least, held, |_, at| at == asked.as_slice())?
+        let window = crate::tile::RANK_PROOF_HOURS;
+        let within = (held.0.max(hour.saturating_sub(window)), held.1.min(hour.saturating_add(window)));
+        line.rank_holds(hour, n, ask.least, within, super::RankProof::Order(&asked), &|| Ok(()))?
     } else if ask.top.is_some() {
         line.query.timeline.unheld.iter().find(|gap| gap.first <= hour && hour <= gap.last)
             .map_or((hour, hour), |gap| (gap.first.max(held.0), gap.last.min(held.1)))
