@@ -21,7 +21,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
-import { gapRows, hoverTextOf, unreadRows, type HoverText } from '../event-feed/hoverText.ts';
+import { gapRows, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
 import { daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
@@ -43,7 +43,7 @@ export interface EventChoicesProjectionOptions {
   readonly awaiting: boolean;
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
-  readonly hover?: HoverText | null;
+  readonly hover?: TooltipTexts;
 }
 
 const HEAD_LIMIT = 256;
@@ -61,7 +61,7 @@ function buildChoiceRow(
   page: ChoicePageInfo,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
-  hover: HoverText | null,
+  hover: TooltipTexts,
 ): TableRow {
   const { card } = at;
   const firstRow = card.first.row;
@@ -225,7 +225,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
           const nextDay = startHour + (elapsed + 1) * 24;
           if (nextDay > readAt && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
-        return buildChoiceRow(readView, resolved, page, options.artwork, boundary, options.hover ?? null);
+        return buildChoiceRow(readView, resolved, page, options.artwork, boundary, options.hover ?? []);
       },
     );
 

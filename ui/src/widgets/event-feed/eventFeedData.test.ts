@@ -95,7 +95,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
   const envoyTip = (hover: { key: string; description: string | null; gaps: string | null; options: (string | null)[] | null; missing: string | null } | null) => {
-    const extra = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: true, hover }).rows.find(r => r.key === 'k1')?.tooltipExtra;
+    const extra = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: true, hover: hover ? [hover] : [] }).rows.find(r => r.key === 'k1')?.tooltipExtra;
     return ((typeof extra === 'function' ? extra() : extra) ?? []).filter(r => r.label === 'Description' || r.label.startsWith('Option ')).map(r => `${r.label}: ${r.value.kind === 'known' ? r.value.value : r.value.kind === 'notRecorded' ? `not recorded: ${r.value.reason}` : r.value.kind}`);
   };
   assert.deepEqual(envoyTip(null), [], 'a listed row carries no description or option text until its row is read');

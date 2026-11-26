@@ -3,7 +3,7 @@ import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/defini
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import DecisionDetailWindow, { type DecisionDetailSubject } from './DecisionDetailWindow.tsx';
-import { useEventDetail, useHoverText } from '../event-choices/eventDetail.ts';
+import { useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
 import { withHoverText } from '../event-feed/hoverText.ts';
 
 function DecisionsView(props: FamilyViewProps) {
@@ -13,8 +13,8 @@ function DecisionsView(props: FamilyViewProps) {
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: DecisionDetailSubject } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
   const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'decisions-tail', shown ? { key: shown.key, hour: shown.startedHour, asOfHour: shown.asOfHour } : null, shown !== null);
-  const hover = useHoverText(props.runtime, props.widget.trackIds[0], 'decisions-tail', props.widget.time.mode === 'follow', props.active);
-  const options = useMemo(() => withHoverText(props.options, hover.text), [props.options, hover.text]);
+  const hover = useTooltipText(props.runtime, props.widget.trackIds[0], 'decisions-tail', props.widget.time.mode === 'follow', props.active);
+  const options = useMemo(() => withHoverText(props.options, hover.texts), [props.options, hover.texts]);
 
   const onActivate = useCallback((action: InstalledAction) => {
     const meta = action.meta as DecisionDetailSubject | null | undefined;
@@ -27,7 +27,7 @@ function DecisionsView(props: FamilyViewProps) {
       {props.manifestDeclaration ? <FamilyWidget
         {...props}
         options={options}
-        onHoverRow={hover.onHoverRow}
+        onTooltipRow={hover.onTooltipRow}
         family={props.manifestDeclaration.family}
         declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}

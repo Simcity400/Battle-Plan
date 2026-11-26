@@ -8,7 +8,7 @@ import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { resolveSelectedCountryRefs } from '../../families/table/logHelpers.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { decisionsDeclaration, decisionsProjection } from './decisionsProjection.ts';
-import { hoverTextOf, withHoverText } from '../event-feed/hoverText.ts';
+import { hoverTextOf, withHoverText, type HoverText } from '../event-feed/hoverText.ts';
 import { eventChoicesDeclaration } from '../event-choices/eventChoicesProjection.ts';
 import { eventFeedDeclaration } from '../event-feed/eventFeedProjection.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
@@ -329,8 +329,8 @@ test('a decision tooltip shows its listed description until the hovered row is r
     rows: [{ hour: start, key: 'a', ordinal: '0', cells: [], occurrence: occ }, { hour: start, key: 'b', ordinal: '1', cells: [], occurrence: other }],
     facetTotals: [], missing: [], unavailable: [], warnings: [],
   }, undefined, start + 1)!;
-  const tip = (hover: Parameters<typeof withHoverText>[1]) => {
-    const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [], hover: hoverTextOf(withHoverText({}, hover)) });
+  const tip = (hover: HoverText | readonly HoverText[] | null) => {
+    const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [], hover: hoverTextOf(withHoverText({}, hover === null ? [] : 'key' in hover ? [hover] : hover)) });
     const extra = model.rows.find(row => row.key === occ.id)?.tooltipExtra;
     const shown = (typeof extra === 'function' ? extra() : extra) ?? [];
     return shown.filter(row => ['Description', 'Full description', 'Authored effects', 'Text not recorded'].includes(row.label))
@@ -340,6 +340,7 @@ test('a decision tooltip shows its listed description until the hovered row is r
   assert.deepEqual(tip(null), [['Description', 'Raise war bonds.']], 'before the read answers, the listed description');
   assert.deepEqual(tip(read), [['Description', 'Raise war bonds. Effects: +5% war support']], 'the read row brings the full text');
   assert.deepEqual(tip({ ...read, key: other.id }), [['Description', 'Raise war bonds.']], 'a read of another row changes nothing here');
+  assert.deepEqual(tip([{ ...read, key: other.id, description: 'Elsewhere.' }, read]), [['Description', 'Raise war bonds. Effects: +5% war support']], 'with a pointer row and a focused row read, each tooltip takes its own');
   assert.deepEqual(tip({ ...read, description: null, missing: 'This event is not in the log at the hour it was read' }), [
     ['Description', 'Raise war bonds.'], ['Full description', 'not recorded: This event is not in the log at the hour it was read'],
   ]);

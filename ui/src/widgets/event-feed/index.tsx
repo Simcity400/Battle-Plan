@@ -7,7 +7,7 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
-import { useEventDetail, useHoverText } from '../event-choices/eventDetail.ts';
+import { useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
 import { withHoverText } from './hoverText.ts';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
@@ -24,7 +24,7 @@ function EventFeedView(props: FamilyViewProps) {
   const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
   const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-feed-tail', shown, shown !== null);
-  const hover = useHoverText(props.runtime, props.widget.trackIds[0], 'event-feed-tail', props.widget.time.mode === 'follow', props.active, isEventRow);
+  const hover = useTooltipText(props.runtime, props.widget.trackIds[0], 'event-feed-tail', props.widget.time.mode === 'follow', props.active, isEventRow);
 
   useEffect(() => {
     if (!track || !props.active) return;
@@ -39,7 +39,7 @@ function EventFeedView(props: FamilyViewProps) {
   }, [track, props.active, props.runtime.client, scope, kinds?.scope]);
 
   const { options } = props;
-  const familyOptions = useMemo(() => withHoverText(options, hover.text), [options, hover.text]);
+  const familyOptions = useMemo(() => withHoverText(options, hover.texts), [options, hover.texts]);
   const recordingKinds = kinds?.scope === scope ? kinds.list : null;
   const categories = useMemo(
     () => CATEGORIES.filter(cat => options[cat.value] !== false).map(cat => cat.value),
@@ -141,7 +141,7 @@ function EventFeedView(props: FamilyViewProps) {
       {props.manifestDeclaration ? <FamilyWidget
         {...props}
         options={familyOptions}
-        onHoverRow={hover.onHoverRow}
+        onTooltipRow={hover.onTooltipRow}
         family={props.manifestDeclaration.family}
         declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}

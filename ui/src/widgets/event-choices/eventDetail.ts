@@ -7,7 +7,8 @@ import { classifyFailure } from '../../dashboard/queryError.ts';
 import { rowRequest, rowSource } from '../../families/table/rowSelection.ts';
 import type { EventFeedCategory, EventFeedItem, ScriptEdge } from '../../generated/dashboard';
 import { effectiveEventItem, validateFeedRow } from '../event-feed/eventFeedData.ts';
-import type { HoverText } from '../event-feed/hoverText.ts';
+import type { HoverText, TooltipTexts } from '../event-feed/hoverText.ts';
+import type { TooltipRowSource } from '../../families/host/hoverRow.ts';
 import { occurrenceItem, validateOccurrence } from '../event-feed/scriptOccurrences.ts';
 
 export interface EventDetail {
@@ -70,25 +71,7 @@ export function hoverSubject(track: BoundTrack | undefined, clock: Pick<Playback
   return { key: subject, hour: following ? Math.min(lastHour, Math.max(firstHour, Math.floor(clock.getHour()) + track.axisOffset)) : lastHour };
 }
 
-export function useHoverText(
-  runtime: FamilyViewProps['runtime'],
-  trackId: string | undefined,
-  product: DetailProduct,
-  following: boolean,
-  active: boolean,
-  names: (key: string) => boolean = () => true,
-): { readonly onHoverRow: (subject: string | null) => void; readonly text: HoverText | null } {
-  const track = runtime.tracks.find(item => item.id === trackId);
-  const scope = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
-  const [hovered, setHovered] = useState<{ readonly scope: string; readonly subject: DetailSubject } | null>(null);
-  const latest = useRef({ track, scope, clock: runtime.clock, following, names });
-  latest.current = { track, scope, clock: runtime.clock, following, names };
-  const onHoverRow = useCallback((subject: string | null) => {
-    const now = latest.current;
-    const held = hoverSubject(now.track, now.clock, now.following, now.names, subject);
-    setHovered(held ? { scope: now.scope, subject: held } : null);
-  }, []);
-  const shown = hovered?.scope === scope ? hovered.subject : null;
+function useRowText(runtime: FamilyViewProps['runtime'], trackId: string | undefined, product: DetailProduct, shown: DetailSubject | null, active: boolean): HoverText | null {
   const detail = useEventDetail(runtime, trackId, product, shown, active && shown !== null);
   const answered = shown && detail && !detail.pending ? detail : null;
   const key = answered ? shown!.key : null;
@@ -96,9 +79,37 @@ export function useHoverText(
   const gaps = answered?.item?.gaps ?? null;
   const named = answered?.item?.options ? JSON.stringify(answered.item.options.map(option => option.name)) : null;
   const missing = answered?.missing ?? null;
-  const text = useMemo<HoverText | null>(
+  return useMemo<HoverText | null>(
     () => (key === null ? null : { key, description, gaps, options: named === null ? null : JSON.parse(named) as (string | null)[], missing }),
     [key, description, gaps, named, missing],
   );
-  return { onHoverRow, text };
+}
+
+const sameSubject = (a: DetailSubject | null, b: DetailSubject | null): boolean => !!a && !!b && a.key === b.key && a.hour === b.hour;
+
+export function useTooltipText(
+  runtime: FamilyViewProps['runtime'],
+  trackId: string | undefined,
+  product: DetailProduct,
+  following: boolean,
+  active: boolean,
+  names: (key: string) => boolean = () => true,
+): { readonly onTooltipRow: (subject: string | null, by: TooltipRowSource) => void; readonly texts: TooltipTexts } {
+  const track = runtime.tracks.find(item => item.id === trackId);
+  const scope = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
+  const [held, setHeld] = useState<{ readonly scope: string; readonly pointer: DetailSubject | null; readonly focus: DetailSubject | null }>({ scope: '', pointer: null, focus: null });
+  const latest = useRef({ track, scope, clock: runtime.clock, following, names });
+  latest.current = { track, scope, clock: runtime.clock, following, names };
+  const onTooltipRow = useCallback((subject: string | null, by: TooltipRowSource) => {
+    const now = latest.current;
+    const row = hoverSubject(now.track, now.clock, now.following, now.names, subject);
+    setHeld(previous => ({ ...(previous.scope === now.scope ? previous : { scope: now.scope, pointer: null, focus: null }), [by]: row }));
+  }, []);
+  const current = held.scope === scope ? held : null;
+  const pointer = current?.pointer ?? null;
+  const focus = current?.focus && !sameSubject(current.focus, pointer) ? current.focus : null;
+  const pointed = useRowText(runtime, trackId, product, pointer, active);
+  const focused = useRowText(runtime, trackId, product, focus, active);
+  const texts = useMemo(() => [pointed, focused].filter((text): text is HoverText => text !== null), [pointed, focused]);
+  return { onTooltipRow, texts };
 }

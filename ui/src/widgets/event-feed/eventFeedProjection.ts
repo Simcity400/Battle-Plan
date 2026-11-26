@@ -25,13 +25,13 @@ import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
 import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
-import { descriptionRows, gapRows, hoverTextOf, optionRows, type HoverText } from './hoverText.ts';
+import { descriptionRows, gapRows, hoverTextOf, optionRows, type TooltipTexts } from './hoverText.ts';
 import { plainScripted, reasonsOf } from './scriptedGaps.ts';
 
 export interface EventFeedProjectionOptions {
   readonly categories: readonly string[];
   readonly artwork: boolean;
-  readonly hover?: HoverText | null;
+  readonly hover?: TooltipTexts;
 }
 
 const HEAD_LIMIT = 256;
@@ -335,7 +335,7 @@ function buildFeedTableRow(
   artwork: boolean,
   displayedHour: number,
   boundary: ReturnType<typeof newIdentityBoundary>,
-  hover: HoverText | null,
+  hover: TooltipTexts,
 ): { readonly row: TableRow; readonly fold: FoldMeta } {
   const item = effectiveEventItem(event, page.choice);
   const { primary, secondary, detail, missingReason } = eventItemAndSubtext(event, page, readView);
@@ -496,7 +496,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
           status: rawRow.status,
           live: rawRow.live === true,
         };
-        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? null);
+        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? []);
         foldByKey.set(built.row.key, built.fold);
         return built.row;
       },
