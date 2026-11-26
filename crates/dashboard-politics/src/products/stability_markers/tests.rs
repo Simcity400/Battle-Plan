@@ -30,7 +30,7 @@ fn a_country_s_wars_and_factions_are_marked_up_to_the_hour_and_the_next_one_boun
     let mut out = Markers { hour: 450, shown: Vec::new(), next: None };
     let ita = |tag: &str, _: i32| tag == "ITA";
     war_markers(&mut out, &ita, &groups);
-    faction_markers(&mut out, &ita, &groups, (0, 1000));
+    faction_markers(&mut out, &ita, &groups, (0, 1000), &[]);
     assert_eq!(titles(&out), [(200, "War with ETH began"), (400, "ETH capitulated"), (300, "Joined Axis")]);
     assert_eq!(out.next, Some(501), "leaving the faction is after the hour: it is not shown, it is when the reply is next asked");
     assert!(out.shown.iter().all(|marker| marker.hour <= 450));
@@ -39,7 +39,7 @@ fn a_country_s_wars_and_factions_are_marked_up_to_the_hour_and_the_next_one_boun
 
     let mut founder = Markers { hour: 1000, shown: Vec::new(), next: None };
     let ger = |tag: &str, _: i32| tag == "GER";
-    faction_markers(&mut founder, &ger, &groups, (0, 900));
+    faction_markers(&mut founder, &ger, &groups, (0, 900), &[]);
     assert_eq!(titles(&founder), [(100, "Founded Axis")], "the sole founder founded it; a member to the branch's end never left");
     war_markers(&mut founder, &ger, &groups);
     assert_eq!(titles(&founder)[1..], [(250, "War with POL began")], "a country capitulating to someone else's war is not this country's enemy");
@@ -51,13 +51,13 @@ fn an_event_is_matched_to_the_slot_at_its_own_hour_not_at_the_hour_asked() {
     let until_260 = |tag: &str, hour: i32| tag == "GER" && hour < 260;
     let mut out = Markers { hour: 1000, shown: Vec::new(), next: None };
     war_markers(&mut out, &until_260, &groups);
-    faction_markers(&mut out, &until_260, &groups, (0, 1000));
+    faction_markers(&mut out, &until_260, &groups, (0, 1000), &[]);
     assert_eq!(titles(&out), [(250, "War with POL began"), (100, "Founded Axis")], "a war begun under a tag the slot later lost is still its war");
 
     let from_350 = |tag: &str, hour: i32| tag == "ITA" && hour >= 350;
     let mut late = Markers { hour: 1000, shown: Vec::new(), next: None };
     war_markers(&mut late, &from_350, &groups);
-    faction_markers(&mut late, &from_350, &groups, (0, 1000));
+    faction_markers(&mut late, &from_350, &groups, (0, 1000), &[]);
     assert_eq!(titles(&late), [(400, "ETH capitulated"), (501, "Left Axis")], "nothing before the slot held the tag is its event");
 }
 
@@ -70,7 +70,7 @@ fn a_slot_that_changes_tag_inside_its_faction_neither_leaves_nor_joins() {
     .unwrap();
     let slot = |tag: &str, hour: i32| (tag == "GER" && hour < 600) || (tag == "DEU" && hour >= 600);
     let mut out = Markers { hour: 1000, shown: Vec::new(), next: None };
-    faction_markers(&mut out, &slot, &groups, (0, 1000));
+    faction_markers(&mut out, &slot, &groups, (0, 1000), &[]);
     assert_eq!(titles(&out), [(100, "Founded Axis"), (801, "Left Axis")], "the tag change at 600 is no event: the slot stayed a member");
 }
 
@@ -138,7 +138,7 @@ fn an_unattributed_war_start_is_said_once_with_its_span_and_a_late_join_says_it_
     .unwrap();
     groups.factions[0].name = Some("Pact".to_owned());
     let mut late = Markers { hour: 450, shown: Vec::new(), next: None };
-    let notes = faction_markers(&mut late, &|tag: &str, _| tag == "ITA", &groups, (0, 1000));
+    let notes = faction_markers(&mut late, &|tag: &str, _| tag == "ITA", &groups, (0, 1000), &[]);
     assert!(titles(&late).is_empty(), "a join right after an unobserved hour is not dated");
     assert_eq!(notes.len(), 1, "but it is said: {notes:?}");
     assert!(notes[0].starts_with("In Axis by "), "named as it was then, not by its later name: {notes:?}");
@@ -150,6 +150,28 @@ fn an_unattributed_war_start_is_said_once_with_its_span_and_a_late_join_says_it_
     .unwrap();
     let mut gap = Markers { hour: 450, shown: Vec::new(), next: None };
     let slot = |tag: &str, hour: i32| (tag == "AAA" && hour == 299) || (tag == "BBB" && hour >= 300);
-    let notes = faction_markers(&mut gap, &slot, &joined, (0, 1000));
+    let notes = faction_markers(&mut gap, &slot, &joined, (0, 1000), &[]);
     assert!(notes.iter().any(|note| note.starts_with("In Axis by ")), "a roster unread the hour before says nothing of who was in it then: {notes:?}");
+}
+
+#[test]
+fn an_hour_no_one_knows_who_held_the_country_is_no_departure_and_no_join() {
+    use dashboard_query::identity::HolderRun;
+    let mut groups = groups();
+    groups.factions[0].members = serde_json::from_value(serde_json::json!([
+        { "tag": "GER", "firstHour": 100, "lastHour": 298 }, { "tag": "GER", "firstHour": 300, "lastHour": 900 }
+    ]))
+    .unwrap();
+    let held = |first, last| HolderRun { first, last, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: false };
+    let holders = Holders::new(
+        [("GER".to_owned(), vec![held(0, 298), HolderRun { first: 299, last: 299, holder: Holder::Unresolved, starts_segment: false }, held(300, 1000)])].into_iter().collect(),
+        Vec::new(),
+    );
+    let country = Country::Tag("GER".into());
+    let hidden: Vec<HourSpan> = holder_gaps(&holders, &country, 0).into_iter().map(|(first_hour, last_hour, _)| HourSpan { first_hour, last_hour }).collect();
+    let mut out = Markers { hour: 400, shown: Vec::new(), next: None };
+    let notes = faction_markers(&mut out, &|tag: &str, hour| tag == "GER" && hour != 299, &groups, (0, 1000), &hidden);
+    assert_eq!(titles(&out), [(100, "Founded Axis")], "no departure at 299 nor a join at 300 around an hour whose holder is unknown");
+    assert!(notes.is_empty(), "and no late join either: the roster was read: {notes:?}");
+    assert_eq!(holder_notes(&mut out, &holders, &country, (0, 1000), "Faction markers").len(), 1, "the holder warning says why");
 }

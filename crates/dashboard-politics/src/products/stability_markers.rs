@@ -212,17 +212,19 @@ fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &Co
     }
 }
 
-fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, branch: (i32, i32)) -> Vec<String> {
+fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, branch: (i32, i32), hidden: &[HourSpan]) -> Vec<String> {
     let mut notes = Vec::new();
     for faction in &groups.factions {
-        let unknown: Vec<HourSpan> = groups.unobserved.factions.iter().chain(&faction.incomplete).cloned().collect();
+        let roster: Vec<HourSpan> = groups.unobserved.factions.iter().chain(&faction.incomplete).cloned().collect();
+        let unknown: Vec<HourSpan> = roster.iter().chain(hidden).cloned().collect();
         let founders = faction.members.iter().filter(|member| member.first_hour == faction.first_hour).count();
         let sole = founders == 1 && !within(&unknown, faction.first_hour);
         let name = faction.name.as_deref().unwrap_or(FACTION_UNNAMED);
         let member_at = |hour: i32| faction.members.iter().any(|other| other.first_hour <= hour && hour <= other.last_hour && holds(&other.tag, hour));
         for run in &faction.members {
             if run.first_hour > branch.0
-                && within(&unknown, run.first_hour - 1)
+                && within(&roster, run.first_hour - 1)
+                && !within(hidden, run.first_hour - 1)
                 && holds(&run.tag, run.first_hour)
                 && (within(&groups.unobserved.factions, run.first_hour - 1) || !member_at(run.first_hour - 1))
             {
@@ -265,18 +267,8 @@ fn hidden(wars: bool, factions: bool) -> &'static str {
     }
 }
 
-fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, (from, end): (i32, i32), kinds: &str) -> Vec<String> {
+fn holder_gaps<'h>(holders: &'h Holders, country: &Country, from: i32) -> Vec<(i32, i32, Option<&'h str>)> {
     let runs = country.runs(holders);
-    let said = |hour: i32, reason: &str| match country {
-        Country::Tag(tag) => format!("Who holds {tag} is not known: {reason}"),
-        Country::Slot(slot) => {
-            let before = runs[..runs.partition_point(|run| run.first < hour)].last().and_then(|run| holders.slot_tag(*slot, run.last));
-            match before {
-                Some(tag) => format!("The chosen country's tag is not known: {reason}; it was last recorded as {tag}"),
-                None => format!("The chosen country's tag is not known: {reason}"),
-            }
-        }
-    };
     let mut spans: Vec<(i32, i32, Option<&str>)> = holders.unknown.iter().map(|(first, last, reason)| (*first, *last, Some(reason.as_str()))).collect();
     match country {
         Country::Tag(_) => spans.extend(holders.within(country, from, i32::MAX).into_iter().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last, None))),
@@ -296,6 +288,22 @@ fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, (from, 
         }
     }
     spans.sort_unstable_by_key(|&(first, last, _)| (first, last));
+    spans
+}
+
+fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, (from, end): (i32, i32), kinds: &str) -> Vec<String> {
+    let runs = country.runs(holders);
+    let said = |hour: i32, reason: &str| match country {
+        Country::Tag(tag) => format!("Who holds {tag} is not known: {reason}"),
+        Country::Slot(slot) => {
+            let before = runs[..runs.partition_point(|run| run.first < hour)].last().and_then(|run| holders.slot_tag(*slot, run.last));
+            match before {
+                Some(tag) => format!("The chosen country's tag is not known: {reason}; it was last recorded as {tag}"),
+                None => format!("The chosen country's tag is not known: {reason}"),
+            }
+        }
+    };
+    let spans = holder_gaps(holders, country, from);
     let mut notes = Vec::new();
     for (first, last, reason) in spans {
         if last < from {
@@ -371,7 +379,8 @@ impl Product for StabilityMarkers {
             if params.wars {
                 war_markers(&mut out, &holds, &groups);
             }
-            let joins = if params.factions { faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last)) } else { Vec::new() };
+            let unheld: Vec<HourSpan> = holder_gaps(&query.holders, &params.country, query.timeline.first).into_iter().map(|(first_hour, last_hour, _)| HourSpan { first_hour, last_hour }).collect();
+            let joins = if params.factions { faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last), &unheld) } else { Vec::new() };
             if params.wars {
                 warnings.extend(unattributed_note(&mut out, &groups.unobserved.unattributed));
             }
