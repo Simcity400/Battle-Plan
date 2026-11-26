@@ -42,6 +42,7 @@ test('navy-size race scales fixed-5 hull HP, splits by ship class, and includes 
       { key: 'class:battleship', name: 'Battleship', unresolved: false },
       { key: 'class:destroyer', name: 'Destroyer', unresolved: false },
     ],
+    ordinals: [0, 1],
     rows: [
       { country: 'ENG', slot: null, tag: 'ENG', total: 50_000_000, referenceTotal: 60_000_000, missing: null, values: [30_000_000, 20_000_000], partsMissing: null },
       { country: 'JAP', slot: null, tag: 'JAP', total: null, referenceTotal: null, missing: 'Not recorded', values: [null, null], partsMissing: null },

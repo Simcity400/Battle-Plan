@@ -1,4 +1,4 @@
-use super::{ArmyAttribution, group_info};
+use super::{ArmyAttribution, group_info, group_key};
 use crate::products::forces::{
     ForceAtReply, ForcePart, Named,
     at_hour::{Chosen, ForceContext, attach_parts, chosen, chosen_reads, chosen_set, frame_literals, frame_rows, load_context, load_context_for, parts_keys, recorded_value, select_explicit, select_population, validate_group},
@@ -82,7 +82,8 @@ fn name_army_groups(frame: &DecodedFrame, tokens: &BTreeSet<u128>, catalogue: Op
     if unresolved > 0 {
         warnings.push(format!("{unresolved} sub-unit group/name lookups are unresolved or refused; battalions remain counted."));
     }
-    Named::group(resolved)
+    let groups = units.as_deref().into_iter().flat_map(|units| units.in_content_order().filter_map(|unit| Some(group_key(units.group(unit).ok()??)))).collect::<Vec<_>>();
+    Named::group(resolved).in_content_order(groups)
 }
 
 impl AtHour for ArmyAt {
@@ -152,15 +153,15 @@ impl AtHour for ArmyAt {
             ArmyAttribution::Host => recorded_value(row.host_battalions),
         };
         let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
-            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             Chosen::Population => {
                 let totals = match population::<tables::ArmyTotals>(frame, &Keys::All) {
                     Ok(rows) => rows,
-                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
                 };
                 match select_population(totals, |row| row.slot, total_of, |_| None, at.holders, frame.hour, params.top, "battalions") {
                     Ok(rows) => rows,
-                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
                 }
             }
             Chosen::These(countries) => select_explicit::<tables::ArmyTotals>(frame, &countries, total_of, |_| None, None, at.holders, frame.hour, "battalions"),
@@ -185,10 +186,11 @@ impl AtHour for ArmyAt {
             Err(reason) => Some(reason),
         };
         let named = if parts_error.is_some() { Named::default() } else { name_army_groups(frame, &met, at.context.catalogue.as_deref(), &mut warnings) };
+        let ordinals = named.ordinals();
         let (parts, rows, extra_warnings) = attach_parts(selected, named, &by_slot, parts_error);
         warnings.extend(extra_warnings);
         let mut seen = BTreeSet::new();
         warnings.retain(|warning| seen.insert(warning.clone()));
-        Ok(ForceAtReply { parts, rows, missing: None, warnings })
+        Ok(ForceAtReply { parts, ordinals, rows, missing: None, warnings })
     }
 }

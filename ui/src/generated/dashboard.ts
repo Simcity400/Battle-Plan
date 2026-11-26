@@ -6261,7 +6261,11 @@ export type AirForceAtParams = { branchId: string, countries: Array<CountryRef>,
  * The group whose members at the hour are the rows; never with countries or a top.
  */
 group?: GroupSelection, measure: AirForceMeasure, ownership: AirForceOwnership, };
-export type ForceAtReply = { parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
+export type ForceAtReply = { parts: Array<ForcePart>,
+/**
+ * Each part's position in the recorded content's own list (unit groups, ship classes or roles, aircraft archetypes), in `parts` order; none where the content does not classify the part.
+ */
+ordinals: Array<number | null>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
 export type AirForceMeasure = "planes" | "wings";
 export type AirForceOwnership = "roster" | "effective";
 export type AirForceAtParamsAtHour = AirForceAtParams & { hour: number };

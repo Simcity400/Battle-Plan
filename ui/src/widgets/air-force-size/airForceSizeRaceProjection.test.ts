@@ -41,6 +41,7 @@ test('air-force-size race builds split aircraft-type segments from air-force-at 
       { key: 'small_plane_airframe', name: 'Fighter', unresolved: false },
       { key: 'medium_plane_airframe', name: 'Tactical Bomber', unresolved: false },
     ],
+    ordinals: [0, 1],
     rows: [
       { country: 'GER', slot: null, tag: 'GER', total: 1000, missing: null, values: [700, 300], partsMissing: null },
       { country: 'ENG', slot: null, tag: 'ENG', total: 800, missing: null, values: [null, null], partsMissing: 'Parts withheld' },

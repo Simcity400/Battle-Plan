@@ -1,23 +1,7 @@
-import { CATEGORY_LIMIT, colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour, DEFAULT_CARD_SURFACE, reservedGrey } from '../../charts/palette.ts';
 
-function keySlot(key: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    hash ^= key.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % CATEGORY_LIMIT;
-}
+export const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
-export function partColours(keys: readonly string[]): ReadonlyMap<string, string> {
-  const room = Math.max(CATEGORY_LIMIT, keys.length);
-  const taken = new Set<number>();
-  const out = new Map<string, string>();
-  for (const key of [...new Set(keys)].sort()) {
-    let slot = keySlot(key);
-    while (taken.has(slot)) slot = (slot + 1) % room;
-    taken.add(slot);
-    out.set(key, colour(DEFAULT_CARD_SURFACE, slot));
-  }
-  return out;
+export function partColours(ordinals: readonly (number | null | undefined)[]): string[] {
+  return ordinals.map(ordinal => ordinal == null ? reservedGrey(PART_SURFACE) : colour(PART_SURFACE, ordinal));
 }

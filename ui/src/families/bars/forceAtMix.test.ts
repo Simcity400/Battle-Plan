@@ -5,6 +5,9 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { IdentityProvider } from '../plan.ts';
 import type { ForceAtReply } from '../../generated/dashboard';
 import { projectForceAtMix } from './forceAtMix.ts';
+import { validateNavalLossesAtReply } from './forceAtRace.ts';
+import { PART_SURFACE } from './partColour.ts';
+import { CATEGORY_LIMIT, categoricalPalette, reservedGrey } from '../../charts/palette.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -32,6 +35,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
       { key: 'ships', name: 'Ships', unresolved: false },
       { key: 'convoys', name: 'Convoys', unresolved: false },
     ],
+    ordinals: [0, 1],
     rows: [
       { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, values: [25, 75], partsMissing: null },
       { country: 'GER', slot: null, tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
@@ -73,29 +77,30 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
   ], 'each witnessed count is still shown');
 });
 
-test('a part keeps its colour when the parts beside it change (convoys alone or beside ships)', () => {
+test('a part takes the palette colour at its content ordinal, so a new part moves no colour; one the content does not order is neutral', () => {
   const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map(), identity: fakeIdentity({}) });
-  const project = (parts: ForceAtReply['parts'], values: number[]) => projectForceAtMix(view, {
-    parts, rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: values.reduce((a, b) => a + b, 0), missing: null, values, partsMissing: null }], missing: null, warnings: [],
-  }, { top: 10, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Ships and convoys (colour test)', emptyMessage: 'None.' });
+  const project = (parts: ForceAtReply['parts'], ordinals: ForceAtReply['ordinals'], values: number[]) => projectForceAtMix(view, {
+    parts, ordinals, rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: values.reduce((a, b) => a + b, 0), missing: null, values, partsMissing: null }], missing: null, warnings: [],
+  }, { top: 10, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Parts (colour test)', emptyMessage: 'None.' });
   const colours = (model: ReturnType<typeof project>) => new Map(model.legend?.map(item => [item.key, item.color]));
-  const both = colours(project([{ key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }], [2, 3]));
-  const alone = colours(project([{ key: 'convoys', name: 'Convoys', unresolved: false }], [3]));
-  const added = colours(project([{ key: 'aaa', name: 'Earlier kind', unresolved: false }, { key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }], [1, 2, 3]));
-  const reversed = colours(project([{ key: 'convoys', name: 'Convoys', unresolved: false }, { key: 'ships', name: 'Ships', unresolved: false }], [3, 2]));
-  assert.deepEqual([reversed.get('ships'), reversed.get('convoys')], [both.get('ships'), both.get('convoys')], 'the order a reply lists its parts in, or a view met them in, never changes a colour');
-  assert.equal(alone.get('convoys'), both.get('convoys'));
-  const air = colours(project([{ key: 'tactical_bomber', name: 'Tactical bomber', unresolved: false }], [2]));
-  const withCas = colours(project([{ key: 'cas', name: 'Close air support', unresolved: false }, { key: 'tactical_bomber', name: 'Tactical bomber', unresolved: false }], [1, 2]));
-  assert.notEqual(withCas.get('cas'), withCas.get('tactical_bomber'), 'two parts never share a colour');
-  assert.ok(air.get('tactical_bomber'));
-  assert.equal(added.get('ships'), both.get('ships'), 'an earlier-sorting part added later does not recolour one on screen');
+  const ships = { key: 'ships', name: 'Ships', unresolved: false };
+  const convoys = { key: 'convoys', name: 'Convoys', unresolved: false };
+  const both = colours(project([ships, convoys], [0, 1], [2, 3]));
+  const added = colours(project([{ key: 'aaa', name: 'New kind', unresolved: false }, ships, convoys], [2, 0, 1], [1, 2, 3]));
+  assert.deepEqual([added.get('ships'), added.get('convoys')], [both.get('ships'), both.get('convoys')], 'a part appearing later moves no colour on screen');
   assert.notEqual(added.get('aaa'), added.get('ships'));
+  const naval = (parts: ForceAtReply['parts']) => validateNavalLossesAtReply({ firstHour: 0, lastHour: 1, parts, rows: [], missing: null, warnings: [] }).ordinals;
+  assert.deepEqual([naval([ships, convoys]), naval([convoys])], [[0, 1], [1]], 'convoys alone keep the place they hold beside ships');
+  const unordered = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1]));
+  assert.equal(unordered.get('mystery'), reservedGrey(PART_SURFACE), 'a part without an ordinal is drawn in the neutral colour, never guessed');
+  const past = colours(project([ships], [CATEGORY_LIMIT], [1]));
+  assert.ok(!categoricalPalette(PART_SURFACE).includes(past.get('ships')!), 'a part past the palette takes its generated extension');
 });
 
 test('a total not known beside a known part keeps the known part in its tooltip (ships known, convoys not)', () => {
   const reply: ForceAtReply = {
     parts: [{ key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }],
+    ordinals: [0, 1],
     rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: null, missing: 'Convoys sunk are not known at this hour', values: [3, null], partsMissing: null }],
     missing: null,
     warnings: [],

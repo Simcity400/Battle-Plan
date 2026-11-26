@@ -23,6 +23,8 @@ fn recorded_parts_group_under_their_reply_part_in_key_order() {
     let named = Named::group(resolved);
     assert_eq!(named.parts.iter().map(|part| part.key.as_str()).collect::<Vec<_>>(), vec!["cas", "fighter"]);
     assert_eq!((named.of[&1], named.of[&2], named.of[&3]), (0, 1, 1));
+    let named = named.in_content_order(["bomber", "fighter", "bomber", "transport"].map(String::from));
+    assert_eq!(named.ordinals(), vec![None, Some(1)], "the content's own order, first listing kept; a part it does not list has no ordinal");
 }
 
 #[test]
