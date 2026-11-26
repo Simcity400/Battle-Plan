@@ -1,5 +1,5 @@
 import type { FamilyProjection } from './contract.ts';
-import { DEFAULT_VIEW, normalizeView, type FamilyViewEntry } from './manifest.ts';
+import { DEFAULT_VIEW, normalizeView, type FamilyViewEntry, type FamilyViewModule } from './manifest.ts';
 import type { FamilyId } from './plan.ts';
 
 export { DEFAULT_VIEW };
@@ -63,7 +63,7 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
   if (!listeners) waiters.set(key, listeners = new Set());
   listeners.add(onReady);
   if (!pendingLoads.has(key)) {
-    const load = entry.loadSpec().then(mod => {
+    const load = new Promise<FamilyViewModule>(resolve => resolve(entry.loadSpec())).then(mod => {
       const projection = mod.projection;
       projections.set(key, projection);
       return projection;

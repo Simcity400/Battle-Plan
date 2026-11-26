@@ -5,7 +5,7 @@ import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from
 import { cropAll, cropSurfaces, macrotaskSchedule, markCanvasPainted, type WakeChannel } from './laneDispatch.ts';
 import { startLaneWorker } from './lane.worker.ts';
 import { prepareProjections } from './views/drawn.ts';
-import { bindFamilyManifest } from '../families/registry.ts';
+import { bindFamilyManifest, familyProjectionFailure } from '../families/registry.ts';
 import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
@@ -3949,4 +3949,5 @@ test('preparing projections waits for every projection to settle, when another t
   release({ projection: { family: 'bars', kind: 'prepare-held', project: () => null } } as never);
   await prepared;
   assert.equal(done, true);
+  assert.equal(familyProjectionFailure('bars', 'prepare-throws'), 'the chunk is missing', 'a load that throws as it starts is recorded as that projection failing, and its waiter is woken');
 });
