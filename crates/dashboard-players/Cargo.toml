@@ -30,6 +30,8 @@ ts-rs = "11.1"
 
 [dev-dependencies]
 replay = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true }
+recorder-derive.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-players = { workspace = true, features = ["export-types"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
