@@ -76,6 +76,7 @@ function runIndexAt(runs: readonly { firstHour: number }[], hour: number): numbe
 type PlayerRuns = Pick<ApmPlayer, 'id' | 'runs'>;
 type NameChanges = Map<string, { firstHour: number; labels: Map<string, string> }[]>;
 type PlayerRoster = Map<string, { runs: ApmPlayer['runs']; names: NameChanges }>;
+type PlayerLookup = Pick<PlayerRoster, 'get'>;
 const recordedRosters = new WeakMap<readonly ApmPlayer[], PlayerRoster>();
 const noPlayers: readonly ApmPlayer[] = [];
 
@@ -133,21 +134,21 @@ function recordedRoster(players: readonly ApmPlayer[]): PlayerRoster {
   return roster;
 }
 
-function withObservations(recorded: PlayerRoster, entries: readonly SeriesEntry[]): PlayerRoster {
+function withObservations(recorded: PlayerRoster, entries: readonly SeriesEntry[]): PlayerLookup {
   if (entries.every(entry => recorded.get(entry.id)?.runs?.length)) return recorded;
-  const roster = new Map(recorded);
+  const observed: PlayerRoster = new Map();
   const observations = entries.map(({ id, obsHour, tag, name }) => ({
     id, runs: [{ firstHour: obsHour, lastHour: obsHour, tag: tag ?? '', name, nameMissing: null }],
   }));
   const observedNames = nameChangesFor(observations);
   for (const { id, runs } of observations) {
-    if (!roster.get(id)?.runs?.length) roster.set(id, { runs, names: observedNames });
+    if (!recorded.get(id)?.runs?.length) observed.set(id, { runs, names: observedNames });
   }
-  return roster;
+  return { get: id => observed.get(id) ?? recorded.get(id) };
 }
 
 function apmSeriesLooks(
-  entries: readonly SeriesEntry[], roster: PlayerRoster | null, readView: BoundedReadView, options: ApmGraphOptions,
+  entries: readonly SeriesEntry[], roster: PlayerLookup | null, readView: BoundedReadView, options: ApmGraphOptions,
 ) {
   const ids = entries.map(entry => entry.id);
   const input = { from: options.extent[0], surface: options.surface, withFlag: true, holders: null };
@@ -186,7 +187,7 @@ function apmSeriesLooks(
   }));
 }
 
-function exactPlayerNames(roster: PlayerRoster, rows: readonly ApmSeries[], hour: number): Map<string, string> {
+function exactPlayerNames(roster: PlayerLookup, rows: readonly ApmSeries[], hour: number, chartIds: Iterable<string>): Map<string, string> {
   const labels = new Map<string, string>();
   const unmatched: { id: string; name: string }[] = [];
   for (const { id, name } of rows) {
@@ -202,6 +203,15 @@ function exactPlayerNames(roster: PlayerRoster, rows: readonly ApmSeries[], hour
   if (!unmatched.length) return labels;
   const fromReply = playerNames(rows);
   const used = new Set(labels.values());
+  const needed = new Set(unmatched.map(row => row.name));
+  for (const id of chartIds) {
+    const player = roster.get(id)!;
+    const run = player.runs[runIndexAt(player.runs, hour)];
+    if (run?.name && hour <= run.lastHour && needed.has(run.name)) {
+      used.add(run.name);
+      used.add(datedName(player.names, id, run.name, hour).name ?? run.name);
+    }
+  }
   const next = new Map<string, number>();
   for (const { id, name } of unmatched) {
     let label = fromReply.get(id) ?? name;
@@ -220,14 +230,14 @@ function buildHoverDetail(
   readView: BoundedReadView,
   seriesById: ReadonlyMap<string, TimeChartSeriesModel>,
   hour: number,
-  roster: PlayerRoster | null,
+  roster: PlayerLookup | null,
 ): TimeChartModel['hoverDetail'] {
   const hover = readView.hover<ApmReply>('hover');
   if (!hover || hover.hour > hour || !hover.data) return null;
   const reply = hover.data;
   if (!reply.available) return null;
   const items: TooltipListItem[] = [];
-  const names = roster && exactPlayerNames(roster, reply.series, hover.hour);
+  const names = roster && exactPlayerNames(roster, reply.series, hover.hour, seriesById.keys());
   let anyGaps = false;
   for (const row of reply.series) {
     if (row.summary.gaps) anyGaps = true;
@@ -368,7 +378,6 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         ...(ready ? { empty: { message: 'No eAPM is available for these countries, players and dates.', kind: 'empty' as const } } : {}),
       };
     }
-    const disambiguated = options.group === 'player' ? playerNames(entries) : null;
     const roster = recorded && withObservations(recorded, entries);
     const looks = apmSeriesLooks(entries, roster, readView, options);
     const headTexts = new Map<string, string>();
@@ -378,7 +387,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       const identities = held.identities;
       const look = seriesLookAt(held, entry.obsHour);
       const { color, flag } = look;
-      const name = disambiguated?.get(entry.id) ?? look.name;
+      const name = roster ? datedName(roster.get(entry.id)!.names, entry.id, entry.name, entry.obsHour).name ?? 'Name not recorded' : look.name;
       const headText = entry.summary ? formatApmRate(entry.summary, 0) : null;
       if (headText !== null) headTexts.set(entry.id, headText);
       const headRat = entry.summary ? apmRateRational(entry.summary) : null;

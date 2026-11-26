@@ -16,18 +16,18 @@ import { apmGraphDeclaration, apmGraphProjection } from './apmGraphProjection.ts
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1943 = engineHour({ year: 1943, month: 9, day: 7, hour: 1 })!;
 
-function makeTiled(id: string, val: number): TiledLine {
+function makeTiled(id: string, val: number, lastHour = H1943): TiledLine {
   return {
     tag: id,
     head: 'h',
     decimals: 0,
     summary: {
       from: H1936,
-      to: H1943,
+      to: lastHour,
       width: 2,
       buckets: [{
-        firstHour: H1936, lastHour: H1943, firstValue: val, lastValue: val, lastValueHour: H1943,
-        minHour: H1936, minValue: val, maxHour: H1943, maxValue: val, firstBreak: false, hasBreak: false,
+        firstHour: H1936, lastHour, firstValue: val, lastValue: val, lastValueHour: lastHour,
+        minHour: H1936, minValue: val, maxHour: lastHour, maxValue: val, firstBreak: false, hasBreak: false,
       }],
       tiles: { binHours: 96, valueAt: () => null },
     },
@@ -49,26 +49,33 @@ describe('apm-graph projection', () => {
     ];
     const excluded = { id: 'user:1', name: 'Shared', nameMissing: null, tags: ['BBB'],
       runs: [{ ...run(first, last, 'Shared'), tag: 'BBB' }] };
+    const departed = { id: 'user:3', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(first, first, 'Shared')] };
     const options = apmGraphDeclaration.projectionOptions({
       options: { group: 'player' }, countries: { all: false, tags: ['AAA'] },
-      aux: { available: true, players: [...players, excluded] }, branch: { gaps: [] },
+      aux: { available: true, players: [...players, excluded, departed] }, branch: { gaps: [] },
     } as never, { extent: [first, last], surface: '#111111' });
     const tiles = players.map((p, i) => [p.id, boundTiledSeries(makeTiled(p.id, 8 + i), displayedHour(last))] as const);
-    const labels = (hour: number, exact: boolean, exactIds = players.map(p => p.id)) => {
-      const reply: ApmReply = { available: true, players: [], warnings: [], series: players.map((p, i) => ({
-        id: exactIds[i]!, name: p.runs.find(r => r.firstHour <= hour && hour <= r.lastHour)!.name, nameMissing: null, tag: 'AAA', hour,
+    tiles.push([departed.id, boundTiledSeries(makeTiled(departed.id, 7, first), displayedHour(last))]);
+    const ids = players.map(p => p.id);
+    const replyAt = (hour: number, replyIds: string[]): ApmReply => ({
+      available: true, players: [], warnings: [], series: players.slice(0, replyIds.length).map((p, i) => ({
+        id: replyIds[i]!, name: p.runs.find(r => r.firstHour <= hour && hour <= r.lastHour)!.name, nameMissing: null, tag: 'AAA', hour,
         summary: { apm: 8 + i, confirmedApm: 8 + i, orders: String(8 + i), confirmedOrders: String(8 + i), pausedOrders: '0',
           unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false }, points: [],
-      })).slice(0, exactIds.length) };
-      const view = createBoundedReadView({
-        hour: last, series: new Map([['apm', new Map(tiles)]]),
-        hovers: exact ? new Map([['hover', { hour, data: reply }]]) : undefined,
-      });
-      const model = apmGraphProjection.project(view, options);
+      })),
+    });
+    const project = (hour: number, exact: boolean, exactIds = ids) => apmGraphProjection.project(createBoundedReadView({
+      hour: last, series: new Map([['apm', new Map(tiles)]]), panels: new Map([['head', replyAt(last, ids)]]),
+      hovers: exact ? new Map([['hover', { hour, data: replyAt(hour, exactIds) }]]) : undefined,
+    }), options);
+    const labels = (hour: number, exact: boolean, exactIds = ids) => {
+      const model = project(hour, exact, exactIds);
       const layout = layoutTimeChart(model, 600, 260, 'sans-serif', text => text.length * 6);
       const items = deriveTimeChartTooltip(model, layout, `plot:${hour}`)?.payload?.items ?? [];
       return Object.fromEntries(items.filter(item => item.value).map(item => [item.value, item.label]));
     };
+    const head = project(last, false).series.find(s => s.id === 'user:10');
+    assert.equal(head?.endLabel?.fullName, 'Shared');
     for (const [hour, expected] of [
       [middle - 1, { 8: 'Shared', 9: 'Earlier' }],
       [middle, { 8: 'Shared (2)', 9: 'Shared (1)' }],
@@ -78,7 +85,7 @@ describe('apm-graph projection', () => {
       assert.deepEqual(labels(hour, true), expected);
     }
     assert.deepEqual(labels(middle, true, ['user:10']), { 8: 'Shared (2)' });
-    assert.deepEqual(labels(middle, true, ['user:0', 'user:2']), { 8: 'Shared (2)', 9: 'Shared (1)' });
+    assert.deepEqual(labels(middle, true, ['user:0', 'user:2']), { 8: 'Shared (3)', 9: 'Shared (1)' });
   });
 
   it('uses the player and country recorded at the hovered hour for the name, flag and swatch', () => {
