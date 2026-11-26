@@ -15,10 +15,7 @@ impl Changes {
         let end = first.saturating_add(DAY - 1);
         let mut out = Self { first, next: BTreeSet::new() };
         let recording = query.replay.recording();
-        let ranges: Vec<_> = params.theatres.iter().flatten().filter_map(|s| s.parse::<u64>().ok()).map(|id| {
-            let base = u128::from(id) << 32;
-            (base, base | u128::from(u32::MAX))
-        }).collect();
+        let ranges = theatre_ranges(params.theatres.iter().flatten().filter_map(|id| id.parse().ok()));
         for stretch in query.timeline.within(first, end) {
             out.next.insert(stretch.first);
             out.next.insert(stretch.last.saturating_add(1));
@@ -50,7 +47,7 @@ impl Changes {
             observed(key);
             self.next.insert(hour);
             if table == TableId::RaidAirScores && cells.is_none() {
-                let last = hour.saturating_add(BUCKET - 1 - hour.rem_euclid(BUCKET));
+                let last = bucket_end(hour);
                 self.next.insert(last);
                 self.next.insert(last.saturating_add(1));
             }
@@ -61,7 +58,7 @@ impl Changes {
             self.next.insert(status.last.saturating_add(1));
             if table == TableId::RaidAirScores && !replay_recording::columnar_frames::complete(status.status) {
                 for hour in status.first..=status.last {
-                    if hour.rem_euclid(BUCKET) == BUCKET - 1 {
+                    if hour == bucket_end(hour) {
                         self.next.insert(hour);
                         self.next.insert(hour.saturating_add(1));
                     }
@@ -95,21 +92,13 @@ fn date(reply: &mut Arc<PanelData>, hour: i32) {
 }
 
 pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
-    if asked["firstHour"].is_i64() {
-        return at_hour::day_panel::<AirSuperiorityTimeline>(source, load, asked, "firstHour", "lastHour", |r| r.last_hour);
-    }
     let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
-    let query = dashboard_base::queries::query(source, branch).map_err(|e| e.to_string())?;
-    let first = query.timeline.first;
     let held = Mutex::new(None::<Changes>);
     let styles = OnceLock::new();
     let index = OnceLock::new();
     let owned = Arc::clone(source);
     let options = LoadContext { content: load.content.clone() };
-    at_hour::dated_product::<AirSuperiorityTimeline>(source, load, asked, move |request, hour| {
-        request["firstHour"] = first.max(hour.div_euclid(DAY).saturating_mul(DAY)).into();
-        request["lastHour"] = hour.into();
-    }, move |params, reply| {
+    at_hour::dated_day_panel::<AirSuperiorityTimeline>(source, load, asked, "firstHour", "lastHour", move |params, reply| {
         let hour = params.last_hour;
         let Ok(query) = dashboard_base::queries::query(&owned, branch) else { return hour };
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

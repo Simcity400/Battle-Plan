@@ -223,7 +223,7 @@ fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sam
         edits.tables.insert(table, keys);
         return Ok(());
     }
-    if view.held() == &made { return Ok(()); }
+    if matches!(made, TableView::Truncated { .. }) && view.held() == &made { return Ok(()); }
     *view = match made {
         TableView::Complete(rows) => SharedView::from(TableView::Complete(rows)).with_sampled_at(sampled),
         made => made.into(),
@@ -507,7 +507,8 @@ where P::Context: Sync, P::Params: Sync {
             #[cfg(any(test, feature = "test-support"))]
             crate::test_fixtures::product_called();
             let mut reply = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)))?;
-            let reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_reply_through(&state.frame, &params, &at, &reply));
+            let partial = selected.iter().any(|table| matches!(state.frame.tables[table.index()].held(), TableView::Truncated { .. }));
+            let reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_reply_through(&state.frame, &params, &at, &reply, partial));
             finish(reply.warnings_mut(), &own, &warnings);
             let live = cells.finish();
             let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);

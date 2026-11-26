@@ -758,10 +758,21 @@ impl Links {
     }
 }
 
+fn theatre_ranges(theatres: impl IntoIterator<Item = u64>) -> Vec<(u128, u128)> {
+    theatres.into_iter().map(|id| {
+        let first = u128::from(id) << 32;
+        (first, first | u128::from(u32::MAX))
+    }).collect()
+}
+
+fn bucket_end(hour: i32) -> i32 {
+    hour.saturating_add(BUCKET - 1 - hour.rem_euclid(BUCKET))
+}
+
 fn theatres_in(query: &Query<'_>, run: u32, first: i32, last: i32, theatres: &[u64]) -> Option<(Vec<(i32, i32)>, Vec<(u32, i32, i32)>)> {
     let table = TableId::AirTheatreRegions;
     let recording = query.replay.recording();
-    let ranges: Vec<(u128, u128)> = theatres.iter().map(|&theatre| (u128::from(theatre) << 32, u128::from(theatre) << 32 | u128::from(u32::MAX))).collect();
+    let ranges = theatre_ranges(theatres.iter().copied());
     let column = dashboard_declare::field(table, "wings").ok()?;
     let read = dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last)).ok()?;
     let history = dashboard_query::cost::storage(|| lanes::history(recording, run, table, &[column], lanes::Keys::Ranges(&ranges), first, last)).ok()?;
@@ -834,7 +845,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
     let mut unread_notes: Vec<(usize, i32, String)> = Vec::new();
     for (at, read) in days.iter().enumerate() {
         let Some(read) = read else { continue };
-        if read.hour != stretches[read.part].last || (read.hour + 1).rem_euclid(BUCKET) == 0 {
+        if read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour) {
             continue;
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];

@@ -458,7 +458,7 @@ impl AtHour for AirAcesAt {
         }
     }
 
-    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply) -> i32 {
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
         if reply.missing.is_some() { return frame.hour; }
         if !reply.aces.iter().any(|ace| ace.wing.is_some()) { return i32::MAX; }
         let Ok(wings) = frame.complete::<tables::AirWings>() else { return frame.hour };

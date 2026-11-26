@@ -151,8 +151,8 @@ pub trait AtHour: 'static {
         i32::MAX
     }
 
-    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply) -> i32 {
-        Self::valid_through(frame, params, at)
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply, partial: bool) -> i32 {
+        if partial { frame.hour } else { Self::valid_through(frame, params, at) }
     }
 
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
@@ -387,14 +387,7 @@ pub fn exact_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value
 where P::Params: Sync, P::Context: Sync {
     let mut request = asked.clone();
     if let Some(fields) = request.as_object_mut() { fields.remove("panel"); }
-    let params = dashboard_query::named::named_fields::<P::Params>(&request).map_err(|error| {
-        let message = error.to_string();
-        let field = message.strip_prefix("missing field `").and_then(|field| field.strip_suffix('`'));
-        match field {
-            Some(field) => format!("Invalid {} panel: missing field {field}", P::KEY),
-            None => format!("Invalid {} panel: {message}", P::KEY),
-        }
-    })?;
+    let params = dashboard_query::named::named_fields::<P::Params>(&request).map_err(|reason| format!("Invalid {} panel: {reason}", P::KEY))?;
     P::validate(&params)?;
     let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
     let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
@@ -425,7 +418,7 @@ pub fn interval_panel(
 fn dated_interval(
     executable: Option<engine_executable::executable_tables::Tables>,
     read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
-    date: fn(&mut Arc<PanelData>, i32),
+    date: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
     use dashboard_follow::panel::{ExactReader, ProductRead, ProductReader};
     let read = Arc::new(move |hour, cancelled: &AtomicBool| {
@@ -469,14 +462,23 @@ pub fn day_panel<P: super::Product>(
     source: &Arc<Source>, load: &LoadContext, asked: &Value,
     start: &'static str, end: &'static str, through: fn(&P::Reply) -> i32,
 ) -> Result<Box<dyn Panel>, String> {
+    dated_day_panel::<P>(source, load, asked, start, end, move |_, reply| through(reply), |_, _| {})
+}
+
+pub fn dated_day_panel<P: super::Product>(
+    source: &Arc<Source>, load: &LoadContext, asked: &Value,
+    start: &'static str, end: &'static str,
+    through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
+    date_held: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
+) -> Result<Box<dyn Panel>, String> {
     let first = dashboard_query::branch(asked).and_then(|branch| crate::queries::query(source, branch))
         .map_err(|e| e.to_string())?.timeline.first;
     let day_start = |hour: i32| hour.div_euclid(24).saturating_mul(24);
     let Some(tile_first) = asked[start].as_i64() else {
-        return product_interval_panel::<P>(source, load, asked, move |request, hour| {
+        return dated_product::<P>(source, load, asked, move |request, hour| {
             request[start] = first.max(day_start(hour)).into();
             request[end] = hour.into();
-        }, through);
+        }, through, date_held);
     };
     let tile_first = i32::try_from(tile_first).map_err(|_| "Invalid history start")?;
     let tile_last = asked[end].as_i64().and_then(|n| i32::try_from(n).ok()).ok_or("Invalid history end")?;
@@ -512,7 +514,7 @@ pub fn dated_product<P: super::Product>(
     source: &Arc<Source>, load: &LoadContext, asked: &Value,
     date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
     valid_through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
-    date_held: fn(&mut Arc<PanelData>, i32),
+    date_held: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Result<Box<dyn Panel>, String> {
     let mut params = asked.clone();
     params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");

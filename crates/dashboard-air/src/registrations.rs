@@ -11,7 +11,7 @@ dashboard_base::register_products! {
     REGIONAL_WEATHER_REGIONALWEATHER => crate::products::regional_weather::RegionalWeather; interval(|request, hour| request["lastHour"] = hour.into(), |r| r.valid_through),
     AIR_SUPERIORITY_AIRSUPERIORITYCHOICES => crate::products::air_superiority::AirSuperiorityChoices,
     AIR_STATISTICS_AIRSTATISTICSREGIONS => crate::products::air_statistics::AirStatisticsRegions,
-    AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE => crate::products::air_superiority::timeline::AirSuperiorityTimeline; Exact(crate::products::air_superiority::timeline::panel),
+    AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE => crate::products::air_superiority::timeline::AirSuperiorityTimeline; Interval(crate::products::air_superiority::timeline::panel),
 
     @hourly
     AIR_STATISTICS_AIRSTATISTICSAT => exact<crate::products::air_statistics::AirStatisticsAt>,

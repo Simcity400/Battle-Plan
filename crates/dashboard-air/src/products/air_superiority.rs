@@ -1032,11 +1032,11 @@ impl AtHour for AirSuperiorityAt {
         })
     }
 
-    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply) -> i32 {
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
         if matches!(frame.tables[TableId::RaidAirScores.index()].held(), replay_frame::frame::TableView::NotRecorded { .. }) {
             return at.hour;
         }
-        let through = valid_through(at.context, at.hour);
+        let through = valid_through(at.context, at.hour).min(at_hour::before(at.holders.next_change(at.hour)));
         at.context.resolver.as_ref().map_or(through, |resolver| through.min(resolver.through(at.hour, &reply.sides, reply.viewpoint_country_style.as_ref())))
     }
 

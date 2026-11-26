@@ -88,19 +88,15 @@ fn follows<P: AtHour>(registration: Registered, mut request: Value, live: bool) 
     let mut original = frame_panel::<P>(&source, &load, &request).unwrap();
     let reads = played(source.replay_ref(), panel.exact().unwrap(), 100, 149);
     let mut previous = None;
-    let mut unnecessary = Vec::new();
     for read in &reads {
         let value = materialized_frame(&mut *original, source.replay_ref(), 1, read.hour);
-        if previous.as_ref() == Some(&value) && read.product_calls > 0 {
-            unnecessary.push(read.hour);
+        let streamed = dashboard_base::test_fixtures::streamed;
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&value, read.fresh), "{} played at {}", P::KEY, read.hour);
+        if let Some(last) = &previous {
+            assert_eq!(read.product_calls, u64::from(value.is_ok() && last != &value), "{} at {}", P::KEY, read.hour);
         }
-        if (101..110).contains(&read.hour) {
-            assert_eq!(read.product_calls, u64::from(read.hour == 107), "{} at {}", P::KEY, read.hour);
-        }
-        assert!(read.product_calls <= 1);
         previous = Some(value);
     }
-    assert!(unnecessary.is_empty(), "{} rebuilt an unchanged reply at {unnecessary:?}", P::KEY);
 }
 
 #[test]
@@ -128,15 +124,24 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
     let registration = AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE;
     let source = recording(&[1]);
     let load = LoadContext { content: None };
-    let request = json!({"branchId":"1","panel":registration.key,"mode":"sides","pinnedRegions":[17],"top":7});
-    let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
-    let exact = panel.exact().unwrap();
-    let reads = played(source.replay_ref(), exact, 100, 149);
-    for read in reads.iter().filter(|r| r.hour > 100) {
-        assert_eq!(*read.value, (exact.cold)(read.hour, &false.into()), "air timeline at {}", read.hour);
-        if read.hour < 110 {
-            assert_eq!(read.product_calls, u64::from(read.hour == 107), "air timeline at {}", read.hour);
+    for selection in [
+        json!({"mode":"sides","pinnedRegions":[17],"top":7}),
+        json!({"mode":"viewpoint","viewpoint":"GER","viewpointCountry":true,"pinnedRegions":[17]}),
+        json!({"theatres":["1"],"pinnedRegions":[17],"top":7}),
+        json!({"every":true}),
+    ] {
+        let mut request = selection;
+        request["branchId"] = "1".into();
+        request["panel"] = registration.key.into();
+        let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
+        let exact = panel.exact().unwrap();
+        let reads = played(source.replay_ref(), exact, 100, 149);
+        for read in reads.iter().filter(|r| r.hour > 100) {
+            assert_eq!(*read.value, (exact.cold)(read.hour, &false.into()), "{request} at {}", read.hour);
+            if read.hour < 110 && request["theatres"].is_null() {
+                assert_eq!(read.product_calls, u64::from(read.hour == 107), "{request} at {}", read.hour);
+            }
         }
+        assert_eq!(*(exact.advance)(101, true, &false.into(), None).value, (exact.cold)(101, &false.into()));
     }
-    assert_eq!(*(exact.advance)(101, true, &false.into(), None).value, (exact.cold)(101, &false.into()));
 }

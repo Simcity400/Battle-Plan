@@ -205,7 +205,17 @@ pub fn materialized_frame(panel: &mut dyn dashboard_follow::panel::Panel, replay
     Ok(data)
 }
 
+pub fn streamed(data: &dashboard_follow::panel::PanelData, fresh: bool) -> dashboard_follow::panel::PanelData {
+    data.clone().map(|mut reply| {
+        for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
+            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); group.remove("rawValues"); }
+        }
+        reply
+    })
+}
+
 pub struct Played {
+    pub fresh: bool,
     pub hour: i32,
     pub rows: u64,
     pub visited: u64,
@@ -233,7 +243,7 @@ pub fn played(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel
     let hook: playhead::Hook = Box::new(move |step, lanes| {
         PRODUCT_CALLS.set(0);
         let (read, visited) = crate::products::at_hour::counted(|| advance(step.last(), step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None })));
-        let _ = send.send(Played { hour: step.last(), rows: read.rows, visited, product_calls: PRODUCT_CALLS.get(), pending: read.pending, value: read.value });
+        let _ = send.send(Played { hour: step.last(), fresh: read.fresh, rows: read.rows, visited, product_calls: PRODUCT_CALLS.get(), pending: read.pending, value: read.value });
     });
     let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: 1.0, rate: 1.0, ..playhead::Settings::default() };
     let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
