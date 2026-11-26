@@ -99,15 +99,22 @@ describe('apm-graph projection', () => {
     const tiled = makeTiled(id, 8);
     const paused = 'No unpaused time was observed in this period.';
     const bounded = boundTiledSeries({ ...tiled, missing: [{ firstHour: H1936 + 2, lastHour: H1936 + 2, reason: paused }] }, displayedHour(H1943));
+    const head: ApmReply = { available: true, players: [], warnings: [], series: [{
+      id, tag: 'BBB', name: null, nameMissing: 'Name not recorded', hour: H1943, points: [],
+      summary: { apm: 8, confirmedApm: 8, orders: '8', confirmedOrders: '8', pausedOrders: '0', unpausedMinutes: 1,
+        unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+    }] };
     const view = createBoundedReadView({
       hour: H1943, series: new Map([['apm', new Map([[id, bounded], [other, bounded]])]]), identity: createSnapshotIdentityProvider(index),
+      panels: new Map([['head', head]]), hovers: new Map([['hover', { hour: H1943, data: head }]]),
       art: { resolve: handle => handle.kind === 'flag' ? readyArt(handle.choice) : { status: 'pending' } },
     });
     const model = apmGraphProjection.project(view, {
       group: 'player', extent: [H1936, H1943], surface: '#111111', gaps: [], yMin: null, yMax: null, available: true,
       players: [{ id, name: 'Later', nameMissing: null, tags: ['AAA', 'BBB'], runs: [
         { firstHour: H1936, lastHour: H1936 + 5, tag: 'AAA', name: 'Earlier', nameMissing: null },
-        { firstHour: H1936 + 6, lastHour: H1943, tag: 'BBB', name: 'Later', nameMissing: null },
+        { firstHour: H1936 + 6, lastHour: H1943 - 1, tag: 'BBB', name: 'Later', nameMissing: null },
+        { firstHour: H1943, lastHour: H1943, tag: 'BBB', name: null, nameMissing: 'Name not recorded' },
       ] }, { id: other, name: 'Later', nameMissing: null, tags: ['AAA'], runs: [
         { firstHour: H1936 + 6, lastHour: H1943, tag: 'AAA', name: 'Later', nameMissing: null },
       ] }],
@@ -122,6 +129,10 @@ describe('apm-graph projection', () => {
     assert.match(early?.countryFlag?.flag ?? '', /north/);
     assert.deepEqual(items(H1936 + 6).map(row => row.label).sort(), ['Later (1) · South', 'Later (2) · North']);
     assert.notEqual(early?.swatch, model.series[0]?.color);
+    const endLabel = model.series.find(s => s.id === id)?.endLabel;
+    assert.equal(item(H1943)?.label, 'Name not recorded · South');
+    assert.equal(endLabel?.name, item(H1943)?.label);
+    assert.equal(endLabel?.fullName, item(H1943)?.label);
   });
   it('shows named unavailable state on single-player recordings with no player orders', () => {
     const readView = createBoundedReadView({ hour: H1943 });

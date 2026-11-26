@@ -4,7 +4,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
-import type { BoundedReadView, BoundedSeries, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { BoundedReadView, BoundedSeries, FamilyPlanContext, FieldStatus, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import {
   type TimeChartProjection,
@@ -120,9 +120,9 @@ function datedName(index: NameChanges, id: string, name: string | null, hour: nu
   return { name: dates[i]?.labels.get(id) ?? name, until: (dates[i + 1]?.firstHour ?? Infinity) - 1 };
 }
 
-function playerLabel(player: string | null | undefined, country?: string): string {
+function playerLabel(player: string | null | undefined, country?: FieldStatus<string>): string {
   const name = player ?? 'Name not recorded';
-  return country ? `${name} \u00b7 ${country}` : name;
+  return country?.status === 'ready' && country.value ? `${name} \u00b7 ${country.value}` : name;
 }
 
 function recordedRoster(players: readonly ApmPlayer[]): PlayerRoster {
@@ -170,7 +170,7 @@ function apmSeriesLooks(
       const country = readView.who('country', run.tag, hour);
       const player = datedName(names, key, run.name, hour);
       const end = Math.min(until, run.lastHour, player.until, country.name.status === 'pending' || country.name.status === 'failed' ? Infinity : country.validInterval[1]);
-      const label = playerLabel(player.name, country.name.status === 'ready' ? country.name.value : undefined);
+      const label = playerLabel(player.name, country.name);
       return { ...country, name: { status: 'ready', value: label }, validInterval: [hour, end], nextChangeAt: end + 1 };
     } },
   });
@@ -245,7 +245,7 @@ function buildHoverDetail(
     const flagChoice = identity?.flagChoice?.status === 'ready' ? identity.flagChoice.value : null;
     const flagRes = flagChoice ? readView.art(flagArtHandle(flagChoice, 'small')) : null;
     const label = names
-      ? playerLabel(names.get(row.id) ?? row.name, identity?.name.status === 'ready' ? identity.name.value : undefined)
+      ? playerLabel(names.get(row.id) ?? row.name, identity?.name)
       : (row.tag ? identityName(readView, 'country', row.tag, hover.hour) : row.id);
     const series = seriesById.get(row.id);
     const swatch = series && seriesLookAt(series, hover.hour).color;
@@ -387,7 +387,11 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       const identities = held.identities;
       const look = seriesLookAt(held, entry.obsHour);
       const { color, flag } = look;
-      const name = roster ? datedName(roster.get(entry.id)!.names, entry.id, entry.name, entry.obsHour).name ?? 'Name not recorded' : look.name;
+      let name = look.name;
+      if (roster) {
+        name = datedName(roster.get(entry.id)!.names, entry.id, entry.name, entry.obsHour).name
+          ?? playerLabel(null, entry.tag ? readView.who('country', entry.tag, entry.obsHour).name : undefined);
+      }
       const headText = entry.summary ? formatApmRate(entry.summary, 0) : null;
       if (headText !== null) headTexts.set(entry.id, headText);
       const headRat = entry.summary ? apmRateRational(entry.summary) : null;
