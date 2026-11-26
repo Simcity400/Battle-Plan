@@ -61,7 +61,6 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const ended = model(true).rows[1]!.cells.status!;
   assert.deepEqual([ended.value, ended.statusKind], [{ kind: 'known', value: 'Ended' }, 'finished']);
   assert.deepEqual(ended.tooltipRows!.map(line => [line.label, line.value.kind]), [['Result', 'known'], ['Winner', 'notRecorded']]);
-  assert.match(JSON.stringify(ended.tooltipRows![1]!.value), /only for battles a player takes part in/);
   const endedRow = model(true).rows[1]!;
   const found = { kind: 'data', key: endedRow.key, name: endedRow.name, row: endedRow, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
   const lines = deriveRowTooltip(found, model(true).columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
@@ -69,6 +68,8 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
     ['Attackers', 'notRecorded'], ['Ships', 'known'], ['Ships sunk', 'partial'], ['IC lost', 'partial'],
     ['Defenders', 'notRecorded'], ['Ships', 'zero'], ['Ships sunk', 'notRecorded'], ['IC lost', 'notRecorded']],
     'the tooltip groups the figures under each side instead of repeating the pair columns');
+  assert.equal(deriveRowTooltip(found, model(true).columns).note, 'The game keeps a winner only for battles a player takes part in');
+  assert.equal(deriveRowTooltip({ ...found, row: model(true).rows[0]! }, model(true).columns).note, undefined);
   assert.deepEqual(row.cells.shipsSunk!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
   assert.equal(row.cells.shipsSunk!.value.kind, 'notRecorded');
   assert.deepEqual(row.cells.icLost!.pair!.map(value => value.kind), ['partial', 'notRecorded']);

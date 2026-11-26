@@ -381,24 +381,36 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     }
                 }
                 let battle = linked.unwrap_or(result);
-                let mut sides = [Vec::new(), Vec::new()];
-                for (key, reads) in lists {
-                    let side = ((key >> 32) & 255) as usize;
-                    if let Some(list) = sides.get_mut(side)
-                        && at(reads, hour).is_some()
-                    {
-                        country(list, links.slot_at(*key as u32, named));
+                let named_at = |when: i32| {
+                    let mut sides = [Vec::new(), Vec::new()];
+                    for (key, reads) in lists {
+                        let side = ((key >> 32) & 255) as usize;
+                        if let Some(list) = sides.get_mut(side)
+                            && at(reads, hour).is_some()
+                        {
+                            country(list, links.slot_at(*key as u32, when));
+                        }
                     }
-                }
+                    sides
+                };
+                let mut sides = named_at(date);
                 let line = lines.entry(battle).or_default();
                 line.reads.truncate(line.reads.partition_point(|(at, _)| *at <= hour));
+                let mut late = None;
                 let countries_hour = std::array::from_fn(|i| {
                     if !sides[i].is_empty() {
-                        return Some(named);
+                        return Some(date);
                     }
-                    let (at, prior) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty())?;
-                    sides[i].clone_from(&prior.countries[i]);
-                    prior.countries_hour[i].or(Some(*at))
+                    if let Some((at, prior)) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty()) {
+                        sides[i].clone_from(&prior.countries[i]);
+                        return prior.countries_hour[i].or(Some(*at));
+                    }
+                    if named == date {
+                        return None;
+                    }
+                    let found: &[Vec<u32>; 2] = late.get_or_insert_with(|| named_at(named));
+                    sides[i].clone_from(&found[i]);
+                    (!sides[i].is_empty()).then_some(named)
                 });
                 let sunk = [count(obs, 5), count(obs, 7)];
                 let observed = number(obs, 3).and_then(|h| i32::try_from(h).ok()).and_then(|end| line.reads.iter().rev().find(|(at, _)| *at <= end));
@@ -786,5 +798,15 @@ mod tests {
         result_lines(&mut lines, span, &links, &results, &History::default(), &countries);
         let (hour, read) = lines[&Battle::Result(99, 5)].reads.first().unwrap();
         assert_eq!((*hour, read.result, read.countries.clone(), read.countries_hour), (10, NavalBattleStatus::DefenderWon, [vec![3], vec![4]], [Some(10); 2]));
+        let after = History { keys: vec![(99, vec![step(30, Some(&[1, 5, 2]))])], ..History::default() };
+        let lists = History {
+            keys: vec![((99 << 40) | 7, vec![step(30, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(30, Some(&[0]))])],
+            ..History::default()
+        };
+        let relinked = RunLinks { slots: HashMap::from([(7, vec![(30, 40, Some(5))]), (8, vec![(30, 40, Some(6))])]) };
+        let loaded = Stretch { run: 2, first: 30, last: 40, join: dashboard_query::timeline::Join::Start };
+        result_lines(&mut lines, loaded, &relinked, &after, &History::default(), &lists);
+        let (hour, read) = lines[&Battle::Result(99, 5)].reads.last().unwrap();
+        assert_eq!((*hour, read.countries.clone(), read.countries_hour), (30, [vec![3], vec![4]], [Some(10); 2]));
     }
 }

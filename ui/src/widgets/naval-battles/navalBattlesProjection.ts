@@ -21,7 +21,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
   const status = live ? logStatusCell('Ongoing', 'running') : row.result === 'unknown'
-    ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('Winner not recorded: the game keeps a winner only for battles a player takes part in') }] }
+    ? { ...logStatusCell('Ended', 'finished'), tooltipRows: [{ label: 'Result', value: knownValue('Ended') }, { label: 'Winner', value: notRecorded('Winner not recorded') }] }
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
   const lowerBound = row.detailId.startsWith('combat:') ? 'Observed losses so far' : undefined;
   const shipsSunk = logPairCell(row.shipsSunk, 'Ships sunk', colors, lowerBound);
@@ -29,6 +29,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const ships = logPairCell(row.ships, 'Ships');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: row.hour,
+    ...(row.result === 'unknown' ? { tooltipNote: 'The game keeps a winner only for battles a player takes part in' } : {}),
     tooltipExtra: () => sides.flatMap((side, i) => [
       { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
         value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },
