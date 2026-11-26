@@ -1477,12 +1477,7 @@ impl Viewer {
         self.held_clicks.clear();
         self.forget_overlay_builds();
         self.combat.content_replaced();
-        if let Some(side) = self.playhead_map.take() {
-            self.drop_later(side);
-        }
-        self.playhead_opening = None;
-        self.playhead_refused = None;
-        self.playhead_opened = false;
+        self.close_playhead();
         self.presented = MapPresented::default();
         self.shown_whole = false;
         drop(self.replace_document(Some(document)));
@@ -1671,14 +1666,19 @@ impl Viewer {
     }
 
     pub(crate) fn close_playhead(&mut self) {
+        for _ in 0..2 {
+            self.hover_rows.end_frame(false);
+            if self.playhead_map.is_some() {
+                self.head_rows.end_frame(None);
+                self.combat_rows.end_frame();
+            }
+        }
         if let Some(side) = self.playhead_map.take() {
             self.drop_later(side);
         }
         self.frame_head.forget();
         self.playhead_opening = None;
         self.playhead_refused = None;
-        self.hover_rows.end_frame(false);
-        self.hover_rows.end_frame(false);
         self.playhead_opened = false;
     }
 
