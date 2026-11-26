@@ -1,4 +1,5 @@
 use super::*;
+use crate::script_test_game as game;
 use replay_data::{
     rows::FactionMemberRow, rows::FactionRow, rows::Recorded, rows::ReservedCountryNamingRow,
 };
@@ -43,8 +44,7 @@ fn faction_frame() -> DecodedFrame {
 
 #[test]
 fn actual_zero_text_leader_and_null_faction_remain_distinct() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = catalogue(SCRIPTED, " NO_FACTION:0 \"No faction\"\n");
     let content = catalogue.scripted_content().unwrap();
     let mut frame = faction_frame();
@@ -105,8 +105,7 @@ fn actual_zero_text_leader_and_null_faction_remain_distinct() {
 
 #[test]
 fn fresh_entry_binding_of_actual_zero_obeys_each_trigger_mask_and_keeps_prev() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         ("localisation/mod_l_english.yml", LOCALISATION),
         (

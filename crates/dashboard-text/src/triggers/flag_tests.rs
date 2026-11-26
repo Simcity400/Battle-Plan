@@ -1,4 +1,5 @@
 use super::*;
+use crate::script_test_game as game;
 
 const NOW: i32 = game_model::calendar::HOUR_EPOCH + 1003 * 24 + 1;
 const SET: i32 = game_model::calendar::HOUR_EPOCH + 1000 * 24 + 5;
@@ -43,8 +44,7 @@ fn flagged() -> DecodedFrame {
 
 #[test]
 fn country_flags_compare_value_date_and_days() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let f = flagged();
     for (slot, trigger, expected) in [
         (1, "has_country_flag = x", Some(true)),
@@ -95,8 +95,7 @@ fn country_flags_compare_value_date_and_days() {
 
 #[test]
 fn state_global_and_character_flags_share_the_test() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let f = flagged();
     with_world(&f, "", Err("none"), |world| {
         let cases = |trigger: &str, positive: Scope, zero: Option<Scope>| {

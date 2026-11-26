@@ -277,12 +277,13 @@ fn at_rest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_core::test_fixtures::game;
     use content_reader_gui::gui::native::sprites::AnimationData;
 
     #[test]
     fn s4_native_frames_keep_offsets_past_the_strip_in_every_direction() {
         use super::super::texture_tests::png_bytes;
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        game::enter();
         let (_, folder) = super::super::tests::folder_catalogue(&[]);
         let image = Rgba8Image {
             width: 8,
@@ -339,7 +340,7 @@ mod tests {
     #[ignore = "requires DXC and a GPU; synthetic content only"]
     fn s4_native_frames_sample_the_resolved_effect_and_sampler_past_the_strip() {
         use super::super::texture_tests::{ARTWORK_SHADER, png_bytes};
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        game::enter();
         let (_, folder) =
             super::super::tests::folder_catalogue(&[("interface/art.gfx", "spriteTypes={}")]);
         let image = Rgba8Image {

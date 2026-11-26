@@ -1,4 +1,5 @@
 use super::*;
+use crate::script_test_game as game;
 
 fn set_invasion_table<T: replay_data::rows::TableSchema>(f: &mut DecodedFrame, rows: Vec<T::Row>) {
     *f.tables[T::ID.index()] = TableView::Complete(TableRows::from_rows::<T>(rows));
@@ -89,7 +90,7 @@ fn invasion_frame() -> DecodedFrame {
 
 #[test]
 fn an_unlinked_invasion_owner_refuses_masked_colours_on_cold_and_warm_caches() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     for (known_state, unresolved) in [
         (None, true),
         (Some(65), true),
@@ -131,7 +132,7 @@ fn an_unlinked_invasion_owner_refuses_masked_colours_on_cold_and_warm_caches() {
 
 #[test]
 fn alias_bucket_failures_are_reached_only_when_the_candidate_is_consumed() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut f = positive_variables_frame();
     if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
         &mut *f.tables[TableId::ReservedCountryNaming.index()]
@@ -173,7 +174,7 @@ fn alias_bucket_failures_are_reached_only_when_the_candidate_is_consumed() {
 
 #[test]
 fn capital_and_overlord_indexes_preserve_failed_country_joins() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut f = positive_variables_frame();
     *f.tables[TableId::Politics.index()] =
         TableView::Complete(TableRows::Politics(vec![replay_data::rows::PoliticsRow {
@@ -202,7 +203,7 @@ fn capital_and_overlord_indexes_preserve_failed_country_joins() {
 
 #[test]
 fn unavailable_faction_members_has_one_global_identity_across_scope_readers() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut f = positive_variables_frame();
     *f.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
         reason: "synthetic missing membership".into(),
@@ -234,7 +235,7 @@ fn unavailable_faction_members_has_one_global_identity_across_scope_readers() {
 
 #[test]
 fn consuming_a_lazy_seed_through_the_output_reader_replays_its_failure() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let f = positive_variables_frame();
     with_world(&f, "", Err("none"), |world| {
         let eval = Evaluator::new(world, None);
@@ -253,7 +254,7 @@ fn consuming_a_lazy_seed_through_the_output_reader_replays_its_failure() {
 #[test]
 fn filtered_raw_joins_refuse_each_source_once_and_resolved_colours_stay_exact() {
     use replay_data::rows::*;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     for broken in [true, false] {
         let raw = if broken { 999 } else { 100 };
         let mut f = positive_variables_frame();
@@ -432,7 +433,7 @@ fn filtered_raw_joins_refuse_each_source_once_and_resolved_colours_stay_exact() 
 #[test]
 fn filtered_resolution_certainty_is_part_of_a_querys_reuse_digest() {
     use replay_data::rows::*;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut before = positive_variables_frame();
     set_invasion_table::<tables::AdvisorTokens>(
         &mut before,
@@ -483,7 +484,7 @@ fn filtered_resolution_certainty_is_part_of_a_querys_reuse_digest() {
 #[test]
 fn missing_positive_character_tokens_refuse_on_cold_and_warm_indexes() {
     use replay_data::rows::*;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let roles = LeaderRoles::new(vec![content_reader_key_names::characters::LeaderTemplate {
         path: "common/characters/synthetic.txt".into(),
         tag: "synthetic_actor".into(),
@@ -519,7 +520,7 @@ fn missing_positive_character_tokens_refuse_on_cold_and_warm_indexes() {
 
 #[test]
 fn missing_state_references_replay_acquisition_in_encoded_and_numeric_scopes() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     for raw in [(0xffff_ffff_c000_0000_u64 | 64) as i64, 64 * ONE] {
         let mut f = with_variables(
             frame(&original_countries(), &[]),
@@ -548,7 +549,7 @@ fn missing_state_references_replay_acquisition_in_encoded_and_numeric_scopes() {
 #[test]
 fn missing_province_references_refuse_control_and_invasion_nonmatches() {
     use replay_data::rows::*;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut f = invasion_frame();
     add_known_invasion(&mut f, 64);
     set_invasion_table::<tables::LandTheatres>(
@@ -597,7 +598,7 @@ fn missing_province_references_refuse_control_and_invasion_nonmatches() {
 
 #[test]
 fn positive_id_sources_record_but_authenticated_nulls_and_membership_absence_do_not() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let f = positive_variables_frame();
     with_world(&f, "", Err("none"), |world| {
         let (_, missing) = super::super::refusal::capture(|| {
@@ -638,7 +639,7 @@ fn positive_id_sources_record_but_authenticated_nulls_and_membership_absence_do_
 
 #[test]
 fn state_builtin_country_miss_has_only_its_country_links_identity() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut f = positive_variables_frame();
     set_invasion_table::<tables::States>(
         &mut f,
@@ -665,7 +666,7 @@ fn state_builtin_country_miss_has_only_its_country_links_identity() {
 #[test]
 fn country_token_absence_requires_complete_countries_on_cold_and_warm_reads() {
     use content_reader_script::scope::Names;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     for status in ["complete", "truncated", "unavailable"] {
         let mut f = with_variables(
             frame(&[(100, 1, "GER", 1, "GER", "")], &[]),
@@ -723,7 +724,7 @@ fn country_token_absence_requires_complete_countries_on_cold_and_warm_reads() {
 #[test]
 fn character_token_membership_absence_requires_both_complete_tables() {
     use content_reader_script::scope::Names;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     for unavailable in [TableId::Characters, TableId::LexicalTokens] {
         let mut f = positive_variables_frame();
         *f.tables[unavailable.index()] = TableView::Truncated {
@@ -749,7 +750,7 @@ fn character_token_membership_absence_requires_both_complete_tables() {
 
 #[test]
 fn missing_fresh_resistance_row_preserves_its_state_input_identity() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut f = positive_variables_frame();
     f.tables[TableId::StateResistance.index()] = replay_frame::frame::SharedView::from(
         TableView::Complete(TableRows::StateResistance(vec![])),
@@ -770,7 +771,7 @@ fn missing_fresh_resistance_row_preserves_its_state_input_identity() {
 
 #[test]
 fn nested_scope_parse_replays_country_classification_failure_on_cold_and_warm_reads() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let roles = LeaderRoles::new(Vec::new());
     for incomplete in [false, true] {
         let mut f = positive_variables_frame();
@@ -807,7 +808,7 @@ fn nested_scope_parse_replays_country_classification_failure_on_cold_and_warm_re
 
 #[test]
 fn keyword_scope_parse_replays_character_classification_failure_on_cold_and_warm_reads() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let f = positive_variables_frame();
     let roles = LeaderRoles::new(Vec::new());
     for templates in [Ok(&roles), Err("synthetic missing character templates")] {

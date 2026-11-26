@@ -1,4 +1,5 @@
 use super::*;
+use crate::script_test_game as game;
 
 pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::catalogue::tests::Folder)
 {
@@ -106,8 +107,7 @@ pub(super) fn geography_frame() -> DecodedFrame {
 
 #[test]
 fn scripted_political_and_always_titles_leave_geography_unread() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (cat, folder) = geography_catalogue();
     let path = folder.0.join("map/logs/provinces.bmp");
     let bitmap = std::fs::read(&path).unwrap();
@@ -139,8 +139,7 @@ fn scripted_political_and_always_titles_leave_geography_unread() {
 
 #[test]
 fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (cat, folder) = geography_catalogue();
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
@@ -222,8 +221,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
 
 #[test]
 fn reached_geography_caches_missing_and_malformed_map_refusals_without_refusing_titles() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for malformed in [false, true] {
         let (cat, folder) = geography_catalogue();
         let path = folder.0.join("map/logs/provinces.bmp");
@@ -360,8 +358,7 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
 
 #[test]
 fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use content_reader_states::{states::Diagnostic, states::MisreadCause};
     let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
     let warnings = vec![
@@ -424,8 +421,7 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
 
 #[test]
 fn scripted_text_state_display_shares_precedence_language_and_cached_failures() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut cat, _folder) =
         crate::scripted_text::tests::catalogue("", " MOD_STATE:0 \"Mod state\"\n");
     let content = cat.scripted_content().unwrap();
