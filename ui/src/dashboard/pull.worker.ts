@@ -19,7 +19,7 @@ self.onmessage = ({ data }: MessageEvent<{ session: string; ports: MessagePort[]
     answer: async buffers => {
       for (const buffer of buffers) {
         let split, resets: number | undefined;
-        try { resets = stamp(new Uint8Array(buffer)); split = splitForLanes(new Uint8Array(buffer), ports.length); }
+        try { resets = stamp(new Uint8Array(buffer)); split = splitForLanes(buffer, ports.length); }
         catch (error) { all({ kind: 'failure', reason: `A pushed message could not be read: ${error instanceof Error ? error.message : String(error)}` }); credit(charge(new Uint8Array(buffer))); continue; }
         if (split.kind === 'failure') { all({ kind: 'failure', reason: split.reason }); continue; }
         credit(split.header);

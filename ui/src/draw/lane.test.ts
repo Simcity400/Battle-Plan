@@ -3598,6 +3598,32 @@ test('payloads are taken in on every message, not at paint: two binds between pa
   sender.release(second);
 });
 
+test('an identity snapshot reconstructs all fields in order, with fresh data on a different branch or lane', () => {
+  const store = new PayloadStore();
+  const sender = new PayloadSender(message => store.apply(structuredClone(message)));
+  const scope = { branchId: 'one' }, kept = { name: 'Blue' };
+  const first = { scope, styles: { a: kept, b: { name: 'Orange' } }, reason: 'pending' };
+  const second = { scope, styles: { c: { name: 'Red' }, a: kept }, ready: true };
+  const initial = sender.acquire({ identitySnapshot: first }), [base] = initial.ids;
+  const update = sender.acquire({ identitySnapshot: second }, base);
+  const snap = (wire: unknown) => (store.resolve(wire) as { identitySnapshot: typeof second }).identitySnapshot;
+  assert.deepEqual(snap(update.wire), second);
+  assert.deepEqual(Object.keys(snap(update.wire).styles), ['c', 'a']);
+  assert.deepEqual(snap(initial.wire), first);
+  sender.release(initial.ids);
+  assert.deepEqual(snap(update.wire), second);
+  const next = { ...second, scope: { branchId: 'two' } };
+  const full = sender.acquire({ identitySnapshot: next }, [...update.ids][0]);
+  assert.notEqual(snap(full.wire).styles.a, snap(update.wire).styles.a);
+  const late = new PayloadStore();
+  const fresh = new PayloadSender(message => late.apply(structuredClone(message)));
+  const joined = fresh.acquire({ identitySnapshot: second }, base);
+  assert.deepEqual((late.resolve(joined.wire) as { identitySnapshot: unknown }).identitySnapshot, second);
+  sender.release(update.ids);
+  sender.release(full.ids);
+  assert.equal(store.size, 0);
+});
+
 test('a keyed container holding a scalar crosses whole, so 0, 1, null and an empty panel decode apart, and object entries still cross one by one', () => {
   const store = new PayloadStore();
   let crossed = 0;

@@ -26,6 +26,13 @@ test('a completed step goes to every lane and is credited at once', () => {
   assert.deepEqual(split.lanes.map(lane => lane && parseDatedPanels(lane).panels.map(p => p.id)), [null, null, null, [3]]);
   assert.equal(split.owned[3]! + split.header, charge(panel));
   assert.equal(charge(panel), 2 * panel.byteLength - 24);
+  const owned = panel.slice().buffer;
+  const direct = splitForLanes(owned, 4);
+  assert.ok(direct.kind === 'panels');
+  assert.equal(direct.lanes[3]?.buffer, owned);
+  const copy = structuredClone(direct.lanes[3]!, { transfer: [owned] });
+  assert.equal(owned.byteLength, 0);
+  assert.deepEqual(copy, panel);
 });
 
 test('a failure is not split', () => {

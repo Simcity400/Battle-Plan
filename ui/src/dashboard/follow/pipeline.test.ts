@@ -142,8 +142,9 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     const generation = pipeline.binding(slow);
     const installs = pipeline.page.stats.installs;
     const start = posted.length;
+    const scope = { branchId: 'one' }, names = Array.from({ length: 100 }, (_, at) => `T${at}`);
     for (let notify = 0; notify < 10; notify++) {
-      const snapshot = { version: notify, names: Array.from({ length: 100 }, (_, at) => `T${at}`) };
+      const snapshot = { scope, version: notify, names };
       pipeline.supply(other, { identity: snapshot });
       pipeline.supply(slow, { identity: snapshot });
       await new Promise(resolve => { setImmediate(resolve); });
@@ -153,7 +154,10 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     assert.equal(pipeline.page.stats.rejected.binding ?? 0, 0, 'no picture in flight is retired for the binding');
     assert.ok(pipeline.page.stats.installs > installs, 'the pictures drawn meanwhile are installed');
     const sent = posted.slice(start);
-    assert.equal(sent.flatMap(item => item.type === 'payloads' ? (item.message as { put?: unknown[] }).put ?? [] : []).length, 10, 'each snapshot crosses to the lane once, though two widgets read it');
+    const payloads = sent.map(item => item.message).filter(message => message.type === 'payloads');
+    assert.equal(payloads.flatMap(message => message.put ?? []).length, 1);
+    assert.deepEqual(payloads.flatMap(message => message.identity ? [message.identity.changes.set] : []),
+      Array.from({ length: 9 }, (_, i) => [['version', i + 1]]));
     assert.equal(sent.filter(item => item.type === 'bind').length, 0);
     assert.ok(Math.max(...sent.filter(item => item.type === 'supply').map(item => item.bytes)) < 80, 'a widget names its snapshot; it does not carry a copy');
     pipeline.unmount(slow);
