@@ -153,7 +153,12 @@ function buildMarkers(
   }
   const markers: ChartMarker[] = [];
   for (const [evHour, list] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
-    const ordered = [...list].sort((a, b) => Math.abs(Number(b.addedRaw)) - Math.abs(Number(a.addedRaw)));
+    const ordered = [...list].sort((a, b) => {
+      const magnitude = (raw: string | undefined) => raw === undefined ? -1n : BigInt(raw.replace(/^-/, ''));
+      const left = magnitude(a.markerRaw);
+      const right = magnitude(b.markerRaw);
+      return left > right ? -1 : left < right ? 1 : 0;
+    });
     const lead = ordered[0]!;
     const leadInfo = contributorLabel(readView, lead.tag, lead.remembered, Math.min(lead.firstRead, hour));
     const leadFlag = leadInfo.flagChoice
@@ -164,19 +169,19 @@ function buildMarkers(
       const flag = info.flagChoice
         ? { art: readView.art(flagArtHandle(info.flagChoice, 'panel')), tag: ev.tag ?? undefined, label: info.name }
         : undefined;
-      const detail = formatRawPct(ev.addedRaw, reply.contributionScale);
+      const detail = ev.markerRaw === undefined ? 'Amount not recorded at this hour.' : formatRawPct(ev.markerRaw, reply.contributionScale);
       return {
         title: ev.reason,
         ...(detail !== null ? { detail } : {}),
         ...(flag ? { flag } : {}),
       };
     });
-    const leadDetail = formatRawPct(lead.addedRaw, reply.contributionScale);
+    const leadDetail = items[0]!.detail;
     markers.push({
       id: `wt:${evHour}`,
       hour: evHour,
       title: lead.reason,
-      ...(leadDetail !== null ? { detail: leadDetail } : {}),
+      ...(leadDetail ? { detail: leadDetail } : {}),
       ...(leadFlag ? { flag: leadFlag } : {}),
       items,
     });

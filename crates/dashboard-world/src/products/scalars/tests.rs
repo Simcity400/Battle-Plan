@@ -58,6 +58,46 @@ fn unread_threat_source_snapshot_keeps_open_events_and_dates_removals() {
 }
 
 #[test]
+fn tension_markers_keep_the_witness_at_their_hour_and_report_an_unread_listing() {
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures};
+    use replay_data::rows::{TableId, TableRows, ThreatSourceRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    use world_tension_stack::{WorldTensionStack, WorldTensionStackParams};
+
+    let frames = (100..=103).map(|hour| {
+        let mut frame = test_fixtures::source(1, hour, None);
+        *frame.tables[TableId::ThreatSources.index()] = if hour == 102 {
+            TableView::Unavailable { reason: "Fixture listing unread".into() }
+        } else {
+            TableView::Complete(TableRows::ThreatSources([0, 1].map(|ordinal| ThreatSourceRow {
+                ordinal, country: 9001, reason: b"fixture".to_vec(), date: 100,
+                final_raw: match (ordinal, hour) { (0, 100) => 5, (0, _) => 9, (1, 100) => 3, _ => 1 },
+                ..Default::default()
+            }).to_vec()))
+        };
+        frame
+    }).collect();
+    let cancelled = AtomicBool::new(false);
+    let replay = test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "tension-marker".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+    for hour in 101..=103 {
+        let reply = WorldTensionStack::load(&source, &WorldTensionStackParams {
+            branch_id: "1".into(), first_hour: 100, last_hour: hour, layers: 1, values: Default::default(), countries: None,
+            top: None, group: None, width: None, include_stack: Some(false), include_events: Some(true),
+        }, &LoadContext { content: None }, &cancelled).unwrap();
+        assert_eq!(reply.events.len(), 2);
+        assert_eq!(reply.listing_missing.as_deref(), (hour == 102).then_some("Fixture listing unread"));
+        for event in reply.events {
+            assert_eq!(event.marker_raw.as_deref(), Some(if event.place == 0 { "5" } else { "3" }));
+            assert_eq!(event.added_raw, if event.place == 0 { "9" } else { "1" });
+        }
+        if hour < 103 { assert_eq!(reply.next_change_hour, Some(hour + 1)); }
+    }
+}
+
+#[test]
 fn a_nuclear_total_adds_the_shown_counts_as_the_top_bar_does_and_ranks_ties_by_tag() {
     let nuke = |country: u32, nuke_type: u32, bombs: i64| NukeRow { country, nuke_type, amount_raw: bombs * 100_000_000, ready: 0 };
     let rows = [nuke(1, 0, 3), nuke(1, 1, 2), nuke(2, 0, 5), nuke(3, 0, 1), nuke(4, 0, 9)];

@@ -100,6 +100,9 @@ pub struct TensionStackEvent {
     pub remembered: bool,
     pub reason: String,
     pub added_raw: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub marker_raw: Option<String>,
     pub first_read: i32,
     pub last_read: Option<i32>,
 }
@@ -126,6 +129,9 @@ pub struct WorldTensionStackReply {
     pub bands: Vec<TensionStackBand>,
     pub other: Option<TensionStackOther>,
     pub events: Vec<TensionStackEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub listing_missing: Option<String>,
     pub missing: Vec<MissingSpan>,
     pub next_change_hour: Option<i32>,
     pub warnings: Vec<String>,
@@ -306,6 +312,7 @@ struct BranchTension {
     slots: BTreeMap<u32, Vec<(i32, i32, Option<i64>)>>,
     aggregates_complete: Vec<(i32, i32)>,
     events: Vec<CachedEvent>,
+    listing_missing: Vec<MissingSpan>,
     tension_missing: Vec<MissingSpan>,
     aggregates_missing: Vec<MissingSpan>,
     warnings: Vec<(i32, String)>,
@@ -439,6 +446,7 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         .iter()
         .map(|gap| MissingSpan { first_hour: gap.first, last_hour: gap.last, reason: gap.reason.clone() })
         .collect();
+    let mut listing_missing = unheld.clone();
     let mut tension_missing = unheld.clone();
     let mut aggregates_missing = unheld;
     let mut warnings = Vec::new();
@@ -531,29 +539,39 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
             replay_lanes::at::Read { table: TableId::ThreatSources, columns: None, keys: replay_lanes::at::Keys::All },
             replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: replay_lanes::at::Keys::All },
         ];
-        let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, stretch.first, &reads))?;
-        let listed = match rows::<tables::ThreatSources>(&frame) {
-            Ok(sources) => {
-                let links = rows::<tables::CountryLinks>(&frame).ok();
-                Some(listed(sources, |country| links.and_then(|links| link_slot(links, country))))
+        let (valid, withheld) = valid_span(recording, TableId::ThreatSources, stretch.run, stretch.first, stretch.last);
+        listing_missing.extend(withheld);
+        let Some((lo, hi)) = valid else { continue };
+        let statuses = read::statuses(recording, stretch.run, TableId::ThreatSources, lo, hi)?;
+        let reasons = read::status_reasons(recording, stretch.run, TableId::ThreatSources, &statuses)?;
+        for status in statuses {
+            let first = status.first.max(lo);
+            let last = status.last.min(hi);
+            if first > last { continue; }
+            while iter.next_if(|row| row.hour < first).is_some() {}
+            if status.status != Status::Complete {
+                let reason = match status.status {
+                    Status::Unavailable { reason } => reasons.get(&reason).cloned().unwrap_or_else(|| "Threat source listing was not read.".into()),
+                    Status::Truncated { .. } => "Threat source listing was incomplete at this hour.".into(),
+                    Status::NotRecorded => "Threat source listing was not recorded.".into(),
+                    Status::Complete => unreachable!(),
+                };
+                listing_missing.push(MissingSpan { first_hour: first, last_hour: last, reason });
+                continue;
             }
-            Err(error) => {
-                warnings.push((stretch.first, format!("Threat sources listed at hour {} are not known: {error}", stretch.first)));
-                None
+            let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, first, &reads))?;
+            let sources = rows::<tables::ThreatSources>(&frame).map_err(dashboard_core::invalid)?;
+            let links = rows::<tables::CountryLinks>(&frame).ok();
+            steps.push(Step::Stretch { first, last, listed: Some(listed(sources, |country| links.and_then(|links| link_slot(links, country)))) });
+            while let Some(row) = iter.next_if(|row| row.hour <= last) {
+                if row.hour > first {
+                    if let Some(step) = row_step(&row) {
+                        steps.push(step);
+                    } else {
+                        unreadable_hours.push(row.hour);
+                    }
+                }
             }
-        };
-        while let Some(row) = iter.next_if(|row| row.hour < stretch.first) {
-            steps.extend(row_step(&row).or_else(|| {
-                unreadable_hours.push(row.hour);
-                None
-            }));
-        }
-        steps.push(Step::Stretch { first: stretch.first, last: stretch.last, listed });
-        while let Some(row) = iter.next_if(|row| row.hour <= stretch.last) {
-            steps.extend(row_step(&row).or_else(|| {
-                unreadable_hours.push(row.hour);
-                None
-            }));
         }
     }
     unreadable_hours.sort_unstable();
@@ -585,6 +603,7 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         slots,
         aggregates_complete,
         events,
+        listing_missing: merge_missing(listing_missing),
         tension_missing: merge_missing(tension_missing),
         aggregates_missing: merge_missing(aggregates_missing),
         warnings,
@@ -1310,6 +1329,7 @@ impl Product for WorldTensionStack {
                 bands: Vec::new(),
                 other: None,
                 events: Vec::new(),
+                listing_missing: None,
                 missing: vec![MissingSpan { first_hour: params.first_hour, last_hour: params.last_hour, reason: "This time is outside the recording.".into() }],
                 next_change_hour,
                 warnings,
@@ -1350,6 +1370,7 @@ impl Product for WorldTensionStack {
                     bands: Vec::new(),
                     other: None,
                     events: Vec::new(),
+                listing_missing: None,
                     missing: Vec::new(),
                     next_change_hour,
                     warnings,
@@ -1404,7 +1425,17 @@ impl Product for WorldTensionStack {
             StackOutput::default()
         };
         let mut events: Vec<TensionStackEvent> = Vec::new();
+        let mut listing_missing = None;
         if include_events && computed.refused.is_none() {
+            let at = held.listing_missing.partition_point(|span| span.last_hour < last);
+            if let Some(span) = held.listing_missing.get(at) {
+                if span.first_hour <= last {
+                    listing_missing = Some(span.reason.clone());
+                    bump(&mut next_change_hour, span.last_hour.checked_add(1));
+                } else {
+                    bump(&mut next_change_hour, Some(span.first_hour));
+                }
+            }
             let ev_end = held.events.partition_point(|event| event.first_read <= last);
             if let Some(next_ev) = held.events.get(ev_end) {
                 bump(&mut next_change_hour, Some(next_ev.first_read));
@@ -1455,6 +1486,7 @@ impl Product for WorldTensionStack {
                     remembered: resolved.is_some_and(|(_, remembered)| remembered),
                     reason: event.reason.clone(),
                     added_raw: added_raw.to_string(),
+                    marker_raw: event.added[..event.added.partition_point(|&(read, _)| read <= event.hour)].last().map(|(_, raw)| raw.to_string()),
                     first_read: event.first_read,
                     last_read,
                 });
@@ -1494,6 +1526,7 @@ impl Product for WorldTensionStack {
             bands: computed.bands,
             other: computed.other,
             events,
+            listing_missing,
             missing,
             next_change_hour,
             warnings,

@@ -386,7 +386,7 @@ describe('world-tension projections', () => {
       assert.deepEqual((plotTip?.payload?.items ?? []).map(item => [item.label, item.value]), [
         ['World tension', '125%'],
         ['German Reich', '+127%'],
-        ['Japan', '−2%'],
+        ['Japan', 'âˆ’2%'],
       ], values);
     }
   });
@@ -395,8 +395,13 @@ describe('world-tension projections', () => {
     const hoverHour = H1936 + 5000;
     const reply: WorldTensionStackReply = {
       ...sampleStack(),
+      listingMissing: 'Fixture listing unread',
       events: [
-        { hour: hoverHour, country: 9001, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
+        ...[0, 1].map(place => ({
+          hour: hoverHour, country: 9001, slot: 1, secondCountry: 0, place, tag: 'GER', remembered: false, reason: 'Fixture event',
+          addedRaw: place === 0 ? '900000' : '100000', markerRaw: place === 0 ? '500000' : '300000',
+          firstRead: hoverHour, lastRead: null,
+        })),
       ],
     };
     const hoverReply: WorldTensionReply = {
@@ -406,7 +411,7 @@ describe('world-tension projections', () => {
       unnamed: false,
       contributions: [{ slot: 1, tag: 'GER', remembered: false, reading: { Ok: '500000' } }],
       sources: [
-        { ordinal: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', finalRaw: '500000', dailyRaw: '0', date: hoverHour },
+        { ordinal: 0, tag: 'GER', remembered: false, reason: 'Fixture event', finalRaw: '500000', dailyRaw: '0', date: hoverHour },
       ],
       missing: null,
       warnings: [],
@@ -445,14 +450,19 @@ describe('world-tension projections', () => {
       showMarkers: true,
       gaps: [],
     });
-    const evItem = model.hoverDetail?.items.find(item => item.label === 'Remilitarised the Rhineland');
+    const evItem = model.hoverDetail?.items.find(item => item.label === 'Fixture event');
     assert.equal(evItem?.value, '+5%', 'hover shows +5% recorded at hoverHour, not +9% revised later at playhead');
     const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
     const markerIndex = model.markers?.findIndex(marker => marker.hour === hoverHour) ?? -1;
     assert.ok(markerIndex >= 0, 'the event has a marker at its hour');
     const markerTip = deriveTimeChartTooltip(model, layout, `marker:${markerIndex}@${hoverHour}`);
-    const listed = (markerTip?.payload?.items ?? []).filter(item => item.label === 'Remilitarised the Rhineland');
-    assert.equal(listed.length, 1, `the marker lists its event once: ${JSON.stringify(markerTip?.payload?.items)}`);
+    const listed = (markerTip?.payload?.items ?? []).filter(item => item.label === 'Fixture event');
+    assert.deepEqual(listed.map(item => item.value), ['+5%', '+3%']);
+    assert.equal(model.markers![markerIndex]!.detail, '+5%');
+    const table = worldTensionEventsProjection.project(readView, { branchFirst: H1936 });
+    for (const row of table.rows) {
+      assert.deepEqual(row.cells.until?.value, { kind: 'notRecorded', reason: 'Fixture listing unread' });
+    }
   });
 
   it('S11: downsampled world-tension lines paint interval bounds, hover as ranges before exact hover, and show exact hovered-hour contributions once loaded', () => {
@@ -821,8 +831,8 @@ describe('world-tension projections', () => {
     assert.equal(share.stack?.total?.endLabel?.value, '100%', 'the world label is the recorded world tension, never the 125% sum of contributions');
     assert.equal(audit(share).get('__total__'), '100%');
     const italy = share.stack?.bands.find(b => b.id === 'slot:3');
-    assert.equal(italy?.endLabel?.value, '−4%', 'a negative share keeps its end label');
-    assert.equal(audit(share).get('slot:3'), '−4%');
+    assert.equal(italy?.endLabel?.value, 'âˆ’4%', 'a negative share keeps its end label');
+    assert.equal(audit(share).get('slot:3'), 'âˆ’4%');
     assert.equal(audit(share).get('slot:17'), 'This country\'s threat contribution was not recorded at this hour.');
     assert.equal(audit(share).get('other'), 'A shown country\'s contribution was not recorded at this hour, so the rest is not known.');
     assert.equal(audit(share).size, 12, 'the world, every band and Other');
