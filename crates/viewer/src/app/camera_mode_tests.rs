@@ -89,11 +89,50 @@ fn every_camera_mode_choice_is_taken_from_every_other() {
                 ),
             }
             assert!(viewer.flight.is_none(), "{from:?} -> {to:?} keeps no flight");
+            assert!(
+                viewer.free_cam.is_none(),
+                "{from:?} -> {to:?} keeps no free camera"
+            );
             assert_eq!(
                 viewer.walk.standing(),
                 None,
                 "{from:?} -> {to:?} keeps no walker"
             );
+            if from == CameraMode::Walk && to == CameraMode::Fly {
+                assert!(
+                    viewer.mode_handover.is_some(),
+                    "Walk -> Fly preserves eye pose for handover"
+                );
+            }
         }
     }
+}
+
+#[test]
+fn third_person_walk_hands_over_rendered_orbit_eye_and_reports_unloaded_figure() {
+    let ctx = egui::Context::default();
+    let mut viewer = viewer();
+    viewer.set_camera_mode(CameraMode::Walk, false, &ctx);
+    viewer.start_pick = drop::Pick::At(AT);
+    let ground = |_: f32, _: f32| 12.0;
+    let world = World {
+        ground: &ground,
+        map: [MAP.x(), MAP.y()],
+        ceiling: 3000.0,
+    };
+    let toggle = Frame {
+        pressed: vec![egui::Key::V],
+        ..Frame::default()
+    };
+    let rendered = viewer
+        .walk
+        .camera(&toggle, 0.0, map_camera(), AT, &world);
+    assert!(viewer.walk.figure_missing());
+    viewer.set_camera_mode(CameraMode::Fly, false, &ctx);
+    let (eye, yaw, pitch) = viewer.mode_handover.expect("rendered eye handed over");
+    assert!((eye[0] - rendered.eye()[0]).abs() < 1e-4);
+    assert!((eye[1] - rendered.eye()[1]).abs() < 1e-4);
+    assert!((eye[2] - rendered.eye()[2]).abs() < 1e-4);
+    let free = rendered.free().unwrap();
+    assert!((yaw - free.yaw).abs() < 1e-4 && (pitch - free.pitch).abs() < 1e-4);
 }

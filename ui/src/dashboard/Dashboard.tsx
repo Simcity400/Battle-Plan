@@ -663,7 +663,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     <PlaybackStrip clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
     <div className="header-workspace-tools">
     {mapActive && mapReady && desktopAvailable && <CameraModeControl value={cameraMode} onChange={chooseCameraMode} overlays={cameraOverlays} onOverlaysChange={chooseOverlays} />}
-    {mapActive && mapReady && desktopAvailable && cameraMode === 'fly' && <AircraftPicker client={client} source={defaultSource ?? null} chosen={aircraft} status={flyAircraft} onChoose={chooseAircraft} host={sideHost} prompt />}
+    {mapActive && mapReady && desktopAvailable && cameraMode === 'fly' && <AircraftPicker client={client} source={defaultSource ?? null} chosen={aircraft} status={flyAircraft} onChoose={chooseAircraft} host={sideHost} />}
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}
       onChooseHistory={client.chooseHistory && defaultSource ? async (segmentId, parentId) => {

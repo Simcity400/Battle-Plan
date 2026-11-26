@@ -89,6 +89,7 @@ mod order_cursor;
 mod pointer_changes;
 mod selection_input;
 mod unit_pick;
+mod hud;
 mod walk;
 
 #[cfg(test)]
@@ -405,13 +406,59 @@ pub(crate) fn map_overlay(
         });
 }
 
-fn start_prompt(mode: CameraMode) -> &'static str {
-    match mode {
-        CameraMode::Walk => {
-            "Click the map where the walk starts, or press A on a controller to start in the              middle of the view. Escape goes back to the map."
-        }
-        _ => {
-            "Click the map where the flight starts, or press A on a controller to start in the              middle of the view. Escape goes back to the map."
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CameraKeyFilter {
+    None,
+    Walk,
+    FlyFree,
+    FlyAircraft,
+}
+
+impl CameraKeyFilter {
+    pub(super) fn blocks(self, key: egui::Key) -> bool {
+        match self {
+            Self::None => false,
+            Self::Walk => matches!(
+                key,
+                egui::Key::W
+                    | egui::Key::A
+                    | egui::Key::S
+                    | egui::Key::D
+                    | egui::Key::Space
+                    | egui::Key::Equals
+                    | egui::Key::Plus
+                    | egui::Key::Minus
+                    | egui::Key::Num0
+                    | egui::Key::V
+                    | egui::Key::Escape
+            ),
+            Self::FlyFree => matches!(
+                key,
+                egui::Key::W
+                    | egui::Key::A
+                    | egui::Key::S
+                    | egui::Key::D
+                    | egui::Key::Space
+                    | egui::Key::Equals
+                    | egui::Key::Plus
+                    | egui::Key::Minus
+                    | egui::Key::Num0
+                    | egui::Key::Escape
+            ),
+            Self::FlyAircraft => matches!(
+                key,
+                egui::Key::W
+                    | egui::Key::A
+                    | egui::Key::S
+                    | egui::Key::D
+                    | egui::Key::V
+                    | egui::Key::C
+                    | egui::Key::ArrowLeft
+                    | egui::Key::ArrowRight
+                    | egui::Key::ArrowUp
+                    | egui::Key::ArrowDown
+                    | egui::Key::Escape
+            ),
         }
     }
 }
@@ -678,6 +725,12 @@ pub struct Viewer {
     orbit: crate::controls::orbit::Orbit,
     walk: walk::Walk,
     flight: Option<crate::controls::flight::Flight>,
+    free_cam: Option<crate::controls::walker::Walker>,
+    free_cam_speed: Option<f32>,
+    fly_view: crate::controls::flight::View,
+    last_fly_eye: Option<([f32; 3], f32, f32)>,
+    mode_handover: Option<([f32; 3], f32, f32)>,
+    hud: hud::Hud,
     flying: Option<(usize, viewer_models::ModelInstance)>,
     fly_clock: Option<f32>,
     fly_footprints: crate::controls::flight::Footprints,
@@ -1212,6 +1265,12 @@ impl Viewer {
             orbit: crate::controls::orbit::Orbit::default(),
             walk: walk::Walk::new(options.walk.clone()),
             flight: None,
+            free_cam: None,
+            free_cam_speed: None,
+            fly_view: Default::default(),
+            last_fly_eye: None,
+            mode_handover: None,
+            hud: hud::Hud::default(),
             flying: None,
             fly_clock: None,
             fly_footprints: Default::default(),
@@ -2930,6 +2989,10 @@ impl Viewer {
             self.orbit.reset();
             self.walk.reset();
             self.flight = None;
+            self.free_cam = None;
+            self.last_fly_eye = None;
+            self.mode_handover = None;
+            self.hud.leave();
             if self.start_pick.at().is_some() {
                 self.start_pick = drop::Pick::Choosing;
                 self.input.release();
@@ -4193,6 +4256,11 @@ impl Viewer {
         let camera = &mut camera;
         let held_pointer = self.input.captured();
         let placed_walk = pinned.is_some() && self.walk.placed();
+        let interface_visible = pinned.is_none()
+            && (self.camera_mode == CameraMode::Map
+                || self.start_pick.choosing()
+                || self.free_overlays);
+        let find_typing = interface_visible && !self.picker.hidden && self.picker.find.typing();
         let controls = if pinned.is_some() {
             let time = self.capture.as_ref().and_then(|capture| capture.time);
             self.walk
@@ -4203,7 +4271,7 @@ impl Viewer {
                 ui.input(|input| (input.events.clone(), input.focused, input.modifiers));
             self.input.frame(crate::controls::Window {
                 events: &events,
-                focused,
+                focused: focused && !find_typing,
                 modifiers,
                 now: Instant::now(),
             })
@@ -4242,7 +4310,8 @@ impl Viewer {
             .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));
         let takes_keys = takes_map_keys(self.dashboard_map, owner, response.id, response.hovered());
         let escape = takes_keys && ui.input(|input| input.key_pressed(egui::Key::Escape));
-        if escape && !held_pointer && !self.start_pick.choosing() && !self.picker.find.open {
+        let find_visible = interface && !self.picker.hidden && self.picker.find.open;
+        if escape && !held_pointer && !self.start_pick.choosing() && !find_visible {
             if self.combat.tactics_open {
                 self.combat.tactics_open = false;
             } else {
@@ -4320,9 +4389,18 @@ impl Viewer {
                 held,
             }
         }).unwrap_or_default());
-        if takes_keys {
-            self.confirmation_keys(ui, document, extent);
-            self.picker_keys(ui, document, extent);
+        if takes_keys && reaches {
+            let filter = if !free_mode {
+                CameraKeyFilter::None
+            } else if self.camera_mode == CameraMode::Walk {
+                CameraKeyFilter::Walk
+            } else if self.fly_aircraft(document).is_some() {
+                CameraKeyFilter::FlyAircraft
+            } else {
+                CameraKeyFilter::FlyFree
+            };
+            self.confirmation_keys(ui, document, extent, filter);
+            self.picker_keys(ui, document, extent, filter);
         }
         let picker_controls = match &self.picker_controls {
             Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => {
@@ -4455,15 +4533,16 @@ impl Viewer {
             self.secondary_on = None;
             self.air_orders.release();
         }
-        let picker_hit = point.and_then(picker_at);
+        let picker_hit = point.filter(|_| reaches).and_then(picker_at);
         let over_picker = picker_hit.is_some();
-        if response.drag_started() && !over_picker {
+        if reaches && response.drag_started() && !over_picker {
             self.combat.start_drag(combat_geometry.as_ref(), point);
         }
         if response.drag_stopped() {
             self.combat.dragging = false;
         }
-        let over_combat = self.combat.dragging || over_picker || point.is_some_and(&over_window);
+        let over_combat =
+            reaches && (self.combat.dragging || over_picker || point.is_some_and(&over_window));
         self.combat.set_modifiers(frame_modifiers.shift, frame_modifiers.ctrl);
         if over_combat {
             if response.dragged() && self.combat.dragging {
@@ -4506,7 +4585,7 @@ impl Viewer {
         }
         let owns = ui.ctx().data(|data| data.get_temp::<egui::Id>(owner)) == Some(response.id);
         let window_focused = ui.input(|input| input.focused);
-        let focused = window_focused && (!self.dashboard_map || owns) && !self.picker.find.typing();
+        let focused = window_focused && (!self.dashboard_map || owns) && !find_typing;
         let pointed = response.hovered() && !over_combat;
         let mut started = false;
         if self.start_pick.choosing() {
@@ -4524,17 +4603,26 @@ impl Viewer {
             let south = controls
                 .pad
                 .pressed(dashboard_core::protocol::GamepadButton::South);
+            let east = controls
+                .pad
+                .pressed(dashboard_core::protocol::GamepadButton::East);
             let centre = south
                 .then(|| ground([pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5]))
                 .flatten();
-            match drop::choose(escape, clicked, south, centre, camera.map.x()) {
+            match drop::choose(escape, east, clicked, south, centre, camera.map.x()) {
                 drop::Choice::Wait => {}
                 drop::Choice::Cancel => {
                     self.set_camera_mode(CameraMode::Map, self.free_overlays, ui.ctx());
                 }
                 drop::Choice::Start(at) => {
                     self.start_pick = drop::Pick::At(at);
+                    self.picker.find.field.focused = false;
                     self.input.forget_pad_taps();
+                    if south {
+                        self.input
+                            .suppress_pad(dashboard_core::protocol::GamepadButton::South);
+                    }
+                    self.hud.enter_mode();
                     started = true;
                     ui.ctx().request_repaint();
                 }
@@ -4555,6 +4643,7 @@ impl Viewer {
             && !over_combat
             && (response.clicked() || response.drag_started())
         {
+            self.picker.find.field.focused = false;
             self.input.capture();
         }
         if !free_mode
@@ -4589,7 +4678,18 @@ impl Viewer {
             .iter()
             .map(|&(order, pos, pressed)| (interface_at(pos), pressed, modifiers_at(order)))
             .collect();
-        let map_pinged = self.map_windows_pointer(ui, document, camera, &floor, &picker_controls, point, &presses, held, extent, &over_window);
+        let map_pinged = self.map_windows_pointer(
+            ui,
+            document,
+            camera,
+            &floor,
+            if reaches { &picker_controls } else { &[] },
+            point.filter(|_| reaches),
+            &presses,
+            held && reaches,
+            extent,
+            &over_window,
+        );
         let law = &document.camera_law;
         let (lines, zoom_keys, keys) = ui.input(|input| {
             let mut lines = Vec::new();
@@ -4726,7 +4826,7 @@ impl Viewer {
                             _ => 0.0,
                         };
                         self.fly_clock = time;
-                        let eye = self.fly(document, camera, None, &scripted.frame(dt));
+                        let eye = self.fly(document, camera, None, 0.0, &scripted.frame(dt));
                         (eye, if interface { eye } else { camera })
                     }
                     _ => (camera, camera),
@@ -4742,6 +4842,11 @@ impl Viewer {
                         values: texels,
                     };
                     let floor = |x: f32, z: f32| field.surface_height(x, z);
+                    let wheel = if response.hovered() && !over_combat {
+                        ui.input(|input| input.smooth_scroll_delta.y)
+                    } else {
+                        0.0
+                    };
                     let eye = if self.camera_mode == CameraMode::Walk {
                         let vision = self.shown_vision().ok();
                         let head = head_rows::head(live_of(&self.playhead_map));
@@ -4752,16 +4857,11 @@ impl Viewer {
                         {
                             self.walk.set_figure(key, figure);
                         }
-                        let wheel = if response.hovered() {
-                            ui.input(|input| input.smooth_scroll_delta.y)
-                        } else {
-                            0.0
-                        };
                         let world = crate::controls::walker::World::of(&map, &floor);
                         let start = self.start_pick.at().unwrap_or(camera.center);
                         self.walk.camera(&controls, wheel, map, start, &world)
                     } else {
-                        self.fly(document, map, self.start_pick.at(), &controls)
+                        self.fly(document, map, self.start_pick.at(), wheel, &controls)
                     };
                     (eye, if interface { eye } else { map })
                 } else {
@@ -6452,21 +6552,14 @@ impl Viewer {
             && self.embedded.is_some()
             && !self.dashboard_map;
         let scoped = replay_data::scope::omits(document.capture_mode()).is_some();
-        let start_prompt = self
-            .start_pick
-            .choosing()
-            .then(|| start_prompt(self.camera_mode));
         let vision_refused = self.vision_refusal_line();
-        if software || diagnostics || partial || scoped || start_prompt.is_some() || vision_refused.is_some() {
+        if software || diagnostics || partial || scoped || vision_refused.is_some() {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
                 "diagnostics",
                 self.interface_points,
                 |ui, height| {
-                    if let Some(prompt) = start_prompt {
-                        ui.colored_label(egui::Color32::WHITE, prompt);
-                    }
                     if let Some(refused) = &vision_refused {
                         ui.colored_label(egui::Color32::YELLOW, refused);
                     }
@@ -6484,6 +6577,89 @@ impl Viewer {
                     }
                 },
             );
+        }
+        if pinned.is_none() {
+            let hud_rect = rect.intersect(ui.clip_rect());
+            let hud_now = self.started.elapsed().as_secs_f64();
+            if self.start_pick.choosing() {
+                self.hud.paint(
+                    ui,
+                    hud_rect,
+                    self.interface_points,
+                    &hud::HudState::StartPick {
+                        mode: self.camera_mode,
+                        pad_connected: controls.pad_connected,
+                    },
+                    hud_now,
+                );
+            } else if free_mode {
+                let active = match self.camera_mode {
+                    CameraMode::Walk => self.walk.state().map(|walker| {
+                        let field = viewer_gpu::province_map::HeightField {
+                            width: document.map.width,
+                            height: document.map.height,
+                            values: document.assets.heightmap_texels(),
+                        };
+                        let local_floor = field
+                            .surface_height(walker.feet[0], walker.feet[2])
+                            .max(viewer_gpu::camera::WATER_HEIGHT);
+                        hud::ActiveHud::Walk {
+                            view: walker.view,
+                            gait: walker.gait,
+                            scale: walker.scale,
+                            scale_limit: walker.at_scale_limit(
+                                self.walk.figure_height(),
+                                local_floor,
+                                defines.heights[1],
+                            ),
+                            figure_missing: self.walk.figure_missing(),
+                        }
+                    }),
+                    CameraMode::Fly => {
+                        if let Some(free) = &self.free_cam {
+                            let aircraft = match self.fly_aircraft.choice() {
+                                None => hud::AircraftHud::Free,
+                                Some(name) if self.fly_aircraft.refusal().is_some() => {
+                                    hud::AircraftHud::Refused(hud::model_label(name))
+                                }
+                                Some(name) => hud::AircraftHud::Loading(hud::model_label(name)),
+                            };
+                            Some(hud::ActiveHud::FlyFree {
+                                speed: free.speed_multiplier(),
+                                speed_limit: free.at_scale_limit(
+                                    crate::controls::walker::FALLBACK_FIGURE,
+                                    viewer_gpu::camera::WATER_HEIGHT,
+                                    defines.heights[1],
+                                ),
+                                aircraft,
+                            })
+                        } else {
+                            self.flight.as_ref().map(|flight| hud::ActiveHud::FlyAircraft {
+                                title: self
+                                    .fly_aircraft(document)
+                                    .map(|aircraft| hud::model_label(&aircraft.name))
+                                    .unwrap_or_else(|| "Aircraft".into()),
+                                view: flight.view,
+                            })
+                        }
+                    }
+                    CameraMode::Map => None,
+                };
+                if let Some(active) = active {
+                    self.hud.observe(&active, &controls, hud_now);
+                    self.hud.paint(
+                        ui,
+                        hud_rect,
+                        self.interface_points,
+                        &hud::HudState::Active {
+                            active,
+                            captured: controls.captured,
+                            device: controls.device,
+                        },
+                        hud_now,
+                    );
+                }
+            }
         }
         self.shown_whole = self.shown_whole || self.playhead.is_some_and(|head| self.picture_whole(head, self.playing));
         if !self.shown_whole {
@@ -6525,9 +6701,14 @@ impl Viewer {
             CameraMode::Map => None,
             CameraMode::Walk => self.walk.standing(),
             CameraMode::Fly => self
-                .flight
+                .free_cam
                 .as_ref()
-                .map(|flight| [flight.position[0], flight.position[2]]),
+                .map(|free| [free.feet[0], free.feet[2]])
+                .or_else(|| {
+                    self.flight
+                        .as_ref()
+                        .map(|flight| [flight.position[0], flight.position[2]])
+                }),
         }
     }
 
@@ -6539,6 +6720,7 @@ impl Viewer {
     ) {
         if mode != CameraMode::Map && !overlays {
             self.combat.close();
+            self.picker.find.field.focused = false;
         }
         if (mode, overlays) != (self.camera_mode, self.free_overlays)
             && let Some(embedded) = &self.embedded
@@ -6550,6 +6732,11 @@ impl Viewer {
             return;
         }
         let standing = self.free_mode_ground();
+        let handover = if self.camera_mode == CameraMode::Walk && mode == CameraMode::Fly {
+            self.walk.eye_pose()
+        } else {
+            None
+        };
         self.camera_mode = mode;
         self.start_pick = match (mode, standing) {
             (CameraMode::Map, _) => drop::Pick::Idle,
@@ -6558,6 +6745,14 @@ impl Viewer {
         };
         self.walk.leave();
         self.flight = None;
+        self.free_cam = None;
+        self.last_fly_eye = None;
+        self.mode_handover = handover;
+        if mode == CameraMode::Map {
+            self.hud.leave();
+        } else if standing.is_some() {
+            self.hud.enter_mode();
+        }
         self.input.release();
         self.grab_pointer(ctx);
     }

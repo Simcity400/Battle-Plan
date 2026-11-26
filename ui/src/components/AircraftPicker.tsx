@@ -14,15 +14,15 @@ import { FailureLine } from './FailureLine';
 import { VirtualList } from './VirtualList';
 import './aircraftPicker.css';
 
-export const NO_AIRCRAFT = 'No aircraft is chosen: Fly mode is a free camera until you choose one.';
+export const FREE_CAMERA = 'Flying as a free camera. Choose an aircraft to pilot it.';
 
 export function statusText(chosen: AircraftChoice | null, status: FlyAircraftStatus | null): { text: string; alert: boolean; detail?: string } | null {
-  if (!chosen) return { text: NO_AIRCRAFT, alert: false };
+  if (!chosen) return { text: FREE_CAMERA, alert: false };
   if (!status || status.aircraft !== chosen.name) return null;
   switch (status.state.kind) {
-    case 'loading': return { text: `Loading ${chosen.title}…`, alert: false };
+    case 'loading': return { text: `Loading ${chosen.title}… The free camera flies until it’s ready.`, alert: false };
     case 'ready': return { text: `Flying ${chosen.title}`, alert: false };
-    case 'refused': return { text: `${chosen.title} can’t be flown.`, alert: true, detail: status.state.reason };
+    case 'refused': return { text: `${chosen.title} can’t be flown. Flying as a free camera.`, alert: true, detail: status.state.reason };
   }
 }
 
@@ -150,9 +150,9 @@ export function AircraftPanel({ id, onClose, onFreeCamera, children }: { id?: st
   </section>;
 }
 
-export default function AircraftPicker({ client, source, chosen, status, onChoose, host, prompt = false }: {
+export default function AircraftPicker({ client, source, chosen, status, onChoose, host }: {
   client: DashboardClient; source: DashboardSource | null; chosen: AircraftChoice | null; status: FlyAircraftStatus | null;
-  onChoose: (aircraft: AircraftChoice | null) => void; host: HTMLElement | null; prompt?: boolean;
+  onChoose: (aircraft: AircraftChoice | null) => void; host: HTMLElement | null;
 }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -161,15 +161,15 @@ export default function AircraftPicker({ client, source, chosen, status, onChoos
   const [query, setQuery] = useState('');
   const shown = open && !!host && !!source;
   const { pages, version, request, retry } = useAircraftCatalogue(client, source, origin, query, shown);
-  useEffect(() => { if (prompt && chosen === null && source) setOpen(true); }, [prompt, source?.id]);
   const close = useCallback(() => { setOpen(false); trigger.current?.focus({ preventScroll: true }); }, []);
   const line = statusText(chosen, status);
-  const label = chosen?.title ?? 'No aircraft chosen';
-  if (!source) return <button type="button" className="icon-button aircraft-picker-trigger" disabled aria-label="Aircraft: none chosen"
+  const label = chosen?.title ?? 'Free camera';
+  const state = !chosen ? 'free' : status?.aircraft === chosen.name ? status.state.kind : 'loading';
+  if (!source) return <button type="button" className="icon-button aircraft-picker-trigger" disabled data-state="free" aria-label="Aircraft: none, free camera"
     data-tooltip="Open a campaign to choose an aircraft"><Icon name="plane" /><span>{label}</span></button>;
   return <>
-    <button ref={trigger} type="button" className={chosen ? 'icon-button aircraft-picker-trigger' : 'icon-button aircraft-picker-trigger is-unchosen'}
-      aria-expanded={shown} aria-controls={shown ? id : undefined} disabled={!host} aria-label={`Aircraft: ${chosen ? chosen.title : 'none chosen'}`}
+    <button ref={trigger} type="button" className="icon-button aircraft-picker-trigger" data-state={state}
+      aria-expanded={shown} aria-controls={shown ? id : undefined} disabled={!host} aria-label={chosen ? `Aircraft: ${chosen.title}` : 'Aircraft: none, free camera'}
       data-tooltip={line?.text ?? 'Choose the aircraft to fly'} data-detail={line?.detail} onClick={() => setOpen(value => !value)}><Icon name="plane" /><span>{label}</span></button>
     {shown && createPortal(<AircraftPanel id={id} onClose={close} onFreeCamera={chosen ? () => onChoose(null) : undefined}>
       <AircraftCatalogueView pages={pages} version={version} origin={origin} onOrigin={setOrigin} query={query} onQuery={setQuery}

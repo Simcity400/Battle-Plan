@@ -23,6 +23,10 @@ enum Outcome {
 }
 
 impl FlyAircraft {
+    pub fn choice(&self) -> Option<&str> {
+        self.choice.as_deref()
+    }
+
     pub fn choose(&mut self, aircraft: Option<String>) {
         if self.choice != aircraft {
             self.choice = aircraft;

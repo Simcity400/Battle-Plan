@@ -212,12 +212,15 @@ fn run(app: &AppHandle) {
         if let Some(id) = active {
             buttons.insert(id, state.buttons);
         }
+        let connected = active.is_some() || gilrs.gamepads().any(|(_, pad)| pad.is_connected());
         let foreground = unsafe { GetForegroundWindow() } as usize;
         let main = app
             .get_webview_window("main")
             .and_then(|window| window.hwnd().ok())
             .map(|hwnd| hwnd.0 as usize);
-        let target = front(foreground, main, popouts.in_front(foreground));
+        let target = connected
+            .then(|| front(foreground, main, popouts.in_front(foreground)))
+            .flatten();
         router.route(&maps, target, state, pressed);
         thread::sleep(POLL);
     }

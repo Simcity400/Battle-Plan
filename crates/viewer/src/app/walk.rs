@@ -1,6 +1,6 @@
 
 use crate::controls::Frame;
-use crate::controls::walker::{FALLBACK_FIGURE, Start, Walker, World};
+use crate::controls::walker::{FALLBACK_FIGURE, Start, View, Walker, World};
 use viewer_gpu::camera::{Camera, Placement};
 use viewer_foundation::perspective::Choice;
 use viewer_models::ModelLibrary;
@@ -14,6 +14,7 @@ const LAND_FIGURES: &str = "unit models";
 pub(super) struct Walk {
     walker: Option<Walker>,
     scale: f32,
+    view: View,
     figure: Option<(FigureKey, Result<Figure, String>)>,
     start: Option<Start>,
     clock: Option<f32>,
@@ -25,6 +26,7 @@ impl Walk {
         Self {
             walker: None,
             scale: start.as_ref().map_or(1.0, |start| start.scale),
+            view: start.as_ref().map_or(View::First, |start| start.view),
             figure: None,
             start,
             clock: None,
@@ -38,6 +40,7 @@ impl Walk {
 
     pub(super) fn leave(&mut self) {
         self.walker = None;
+        self.eye = None;
     }
 
     pub(super) fn standing(&self) -> Option<[f32; 2]> {
@@ -46,10 +49,41 @@ impl Walk {
             .map(|walker| [walker.feet[0], walker.feet[2]])
     }
 
+    pub(super) fn eye_pose(&self) -> Option<([f32; 3], f32, f32)> {
+        if let Some(eye) = self.eye
+            && let viewer_gpu::camera::Pose::Free(free) = eye.pose
+        {
+            return Some((
+                [eye.center[0], eye.height, eye.center[1]],
+                free.yaw,
+                free.pitch,
+            ));
+        }
+        let walker = self.walker.as_ref()?;
+        Some((
+            walker.eye_position(self.height()),
+            walker.view_yaw,
+            walker.view_pitch,
+        ))
+    }
+
+    pub(super) fn state(&self) -> Option<&Walker> {
+        self.walker.as_ref()
+    }
+
+    pub(super) fn figure_height(&self) -> f32 {
+        self.height()
+    }
+
+    pub(super) fn figure_missing(&self) -> bool {
+        !matches!(&self.figure, Some((_, Ok(_))))
+    }
+
     pub(super) fn reset(&mut self) {
         self.walker = None;
         self.figure = None;
         self.clock = None;
+        self.eye = None;
     }
 
     pub(super) fn forget_figure(&mut self) {
@@ -87,15 +121,20 @@ impl Walk {
         world: &World<'_>,
     ) -> Camera {
         let height = self.height();
+        let view = self.view;
         let walker = self.walker.get_or_insert_with(|| match &self.start {
             Some(start) => start.walker(world),
             None => {
                 let forward = map.look_direction();
-                Walker::standing(look_at, forward[0].atan2(forward[2]), self.scale, world)
+                let mut walker =
+                    Walker::standing(look_at, forward[0].atan2(forward[2]), self.scale, world);
+                walker.set_view(view);
+                walker
             }
         });
         walker.update(controls, wheel, height, world);
         self.scale = walker.scale;
+        self.view = walker.view;
         let eye = walker.camera(map, height, world);
         self.eye = Some(eye.placement());
         eye
@@ -107,6 +146,9 @@ impl Walk {
 
     pub(super) fn player<'a>(&self, library: &'a ModelLibrary) -> Option<PlayerModel<'a>> {
         let walker = self.walker.as_ref()?;
+        if walker.view == View::First {
+            return None;
+        }
         let Some((_, Ok(figure))) = &self.figure else {
             return None;
         };
@@ -129,7 +171,8 @@ impl Walk {
             None => "no figure chosen".to_owned(),
         };
         Some(format!(
-            "Walk: {figure}; scale {:.4}, {:?}, feet {:.3},{:.3},{:.3}, facing {:.1} degrees, {}",
+            "Walk: {figure}; {:?} view, scale {:.4}, {:?}, feet {:.3},{:.3},{:.3}, facing {:.1} degrees, {}",
+            walker.view,
             walker.scale,
             walker.gait,
             walker.feet[0],

@@ -127,14 +127,14 @@ Window dump: --window-dump opens a window, renders through the windowed path at 
              and --camera or --free-camera, writes the frame to --out and exits
              --walk <x,z,heading[,scale]> draws the walking mode instead: the viewing country's
              infantry standing at world (x, z) facing heading degrees clockwise from north, at
-             scale (default 1), seen from behind; --walk-keys <keys> holds keys through every
-             frame (w, a, s, d, space, shift, ctrl, plus, minus) and --walk-flying starts in
-             flight; each frame moves it by --animation-step
+             scale (default 1); --walk-view first|third sets the camera (default third),
+             --walk-keys <keys> holds keys through every frame (w, a, s, d, space, shift, ctrl,
+             plus, minus) and --walk-flying starts in flight; each frame moves it by --animation-step
              --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>
              sample a deterministic sequence; default is one frame at time zero
              --fly <x,y,z,yaw,pitch[,roll]>, the flying mode with its aircraft at world (x, y, z)
                turned by degrees, in place of --camera; each sampled frame flies one step
-             --fly-view chase|nose, the flying camera (default chase)
+             --fly-view chase|nose|free, the flying camera (default chase)
              --fly-steer <turn,climb,throttle>, each -1..1, held through the capture as the
                controller's left stick and triggers (default none)
 Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:
@@ -212,6 +212,7 @@ fn parse_fly(value: &str) -> io::Result<app::fly::Scripted> {
             values.get(5).copied().unwrap_or(0.0).to_radians(),
         ],
         view: controls::flight::View::Chase,
+        free: false,
         steer: [0.0; 3],
     })
 }
@@ -300,7 +301,7 @@ struct Options {
     visual_mods: Vec<content_reader_layers::content::visual::Choice>,
     window_dump: bool,
     fly: Option<app::fly::Scripted>,
-    fly_view: Option<controls::flight::View>,
+    fly_view: Option<(controls::flight::View, bool)>,
     fly_steer: Option<[f32; 3]>,
     animation_time: f32,
     animation_step: f32,
@@ -378,7 +379,7 @@ impl Options {
             ..Default::default()
         };
         let mut args = args.peekable();
-        let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
+        let (mut walk, mut walk_keys, mut walk_flying, mut walk_view) = (None, None, false, None);
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--combat" | "--combat-at" | "--air-region" | "--state-view" | "--naval-region") => {
@@ -601,6 +602,17 @@ impl Options {
                 }
                 Some("--allow-unverified-content") => options.allow_unverified = true,
                 Some("--walk-flying") => walk_flying = true,
+                Some("--walk-view") => {
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    walk_view = Some(match value.trim() {
+                        "first" => controls::walker::View::First,
+                        "third" => controls::walker::View::Third,
+                        _ => return Err(invalid("--walk-view takes first or third")),
+                    });
+                }
                 Some(flag @ ("--walk" | "--walk-keys")) => {
                     let flag = flag.to_owned();
                     let value = args
@@ -744,9 +756,14 @@ impl Options {
                         "--fly" => options.fly = Some(parse_fly(&value)?),
                         "--fly-view" => {
                             options.fly_view = Some(match value.trim() {
-                                "chase" => controls::flight::View::Chase,
-                                "nose" => controls::flight::View::Nose,
-                                _ => return Err(invalid("--fly-view takes chase or nose")),
+                                "chase" => (controls::flight::View::Chase, false),
+                                "nose" => (controls::flight::View::Nose, false),
+                                "free" => (controls::flight::View::Chase, true),
+                                _ => {
+                                    return Err(invalid(
+                                        "--fly-view takes chase, nose or free",
+                                    ));
+                                }
                             })
                         }
                         "--fly-steer" => options.fly_steer = Some(parse_fly_steer(&value)?),
@@ -812,14 +829,17 @@ impl Options {
         }
         match walk {
             Some(place) => {
-                options.walk = Some(
+                let mut start =
                     controls::walker::Start::parse(&place, walk_keys.as_deref(), walk_flying)
-                        .map_err(invalid)?,
-                );
+                        .map_err(invalid)?;
+                if let Some(view) = walk_view {
+                    start.view = view;
+                }
+                options.walk = Some(start);
             }
-            None if walk_keys.is_some() || walk_flying => {
+            None if walk_keys.is_some() || walk_flying || walk_view.is_some() => {
                 return Err(invalid(
-                    "--walk-keys and --walk-flying hold keys for a --walk",
+                    "--walk-keys, --walk-flying and --walk-view require --walk",
                 ));
             }
             None => {}
@@ -947,7 +967,10 @@ impl Options {
         }
         match (&mut options.fly, options.fly_view, options.fly_steer) {
             (Some(fly), view, steer) => {
-                fly.view = view.unwrap_or(fly.view);
+                if let Some((view, free)) = view {
+                    fly.view = view;
+                    fly.free = free;
+                }
                 fly.steer = steer.unwrap_or(fly.steer);
             }
             (None, None, None) => {}
@@ -2785,6 +2808,8 @@ mod tests {
             "w,Shift,plus",
             "--walk",
             "3000,1200,90,2.5",
+            "--walk-view",
+            "first",
             "--walk-flying",
         ])
         .unwrap();
@@ -2792,15 +2817,20 @@ mod tests {
         assert_eq!(start.at, [3000.0, 1200.0]);
         assert!((start.facing - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert_eq!(start.scale, 2.5);
+        assert_eq!(start.view, controls::walker::View::First);
         assert!(start.flying && start.modifiers.shift && !start.modifiers.ctrl);
         assert_eq!(start.held, [eframe::egui::Key::W, eframe::egui::Key::Plus]);
-        assert_eq!(dump(&["--walk", "1,2,0"]).unwrap().walk.unwrap().scale, 1.0);
+        let plain_walk = dump(&["--walk", "1,2,0"]).unwrap().walk.unwrap();
+        assert_eq!(plain_walk.scale, 1.0);
+        assert_eq!(plain_walk.view, controls::walker::View::Third);
         for refused in [
             &["--walk", "1,2"][..],
             &["--walk", "1,2,0,0"],
             &["--walk", "1,2,0", "--walk-keys", "q"],
+            &["--walk", "1,2,0", "--walk-view", "side"],
             &["--walk-keys", "w"],
             &["--walk-flying"],
+            &["--walk-view", "first"],
             &["--walk", "1,2,0", "--camera", "100,200,300"],
         ] {
             assert!(dump(refused).is_err(), "{refused:?}");
@@ -2845,8 +2875,14 @@ mod tests {
         assert_eq!(fly.steer, [0.5, -1.0, 1.0]);
         let plain = window(&["--fly", "1,2,3,4,5"]).unwrap().fly.unwrap();
         assert_eq!(plain.view, controls::flight::View::Chase);
+        assert!(!plain.free);
         assert_eq!(plain.steer, [0.0; 3]);
         assert_eq!(plain.attitude[2], 0.0);
+        let free = window(&["--fly", "1,2,3,4,5", "--fly-view", "free"])
+            .unwrap()
+            .fly
+            .unwrap();
+        assert!(free.free);
         for refused in [
             &["--fly", "1,2,3,4"][..],
             &["--fly", "1,2,3,4,5,6,7"],

@@ -22,5 +22,11 @@ test('an export is asked for with the map settings closed, and a refusal reopens
     assert.equal(warned.retry, null, 'and offers no export again, since the picture was saved');
     const bare = await act<Ended>(`exportWith(${JSON.stringify('The map isn’t ready yet')})`);
     assert.equal(bare.said, 'Couldn’t export the map.', 'a raw fragment is detail; the line names what failed');
+    type PickerCheck = { initialPanel: boolean; initialExpanded: string | null; label: string | null; afterClickPanel: boolean };
+    const picker = await act<PickerCheck>('aircraftNoAutoOpen()');
+    assert.equal(picker.initialPanel, false, 'mounting AircraftPicker with a real portal host and no aircraft leaves the drawer closed');
+    assert.equal(picker.initialExpanded, 'false');
+    assert.equal(picker.label, 'Free camera');
+    assert.equal(picker.afterClickPanel, true, 'clicking the Free camera button opens the drawer');
   }));
 });

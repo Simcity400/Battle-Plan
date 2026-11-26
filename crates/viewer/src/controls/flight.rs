@@ -138,6 +138,23 @@ impl Flight {
         }
     }
 
+    pub fn handover(
+        position: [f32; 3],
+        yaw: f32,
+        map: &Camera,
+        floor: Floor<'_>,
+        airframe: &Airframe,
+    ) -> Self {
+        let width = map.map.x().max(1.0);
+        let x = position[0].rem_euclid(width);
+        let z = position[2].clamp(0.0, map.map.y());
+        let top = highest(floor, width, [x, z], [x, z], airframe.size);
+        let safe = top + airframe.ground.offset.max(0.0) + clearance(airframe.size);
+        let ceiling = map.defines.heights[1];
+        let y = position[1].max(safe).min(ceiling.max(safe));
+        Self::new([x, y, z], yaw, 0.0, 0.0)
+    }
+
     pub fn from_map(map: &Camera, floor: Floor<'_>, size: f32) -> Self {
         let forward = map.look_direction();
         let target = match map.free() {
