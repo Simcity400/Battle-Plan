@@ -542,7 +542,7 @@ export class Page<B extends Bitmap = Bitmap> {
     const shown = widget.installed;
     if (shown && shown.binding === entry.binding && entry.id < shown.id) return 'superseded';
     if (at < entry.lo) return 'early';
-    if (at > entry.hi) return 'superseded';
+    if (at > entry.hi && (!this.playing || (shown && shown.binding === entry.binding && shown.hi >= entry.hi))) return 'superseded';
     if (!shown && Object.values(entry.fields).some(value => value === SAME)) return 'kept content';
     const c = this.effectiveC(widget, entry);
     if (entry.mode === 'refused' && !this.playing && shown && at > c && !sameContent(entry.content, widget.content)) return 'uncovered';

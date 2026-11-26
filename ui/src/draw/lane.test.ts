@@ -167,6 +167,28 @@ test('the lane sends a bounded picture while the page can still install it', asy
   assert.equal(page.view(1).fields?.first, 19);
 });
 
+test('playing past its confirmed hour, a time-dependent widget shows its newest known picture instead of keeping the first one', async () => {
+  const probe: LaneView = {
+    paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: hour + 1, motion: false }),
+  };
+  const { page, lane, mount, step } = rig({ probe });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const supply = (hour: number) => lane.receive('panels', panels([{ id: 3, hour, kind: 'data', stepped: true, data: { hour } }]));
+  supply(10);
+  await step(10, { playing: false });
+  assert.equal(page.view(1).fields?.first, 10);
+  await step(10, { playing: true, speed: 1440, step: 24 });
+  supply(14);
+  await step(40);
+  assert.equal(page.view(1).fields?.first, 14, 'the picture of the newest known hour replaces the first one');
+  supply(30);
+  await step(64);
+  assert.equal(page.view(1).fields?.first, 30);
+  await step(88);
+  assert.equal(page.view(1).fields?.first, 30, 'with no newer data the newest known picture stays');
+});
+
 test('addendum 2: a moving widget stays due, one step per acknowledgement, after every widget whose data changed', async () => {
   let frames = 0;
   const moving: LaneView = { paint: (): Painted => ({ surfaces: [], fields: { step: { value: ++frames, content: `step:${frames}` } }, motion: frames < 3 }) };
