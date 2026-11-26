@@ -824,3 +824,102 @@ fn withheld_destruction_and_unavailable_country_hours_never_claim_zero() {
     let at_106 = load(106);
     assert_eq!(at_106.breakdown.total.state, BreakdownState::NotRecorded, "withheld destruction hours never show stale or zero totals: {:?}", at_106.breakdown);
 }
+
+#[test]
+fn combat_log_and_destruction_coverage_messages_use_plain_language() {
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{Country, LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source as base_frame},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{EquipmentDestructionCause, EquipmentDestructionCoverage, EquipmentDestructionRow, Recorded, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let held = Held {
+        country: vec![
+            (100, 100, Some(CountryCells { land: Some(Row::NOT_LOGGED), ..Default::default() })),
+            (101, 101, None),
+        ],
+        ..Default::default()
+    };
+    let warnings = held.warnings_through(101, true);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    for warning in &warnings {
+        assert!(!warning.contains("feature gate"), "internal term in warning: {warning}");
+        assert!(!warning.contains("blocks/frames"), "internal term in warning: {warning}");
+        assert!(!warning.contains("division census"), "internal term in warning: {warning}");
+        assert!(!warning.contains("writer inputs"), "internal term in warning: {warning}");
+    }
+
+    let variant = (7_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let frames: Vec<_> = (100..=104)
+        .map(|hour| {
+            let mut frame = base_frame(1, hour, Some(1));
+            *frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![replay_data::rows::SunkShipsRow::default()]));
+            frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+            *frame.tables[TableId::SunkConvoys.index()] = TableView::Complete(TableRows::SunkConvoys(Vec::new()));
+            frame.metrics.table_ns[TableId::SunkConvoys.index()] = 1;
+            *frame.tables[TableId::LendLeaseEquipment.index()] = TableView::Complete(TableRows::LendLeaseEquipment(Vec::new()));
+            frame.metrics.table_ns[TableId::LendLeaseEquipment.index()] = 1;
+            frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+            *frame.tables[TableId::EquipmentDestruction.index()] = match hour {
+                101 => TableView::Complete(TableRows::EquipmentDestruction(vec![EquipmentDestructionRow {
+                    country: 9001,
+                    cause: EquipmentDestructionCause::LandCombat,
+                    variant,
+                    amount_raw: 200_000,
+                    coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+                    unavailable_reason: Recorded::Value(String::new()),
+                }])),
+                102 => TableView::Complete(TableRows::EquipmentDestruction(vec![EquipmentDestructionRow {
+                    coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+                    unavailable_reason: Recorded::Value(replay_data::rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON.to_owned()),
+                    ..Default::default()
+                }])),
+                103..=104 => TableView::Unavailable { reason: Row::DRAIN_NOT_READ.to_owned() },
+                _ => TableView::Complete(TableRows::EquipmentDestruction(Vec::new())),
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        SourceKey { source_id: "losses-plain-wording".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let at_102 = EquipmentLosses::load(
+        &source,
+        &EquipmentLossesParams { branch_id: "1".into(), country: Country::Slot(7), hour: 102, land_source: LandSource::Destruction },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let gap_reason = at_102.breakdown.total.reason.as_deref().expect("startup partial carries a reason");
+    assert_eq!(gap_reason, "Equipment destruction did not cover the full period from the start");
+
+    let at_104 = EquipmentLosses::load(
+        &source,
+        &EquipmentLossesParams { branch_id: "1".into(), country: Country::Slot(7), hour: 104, land_source: LandSource::Destruction },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let reason = at_104.breakdown.total.reason.as_deref().expect("destruction gap carries a reason");
+    assert_eq!(reason, "Equipment destruction was not read at this hour");
+    assert_eq!(
+        super::breakdown::plain_destruction_reason(Row::DRAIN_TRUNCATED),
+        "Equipment destruction was truncated and withheld for this run",
+    );
+    assert_eq!(
+        super::breakdown::plain_destruction_reason(&format!("{}; {}", Row::DRAIN_TRUNCATED, Row::DRAIN_OWNER_UNKNOWN)),
+        "Equipment destruction was truncated and withheld for this run; Some destroyed equipment has no recorded country link",
+    );
+}

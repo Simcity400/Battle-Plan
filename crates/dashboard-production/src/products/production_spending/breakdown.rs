@@ -7,7 +7,7 @@ use dashboard_base::{
     Source,
     products::{
         Country, LoadContext,
-        breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded},
+        breakdown::{self, Amount, Breakdown, BreakdownPart, BreakdownState, Exact, Leaf, Node, Unrecorded},
         check_reply_budget,
     },
 };
@@ -26,6 +26,7 @@ const REPAIR_SCALE: i128 = REPAIR_DENOMINATOR as i128 * SPENT_SCALE;
 const UNRESOLVED_TYPE_KEY: &str = "~unresolved";
 const REPAIR_KEY: &str = "repair";
 const UNASSIGNED: &str = "Some designs\u{2019} equipment types are not recorded at this hour, so which factories spent their IC is not known";
+const REPAIR_SPLIT_INCOMPLETE: &str = "Some dockyard repair spending\u{2019}s split by design is not known";
 
 pub(crate) fn unknown_reason(why: ProductionSpendingUnknown) -> &'static str {
     match why {
@@ -417,6 +418,8 @@ pub(crate) struct Built {
     leaves: Vec<Leaf>,
     reasons: Vec<String>,
     unassigned: bool,
+    repair_gap: Option<&'static str>,
+    repair_split_incomplete: bool,
     through: i32,
     warnings: Vec<String>,
 }
@@ -441,13 +444,50 @@ fn leaf_key(leaf: &Leaf) -> Vec<String> {
     }
 }
 
+fn append_reason(target: &mut Option<String>, reason: &str) {
+    *target = Some(match target.take() {
+        Some(held) if held.contains(reason) => held,
+        Some(held) => format!("{held}; {reason}"),
+        None => reason.to_owned(),
+    });
+}
+
+fn qualify_repair_children(parts: &mut [BreakdownPart], gap_reason: Option<&str>, split_incomplete: bool) {
+    for part in parts {
+        part.share = None;
+        part.parent_share = None;
+        let is_unrecorded = part.key == "~unrecorded";
+        let is_unattributed = part.key == "~unattributed";
+        if !is_unrecorded {
+            if let Some(reason) = gap_reason {
+                if part.state == BreakdownState::Known {
+                    part.state = BreakdownState::Partial;
+                }
+                append_reason(&mut part.reason, reason);
+            }
+            if split_incomplete && !is_unattributed {
+                if part.state == BreakdownState::Known {
+                    part.state = BreakdownState::Partial;
+                }
+                append_reason(&mut part.reason, REPAIR_SPLIT_INCOMPLETE);
+            }
+        }
+        qualify_repair_children(&mut part.children, gap_reason, split_incomplete);
+    }
+}
+
 impl Built {
     fn reply(self, hour: i32) -> ProductionSpendingReply {
-        let breakdown = if self.unassigned {
+        let mut breakdown = if self.unassigned {
             breakdown::breakdown_of(&self.leaves, &Amount::NotRecorded(UNASSIGNED.into()))
         } else {
             breakdown::breakdown_qualified(&self.leaves, &self.reasons)
         };
+        if (self.repair_gap.is_some() || self.repair_split_incomplete)
+            && let Some(repair) = breakdown.parts.iter_mut().find(|part| part.key == REPAIR_KEY)
+        {
+            qualify_repair_children(&mut repair.children, self.repair_gap, self.repair_split_incomplete);
+        }
         ProductionSpendingReply { from: self.from, hour, through: self.through, breakdown, warnings: self.warnings }
     }
 
@@ -554,6 +594,8 @@ impl SpendingIndex {
         let mut leaves: Vec<Leaf> = Vec::new();
         let mut reasons: Vec<String> = Vec::new();
         let mut unassigned = false;
+        let mut repair_gap = None;
+        let mut repair_split_incomplete = false;
 
         match scope {
             ProductionSpendingScope::Military => {
@@ -803,6 +845,7 @@ impl SpendingIndex {
                         leaves.push(Leaf { path: vec![repair_root], amount: Amount::NotRecorded("Spending was not recorded".into()), count: None, last: None });
                     }
                     Some(summary) => {
+                        let gap_reason = summary.gap.map(unknown_reason);
                         let mut any_repair = false;
                         for (variant, sum) in summary.designs {
                             if sum == 0 {
@@ -825,20 +868,22 @@ impl SpendingIndex {
                                 last: None,
                             });
                         }
-                        if let Some(gap_why) = summary.gap {
+                        if let Some(reason) = gap_reason {
+                            repair_gap = Some(reason);
                             if any_repair {
                                 leaves.push(Leaf {
                                     path: vec![repair_root, Node::new("~unrecorded", "Unrecorded hours", u32::MAX).other()],
-                                    amount: Amount::NotRecorded(unknown_reason(gap_why).into()),
+                                    amount: Amount::NotRecorded(reason.into()),
                                     count: None,
                                     last: None,
                                 });
                             } else {
-                                leaves.push(Leaf { path: vec![repair_root], amount: Amount::NotRecorded(unknown_reason(gap_why).into()), count: None, last: None });
+                                leaves.push(Leaf { path: vec![repair_root], amount: Amount::NotRecorded(reason.into()), count: None, last: None });
                             }
                         }
                         if summary.split_incomplete {
-                            warnings.push("Some dockyard repair spending\u{2019}s split by design is not known.".into());
+                            repair_split_incomplete = true;
+                            warnings.push(format!("{REPAIR_SPLIT_INCOMPLETE}."));
                         }
                     }
                 }
@@ -904,7 +949,7 @@ impl SpendingIndex {
         reasons.sort();
         reasons.dedup();
         warnings.dedup();
-        Ok(Built { span: span_at, from: observed_from, rocket_from, leaves, reasons, unassigned, through: through.max(hour), warnings })
+        Ok(Built { span: span_at, from: observed_from, rocket_from, leaves, reasons, unassigned, repair_gap, repair_split_incomplete, through: through.max(hour), warnings })
     }
 
     pub(crate) fn at(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> ProductionSpendingReply {
@@ -940,7 +985,7 @@ impl SpendingIndex {
             Ok(start) if start.span == end.span && (!equipment_baseline || start.from == end.from) && (!rocket_baseline || start.rocket_from == end.rocket_from) => start,
             Ok(_) => return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted)),
             Err(_) if !equipment_baseline && piece_at(&self.spans[end.span].read.rocket_total(), from - 1).is_some_and(|piece| matches!(piece.2, RunAmount::Known(0))) => {
-                Built { span: end.span, from: end.from, rocket_from: end.rocket_from, leaves: Vec::new(), reasons: Vec::new(), unassigned: false, through: end.through, warnings: Vec::new() }
+                Built { span: end.span, from: end.from, rocket_from: end.rocket_from, leaves: Vec::new(), reasons: Vec::new(), unassigned: false, repair_gap: None, repair_split_incomplete: false, through: end.through, warnings: Vec::new() }
             }
             Err(reply) => return refused(reply.breakdown.total.reason.as_deref().unwrap_or(unknown_reason(ProductionSpendingUnknown::NotRecorded))),
         };
