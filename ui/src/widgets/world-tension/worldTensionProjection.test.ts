@@ -386,7 +386,7 @@ describe('world-tension projections', () => {
       assert.deepEqual((plotTip?.payload?.items ?? []).map(item => [item.label, item.value]), [
         ['World tension', '125%'],
         ['German Reich', '+127%'],
-        ['Japan', 'âˆ’2%'],
+        ['Japan', '−2%'],
       ], values);
     }
   });
@@ -831,8 +831,8 @@ describe('world-tension projections', () => {
     assert.equal(share.stack?.total?.endLabel?.value, '100%', 'the world label is the recorded world tension, never the 125% sum of contributions');
     assert.equal(audit(share).get('__total__'), '100%');
     const italy = share.stack?.bands.find(b => b.id === 'slot:3');
-    assert.equal(italy?.endLabel?.value, 'âˆ’4%', 'a negative share keeps its end label');
-    assert.equal(audit(share).get('slot:3'), 'âˆ’4%');
+    assert.equal(italy?.endLabel?.value, '−4%', 'a negative share keeps its end label');
+    assert.equal(audit(share).get('slot:3'), '−4%');
     assert.equal(audit(share).get('slot:17'), 'This country\'s threat contribution was not recorded at this hour.');
     assert.equal(audit(share).get('other'), 'A shown country\'s contribution was not recorded at this hour, so the rest is not known.');
     assert.equal(audit(share).size, 12, 'the world, every band and Other');
