@@ -115,6 +115,8 @@ pub struct ViewLine {
     pub country: Country,
     pub summary: ChartSummary,
     pub missing: Vec<MissingSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partial: Vec<MissingSpan>,
     pub parts: Vec<TilePart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marks: Option<MarkSummary>,
@@ -189,6 +191,17 @@ fn line(view: View, bin_hours: i64, first_tile: i64, tiles: &[&(&TileLine, Bins)
     let (from, to) = (i64::from(view.from), i64::from(view.to));
     let mut parts: Vec<TilePart> = Vec::new();
     let mut missing: Vec<MissingSpan> = Vec::new();
+    let mut partial: Vec<MissingSpan> = Vec::new();
+    let push_span = |out: &mut Vec<MissingSpan>, span: &MissingSpan| {
+        let (first, last) = (i64::from(span.first_hour).max(from), i64::from(span.last_hour).min(to));
+        if first > last {
+            return;
+        }
+        match out.last_mut() {
+            Some(held) if held.reason == span.reason && i64::from(held.last_hour) + 1 == first => held.last_hour = last as i32,
+            _ => out.push(MissingSpan { first_hour: first as i32, last_hour: last as i32, reason: span.reason.clone() }),
+        }
+    };
     for (line, _) in tiles {
         for part in &line.parts {
             if i64::from(part.last_hour) >= from && i64::from(part.first_hour) <= to && !parts.contains(part) {
@@ -196,14 +209,10 @@ fn line(view: View, bin_hours: i64, first_tile: i64, tiles: &[&(&TileLine, Bins)
             }
         }
         for span in &line.missing {
-            let (first, last) = (i64::from(span.first_hour).max(from), i64::from(span.last_hour).min(to));
-            if first > last {
-                continue;
-            }
-            match missing.last_mut() {
-                Some(held) if held.reason == span.reason && i64::from(held.last_hour) + 1 == first => held.last_hour = last as i32,
-                _ => missing.push(MissingSpan { first_hour: first as i32, last_hour: last as i32, reason: span.reason.clone() }),
-            }
+            push_span(&mut missing, span);
+        }
+        for span in &line.partial {
+            push_span(&mut partial, span);
         }
     }
     let summary = match &tiles[0].1 {
@@ -289,7 +298,7 @@ fn line(view: View, bin_hours: i64, first_tile: i64, tiles: &[&(&TileLine, Bins)
         false => None,
     };
     let country = tiles[0].0.country.clone();
-    Ok(ViewLine { country, summary, missing, parts, marks })
+    Ok(ViewLine { country, summary, missing, partial, parts, marks })
 }
 
 fn unbase64(text: &str) -> io::Result<Vec<u8>> {

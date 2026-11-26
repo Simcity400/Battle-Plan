@@ -189,6 +189,7 @@ export interface BoundedSeries {
   readonly straddling: 'none' | 'cut' | 'loading';
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
+  readonly partial?: BoundedSlice<MissingSpan>;
   readonly approximate?: BoundedSlice<{ readonly firstHour: number; readonly lastHour: number }>;
   readonly validInterval: readonly [lo: number, hi: number];
 }

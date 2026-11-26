@@ -1474,6 +1474,9 @@ pub struct RaidTallyAtReply {
     pub unattributed_launched: u32,
     pub unattributed_succeeded: u32,
     pub missing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub partial: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -1494,7 +1497,9 @@ struct CachedTallyBranch {
     available: Option<bool>,
     unavailable: Option<String>,
     events: Vec<TallyEvent>,
-    unattributed_events: Vec<(i32, bool)>,
+    unattributed_launched: Vec<i32>,
+    unattributed_succeeded: Vec<i32>,
+    unattributed_both: Vec<i32>,
     event_hours: Vec<i32>,
     missing: Vec<MissingSpan>,
     warnings: Vec<String>,
@@ -1523,24 +1528,43 @@ fn load_tally_branch(source: &Source, query: &Query<'_>, branch_id: u64, context
     let unavailable = none.then(|| "The content declares no raid type.".to_owned());
 
     let mut events = Vec::new();
-    let mut unattributed_events = Vec::new();
+    let mut unattributed_launched = Vec::new();
+    let mut unattributed_succeeded = Vec::new();
+    let mut unattributed_both = Vec::new();
     for episode in episodes {
+        let mut unattributed_first: Option<i32> = None;
         if let Some(h) = episode.launched_hour {
-            match episode.launched_raider.as_ref().or(episode.raider.as_ref()) {
-                Some(tag) => events.push(TallyEvent { hour: h, succeeded: false, tag: tag.clone(), slot: episode.raider_slot }),
-                None => unattributed_events.push((h, false)),
+            let tag = episode.launched_raider.as_ref().or(episode.raider.as_ref());
+            if episode.raider_slot.is_some() || tag.is_some() {
+                events.push(TallyEvent { hour: h, succeeded: false, tag: tag.cloned().unwrap_or_default(), slot: episode.raider_slot });
+            } else {
+                unattributed_launched.push(h);
+                unattributed_first = Some(h);
             }
         }
         if let Some(h) = episode.succeeded_hour {
-            match episode.raider.as_ref().or(episode.launched_raider.as_ref()) {
-                Some(tag) => events.push(TallyEvent { hour: h, succeeded: true, tag: tag.clone(), slot: episode.raider_slot }),
-                None => unattributed_events.push((h, true)),
+            let tag = episode.raider.as_ref().or(episode.launched_raider.as_ref());
+            if episode.raider_slot.is_some() || tag.is_some() {
+                events.push(TallyEvent { hour: h, succeeded: true, tag: tag.cloned().unwrap_or_default(), slot: episode.raider_slot });
+            } else {
+                unattributed_succeeded.push(h);
+                unattributed_first = Some(unattributed_first.map_or(h, |prev| prev.min(h)));
             }
+        }
+        if let Some(h) = unattributed_first {
+            unattributed_both.push(h);
         }
     }
     events.sort_by_key(|event| event.hour);
-    unattributed_events.sort_by_key(|&(h, _)| h);
-    let mut event_hours: Vec<i32> = events.iter().map(|event| event.hour).chain(unattributed_events.iter().map(|&(h, _)| h)).collect();
+    unattributed_launched.sort_unstable();
+    unattributed_succeeded.sort_unstable();
+    unattributed_both.sort_unstable();
+    let mut event_hours: Vec<i32> = events
+        .iter()
+        .map(|event| event.hour)
+        .chain(unattributed_launched.iter().copied())
+        .chain(unattributed_succeeded.iter().copied())
+        .collect();
     event_hours.sort_unstable();
     event_hours.dedup();
     let built = Arc::new(CachedTallyBranch {
@@ -1549,7 +1573,9 @@ fn load_tally_branch(source: &Source, query: &Query<'_>, branch_id: u64, context
         available,
         unavailable,
         events,
-        unattributed_events,
+        unattributed_launched,
+        unattributed_succeeded,
+        unattributed_both,
         event_hours,
         missing: missing_spans,
         warnings: warnings.into_iter().collect(),
@@ -1578,6 +1604,14 @@ fn tally_interval(branch: &CachedTallyBranch, hour: i32) -> (i32, i32) {
         last = last.min(branch.event_hours[idx].saturating_sub(1));
     }
     (first.min(hour), last.max(hour))
+}
+
+pub(super) fn metric_unattributed(metric: RaidTallyMetric, launched: u32, succeeded: u32, both: u32) -> u32 {
+    match metric {
+        RaidTallyMetric::Launched => launched,
+        RaidTallyMetric::Succeeded => succeeded,
+        RaidTallyMetric::Both => both,
+    }
 }
 
 impl Product for RaidTallyAt {
@@ -1611,20 +1645,10 @@ impl Product for RaidTallyAt {
         let query = dashboard_base::queries::query(source, branch_id)?;
         let cached = load_tally_branch(source, &query, branch_id, context)?;
         let hour = params.hour;
-        let mut unattributed_launched = 0u32;
-        let mut unattributed_succeeded = 0u32;
-        for &(event_hour, succeeded) in cached.unattributed_events.iter().take_while(|&&(h, _)| h <= hour) {
-            let _ = event_hour;
-            if succeeded {
-                unattributed_succeeded = unattributed_succeeded.saturating_add(1);
-            } else {
-                unattributed_launched = unattributed_launched.saturating_add(1);
-            }
-        }
-        let unattributed = match params.metric {
-            RaidTallyMetric::Succeeded => unattributed_succeeded,
-            RaidTallyMetric::Launched | RaidTallyMetric::Both => unattributed_launched.max(unattributed_succeeded),
-        };
+        let unattributed_launched = cached.unattributed_launched.partition_point(|&h| h <= hour) as u32;
+        let unattributed_succeeded = cached.unattributed_succeeded.partition_point(|&h| h <= hour) as u32;
+        let unattributed_both = cached.unattributed_both.partition_point(|&h| h <= hour) as u32;
+        let unattributed = metric_unattributed(params.metric, unattributed_launched, unattributed_succeeded, unattributed_both);
         if cached.available == Some(false) {
             return Ok(RaidTallyAtReply {
                 branch_id: params.branch_id.clone(),
@@ -1639,6 +1663,7 @@ impl Product for RaidTallyAt {
                 unattributed_launched,
                 unattributed_succeeded,
                 missing: None,
+                partial: None,
                 warnings: cached.warnings.clone(),
             });
         }
@@ -1656,33 +1681,39 @@ impl Product for RaidTallyAt {
                 unattributed_launched,
                 unattributed_succeeded,
                 missing: Some(gap.reason.clone()),
+                partial: None,
                 warnings: cached.warnings.clone(),
             });
         }
         let (mut first_hour, mut last_hour) = tally_interval(&cached, hour);
         let explicit_countries: Option<Vec<Country>> = if let Some(group) = &params.group {
             let groups = GroupsAt::load(source, context, &params.branch_id, Some(group))?;
-            let members = groups.members(group, hour)?;
-            if let Some(refused) = members.refused {
-                return Ok(RaidTallyAtReply {
-                    branch_id: params.branch_id.clone(),
-                    hour,
-                    first_hour: members.from.max(cached.first_hour).min(hour),
-                    last_hour: members.until.min(cached.last_hour).max(hour),
-                    metric: params.metric,
-                    available: cached.available,
-                    unavailable: cached.unavailable.clone(),
-                    rows: Vec::new(),
-                    unattributed,
-                    unattributed_launched,
-                    unattributed_succeeded,
-                    missing: Some(refused),
-                    warnings: cached.warnings.clone(),
-                });
+            let members = groups.slots_at(group, &query.holders, hour)?;
+            match &members.slots {
+                Err(refused) => {
+                    return Ok(RaidTallyAtReply {
+                        branch_id: params.branch_id.clone(),
+                        hour,
+                        first_hour: first_hour.max(members.from).min(hour),
+                        last_hour: last_hour.min(members.until).max(hour),
+                        metric: params.metric,
+                        available: cached.available,
+                        unavailable: cached.unavailable.clone(),
+                        rows: Vec::new(),
+                        unattributed,
+                        unattributed_launched,
+                        unattributed_succeeded,
+                        missing: Some(refused.clone()),
+                        partial: None,
+                        warnings: cached.warnings.clone(),
+                    });
+                }
+                Ok(slots) => {
+                    first_hour = first_hour.max(members.from);
+                    last_hour = last_hour.min(members.until);
+                    Some(slots.iter().copied().map(Country::Slot).collect())
+                }
             }
-            first_hour = first_hour.max(members.from);
-            last_hour = last_hour.min(members.until);
-            Some(members.tags.into_iter().map(Country::Tag).collect())
         } else if !params.countries.is_empty() {
             Some(params.countries.clone())
         } else {
@@ -1709,6 +1740,7 @@ impl Product for RaidTallyAt {
                     unattributed_launched,
                     unattributed_succeeded,
                     missing: Some(format!("Raid history is incomplete up to this date: {}", gap.reason)),
+                    partial: None,
                     warnings: cached.warnings.clone(),
                 });
             }
@@ -1726,6 +1758,7 @@ impl Product for RaidTallyAt {
                     unattributed_launched,
                     unattributed_succeeded,
                     missing: Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld")),
+                    partial: None,
                     warnings: cached.warnings.clone(),
                 });
             }
@@ -1824,13 +1857,23 @@ impl Product for RaidTallyAt {
         rows_out.sort_unstable_by(|a, b| {
             rank_value(b.launched, b.succeeded)
                 .cmp(&rank_value(a.launched, a.succeeded))
-                .then_with(|| b.succeeded.cmp(&a.succeeded))
-                .then_with(|| a.tag.cmp(&b.tag))
+                .then_with(|| match params.metric {
+                    RaidTallyMetric::Both => b.succeeded.cmp(&a.succeeded),
+                    RaidTallyMetric::Launched | RaidTallyMetric::Succeeded => std::cmp::Ordering::Equal,
+                })
                 .then_with(|| a.country.cmp(&b.country))
+                .then_with(|| a.tag.cmp(&b.tag))
         });
         if let Some(limit) = params.top {
             rows_out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         }
+        let partial = if let Some(gap) = cached.missing.iter().find(|gap| gap.first_hour <= hour) {
+            Some(format!("Raid history is incomplete up to this date: {}", gap.reason))
+        } else if unattributed > 0 {
+            Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider"))
+        } else {
+            None
+        };
         let reply = RaidTallyAtReply {
             branch_id: params.branch_id.clone(),
             hour,
@@ -1844,6 +1887,7 @@ impl Product for RaidTallyAt {
             unattributed_launched,
             unattributed_succeeded,
             missing: None,
+            partial,
             warnings: cached.warnings.clone(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;

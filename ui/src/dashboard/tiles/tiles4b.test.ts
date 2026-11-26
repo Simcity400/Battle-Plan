@@ -20,7 +20,7 @@ function binned(tags: readonly string[], binHours: number, index: number, marks:
   for (let at = 0; at < tags.length * TILE_BINS; at++) view.setInt32(tags.length * TILE_BINS + at * 4, at, true);
   return { branchId: '1', measure: 'politicalPower', decimals: 0, binHours, index, firstHour: first, immutable: last < LAST, filled: Math.min(last, LAST),
     rawValues: true, hourBytes: 1, bins: base64(bytes),
-    lines: tags.map((tag, at) => ({ country: tag, missing: [], parts: [{ firstHour: first, lastHour: last, slot: at, countryId: at, segmentFirstHour: 0 }],
+    lines: tags.map((tag, at) => ({ country: tag, missing: [], partial: [], parts: [{ firstHour: first, lastHour: last, slot: at, countryId: at, segmentFirstHour: 0 }],
       ...(marks ? { marks: { before: String(index * 51), bins: Array.from({ length: 52 }, (_, bin) => [bin * 5, 1] as [number, number]).filter(([bin]) => bin < TILE_BINS) } } : {}) })) };
 }
 
@@ -89,7 +89,7 @@ function hourly(runs: (tag: number) => Run[]) {
     values.forEach((value, at) => new DataView(bytes.buffer).setInt32(flags.length + at * 4, value, true));
     return { branchId: '1', measure: 'politicalPower', decimals: 2, binHours: 1, index, firstHour: first, immutable: true, filled: last,
       rawValues: true, hourBytes: 0, bins: base64(bytes),
-      lines: tags.map((tag, at) => ({ country: tag, missing: [], parts: [{ firstHour: first, lastHour: last, slot: at, countryId: at, segmentFirstHour: 1000 }] })) };
+      lines: tags.map((tag, at) => ({ country: tag, missing: [], partial: [], parts: [{ firstHour: first, lastHour: last, slot: at, countryId: at, segmentFirstHour: 1000 }] })) };
   };
 }
 

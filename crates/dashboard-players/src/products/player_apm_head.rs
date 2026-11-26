@@ -647,7 +647,7 @@ fn tile_from_index(
         let lines = ask
             .countries
             .iter()
-            .map(|id| TileLine { country: id.clone().into(), part: None, missing: missing.clone(), parts: Vec::new(), marks: None })
+            .map(|id| TileLine { country: id.clone().into(), part: None, missing: missing.clone(), partial: Vec::new(), parts: Vec::new(), marks: None })
             .collect();
         let (immutable, filled) = tile::closure(first, last, timeline_last);
         let buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
@@ -732,7 +732,7 @@ fn tile_from_index(
                 }
             }
         }
-        lines.push(TileLine { country: id.clone().into(), part: None, missing: merge_missing_spans(missing), parts: Vec::new(), marks: None });
+        lines.push(TileLine { country: id.clone().into(), part: None, missing: merge_missing_spans(missing), partial: Vec::new(), parts: Vec::new(), marks: None });
     }
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);

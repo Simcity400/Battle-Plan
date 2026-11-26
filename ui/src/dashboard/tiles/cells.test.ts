@@ -23,7 +23,7 @@ function marked(tags: readonly string[], binHours: number, index: number): Serie
   const before = (tag: number) => { let sum = 0; for (let bin = 0; bin < index * TILE_BINS; bin++) sum += dropsAt(tag, bin); return sum; };
   return { branchId: '1', measure: 'politicalPower', decimals: 0, binHours, index, firstHour: first, immutable: last < LAST, filled: Math.min(last, LAST),
     rawValues: true, hourBytes: 1, bins: base64(bytes),
-    lines: tags.map((tag, at) => ({ country: tag, missing: [], parts: [{ firstHour: first, lastHour: last, slot: at, countryId: at, segmentFirstHour: 0 }],
+    lines: tags.map((tag, at) => ({ country: tag, missing: [], partial: [], parts: [{ firstHour: first, lastHour: last, slot: at, countryId: at, segmentFirstHour: 0 }],
       marks: { before: String(before(at)), bins: Array.from({ length: TILE_BINS }, (_, bin) => [bin, dropsAt(at, index * TILE_BINS + bin)] as [number, number]).filter(([, count]) => count > 0) } })) };
 }
 

@@ -474,6 +474,15 @@ export function missingSpansOf(bounded: BoundedSeries | null | undefined): reado
   }));
 }
 
+export function partialSpansOf(bounded: BoundedSeries | null | undefined): readonly ChartMissingSpan[] | undefined {
+  if (!bounded?.partial || bounded.partial.length === 0) return undefined;
+  return [...bounded.partial].map(sp => ({
+    firstHour: sp.firstHour,
+    lastHour: sp.lastHour,
+    reason: sp.reason ?? 'Partial',
+  }));
+}
+
 export interface CardRow {
   readonly label: string;
   readonly value?: string;

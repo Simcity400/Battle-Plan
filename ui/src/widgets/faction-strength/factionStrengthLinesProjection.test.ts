@@ -149,7 +149,7 @@ test('aggregated explicit country list asks one group tile line keyed as group a
     filled: 115,
     rawValues: true,
     hourBytes: 0,
-    lines: [{ country: 'group', missing: [], parts: [] }],
+    lines: [{ country: 'group', missing: [], partial: [], parts: [] }],
     bins: new Uint8Array(256),
   };
   const decoded = tilesOf(reply, main.read.tags, 1, 0, tag => tag);
