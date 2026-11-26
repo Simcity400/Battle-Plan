@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
-import { shownClusters } from '../../charts/markSummary.ts';
-import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
+import type { MarkCluster } from '../../charts/markSummary';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
 import { PRESENT, TILE_BINS, binHoursOf } from './tile.ts';
@@ -85,47 +84,6 @@ test('a scroll keeps every past cluster, a zoom regroups, and the ordinals are t
   await settle();
   const zoomed = view.current!.get('GER')!.marks!;
   assert.notEqual(zoomed.clusters[0].lastHour - zoomed.clusters[0].firstHour, after.clusters[0].lastHour - after.clusters[0].firstHour);
-});
-
-test('the head inside a cell shows the drops of the bins it has passed, and the tick grows as it crosses', () => {
-  const summary: MarkSummary = { from: 0, to: 200, width: 600, tiles: true, clusters: cellClusters([[0, 2, 0n], [24, 1, 2n], [36, 4, 3n], [60, 2, 7n]], 12, 3) };
-  assert.deepEqual(shownClusters(summary, 10).map(key), [], 'nothing until the head passes a bin with drops');
-  assert.deepEqual(shownClusters(summary, 11).map(key), ['0:11:2:0']);
-  assert.deepEqual(shownClusters(summary, 34).map(key), ['0:11:2:0']);
-  assert.deepEqual(shownClusters(summary, 35).map(key), ['0:35:3:0'], 'the cell whole once the head passes its last bin with drops');
-  assert.deepEqual(shownClusters(summary, 50).map(key), ['0:35:3:0', '36:47:4:3']);
-  assert.deepEqual(shownClusters(summary, 71).map(key), ['0:35:3:0', '36:71:6:3']);
-  assert.equal(shownClusters(summary, 50), shownClusters(summary, 52), 'made again only when the head passes a bin with drops');
-  assert.equal(shownClusters({ ...summary, tiles: undefined }, 10).length, 2);
-});
-
-test('following at 1,440 h/s with spend ticks on: a cluster once drawn never changes but the one the head is inside, and requests are those of P4b', async () => {
-  const cache = new TileCache(), marks = lane(['GER', 'ITA']);
-  let renders = 0;
-  const view = new TileView(cache, marks, () => { renders++; });
-  view.setView(following(8760, 365));
-  await settle();
-  const initial = marks.asked.length;
-  const drawn = new Map<string, string>();
-  let checked = 0, inside = 0;
-  for (let head = 8784; head <= LAST; head += 24) {
-    view.setView(following(head, 365));
-    await settle();
-    const summary = view.current!.get('GER')!.marks!;
-    const shown = shownClusters(summary, head);
-    shown.forEach((cluster, at) => {
-      const whole = at < shown.length - 1 || cluster.lastHour <= head - binHoursOf(8760, 600) * cellBins(8760, 600, binHoursOf(8760, 600));
-      const before = drawn.get(cluster.firstOrdinal);
-      if (before !== undefined && whole) { assert.equal(key(cluster), before, `cluster ${cluster.firstOrdinal} unchanged at hour ${head}`); checked++; }
-      if (!whole) inside++;
-      drawn.set(cluster.firstOrdinal, key(cluster));
-    });
-  }
-  assert.ok(checked > 100_000, `${checked} drawn clusters checked`);
-  const moving = marks.asked.length - initial;
-  assert.equal(moving, 32, 'one tile per 256 bins of travel, as in P4b');
-  assert.ok(renders <= initial + moving);
-  console.log(`following with 18-pixel cells at 1,440 h/s: ${initial} tiles to open, then ${moving} requests; ${checked} drawn clusters unchanged across frames, ${inside} head-cell clusters seen growing; ${renders} renders`);
 });
 
 

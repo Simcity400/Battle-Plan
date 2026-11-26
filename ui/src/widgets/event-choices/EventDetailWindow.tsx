@@ -6,6 +6,7 @@ import type { EventFeedItem } from '../../generated/dashboard';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import type { RefObject } from 'react';
 import { optionLetter } from './eventChoicesData.ts';
+import type { EventDetail } from './eventDetail.ts';
 import { plainScripted, reasonsOf, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import './eventDetailWindow.css';
 
@@ -28,6 +29,7 @@ export interface EventDetailSubject {
 
 export interface EventDetailWindowProps {
   readonly subject: EventDetailSubject | null;
+  readonly detail?: EventDetail | null;
   readonly anchor: RefObject<HTMLElement | null>;
   readonly onClose: () => void;
 }
@@ -43,15 +45,17 @@ function ScriptedSpan({ text, reason }: { readonly text: string; readonly reason
   );
 }
 
-export default function EventDetailWindow({ subject, anchor, onClose }: EventDetailWindowProps) {
-  const item = subject?.item ?? null;
+export default function EventDetailWindow({ subject, detail, anchor, onClose }: EventDetailWindowProps) {
+  const read = detail && !detail.pending && !detail.missing ? detail.item : null;
+  const item = read ?? subject?.item ?? null;
   const reasons = reasonsOf(item);
   const titleText = subject?.title ? plainScripted(subject.title) : 'Event presentation was not recorded';
-  const options = item?.options ?? [];
+  const options = read?.options ?? [];
+  const known = item?.options ?? [];
   const chosenIndex = subject && subject.chosenOrdinal !== null
-    ? options.findIndex(opt => opt.ordinal === subject.chosenOrdinal)
+    ? known.findIndex(opt => opt.ordinal === subject.chosenOrdinal)
     : -1;
-  const chosenOption = chosenIndex >= 0 ? options[chosenIndex]! : null;
+  const chosenOption = chosenIndex >= 0 ? known[chosenIndex]! : null;
   const chosenLetter = chosenIndex >= 0 ? optionLetter(chosenIndex) : null;
 
   const asOfHour = subject ? (subject.asOfHour ?? subject.hour) : null;
@@ -90,12 +94,21 @@ export default function EventDetailWindow({ subject, anchor, onClose }: EventDet
             </div>
 
             <div className="evd-desc">
-              {item?.description ? (
-                <p><ScriptedSpan text={item.description} reason={reasons.gaps} /></p>
+              {detail?.pending ? (
+                <p className="evd-missing">Reading the event's text…</p>
+              ) : detail?.missing ? (
+                <p className="evd-missing" title={detail.missing}>Not recorded: {detail.missing}</p>
               ) : (
-                <p className="evd-missing" title={reasons.nameMissing ?? 'Event presentation was not recorded'}>
-                  Event presentation was not recorded
-                </p>
+                <>
+                  {item?.description ? (
+                    <p><ScriptedSpan text={item.description} reason={reasons.gaps} /></p>
+                  ) : (
+                    <p className="evd-missing" title={reasons.nameMissing ?? 'Event presentation was not recorded'}>
+                      Event presentation was not recorded
+                    </p>
+                  )}
+                  {detail?.effectsMissing?.map(reason => <p key={reason} className="evd-missing" title={reason}>Authored effects not recorded: {reason}</p>)}
+                </>
               )}
             </div>
 
@@ -113,9 +126,9 @@ export default function EventDetailWindow({ subject, anchor, onClose }: EventDet
                     </span>
                   </div>
                 );
-              }) : (
+              }) : read ? (
                 <div className="evd-missing">Options were not recorded for this event.</div>
-              )}
+              ) : null}
             </div>
           </div>
 

@@ -1,9 +1,8 @@
 import { stackedSegments } from '../stack.ts';
 import type { StackModel, StackSegment } from '../stack';
 
-export function countryRaceSegments(stack: StackModel, from: number, to: number, hoursPerPixel: number, held = true): StackSegment[] {
-  const segments = stackedSegments(stack, from, to, hoursPerPixel / 2);
-  return held ? segments.map(heldStackSegment) : segments;
+export function countryRaceSegments(stack: StackModel, from: number, to: number, hoursPerPixel: number): StackSegment[] {
+  return stackedSegments(stack, from, to, hoursPerPixel / 2).map(heldStackSegment);
 }
 
 export function heldStackSegment(segment: StackSegment): StackSegment {

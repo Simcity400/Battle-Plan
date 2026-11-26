@@ -187,6 +187,8 @@ pub struct EventFeedRow {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub participants: Option<[Option<String>; 2]>,
     pub item: Option<EventFeedItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub amount: Option<u32>,
     #[doc = " A native event's recorded cause; absent when the recording holds none."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,19 +301,38 @@ pub struct EventFeedStrike {
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedCause {
     #[doc = " The native operation the event happened in."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub how: Option<String>,
     #[doc = " The operation that one ran inside."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub within: Option<String>,
     #[doc = " The peace conference starting or applying, as its reference in decimal."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub conference: Option<String>,
     #[doc = " A state whose owner changed."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub state: Option<u32>,
     #[doc = " A join's ally."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub ally: Option<String>,
     #[doc = " A join's hostility reason."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub reason: Option<String>,
-    #[doc = " The native operands that change what the event means."]
+    #[doc = " The native operands that change what the event means; empty in a list row, read with the opened row."]
     pub notes: Vec<String>,
+    #[doc = " A scripted event's selected native option ordinal, where recorded."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub selected_option: Option<i32>,
+    #[doc = " Whether a scripted event recorded a country or numeric target."]
+    #[serde(default)]
+    pub target_recorded: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -321,6 +342,8 @@ pub struct EventFeedItem {
     pub token: Option<String>,
     pub name: Option<String>,
     pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub description: Option<String>,
     #[doc = " A scripted event's authored options in the game's order; absent for other kinds and when"]
     #[doc = " the event's content does not resolve."]
@@ -343,6 +366,7 @@ pub struct EventFeedItem {
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedOption {
     pub ordinal: u32,
+    #[doc = " In a list row only the chosen option's name; the opened row holds every option's."]
     pub name: Option<String>,
 }
 
@@ -395,14 +419,32 @@ fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
     }
 }
 
-pub(crate) fn present_all(query: &Query<'_>, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
-    let states = decision_state::resolve_all(query, events)?;
+pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
+    let states = scanned.decision_states(query, events)?;
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&at| events[at].hour);
-    let mut out: Vec<Option<EventFeedRow>> = (0..events.len()).map(|_| None).collect();
-    for at in order {
+    let (request, mut held) = scanned.held_rows(presenter.content(), presenter.effects(), events);
+    let mut made = Vec::new();
+    for &at in &order {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let mut presented = present(events[at], names, presenter, notices)?;
+        if held[at].is_none() {
+            let (presented, own) = catalogue::capture(|| {
+                let mut said = Notices::default();
+                present(events[at], names, presenter, &mut said).map(|row| (row, said))
+            });
+            let (row, said) = presented?;
+            let kept: index::HeldRow = Arc::new((row, said, own));
+            made.push((events[at], Arc::clone(&kept)));
+            held[at] = Some(kept);
+        }
+    }
+    scanned.keep_rows(presenter.content(), presenter.effects(), request, made);
+    let mut out: Vec<Option<EventFeedRow>> = vec![None; events.len()];
+    for &at in &order {
+        let Some(kept) = held[at].as_ref() else { continue };
+        catalogue::credit(&kept.2);
+        notices.absorb(&kept.1);
+        let mut presented = kept.0.clone();
         if let Some(row) = presented.as_mut() {
             row.decision_state = states[at].clone();
         }

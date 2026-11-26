@@ -1,6 +1,5 @@
 import type { ValueStateProps } from '../components/ValueState';
 import { formatDateTime, formatDay, gameDate, monthNames } from '../dashboard/calendar.ts';
-import { canonicalAuditValue } from './audit.ts';
 import { InvalidFamilyValueError, assertValue, type Scalar, type Value } from './value.ts';
 
 function assertFiniteScalar(raw: unknown, context: string): asserts raw is Scalar {
@@ -434,74 +433,6 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
   }
 }
 
-export interface FormattedOutOf {
-  readonly kind: FormattedValue['kind'];
-  readonly text: string;
-  readonly exact: string;
-  readonly spoken: string;
-  readonly missingReason?: string;
-  readonly partialReason?: string;
-  readonly gameWindow?: boolean;
-}
-
-export function formatOutOf(
-  value: Value,
-  max: Value,
-  format?: ValueFormat,
-  options?: FormatValueOptions,
-): FormattedOutOf {
-  const formattedValue = formatValueState(value, format, options);
-  if (formattedValue.kind === 'notRecorded' || formattedValue.kind === 'notApplicable') {
-    return {
-      kind: formattedValue.kind,
-      text: formattedValue.label,
-      exact: formattedValue.label,
-      spoken: formattedValue.spoken,
-      missingReason: formattedValue.reason,
-      ...(formattedValue.kind === 'notRecorded' && formattedValue.gameWindow ? { gameWindow: true } : {}),
-    };
-  }
-  const formattedMax = formatValueState(max, format, options);
-  const valueExact = formattedValue.exact;
-  if (formattedMax.kind === 'notApplicable') {
-    return {
-      kind: formattedValue.kind,
-      text: formattedValue.text,
-      exact: valueExact,
-      spoken: formattedValue.spoken,
-      ...(formattedValue.kind === 'partial' ? { partialReason: formattedValue.reason } : {}),
-    };
-  }
-  if (formattedMax.kind === 'notRecorded') {
-    const reason = formattedValue.kind === 'partial'
-      ? `${formattedValue.reason}; maximum not recorded: ${formattedMax.reason}`
-      : `Maximum not recorded: ${formattedMax.reason}`;
-    return {
-      kind: 'partial',
-      text: formattedValue.text,
-      exact: valueExact,
-      spoken: `${valueExact}, ${reason}`,
-      partialReason: reason,
-    };
-  }
-  const maxExact = formattedMax.exact;
-  const text = `${formattedValue.text} / ${formattedMax.text}`;
-  const exact = `${valueExact} / ${maxExact}`;
-  const reasons: string[] = [];
-  if (formattedValue.kind === 'partial') reasons.push(formattedValue.reason);
-  if (formattedMax.kind === 'partial') reasons.push(formattedMax.reason);
-  if (reasons.length) {
-    const partialReason = reasons.join('; ');
-    return { kind: 'partial', text, exact, spoken: `${exact}, partial: ${partialReason}`, partialReason };
-  }
-  return {
-    kind: formattedValue.kind === 'zero' && formattedMax.kind === 'zero' ? 'zero' : 'known',
-    text,
-    exact,
-    spoken: exact,
-  };
-}
-
 export interface DateColumnParts {
   readonly dayMonth: string;
   readonly year: string;
@@ -532,28 +463,6 @@ export function formatDateParts(hour: number): DateColumnParts | null {
   };
 }
 
-export function formatDateValue(
-  hour: Value<number>,
-  options?: { readonly figure?: string; readonly gameWindow?: boolean },
-): FormattedValue & { readonly hover?: string; readonly parts?: DateColumnParts | null } {
-  assertValue(hour, 'formatDateValue');
-  if (hour.kind === 'notRecorded') {
-    return formatValueState(hour, undefined, { figure: options?.figure ?? 'Date', gameWindow: options?.gameWindow });
-  }
-  if (hour.kind === 'notApplicable') {
-    return formatValueState(hour);
-  }
-  const whole = Math.floor(Number(hour.value));
-  const display = formatDateOnly(whole);
-  const parts = formatDateParts(whole);
-  const hover = formatDateHover(whole);
-  if (hour.kind === 'partial') {
-    const spoken = `${display}, partial: ${hour.reason}`;
-    return { kind: 'partial', text: display, exact: hover, reason: hour.reason, spoken, audit: spoken, hover, parts };
-  }
-  return { kind: 'known', text: display, exact: hover, spoken: display, audit: display, hover, parts };
-}
-
 export function valueStateProps(value: Value, format?: ValueFormat, narrow = false): ValueStateProps {
   const formatted = formatValueState(value, format);
   switch (formatted.kind) {
@@ -576,11 +485,6 @@ export function valueStateProps(value: Value, format?: ValueFormat, narrow = fal
 
 export function spokenValue(value: Value, format?: ValueFormat): string {
   return formatValueState(value, format).spoken;
-}
-
-export function auditValue(value: Value, _format?: ValueFormat): string {
-  assertValue(value, 'auditValue');
-  return canonicalAuditValue(value);
 }
 
 export function defaultWidestSamples(format?: ValueFormat): readonly string[] {

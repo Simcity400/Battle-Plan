@@ -1,3 +1,4 @@
+import type { EventDetail } from '../event-choices/eventDetail.ts';
 import type { RefObject } from 'react';
 import { dayLabel } from '../../charts/draw.ts';
 import ArtFallback from '../../components/ArtFallback.tsx';
@@ -38,11 +39,14 @@ export interface DecisionDetailSubject {
 
 export interface DecisionDetailWindowProps {
   readonly subject: DecisionDetailSubject | null;
+  readonly detail?: EventDetail | null;
   readonly anchor: RefObject<HTMLElement | null>;
   readonly onClose: () => void;
 }
 
-export default function DecisionDetailWindow({ subject, anchor, onClose }: DecisionDetailWindowProps) {
+export default function DecisionDetailWindow({ subject, detail, anchor, onClose }: DecisionDetailWindowProps) {
+  const description = detail?.item?.description ?? subject?.description ?? null;
+  const gaps = detail?.item?.gaps ?? subject?.gaps ?? null;
   const titleText = subject?.name ? plainScripted(subject.name) : 'Decision name not recorded';
 
   return (
@@ -136,17 +140,24 @@ export default function DecisionDetailWindow({ subject, anchor, onClose }: Decis
                 <dd className="dcd-missing">{subject.nameMissing}</dd>
               </>
             ) : null}
-            {subject.gaps ? (
+            {gaps ? (
               <>
                 <dt>Text not recorded</dt>
-                <dd className="dcd-missing">{subject.gaps}</dd>
+                <dd className="dcd-missing">{gaps}</dd>
               </>
             ) : null}
           </dl>
 
-          {subject.description ? (
-            <p className="dcd-desc">{plainScripted(subject.description)}</p>
-          ) : null}
+          {detail?.pending ? (
+            <p className="dcd-desc dcd-missing">Reading the decision's text…</p>
+          ) : detail?.missing ? (
+            <p className="dcd-desc dcd-missing" title={detail.missing}>Not recorded: {detail.missing}</p>
+          ) : (
+            <>
+              {description ? <p className="dcd-desc">{plainScripted(description)}</p> : null}
+              {detail?.effectsMissing?.map(reason => <p key={reason} className="dcd-desc dcd-missing" title={reason}>Authored effects not recorded: {reason}</p>)}
+            </>
+          )}
         </div>
       ) : null}
     </DetailWindowHost>

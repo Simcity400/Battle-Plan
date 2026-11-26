@@ -221,7 +221,8 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
     art,
   });
 
-  const model = activeResearchProjection.project(view, { history, countryName: 'Germany' });
+  const opts = activeResearchDeclaration.projectionOptions({ aux: history, countryName: 'Germany', countrySubject: '\u00001', countryTag: 'GER' } as never, {} as never);
+  const model = activeResearchProjection.project(view, opts);
   assert.equal(model.layout, 'rows');
   assert.equal(model.summaryText, null);
   assert.equal(model.sections?.length, 1);
@@ -231,6 +232,7 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
   assert.ok(sec.rightCaption?.startsWith('As of '), 'shows single As of caption when reading >= 24h old');
   assert.equal(sec.rows?.length, 3);
   assert.equal(sec.rows![0]!.name, 'Basic Machine Tools');
+  assert.equal((sec.rows![0]!.meta as { country: string | null }).country, '\u00001', 'carries the installed country slot through activation');
   assert.equal(sec.rows![0]!.subtitle, 'Industry');
   assert.equal(sec.rows![0]!.figure, '68%');
   assert.equal(sec.rows![0]!.secondary, '90 days left');

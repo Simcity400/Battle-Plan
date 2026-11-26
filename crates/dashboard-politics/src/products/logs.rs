@@ -150,10 +150,10 @@ pub fn dated_panel(source: &Source, _load: &LoadContext, asked: &serde_json::Val
     let q_caches = caches.clone();
     Ok(dated_tail_panel(
         executable,
-        move |prev_hour, hour, prev_reply, cancelled| {
+        move |prev_hour, hour, cancelled| {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let query = Query { replay: &q_replay, timeline: q_timeline.clone(), holders: q_holders.clone() };
-            quiet_tail_missing(&query, &q_params.log, &q_caches, &selection, &count_selections, &q_params.facets, &q_params.count_facets, q_params.from, prev_hour, hour, prev_reply)
+            quiet_tail_missing(&query, &q_params.log, &q_caches, &selection, &count_selections, &q_params.facets, &q_params.count_facets, q_params.from, prev_hour, hour)
         },
         move |hour, cancelled| {
             let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };

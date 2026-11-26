@@ -18,7 +18,7 @@ test('game score reply validation rejects malformed cells and column hints fall 
   assert.equal(scoreHint(REPLY, 'country'), undefined);
 });
 
-import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import { gameScoreProjection } from './gameScoreProjection.ts';
 
 test('game-score projection resolves slot tag runs at the projected hour and honours faction rename bounds without latest-name fallback', () => {
@@ -69,8 +69,8 @@ test('game-score projection resolves slot tag runs at the projected hour and hon
   const at110 = gameScoreProjection.project(createBoundedReadView({ hour: 110, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), opts);
   assert.deepEqual(at110.rows.map(r => r.key), ['GDR'], 'slot 7 resolves to GDR at hour 110');
 
-  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(40), opts), 51, 'nextChange reports faction rename boundary');
-  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(90), opts), 105, 'nextChange reports slot switch / faction end boundary');
+  assert.equal(gameScoreProjection.nextChange?.(createBoundedReadView({ hour: 40 }), opts), 51, 'nextChange reports faction rename boundary');
+  assert.equal(gameScoreProjection.nextChange?.(createBoundedReadView({ hour: 90 }), opts), 105, 'nextChange reports slot switch / faction end boundary');
 
   const ungroupedOpts = {
     ...opts,
@@ -78,8 +78,8 @@ test('game-score projection resolves slot tag runs at the projected hour and hon
     factionUnobserved: [[20, 30] as const],
     factionIncomplete: [[65, 75] as const],
   };
-  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(10), ungroupedOpts), 20, 'nextChange includes faction coverage bounds even when grouping is off');
-  assert.equal(gameScoreProjection.nextChange?.(emptyReadView(40), ungroupedOpts), 51, 'nextChange includes faction rename bounds even when grouping is off');
+  assert.equal(gameScoreProjection.nextChange?.(createBoundedReadView({ hour: 10 }), ungroupedOpts), 20, 'nextChange includes faction coverage bounds even when grouping is off');
+  assert.equal(gameScoreProjection.nextChange?.(createBoundedReadView({ hour: 40 }), ungroupedOpts), 51, 'nextChange includes faction rename bounds even when grouping is off');
 
   const unobsModel = gameScoreProjection.project(createBoundedReadView({ hour: 25, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), { ...opts, factionUnobserved: [[20, 30]] });
   assert.equal(unobsModel.rows[0]!.group?.key, 'faction-not-recorded', 'unobserved faction hours are notRecorded, never No faction');

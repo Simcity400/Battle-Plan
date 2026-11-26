@@ -11899,6 +11899,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-journal",
+ "replay-lanes",
  "replay-recording",
  "replay-settings",
  "serde_json",

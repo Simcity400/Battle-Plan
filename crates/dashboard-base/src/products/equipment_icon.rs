@@ -290,7 +290,6 @@ pub struct IconContent {
     refused_sprites: BTreeMap<String, String>,
     files: Files,
     stamped: bool,
-    visual: String,
 }
 
 fn settled<T>(read: std::thread::Result<T>) -> T {
@@ -357,9 +356,7 @@ impl IconContent {
             files: Box::new(move |path| art_file_present(layers.presentation(), path)),
             stamped: false,
             load_warnings: warnings,
-            visual: String::new(),
-        }
-        .fingerprinted())
+        })
     }
 
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
@@ -462,23 +459,11 @@ impl IconContent {
             stamped: inputs_stamped(layers).unwrap_or(false),
             catalogue: Some(catalogue),
             load_warnings: warnings,
-            visual: String::new(),
-        }
-        .fingerprinted())
-    }
-
-    fn fingerprinted(mut self) -> Self {
-        let inputs = format!("{:?}\0{:?}\0{:?}", self.pools, self.geography, self.dlc);
-        self.visual = blake3::hash(inputs.as_bytes()).to_hex().to_string();
-        self
+        })
     }
 
     fn file(&self, path: &str) -> Result<bool, String> {
         (self.files)(path)
-    }
-
-    pub fn visual_inputs(&self) -> &str {
-        &self.visual
     }
 
     pub fn stamped(&self) -> bool {
@@ -505,14 +490,12 @@ impl IconContent {
             refused_sprites: BTreeMap::new(),
             files: Box::new(move |path| Ok(files.contains(path))),
             stamped: false,
-            visual: String::new(),
         }
-        .fingerprinted()
     }
 
     pub fn with_geography(mut self, geography: equipment_graphics::context::Content) -> Self {
         self.geography = geography;
-        self.fingerprinted()
+        self
     }
 
     pub fn warnings(&self) -> Vec<String> {

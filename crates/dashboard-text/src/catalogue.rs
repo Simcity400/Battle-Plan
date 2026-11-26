@@ -20,8 +20,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const CONTENT_DIAGNOSTICS_FORMAT: u32 = 1;
-
 #[derive(Clone, Debug)]
 pub struct ContentError(Arc<io::Error>);
 impl From<io::Error> for ContentError {
@@ -378,23 +376,6 @@ impl Refusals {
         }
     }
 
-    pub fn merge_new(&mut self, other: &Self) -> Self {
-        let mut added = Self::default();
-        for (reason, identities) in &other.0 {
-            let fresh = !self.0.contains_key(reason);
-            let held = self.0.entry(reason.clone()).or_default();
-            let new: BTreeSet<String> = identities
-                .iter()
-                .filter(|identity| held.insert((*identity).clone()))
-                .cloned()
-                .collect();
-            if fresh || !new.is_empty() {
-                added.0.insert(reason.clone(), new);
-            }
-        }
-        added
-    }
-
     pub fn note(&mut self, reason: impl Into<String>, identity: impl Into<String>) {
         self.0
             .entry(reason.into())
@@ -488,10 +469,6 @@ impl OwnRefusals {
 
     pub fn readers(&self) -> &BTreeSet<Reader> {
         &self.readers
-    }
-
-    pub fn refuses_texts(&self) -> bool {
-        !self.texts.is_empty()
     }
 }
 
@@ -994,10 +971,6 @@ impl Catalogue {
         refusals: &Mutex<Refusals>,
     ) -> Option<String> {
         self.localised_for(key, arguments, view, Kind::Unsupported, Some(refusals))
-    }
-
-    pub fn localised_offline_country(&self, key: &str) -> Option<String> {
-        self.localised_for(key, &[], View::Scripted, Kind::Offline, None)
     }
 
     fn localised_for(

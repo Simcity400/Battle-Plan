@@ -26,14 +26,11 @@ import {
 import { canonicalAuditData } from './audit.ts';
 import {
   GAME_WINDOW_MISSING_LABEL,
-  auditValue,
   formatCompactRational,
   formatCompactScalar,
   formatDateHover,
   formatDateOnly,
   formatDateParts,
-  formatDateValue,
-  formatOutOf,
   formatProgress,
   formatRational,
   formatRecordedPercent,
@@ -193,14 +190,6 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   const partialAtLeast = formatValueState(partialValue(15, 'Gaps', { atLeast: true }), 'integer');
   assert.equal(partialAtLeast.kind, 'partial');
   assert.equal(partialAtLeast.spoken, '15, partial: Gaps');
-
-  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', ['int', '0']]));
-  assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));
-  assert.equal(auditValue(notApplicable('Peacetime'), 'integer'), JSON.stringify(['notApplicable', 'Peacetime']));
-  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', ['int', '15'], 'Gaps', false]));
-  assert.notEqual(auditValue(zeroValue(0), 'decimal1'), auditValue(knownValue(0.04), 'decimal1'));
-  assert.notEqual(auditValue(knownValue('1000')), auditValue(knownValue(1000)));
-  assert.equal(auditValue(knownValue(1e21)), auditValue(knownValue(10n ** 21n)));
 });
 
 test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
@@ -307,17 +296,9 @@ test('dates show the day on screen and the hour on hover, and identify missing d
     full: '14 Sep 1941',
     hover: '14 Sep 1941 · 08:00',
   });
-  const missingDate = formatDateValue(notRecorded('Date was absent from the log.'));
-  assert.equal(missingDate.kind, 'notRecorded');
-  assert.equal(missingDate.label, 'Date not recorded');
-
-  const knownDate = formatDateValue(knownValue(hour));
-  assert.equal(knownDate.kind, 'known');
-  assert.equal(knownDate.text, '14 Sep 1941');
-  assert.equal(knownDate.hover, '14 Sep 1941 · 08:00');
 });
 
-test('missing-value vocabulary, compact K/M formatting, and N / max preserve exact figures and missing caps', () => {
+test('missing-value vocabulary and compact K/M formatting preserve exact figures', () => {
   assert.equal(notRecordedLabel(), 'Not recorded');
   assert.equal(notRecordedLabel('Manpower'), 'Manpower not recorded');
   assert.equal(GAME_WINDOW_MISSING_LABEL, 'n/a');
@@ -341,19 +322,6 @@ test('missing-value vocabulary, compact K/M formatting, and N / max preserve exa
   assert.equal(compactState.text, '45.6K');
   assert.equal(compactState.exact, '45,600');
   assert.equal(compactState.spoken, '45,600');
-
-  const ratio = formatOutOf(knownValue(12), knownValue(15), 'integer');
-  assert.equal(ratio.kind, 'known');
-  assert.equal(ratio.text, '12 / 15');
-
-  const missingCap = formatOutOf(knownValue(12), notRecorded('Cap not recorded'), 'integer');
-  assert.equal(missingCap.kind, 'partial');
-  assert.equal(missingCap.text, '12');
-  assert.match(missingCap.partialReason!, /Cap not recorded/);
-
-  const missingVal = formatOutOf(notRecorded('Count missing'), knownValue(15), 'integer');
-  assert.equal(missingVal.kind, 'notRecorded');
-  assert.equal(missingVal.missingReason, 'Count missing');
 });
 
 

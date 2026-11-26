@@ -105,8 +105,8 @@ export default function FuelWidget(props: FamilyViewProps) {
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>
     {props.manifestDeclaration ? <FamilyWidget {...props} family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} onActivate={action => open(action.hour)} /> : null}
     <DetailWindowHost open={drill.breakdown !== null} subject={drillTag} hour={at} title={DETAIL_TITLE} day={detailDay} anchor={anchor} onClose={closeDetail}>
-      <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode="inline" title={DETAIL_TITLE}
-        day={detailDay} canFollow={actualHour !== null && !!drillTag} onClose={closeDetail} main={null}>
+      <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} title={DETAIL_TITLE}
+        day={detailDay} canFollow={actualHour !== null && !!drillTag} onClose={closeDetail}>
         <Segmented label="Breakdown of" value={drillMeasure} onChange={next => {
           setMeasure(next); setRecipient(null); setConsumption(null); setLevel(null);
           if (drill.breakdown !== null && at !== null) dispatch({ type: 'open', breakdown: next, hour: at, follow: drillControl.following, country: drill.country });

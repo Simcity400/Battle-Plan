@@ -1,22 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { firstHourOfMonth } from '../dashboard/calendar.ts';
-import { BADGE_STRIP } from './badges.ts';
-import { VALUE_LABEL_GAP, drawAxes } from './draw.ts';
-import { plotFrame, STRIP_GAP } from './frame.ts';
+import { VALUE_LABEL_GAP } from './draw.ts';
 import {
   TIME_CHART_DEFAULT_PADDING,
   TIME_CHART_LABEL_MARGIN,
   TIME_CHART_MIN_SPAN,
   drawTimeChartScene,
   fitTimeChartFrame,
-  normalizeStripHeight,
-  resolveAxisFormatter,
-  resolveChartFit,
-  resolveTimeChartPadding,
   resolveTimeChartTargetX,
   resolveTimeChartTargetY,
-  stabilityZoomFit,
 } from './renderTimeChart.ts';
 import { canvasMeasureText, clearTextWidthCache, type Canvas2D, type MeasureText } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
@@ -81,83 +74,6 @@ function mockCanvas2D() {
   return { ctx, calls };
 }
 
-test('resolveTimeChartPadding handles badges, strip rounding, custom overrides, and row labels', () => {
-  const plain = resolveTimeChartPadding({
-    layoutWidth: 400,
-    tokens: baseTokens,
-    stripHeight: 0,
-    hasBadges: false,
-    hasBadgeSummary: false,
-  });
-  assert.deepEqual(plain, TIME_CHART_DEFAULT_PADDING);
-
-  const withBadgesAndStrip = resolveTimeChartPadding({
-    layoutWidth: 400,
-    tokens: baseTokens,
-    stripHeight: 18,
-    hasBadges: true,
-    hasBadgeSummary: false,
-  });
-  assert.equal(withBadgesAndStrip.top, BADGE_STRIP);
-  assert.equal(withBadgesAndStrip.bottom, TIME_CHART_DEFAULT_PADDING.bottom + 18 + STRIP_GAP);
-
-  const fractionalPadding = resolveTimeChartPadding({
-    layoutWidth: 400,
-    tokens: baseTokens,
-    stripHeight: 48.48,
-    hasBadges: false,
-    hasBadgeSummary: false,
-  });
-  const roundedPadding = resolveTimeChartPadding({
-    layoutWidth: 400,
-    tokens: baseTokens,
-    stripHeight: 48,
-    hasBadges: false,
-    hasBadgeSummary: false,
-  });
-  const fractionalStrip = fitTimeChartFrame({
-    layoutWidth: 400,
-    layoutHeight: 202,
-    padding: fractionalPadding,
-    x: [0, 720],
-    y: [0, 100],
-    log: false,
-    stripHeight: 48.48,
-    hasRows: false,
-    hasExplicitLeftPadding: false,
-    tokens: baseTokens,
-    measure: text => text.length * 7,
-  });
-  const roundedStrip = fitTimeChartFrame({
-    layoutWidth: 400,
-    layoutHeight: 202,
-    padding: roundedPadding,
-    x: [0, 720],
-    y: [0, 100],
-    log: false,
-    stripHeight: 48,
-    hasRows: false,
-    hasExplicitLeftPadding: false,
-    tokens: baseTokens,
-    measure: text => text.length * 7,
-  });
-  assert.equal(normalizeStripHeight(48.48), 48);
-  assert.equal(fractionalStrip.plotHeight, roundedStrip.plotHeight);
-  assert.deepEqual(fractionalStrip.strip, roundedStrip.strip);
-
-  const withRows = resolveTimeChartPadding({
-    layoutWidth: 200,
-    tokens: baseTokens,
-    stripHeight: 0,
-    hasBadges: false,
-    hasBadgeSummary: false,
-    rowLabelWidth: 150,
-  });
-  assert.equal(withRows.left, 90);
-  assert.equal(withRows.top, baseTokens.fontSize.small * 2 + 4);
-  assert.equal(withRows.bottom, 8);
-});
-
 test('resolveTimeChartTargetX resolves draw-in minimum span, window, and cursor modes', () => {
   const extent: [number, number] = [1000, 5000];
   assert.deepEqual(
@@ -220,40 +136,6 @@ test('resolveTimeChartTargetX resolves draw-in minimum span, window, and cursor 
   assert.deepEqual(clampedWindow, [3000 - TIME_CHART_MIN_SPAN, 3000]);
 });
 
-test('declarative formatters, fractional stabilityZoom fit, and resolveTimeChartTargetY match chart semantics', () => {
-  assert.equal(resolveAxisFormatter('powerAxis')(1500, []), '1.5k');
-  assert.equal(resolveAxisFormatter('powerAxis')(420.4, []), '420');
-  assert.equal(resolveAxisFormatter('percent')(50, [0, 50, 100]), '50%');
-  assert.equal(resolveAxisFormatter()(10, [0, 10]), '10');
-  assert.equal(resolveChartFit('none'), undefined);
-
-  const stabilityFit = resolveChartFit('stabilityZoom');
-  assert.equal(stabilityFit, stabilityZoomFit);
-  assert.equal(stabilityFit!(null), null);
-  assert.deepEqual(stabilityFit!([0.6, 0.7]), [0.59, 0.71]);
-  assert.deepEqual(stabilityFit!([0.5, 0.5]), [0.49, 0.51]);
-
-  const target = resolveTimeChartTargetY(
-    [{ extent: () => [0.6, 0.7] }, { extent: () => [0.62, 0.75] }],
-    [0, 100],
-    EMPTY_VIEW,
-    { ...defaultAxes, yMin: null, yMax: null },
-    'stabilityZoom',
-  );
-  assert.equal(target.log, false);
-  assert.deepEqual(target.range, [0.58, 0.77]);
-
-  const pinnedLow = resolveTimeChartTargetY(
-    [{ extent: () => [0.6, 0.7] }],
-    [0, 100],
-    EMPTY_VIEW,
-    { ...defaultAxes, yMin: 0 },
-    'stabilityZoom',
-  );
-  assert.equal(pinnedLow.range[0], 0);
-  assert.equal(pinnedLow.range[1], 0.71);
-});
-
 test('fitTimeChartFrame expands left padding from injected MeasureText without DOM', () => {
   const measured: string[] = [];
   const wideMeasure: MeasureText = text => {
@@ -267,35 +149,15 @@ test('fitTimeChartFrame expands left padding from injected MeasureText without D
     x: [0, 240],
     y: [0, 100_000],
     log: false,
-    stripHeight: 0,
-    hasRows: false,
-    hasExplicitLeftPadding: false,
     tokens: baseTokens,
-    formatValue: 'axisValue',
     measure: wideMeasure,
   });
   assert.ok(measured.length > 0);
   const maxWidth = Math.max(...measured.map(text => text.length * 20));
   assert.equal(frame.plotLeft, maxWidth + VALUE_LABEL_GAP + TIME_CHART_LABEL_MARGIN);
-
-  const locked = fitTimeChartFrame({
-    layoutWidth: 400,
-    layoutHeight: 200,
-    padding: { ...TIME_CHART_DEFAULT_PADDING, left: 36 },
-    x: [0, 240],
-    y: [0, 100_000],
-    log: false,
-    stripHeight: 0,
-    hasRows: false,
-    hasExplicitLeftPadding: true,
-    tokens: baseTokens,
-    formatValue: 'axisValue',
-    measure: wideMeasure,
-  });
-  assert.equal(locked.plotLeft, 36);
 });
 
-test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock and consult injected measure for dates and end labels', () => {
+test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock and consult injected measure for dates', () => {
   const measuredDuringDraw: string[] = [];
   let recording = false;
   const customMeasure: MeasureText = text => {
@@ -317,26 +179,14 @@ test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock an
     branchStart: jan1936,
   });
   const y = resolveTimeChartTargetY([{ extent: () => [0, 500] }], x, EMPTY_VIEW, defaultAxes);
-  const padding = resolveTimeChartPadding({
-    layoutWidth: 520,
-    tokens: baseTokens,
-    stripHeight: 0,
-    hasBadges: false,
-    hasBadgeSummary: false,
-    padding: { right: 120 },
-  });
   const frame = fitTimeChartFrame({
     layoutWidth: 520,
     layoutHeight: 240,
-    padding,
+    padding: TIME_CHART_DEFAULT_PADDING,
     x,
     y: y.range,
     log: y.log,
-    stripHeight: 0,
-    hasRows: false,
-    hasExplicitLeftPadding: false,
     tokens: baseTokens,
-    formatValue: 'powerAxis',
     measure: customMeasure,
   });
 
@@ -353,8 +203,6 @@ test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock an
       scaleY: 2,
       playhead: mid1936,
       playback: 'cursor',
-      formatValue: 'powerAxis',
-      gaps: [{ firstHour: jan1936 + 100, lastHour: jan1936 + 140 }],
       layers: [
         {
           draw: (_c, _f, _t, state) => {
@@ -365,7 +213,6 @@ test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock an
       overlay: () => {
         overlayCalled = true;
       },
-      endLabels: [{ id: 'GER', text: 'German Reich', suffix: '500', y: frame.toY(500), color: '#4488ff' }],
     },
     customMeasure,
   );
@@ -377,32 +224,6 @@ test('fitTimeChartFrame and drawTimeChartScene run cleanly on a Canvas2D mock an
   assert.equal(overlayCalled, true);
   assert.equal(calls.some(call => call[0] === 'measureText'), false);
   assert.ok(measuredDuringDraw.some(text => /1936|Apr|Jul|Oct/.test(text)), `date labels measured: ${JSON.stringify(measuredDuringDraw)}`);
-  assert.ok(measuredDuringDraw.includes(' 500'), `end-label suffix measured: ${JSON.stringify(measuredDuringDraw)}`);
-  assert.ok(measuredDuringDraw.some(text => text.startsWith('German')), `end-label text measured: ${JSON.stringify(measuredDuringDraw)}`);
-});
-
-test('drawAxes invalidates cached row labels when the injected measurer or text width cache changes', () => {
-  const { ctx, calls } = mockCanvas2D();
-  const frame = plotFrame(300, 120, { left: 40 + VALUE_LABEL_GAP * 2, right: 10, top: 20, bottom: 10 }, [0, 100], [0, 1], false, 0, true);
-  const narrow: MeasureText = text => text.length;
-  const wide: MeasureText = text => text.length * 10;
-
-  const lastFill = () => calls.filter(call => call[0] === 'fillText').at(-1);
-
-  drawAxes(ctx, frame, baseTokens, String, ['Germany'], narrow);
-  assert.equal(lastFill()?.[1], 'Germany');
-
-  drawAxes(ctx, frame, baseTokens, String, ['Germany'], wide);
-  assert.equal(lastFill()?.[1], 'Ger…');
-
-  let scale = 1;
-  const mutable: MeasureText = text => text.length * scale;
-  drawAxes(ctx, frame, baseTokens, String, ['Germany'], mutable);
-  assert.equal(lastFill()?.[1], 'Germany');
-  scale = 10;
-  clearTextWidthCache();
-  drawAxes(ctx, frame, baseTokens, String, ['Germany'], mutable);
-  assert.equal(lastFill()?.[1], 'Ger…');
 });
 
 test('canvasMeasureText keys relative font shorthands by resolved canvas font', () => {

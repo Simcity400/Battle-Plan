@@ -136,12 +136,11 @@ export default function StabilityDetail({ widget, runtime, active, options, char
   return <div className="stability" ref={anchor}>
     {chart?.(onActivate) ?? null}
     <DetailWindowHost open={drill.breakdown !== null} subject={drillTag} hour={drillAt} title={detailTitle} day={detailDay} anchor={anchor} onClose={closeDetail}>
-    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode="inline" anchor={anchor}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} anchor={anchor}
       title={detailTitle}
       day={detailDay}
       canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
-      onClose={closeDetail}
-      main={null}>
+      onClose={closeDetail}>
       {choosingActor && chosen && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null}
         selectedTag={null} source={track.source} client={runtime.client} allowedTags={chosen.candidates}
         flagAt={{ branchId: track.branch.id, hour: chosen.hour }} onChange={tag => {

@@ -4,8 +4,6 @@ use crate::{
     Source,
     catalogue::{self, Catalogue},
 };
-use content_reader_layers::ResolvedLayers;
-use content_reader_gfx::gfx::SpriteSet;
 use content_reader_localisation::localisation::Localisation;
 use replay_data::{rows::LexicalTokenRow, rows::ResourceDefinitionRow};
 use serde::{Deserialize, Serialize};
@@ -71,14 +69,6 @@ impl Learned {
         self.ids.contains_key(&id)
     }
 
-    pub fn learn_names(&mut self, names: &Self) -> bool {
-        let before = self.ids.len();
-        for (&id, token) in &names.ids {
-            self.ids.entry(id).or_insert_with(|| token.clone());
-        }
-        before != self.ids.len()
-    }
-
     pub fn list(&self) -> Vec<(u32, String)> {
         self.ids
             .iter()
@@ -87,7 +77,7 @@ impl Learned {
     }
 }
 
-pub fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
+fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
     resources
         .iter()
@@ -107,33 +97,13 @@ struct ContentState {
 struct ContentCache {
     catalogue: Arc<Catalogue>,
     resources: BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
-    warnings: Vec<(Note, String)>,
+    warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Declared {
-    pub name: Option<String>,
-    pub icon: Option<String>,
-}
-
-pub struct ContentView<'a> {
-    pub layers: &'a ResolvedLayers,
-    pub sprites: &'a SpriteSet,
-    pub localisation: &'a Localisation,
-    pub guis: Result<&'a content_reader_gui::gui::native::Guis, String>,
-    pub gui_decode: &'a Result<content_reader_image::native::Decode, String>,
-}
-
-impl<'a> ContentView<'a> {
-    pub fn of(catalogue: &'a Catalogue) -> Self {
-        Self {
-            layers: &catalogue.content.layers,
-            sprites: &catalogue.sprites,
-            localisation: &catalogue.localisation,
-            guis: catalogue.guis().map_err(|error| error.to_string()),
-            gui_decode: &catalogue.gui_decode,
-        }
-    }
+struct Declared {
+    name: Option<String>,
+    icon: Option<String>,
 }
 
 struct Icons {
@@ -176,16 +146,19 @@ impl Frames {
     }
 }
 
-fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
+fn icons(catalogue: &Catalogue) -> io::Result<(Icons, Vec<String>)> {
     let mut warnings = Vec::new();
+    let guis = catalogue
+        .guis()
+        .map_err(|error| crate::invalid(error.to_string()))?;
     let name = content_reader_gui::gui::native::window_button_sprite(
-        view.guis.as_ref().map_err(crate::invalid)?,
+        guis,
         RESOURCE_ROW,
         RESOURCE_ICON,
         &mut warnings,
     )?;
-    let sprite = catalogue::created_gui_sprite(view.sprites, &name)?.clone();
-    let (resources, notes) = content_reader_key_names::resources::read(view.layers)?;
+    let sprite = catalogue::created_gui_sprite(&catalogue.sprites, &name)?.clone();
+    let (resources, notes) = content_reader_key_names::resources::read(&catalogue.content.layers)?;
     warnings.extend(notes.into_iter().map(|(_, message)| message));
     Ok((
         Icons {
@@ -200,7 +173,6 @@ fn resource_name(
     localisation: &Localisation,
     token: &str,
     warnings: &mut Vec<String>,
-    findings: &mut Vec<dashboard_core::findings::Finding>,
 ) -> Option<String> {
     let upper = content_reader_localisation::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
@@ -217,73 +189,38 @@ fn resource_name(
             .filter(|finding| finding.kind != dashboard_core::findings::Kind::Content)
             .map(|finding| format!("{token}: no name: {}", finding.message)),
     );
-    findings.extend(notes);
     name
 }
 
-pub fn resource_content(
-    view: &ContentView,
+fn load_resource_content(
+    catalogue: &Catalogue,
     wanted: &[(String, u32)],
     cached: &mut BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
     warnings: &mut Vec<String>,
     cancelled: &AtomicBool,
-) -> io::Result<Vec<dashboard_core::findings::Finding>> {
-    resource_content_noted(
-        view,
-        wanted,
-        cached,
-        &mut |_, warning| warnings.push(warning),
-        cancelled,
-    )
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Note {
-    Name,
-    Art,
-}
-
-fn resource_content_noted(
-    view: &ContentView,
-    wanted: &[(String, u32)],
-    cached: &mut BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
-    note: &mut dyn FnMut(Note, String),
-    cancelled: &AtomicBool,
-) -> io::Result<Vec<dashboard_core::findings::Finding>> {
-    use dashboard_core::findings::{Finding, Kind};
+) -> io::Result<()> {
     let missing: Vec<&(String, u32)> = wanted
         .iter()
         .filter(|key| !cached.contains_key(*key))
         .collect();
     if missing.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let mut findings = Vec::new();
-    let icons = match icons(view) {
+    let layers = &catalogue.content.layers;
+    let icons = match icons(catalogue) {
         Ok((icons, notes)) => {
-            findings.extend(
-                notes
-                    .iter()
-                    .map(|note| Finding::new(Kind::Warning, "resource icons", note)),
-            );
-            for warning in notes {
-                note(Note::Art, warning);
-            }
+            warnings.extend(notes);
             Some(icons)
         }
         Err(error) => {
-            let message = format!("Resource icons are unavailable: {error}");
-            findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-            note(Note::Art, message);
+            warnings.push(format!("Resource icons are unavailable: {error}"));
             None
         }
     };
-    let decode = match (&icons, view.gui_decode) {
+    let decode = match (&icons, &catalogue.gui_decode) {
         (Some(_), Ok(decode)) => Some(*decode),
         (Some(_), Err(why)) => {
-            let message = format!("Resource icons are unavailable: {why}");
-            findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-            note(Note::Art, message);
+            warnings.push(format!("Resource icons are unavailable: {why}"));
             None
         }
         (None, _) => None,
@@ -295,7 +232,7 @@ fn resource_content_noted(
             .map(|frame| frame - 1)
             .collect();
         let requests: Vec<_> = frames.iter().map(|frame| (&icons.sprite, *frame)).collect();
-        let _ = catalogue::sprite_frames_png(view.layers, &requests, decode, ICON_EDGE);
+        let _ = catalogue::sprite_frames_png(layers, &requests, decode, ICON_EDGE);
     }
     let mut refused = false;
     for (token, ordinal) in missing {
@@ -306,16 +243,9 @@ fn resource_content_noted(
             ));
         }
         let mut notes = Vec::new();
-        let mut name_findings = Vec::new();
-        let name = resource_name(view.localisation, token, &mut notes, &mut name_findings);
-        for finding in &mut name_findings {
-            finding.subject = format!("resource {token} declaration {ordinal}");
-        }
-        findings.extend(name_findings);
+        let name = resource_name(&catalogue.localisation, token, &mut notes);
         if *ordinal == 1 {
-            for warning in notes {
-                note(Note::Name, warning);
-            }
+            warnings.extend(notes);
         }
         let Some(icons) = &icons else {
             let declared = catalogue::Drawn::new(|| Declared { name, icon: None });
@@ -328,8 +258,8 @@ fn resource_content_noted(
                 decode.filter(|_| !refused),
             ) {
                 (Ok(Some(frame)), Some(decode)) => match super::artwork::resolve_sprite_type_on_layers(
-                    view.layers,
-                    view.layers.recorded_language().unwrap_or("english"),
+                    layers,
+                    layers.recorded_language().unwrap_or("english"),
                     &icons.sprite,
                     frame - 1,
                     super::artwork::ArtRenderVariant {
@@ -343,31 +273,19 @@ fn resource_content_noted(
                     Ok(None) => None,
                     Err(error) => {
                         refused = true;
-                        let message = format!("Resource icons are unavailable: {error}");
-                        findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-                        note(Note::Art, message);
+                        warnings.push(format!("Resource icons are unavailable: {error}"));
                         None
                     }
                 },
                 (Ok(Some(_)), None) => None,
                 (Err(message), _) => {
-                    findings.push(Finding::new(
-                        Kind::Refused,
-                        format!("resource {token} declaration {ordinal}"),
-                        &message,
-                    ));
-                    note(Note::Art, message);
+                    warnings.push(message);
                     None
                 }
                 (Ok(None), _) => {
-                    let message =
-                        format!("{token}: the recorded content gives no usable icon frame.");
-                    findings.push(Finding::new(
-                        Kind::Fallback,
-                        format!("resource {token} declaration {ordinal}"),
-                        &message,
+                    warnings.push(format!(
+                        "{token}: the recorded content gives no usable icon frame."
                     ));
-                    note(Note::Art, message);
                     None
                 }
             };
@@ -376,159 +294,10 @@ fn resource_content_noted(
         declared.get();
         cached.insert((token.clone(), *ordinal), declared);
     }
-    Ok(findings)
-}
-
-pub fn resource_infos(
-    source: &Source,
-    context: &LoadContext,
-    resources: &[(u32, String)],
-    cancelled: &AtomicBool,
-) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
-    let naming = ResourceNaming::stored(source, context);
-    let Some(content) = context
-        .content()
-        .ok()
-        .filter(|content| content.presentation.shows_mods())
-    else {
-        return naming.infos(resources, cancelled);
-    };
-    let (mut infos, mut warnings) =
-        infos(&naming.catalogue, &naming.cache, resources, cancelled, false)?;
-    match present_icons(source, Some(content), &mut infos, cancelled) {
-        Ok(refused) => warnings.extend(
-            refused
-                .into_iter()
-                .map(|why| format!("Resource icons are unavailable: {why}")),
-        ),
-        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-        Err(error) => {
-            for info in &mut infos {
-                info.icon = None;
-            }
-            warnings.push(format!("Resource icons are unavailable: {error}"));
-        }
-    }
-    if infos.iter().any(|resource| resource.icon.is_some()) {
-        warnings.push(ARTWORK_NOTE.to_owned());
-    }
-    Ok((infos, warnings))
+    Ok(())
 }
 
 const ARTWORK_NOTE: &str = "Artwork from current installation; visual assets are outside content hash coverage.";
-
-pub fn stored_resource_infos(
-    source: &Source,
-    context: &LoadContext,
-    resources: &[(u32, String)],
-    cancelled: &AtomicBool,
-) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
-    ResourceNaming::stored(source, context).infos(resources, cancelled)
-}
-
-pub fn present_stored(
-    source: &Source,
-    content: Option<&dashboard_core::config::ContentOptions>,
-    resources: &mut [ResourceInfo],
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    present_icons(source, content, resources, cancelled).map(|_| ())
-}
-
-fn present_icons(
-    source: &Source,
-    content: Option<&dashboard_core::config::ContentOptions>,
-    resources: &mut [ResourceInfo],
-    cancelled: &AtomicBool,
-) -> io::Result<BTreeSet<String>> {
-    let mut refused = BTreeSet::new();
-    let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
-        return Ok(refused);
-    };
-    let state = source.state::<catalogue::ByCatalogue<ResourceArt>>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    let ResourceArt { frames, drawn } = state.of(&admitted);
-    if !frames
-        .as_ref()
-        .is_some_and(|(held, _)| Arc::ptr_eq(held, &recorded))
-    {
-        *frames = Some((Arc::clone(&recorded), icon_frames(&recorded.content.layers)?));
-    }
-    let (_, frames) = frames.as_ref().expect("resource frames read");
-    let drawn = catalogue::Redrawn::bind(drawn, &admitted, &recorded);
-    for resource in resources {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Resource request cancelled",
-            ));
-        }
-        let key = (resource.token.clone(), resource.ordinal);
-        let shown = drawn.get(
-            key,
-            || format!("resource {} icon", resource.token),
-            |catalogue| resource_icon(catalogue, frames, &resource.token, resource.ordinal),
-        );
-        resource.icon = match shown {
-            Ok(icon) => Some(icon.clone()),
-            Err(why) => {
-                refused.insert(why.clone());
-                None
-            }
-        };
-    }
-    Ok(refused)
-}
-
-#[derive(Default)]
-struct ResourceArt {
-    frames: Option<(Arc<Catalogue>, Frames)>,
-    drawn: Option<catalogue::Redrawn<(String, u32), String>>,
-}
-
-fn icon_frames(layers: &ResolvedLayers) -> io::Result<Frames> {
-    Ok(Frames::new(&content_reader_key_names::resources::read(layers)?.0))
-}
-
-fn resource_icon(
-    catalogue: &Catalogue,
-    frames: &Frames,
-    token: &str,
-    ordinal: u32,
-) -> Result<String, String> {
-    let guis = catalogue.guis().map_err(|error| error.to_string())?;
-    let name = content_reader_gui::gui::native::window_button_sprite(
-        guis,
-        RESOURCE_ROW,
-        RESOURCE_ICON,
-        &mut Vec::new(),
-    )
-    .map_err(|error| error.to_string())?;
-    let sprite =
-        catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|e| e.to_string())?;
-    let frame = frames
-        .of(token, ordinal)?
-        .and_then(|frame| frame.checked_sub(1))
-        .ok_or_else(|| format!("{token}: the recorded content gives no usable icon frame."))?;
-    super::artwork::resolve_sprite_type(catalogue, sprite, frame, ICON_EDGE)
-        .into_result()?
-        .ok_or_else(|| format!("{token}: resource icon unavailable"))
-}
-
-pub fn present_stored_json(
-    source: &Source,
-    content: Option<&dashboard_core::config::ContentOptions>,
-    resources: &mut serde_json::Value,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    if resources.is_null() || !content.is_some_and(|content| content.presentation.shows_mods()) {
-        return Ok(());
-    }
-    let mut infos: Vec<ResourceInfo> = serde_json::from_value(resources.take())?;
-    present_stored(source, content, &mut infos, cancelled)?;
-    *resources = serde_json::to_value(infos)?;
-    Ok(())
-}
 
 pub struct ResourceNaming {
     catalogue: Result<Arc<Catalogue>, String>,
@@ -551,7 +320,7 @@ impl ResourceNaming {
         resources: &[(u32, String)],
         cancelled: &AtomicBool,
     ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
-        infos(&self.catalogue, &self.cache, resources, cancelled, true)
+        infos(&self.catalogue, &self.cache, resources, cancelled)
     }
 }
 
@@ -560,7 +329,6 @@ fn infos(
     state: &std::sync::Mutex<catalogue::ByCatalogue<ContentState>>,
     resources: &[(u32, String)],
     cancelled: &AtomicBool,
-    art: bool,
 ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
     let mut warnings = Vec::new();
     let ordinals = ordinals(resources);
@@ -592,7 +360,7 @@ fn infos(
                     .verification
                     .iter()
                     .chain(&catalogue.warnings)
-                    .map(|warning| (Note::Name, warning.clone()))
+                    .cloned()
                     .collect();
                 cache.content = Some(ContentCache {
                     catalogue: Arc::clone(catalogue),
@@ -601,21 +369,14 @@ fn infos(
                 });
             }
             let content = cache.content.as_mut().expect("content cached");
-            let kept = &mut content.warnings;
-            resource_content_noted(
-                &ContentView::of(catalogue),
+            load_resource_content(
+                catalogue,
                 &declarations,
                 &mut content.resources,
-                &mut |about, warning| kept.push((about, warning)),
+                &mut content.warnings,
                 cancelled,
             )?;
-            warnings.extend(
-                content
-                    .warnings
-                    .iter()
-                    .filter(|(about, _)| art || *about == Note::Name)
-                    .map(|(_, warning)| warning.clone()),
-            );
+            warnings.extend(content.warnings.iter().cloned());
             let infos: Vec<ResourceInfo> = declarations
                 .iter()
                 .enumerate()
@@ -623,7 +384,7 @@ fn infos(
                     info(index, content.resources.get(key).map(catalogue::Drawn::get))
                 })
                 .collect();
-            if art && infos.iter().any(|resource| resource.icon.is_some()) {
+            if infos.iter().any(|resource| resource.icon.is_some()) {
                 warnings.push(ARTWORK_NOTE.to_owned());
             }
             infos

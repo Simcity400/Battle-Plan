@@ -7,11 +7,14 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
+import { readableRow, useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
+import { withHoverText } from './hoverText.ts';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
 import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
 
 const CATEGORY_LABEL = new Map<string, string>(CATEGORIES.map(cat => [cat.value, cat.label]));
+const isEventRow = (key: string): boolean => readableRow(key) && !key.startsWith('fold:');
 
 function EventFeedView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
@@ -20,6 +23,8 @@ function EventFeedView(props: FamilyViewProps) {
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
   const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
+  const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-feed-tail', shown, shown !== null);
+  const hover = useTooltipText(props.runtime, props.widget.trackIds[0], 'event-feed-tail', props.widget.time.mode === 'follow', props.active, isEventRow);
 
   useEffect(() => {
     if (!track || !props.active) return;
@@ -34,6 +39,7 @@ function EventFeedView(props: FamilyViewProps) {
   }, [track, props.active, props.runtime.client, scope, kinds?.scope]);
 
   const { options } = props;
+  const familyOptions = useMemo(() => withHoverText(options, hover.texts), [options, hover.texts]);
   const recordingKinds = kinds?.scope === scope ? kinds.list : null;
   const categories = useMemo(
     () => CATEGORIES.filter(cat => options[cat.value] !== false).map(cat => cat.value),
@@ -99,7 +105,7 @@ function EventFeedView(props: FamilyViewProps) {
   const onActivate = useCallback((action: InstalledAction) => {
     const meta = action.meta as EventDetailSubject | null | undefined;
     if (!meta || typeof meta !== 'object' || typeof meta.key !== 'string') return;
-    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: action.hour } });
+    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: meta.asOfHour ?? action.hour } });
   }, [scope]);
 
   const showStrip = options.activityStrip !== false;
@@ -134,12 +140,14 @@ function EventFeedView(props: FamilyViewProps) {
       ) : null}
       {props.manifestDeclaration ? <FamilyWidget
         {...props}
+        options={familyOptions}
+        onTooltipRow={hover.onTooltipRow}
         family={props.manifestDeclaration.family}
         declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
       /> : null}
-      <EventDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
+      <EventDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }

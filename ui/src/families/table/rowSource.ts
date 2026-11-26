@@ -161,24 +161,6 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
   return { total, offset, baseOrdinal, firstOrdinal, rows, facetTotals, ...(facetMissing.size ? { facetMissing } : {}), missing };
 }
 
-export function validateTailReply(value: unknown, readAt?: number): TailReply<LogReplyRow> {
-  return validateRowTailReply(
-    value,
-    (row, columns): LogReplyRow => {
-      if (!Array.isArray(row.cells) || row.cells.length !== columns.length || !row.cells.every(isCell)) {
-        throw new Error('The log tail reply is malformed.');
-      }
-      return {
-        key: row.key as string,
-        hour: row.hour as number,
-        cells: Object.fromEntries(columns.map((column, index) => [column, (row.cells as LogCell[])[index]!])),
-        fields: row,
-      };
-    },
-    readAt,
-  );
-}
-
 export function validateGenericTailReply(value: unknown, readAt?: number): TailReply<DatedLogRow> {
   return validateRowTailReply(
     value,
@@ -449,6 +431,12 @@ export interface PagerStep {
 
 const NO_STEP: PagerStep = { fetch: [], cancel: [] };
 
+export function dataWindowOf(window: RowWindow): { readonly first: number; readonly count: number } | null {
+  if (Math.max(0, Math.floor(window.count)) === 0) return null;
+  const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
+  return { first, count: Math.max(1, Math.floor(window.dataCount ?? window.count)) };
+}
+
 export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   readonly #headLimit: number;
   readonly #pageSize: number;
@@ -473,12 +461,10 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   }
 
   window(window: RowWindow, installedHour: number | null): PagerStep {
-    const displayCount = Math.max(0, Math.floor(window.count));
-    if (displayCount === 0) return NO_STEP;
-    const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
-    const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
+    const data = dataWindowOf(window);
+    if (!data) return NO_STEP;
+    const { first, count } = data;
     if (first + count <= this.#headLimit) return { fetch: [], cancel: this.#release() };
-    if (count === 0) return NO_STEP;
     if (installedHour === null || !Number.isFinite(installedHour)) return NO_STEP;
     const hour = Math.floor(installedHour);
     const cancel: number[] = [];

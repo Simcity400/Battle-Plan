@@ -13,8 +13,7 @@ const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Par
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
 
 test('a feed row is validated, an icon the dashboard cannot draw dropped, and malformed rows refused', () => {
-  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', within: null, conference: null, state: null,
-    ally: null, reason: null, notes: [] } });
+  const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', notes: [], targetRecorded: false } });
   assert.deepEqual(validateFeedRow(event), event);
   const scripted = row('scriptEventFired', 100, ['GER', 'GER'], { category: 'politics',
     item: { token: 'news.1', name: 'News', icon: 'javascript:bad', description: null, options: [{ ordinal: 0, name: 'Fine' }] } });
@@ -38,7 +37,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   const chosenRow = row('eventOptionSelected', 100, ['GER'], {
     category: 'politics',
     participants: ['GER', null],
-    cause: { how: null, within: null, conference: null, state: null, ally: null, reason: null, notes: ['Selected native option ordinal: 1.'] },
+    cause: { notes: [], selectedOption: 1, targetRecorded: false },
     item: { token: 'ev.1', name: 'Cabinet Crisis', icon: null, description: 'Body', options: [{ ordinal: 0, name: 'Stay' }, { ordinal: 1, name: 'Resign' }] },
   });
   const unknownRecipient = row('scriptEventFired', 100, ['GER'], {
@@ -95,6 +94,14 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
     ['War support', '−15%'],
   ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
+  const envoyTip = (hover: { key: string; description: string | null; gaps: string | null; options: (string | null)[] | null; missing: string | null } | null) => {
+    const extra = eventFeedProjection.project(readView, { categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'], artwork: true, hover: hover ? [hover] : [] }).rows.find(r => r.key === 'k1')?.tooltipExtra;
+    return ((typeof extra === 'function' ? extra() : extra) ?? []).filter(r => r.label === 'Description' || r.label.startsWith('Option ')).map(r => `${r.label}: ${r.value.kind === 'known' ? r.value.value : r.value.kind === 'notRecorded' ? `not recorded: ${r.value.reason}` : r.value.kind}`);
+  };
+  assert.deepEqual(envoyTip(null), [], 'a listed row carries no description or option text until its row is read');
+  assert.deepEqual(envoyTip({ key: 'k1', description: 'An envoy arrives.', gaps: null, options: ['Accept', null], missing: null }),
+    ['Description: An envoy arrives.', 'Option A: Accept', 'Option B: not recorded: Option text not recorded'], 'the hovered row brings its description and every option it offers');
+  assert.deepEqual(envoyTip({ key: 'k1', description: null, gaps: null, options: null, missing: 'This event is not in the log at the hour it was read' }), ['Description: not recorded: This event is not in the log at the hour it was read']);
   const foldRow = model.rows.find(r => r.key.startsWith('fold:'))!;
   assert.equal(foldRow.name, '5 events');
   assert.equal(foldRow.children?.length, 5);
@@ -182,3 +189,23 @@ test('event feed projection renders merged choice letter and text, awaiting choi
   assert.equal((nullOptRow.meta as EventDetailSubject).awaiting, false);
 });
 
+test('a firing whose options come only from its choice lists them from the choice the page shows, and none before that choice', () => {
+  const fired = row('newsEventFired', 100, ['GER', 'FRA'], { category: 'politics', participants: ['GER', 'FRA'], item: { token: 'ev.20', name: 'Envoy', icon: null, description: null } });
+  const choice = {
+    row: row('eventOptionSelected', 110, ['FRA'], { category: 'politics', participants: ['FRA', null], item: { token: 'ev.20', name: 'Envoy', icon: null, description: null, options: [{ ordinal: 0, name: 'Receive' }, { ordinal: 1, name: 'Refuse' }] } }),
+    option: 1, lifecycle: null, days: null, costs: null,
+  };
+  const options = (hour: number, picked: typeof choice | null) => {
+    const head = {
+      branchId: '1', offset: '0', total: '1', live: '0', counts: [],
+      rows: [{ key: 'm-envoy', hour: 100, observed: 100, ordinal: '0', live: false, status: picked ? 'chosen' : 'awaiting', row: fired, choice: picked }],
+      missing: [], nextChange: null, unavailable: [], warnings: [],
+    };
+    const source = buildRowSourceFromHead(`test:feed-envoy-${hour}`, head, undefined, hour)!;
+    const model = eventFeedProjection.project(createBoundedReadView({ hour, rows: new Map([['main', source]]) }), { categories: ['politics'], artwork: true, hover: [] });
+    const extra = model.rows.find(r => r.key === 'm-envoy')?.tooltipExtra;
+    return ((typeof extra === 'function' ? extra() : extra) ?? []).filter(r => r.label.startsWith('Option ')).map(r => `${r.label}: ${r.value.kind === 'known' ? r.value.value : r.value.kind}`);
+  };
+  assert.deepEqual(options(105, null), [], 'before its choice the firing offers no option text');
+  assert.deepEqual(options(120, choice), ['Option A: Receive', 'Option B: Refuse'], 'after it, the choice the page shows supplies them');
+});

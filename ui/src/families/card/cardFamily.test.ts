@@ -346,6 +346,7 @@ test('a general’s dossier splits the record won and lost, measures experience 
     role: { owner: 'AAA', kind: 1, category: 1, rank: 'General', attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'], maximumSkill: 9 },
     skill: 7, components: [3, 4, 5, 6], traits: [0, 1], traitDates: [[gained, 1], null], traitCatalogue: [trait('a', 'Invented trait A'), trait('b', 'Invented trait B')],
     fought: 1600, won: 841, lost: 737, battlesPartialFrom: null, firstSeenHour: hour - 5000,
+    serviceStart: { kind: 'since' as const, hour: hour - 5000 },
     progress: { nextRequiredRaw: '250000000', training: [{ key: '7', token: 'c', name: 'Invented trait C', requiredRaw: '70000000' }], factors: [] },
     warnings: [],
   };
@@ -372,6 +373,15 @@ test('a general’s dossier splits the record won and lost, measures experience 
   const header = row('leader');
   assert.ok(header.kind === 'item');
   assert.equal(header.subtitle, 'General · ★ 7 / 9');
+  assert.ok(header.tooltip?.items?.some(item => item.label === 'Serving since' && item.value === formatDateOnly(hour - 5000)));
+  const beforeStart = dossierProjection.project(view(hour, { ...reply, serviceStart: { kind: 'before' as const, hour: hour - 5000 } }, live), { reference: null });
+  const beforeHeader = beforeStart.rows.find(item => item.key === 'leader') as CardItemRow;
+  assert.ok(beforeHeader.tooltip?.items?.some(item => item.label === 'Serving before' && item.value === formatDateOnly(hour - 5000)));
+  assert.ok(!beforeHeader.tooltip?.items?.some(item => item.label === 'Serving since'));
+  const postGap = dossierProjection.project(view(hour, { ...reply, serviceStart: { kind: 'unknown' as const, reason: 'Unit leaders were not recorded before this leader was observed' } }, live), { reference: null });
+  const gapHeader = postGap.rows.find(item => item.key === 'leader') as CardItemRow;
+  assert.ok(gapHeader.tooltip?.items?.some(item => item.label === 'Service start' && item.missingReason === 'Unit leaders were not recorded before this leader was observed'));
+  assert.ok(!gapHeader.tooltip?.items?.some(item => item.label === 'Serving since'));
   const none = dossierProjection.project(view(hour, { ...reply, reference: null, role: null }, live), { reference: null });
   assert.deepEqual([none.empty, none.emptyKind], ['No generals yet.', 'empty']);
   const unread = dossierProjection.project(view(hour, { ...reply, reference: null, role: null, missing: 'Leaders were not recorded' }, live), { reference: null });

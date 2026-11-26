@@ -438,22 +438,12 @@ fn core_tables(frame: HourFrame<'_>) -> (CoreRows<'_>, Vec<(&'static str, Failur
 }
 
 pub fn core_gap(frame: &dyn replay_frame::frame::RecordedSource) -> Option<String> {
-    core_gap_of(|table| frame.status(table))
-}
-
-pub fn core_gap_in(frame: HourFrame<'_>) -> Option<String> {
-    core_gap_of(|table| frame.status(table))
-}
-
-fn core_gap_of<'f>(
-    status: impl Fn(replay_data::rows::TableId) -> OperandStatus<'f>,
-) -> Option<String> {
     use replay_data::rows::TableId;
     let gaps = super::refusal::deferred(|| {
         [TableId::CountryLinks, TableId::Countries, TableId::Provinces, TableId::States]
         .into_iter()
         .filter_map(|table| {
-            core_reason(status(table), table).map(|reason| Failure::input(table, "", None, reason))
+            core_reason(frame.status(table), table).map(|reason| Failure::input(table, "", None, reason))
         })
         .collect::<Vec<_>>()
     });

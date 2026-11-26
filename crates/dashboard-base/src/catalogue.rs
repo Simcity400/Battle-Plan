@@ -327,7 +327,8 @@ mod present_tests {
         machine.write_mod("art", "gfx/icon.png", &png(RED));
         let (source, mut options) = machine.open();
         select(&source, &mut options, &["art"]);
-        let (admitted, recorded) = presenting(&source, Some(&options)).unwrap().unwrap();
+        let admitted = catalogue(&source, &options).unwrap();
+        let recorded = recorded_catalogue(&source, &options).unwrap();
         let note = |text: &str| {
             content_reader_layers::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
                 text.to_owned(),
@@ -478,57 +479,6 @@ thread_local! {
 #[cfg(any(test, feature = "test-support"))]
 pub fn presented() -> usize {
     PRESENTED.with(std::cell::Cell::get)
-}
-
-pub struct Redrawn<K, T> {
-    pub admitted: Arc<Catalogue>,
-    pub recorded: Arc<Catalogue>,
-    pub drawn: std::collections::BTreeMap<K, Drawn<Result<T, String>>>,
-}
-
-impl<K: Ord, T> Redrawn<K, T> {
-    pub fn bind<'a>(
-        slot: &'a mut Option<Self>,
-        admitted: &Arc<Catalogue>,
-        recorded: &Arc<Catalogue>,
-    ) -> &'a mut Self {
-        if !slot.as_ref().is_some_and(|held| {
-            Arc::ptr_eq(&held.admitted, admitted) && Arc::ptr_eq(&held.recorded, recorded)
-        }) {
-            *slot = Some(Self {
-                admitted: Arc::clone(admitted),
-                recorded: Arc::clone(recorded),
-                drawn: std::collections::BTreeMap::new(),
-            });
-        }
-        slot.as_mut().expect("presented art bound")
-    }
-
-    pub fn get(
-        &mut self,
-        key: K,
-        what: impl FnOnce() -> String,
-        draw: impl Fn(&Catalogue) -> Result<T, String>,
-    ) -> &Result<T, String> {
-        let (admitted, recorded) = (&self.admitted, &self.recorded);
-        self.drawn
-            .entry(key)
-            .or_insert_with(|| present(&what(), admitted, recorded, draw))
-            .get()
-    }
-}
-
-pub fn presenting(
-    source: &Source,
-    options: Option<&ContentOptions>,
-) -> io::Result<Option<(Arc<Catalogue>, Arc<Catalogue>)>> {
-    let Some(options) = options.filter(|options| options.presentation.shows_mods()) else {
-        return Ok(None);
-    };
-    Ok(Some((
-        catalogue(source, options)?,
-        recorded_catalogue(source, options)?,
-    )))
 }
 
 #[derive(Default)]

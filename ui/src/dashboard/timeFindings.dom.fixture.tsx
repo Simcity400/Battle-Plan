@@ -177,7 +177,7 @@ let root: Root | null = null;
 const host = () => document.getElementById('finding');
 const read = () => {
   const element = host();
-  const drill = element?.querySelector('.drill-host[data-open] > .drill-view, .drill-saved, .drill-popout:has(.drill-body)');
+  const drill = element?.querySelector('.drill-host[data-open] > .drill-view');
   return { text: element?.textContent ?? '', detail: element?.querySelector('[data-detail]')?.getAttribute('data-detail') ?? null, drillOpen: !!drill, drill: drill?.textContent ?? '', day: drill?.querySelector('.drill-day')?.textContent ?? null,
     asks: state.asks.splice(0), options: state.options.splice(0), pins: state.pins.splice(0),
     follows: [...follows.values()], followLog: followLog.splice(0), shown: state.shown.splice(0),

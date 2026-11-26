@@ -47,6 +47,7 @@ const hourReply = (): LeaderHourReply => ({
   lost: 737,
   battlesPartialFrom: null,
   firstSeenHour: FIRST,
+  serviceStart: { kind: 'before', hour: FIRST },
   progress: {
     nextRequiredRaw: '100000000',
     training: [

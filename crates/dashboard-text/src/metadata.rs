@@ -595,12 +595,6 @@ impl ReadFrom {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct LinkProjection {
-    slots: Vec<(u32, Vec<u8>)>,
-    links: Vec<(u32, u32)>,
-}
-
 impl LinkTags {
     pub fn heap_bytes(&self) -> usize {
         let table = |capacity: usize, entry: usize| capacity * 8 / 7 * (entry + 1);
@@ -651,38 +645,6 @@ impl LinkTags {
         Ok(rebuilt)
     }
 
-    pub fn update_tables<F: replay_frame::frame::Tables + ?Sized>(
-        &mut self,
-        frame: &F,
-    ) -> io::Result<bool> {
-        let read = || -> io::Result<(CountryKeys, HashMap<u32, u32>)> {
-            let countries = frame.complete_rows::<tables::Countries>(replay_data::rows::mask::<
-                CountryRow,
-            >(&["canonical_slot", "tag"]))?;
-            let links = frame.complete_rows::<tables::CountryLinks>(
-                replay_data::rows::mask::<CountryLinkRow>(&["canonical_slot"]),
-            )?;
-            let mut keys = Vec::with_capacity(countries.len());
-            for row in countries.iter() {
-                let row = row?;
-                keys.push((row.id, row.canonical_slot, row.tag.clone()));
-            }
-            let mut slots = Vec::with_capacity(links.len());
-            for row in links.iter() {
-                let row = row?;
-                slots.push((row.id, row.canonical_slot));
-            }
-            Ok((CountryKeys::from_keys(keys), link_slots_of(slots)))
-        };
-        match read() {
-            Ok((countries, links)) => self.update_projected(Some(&countries), Some(&links)),
-            Err(error) => {
-                self.from = None;
-                Err(error)
-            }
-        }
-    }
-
     pub fn update_projected(
         &mut self,
         countries: Option<&CountryKeys>,
@@ -715,34 +677,6 @@ impl LinkTags {
         self.tags = from.tags();
         self.from = Some(from);
         Ok(true)
-    }
-
-    pub fn projection(&self) -> Option<LinkProjection> {
-        self.from.as_ref().map(|from| {
-            let mut links: Vec<_> = from
-                .link_slots
-                .iter()
-                .map(|(&raw, &slot)| (raw, slot))
-                .collect();
-            links.sort_unstable();
-            LinkProjection {
-                slots: from.slots.clone(),
-                links,
-            }
-        })
-    }
-
-    pub fn from_projection(projection: LinkProjection) -> Self {
-        let from = ReadFrom {
-            countries: None,
-            links: None,
-            slots: projection.slots,
-            link_slots: projection.links.into_iter().collect(),
-        };
-        Self {
-            tags: from.tags(),
-            from: Some(from),
-        }
     }
 
     pub fn get(&self, raw: u32) -> Option<&String> {
@@ -832,16 +766,6 @@ impl CountryKeys {
                 *id == row.id && *slot == row.canonical_slot && *tag == row.tag
             })
     }
-    pub fn same_in(&self, countries: replay_frame::frame::Rowset<'_, CountryRow>) -> bool {
-        self.0.len() == countries.len()
-            && self.0.iter().zip(countries.iter()).all(|((id, slot, tag), row)| {
-                #[cfg(any(test, feature = "test-support"))]
-                self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                row.is_ok_and(|row| {
-                    *id == row.id && *slot == row.canonical_slot && *tag == row.tag
-                })
-            })
-    }
 
     pub fn same_changes(
         &self,
@@ -890,17 +814,6 @@ impl CountryKeys {
 
 pub fn link_slots(links: &[CountryLinkRow]) -> HashMap<u32, u32> {
     link_slots_of(links.iter().map(|link| (link.id, link.canonical_slot)))
-}
-
-pub fn link_slots_in(
-    links: replay_frame::frame::Rowset<'_, CountryLinkRow>,
-) -> io::Result<HashMap<u32, u32>> {
-    let mut pairs = Vec::with_capacity(links.len());
-    for link in links.iter() {
-        let link = link?;
-        pairs.push((link.id, link.canonical_slot));
-    }
-    Ok(link_slots_of(pairs))
 }
 
 pub fn link_slots_of(links: impl IntoIterator<Item = (u32, u32)>) -> HashMap<u32, u32> {

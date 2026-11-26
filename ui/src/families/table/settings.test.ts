@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  amountCell,
   displayExtra,
   encodeTableSettings,
   endAligned,
-  percentCell,
   rankMarkers,
   strengthBar,
   tableDefaults,
@@ -110,8 +108,6 @@ test('displays reserve their room, numeric columns align right, and rank markers
   assert.deepEqual(['plain', 'meterAfter', 'track', 'meterBefore'].map(display => endAligned({ numeric: true, display: display as never })), [true, true, true, true]);
   assert.equal(endAligned({ numeric: false, display: 'plain' }), false);
   assert.equal(endAligned({ numeric: true, display: 'plain', cellKind: 'icons' }), false, 'an icon strip starts at the left, and so does its header');
-  assert.deepEqual(['4449999', '4450000', '12000000', '-1'].map(percentCell), ['44%', '45%', '100%', '0%']);
-  assert.deepEqual([173_611n, 0n, -5n, 99_999n].map(amountCell), ['1.73', '-', '!', '0.99']);
   assert.equal(strengthBar('87544'), 88000n);
   const first = rankMarkers(['GER', 'ITA', 'SOV'], ['SOV', 'GER', 'ITA', 'ENG'], 1000, new Map(), 2500);
   assert.deepEqual(Object.fromEntries(first), { SOV: { delta: 2, until: 3500 }, GER: { delta: -1, until: 3500 }, ITA: { delta: -1, until: 3500 } });

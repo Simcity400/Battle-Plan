@@ -574,6 +574,11 @@ fn complete_tile_and_unvalued_scalar_state_match_main_storage_read_counts() {
     let second_calls = crate::cost::take_calls();
     assert_eq!(second_calls, 2, "subsequent complete tile reuses cached lifetimes and performs exactly chart + statuses");
 
+    let command = Line::new(&query, series, series.measure("commandPower").unwrap()).unwrap();
+    let power_rows = line.lives(0).unwrap().unwrap();
+    assert!(!power_rows.is_empty());
+    assert!(Arc::ptr_eq(&power_rows, &command.lives(0).unwrap().unwrap()));
+
     let filtered_line = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
     let tile1_first = (first_index * 6 * tile::BINS as i64) as i32;
     let within1 = [(Country::from("GER"), vec![Span { first_hour: tile1_first, last_hour: tile1_first + 5 }])];
@@ -582,8 +587,8 @@ fn complete_tile_and_unvalued_scalar_state_match_main_storage_read_counts() {
     assert!(first_filtered.lines[0].missing.is_empty());
     assert_eq!(
         crate::cost::take_calls(),
-        3,
-        "within-filtered complete tile reads statuses once for the tile span and shares the cache with missing_scoped"
+        2,
+        "a fresh line shares the recording's lifetimes and reads only the chart and statuses"
     );
 
     let tile2_first = ((first_index + 1) * 6 * tile::BINS as i64) as i32;

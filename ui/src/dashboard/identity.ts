@@ -101,25 +101,3 @@ function entryAt<E extends { hour: number }>(list: readonly E[], hour: number): 
   }
   return list[low];
 }
-
-function joinTagChanges<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage): R[][] {
-  const groups = new Map<string, R[]>();
-  for (const run of runs) {
-    const changes = lineage.changeHours(run.tag, run.firstHour + 1, run.lastHour);
-    const starts = [run.firstHour, ...new Set(changes.sort((a, b) => a - b))];
-    for (let index = 0; index < starts.length; index++) {
-      const firstHour = starts[index];
-      const lastHour = (starts[index + 1] ?? run.lastHour + 1) - 1;
-      const piece = starts.length === 1 ? run : { ...run, firstHour, lastHour };
-      const country = lineage.countryAt(run.tag, firstHour);
-      const group = groups.get(country);
-      if (group) group.push(piece); else groups.set(country, [piece]);
-    }
-  }
-  return [...groups.values()].map(group => group.sort((a, b) => a.firstHour - b.firstHour))
-    .sort((a, b) => a[0].firstHour - b[0].firstHour);
-}
-
-export function countryMembership<R extends { tag: string; firstHour: number; lastHour: number }>(runs: readonly R[], lineage: Lineage): Map<string, R[]> {
-  return new Map(joinTagChanges(runs, lineage).map(group => [lineage.countryAt(group[0].tag, group[0].firstHour), group]));
-}

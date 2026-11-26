@@ -9,15 +9,14 @@ test('country mix expands shared stack samples without inventing intermediate va
     { hours: [1, 3, 3], bands: [{ low: [0, 0, 0], high: [2, 2, 8] }] });
 });
 
-test('legacy mixes use the same half-pixel thinning and preserve signed peaks and gaps', () => {
+test('countryRaceSegments uses half-pixel thinning and preserves signed peaks and gaps', () => {
   const stack = buildStack([[{ firstHour: 0, lastHour: 1, value: 2 }, { firstHour: 2, lastHour: 2, value: 12 },
     { firstHour: 3, lastHour: 4, value: -8 }, { firstHour: 8, lastHour: 10, value: 3, breakBefore: true }]]);
-  const legacy = countryRaceSegments(stack, 1, 10, 8, false);
-  assert.deepEqual(legacy, stackedSegments(stack, 1, 10, 4));
-  assert.ok(legacy.some(segment => segment.bands[0].high.includes(12)));
-  assert.ok(legacy.some(segment => segment.bands[0].low.includes(-8)));
-  assert.equal(legacy.length, 2);
-  assert.deepEqual(countryRaceSegments(stack, 1, 10, 8), legacy.map(heldStackSegment));
+  const segments = countryRaceSegments(stack, 1, 10, 8);
+  assert.deepEqual(segments, stackedSegments(stack, 1, 10, 4).map(heldStackSegment));
+  assert.ok(segments.some(segment => segment.bands[0].high.includes(12)));
+  assert.ok(segments.some(segment => segment.bands[0].low.includes(-8)));
+  assert.equal(segments.length, 2);
   assert.deepEqual(countryRaceSegments(stack, 5, 7, 8), []);
 });
 

@@ -36,13 +36,3 @@ export interface HeatMatrixWidgetDeclaration<TProjectionOptions = Record<string,
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
-
-export type AnyHeatMatrixWidgetDeclaration = HeatMatrixWidgetDeclaration<any, any>;
-
-export function isHeatMatrixWidgetDeclaration(value: unknown): value is AnyHeatMatrixWidgetDeclaration {
-  return !!value
-    && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'heat-matrix'
-    && 'sources' in value
-    && 'projection' in value;
-}

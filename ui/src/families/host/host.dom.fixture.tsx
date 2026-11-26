@@ -255,7 +255,9 @@ let currentState = {
   spanMounted: false,
   deepLogMounted: false,
   deepLogPaged: undefined as PagedRows | undefined,
+  owner: undefined as string | undefined,
 };
+const hoverRows: (string | null)[] = [];
 
 const origBind = pipeline.bind.bind(pipeline);
 pipeline.bind = ((...args: Parameters<typeof pipeline.bind>) => {
@@ -457,7 +459,8 @@ function renderApp() {
               pin={null}
               bounds={BOUNDS}
               onActivate={action => { activated.push(action.subject); }}
-              onTooltipRow={(subject, by) => { tooltipRows.push([by, subject]); }}
+              onTooltipRow={(subject, by) => { tooltipRows.push([by, subject]); if (by === 'pointer') hoverRows.push(subject); }}
+              {...currentState.owner ? { owner: currentState.owner } : {}}
             />
           </div>
           {currentState.secondMounted && (
@@ -718,6 +721,30 @@ window.hostDom = {
     (document.activeElement as HTMLElement | null)?.blur();
     await until(() => focused().at(-1) === null, 2000);
     return { moved, playing, outside, left: focused().slice(settled) };
+  },
+
+  async waitHoverRow(expected: string | null) {
+    return until(() => hoverRows.length > 0 && hoverRows[hoverRows.length - 1] === expected, 2000);
+  },
+
+  async testHoverRowOwnerReset() {
+    const before = hoverRows[hoverRows.length - 1] ?? null;
+    currentState = { ...currentState, owner: 'scoreboard-reset' };
+    renderApp();
+    const cleared = hoverRows[hoverRows.length - 1] ?? null;
+    let pipeId = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas');
+      pipeId = Number(canvas?.dataset.placement ?? -1);
+      return pipeId > 0;
+    });
+    const subs = subsForPipe(pipeId);
+    await until(() => subs.length === 2 && subs.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(35);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subs, 35, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeId)?.mode === 'picture' && !pipeline.view(pipeId)?.dim);
+    return { before, cleared, afterInstall: hoverRows[hoverRows.length - 1] ?? null };
   },
 
   async testF3UnrelatedAppearanceAndF4ReducedMotion() {

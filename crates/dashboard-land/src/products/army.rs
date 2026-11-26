@@ -761,14 +761,6 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
 #[cfg(test)]
 mod tests;
 
-enum RunKey {}
-
-type CachedRuns = dashboard_base::queries::RunCache<RunKey, Vec<(u128, i64, i64)>>;
-
-pub(crate) fn forget(source: &dashboard_base::Source) {
-    CachedRuns::forget(source);
-}
-
 pub fn cached_army_mix(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<Vec<(u128, i64, i64)>>> {
-    CachedRuns::held(&source.state::<CachedRuns>(), run, || dashboard_query::cost::lifetimes(source.replay_ref().recording(), run, replay_data::rows::TableId::ArmyMix))
+    dashboard_base::queries::lifetimes(source, run, replay_data::rows::TableId::ArmyMix)
 }

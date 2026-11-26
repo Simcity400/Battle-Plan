@@ -8,6 +8,7 @@ import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { resolveSelectedCountryRefs } from '../../families/table/logHelpers.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { decisionsDeclaration, decisionsProjection } from './decisionsProjection.ts';
+import { hoverTextOf, withHoverText, type HoverText } from '../event-feed/hoverText.ts';
 import { eventChoicesDeclaration } from '../event-choices/eventChoicesProjection.ts';
 import { eventFeedDeclaration } from '../event-feed/eventFeedProjection.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
@@ -125,8 +126,9 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   const start = day(3, 1);
   const hour = start + 10;
   const missionOcc = card([edge('decisionActivated', start, { days: 10 })]);
+  const { costs: _absent, ...unproven } = edge('decisionSelected', start);
   const mixedUnknownOcc = card([
-    edge('decisionSelected', start, { costs: null }),
+    unproven as ScriptEdge,
     edge('decisionTimeoutEffect', start + 2, { costs: [] }),
   ]);
   const chargedOcc = card([edge('decisionSelected', start, { days: 10, costs: pp('-5000000') })]);
@@ -315,4 +317,34 @@ test('S20: frozen Decisions page derives row state, timer, and detail asOfHour f
   const row = model.rows[0]!;
   assert.deepEqual(row.cells.timer?.value, { kind: 'known', value: '2' }, 'timer must use frozen snapshot hour (2 days left), not playhead (0 days left)');
   assert.equal((row.meta as { asOfHour: number }).asOfHour, frozenAt, 'detail asOfHour must match frozen snapshot hour');
+});
+
+test('a decision tooltip shows its listed description until the hovered row is read, then the full text, and says what could not be read', () => {
+  const start = day(3, 1);
+  const selected = edge('decisionSelected', start, { days: 10 });
+  const occ = card([{ ...selected, row: { ...selected.row, item: { ...selected.row.item!, description: 'Raise war bonds.' } } }]);
+  const other = card([edge('decisionSelected', start, { days: 10 })]);
+  const source = buildRowSourceFromHead('test:decisions-hover', {
+    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '2', counts: [],
+    rows: [{ hour: start, key: 'a', ordinal: '0', cells: [], occurrence: occ }, { hour: start, key: 'b', ordinal: '1', cells: [], occurrence: other }],
+    facetTotals: [], missing: [], unavailable: [], warnings: [],
+  }, undefined, start + 1)!;
+  const tip = (hover: HoverText | readonly HoverText[] | null) => {
+    const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [], hover: hoverTextOf(withHoverText({}, hover === null ? [] : 'key' in hover ? [hover] : hover)) });
+    const extra = model.rows.find(row => row.key === occ.id)?.tooltipExtra;
+    const shown = (typeof extra === 'function' ? extra() : extra) ?? [];
+    return shown.filter(row => ['Description', 'Full description', 'Authored effects', 'Text not recorded'].includes(row.label))
+      .map(row => [row.label, row.value.kind === 'known' ? row.value.value : row.value.kind === 'notRecorded' ? `not recorded: ${row.value.reason}` : row.value.kind]);
+  };
+  const read = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', gaps: null, options: null, missing: null };
+  assert.deepEqual(tip(null), [['Description', 'Raise war bonds.']], 'before the read answers, the listed description');
+  assert.deepEqual(tip(read), [['Description', 'Raise war bonds. Effects: +5% war support']], 'the read row brings the full text');
+  assert.deepEqual(tip({ ...read, key: other.id }), [['Description', 'Raise war bonds.']], 'a read of another row changes nothing here');
+  assert.deepEqual(tip([{ ...read, key: other.id, description: 'Elsewhere.' }, read]), [['Description', 'Raise war bonds. Effects: +5% war support']], 'with a pointer row and a focused row read, each tooltip takes its own');
+  assert.deepEqual(tip({ ...read, description: null, missing: 'This event is not in the log at the hour it was read' }), [
+    ['Description', 'Raise war bonds.'], ['Full description', 'not recorded: This event is not in the log at the hour it was read'],
+  ]);
+  assert.deepEqual(tip({ ...read, gaps: 'GER_war_bonds.d shows its scripted text elided' }), [
+    ['Text not recorded', 'not recorded: GER_war_bonds.d shows its scripted text elided'], ['Description', 'Raise war bonds. Effects: +5% war support'],
+  ], 'the text the read row could not expand is named once its row is read');
 });

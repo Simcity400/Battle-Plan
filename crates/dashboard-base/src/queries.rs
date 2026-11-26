@@ -72,11 +72,11 @@ pub fn warm_lexicons(source: &Source) -> io::Result<()> {
 
 #[derive(Default)]
 struct Histories {
-    lifetimes: HashMap<(u32, usize), Arc<Vec<(u128, i64, i64)>>>,
     links: HashMap<u32, Arc<country_ids::RunLinks>>,
 }
 
 pub fn forget(source: &Source) {
+    source.replay_ref().forget_row_lifetimes();
     *source.state::<Held>().lock().unwrap_or_else(PoisonError::into_inner) = Held::default();
     *source.state::<Histories>().lock().unwrap_or_else(PoisonError::into_inner) = Histories::default();
     *source.state::<Lexicons>().lock().unwrap_or_else(PoisonError::into_inner) = Lexicons::default();
@@ -103,13 +103,7 @@ pub fn links(source: &Source, run: u32) -> io::Result<Arc<country_ids::RunLinks>
 }
 
 pub fn lifetimes(source: &Source, run: u32, table: replay_data::rows::TableId) -> io::Result<Arc<Vec<(u128, i64, i64)>>> {
-    let state = source.state::<Histories>();
-    if let Some(found) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lifetimes.get(&(run, table.index())) {
-        return Ok(Arc::clone(found));
-    }
-    let made = Arc::new(dashboard_query::cost::lifetimes(source.replay_ref().recording(), run, table)?);
-    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lifetimes.insert((run, table.index()), Arc::clone(&made));
-    Ok(made)
+    dashboard_query::cost::recorded_lifetimes(source.replay_ref(), run, table)
 }
 
 pub fn query(source: &Source, branch: u64) -> io::Result<dashboard_query::Query<'_>> {

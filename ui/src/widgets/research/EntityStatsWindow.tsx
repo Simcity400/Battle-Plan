@@ -1,10 +1,11 @@
 import { useGate } from '../../dashboard/regionGate';
+import { at } from '../../dashboard/regionTime';
 import WidgetState from '../../components/WidgetState';
 import FloatingPanel from '../../components/FloatingPanel';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { WidgetBase } from '../../dashboard/model';
 import { useMemo } from 'react';
 import { GameArtFor, GameIcons, GameRuns } from './GameText';
 import type { EntityLink } from './GameText';
@@ -12,10 +13,12 @@ import { entityStatsStructure, validateEntityStats } from './entityStats';
 import { ENTITY_LABELS, trimLabel, trimValue } from './gameRuns';
 import './gameText.css';
 
-export default function EntityStatsWindow({ runtime, widget, link, active, onClose }: {
-  runtime: WidgetRuntime; widget: WidgetSpec; tag: string; link: EntityLink; active: boolean; onClose: () => void;
+export default function EntityStatsWindow({ runtime, widget, hour, link, active, onClose }: {
+  runtime: WidgetRuntime; widget: WidgetBase; tag: string; hour: number; link: EntityLink; active: boolean; onClose: () => void;
 }) {
-  const stats = useHeadProduct(runtime, useGate(runtime, widget), 'content-entity-stats', { kind: link.kind, token: link.token },
+  const action = useMemo(() => at(hour), [hour]);
+  const params = useMemo(() => ({ kind: link.kind, token: link.token }), [link.kind, link.token]);
+  const stats = useHeadProduct(runtime, useGate(runtime, widget, action, active), 'content-entity-stats', params,
     { active, validate: validateEntityStats, structure: entityStatsStructure });
   const { data, error, retry } = stats;
   const kind = ENTITY_LABELS[link.kind];

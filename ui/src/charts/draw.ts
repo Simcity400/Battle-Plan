@@ -1,12 +1,9 @@
-import { ellipsise } from './labels.ts';
 import { formatDate, gameDate } from '../dashboard/calendar.ts';
-import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
-import { layoutEndLabels } from './labels.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
 import { linearTicks, logTicks, thinLogTicks } from './valueAxis.ts';
-import { type Canvas2D, type MeasureText, canvasMeasureText, textWidthRevision } from './textWidth.ts';
+import { type Canvas2D, type MeasureText, canvasMeasureText } from './textWidth.ts';
 
 export const font = (tokens: ChartTokens, size: number, weight = 400) => `${weight} ${size}px ${tokens.font}`;
 export const LABEL_WEIGHT = 500;
@@ -14,7 +11,6 @@ export const VALUE_WEIGHT = 600;
 const crisp = (value: number) => Math.round(value) + 0.5;
 
 export function valueTicks(frame: PlotFrame, tokens: ChartTokens): number[] {
-  if (frame.valueTicks) return frame.valueTicks.filter(value => value >= frame.y[0] && value <= frame.y[1]);
   return frame.log ? thinLogTicks(logTicks(frame.y[0], frame.y[1]), frame.toY, tokens.fontSize.small + 6)
     : linearTicks(frame.y[0], frame.y[1], Math.max(2, Math.round(frame.plotHeight / 48)));
 }
@@ -40,9 +36,8 @@ export function valueLabelWidth(ctx: Canvas2D | null, frame: PlotFrame, tokens: 
   return width;
 }
 
-const rowLabels = new WeakMap<Canvas2D, { font: string; width: number; measure: MeasureText; revision: number; labels: Map<string, string> }>();
 export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
-  rows?: readonly string[], measure?: MeasureText): void {
+  measure?: MeasureText): void {
   const { plotLeft, plotTop, plotWidth, plotHeight } = frame;
   const measureText = measure ?? canvasMeasureText(ctx);
   ctx.save();
@@ -51,7 +46,7 @@ export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, f
   ctx.font = smallFont;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  const values = rows ? [] : valueTicks(frame, tokens);
+  const values = valueTicks(frame, tokens);
   for (const value of values) {
     const y = crisp(frame.toY(value));
     ctx.strokeStyle = tokens.grid;
@@ -59,30 +54,12 @@ export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, f
     ctx.fillStyle = tokens.muted;
     ctx.fillText(formatValue(value, values), plotLeft - VALUE_LABEL_GAP, y);
   }
-  if (rows) {
-    const rowFont = font(tokens, tokens.fontSize.small, 500);
-    ctx.font = rowFont;
-    const width = plotLeft - VALUE_LABEL_GAP * 2;
-    const revision = textWidthRevision();
-    let cached = rowLabels.get(ctx);
-    if (!cached || cached.font !== rowFont || cached.width !== width || cached.measure !== measureText || cached.revision !== revision) {
-      cached = { font: rowFont, width, measure: measureText, revision, labels: new Map() };
-      rowLabels.set(ctx, cached);
-    }
-    rows.forEach((label, index) => {
-      let fitted = cached.labels.get(label);
-      if (fitted === undefined) { fitted = ellipsise(label, width, text => measureText(text, rowFont)); cached.labels.set(label, fitted); }
-      ctx.fillStyle = tokens.text;
-      ctx.fillText(fitted, plotLeft - VALUE_LABEL_GAP, plotTop + (index + 0.5) / Math.max(1, rows.length) * plotHeight);
-    });
-  }
-  const tickFont = rows ? font(tokens, tokens.fontSize.small, 500) : smallFont;
-  const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => measureText(text, tickFont));
-  const dates = frame.timeAxisTop ? plotTop - tokens.fontSize.small * 2 : chartBottom(frame);
+  const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => measureText(text, smallFont));
+  const dates = plotTop + plotHeight;
   ctx.strokeStyle = tokens.grid;
   for (const hour of ticks.grid) {
     const x = crisp(frame.toX(hour));
-    ctx.beginPath(); ctx.moveTo(x, frame.timeAxisTop ? plotTop : dates); ctx.lineTo(x, frame.timeAxisTop ? plotTop + plotHeight : dates + 4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, dates); ctx.lineTo(x, dates + 4); ctx.stroke();
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -141,7 +118,7 @@ export function drawPlayhead(ctx: Canvas2D, frame: PlotFrame, tokens: ChartToken
   const x = crisp(frame.toX(hour));
   ctx.save();
   ctx.strokeStyle = tokens.accent; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(x, frame.plotTop); ctx.lineTo(x, chartBottom(frame)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, frame.plotTop); ctx.lineTo(x, frame.plotTop + frame.plotHeight); ctx.stroke();
   ctx.restore();
 }
 
@@ -149,7 +126,7 @@ export function drawCrosshair(ctx: Canvas2D, frame: PlotFrame, tokens: ChartToke
   const x = crisp(frame.toX(hour));
   ctx.save();
   ctx.strokeStyle = tokens.muted; ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(x, frame.plotTop); ctx.lineTo(x, chartBottom(frame)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, frame.plotTop); ctx.lineTo(x, frame.plotTop + frame.plotHeight); ctx.stroke();
   ctx.restore();
 }
 
@@ -162,35 +139,6 @@ export function drawSelection(ctx: Canvas2D, tokens: ChartTokens, box: { x0: num
   ctx.globalAlpha = 0.8; ctx.strokeStyle = tokens.accent; ctx.lineWidth = 1;
   ctx.strokeRect(crisp(x), crisp(y), Math.abs(box.x1 - box.x0), Math.abs(box.y1 - box.y0));
   ctx.restore();
-}
-
-export function drawEndLabels(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, labels: readonly { text: string; suffix?: string; y: number; from: number; color: string; muted?: boolean }[],
-  measure?: MeasureText): void {
-  const measureText = measure ?? canvasMeasureText(ctx);
-  const labelFont = font(tokens, tokens.fontSize.small, 600);
-  ctx.save();
-  ctx.font = labelFont;
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  const x = frame.plotLeft + frame.plotWidth + 10;
-  for (const label of labels) {
-    if (Math.abs(label.y - label.from) > 2) {
-      ctx.strokeStyle = label.color; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x - 8, label.from); ctx.lineTo(x - 2, label.y); ctx.stroke(); ctx.globalAlpha = 1;
-    }
-    ctx.fillStyle = label.muted ? tokens.muted : tokens.text;
-    const room = frame.padding.right - 14, suffix = label.suffix ? ` ${label.suffix}` : '';
-    const text = room > 0 ? ellipsise(label.text, room - measureText(suffix, labelFont), text => measureText(text, labelFont)) : label.text;
-    ctx.fillText(`${text}${suffix}`.trimStart(), x, label.y);
-  }
-  ctx.restore();
-}
-
-export interface LineEnd { id: string; y: number; text: string; suffix?: string; color: string; muted?: boolean }
-export const END_LABEL_HEIGHT = 14;
-
-export function placeEndLabels(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, ends: readonly LineEnd[], gap = 2, measure?: MeasureText): void {
-  const placed = layoutEndLabels(ends.map(end => ({ ...end, height: END_LABEL_HEIGHT })), frame.plotTop, frame.plotTop + frame.plotHeight, gap);
-  drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, suffix: end.suffix, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })), measure);
 }
 
 export function dayLabel(hour: number): string {
