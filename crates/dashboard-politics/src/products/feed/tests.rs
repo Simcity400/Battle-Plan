@@ -212,20 +212,23 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
     };
     let mut selected = event(EventFeedSource::DecisionSelected as u8, 10, Slot::Of(7), Slot::None);
     selected.costs = [Some(Some(-5_000_000)), Some(Some(0))];
-    let costs = edge(&selected, row(&selected)).costs.unwrap();
+    let costs = edge(&selected, row(&selected), false).costs.unwrap();
     assert_eq!(costs.iter().map(|cost| (cost.currency, cost.amount.as_str())).collect::<Vec<_>>(), [(ScriptCurrency::PoliticalPower, "-5000000")]);
     selected.costs = [Some(None), Some(None)];
-    assert!(edge(&selected, row(&selected)).costs.is_none(), "a kind that charges nothing proves nothing");
+    assert!(edge(&selected, row(&selected), false).costs.is_none(), "a kind that charges nothing proves nothing");
     selected.costs = [None, None];
-    assert!(edge(&selected, row(&selected)).costs.is_none(), "not proven is null, never zero");
+    assert!(edge(&selected, row(&selected), false).costs.is_none(), "not proven is null, never zero");
     selected.costs = [Some(Some(-5_000_000)), None];
-    let partly = edge(&selected, row(&selected));
+    let partly = edge(&selected, row(&selected), false);
     assert_eq!((partly.costs.map(|costs| costs.len()), partly.costs_unread), (Some(1), vec![ScriptCurrency::CommandPower]), "an unread command-power cell keeps the political power that was read, and says which currency it lacks");
     selected.costs = [Some(Some(0)), None];
-    let zero = edge(&selected, row(&selected));
+    let zero = edge(&selected, row(&selected), false);
     assert_eq!((zero.costs.map(|costs| costs.iter().map(|cost| cost.amount.clone()).collect::<Vec<_>>()), zero.costs_unread), (Some(vec!["0".to_owned()]), vec![ScriptCurrency::CommandPower]), "a proven zero stays beside the currency not read");
     selected.costs = [None, Some(Some(-30))];
-    assert_eq!(edge(&selected, row(&selected)).costs_unread, [ScriptCurrency::PoliticalPower], "and the other way round");
+    assert_eq!(edge(&selected, row(&selected), false).costs_unread, [ScriptCurrency::PoliticalPower], "and the other way round");
+    selected.costs = [Some(Some(-20)), Some(None)];
+    let partial = edge(&selected, row(&selected), true);
+    assert_eq!((partial.costs, partial.costs_unread), (None, Vec::new()), "a charge an older recorder wrote from a partial read is not proven");
 }
 
 #[test]

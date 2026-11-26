@@ -1,6 +1,6 @@
 
 use super::{
-    EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, LOG, Names, Notices, invalid,
+    EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, LOG, Notices, invalid,
     row::{Columns, FeedEvent, Slot},
 };
 use dashboard_base::{Source, products::LoadContext};
@@ -118,11 +118,28 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
     }
 }
 
+fn covers(spans: &[HourSpan], hour: i32) -> bool {
+    spans.get(spans.partition_point(|span| span.last_hour < hour)).is_some_and(|span| span.first_hour <= hour)
+}
+
 fn absent_observed(query: &Query<'_>, unobserved: &[&[HourSpan]], absent: i32, present: i32) -> bool {
     let run = query.timeline.at(present).map(|stretch| stretch.run);
-    run.is_some()
-        && query.timeline.at(absent).map(|stretch| stretch.run) == run
-        && !unobserved.iter().flat_map(|spans| spans.iter()).any(|span| span.first_hour <= absent && absent <= span.last_hour)
+    run.is_some() && query.timeline.at(absent).map(|stretch| stretch.run) == run && !unobserved.iter().any(|spans| covers(spans, absent))
+}
+
+fn witnessed(first: i32, last: i32, unread: &[HourSpan]) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let mut at = first;
+    for span in unread[unread.partition_point(|span| span.last_hour < first)..].iter().take_while(|span| span.first_hour <= last) {
+        if span.first_hour > at {
+            out.push((at, span.first_hour - 1));
+        }
+        at = at.max(span.last_hour.saturating_add(1));
+    }
+    if at <= last {
+        out.push((at, last));
+    }
+    out
 }
 
 fn held_by(query: &Query<'_>, tag: &str, first: i32, last: i32) -> Vec<(i32, i32, u32)> {
@@ -209,35 +226,36 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
         out.rows.extend(reply.capitulations.iter().filter(|capitulation| within(capitulation.hour)).map(|capitulation| family_row(EventFeedKind::Capitulated, capitulation.hour, capitulation.hour, capitulation.hour, vec![capitulation.tag.clone()], None, None)));
         let mut fought: HashMap<(u32, u32), Vec<(i32, i32, (String, String), (String, String))>> = HashMap::new();
         for war in &reply.wars {
-            for (a, b, one) in held_by(query, &war.first, war.first_hour, war.last_hour) {
-                for (first, last, other) in held_by(query, &war.second, a, b) {
-                    let tags = (war.first.clone(), war.second.clone());
-                    fought.entry((one.min(other), one.max(other))).or_default().push((first, last, tags.clone(), tags));
+            for (seen, until) in witnessed(war.first_hour, war.last_hour, &reply.unobserved.wars) {
+                for (a, b, one) in held_by(query, &war.first, seen, until) {
+                    for (first, last, other) in held_by(query, &war.second, a, b) {
+                        let tags = (war.first.clone(), war.second.clone());
+                        fought.entry((one.min(other), one.max(other))).or_default().push((first, last, tags.clone(), tags));
+                    }
                 }
             }
         }
-        let mut ends: Vec<(i32, String, String)> = Vec::new();
-        for runs in fought.into_values() {
+        let mut ends: Vec<(i32, u32, u32, String, String)> = Vec::new();
+        for ((one, other), runs) in fought {
             for (_, last, _, (first_tag, second_tag)) in continuous(runs) {
                 let ended = last.saturating_add(1);
                 if within(ended) && absent_observed(query, &[&reply.unobserved.wars], ended, last) {
-                    ends.push((ended, first_tag, second_tag));
+                    ends.push((ended, one, other, first_tag, second_tag));
                 }
             }
         }
         ends.sort();
         let native = match native_war_ends(query, &ends, cancelled) {
             Ok(native) => native,
-            Err(error) if cancelled.load(Ordering::Relaxed) => return Err(error),
+            Err(error) if cancelled.load(Ordering::Relaxed) || retryable(&error) => return Err(error),
             Err(error) => {
                 out.refused = Some(format!("No peace is inferred from war relations: the native war ends it would repeat could not be read: {error}"));
                 ends.clear();
                 BTreeSet::new()
             }
         };
-        for (hour, first, second) in ends {
-            let pair = |at: i32| if first <= second { (at, first.clone(), second.clone()) } else { (at, second.clone(), first.clone()) };
-            if native.contains(&pair(hour)) || native.contains(&pair(hour - 1)) {
+        for (hour, one, other, first, second) in ends {
+            if native.contains(&(hour, one, other)) || native.contains(&(hour - 1, one, other)) {
                 continue;
             }
             out.rows.push(family_row(EventFeedKind::Peace, hour, hour, hour - 1, vec![first, second], None, None));
@@ -262,8 +280,10 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
             let unknown: [&[HourSpan]; 2] = [&reply.unobserved.factions, &faction.incomplete];
             let mut members: HashMap<u32, Vec<(i32, i32, String, String)>> = HashMap::new();
             for member in &faction.members {
-                for (first, last, slot) in held_by(query, &member.tag, member.first_hour, member.last_hour) {
-                    members.entry(slot).or_default().push((first, last, member.tag.clone(), member.tag.clone()));
+                for (seen, until) in witnessed(member.first_hour, member.last_hour, &reply.unobserved.factions) {
+                    for (first, last, slot) in held_by(query, &member.tag, seen, until) {
+                        members.entry(slot).or_default().push((first, last, member.tag.clone(), member.tag.clone()));
+                    }
                 }
             }
             for runs in members.into_values() {
@@ -285,7 +305,11 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     Ok(out)
 }
 
-fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled: &AtomicBool) -> io::Result<BTreeSet<(i32, String, String)>> {
+pub(crate) fn retryable(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock)
+}
+
+fn native_war_ends(query: &Query<'_>, ends: &[(i32, u32, u32, String, String)], cancelled: &AtomicBool) -> io::Result<BTreeSet<(i32, u32, u32)>> {
     let mut out = BTreeSet::new();
     let mut ranges: Vec<(i32, i32)> = ends.iter().map(|(hour, ..)| (hour - 1, *hour)).collect();
     ranges.sort_unstable();
@@ -304,7 +328,6 @@ fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled:
     let ended = EventFeedKind::WarEnded.code().map(i64::from).ok_or_else(|| invalid("A war end has no feed code"))?;
     let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![ended], ..Default::default() }], query.timeline.first, query.timeline.last)?;
     let columns = Columns::new()?;
-    let names = Names::new(&query.holders);
     let mut runs: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
     for &(first, last) in &merged {
         for stretch in query.timeline.within(first, last) {
@@ -315,12 +338,8 @@ fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled:
         dashboard_text::metadata::check_cancel(cancelled)?;
         for (_, row) in reader.rows(run, &selection.patterns, &ranges)? {
             let event = columns.read(&row)?;
-            let tag = |slot: Slot| match slot {
-                Slot::Of(slot) => names.slot_tag(slot, event.hour).map(str::to_owned),
-                _ => None,
-            };
-            if let (Some(first), Some(second)) = (tag(event.actor.slot), tag(event.target.slot)) {
-                out.insert(if first <= second { (event.hour, first, second) } else { (event.hour, second, first) });
+            if let (Slot::Of(one), Slot::Of(other)) = (event.actor.slot, event.target.slot) {
+                out.insert((event.hour, one.min(other), one.max(other)));
             }
         }
     }

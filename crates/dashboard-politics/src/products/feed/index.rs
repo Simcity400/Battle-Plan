@@ -108,6 +108,7 @@ pub(crate) struct Scanned {
     presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
     decision_breaks: Vec<(i32, i32)>,
+    partial_reads: Vec<i32>,
     pub gaps: Vec<MissingSpan>,
 }
 
@@ -135,6 +136,10 @@ fn presented_key(event: &FeedEvent, effects: bool) -> (u64, u64, i32, bool) {
 }
 
 impl Scanned {
+    pub(crate) fn partial_read(&self, read_hour: i32) -> bool {
+        self.partial_reads.binary_search(&read_hour).is_ok()
+    }
+
     fn refused(first: i32, last: i32, reason: &str) -> Self {
         let whole = vec![(first, last)];
         Self {
@@ -147,6 +152,7 @@ impl Scanned {
             presented: Mutex::default(),
             breaks: whole.clone(),
             decision_breaks: whole,
+            partial_reads: Vec::new(),
             gaps: vec![MissingSpan { first_hour: first, last_hour: last, reason: format!("The event history could not be read: {reason}") }],
         }
     }
@@ -377,9 +383,12 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     held.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)));
     let complete = EventFeedCoverage::Complete as u32;
     let lost = |decisions: bool| incomplete.iter().filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals != Some(0))).map(|&(hour, ..)| (hour, hour));
+    let mut partial_reads: Vec<i32> = incomplete.iter().filter(|(_, _, read)| read.coverage != Some(complete)).map(|(_, _, read)| read.read_hour).collect();
+    partial_reads.sort_unstable();
+    partial_reads.dedup();
     let breaks = spans(held.iter().copied().chain(lost(false)).collect());
     let decision_breaks = spans(held.into_iter().chain(lost(true)).collect());
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn spans(mut breaks: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
@@ -665,7 +674,7 @@ type Notice = (Vec<EventFeedCategory>, String, String, String, Option<u32>);
 fn family<T>(made: io::Result<T>, categories: &[EventFeedCategory], kind: &str, label: &str, refused: &mut Vec<Notice>, cancelled: &AtomicBool) -> io::Result<Option<T>> {
     match made {
         Ok(made) => Ok(Some(made)),
-        Err(error) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => Err(error),
+        Err(error) if cancelled.load(std::sync::atomic::Ordering::Relaxed) || families::retryable(&error) => Err(error),
         Err(error) => {
             refused.push((categories.to_vec(), kind.to_owned(), label.to_owned(), error.to_string(), None));
             Ok(None)

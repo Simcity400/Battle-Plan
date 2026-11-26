@@ -29,6 +29,7 @@ export interface EventFeedActivityStripProps {
 interface StripState {
   readonly key: string;
   readonly firstHour: number;
+  readonly askedFrom: number;
   readonly lastHour: number;
   readonly binHours: number;
   readonly binCount: number;
@@ -121,6 +122,7 @@ export default function EventFeedActivityStrip({
       setStrip({
         key: queryKey,
         firstHour: data.firstHour,
+        askedFrom: bound.firstHour,
         lastHour: bound.lastHour,
         binHours: data.binHours,
         binCount,
@@ -135,7 +137,7 @@ export default function EventFeedActivityStrip({
     return () => controller.abort();
   }, [track, runtime.client, queryKey, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
 
-  if (!strip || strip.binCount === 0) return null;
+  if (!strip || strip.binCount === 0 || strip.key !== queryKey) return null;
 
   const totals = new Array<number>(strip.binCount).fill(0);
   for (const s of strip.series) {
@@ -143,9 +145,15 @@ export default function EventFeedActivityStrip({
   }
   const maxTotal = Math.max(1, ...totals);
   const missingHours = new Array<number>(strip.binCount).fill(0);
-  const binStart = (idx: number) => Math.max(strip.firstHour + idx * strip.binHours, track?.branch.firstHour ?? strip.firstHour);
+  const binStart = (idx: number) => Math.max(strip.firstHour + idx * strip.binHours, strip.askedFrom);
   const binEnd = (idx: number) => Math.min(strip.firstHour + (idx + 1) * strip.binHours - 1, strip.lastHour);
-  for (const span of strip.missing) {
+  const unread: [number, number][] = [];
+  for (const span of [...strip.missing].map(span => [Math.max(span.firstHour, strip.askedFrom), Math.min(span.lastHour, strip.lastHour)] as [number, number]).filter(([first, last]) => first <= last).sort((a, b) => a[0] - b[0])) {
+    const held = unread[unread.length - 1];
+    if (held && span[0] <= held[1] + 1) held[1] = Math.max(held[1], span[1]);
+    else unread.push(span);
+  }
+  for (const span of unread.map(([firstHour, lastHour]) => ({ firstHour, lastHour }))) {
     const firstIdx = Math.max(0, Math.min(strip.binCount - 1, Math.floor((span.firstHour - strip.firstHour) / strip.binHours)));
     const lastIdx = Math.max(firstIdx, Math.min(strip.binCount - 1, Math.floor((span.lastHour - strip.firstHour) / strip.binHours)));
     for (let idx = firstIdx; idx <= lastIdx; idx++) {

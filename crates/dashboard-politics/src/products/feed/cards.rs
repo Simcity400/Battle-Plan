@@ -94,9 +94,10 @@ pub struct ScriptOccurrence {
     pub edges: Vec<ScriptEdge>,
 }
 
-pub(crate) fn edge(event: &FeedEvent, row: EventFeedRow) -> ScriptEdge {
-    let charged = [ScriptCurrency::PoliticalPower, ScriptCurrency::CommandPower].into_iter().zip(event.costs);
-    let valued = event.costs.iter().any(|cost| matches!(cost, Some(Some(_))));
+pub(crate) fn edge(event: &FeedEvent, row: EventFeedRow, partial: bool) -> ScriptEdge {
+    let read = if partial { [None, None] } else { event.costs };
+    let charged = [ScriptCurrency::PoliticalPower, ScriptCurrency::CommandPower].into_iter().zip(read);
+    let valued = read.iter().any(|cost| matches!(cost, Some(Some(_))));
     let costs_unread: Vec<ScriptCurrency> = if valued { charged.clone().filter(|(_, amount)| amount.is_none()).map(|(currency, _)| currency).collect() } else { Vec::new() };
     let costs = valued.then(|| {
         charged

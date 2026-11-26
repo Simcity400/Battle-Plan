@@ -399,7 +399,7 @@ fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -
 
 fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (i32, i32), hour: i32) -> Option<i32> {
     let warning = feed.warnings.iter().map(|(at, _)| *at).filter(|at| *at > hour).min();
-    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied()).flatten();
+    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied().filter(|&at| at <= to)).flatten();
     let unrecorded = feed
         .unrecorded
         .iter()
@@ -468,7 +468,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 Item::Family(row) => (row.id.clone(), Some(row.as_ref().clone()), None),
                 Item::Log { .. } => {
                     let row = presented[head_at].take();
-                    let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row)));
+                    let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
                     (events[head_at].id(), row, choice)
                 }
             };
@@ -508,7 +508,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         }
     }
     if params.categories.contains(&EventFeedCategory::WarsPeace) {
-        let left_out = feed.unattributed.partition_point(|&at| at <= hour).saturating_sub(feed.unattributed.partition_point(|&at| at < from));
+        let left_out = feed.unattributed.partition_point(|&at| at <= hour.min(params.to.unwrap_or(hour))).saturating_sub(feed.unattributed.partition_point(|&at| at < from));
         if left_out > 0 {
             notices.unavailable(
                 "warUnattributed",
@@ -532,7 +532,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         live: answer.live.to_string(),
         counts: Vec::new(),
         rows,
-        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(i32::MAX)), hour)].into_iter().flatten().min(),
+        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour)].into_iter().flatten().min(),
         missing: answer.gaps,
         unavailable: notices.into_list(),
         warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
@@ -661,7 +661,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         if !opened_row {
             listed(&mut card, list == List::Decisions, list == List::Decisions);
         }
-        let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
+        let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row, prepared.scanned.partial_read(event.read_hour)))).collect();
         if !opened_row {
             let chosen = listed_choice(&edges);
             let mut named = false;
