@@ -2,6 +2,7 @@ import { auditRow } from '../../families/auditRow.ts';
 import { neutralColour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { liveKey } from '../../charts/live.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
@@ -14,7 +15,7 @@ import {
 } from '../../families/time-chart/declaration.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartExactRational, ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
-import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import { branchGapsOf, memberAt } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent, formatScaledPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
@@ -25,6 +26,7 @@ export interface WorldTensionChartOptions {
   readonly layers: number;
   readonly values: 'share' | 'recorded';
   readonly showMarkers: boolean;
+  readonly membership?: FamilyPlanContext['countries']['membership'];
   readonly gaps: readonly ChartGap[];
 }
 
@@ -183,15 +185,38 @@ function buildMarkers(
   return markers;
 }
 
-function buildHoverDetail(
-  readView: BoundedReadView,
-  hour: number,
-): TimeChartModel['hoverDetail'] {
+export function tensionHover(readView: BoundedReadView, mode: 'share' | 'recorded', membership?: FamilyPlanContext['countries']['membership']) {
   const hover = readView.hover<WorldTensionReply>('hover');
-  if (!hover || hover.hour > hour) return null;
+  if (!hover?.data || hover.hour > readView.hour) return null;
   const detail = hover.data;
-  if (!detail) return null;
+  if (detail.values !== undefined && detail.values !== mode) return null;
   const cells = repliedCells(detail).read();
+  const rows = new Map(detail.contributions.map(row => [row.slot, row]));
+  const unknown = detail.warnings.find(w => w.startsWith('Country contributions are not known at this hour'));
+  const at = (band: WorldTensionStackReply['bands'][number]) => {
+    const row = rows.get(band.slot);
+    const tag = row ? row.tag : band.tag;
+    const key = countryKey(band.slot);
+    const membershipKey = membership && key in membership ? key : tag ?? key;
+    if (row?.reading !== undefined) {
+      return 'Ok' in row.reading ? { raw: BigInt(row.reading.Ok), tag } : { reason: row.reading.Err, tag };
+    }
+    if (!memberAt(membership, membershipKey, hover.hour)) return { reason: 'Not a member of the selected group at this hour.', tag };
+    if (unknown) return { reason: unknown, tag };
+    if (!row) return detail.values === undefined ? { raw: 0n, tag } : { reason: 'This slot was not read at this hour.', tag };
+    const cell = liveKey(String(band.slot), 'value');
+    const raw = cells.raw?.(cell);
+    return raw === undefined ? { reason: cells.missing(cell), tag } : { raw, tag };
+  };
+  return { detail, cells, at, hour: hover.hour };
+}
+
+function buildHoverDetail(
+  readView: BoundedReadView, reply: WorldTensionStackReply, options: WorldTensionChartOptions,
+): TimeChartModel['hoverDetail'] {
+  const hover = tensionHover(readView, options.values, options.membership);
+  if (!hover) return null;
+  const { detail, cells } = hover;
   const tensionVal = cells.get(liveKey('world', 'tension'));
   const sumVal = cells.get(liveKey('world', 'sum'));
   const items: TooltipListItem[] = [];
@@ -223,29 +248,30 @@ function buildHoverDetail(
       if (sumText !== null) items.push({ label: 'Uncapped sum', value: sumText, tone: 'muted' });
     }
   }
-  const topContribs = detail.contributions.slice(0, 10);
-  topContribs.forEach((c, idx) => {
-    const key = liveKey(String(c.slot), 'value');
-    const val = cells.get(key);
-    const valRaw = cells.raw?.(key);
-    const info = contributorLabel(readView, c.tag, c.remembered, hover.hour);
-    const flagRes = info.flagChoice ? readView.art({ kind: 'flag', choice: info.flagChoice, size: 'small' }) : null;
-    const valText = val !== undefined
-      ? (valRaw !== undefined
-        ? formatRawPct(valRaw.toString(), detail.contributionScale, false)
-        : Number.isFinite(Number(val) / detail.contributionScale) ? formatRecordedPercent(Number(val) / detail.contributionScale) : null)
-      : null;
-    items.push({
-      label: info.fullName,
-      ...(valText !== null
-        ? { value: valText }
-        : { missingReason: cells.missing(key), tone: 'muted' as const }),
-      ...(flagRes?.status === 'ready' && flagRes.url ? { countryFlag: { flag: flagRes.url } } : {}),
-      ...(idx === 0 ? { divider: true } : {}),
-    });
+  const tension = cells.raw?.(liveKey('world', 'tension'));
+  const sum = cells.raw?.(liveKey('world', 'sum'));
+  const figure = (raw: bigint | undefined, reason?: string) => {
+    const exact = exactBandRational(raw?.toString() ?? null, options.values, tension?.toString(), sum?.toString(), detail.tensionScale, detail.contributionScale);
+    if (exact) return { value: formatEndPct(Number(exact.raw) / Number(exact.denominator), options.values, exact) };
+    const missing = reason ?? (tension === undefined ? detail.missing ?? cells.missing(liveKey('world', 'tension'))
+      : sum === undefined ? cells.missing(liveKey('world', 'sum')) : 'No share is defined for these contributions.');
+    return { missingReason: missing, tone: 'muted' as const };
+  };
+  let shown = 0n;
+  let missing: string | undefined;
+  reply.bands.forEach((band, index) => {
+    const reading = hover.at(band);
+    if (reading.raw !== undefined) shown += reading.raw;
+    else missing ??= reading.reason;
+    const info = contributorLabel(readView, reading.tag, band.remembered, hover.hour);
+    const flag = info.flagChoice ? readView.art({ kind: 'flag', choice: info.flagChoice, size: 'small' }) : null;
+    items.push({ label: info.fullName, ...figure(reading.raw, reading.reason),
+      ...(flag?.status === 'ready' && flag.url ? { countryFlag: { flag: flag.url } } : {}), ...(index === 0 ? { divider: true } : {}) });
   });
-  if (detail.contributions.length > topContribs.length) {
-    items.push({ label: `${detail.contributions.length - topContribs.length} more countries`, tone: 'muted' });
+  if (reply.other) {
+    const label = reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other';
+    const rest = sum !== undefined && missing === undefined ? sum - shown : undefined;
+    items.push({ label, ...figure(rest, missing ?? (sum === undefined ? cells.missing(liveKey('world', 'sum')) : undefined)) });
   }
   const sameHourSources = detail.sources.filter(src => src.date === hover.hour);
   sameHourSources.forEach((src, idx) => {
@@ -415,7 +441,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       endHour !== null && value !== null && Number.isFinite(value) ? formatEndPct(value, options.values, exact) : (missing ?? END_UNKNOWN);
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
-    const hoverDetail = buildHoverDetail(readView, hour);
+    const hoverDetail = buildHoverDetail(readView, reply, options);
     const auditRows = [
       auditRow('__total__', worldText ?? reply.endMissing ?? WORLD_UNKNOWN),
       ...reply.bands.map((band, i) => auditRow(`slot:${band.slot}`, endText(band.endValue, bandEndExacts[i] ?? null, band.endMissing))),
@@ -433,6 +459,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         ...(hasNegative ? {} : { min: 0 }),
       },
       series: [],
+      drawnKeys: { main: reply.bands.map(band => countryKey(band.slot)) },
       stack: {
         ...(reply.downsampled ? { reduced: true } : {}),
         hours: reply.hours,
@@ -512,7 +539,8 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
           read: {
             shape: 'exact-hover',
             product: 'world-tension',
-            params: { branchId: ctx.branch.id },
+            countriesOf: 'main',
+            params: { branchId: ctx.branch.id, values, group },
             validate: validateWorldTensionHover,
           },
         },
@@ -527,6 +555,7 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
       layers: Math.max(1, Math.min(20, Number(ctx.options.layers) || 5)),
       values: ctx.options.values === 'recorded' ? 'recorded' : 'share',
       showMarkers: ctx.options.markers !== false,
+      membership: ctx.countries.membership,
       gaps: branchGapsOf(ctx.branch),
     };
   },

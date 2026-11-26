@@ -1,7 +1,6 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { liveKey } from '../../charts/live.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { resolveLineColors, tailColour } from '../../charts/palette.ts';
-import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
@@ -13,8 +12,8 @@ import {
 import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent } from '../../families/valueFormat.ts';
-import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
-import { validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
+import type { WorldTensionStackReply } from '../../generated/dashboard';
+import { tensionHover, validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
 import { identityName } from '../../families/table/identityCell.ts';
 
 const TOP_NAMED = 8;
@@ -23,6 +22,7 @@ export interface WorldTensionLinesOptions {
   readonly extent: readonly [number, number];
   readonly surface: string;
   readonly gaps: readonly ChartGap[];
+  readonly membership?: FamilyPlanContext['countries']['membership'];
 }
 
 function parseRawInt(raw: string | null | undefined): bigint | null {
@@ -116,13 +116,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         flagChoice: id.flagChoice?.status === 'ready' ? id.flagChoice.value : null,
       };
     });
-    const hover = readView.hover<WorldTensionReply>('hover');
-    const exactHover = hover && hover.hour <= hour && hover.data ? { hour: hover.hour, data: hover.data } : null;
-    const hoverCells = exactHover ? repliedCells(exactHover.data).read() : null;
-    const hoverContribMissing = exactHover
-      ? (exactHover.data.warnings.find(w => w.startsWith('Country contributions are not known at this hour')) ?? null)
-      : null;
-    const hoverSlots = exactHover ? new Set(exactHover.data.contributions.map(c => c.slot)) : null;
+    const hover = tensionHover(readView, 'recorded', options.membership);
     const topColors = resolveLineColors(reply.bands.slice(0, TOP_NAMED).map((band, i) => ({ key: band.slot, color: infos[i]!.color })), options.surface);
     const scaleBig = reply.contributionScale > 0 ? BigInt(reply.contributionScale) : null;
     const endTexts = new Map<string, string>();
@@ -151,31 +145,12 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
       const headText = headValue !== null ? formatContributionPct(headValue, band.endRaw, reply.contributionScale) : null;
       endTexts.set(`slot:${band.slot}`, headText ?? band.endMissing ?? 'Not recorded at this hour.');
       let exact: TimeChartSeriesModel['exact'] = null;
-      if (exactHover && hoverCells) {
-        if (hoverContribMissing) {
-          exact = { hour: exactHover.hour, value: null, reason: hoverContribMissing };
-        } else if (hoverSlots?.has(band.slot)) {
-          const key = liveKey(String(band.slot), 'value');
-          const rawVal = hoverCells.get(key);
-          const rawBig = hoverCells.raw?.(key);
-          if (rawVal === undefined) {
-            exact = { hour: exactHover.hour, value: null, reason: hoverCells.missing(key) };
-          } else {
-            const pct = Number(rawVal) / exactHover.data.contributionScale;
-            const exactRaw = rawBig !== undefined ? rawBig : typeof rawVal === 'bigint' ? rawVal : Number.isSafeInteger(rawVal) ? BigInt(rawVal) : undefined;
-            exact = Number.isFinite(pct)
-              ? {
-                  hour: exactHover.hour,
-                  value: pct,
-                  ...(exactRaw !== undefined && exactHover.data.contributionScale > 0
-                    ? { raw: exactRaw, denominator: BigInt(exactHover.data.contributionScale) }
-                    : {}),
-                }
-              : { hour: exactHover.hour, value: null, reason: hoverCells.missing(key) };
-          }
-        } else {
-          exact = { hour: exactHover.hour, value: 0, raw: 0n, denominator: 1n };
-        }
+      if (hover) {
+        const reading = hover.at(band);
+        exact = reading.raw !== undefined && hover.detail.contributionScale > 0
+          ? { hour: hover.hour, value: Number(reading.raw) / hover.detail.contributionScale,
+              raw: reading.raw, denominator: BigInt(hover.detail.contributionScale) }
+          : { hour: hover.hour, value: null, reason: reading.reason ?? 'Contribution scale was not recorded.' };
       }
       return {
         id: `slot:${band.slot}`,
@@ -209,6 +184,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
       extent: options.extent,
       yAxis: { format: 'signedPercent', fixed: null, ...(hasNegative ? {} : { min: 0 }) },
       series,
+      drawnKeys: { main: reply.bands.map(band => countryKey(band.slot)) },
       ...(gaps.length > 0 ? { gaps } : {}),
       warnings: reply.warnings,
       auditRows,
@@ -275,7 +251,8 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
           read: {
             shape: 'exact-hover',
             product: 'world-tension',
-            params: { branchId: ctx.branch.id },
+            countriesOf: 'main',
+            params: { branchId: ctx.branch.id, values: 'recorded', group },
             validate: validateWorldTensionHover,
           },
         },
@@ -288,6 +265,7 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
       extent,
       surface,
       gaps: branchGapsOf(ctx.branch),
+      membership: ctx.countries.membership,
     };
   },
 };
