@@ -34,13 +34,3 @@ export interface HeatLanesWidgetDeclaration<TProjectionOptions = Record<string, 
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
-
-export type AnyHeatLanesWidgetDeclaration = HeatLanesWidgetDeclaration<any, any>;
-
-export function isHeatLanesWidgetDeclaration(value: unknown): value is AnyHeatLanesWidgetDeclaration {
-  return !!value
-    && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'heat-lanes'
-    && 'sources' in value
-    && 'projection' in value;
-}

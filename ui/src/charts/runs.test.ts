@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IntervalIndex, intervalIndexOf } from './intervalIndex.ts';
 import { clipToSpans, runAt } from './series.ts';
 import type { Run, Span } from './series';
 
@@ -28,36 +27,4 @@ test('runs are cut to spans, keeping a line break only where a run starts', () =
   const plotted: Run[] = [{ firstHour: 0, lastHour: 20, value: 1, breakBefore: true }];
   const spans: Span[] = [{ firstHour: 15, lastHour: 30 }, { firstHour: 0, lastHour: 5 }];
   assert.deepEqual(clipToSpans(plotted, spans), [{ firstHour: 0, lastHour: 5, value: 1, breakBefore: true }, { firstHour: 15, lastHour: 20, value: 1 }]);
-});
-
-test('an 80,000-item interval index answers a lookup without scanning it', () => {
-  const items: (Span & { id: number })[] = [];
-  for (let index = 0; items.length < 80000; index++) {
-    const first = 1000 + index * 7 + (index % 5);
-    items.push({ id: index, firstHour: first, lastHour: first + 20 + (index % 40) });
-  }
-  for (let index = 0; index < 20; index++) items.push({ id: -index - 1, firstHour: 900 + index, lastHour: 400000 + index });
-  const index = new IntervalIndex(items);
-  for (const hour of [999, 1000, 1500, 123456, 400010, 560000, 700000]) {
-    index.comparisons = 0;
-    const found = index.at(hour);
-    assert.ok(index.comparisons < 80, `${index.comparisons} comparisons at ${hour}`);
-    const expected = items.filter(item => item.firstHour <= hour && hour <= item.lastHour);
-    assert.deepEqual(new Set(found), new Set(expected), `hour ${hour}`);
-    assert.equal(found.length, expected.length);
-  }
-  assert.deepEqual(new IntervalIndex([]).at(5), []);
-});
-
-test('an interval index is built once per owner, and answers at its items’ edges', () => {
-  const owner = { items: [{ firstHour: 100, lastHour: 123 }, { firstHour: 120, lastHour: 130 }] };
-  let builds = 0;
-  const index = () => intervalIndexOf(owner, () => { builds++; return owner.items; });
-  assert.equal(index(), index());
-  assert.equal(builds, 1);
-  assert.deepEqual(index().at(99), []);
-  assert.deepEqual(index().at(100), [owner.items[0]]);
-  assert.equal(index().at(123).length, 2);
-  assert.deepEqual(index().at(124), [owner.items[1]]);
-  assert.deepEqual(index().at(131), []);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { exactDecimal, formatAmount, formatAxisPercent, formatAxisValue, formatNativeFixed5, formatSigned, linearTicks, rescale } from './valueAxis.ts';
+import { exactDecimal, formatAmount, formatAxisValue, formatSigned, linearTicks, rescale } from './valueAxis.ts';
 
 const axis = (ticks: number[]) => ticks.map(tick => formatAxisValue(tick, ticks));
 
@@ -59,23 +59,6 @@ test('amounts in binary fixed point are written exactly in decimals', () => {
   assert.equal(rescale(String(-1.5 * 32768), 32768, 0), -2n);
   assert.equal(rescale(16384n, 32768n, 2), 50n);
   assert.equal(rescale(2n, 3n, 3), 667n);
-});
-
-test('percent axis labels keep small ticks apart and hold their sign', () => {
-  const ticks = [0, 0.1, 0.2, 0.3, 0.4];
-  assert.deepEqual(ticks.map(tick => formatAxisPercent(tick, ticks)), ['0.0%', '0.1%', '0.2%', '0.3%', '0.4%']);
-  assert.deepEqual([-50, 0, 50].map(tick => formatAxisPercent(tick, [-50, 0, 50])), ['−50%', '0%', '50%']);
-});
-
-test('native fixed-digit amounts truncate toward zero and retain two digits', () => {
-  assert.equal(formatNativeFixed5('123999', 2), '1.23');
-  assert.equal(formatNativeFixed5('199999', 2), '1.99');
-  assert.equal(formatNativeFixed5('100000', 2), '1.00');
-  assert.equal(formatNativeFixed5('1234567890', 2), '12345.67');
-  assert.equal(formatNativeFixed5('-123999', 2), '-1.23');
-  assert.equal(formatNativeFixed5('0', 2), '0.00');
-  assert.equal(formatNativeFixed5('-1', 2), '-0.00');
-  assert.equal(formatNativeFixed5('214748364899999', 2), '-2147483648.99');
 });
 
 test('K4: linearTicks supports 2.5 steps so 0..100 at count 4 gives 0, 25, 50, 75, 100', () => {

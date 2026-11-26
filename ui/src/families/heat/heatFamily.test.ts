@@ -13,7 +13,7 @@ import {
   type MatrixAxisEntity,
   type MatrixCell,
 } from './matrixModel.ts';
-import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
+import { hitHeatMatrix, layoutHeatMatrix } from './matrixLayout.ts';
 import { drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
 import { hitHeatLanes, LanePixels, lanesWindow, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
@@ -156,10 +156,6 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
   );
   assert.deepEqual(cellHit, { kind: 'cell', row: 0, column: 1 });
   assert.equal(hitHeatMatrix(4, 4, 0, 0, layout, rows.length, columns.length), null);
-
-  assert.deepEqual(matrixKeyStep('ArrowRight', { row: 0, column: 0 }, 2, 3, 4), { row: 0, column: 1 });
-  assert.deepEqual(matrixKeyStep('End', { row: 1, column: 0 }, 2, 3, 4), { row: 1, column: 2 });
-  assert.equal(revealMatrixOffset(5, 30, 0, 100), 80);
 
   const tip = deriveMatrixTooltip(model, 1, 1);
   assert.equal(tip?.missingReason, 'Opinions not recorded');

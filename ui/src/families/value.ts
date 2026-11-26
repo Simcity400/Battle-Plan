@@ -14,9 +14,6 @@ export type Value<T extends Scalar = Scalar> =
   | { readonly kind: 'notApplicable'; readonly reason: string }
   | { readonly kind: 'partial'; readonly value: T; readonly reason: string; readonly atLeast?: boolean };
 
-export type NumericValue = Value<NumericScalar>;
-export type TextValue = Value<string>;
-
 export class InvalidFamilyValueError extends Error {
   constructor(message: string) {
     super(message);
@@ -115,10 +112,6 @@ export function assertValue(value: unknown, context = 'family value'): asserts v
 
 export function hasMeasuredValue(value: Value): value is Extract<Value, { kind: 'known' | 'zero' | 'partial' }> {
   return value.kind === 'known' || value.kind === 'zero' || value.kind === 'partial';
-}
-
-export function valueScalar(value: Value): Scalar | undefined {
-  return hasMeasuredValue(value) ? value.value : undefined;
 }
 
 export function valueNumber(value: Value): number | undefined {

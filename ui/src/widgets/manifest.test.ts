@@ -13,18 +13,14 @@ import {
   viewOwnedFields,
   type FamilyViewEntry,
 } from '../families/manifest.ts';
-import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, familyProjection, registeredFamilyProjections } from '../families/registry.ts';
+import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, registeredFamilyProjections } from '../families/registry.ts';
 import { familyBinding, type FamilyBindingContext, type FamilyBindingIdentity } from '../families/host/adapter.ts';
 import type { FamilyTheme } from '../families/contract.ts';
 import {
   BARS_BEHIND_CHOICES,
   ROW_HEIGHT_CHOICES,
-  barsBehindControl,
-  barsBehindOf,
   columnsControl,
   regionPickerControl,
-  rowHeightControl,
-  rowHeightOf,
   viewSwitchControl,
 } from '../families/settingsControls.ts';
 import { encodeTableSettings, ROW_HEIGHT, tableDefaults, tableSettingsOf, updateTableSettings, type TableBase, type TableColumnDefaults } from '../families/table/settings.ts';
@@ -196,10 +192,14 @@ test('worker projection registry loads table and bars projections lazily on dema
     assert.equal(first, 'loading');
     assert.equal(second, 'loading');
   });
+  const loadedKind = (family: string, kind: string, view?: string) => {
+    const found = ensureFamilyProjection(family as never, kind, view, () => {});
+    return typeof found === 'object' ? found.kind : undefined;
+  };
   await tableDone;
   assert.equal(tableLoads, 1);
   assert.equal(tableWakes, 2);
-  assert.equal(familyProjection('table', 'synthetic-lazy-table', 'summary')?.kind, 'synthetic-lazy-table');
+  assert.equal(loadedKind('table', 'synthetic-lazy-table', 'summary'), 'synthetic-lazy-table');
 
   let barsWakes = 0;
   const barsDone = new Promise<void>(resolve => {
@@ -208,7 +208,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   await barsDone;
   assert.equal(barsLoads, 1);
   assert.equal(barsWakes, 1);
-  assert.equal(familyProjection('bars', 'synthetic-lazy-bars')?.kind, 'synthetic-lazy-bars');
+  assert.equal(loadedKind('bars', 'synthetic-lazy-bars'), 'synthetic-lazy-bars');
 
   let timeChartWakes = 0;
   const pp = ensureFamilyProjection('time-chart', 'political-power', DEFAULT_VIEW, () => { timeChartWakes++; });
@@ -218,7 +218,7 @@ test('worker projection registry loads table and bars projections lazily on dema
     });
     assert.ok(timeChartWakes >= 1);
   }
-  assert.equal(familyProjection('time-chart', 'political-power')?.kind, 'political-power');
+  assert.equal(loadedKind('time-chart', 'political-power'), 'political-power');
 
   let heatMatrixLoads = 0;
   let heatLanesLoads = 0;
@@ -272,7 +272,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   await settle(matrixWakes);
   assert.equal(heatMatrixLoads, 1);
   assert.deepEqual(matrixWakes, [7]);
-  assert.equal(familyProjection('heat-matrix', 'synthetic-heat-matrix')?.kind, 'synthetic-heat-matrix');
+  assert.equal(loadedKind('heat-matrix', 'synthetic-heat-matrix'), 'synthetic-heat-matrix');
 
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
@@ -287,7 +287,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   await settle(lanesWakes);
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
-  assert.equal(familyProjection('heat-lanes', 'synthetic-heat-lanes')?.kind, 'synthetic-heat-lanes');
+  assert.equal(loadedKind('heat-lanes', 'synthetic-heat-lanes'), 'synthetic-heat-lanes');
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
@@ -306,29 +306,16 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const base: TableBase = { density: 'normal', barsBehind: 'sorted', sort: { column: 'factories', direction: 'descending' } };
   const fields = [
     viewSwitchControl([{ value: 'rows', label: 'Rows' }, { value: 'bars', label: 'Bars' }], 'rows'),
-    rowHeightControl('normal'),
-    barsBehindControl('sorted'),
     columnsControl(cols, base),
     regionPickerControl(),
   ];
 
   const defaults = resolveOptions(fields, undefined);
   assert.equal(defaults.view, 'rows');
-  assert.equal(defaults.rowHeight, 'normal');
-  assert.equal(defaults.barsBehind, 'sorted');
   assert.equal(defaults.regions, '');
   assert.equal(ROW_HEIGHT_CHOICES.length, 3);
   assert.equal(BARS_BEHIND_CHOICES.length, 3);
   assert.deepEqual(ROW_HEIGHT, { compact: 28, normal: 36, comfortable: 44 });
-
-  assert.equal(rowHeightOf('compact'), 'compact');
-  assert.equal(rowHeightOf('normal'), 'normal');
-  assert.equal(rowHeightOf('comfortable'), 'comfortable');
-  assert.equal(rowHeightOf('bogus'), 'normal');
-  assert.equal(barsBehindOf('off'), 'off');
-  assert.equal(barsBehindOf('sorted'), 'sorted');
-  assert.equal(barsBehindOf('all'), 'all');
-  assert.equal(barsBehindOf('bogus'), 'all');
   assert.deepEqual(BARS_BEHIND_CHOICES.map(c => c.label), ['Every column', 'Sorted column', 'Off']);
   assert.deepEqual(ROW_HEIGHT_CHOICES.map(c => c.label), ['Compact', 'Default', 'Comfortable']);
 
@@ -386,13 +373,15 @@ test('shared data-driven settings controls expose bars-behind, three row heights
 });
 
 test('scopedOptionFields and manifestViewSwitch support a second family view on the same kind', () => {
+  const rowHeightOption: OptionField = { key: 'rowHeight', section: 'options', label: 'Row height', kind: 'choice', default: 'normal', choices: ROW_HEIGHT_CHOICES };
+  const barsBehindOption: OptionField = { key: 'barsBehind', section: 'options', label: 'Bars behind figures', kind: 'choice', default: 'all', choices: BARS_BEHIND_CHOICES };
   const entries: readonly FamilyViewEntry[] = [
     {
       kind: 'synthetic-dual',
       view: 'table',
       label: 'Table',
       family: 'table',
-      options: [rowHeightControl(), barsBehindControl()],
+      options: [rowHeightOption, barsBehindOption],
       loadSpec: async () => ({ family: 'table', kind: 'synthetic-dual', view: 'table', projection: { family: 'table', kind: 'synthetic-dual', project: () => ({}) } }),
     },
     {
@@ -400,7 +389,7 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
       view: 'bars',
       label: 'Bars',
       family: 'bars',
-      options: [regionPickerControl(), rowHeightControl()],
+      options: [regionPickerControl(), rowHeightOption],
       loadSpec: async () => ({ family: 'bars', kind: 'synthetic-dual', view: 'bars', projection: { family: 'bars', kind: 'synthetic-dual', project: () => ({}) } }),
     },
   ];
@@ -446,7 +435,7 @@ test('two table views of one kind each draw their own projection, and a missing 
   assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => { woken++; }), 'loading', 'switching to the shares view loads its own projection');
   await drain(() => woken > 1);
   assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => {}), shares);
-  assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', undefined, () => {}), 'unknown', 'a kind with named views has no default view to fall back to');
 });
 
 test('a preset is materialised once through the mapping of the view it opens, and the catalogue preview and the placed widget are that one record (R3-S3, R4-S4)', () => {

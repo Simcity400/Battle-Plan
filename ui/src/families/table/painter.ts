@@ -38,8 +38,6 @@ import {
   type TableTheme,
 } from './settings.ts';
 
-export { computeColumnMaxima };
-
 export const WATCHING_SPEED = 24;
 export const FAST_SPEED = 168;
 export const WATCHING_GLIDE_MS = 180;

@@ -4,14 +4,14 @@ import { drawnViews } from './drawn.ts';
 import { Page } from '../../dashboard/follow/page.ts';
 import { Lane, type Bitmapped } from '../lane.ts';
 import { bindFamilyManifest } from '../../families/registry.ts';
-import { emptyReadView } from '../../families/boundedView.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { FamilyTableBinding } from '../../families/table/laneView.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 
 test('astra 7: a table breaks at its filter bounds', async () => {
   const { occupiedStatesProjection } = await import('../../widgets/occupied-states/occupiedProjection.ts');
-  const next = (options: unknown) => occupiedStatesProjection.nextChange!(emptyReadView(100), options as never);
+  const next = (options: unknown) => occupiedStatesProjection.nextChange!(createBoundedReadView({ hour: 100 }), options as never);
   const filtered = { filter: { passing: null, unrecorded: [], bounds: [0, 109, 300] }, role: 'occupier', lawAs: 'dot', filterAll: true };
   assert.equal(next(filtered), 109, 'the filter changes at 109, never sampled a day later');
 });

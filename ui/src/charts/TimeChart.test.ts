@@ -5,7 +5,6 @@ import { createServer } from 'vite';
 import type { PlotFrame } from './frame';
 import type { FrameTask } from './scheduler';
 import type { TimeChartProps } from './TimeChart';
-import type { EventBadge } from './badges';
 import type { TooltipContent } from './tooltip';
 
 type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
@@ -96,7 +95,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const props: TimeChartProps = { label: 'Synthetic shares', extent: [0, 100], branchStart: 0,
       playhead: 90, playback: 'cursor', axes: { xFrom: null, xTo: null, yMin: 0, yMax: 1, log: false },
       layers: [{ draw: (_ctx, drawn) => { frame = drawn; paints++; } }], active: true, revision: 1,
-      keyHours: [0, 10, 80, 100], snap: () => 37.9, pickOwner: {}, onHover: observe('A'),
+      keyHours: [0, 10, 80, 100], pickOwner: {}, onHover: observe('A'),
       tooltip: hour => { described.push(hour); return { title: String(hour), rows: [] }; } };
     type Canvas = { ref: { current: unknown }; onKeyDown: (event: unknown) => void };
     const render = (commit = true) => {
@@ -112,9 +111,9 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const pointer = () => listeners.get('pointermove')!({ clientX: frame!.toX(50), clientY: frame!.plotTop + 10 });
     const key = (canvas: Canvas, name: string) => canvas.onKeyDown({ key: name, preventDefault() {} });
     let canvas = render(); draw(); pointer(); draw();
-    assert.deepEqual(seen.at(-1), ['A', null]); assert.equal(described.at(-1), 37);
+    assert.deepEqual(seen.at(-1), ['A', null]); assert.equal(described.at(-1), 50);
     draw(100);
-    assert.deepEqual(seen.at(-1), ['A', 37]); assert.equal(described.at(-1), 37);
+    assert.deepEqual(seen.at(-1), ['A', 50]); assert.equal(described.at(-1), 50);
     assert.equal(paints, 1, 'hovering repaints only the overlay: the series paint once');
     const reads = layoutReads; draw(); draw();
     assert.equal(layoutReads, reads, 'frames reuse the canvas size measured until it resizes');
@@ -124,82 +123,69 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     key(canvas, 'End'); draw();
     assert.deepEqual(seen.at(-1), ['B', 80]); assert.equal(described.at(-1), 80);
     assert.ok(seen.slice(refreshedAt).every(([name]) => name === 'B'), 'callback refresh keeps the same owner');
-    const numericTooltip = props.tooltip;
-    const simultaneous = Array.from({ length: 5000 }, (_, index) => ({ hour: 80, glyph: '\u00d7', label: `opaque actor ${index} capitulated` }));
-    const early = { hour: 10, glyph: '\u00d7', label: 'earlier country capitulated' };
-    const late = { hour: 100, glyph: '\u00d7', label: 'future country capitulated' };
-    const badgeReads: { hour: number; badges: readonly EventBadge[] }[] = [];
-    props.badges = [late, ...simultaneous, early];
-    props.tooltip = (hour, _frame, badges) => {
-      badgeReads.push({ hour, badges });
-      return { title: String(hour), rows: badges.map(badge => ({ label: badge.label })),
-        spoken: [String(hour), ...badges.map(badge => badge.label)].join('; ') };
-    };
-    canvas = render(); draw();
-    const reached = badgeReads.at(-1)!;
-    assert.equal(reached.hour, 80);
-    assert.deepEqual(reached.badges, simultaneous, 'the real keyboard handler supplies every same-hour event in source order');
-    assert.equal(fixture.shownTooltip?.rows.length, 5000);
     cursor = 0;
     const spokenTree = Chart(props) as ReactElement<{ children: ReactElement<{ children: string }>[] }>;
-    assert.match(spokenTree.props.children[2].props.children, /opaque actor 4999 capitulated/);
+    assert.equal(spokenTree.props.children[1].props.children, '80', 'keyboard selection announces the numeric hour in the live region');
     fixture.commit();
+    let keyHourReads = 0;
+    const countedHours = new Proxy([0, 10, 80, 100], {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) keyHourReads++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    props.keyHours = countedHours;
+    canvas = render(); draw();
+    key(canvas, 'Home'); draw();
+    const afterFirst = keyHourReads;
+    assert.ok(afterFirst > 0);
+    key(canvas, 'ArrowRight'); draw();
+    assert.equal(keyHourReads, afterFirst, 'repeated keypresses in an unchanged viewport reuse cached visible stops');
+    assert.deepEqual(seen.at(-1), ['B', 10]);
+    props.keyHours = [0, 10, 80, 100];
+    canvas = render(); draw();
+    key(canvas, 'End'); draw();
     fixture.heldTooltip = { owner: 'other chart' }; fixture.shownTooltip = null;
     props.revision = 3; canvas = render(); draw();
     assert.equal(fixture.shownTooltip, null, 'a kept keyboard hour redraws without taking another chart\'s tooltip');
     key(canvas, 'End'); draw();
-    assert.equal((fixture.shownTooltip as TooltipContent | null)?.rows.length, 5000, 'a fresh key takes the tooltip back');
+    assert.equal((fixture.shownTooltip as TooltipContent | null)?.title, '80', 'a fresh key takes the tooltip back');
     fixture.heldTooltip = null;
-    props.revision = 2; canvas = render(); draw();
-    assert.equal(badgeReads.at(-1)?.badges, reached.badges, 'redrawing the same source and hour reuses the indexed cohort');
-    props.badges = [{ hour: 80, glyph: '\u00d7', label: 'replacement country capitulated' }, early, late];
-    canvas = render(); draw();
-    assert.deepEqual(badgeReads.at(-1)?.badges.map(badge => badge.label), ['replacement country capitulated'], 'a new source cannot retain the old cohort');
     props.axes = { ...props.axes, xFrom: 81, xTo: 100 }; canvas = render(); draw();
-    assert.equal(fixture.shownTooltip, null, 'a keyboard hour outside the zoom has no event tooltip');
-    key(canvas, 'Home'); draw();
-    assert.deepEqual(badgeReads.at(-1), { hour: 81, badges: [] }, 'carried keyboard stops never acquire a clipped earlier event');
-    props.axes = { ...props.axes, xFrom: null, xTo: null }; props.badges = [late, ...simultaneous, early];
-    canvas = render(); draw(); key(canvas, 'End'); draw();
-    props.playhead = 20; canvas = render(); draw();
-    assert.equal(fixture.shownTooltip, null, 'events after the playhead stay hidden');
-    props.afterPlayhead = true; canvas = render(); draw();
-    assert.deepEqual(badgeReads.at(-1)?.badges, simultaneous, 'Show after the playhead restores only the focused hour');
-    key(canvas, 'Home'); draw(); assert.deepEqual(badgeReads.at(-1), { hour: 0, badges: [] });
-    key(canvas, 'ArrowRight'); draw(); assert.deepEqual(badgeReads.at(-1), { hour: 10, badges: [early] });
-    key(canvas, 'End'); draw();
-    props.badges = undefined; props.tooltip = numericTooltip; props.playhead = 90; props.afterPlayhead = undefined;
+    assert.equal(fixture.shownTooltip, null, 'a keyboard hour outside the zoom has no tooltip');
+    props.axes = { ...props.axes, xFrom: null, xTo: null };
     canvas = render(); draw(); key(canvas, 'End'); draw();
     props.playhead = 20; canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['B', null]);
     props.afterPlayhead = true; canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['B', 80]);
+    props.playhead = 90; props.afterPlayhead = undefined; canvas = render(); draw();
     key(canvas, 'Escape'); draw(); assert.deepEqual(seen.at(-1), ['B', null]);
     pointer(); draw(); listeners.get('pointerleave')!({}); draw(); assert.deepEqual(seen.at(-1), ['B', null]);
-    pointer(); draw(); draw(200); assert.deepEqual(seen.at(-1), ['B', 37]);
+    pointer(); draw(); draw(200); assert.deepEqual(seen.at(-1), ['B', 50]);
     props.pickOwner = {}; props.onHover = observe('C'); canvas = render(false);
     const handedOffAt = seen.length; draw();
-    assert.deepEqual(seen.slice(handedOffAt), [['B', null], ['C', 37]], 'a frame before cleanup clears old facts before publishing new ones');
-    fixture.commit(); assert.deepEqual(seen.at(-1), ['C', 37], 'old passive cleanup leaves the new consumer alone');
+    assert.deepEqual(seen.slice(handedOffAt), [['B', null], ['C', 50]], 'a frame before cleanup clears old facts before publishing new ones');
+    fixture.commit(); assert.deepEqual(seen.at(-1), ['C', 50], 'old passive cleanup leaves the new consumer alone');
     props.active = false; props.onHover = observe('D'); canvas = render(false);
     const deactivatedAt = seen.length; draw(); assert.equal(seen.length, deactivatedAt, 'latest inactive props cannot publish before passive cleanup');
     fixture.commit();
     assert.ok(seen.some(([name, hour]) => name === 'C' && hour === null));
     assert.deepEqual(seen.at(-1), ['D', null]);
     const count = seen.length; draw(); assert.equal(seen.length, count, 'inactive charts do not publish moments');
-    props.active = true; canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['D', 37]);
+    props.active = true; canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['D', 50]);
     props.onHover = undefined; canvas = render(false);
     const beforeRemoval = seen.length; draw(); assert.equal(seen.length, beforeRemoval);
     fixture.commit(); assert.deepEqual(seen.at(-1), ['D', null], 'a frame before passive cleanup keeps the last notified consumer');
-    props.onHover = observe('E'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['E', 37]);
+    props.onHover = observe('E'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['E', 50]);
     props.onHover = undefined; canvas = render(); assert.deepEqual(seen.at(-1), ['E', null], 'normal removal clears its consumer');
-    props.onHover = observe('F'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['F', 37]);
+    props.onHover = observe('F'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['F', 50]);
     const picked: number[] = [];
     props.onPick = hour => { picked.push(hour); }; canvas = render(); draw();
     const press = (detail: number) => {
       const at = { clientX: frame!.toX(50), clientY: frame!.plotTop + 10, button: 0, pointerId: 1, detail, preventDefault() {} };
       listeners.get('pointerdown')!(at); listeners.get('pointerup')!(at);
     };
-    press(1); assert.deepEqual(picked, [37]);
-    press(2); assert.deepEqual(picked, [37]);
+    press(1); assert.deepEqual(picked, [50]);
+    press(2); assert.deepEqual(picked, [50]);
     const views: unknown[] = [];
     props.onViewChange = x => { views.push(x); }; canvas = render(); draw(); draw(); canvas = render(); draw();
     assert.deepEqual([...views], [[0, 100]]);
@@ -210,7 +196,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     canvas = render(); draw(); key(canvas, 'ArrowRight');
     pointer(); draw();
     props.keyboardHour = 80; props.keyboardRevision = 1; canvas = render(); draw();
-    assert.deepEqual(seen.at(-1), ['F', 37], 'a delayed key reply cannot reclaim hover after pointer movement');
+    assert.deepEqual(seen.at(-1), ['F', 50], 'a delayed key reply cannot reclaim hover after pointer movement');
     key(canvas, 'ArrowRight');
     props.keyboardRevision = 2; canvas = render(); draw();
     assert.deepEqual(seen.at(-1), ['F', 80], 'a fresh key request still accepts the same returned hour');
