@@ -1,4 +1,4 @@
-import { emptyPagers, pagerFor, replacePagers, type PagerSet } from './pagers.ts';
+import { emptyPagers, pagerWindow, pagesOf, replacePagers, type PagerSet } from './pagers.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
@@ -746,8 +746,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     setPagedRowsState(prev => {
       const map: Record<string, PagedRows[string]> = {};
       let changed = prev.sig !== forSig;
-      for (const [name, pager] of held.pagers) {
-        map[name] = pager.pages();
+      for (const name of held.pagers.keys()) {
+        map[name] = pagesOf(held, name)!;
         if (prev.map[name] !== map[name]) changed = true;
       }
       return changed ? { sig: forSig, map } : prev;
@@ -783,8 +783,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const pageBroker = pageBrokerRef.current;
     const held = pagersRef.current;
     for (const entry of pagedEntries) {
-      const { pager, frozenAt } = pagerFor(held, entry);
-      const step = pager.window(rowWindow, frozenAt ?? installedHour);
+      const { pager, step } = pagerWindow(held, entry, rowWindow, installedHour);
       for (const offset of step.cancel) pageBroker.cancelSlot(`page:${entry.name}:${offset}`);
       const validate = entry.read.validate ?? validateGenericTailReply;
       const owner = pager;
