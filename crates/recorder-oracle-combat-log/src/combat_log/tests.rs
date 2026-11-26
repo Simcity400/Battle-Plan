@@ -648,25 +648,31 @@ fn every_mismatch_is_a_difference() {
 }
 
 #[test]
-fn a_sliced_hour_compares_the_countries_read_and_their_last_two_months() {
-    let frame = frame(
-        vec![
-            row_at(SEPTEMBER, 0, 1326, 200_000),
-            row_at(DATE, 0, 1326, 300_000),
-        ],
-        &[GER],
-    );
+fn a_sliced_hour_requires_every_saved_month_of_a_country_read_now() {
+    let august = row_at(AUGUST, 0, 1326, 100_000);
+    let mut rows = vec![
+        row_at(SEPTEMBER, 0, 1326, 200_000),
+        row_at(DATE, 0, 1326, 300_000),
+    ];
+    let window_only = frame(rows.clone(), &[GER]);
     let save = save(&[
         month_at("equipment", 0, "1943.8.30.11", &[(1326, "1")]),
         month_at("equipment", 0, "1943.9.30.11", &[(1326, "2")]),
         month("equipment", 0, &[(1326, "3")]),
     ]);
-    let report = run(&frame, &save, false).unwrap();
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let report = run(&window_only, &save, false).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains(&format!(
+        "GER.combat_log[group 12793][kind 0][month {}][variant 1326]", august.month
+    )));
     assert_eq!(report.compared_tables["CombatLogEquipment"], 2);
-    let report = run(&frame, &save, true).unwrap();
+    let report = run(&window_only, &save, true).unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
-    let _ = AUGUST;
+    rows.insert(0, august);
+    let retained = frame(rows, &[GER]);
+    let report = run(&retained, &save, false).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["CombatLogEquipment"], 3);
 }
 
 #[test]
