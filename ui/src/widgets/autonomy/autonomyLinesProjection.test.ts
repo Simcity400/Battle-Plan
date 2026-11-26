@@ -232,6 +232,30 @@ test('the exact audit reads the dated autonomy levels, so a correct picture has 
   assert.equal(asked.length, 1);
 });
 
+test('a subject that became independent keeps its history, and a selection reaches the tile request', () => {
+  const formerKey = countryKey(14);
+  const tile = {
+    tag: formerKey, from: 100, binHours: 1, decimals: 5,
+    buckets: createBoundedSlice([{ firstHour: 100, lastHour: 150, firstValue: 0.3, lastValue: 0.6, lastValueHour: 150, minValue: 0.3, minHour: 100, maxValue: 0.6, maxHour: 150, firstBreak: true, hasBreak: false }], 1),
+    straddling: 'none' as const, missing: createBoundedSlice([], 0), validInterval: [100, 300] as const,
+  };
+  const reply: AutonomyLevelsReply = { levels: [], subjects: [], missing: null, warnings: [] };
+  const ctx = makeCtx({ countriesAre: 'overlords' });
+  const model = autonomyLinesProjection.project(createBoundedReadView({ hour: displayedHour(300), series: new Map([['main', new Map([[formerKey, tile]])]]), panels: new Map([['head', reply]]) }),
+    autonomyLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }));
+  assert.equal(model.empty ?? null, null, 'never "No subjects at this time" while recorded history exists');
+  assert.deepEqual(model.series.map(s => [s.id, s.headValue, s.endLabel]), [[formerKey, null, null]], 'drawn as history, with no head and no end label');
+  assert.deepEqual(model.auditRows, [], 'a former subject has no reading at the hour to audit');
+
+  const selected = (countriesAre: string) => {
+    const base = makeCtx({ countriesAre });
+    return { ...base, countries: { ...base.countries, all: false, filter: { ...base.countries.filter, passing: { ENG: [[100, 600]] } } } } as FamilyPlanContext;
+  };
+  const read = (ctx: FamilyPlanContext) => autonomyLinesDeclaration.sources(ctx, { following: true, staticSpan: null }).entries.find(entry => entry.name === 'main')!.read as { family: { overlords?: unknown }; tags: readonly string[]; top?: unknown };
+  assert.deepEqual(read(selected('overlords')).family.overlords, ['ENG'], 'only the time under the chosen overlord is asked');
+  assert.deepEqual([read(selected('subjects')).tags, read(selected('subjects')).top], [['ENG'], undefined], 'chosen subjects are asked by name, with their whole history');
+});
+
 test('a quiet stretch of played hours makes zero extra requests for autonomy lines', async () => {
   const plan = autonomyLinesDeclaration.sources(makeCtx(), { following: true, staticSpan: null });
   const compiled = compileFollowPlan(plan, query => ({ query: query as never, refused: null }));

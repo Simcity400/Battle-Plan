@@ -1,5 +1,5 @@
 import { tailColour } from '../../charts/palette.ts';
-import { countryKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
 import {
@@ -52,6 +52,8 @@ export interface AutonomyLinesOptions {
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
 }
+
+const FORMER_SUBJECT = 'Not a subject of this overlord at this date';
 
 function matchingSubjects(
   subjects: readonly AutonomySubject[],
@@ -236,7 +238,15 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
     }
 
     const shown = matchingSubjects(reply.subjects, options.filter, options.bySubject, hour);
-    if (shown.length === 0) {
+    const mainTiles = readView.series('main');
+    const current = new Set<string>();
+    for (const item of shown) {
+      current.add(subjectKeyOf(item));
+      if (item.subjectSlot != null) current.add(countryKey(item.subjectSlot));
+      if (item.subject) current.add(item.subject);
+    }
+    const former = [...mainTiles?.keys() ?? []].filter(key => !current.has(key));
+    if (shown.length === 0 && former.length === 0) {
       return {
         kind: 'autonomy',
         measureTitle: 'Autonomy',
@@ -256,7 +266,6 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       };
     }
 
-    const mainTiles = readView.series('main');
     const orderedKeys: string[] = [];
     const seen = new Set<string>();
     const itemByKey = new Map<string, AutonomySubject>();
@@ -269,7 +278,8 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       }
     }
 
-    const looks = countrySeriesLooks(orderedKeys, readView, {
+    const allKeys = [...orderedKeys, ...former];
+    const looks = countrySeriesLooks(allKeys, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
@@ -334,6 +344,28 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       ));
     }
 
+    for (const key of former) {
+      const look = looks.get(key)!;
+      const tile = mainTiles?.get(key) ?? null;
+      seriesList.push({
+        id: key,
+        key,
+        name: look.name,
+        color: tailColour(options.surface),
+        role: 'tail',
+        step: true,
+        bounded: tile,
+        valueScale: 100,
+        headValue: null,
+        headHour: hour,
+        flag: look.flag,
+        identities: look.identities,
+        missingSpans: missingSpansOf(tile),
+        absentReason: FORMER_SUBJECT,
+        endLabel: null,
+      });
+    }
+
     const yTop = maxSeen > 100 ? Math.ceil(maxSeen / 25) * 25 : 100;
     const hoverDetail = buildHoverDetail(readView, options, looks);
     return {
@@ -367,6 +399,18 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
   countries: { mode: 'filter' },
   sources: (ctx: FamilyPlanContext): SourcePlan => {
     const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+    const selected = ctx.countries.filter.passing ? Object.keys(ctx.countries.filter.passing).sort() : null;
+    const bySubject = ctx.options.countriesAre === 'subjects';
+    const tiles: SourceEntry['read'] = selected && bySubject
+      ? { shape: 'pixel-binned', coverage: { mode: 'keyed', keys: selected }, family: { kind: 'autonomy-lines' }, tags: selected, headQuery: null }
+      : {
+          shape: 'pixel-binned',
+          coverage: { mode: 'population', form: 'all' },
+          family: { kind: 'autonomy-lines', ...(selected ? { overlords: selected.map(countryFromKey) } : {}) },
+          tags: [],
+          top: { n: ALL_POPULATION_TOP },
+          headQuery: null,
+        };
     const head: SourceEntry = {
       name: 'head',
       ...common,
@@ -381,21 +425,10 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
       },
     };
     return {
-      owner: `autonomy:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      owner: `autonomy:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${bySubject ? 's' : 'o'}:${selected?.join(',') ?? '*'}`,
       exactEntry: head,
       entries: [
-        {
-          name: 'main',
-          ...common,
-          read: {
-            shape: 'pixel-binned',
-            coverage: { mode: 'population', form: 'all' },
-            family: { kind: 'autonomy-lines' },
-            tags: [],
-            top: { n: ALL_POPULATION_TOP },
-            headQuery: null,
-          },
-        },
+        { name: 'main', ...common, read: tiles },
         head,
         {
           name: 'hover',

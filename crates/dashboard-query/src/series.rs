@@ -199,7 +199,7 @@ pub const FIELDS: crate::fields::Fields = {
         ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
         ("hour", Read), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
-        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("family.country", Undated), ("family.fromHour", Start), ("family.regions[]", Undated), ("family.causes[]", Undated), ("family.members[]", Undated), ("rankBy", Undated), ("group", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("family.country", Undated), ("family.fromHour", Start), ("family.regions[]", Undated), ("family.causes[]", Undated), ("family.members[]", Undated), ("family.overlords[]", Undated), ("rankBy", Undated), ("group", Undated),
     ]
 };
 

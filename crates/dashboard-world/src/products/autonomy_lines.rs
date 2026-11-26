@@ -16,7 +16,7 @@ use dashboard_text::metadata::check_cancel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -30,6 +30,10 @@ pub const SERIES: &str = "autonomy-lines";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomyLinesTileFamily {
     pub kind: String,
+    #[doc = " Only the time each subject spent under one of these overlords; every relation when absent."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub overlords: Option<Vec<Country>>,
 }
 
 pub fn tile_family_walk() -> dashboard_query::fields::Walk {
@@ -102,11 +106,12 @@ fn clip_missing(missing: &[MissingSpan], spans: &[Span]) -> Vec<MissingSpan> {
 fn subject_spans_from_held(
     stretches: &[Stretch],
     held: &HashMap<u32, (Arc<RunSubjects>, Arc<RunLinks>)>,
+    overlords: Option<&BTreeSet<u32>>,
 ) -> BTreeMap<u32, Vec<Span>> {
     let mut raw_spans: BTreeMap<u32, Vec<Span>> = BTreeMap::new();
     for stretch in stretches {
         let Some((subjects, links)) = held.get(&stretch.run) else { continue };
-        for &(_overlord, subject, ref cells) in &subjects.relations {
+        for &(overlord, subject, ref cells) in &subjects.relations {
             let start = cells.partition_point(|run| run.1 < stretch.first);
             for &(a, b, cell) in cells[start..].iter().take_while(|run| run.0 <= stretch.last) {
                 let Some(cell) = cell else { continue };
@@ -119,9 +124,19 @@ fn subject_spans_from_held(
                 if first > last {
                     continue;
                 }
-                for (slot, sa, sb) in links.within(subject, first, last) {
-                    if let Some(slot) = slot {
-                        raw_spans.entry(slot).or_default().push(Span { first_hour: sa, last_hour: sb });
+                let under: Vec<(i32, i32)> = match overlords {
+                    None => vec![(first, last)],
+                    Some(allowed) => links
+                        .within(overlord, first, last)
+                        .into_iter()
+                        .filter_map(|(slot, oa, ob)| slot.filter(|slot| allowed.contains(slot)).map(|_| (oa, ob)))
+                        .collect(),
+                };
+                for (ua, ub) in under {
+                    for (slot, sa, sb) in links.within(subject, ua, ub) {
+                        if let Some(slot) = slot {
+                            raw_spans.entry(slot).or_default().push(Span { first_hour: sa, last_hour: sb });
+                        }
                     }
                 }
             }
@@ -130,7 +145,7 @@ fn subject_spans_from_held(
     raw_spans.into_iter().map(|(slot, spans)| (slot, merge_spans(spans))).collect()
 }
 
-fn active_subjects_and_window(
+fn subjects_by_hour(
     subject_spans: &BTreeMap<u32, Vec<Span>>,
     is_named: impl Fn(u32) -> bool,
     timeline_first: i32,
@@ -139,7 +154,7 @@ fn active_subjects_and_window(
     hour: i32,
     limit: usize,
 ) -> (Vec<u32>, i32, i32) {
-    let mut active = Vec::new();
+    let mut subjects = Vec::new();
     let mut from = timeline_first;
     let mut until = timeline_last;
     for &(gap_first, gap_last) in unheld {
@@ -153,24 +168,16 @@ fn active_subjects_and_window(
         if !is_named(slot) {
             continue;
         }
-        let mut is_active = false;
-        for span in spans {
-            if span.first_hour <= hour && hour <= span.last_hour {
-                is_active = true;
-                from = from.max(span.first_hour);
-                until = until.min(span.last_hour);
-            } else if span.last_hour < hour {
-                from = from.max(span.last_hour.saturating_add(1));
-            } else if span.first_hour > hour {
-                until = until.min(span.first_hour.saturating_sub(1));
-            }
-        }
-        if is_active {
-            active.push(slot);
+        let Some(began) = spans.iter().map(|span| span.first_hour).min() else { continue };
+        if began <= hour {
+            from = from.max(began);
+            subjects.push(slot);
+        } else {
+            until = until.min(began.saturating_sub(1));
         }
     }
-    active.truncate(limit);
-    (active, from.min(hour), until.max(hour))
+    subjects.truncate(limit);
+    (subjects, from.min(hour), until.max(hour))
 }
 
 fn clone_spans(spans: &[Span]) -> Vec<Span> {
@@ -233,7 +240,17 @@ pub fn tile(
             ));
         }
     }
-    let subject_spans = subject_spans_from_held(&query.timeline.stretches, &held);
+    let overlords: Option<BTreeSet<u32>> = family.overlords.as_ref().map(|asked| {
+        asked
+            .iter()
+            .flat_map(|country| query.holders.within(country, query.timeline.first, query.timeline.last))
+            .filter_map(|run| match run.holder {
+                Holder::Found { slot, .. } => Some(slot),
+                _ => None,
+            })
+            .collect()
+    });
+    let subject_spans = subject_spans_from_held(&query.timeline.stretches, &held, overlords.as_ref());
 
     let (asks, within, ranking): (Vec<Ask>, Vec<(Country, Vec<Span>)>, Option<TileRanking>) = if let Some(top) = ask.top {
         if !ask.countries.is_empty() {
@@ -268,7 +285,7 @@ pub fn tile(
             )
         } else {
             let unheld: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last)).collect();
-            let (active, from, until) = active_subjects_and_window(
+            let (active, from, until) = subjects_by_hour(
                 &subject_spans,
                 |slot| query.holders.named(&Country::Slot(slot)),
                 query.timeline.first,
@@ -343,27 +360,32 @@ mod tests {
         let held = HashMap::from([(0, (Arc::new(run0), Arc::new(links0)))]);
         let stretches = [Stretch { run: 0, first: 100, last: 199, join: Join::Start }];
 
-        let spans = subject_spans_from_held(&stretches, &held);
+        let spans = subject_spans_from_held(&stretches, &held, None);
         let pairs = |list: &[Span]| list.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>();
         assert_eq!(pairs(&spans[&20]), vec![(100, 179)]);
         assert_eq!(pairs(&spans[&30]), vec![(120, 199)]);
 
+        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[], 110, 1500), (vec![20], 100, 119));
+        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[], 150, 1500), (vec![20, 30], 120, 199));
         assert_eq!(
-            active_subjects_and_window(&spans, |_| true, 100, 199, &[], 110, 1500),
-            (vec![20], 100, 119),
+            subjects_by_hour(&spans, |_| true, 100, 199, &[], 185, 1500),
+            (vec![20, 30], 120, 199),
+            "a subject that became independent at 180 keeps its recorded history",
         );
-        assert_eq!(
-            active_subjects_and_window(&spans, |_| true, 100, 199, &[], 150, 1500),
-            (vec![20, 30], 120, 179),
-        );
-        assert_eq!(
-            active_subjects_and_window(&spans, |_| true, 100, 199, &[], 185, 1500),
-            (vec![30], 180, 199),
-        );
-        assert_eq!(
-            active_subjects_and_window(&spans, |_| true, 100, 199, &[(160, 165)], 150, 1500),
-            (vec![20, 30], 120, 159),
-        );
+        assert_eq!(subjects_by_hour(&spans, |_| true, 100, 199, &[(160, 165)], 150, 1500), (vec![20, 30], 120, 159));
+
+        let moved = RunSubjects {
+            relations: vec![(1, 2, vec![(100, 149, cell(100, 150))]), (4, 2, vec![(150, 199, cell(150, 0))])],
+            levels: HashMap::new(),
+        };
+        let moved_links = RunLinks {
+            slots: HashMap::from([(1, vec![(100, 199, Some(10))]), (2, vec![(100, 199, Some(20))]), (4, vec![(100, 199, Some(40))])]),
+        };
+        let moved_held = HashMap::from([(0, (Arc::new(moved), Arc::new(moved_links)))]);
+        let under_b = subject_spans_from_held(&stretches, &moved_held, Some(&BTreeSet::from([40])));
+        assert_eq!(pairs(&under_b[&20]), vec![(150, 199)], "the subject's time under its earlier overlord is not drawn for the later one");
+        let everyone = subject_spans_from_held(&stretches, &moved_held, None);
+        assert_eq!(pairs(&everyone[&20]), vec![(100, 199)]);
         let missing = vec![MissingSpan { first_hour: 100, last_hour: 130, reason: "Not recorded".to_owned() }];
         assert_eq!(
             clip_missing(&missing, &spans[&30]),
