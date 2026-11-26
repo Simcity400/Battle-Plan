@@ -739,7 +739,13 @@ function Start-SmokeTool {
         RedirectStandardError = $stderrPath
     }
     if ($joinedArgs.Length -gt 0) { $startParams.ArgumentList = $joinedArgs }
-    $process = Microsoft.PowerShell.Management\Start-Process @startParams
+    $previousCache = $env:BATTLEPLAN_CACHE
+    try {
+        $env:BATTLEPLAN_CACHE = Join-Path $OutputDir 'recorder-cache'
+        $process = Microsoft.PowerShell.Management\Start-Process @startParams
+    } finally {
+        $env:BATTLEPLAN_CACHE = $previousCache
+    }
     $null = $process.Handle
     $run = [pscustomobject]@{
         Process = $process

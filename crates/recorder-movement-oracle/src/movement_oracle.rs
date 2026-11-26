@@ -76,9 +76,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         Some(user) => user,
         None => crate::directories::resolve_user_directory()?,
     };
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or("LOCALAPPDATA is unset")?;
     let content = gather(&GatherOptions {
         game_dir: process
             .path
@@ -86,7 +83,7 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
             .ok_or("game executable has no folder")?
             .to_owned(),
         user_dir: user.clone(),
-        cache_dir: local.join("BattlePlan").join("recorder"),
+        cache_dir: crate::directories::cache_directory(),
         dlc_order: None,
     })
     .map_err(|e| e.to_string())?;

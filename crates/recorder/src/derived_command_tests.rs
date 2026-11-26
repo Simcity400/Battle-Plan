@@ -23,6 +23,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
             ])
             .env(CHILD, &sandbox.cache_dir)
             .env("LOCALAPPDATA", &sandbox.cache_dir)
+            .env("BATTLEPLAN_CACHE", sandbox.cache_dir.join("private"))
             .output()
             .unwrap();
         assert!(
@@ -31,6 +32,8 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(!sandbox.cache_dir.join("BattlePlan").exists());
+        assert!(sandbox.cache_dir.join("private/content-hashes-v2.bin").is_file());
         return;
     };
     content_reader_script::test_game::enter();

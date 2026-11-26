@@ -22,7 +22,7 @@ fn main() {
     let folders = recording_upgrade::Folders {
         games,
         user,
-        cache: cache.unwrap_or_else(replay_settings::recorder_settings::directory),
+        cache: cache.unwrap_or_else(replay_settings::recorder_settings::cache_directory),
     };
     let mut recordings = Vec::new();
     for target in targets {

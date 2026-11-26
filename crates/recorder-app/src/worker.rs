@@ -584,7 +584,7 @@ impl Recorder {
         let options = content_reader_layers::ResolveOptions {
             game_dir,
             user_dir,
-            cache_dir: replay_settings::recorder_settings::directory(),
+            cache_dir: replay_settings::recorder_settings::cache_directory(),
         };
         let content = Arc::new(FlagContent::load(&identity, &options)?);
         *cached = Some((session.to_path_buf(), Arc::clone(&content)));

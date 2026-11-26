@@ -203,10 +203,15 @@ mod tests {
             "user/changed/common/ideas/mod.txt",
             "ideas = { first = {} }",
         );
+        let cache = root.join("private cache");
+        let parsed = super::super::parse_options("record", vec!["--cache-dir".into(), cache.clone().into()]).unwrap();
+        let user = root.join("user");
+        let capture = super::super::cli_capture(&parsed, &user);
+        assert_eq!(capture.cache, cache);
         let options = GatherOptions {
             game_dir: root.join("game"),
-            user_dir: root.join("user"),
-            cache_dir: root.join("cache"),
+            user_dir: capture.user.to_owned(),
+            cache_dir: capture.cache.to_owned(),
             dlc_order: None,
         };
         let began = gather(&options).unwrap();

@@ -214,6 +214,7 @@ def harness_run(viewer, arguments, folder, *, cores=0, minutes=30, stop_after=No
     folder.mkdir(parents=True)
     environment = dict(os.environ)
     environment["BATTLEPLAN_CAPTURES"] = str(folder)
+    environment["BATTLEPLAN_CACHE"] = str(folder / "recorder-cache")
     check_shader_compiler(viewer)
     environment.pop("BATTLEPLAN_PERF_LOG", None)
     kind = "proof" if "--playhead-proof" in arguments else "paced" if "--paced" in arguments else "step"

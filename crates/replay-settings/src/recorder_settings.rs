@@ -149,6 +149,13 @@ pub fn directory() -> PathBuf {
     local_data().join("recorder")
 }
 
+pub fn cache_directory() -> PathBuf {
+    std::env::var_os("BATTLEPLAN_CACHE")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(directory)
+}
+
 pub fn histories_folder() -> PathBuf {
     local_data().join("histories")
 }

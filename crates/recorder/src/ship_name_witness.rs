@@ -387,7 +387,7 @@ fn capture(options: Options) -> Result<(), String> {
             .ok_or("game executable has no folder")?
             .to_owned(),
         user_dir: user,
-        cache_dir: replay_settings::recorder_settings::directory(),
+        cache_dir: crate::directories::cache_directory(),
         dlc_order: None,
     })
     .map_err(|e| e.to_string())?;
