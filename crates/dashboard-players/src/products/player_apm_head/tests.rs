@@ -470,7 +470,7 @@ fn an_unrepresentable_clock_sum_is_reported_by_the_exact_tile_and_followed_reads
     for (id, frequency) in frequencies.into_iter().enumerate() {
         let mut session = dashboard_base::test_fixtures::session(id as u64 + 1);
         session.qpc_frequency = frequency;
-        packets.push(ControlRecord::PlayerCommands { session: session.id, packet: Packet::pack(4, 1, 2, 0, 0, 60, 0, &batch).unwrap() });
+        packets.push(ControlRecord::PlayerCommands { session: session.id, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, 60, 0, &batch).unwrap()) });
         sessions.push(session);
     }
     let index = Arc::new(commands::index(&sessions, &packets, 4).unwrap());
