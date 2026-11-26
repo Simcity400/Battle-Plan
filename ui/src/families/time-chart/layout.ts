@@ -808,23 +808,34 @@ export function layoutTimeChart(
     const lx = playheadX + 10;
     const availWidth = Math.max(0, width - lx - 4);
     const minEllipsis = measure('\u2026', labelNameFont);
+    const measureName = (text: string) => measure(text, labelNameFont);
     const namedIndices: number[] = [];
     const namedRaw: string[] = [];
     const namedBudgets: number[] = [];
+    const namedInitial: string[] = [];
+    const namedWidths: number[] = [];
     for (let i = 0; i < rawEndLabels.length; i++) {
       const l = rawEndLabels[i]!;
       if (!l.name) continue;
       const budget = Math.min(END_LABEL_MAX_NAME_PX, availWidth - l.fixedWidth - 6);
       if (budget < minEllipsis) continue;
+      const entry = cachedEllipsise(l.name, budget, labelNameFont, measure, cacheBucket);
       namedIndices.push(i);
       namedRaw.push(l.name);
       namedBudgets.push(budget);
+      namedInitial.push(entry.text);
+      namedWidths.push(entry.width);
     }
     const fittedNames = new Map<number, string>();
+    const fittedWidths = new Map<number, number>();
     if (namedRaw.length > 0) {
-      const resolved = disambiguateLabels(namedRaw, namedBudgets, measureName);
+      const resolved = disambiguateLabels(namedRaw, namedBudgets, measureName, namedInitial);
       for (let i = 0; i < namedIndices.length; i++) {
-        if (resolved[i]) fittedNames.set(namedIndices[i]!, resolved[i]!);
+        const text = resolved[i];
+        if (!text) continue;
+        const idx = namedIndices[i]!;
+        fittedNames.set(idx, text);
+        fittedWidths.set(idx, text === namedInitial[i] ? namedWidths[i]! : measureName(text));
       }
     }
     for (let i = 0; i < rawEndLabels.length; i++) {
@@ -832,7 +843,7 @@ export function layoutTimeChart(
       const anchorY = toY(l.anchorVal);
       const ly = placedY.get(l.id) ?? anchorY;
       const fittedName = fittedNames.get(i) ?? null;
-      const fittedNameW = fittedName ? measureName(fittedName) : 0;
+      const fittedNameW = fittedWidths.get(i) ?? 0;
       const fittedWidth = l.fixedWidth + (fittedName ? fittedNameW + 6 : 0) + 8;
       endLabels.push({
         id: l.id,

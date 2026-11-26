@@ -3574,4 +3574,47 @@ describe('time-chart selectedHour pinned day marker', () => {
     assert.strictEqual(secondSeries?.get('main')?.get('GER'), firstSeries?.get('main')?.get('GER'), 'unchanged coarse series reuses BoundedSeries across identical ticks');
     assert.strictEqual(secondSeries, firstSeries, 'unchanged coarse series reuses source map across identical ticks');
   });
+
+  it('reuses cached end-label fits on repeated layout of 80 distinct long names without re-segmenting graphemes', () => {
+    const series = Array.from({ length: 80 }, (_, idx) => {
+      const label = `Region ${String(idx).padStart(2, '0')} Long Confederation Territory`;
+      return {
+        id: `s${idx}`,
+        key: `s${idx}`,
+        role: 'primary' as const,
+        name: label,
+        color: '#5588cc',
+        points: [{ hour: 0, value: idx + 1 }, { hour: 24, value: idx + 1 }],
+        endLabel: { name: label, value: String(idx + 1) },
+      };
+    });
+    const model: TimeChartModel = {
+      kind: 'test-end-label-cache',
+      measureTitle: 'Value',
+      mode: 'lines',
+      hour: 24,
+      extent: [0, 24],
+      yAxis: { format: 'number' },
+      series,
+    };
+    const first = layoutTimeChart(model, 640, 320, FONT, measure);
+    assert.equal(first.endLabels.length, 80);
+    let segments = 0;
+    const origSegment = Intl.Segmenter.prototype.segment;
+    Intl.Segmenter.prototype.segment = function (...args) {
+      segments++;
+      return origSegment.apply(this, args);
+    };
+    try {
+      const second = layoutTimeChart(model, 640, 320, FONT, measure);
+      assert.equal(second.endLabels.length, 80);
+      assert.equal(segments, 0, 'warm end-label cache avoids grapheme segmentation for distinct long names');
+      for (let i = 0; i < 80; i++) {
+        assert.equal(second.endLabels[i]!.name, first.endLabels[i]!.name);
+        assert.equal(second.endLabels[i]!.nameWidth, first.endLabels[i]!.nameWidth);
+      }
+    } finally {
+      Intl.Segmenter.prototype.segment = origSegment;
+    }
+  });
 });

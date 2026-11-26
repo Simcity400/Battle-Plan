@@ -153,12 +153,19 @@ function fitDiffWindow(
 type DiffSpan = readonly [number, number];
 
 function mergeDiffSpans(spans: readonly DiffSpan[], next: DiffSpan): DiffSpan[] {
-  const combined = [...spans, next].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const byStart = new Map<number, number>();
+  for (const [start, end] of spans) {
+    const held = byStart.get(start);
+    byStart.set(start, held === undefined ? end : Math.min(held, end));
+  }
+  const held = byStart.get(next[0]);
+  byStart.set(next[0], held === undefined ? next[1] : Math.min(held, next[1]));
+  const sorted = [...byStart.entries()].sort((a, b) => a[0] - b[0]);
   const out: DiffSpan[] = [];
-  for (const [start, end] of combined) {
-    const prev = out.at(-1);
-    if (prev && start <= prev[1]) out[out.length - 1] = [prev[0], Math.max(prev[1], end)];
-    else out.push([start, end]);
+  for (let i = 0; i < sorted.length; i++) {
+    const [start, end] = sorted[i]!;
+    const limit = i + 1 < sorted.length ? Math.min(end, sorted[i + 1]![0]) : end;
+    if (limit > start) out.push([start, limit]);
   }
   return out;
 }
@@ -289,11 +296,14 @@ export function disambiguateLabels(
   labels: readonly string[],
   widths: number | readonly number[],
   measure: (text: string) => number,
+  initial?: readonly string[],
 ): string[] {
   const count = labels.length;
-  const out = new Array<string>(count);
+  const out = initial ? initial.slice() : new Array<string>(count);
   const widthOf = typeof widths === 'number' ? () => widths : (index: number) => widths[index] ?? 0;
-  for (let i = 0; i < count; i++) out[i] = ellipsise(labels[i]!, widthOf(i), measure);
+  if (!initial) {
+    for (let i = 0; i < count; i++) out[i] = ellipsise(labels[i]!, widthOf(i), measure);
+  }
   const cache = new Map<number, string[]>();
   const anchors = new Map<number, DiffSpan[]>();
   const resolved = new Set<string>();

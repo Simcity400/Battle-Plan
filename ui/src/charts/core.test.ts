@@ -258,10 +258,19 @@ test('disambiguateLabels distinguishes colliding shared-prefix labels without sp
     'Northern Assembly East',
     'Northern Assembly West',
   ];
+  const nestedOverlapNames = [
+    'Federation of Northern Alliance East',
+    'Federation of Northern Alliance West',
+    'Federation of Southern Alliance East',
+  ];
   for (const width of [96, 112]) {
     const crossGroup = disambiguateLabels(crossGroupNames, width, mono);
     assert.equal(new Set(crossGroup).size, 4, `cross-group collisions at ${width}px converge to 4 distinct labels (${crossGroup.join(', ')})`);
     assert.ok(crossGroup.every(label => mono(label) <= width), `all labels fit within ${width}px (${crossGroup.join(', ')})`);
+
+    const nestedOverlap = disambiguateLabels(nestedOverlapNames, width, mono);
+    assert.equal(new Set(nestedOverlap).size, 3, `overlapping spans at ${width}px stay distinct (${nestedOverlap.join(', ')})`);
+    assert.ok(nestedOverlap.every(label => mono(label) <= width), `overlapping labels fit within ${width}px (${nestedOverlap.join(', ')})`);
   }
 
   const { layoutFamilyBars } = await import('../families/bars/layout.ts');
