@@ -12,7 +12,7 @@ test('a header whose count fits only without the time chip shows a live chip as 
       const shown = await page.evaluate<Shown>(`window.widgetHeader.switchWhilePlaying({ mode: '${mode}' })`);
       assert.equal(shown.count, false, `switch ${at + 1} to ${mode} while playing refits at once: the count stays dropped (${JSON.stringify(shown)})`);
       if (mode === 'follow') assert.deepEqual(shown, live, `switch ${at + 1}: back on live, only the dot`);
-      else assert.notEqual(shown.label, 'Live', `switch ${at + 1}: the chip is the whole campaign's`);
+      else assert.deepEqual(shown, { count: false, compact: false, label: 'Whole campaign' }, `switch ${at + 1}: the whole campaign's chip at full width`);
     }
   }, 60_000));
 });
