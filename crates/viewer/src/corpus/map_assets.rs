@@ -67,16 +67,16 @@ pub(super) fn read(
                 quality,
                 decode,
             )
-            .map(|assets| {
+            .map(|(assets, _, masks)| {
                 let summary = (assets.map.width, assets.map.height, assets.post.luts.len());
                 if quality == 0 {
-                    loaded = Some(assets);
+                    loaded = Some((assets, masks));
                 }
                 summary
             })
         });
-        if let Some(assets) = loaded {
-            trees_and_cities(log, layers, defines, map, &assets, decode);
+        if let Some((assets, masks)) = loaded {
+            trees_and_cities(log, layers, defines, map, (&assets, &masks), decode);
         } else if quality == 0 {
             log.not_run(&["viewer.tree_assets", "viewer.city_assets"], &reader);
         }
@@ -124,10 +124,10 @@ fn trees_and_cities(
     layers: &ResolvedLayers,
     defines: &Defines,
     map: &MapData,
-    assets: &viewer_world::scene_content::MapAssets,
+    (assets, masks): (&viewer_world::scene_content::MapAssets, &viewer_world::scene_content::LoadMasks),
     decode: Decode,
 ) {
-    let palettes: Vec<_> = assets
+    let palettes: Vec<_> = masks
         .trees
         .indices
         .iter()
@@ -142,7 +142,7 @@ fn trees_and_cities(
             layers,
             decode,
             &palettes,
-            &assets.rivers,
+            &masks.rivers,
             &mut warnings,
         )
         .map(|_| ())
@@ -157,7 +157,7 @@ fn trees_and_cities(
             &assets.spawn_city,
             &assets.height_field(),
             &map.province_ids,
-            &assets.rivers,
+            &masks.rivers,
         )?;
         viewer_buildings::sprawl::Sprawl::load(layers, decode, &plan, defines, &mut warnings)
             .map(|_| ())

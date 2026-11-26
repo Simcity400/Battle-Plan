@@ -10,7 +10,6 @@ use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Inter
 
 pub struct MapIcons {
     pub combat: Arc<combat::Assets>,
-    pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
     pub counters: Arc<CounterAssets>,
     pub raids: Arc<viewer_raids::map::raids::RaidAssets>,

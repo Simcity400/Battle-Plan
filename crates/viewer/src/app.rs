@@ -850,7 +850,7 @@ fn load_scene_scoped(
         let _stage = stage("scene.textures");
         document
             .scene_textures
-            .warm(device, queue, &document.assets, &document.icons.images)?
+            .warm(device, queue, &document.assets)?
     };
     let mut scene = {
         let _stage = stage("scene.passes");

@@ -303,13 +303,15 @@ pub fn dump_png(
             .await
             .map_err(io::Error::other)?;
         drop(lifecycle);
-        let mut scene = Scene::new(
+        let textures = layers.content.scene_textures.warm(&device, &queue, assets)?;
+        let mut scene = Scene::with_textures(
             &device,
             &queue,
+            textures,
             assets,
-            &icons.images,
             &icons.lazy,
             layers.graphics,
+            &viewer_runtime::parallel::Workers::default(),
         )?;
         scene.settle_builds(true);
         scene.settle_poses(true);
