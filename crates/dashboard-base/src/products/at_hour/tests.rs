@@ -682,6 +682,86 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
     }
 }
 
+fn older_format_frame(tables: &[TableId]) -> DecodedFrame {
+    use replay_data::rows::{ClockRow, compatibility::STANDALONE_UNITS_FORMAT};
+    let frames = (FIRST..=FIRST + 2).map(|hour| {
+        let mut frame = frame(hour);
+        *frame.tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+        frame
+    }).collect();
+    let bytes = replay::campaign::fixtures::encode_records_at(
+        recorder_derive::writers_within, STANDALONE_UNITS_FORMAT, CAMPAIGN.into(), &[records(1, frames)],
+    ).unwrap();
+    let replay = Replay::open(bytes).unwrap();
+    let damaged = TableId::Clock;
+    let bytes = replay.damaged_table(&replay.index[0], damaged).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "older-format".into(), revision: "1".into() },
+        "older.battleplan".into(), Arc::new(Replay::open(bytes).unwrap()), &false.into()).unwrap();
+    let pool = placed::Pool::of(&source).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    let mut count = 0;
+    let mut input = incremental::Input { pool: &pool, run: pool.pages.run_of(0).unwrap(), hour: FIRST + 1, mode, count: &mut count, step: None, placed: None };
+    input.frame(&tables.iter().copied().map(Read::all).collect::<Vec<_>>(), |_| None, 1).unwrap()
+}
+
+#[test]
+fn the_exact_host_distinguishes_predated_withheld_and_damaged_tables() {
+    use replay_data::{rows::compatibility::STANDALONE_UNITS_FORMAT, scope::CaptureMode};
+    let (predates, withheld, damaged) = (TableId::DivisionKills, TableId::VariantStats, TableId::Clock);
+    let frame = older_format_frame(&[predates, withheld, damaged]);
+    assert_eq!(*frame.tables[predates.index()], TableView::NotRecorded { mode: CaptureMode::Full });
+    let changed = withheld.last_change().table_gap(withheld, STANDALONE_UNITS_FORMAT).unwrap();
+    assert!(changed.contains("layout or meaning changed"), "{changed}");
+    assert_eq!(*frame.tables[withheld.index()], TableView::Unavailable { reason: changed });
+    let TableView::Unavailable { reason } = &*frame.tables[damaged.index()] else { panic!("the damaged clock table was read") };
+    assert!(reason.contains("digest"), "{reason}");
+    assert!(frame.complete::<tables::Clock>().unwrap_err().to_string().contains("Clock"));
+}
+
+#[test]
+fn an_older_recordings_law_can_rule_out_a_variable_only_with_a_recorded_store() {
+    use dashboard_text::occupation_law::{GroupLaw, LawInputs, admitted, law_for};
+    use replay_data::{rows::ScriptVariablesRow, scope::CaptureMode};
+    crate::catalogue::tests::script_game::enter();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+    )]);
+    let script = catalogue.scripted_content().unwrap();
+    let law = content_reader_politics::occupation_laws::parse(b"candidate={visible={has_variable=mod_law}}", &Default::default()).unwrap().remove(0);
+    let split_tables = [TableId::ScriptVariableNames, TableId::ScriptVariableValues];
+    let mut frame = older_format_frame(&split_tables);
+    let country = source(1, frame.hour, None);
+    for table in [TableId::Countries, TableId::CountryLinks] {
+        frame.tables[table.index()] = country.tables[table.index()].clone();
+    }
+    let absent = TableView::NotRecorded { mode: CaptureMode::Full };
+    for table in split_tables {
+        assert_eq!(*frame.tables[table.index()], absent);
+    }
+    for table in [TableId::Provinces, TableId::States] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    let empty = ScriptVariablesRow { scope_kind: 1, scope_id: 9001, ..Default::default() };
+    for store in [
+        TableView::Complete(TableRows::ScriptVariables(vec![empty])),
+        absent,
+        TableView::Unavailable { reason: "inline store withheld".into() },
+        TableView::Unavailable { reason: "inline store failed its digest".into() },
+    ] {
+        *frame.tables[TableId::ScriptVariables.index()] = store;
+        let world = script.recorded_world(&frame).unwrap();
+        let inputs = LawInputs { state: None, key_resolved: true, overrides_complete: true, group: GroupLaw::Law(None), default: Some((true, b"candidate")), fallback: Ok(b"fallback") };
+        let choice = law_for(inputs, |_| admitted(&world, &law, 7, 8));
+        match frame.complete::<tables::ScriptVariables>() {
+            Ok(_) => assert_eq!(choice.as_deref(), Ok("fallback")),
+            Err(missing) => {
+                let reason = choice.unwrap_err();
+                assert!(reason.contains(&missing.to_string()), "{reason}");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_keyed_read_names_the_rows_it_chose() {
     let (source, _) = recording();
@@ -977,6 +1057,48 @@ fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncate
         let cold = (exact.cold)(read.hour, &token);
         assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "stepped equals cold at hour {}", read.hour);
     }
+}
+
+#[test]
+fn a_later_stage_releasing_its_selection_restores_the_first_stages_reply() {
+    struct Roster;
+    impl AtHour for Roster {
+        const KEY: &'static str = "test-repeated-countries";
+        const TITLE: &'static str = "Roster";
+        const CONTENT_DEPENDENT: bool = false;
+        const CLOCK: Clock = Clock::Boundaries;
+        type Params = PlannedParams;
+        const FIELDS: crate::products::Fields = crate::fields![branchId];
+        type Context = ();
+        type Reply = SteadyReply;
+
+        fn tables(_: &Self::Params) -> Vec<TableId> { vec![TableId::Countries] }
+
+        fn retained_reads(_: &Self::Params, _: Option<Owner>, stage: usize, _: &DecodedFrame, at: &ReadsAt<'_, ()>) -> (Vec<Read>, i32) {
+            match stage {
+                0 => (vec![Read::these(TableId::Countries, [9001])], i32::MAX),
+                1 if at.hour == FIRST => (vec![Read::all(TableId::Countries)], FIRST),
+                _ => (Vec::new(), i32::MAX),
+            }
+        }
+
+        fn columns(table: TableId) -> Option<Vec<usize>> { Some(field_columns(table, &["tag"])) }
+        fn context(_: &Source, _: &LoadContext) -> io::Result<()> { Ok(()) }
+
+        fn reply(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, ()>) -> io::Result<Self::Reply> {
+            let tags = frame.complete::<tables::Countries>()?.iter().map(|row| String::from_utf8_lossy(&row.tag).into_owned()).collect();
+            Ok(SteadyReply { tags, warnings: Vec::new() })
+        }
+    }
+
+    let (source, _) = recording();
+    let panel = exact_panel::<Roster>(&source, &load(), &json!({"branchId":"1"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let token = false.into();
+    let all = (reader.advance)(FIRST, true, &token, None);
+    let one = (reader.advance)(FIRST + 1, false, &token, None);
+    assert_eq!(all.value.as_ref().as_ref().unwrap()["tags"], json!(["GER", "ITA"]));
+    assert_eq!(one.value.as_ref().as_ref().unwrap()["tags"], json!(["GER"]));
 }
 
 #[test]

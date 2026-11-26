@@ -1,7 +1,7 @@
 
 pub mod service_record;
 use super::{Content, Countries, Refusals, attributed, find, token_key};
-use dashboard_base::{Source, catalogue, products::{LoadContext, at_hour::{At, AtHour}}};
+use dashboard_base::{Source, catalogue, products::{LoadContext, at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt}}};
 use crate::products::army::ArmyAttribution;
 use dashboard_query::coverage::witnessed;
 use dashboard_text::division_history;
@@ -225,6 +225,60 @@ impl AtHour for DecoratedDivisions {
         TABLES.to_vec()
     }
 
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match stage {
+            0 => [TableId::Divisions, TableId::Countries, TableId::CountryLinks].map(Read::all).into(),
+            1 => {
+                let countries = Countries::witnessed(frame).0.named(at.holders, at.hour);
+                let filter = selected_tags(params, at.hour);
+                let eligible: Vec<_> = frame.complete::<tables::Divisions>().unwrap_or(&[]).iter()
+                    .filter(|row| row.reveal_skip == 0 && filter.as_ref().is_none_or(|tags|
+                        countries.tag(attributed(row, ArmyAttribution::Owner)).is_some_and(|tag| tags.contains(tag.as_str())))).collect();
+                let ids = eligible.iter().map(|row| u128::from(row.id));
+                let templates = eligible.iter().map(|row| u128::from(row.template));
+                let mut history = Vec::new();
+                for id in ids.clone() {
+                    let first = id << 34;
+                    history.push((first, first | u128::from(u32::MAX)));
+                    let awards = first | u128::from(DivisionHistoryRow::AWARDS) << 32;
+                    history.push((awards, awards | u128::from(u32::MAX)));
+                }
+                vec![
+                    Read::these(TableId::DivisionStatus, ids.clone()), Read::these(TableId::DivisionLandInputs, ids.clone()), Read::these(TableId::DivisionKills, ids),
+                    Read { table: TableId::DivisionHistory, keys: Keys::Ranges(history) },
+                    Read::these(TableId::DivisionTemplates, templates.clone()), Read::these(TableId::DivisionTemplateIcons, templates),
+                ]
+            }
+            2 => {
+                let rows = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
+                vec![Read::these(TableId::LexicalTokens, rows.iter().filter(|row| row.list == DivisionHistoryRow::AWARDS && row.medal_enabled != 0)
+                    .filter_map(|row| row.medal_token.map(|token| u128::from(token as u32))))]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage == 1 && params.countries.is_some() {
+            filter_valid_through(params.countries.as_deref(), at.hour).min(dashboard_base::products::at_hour::before(at.holders.next_change(at.hour)))
+        } else { i32::MAX };
+        (Self::reads_in(params, owner, stage, frame, at), through)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _frame: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            1 => edits.fields(TableId::Divisions, u64::MAX) || edits.fields(TableId::CountryLinks, u64::MAX),
+            2 => edits.fields(TableId::DivisionHistory, dashboard_base::products::at_hour::field_mask(TableId::DivisionHistory, &["medal_token", "medal_enabled"])),
+            _ => false,
+        }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at)
+            .min(super::names_through(frame, reply.templates.iter().map(|t| t.template.as_str()), &at.context.content))
+            .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
+    }
+
     fn columns(table: TableId) -> Option<Vec<usize>> {
         let fields = match table {
             TableId::Countries => mask::<CountryRow>(&["canonical_slot", "tag"]),
@@ -232,8 +286,9 @@ impl AtHour for DecoratedDivisions {
             TableId::Divisions => mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "template", "reveal_skip"]),
             TableId::DivisionStatus => mask::<DivisionStatusRow>(&["experience", "career_counter", "name", "naming", "country_ordinal"]),
             TableId::DivisionLandInputs => mask::<DivisionLandInputsRow>(&["manpower"]),
+            TableId::DivisionHistory => mask::<DivisionHistoryRow>(&["available", "reason", "amount", "medal_token", "medal_definition", "medal_enabled"]),
             TableId::DivisionKills => mask::<DivisionKillsRow>(&["killed_raw", "incomplete_from"]),
-            _ => return None,
+            _ => return super::naming_columns(table),
         };
         Some((0..64).filter(|column| fields & 1 << column != 0).collect())
     }
@@ -539,6 +594,10 @@ fn rank_name(by: DecoratedRank, content: &Content, looks: &Result<BranchLooks, S
     }
 }
 
+fn selected_tags(params: &DecoratedDivisionsParams, hour: i32) -> Option<HashSet<&str>> {
+    params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.tag.as_str()).collect())
+}
+
 fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_, DecoratedContext>, refusals: &mut Refusals) -> io::Result<DecoratedDivisionsReply> {
     let mut reply = DecoratedDivisionsReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), partial: None, missing: None, warnings: Vec::new() };
     let divisions = match frame.complete::<tables::Divisions>() {
@@ -555,7 +614,7 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     if let Some(why) = links_missing {
         refusals.note(format!("Division countries unavailable: {why}"));
     }
-    let passing = params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= at.hour && at.hour <= span.last_hour).map(|span| span.tag.as_str()).collect::<HashSet<&str>>());
+    let passing = selected_tags(params, at.hour);
     let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
     let mut measured = Vec::new();
     let (mut unplaced, mut unmeasured) = (0usize, 0usize);

@@ -142,7 +142,7 @@ impl AtHour for DivisionTemplates {
     const KEY: &'static str = "division-templates";
     const TITLE: &'static str = "Division templates";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DivisionTemplatesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor];
     type Reply = DivisionTemplatesReply;
@@ -184,6 +184,22 @@ impl AtHour for DivisionTemplates {
             1 => vec![Read::these(TableId::DivisionTemplateIcons, owned(held, owner.slot).0.into_iter().map(u128::from))],
             _ => Vec::new(),
         }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::DivisionTemplates => &["owner", "name", "name_key"],
+            TableId::DivisionEquipmentCounts => &["unresolved"],
+            TableId::DivisionEquipmentByTemplate => &["divisions"],
+            TableId::DivisionTemplateIcons => &["priority_unit", "priority_unit_name", "custom_icon", "country", "display_name", "settings", "base_width", "grids", "model_unreadable"],
+            _ => return super::naming_columns(table),
+        };
+        Some(dashboard_base::products::at_hour::field_columns(table, fields))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        super::names_through(frame, reply.templates.iter().map(|t| t.template.as_str()), at.context)
+            .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.fielded_missing.iter().chain(&reply.warnings).map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

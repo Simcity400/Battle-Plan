@@ -2,14 +2,14 @@
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::products::LoadContext;
 use super::divisions::{Content, Refusals};
-use dashboard_base::{Source, catalogue::{self, Catalogue, View}, products::at_hour::{At, AtHour}};
+use dashboard_base::{Source, catalogue::{self, Catalogue, View}, products::at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ScriptedInputs, field_columns}};
 use dashboard_text::{
     metadata::link_slot,
     scripted_text::ScriptedText,
     subunit_requirements::Sources,
 };
-use replay_data::rows::{DeploymentLineRow, TableId, tables};
-use dashboard_query::coverage::witnessed_rows;
+use replay_data::rows::{DeploymentLineRow, ProvinceRow, TableId, tables};
+use dashboard_query::coverage::{witnessed_rows, witnessed_selection};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -150,6 +150,8 @@ pub struct TrainingOrder {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingQueueReply {
+    #[serde(skip)]
+    text_through: i32,
     pub tag: String,
     #[doc = " The read the queue is from; none when none falls within a day."]
     pub read_hour: Option<i32>,
@@ -243,12 +245,12 @@ fn priorities(cat: &Result<Arc<Catalogue>, String>, frame: &DecodedFrame, root: 
     names
 }
 
-fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province: u32) -> Result<String, String> {
+fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province: u32, provinces: &io::Result<&[ProvinceRow]>) -> Result<String, String> {
     if province == 0 {
         return localised(cat, "CONVEYOR_SET_LOCATION_NOT_SET");
     }
     let cat = cat.as_ref().map_err(|_| "Location names need the recorded content stack".to_owned())?;
-    let provinces = frame.complete::<tables::Provinces>().map_err(|why| format!("Provinces were not read: {why}"))?;
+    let provinces = provinces.as_ref().map_err(|why| format!("Provinces were not read: {why}"))?;
     let row = provinces.binary_search_by_key(&province, |row| row.id).ok().map(|at| &provinces[at]).ok_or_else(|| format!("Province {province} was not read"))?;
     let text = ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, 0);
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
@@ -280,6 +282,21 @@ fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_k
     (name, archetype, archetype_name)
 }
 
+fn queue_sample(frame: &DecodedFrame) -> Option<i32> {
+    frame.tables[TableId::DeploymentLines.index()].sampled_at().filter(|&read|
+        read <= frame.hour && i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD))
+}
+
+fn queue_through(frame: &DecodedFrame) -> i32 {
+    match frame.tables[TableId::DeploymentLines.index()].sampled_at() {
+            Some(read) if read > frame.hour => read - 1,
+            Some(read) if i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD) => {
+                read.saturating_add(replay_data::cadence::STAGGER_PERIOD - 1)
+            }
+            _ => i32::MAX,
+        }
+}
+
 impl AtHour for TrainingQueue {
     const KEY: &'static str = "training-queue";
     const TITLE: &'static str = "Training queue";
@@ -288,7 +305,7 @@ impl AtHour for TrainingQueue {
     type Params = TrainingQueueParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TrainingQueueReply;
-    type Context = Content;
+    type Context = (Content, ScriptedInputs);
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -323,36 +340,119 @@ impl AtHour for TrainingQueue {
         tables
     }
 
+    fn reads_in(_params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        let Some(owner) = owner else { return Vec::new() };
+        match stage {
+            0 => ORDERS.map(|table| Read::these(table, [])).into(),
+            1 if withheld(frame).is_none() && queue_sample(frame).is_some() => [TableId::CountryLinks, TableId::DeploymentConveyors, TableId::DeploymentLines].map(Read::all).into(),
+            2 => {
+                let links = frame.complete::<tables::CountryLinks>().unwrap_or(&[]);
+                let conveyors = frame.complete::<tables::DeploymentConveyors>().unwrap_or(&[]);
+                let orders: BTreeSet<_> = conveyors.iter().filter(|row| link_slot(links, row.country) == Some(owner.slot)).map(|row| row.handle).collect();
+                let owned = || conveyors.iter().filter(|row| orders.contains(&row.handle));
+                let templates: BTreeSet<_> = owned().map(|row| u128::from(row.template)).collect();
+                let lines = frame.complete::<tables::DeploymentLines>().unwrap_or(&[]);
+                let lines: Vec<_> = lines.iter().filter(|line| orders.contains(&line.conveyor)).map(|line| u128::from(line.handle)).collect();
+                let parts = |shift| Keys::Ranges(lines.iter().map(|&line| (line << shift, (line << shift) | ((1_u128 << shift) - 1))).collect());
+                let mut reads = vec![
+                    Read::all(TableId::Countries), Read::all(TableId::CountryAppearance), Read::all(TableId::LexicalTokens), Read::all(TableId::CountryLocalSubunits),
+                    Read::these(TableId::DivisionTemplates, templates.iter().copied()), Read::these(TableId::DivisionTemplateIcons, templates),
+                    Read { table: TableId::DeploymentManpower, keys: parts(33_u32) }, Read { table: TableId::DeploymentEquipment, keys: parts(32_u32) },
+                ];
+                if at.context.0.cat.is_ok() {
+                    let locations = owned().map(|order| order.location).filter(|&id| id != 0).map(u128::from);
+                    let mut locations = locations.peekable();
+                    if locations.peek().is_some() { reads.push(Read::these(TableId::Provinces, locations)); }
+                }
+                reads
+            }
+            3 => {
+                let rows = witnessed_selection::<tables::DeploymentEquipment>(frame);
+                vec![Read::these(TableId::VariantDefinitions, rows.rows.iter().map(|row| u128::from(row.variant_handle)))]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::DeploymentConveyors => &["country", "template", "ordinal", "amount", "location", "priority", "closed", "exile_country"],
+            TableId::DeploymentLines => &["conveyor", "ordinal", "name_order", "training_raw", "max_training_raw", "max_manpower", "halting_reason_present", "custom_name", "custom_flag_a", "custom_flag_b"],
+            TableId::Provinces => &["state"],
+            TableId::DivisionTemplateIcons => return None,
+            _ => return super::divisions::naming_columns(table),
+        };
+        Some(field_columns(table, fields))
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage == 1 { queue_through(frame) } else { i32::MAX };
+        (Self::reads_in(params, owner, stage, frame, at), through)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _frame: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            1 => ORDERS.iter().any(|table| edits.replaced.contains(table)),
+            2 => edits.fields(TableId::CountryLinks, u64::MAX) || edits.fields(TableId::DeploymentConveyors, dashboard_base::products::at_hour::field_mask(TableId::DeploymentConveyors, &["country", "template", "location"]))
+                || edits.fields(TableId::DeploymentLines, dashboard_base::products::at_hour::field_mask(TableId::DeploymentLines, &["conveyor"])),
+            3 => edits.fields(TableId::DeploymentEquipment, dashboard_base::products::at_hour::field_mask(TableId::DeploymentEquipment, &["variant_handle"])),
+            _ => false,
+        }
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        matches!(table, TableId::DeploymentLines | TableId::DeploymentConveyors)
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, _held: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || edits.tables.keys().any(|table| !matches!(table, TableId::DeploymentLines | TableId::DeploymentConveyors)) { return Ok(false); }
+        let Some(owner) = at.owner else { return Ok(false) };
+        let links = frame.complete::<tables::CountryLinks>()?;
+        let orders = frame.complete::<tables::DeploymentConveyors>()?;
+        let mine = |order: &replay_data::rows::DeploymentConveyorRow| link_slot(links, order.country) == Some(owner.slot);
+        if let Some(keys) = edits.tables.get(&TableId::DeploymentConveyors) {
+            let prior = edits.previous.get(&TableId::DeploymentConveyors).and_then(|v| match v.held() { replay_frame::frame::TableView::Complete(rows) => rows.rows::<tables::DeploymentConveyors>(), _ => None });
+            let relevant = |rows: &[replay_data::rows::DeploymentConveyorRow]| keys.keys().any(|&key| rows.binary_search_by_key(&(key as u64), |o| o.handle).is_ok_and(|i| mine(&rows[i])));
+            if prior.is_none_or(relevant) || relevant(orders) { return Ok(false); }
+        }
+        if let Some(keys) = edits.tables.get(&TableId::DeploymentLines) {
+            let prior = edits.previous.get(&TableId::DeploymentLines).and_then(|v| match v.held() { replay_frame::frame::TableView::Complete(rows) => rows.rows::<tables::DeploymentLines>(), _ => None });
+            let relevant = |rows: &[DeploymentLineRow]| keys.keys().any(|&key| rows.binary_search_by_key(&(key as u64), |line| line.handle).is_ok_and(|i|
+                orders.binary_search_by_key(&rows[i].conveyor, |order| order.handle).is_ok_and(|j| mine(&orders[j]))));
+            if prior.is_none_or(relevant) || relevant(frame.complete::<tables::DeploymentLines>()?) { return Ok(false); }
+        }
+        Ok(true)
+    }
+
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(Content::load(source, load))
+        Ok((Content::load(source, load), ScriptedInputs::new(source.replay())))
     }
 
     fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
-        match frame.tables[TableId::DeploymentLines.index()].sampled_at() {
-            Some(read) if read > frame.hour => read - 1,
-            Some(read) if i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD) => {
-                read.saturating_add(replay_data::cadence::STAGGER_PERIOD - 1)
-            }
-            _ => i32::MAX,
-        }
+        queue_through(frame)
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at)
+            .min(reply.text_through)
+            .min(super::divisions::names_through(frame, reply.orders.iter().map(|order| order.template.as_str()), &at.context.0))
+            .min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Training queue country is unavailable at this hour"))?;
-        let mut reply = TrainingQueueReply { tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, orders: Vec::new(), in_training: None, warnings: Vec::new() };
+        let mut reply = TrainingQueueReply { text_through: i32::MAX, tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, orders: Vec::new(), in_training: None, warnings: Vec::new() };
         if let Some(why) = withheld(frame) {
             reply.missing = Some(why);
             return Ok(reply);
         }
-        let read = frame.tables[TableId::DeploymentLines.index()].sampled_at();
-        let within = read.filter(|&read| read <= frame.hour && i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD));
-        let Some(read) = within else {
+        let Some(read) = queue_sample(frame) else {
             reply.missing = Some("The training queue was not read within a day of this hour".into());
             return Ok(reply);
         };
         reply.read_hour = Some(read);
         let mut refusals = Refusals::default();
-        let names = at.context;
+        let (names, inputs) = at.context;
         let cat = &names.cat;
         names.group_notes(&mut refusals);
         let links = frame.complete::<tables::CountryLinks>()?;
@@ -362,7 +462,6 @@ impl AtHour for TrainingQueue {
         }
         let tags: BTreeMap<u32, String> = countries.rows.iter().filter_map(|row| Some((row.canonical_slot, String::from_utf8(row.tag.clone()).ok()?))).collect();
         let tag_of = |raw: u32| tags.get(&link_slot(links, raw)?).cloned();
-        let priority_names = priorities(cat, frame, owner.slot, &mut refusals);
         let content = super::divisions::equipment::template_needs(cat);
         if let Ok(content) = &content {
             for warning in content.dropped.iter().chain(&content.equipment_content().misreads) {
@@ -373,12 +472,26 @@ impl AtHour for TrainingQueue {
         let units = cat.as_ref().ok().and_then(|cat| catalogue::equipment_units(cat).ok());
         let conveyors = frame.complete::<tables::DeploymentConveyors>()?;
         let lines = frame.complete::<tables::DeploymentLines>()?;
-        let manpower_read = witnessed_rows::<tables::DeploymentManpower>(frame);
-        let equipment_read = witnessed_rows::<tables::DeploymentEquipment>(frame);
+        let manpower_read = witnessed_selection::<tables::DeploymentManpower>(frame);
+        let equipment_read = witnessed_selection::<tables::DeploymentEquipment>(frame);
         let (manpower, manpower_missing) = (manpower_read.rows, manpower_read.missing.map(|why| format!("Training manpower not read whole: {why}")));
         let (equipment, equipment_missing) = (equipment_read.rows, equipment_read.missing.map(|why| format!("Held equipment not read whole: {why}")));
         let icons = frame.complete::<tables::DivisionTemplateIcons>().ok();
         let mut orders: Vec<_> = conveyors.iter().filter(|row| link_slot(links, row.country) == Some(owner.slot)).collect();
+        let provinces = frame.complete::<tables::Provinces>();
+        let text = |world: &DecodedFrame| {
+            let names = priorities(cat, world, owner.slot, &mut refusals);
+            let locations: BTreeMap<_, _> = orders.iter().map(|order| order.location).collect::<BTreeSet<_>>().into_iter()
+                .map(|province| (province, location(world, cat, province, &provinces))).collect();
+            (names, locations)
+        };
+        let ((priority_names, locations), through) = if cat.is_ok() {
+            inputs.evaluate(frame, dashboard_text::scripted_text::TABLES, at.cancelled, text)?
+        } else {
+            let mut text = text;
+            (text(frame), i32::MAX)
+        };
+        reply.text_through = through;
         orders.sort_by_key(|row| (row.ordinal, row.handle));
         let mut by_order = BTreeMap::<u64, Vec<&DeploymentLineRow>>::new();
         for line in lines {
@@ -456,7 +569,7 @@ impl AtHour for TrainingQueue {
             }
             let priority = usize::try_from(order.priority).ok().and_then(|at| priority_names.get(at).cloned()).unwrap_or_else(|| Err(format!("Deployment priority {} has no proved name", order.priority)));
             let (priority_name, priority_missing) = refusals.keep(priority);
-            let (location_name, location_missing) = refusals.keep(location(frame, cat, order.location));
+            let (location_name, location_missing) = refusals.keep(locations[&order.location].clone());
             let manpower_total = divisions.iter().map(|division| division.manpower.map(i64::from)).sum();
             let needed_total = divisions.iter().map(|division| division.manpower_needed.map(i64::from)).sum();
             reply.orders.push(TrainingOrder {

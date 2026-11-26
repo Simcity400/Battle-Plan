@@ -457,7 +457,7 @@ fn template_steps(
     let recording = query.replay.recording();
     let mut hours = BTreeMap::<i32, BTreeSet<u128>>::new();
     for table in [TableId::DivisionTemplates, TableId::DivisionTemplateIcons] {
-        let columns = template_columns(table).unwrap_or_default();
+        let columns = crate::products::divisions::naming_columns(table).unwrap_or_default();
         let hist = lanes::history(recording, stretch.run, table, &columns, Keys::All, stretch.first, stretch.last)?;
         for (key, steps) in &hist.keys {
             for step in steps {
@@ -472,7 +472,7 @@ fn template_steps(
     for (at, ids) in hours {
         check_cancel(cancelled)?;
         let reads = [TableId::DivisionTemplates, TableId::DivisionTemplateIcons].map(|table| Read::these(table, ids.iter().copied()));
-        let frame = frames.frame_with(at, &reads, template_columns, TITLE)?;
+        let frame = frames.frame_with(at, &reads, crate::products::divisions::naming_columns, TITLE)?;
         for key in ids {
             let icon = witnessed::<tables::DivisionTemplateIcons>(&frame, key).row();
             let sprite = icon.zip(content.cat.as_ref().ok()).and_then(|(r, cat)| {
@@ -497,13 +497,4 @@ fn template_steps(
         steps.put(stretch.last.saturating_add(1), Template::default());
     }
     Ok(())
-}
-
-fn template_columns(table: TableId) -> Option<Vec<usize>> {
-    let fields: &[&str] = match table {
-        TableId::DivisionTemplates => &["name", "name_key"],
-        TableId::DivisionTemplateIcons => &["priority_unit", "priority_unit_name", "custom_icon", "country", "display_name"],
-        _ => return None,
-    };
-    Some(at_hour::field_columns(table, fields))
 }

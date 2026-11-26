@@ -17,6 +17,33 @@ use std::{
 
 pub use super::army::ArmyAttribution;
 
+pub(super) fn naming_columns(table: TableId) -> Option<Vec<usize>> {
+    let fields: &[&str] = match table {
+        TableId::Countries => &["tag", "canonical_slot"],
+        TableId::CountryLinks => &["canonical_slot"],
+        TableId::CountryAppearance => &["name_tag"],
+        TableId::DivisionTemplates => &["name", "name_key"],
+        TableId::DivisionTemplateIcons => &["priority_unit", "priority_unit_name", "custom_icon", "country", "display_name"],
+        TableId::VariantDefinitions => &["equipment_token", "display_name", "variant_name", "append_variant_name", "origin_link", "creator_link"],
+        _ => return None,
+    };
+    Some(dashboard_base::products::at_hour::field_columns(table, fields))
+}
+
+pub(super) fn names_through<'a>(frame: &DecodedFrame, handles: impl Iterator<Item = &'a str>, content: &Content) -> i32 {
+    if content.cat.is_err() { return i32::MAX; }
+    template_names_through(frame, handles.filter_map(|handle| handle.parse().ok()))
+}
+
+pub(super) fn template_names_through(frame: &DecodedFrame, handles: impl Iterator<Item = u64>) -> i32 {
+    let Ok(icons) = frame.complete::<tables::DivisionTemplateIcons>() else { return i32::MAX };
+    handles.filter_map(|handle| {
+        let icon = find(Some(icons), handle, |row| row.template)?;
+        let stamp = icon.display_name.require("template display name").ok()?.as_ref()?.sample_hour.stamp()?;
+        if stamp == frame.hour { Some(stamp) } else if stamp > frame.hour { Some(stamp - 1) } else { None }
+    }).min().unwrap_or(i32::MAX)
+}
+
 pub fn side(attribution: ArmyAttribution) -> u8 {
     match attribution {
         ArmyAttribution::Owner => replay_data::rows::DivisionEquipmentCountRow::OWNER,

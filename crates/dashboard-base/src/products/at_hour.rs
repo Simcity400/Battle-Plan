@@ -27,6 +27,8 @@ use ts_rs::TS;
 
 mod incremental;
 mod placed;
+mod validity;
+pub use validity::{ReadDates, ScriptedInputs, reads_through};
 pub use incremental::{Edits, Held};
 
 pub use replay_frame::frame::Keys;
@@ -156,6 +158,8 @@ pub trait AtHour: 'static {
     }
 
     fn holds_refusal(_frame: &DecodedFrame) -> bool { false }
+
+    fn context_revision(_context: &Self::Context) -> u64 { 0 }
 
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
         matches!(Self::CLOCK, Clock::EveryHour(_))
@@ -454,6 +458,11 @@ fn dated_interval(
 
 pub fn at_hour(params: &mut Value, hour: i32) {
     params["hour"] = hour.into();
+}
+
+pub fn warnings_through<'a>(hour: i32, reasons: impl IntoIterator<Item = &'a str>) -> i32 {
+    let stamp = format!("hour {hour} ");
+    if reasons.into_iter().any(|reason| reason.contains(&stamp)) { hour } else { i32::MAX }
 }
 
 pub fn before(next: Option<i32>) -> i32 {

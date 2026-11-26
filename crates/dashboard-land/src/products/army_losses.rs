@@ -1,5 +1,5 @@
 use dashboard_base::products::Country;
-use dashboard_base::products::{LoadContext, ReplyWarnings, at_hour::{At, AtHour, Read}};
+use dashboard_base::products::{LoadContext, ReplyWarnings, at_hour::{self, At, AtHour, Keys, Read, ReadsAt}};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::identity::Holder;
@@ -754,8 +754,69 @@ impl AtHour for ArmyLosses {
         TABLES.to_vec()
     }
 
-    fn reads(_params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
-        if step == 0 { TABLES.iter().map(|&table| Read::all(table)).collect() } else { Vec::new() }
+    fn reads_in(params: &Self::Params, _owner: Option<at_hour::Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        let equipment = !matches!(params.view, LossView::Manpower);
+        match stage {
+            0 => {
+                let mut reads = vec![Read::all(TableId::CountryLinks), Read::all(TableId::OrdersGroups)];
+                if equipment { reads.extend([TableId::Countries, TableId::CountryAppearance, TableId::LexicalTokens].map(Read::all)); }
+                reads
+            }
+            1 => {
+                let slot = at.holders.at(&params.country, at.hour).and_then(|run| match run.holder { Holder::Found { slot, .. } => Some(slot), _ => None });
+                let links = held.complete::<tables::CountryLinks>().unwrap_or(&[]);
+                let foreign: Vec<_> = links.iter().filter(|link| Some(link.canonical_slot) != slot).map(|link| u128::from(link.id)).collect();
+                let logs = [
+                    (TableId::CombatLogGroups, 64, true),
+                    (TableId::CombatLogManpower, 64, !matches!(params.view, LossView::Equipment { .. })),
+                    (TableId::CombatLogMonths, 72, equipment),
+                    (TableId::CombatLogEquipment, 88, equipment),
+                    (TableId::CombatLogEnemyEquipment, 96, equipment),
+                    (TableId::CombatLogDropped, 88, equipment),
+                ];
+                let mut reads: Vec<_> = logs.into_iter().map(|(table, bits, needed)| {
+                    let mut ranges = Vec::new();
+                    if needed && slot.is_some() {
+                        let mut first = 0;
+                        for &id in &foreign {
+                            if first < id { ranges.push((first << bits, (id << bits) - 1)); }
+                            first = id + 1;
+                        }
+                        if first <= u128::from(u32::MAX) { ranges.push((first << bits, (u128::from(u32::MAX) << bits) | ((1u128 << bits) - 1))); }
+                    }
+                    Read { table, keys: Keys::Ranges(ranges) }
+                }).collect();
+                let table = (TableId::CombatLogEquipment.index() as u128) << 32;
+                reads.push(Read::these(TableId::SliceReads, links.iter().filter(|link| equipment && Some(link.canonical_slot) == slot)
+                    .map(|link| table | u128::from(link.id))));
+                reads
+            }
+            2 if equipment => {
+                let variant = |id| (u128::from(id) << 32) | u128::from(COMBAT_LOG_VARIANT_TYPE);
+                let own = held.complete::<tables::CombatLogEquipment>().unwrap_or(&[]).iter().map(|row| variant(row.variant));
+                let kept = held.complete::<tables::CombatLogDropped>().unwrap_or(&[]).iter().map(|row| variant(row.variant));
+                let enemy = held.complete::<tables::CombatLogEnemyEquipment>().unwrap_or(&[]).iter().map(|row| u128::from(row.variant));
+                vec![Read::these(TableId::VariantDefinitions, own.chain(kept).chain(enemy))]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &at_hour::Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            1 => edits.fields(TableId::CountryLinks, u64::MAX),
+            2 => [TableId::CombatLogEquipment, TableId::CombatLogDropped].iter().any(|table| edits.replaced.contains(table) || edits.tables.get(table).is_some_and(|rows| rows.values().any(|&fields| fields == u64::MAX)))
+                || edits.fields(TableId::CombatLogEnemyEquipment, at_hour::field_mask(TableId::CombatLogEnemyEquipment, &["variant"])),
+            _ => false,
+        }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        if table == TableId::OrdersGroups {
+            Some(at_hour::field_columns(table, &["is_army_group", "parent", "name"]))
+        } else {
+            super::divisions::naming_columns(table)
+        }
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

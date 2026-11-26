@@ -144,15 +144,15 @@ fn each_ui_panel_key_has_one_registered_reader() {
 #[test]
 fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
-        "army-losses", "autonomy-levels", "casualty-matrix",
-        "country-faction-goals", "country-fuel", "country-stability-breakdown", "decorated-divisions",
-        "decryption", "division-equipment", "division-templates", "doctrine-rewards",
+        "autonomy-levels", "casualty-matrix",
+        "country-faction-goals", "country-fuel", "country-stability-breakdown",
+        "decryption",
         "faction-details", "factory-parts",
         "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
         "production-licences", "resource-balance", "special-project-details", "special-project-effects",
         "special-project-iteration", "special-projects", "stability-part-names", "stockpile-artwork",
-        "technology-effects", "template-roster", "territory-breakdown", "trade-flow",
-        "training-queue", "unit-leaders", "volunteer-flow", "war-contributions",
+        "technology-effects", "territory-breakdown", "trade-flow",
+        "volunteer-flow", "war-contributions",
         "wargoals", "world-tension",
     ];
     let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
@@ -165,7 +165,6 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
     }).collect();
     assert_eq!(conditional, [
         ("occupied-states", ["occupation law reads a timed or undeclared world condition"].as_slice()),
-        ("unit-leader-hour", ["reference", "all", "countries"].as_slice()),
     ]);
     assert_eq!(actual, allowed, "Remove a name when its reader no longer needs whole frames or hourly refreshes");
 }

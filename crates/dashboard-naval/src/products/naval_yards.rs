@@ -484,7 +484,7 @@ impl AtHour for NavalRepairs {
     }
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
-        super::warnings_through(frame.hour, &reply.warnings)
+        dashboard_base::products::at_hour::warnings_through(frame.hour, reply.warnings.iter().map(String::as_str))
     }
 
     fn holds_refusal(frame: &DecodedFrame) -> bool {
@@ -686,7 +686,7 @@ impl AtHour for NavalRefits {
     }
 
     fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
-        Self::valid_through(frame, params, at).min(super::warnings_through(frame.hour, &reply.warnings))
+        Self::valid_through(frame, params, at).min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

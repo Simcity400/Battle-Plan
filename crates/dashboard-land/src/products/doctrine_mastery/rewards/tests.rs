@@ -46,6 +46,10 @@ fn params(track: u32) -> DoctrineRewardsParams {
     DoctrineRewardsParams { branch_id: "1".into(), country: "MOD".into(), folder: 0, track }
 }
 
+fn rewards(frame: &DecodedFrame, params: &DoctrineRewardsParams, slot: u32, context: &Context) -> io::Result<DoctrineRewardsReply> {
+    super::rewards(frame, params, slot, context, |token, source, warnings| describe(frame, slot, context, token, source, warnings))
+}
+
 #[test]
 fn a_tracks_rewards_are_its_subdoctrines_in_authored_order_named_with_their_thresholds_and_described_for_the_country() {
     let context = content();

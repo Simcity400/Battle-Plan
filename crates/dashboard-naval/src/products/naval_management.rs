@@ -187,7 +187,7 @@ impl AtHour for NavalManagement {
     }
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
-        super::warnings_through(frame.hour, &reply.warnings)
+        dashboard_base::products::at_hour::warnings_through(frame.hour, reply.warnings.iter().map(String::as_str))
     }
 
     fn compares_previous(table: TableId) -> bool { table == TableId::Ships }

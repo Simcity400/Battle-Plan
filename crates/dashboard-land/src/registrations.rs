@@ -14,17 +14,20 @@ dashboard_base::register_products! {
     LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
 
     @hourly
-    ARMY_TEMPLATEROSTER => whole_frame<crate::products::army::TemplateRoster>,
-    TRAINING_QUEUE_TRAININGQUEUE => whole_frame<crate::products::training_queue::TrainingQueue>,
+    ARMY_TEMPLATEROSTER => exact<crate::products::army::TemplateRoster>,
+    TRAINING_QUEUE_TRAININGQUEUE => exact<crate::products::training_queue::TrainingQueue>,
     DOCTRINE_MASTERY_DOCTRINEMASTERY => exact<crate::products::doctrine_mastery::DoctrineMastery>,
-    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => whole_frame<crate::products::doctrine_mastery::rewards::DoctrineRewards>,
-    LEADERS_UNITLEADERS => whole_frame<crate::products::leaders::UnitLeaders>,
-    LEADERS_CAREER_LEADERHOUR => exact<crate::products::leaders::career::LeaderHour>(&["reference", "all", "countries"]),
-    DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => whole_frame<crate::products::divisions::templates::DivisionTemplates>,
-    DIVISIONS_CAREERS_DECORATEDDIVISIONS => whole_frame<crate::products::divisions::careers::DecoratedDivisions>,
-    DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => whole_frame<crate::products::divisions::equipment::DivisionEquipment>,
-    ARMY_LOSSES_ARMYLOSSES => whole_frame<crate::products::army_losses::ArmyLosses>,
+    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => exact<crate::products::doctrine_mastery::rewards::DoctrineRewards>,
+    LEADERS_UNITLEADERS => exact<crate::products::leaders::UnitLeaders>,
+    LEADERS_CAREER_LEADERHOUR => exact<crate::products::leaders::career::LeaderHour>,
+    DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => exact<crate::products::divisions::templates::DivisionTemplates>,
+    DIVISIONS_CAREERS_DECORATEDDIVISIONS => exact<crate::products::divisions::careers::DecoratedDivisions>,
+    DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => exact<crate::products::divisions::equipment::DivisionEquipment>,
+    ARMY_LOSSES_ARMYLOSSES => exact<crate::products::army_losses::ArmyLosses>,
     FORCES_AIRFORCEAT => exact<crate::products::forces::AirForceAt>,
     FORCES_NAVYAT => exact<crate::products::forces::NavyAt>,
     ARMY_ARMYAT => exact<crate::products::army::ArmyAt>,
 }
+
+#[cfg(test)]
+mod tests;

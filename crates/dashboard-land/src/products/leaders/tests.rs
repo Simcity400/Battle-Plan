@@ -171,7 +171,7 @@ fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_tri
     let holders = dashboard_query::identity::Holders::new(Default::default(), Vec::new());
     let at = ReadsAt { holders: &holders, context: &context, run, hour: 100, since: None };
     let first: Vec<TableId> = UnitLeaders::reads_in(&params, None, 1, &held, &at).iter().map(|read| read.table).collect();
-    assert_eq!(first, [TableId::Characters, TableId::LexicalTokens], "the leader's character and the tokens, not every trigger table");
+    assert_eq!(first, [TableId::Characters, TableId::LexicalTokens, TableId::UnitLeaderTraits, TableId::LeaderBattleTotals, TableId::LeaderTraitDates], "the selected leader's identity, traits and battle history");
     assert!(UnitLeaders::reads_in(&params, None, 2, &held, &at).is_empty(), "without the content no role is known to have conditions, and no table read would decide one");
 }
 
@@ -554,7 +554,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     ]);
     let (content, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
     let conditioned_ace = UnitLeaderRow { character_id: 9, skill_level: 7, visibility_choice: 1, ..base(14) };
-    let cond_frames: Vec<_> = (100..=102)
+    let cond_frames: Vec<_> = (100..=105)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1_000));
             for table in [replay_data::rows::TableId::Provinces, replay_data::rows::TableId::States, replay_data::rows::TableId::UnitLeaderTraits] {
@@ -579,11 +579,14 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
                 replay_data::rows::LexicalTokenRow { token: 901, literal: b"mod_ace".to_vec() },
             ]))
             .into();
-            let flags = if hour >= 101 {
+            let mut flags = if hour >= 101 {
                 vec![replay_data::rows::ScriptFlagRow { scope_kind: 3, scope_id: 9, token: 900, value: 1, ..Default::default() }]
             } else {
                 Vec::new()
             };
+            if hour >= 103 {
+                flags.push(replay_data::rows::ScriptFlagRow { scope_kind: 3, scope_id: 77, token: 900, value: 1, ..Default::default() });
+            }
             frame.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(flags)).into();
             frame
         })
@@ -635,6 +638,29 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     )
     .unwrap();
     assert_eq!(visible_career.reference.as_deref(), Some(handle(&conditioned_ace).to_string().as_str()));
+    let cond_src = Arc::new(cond_src);
+    for (key, registration) in [
+        ("unit-leaders", crate::registrations::LEADERS_UNITLEADERS),
+        ("unit-leader-hour", crate::registrations::LEADERS_CAREER_LEADERHOUR),
+    ] {
+        use dashboard_base::test_fixtures::{materialized_frame, played, streamed};
+        use dashboard_base::products::at_hour::frame_panel;
+        let mut asked = serde_json::json!({"branchId":"1","selection":{"kind":"countries","countries":["GER"]}});
+        let mut prior = if key == "unit-leaders" {
+            asked["leaders"] = "land".into();
+            frame_panel::<UnitLeaders>(&cond_src, &cond_load, &asked).unwrap()
+        } else {
+            frame_panel::<LeaderHour>(&cond_src, &cond_load, &asked).unwrap()
+        };
+        let panel = (registration.panel.unwrap().open)(&cond_src, &cond_load, &asked).unwrap();
+        for read in played(cond_src.replay_ref(), panel.exact().unwrap(), 100, 105) {
+            let expected = materialized_frame(&mut *prior, cond_src.replay_ref(), 1, read.hour);
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&expected, read.fresh), "{key} at {}", read.hour);
+            if read.hour > 100 {
+                assert_eq!(read.product_calls, u64::from(read.hour == 101), "{key} at {}", read.hour);
+            }
+        }
+    }
 }
 
 #[test]
@@ -923,6 +949,34 @@ fn top_general_follows_recorded_faction_membership() {
                 let advanced = (exact.advance)(hour, true, &cancelled, None);
                 assert_eq!(*advanced.value, expected, "{params} at {hour}");
             }
+        }
+    }
+    for (registered, mut request) in [
+        (register, json!({"reference":home})),
+        (register, json!({"selection":{"kind":"all"}})),
+        (register, json!({"selection":{"kind":"countries","countries":["GER"]}})),
+        (crate::registrations::LEADERS_UNITLEADERS.panel.unwrap().open, json!({"selection":{"kind":"all"},"leaders":"land"})),
+    ] {
+        use dashboard_base::products::at_hour::frame_panel;
+        use dashboard_base::test_fixtures::{materialized_frame, played, streamed};
+        request["branchId"] = "1".into();
+        let panel = registered(&source, &load, &request).unwrap();
+        let exact = panel.exact().expect("leaders follow their recorded inputs");
+        let mut old = if request.get("leaders").is_some() {
+            frame_panel::<super::UnitLeaders>(&source, &load, &request).unwrap()
+        } else {
+            frame_panel::<super::career::LeaderHour>(&source, &load, &request).unwrap()
+        };
+        let reads = played(source.replay_ref(), exact, 150, 255);
+        let mut previous = None;
+        for read in reads {
+            let fresh = materialized_frame(&mut *old, source.replay_ref(), 1, read.hour);
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&fresh, read.fresh), "{request} at {}", read.hour);
+            let structure = streamed(&fresh, false);
+            if let Some(last) = previous {
+                assert_eq!(read.product_calls, u64::from(last != structure), "{request} calls at {}", read.hour);
+            }
+            previous = Some(structure);
         }
     }
     let unknown = Some(dashboard_world::products::group_members::UNKNOWN);
