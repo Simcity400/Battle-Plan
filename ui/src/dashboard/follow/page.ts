@@ -542,7 +542,7 @@ export class Page<B extends Bitmap = Bitmap> {
     const shown = widget.installed;
     if (shown && shown.binding === entry.binding && entry.id < shown.id) return 'superseded';
     if (at < entry.lo) return 'early';
-    if (at > entry.hi && (!this.playing || (shown && shown.binding === entry.binding && shown.hi >= entry.hi))) return 'superseded';
+    if (at > entry.hi && (!this.playing || (shown && shown.binding === entry.binding && shown.lo >= entry.lo))) return 'superseded';
     if (!shown && Object.values(entry.fields).some(value => value === SAME)) return 'kept content';
     const c = this.effectiveC(widget, entry);
     if (entry.mode === 'refused' && !this.playing && shown && at > c && !sameContent(entry.content, widget.content)) return 'uncovered';
@@ -585,7 +585,7 @@ export class Page<B extends Bitmap = Bitmap> {
       for (let k = 0; k < widget.surfaces.length; k++) {
         const part = entry.surfaces[k];
         if (entry.mode !== 'picture' || !part) widget.surfaces[k]!.clear();
-        else if (part !== SAME) { widget.surfaces[k]!.install(part); this.pictures++; }
+        else if (part !== SAME) widget.surfaces[k]!.install(part);
       }
     } catch {
       closeParts(entry);
@@ -597,6 +597,7 @@ export class Page<B extends Bitmap = Bitmap> {
       this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason: 'drawing failed' });
       return;
     }
+    if (entry.mode === 'picture' && entry.surfaces.some(part => part && part !== SAME)) this.pictures++;
     const fields: Record<string, unknown> = {}, kept = this.holding.get(entry) ?? [];
     this.holding.delete(entry);
     for (const [key, value] of Object.entries(entry.fields)) {

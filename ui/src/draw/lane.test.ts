@@ -189,6 +189,40 @@ test('playing past its confirmed hour, a time-dependent widget shows its newest 
   assert.equal(page.view(1).fields?.first, 30, 'with no newer data the newest known picture stays');
 });
 
+test('playing past its confirmed hour, a newer picture with the same day deadline as the shown one still replaces it', async () => {
+  const probe: LaneView = {
+    paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: (Math.floor(hour / 24) + 1) * 24, motion: false }),
+  };
+  const { page, lane, mount, step } = rig({ probe });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const supply = (hour: number) => lane.receive('panels', panels([{ id: 3, hour, kind: 'data', stepped: true, data: { hour } }]));
+  supply(10);
+  await step(10, { playing: false });
+  await step(10, { playing: true, speed: 1440, step: 24 });
+  supply(14);
+  await step(40);
+  assert.equal(page.view(1).fields?.first, 14, 'windows [10, 23] and [14, 23] end together; the later start is the newer picture');
+});
+
+test('after a backward seek while playing, a picture from before the seek never holds back the newest known one', async () => {
+  const probe: LaneView = {
+    paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: hour + 1, motion: false }),
+  };
+  const { page, lane, mount, step } = rig({ probe });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const supply = (hour: number, seek = 0) => lane.receive('panels', panels([{ id: 3, hour, kind: 'data', stepped: true, data: { hour } }], seek));
+  supply(100);
+  await step(100, { playing: false });
+  await step(130, { playing: true, speed: 1440, step: 24 });
+  assert.equal(page.view(1).fields?.first, 100);
+  supply(30, 1);
+  await step(40, { seek: 1 });
+  await step(64);
+  assert.equal(page.view(1).fields?.first, 30, 'the picture of 30 shows though the lane last installed 100 before the seek');
+});
+
 test('addendum 2: a moving widget stays due, one step per acknowledgement, after every widget whose data changed', async () => {
   let frames = 0;
   const moving: LaneView = { paint: (): Painted => ({ surfaces: [], fields: { step: { value: ++frames, content: `step:${frames}` } }, motion: frames < 3 }) };

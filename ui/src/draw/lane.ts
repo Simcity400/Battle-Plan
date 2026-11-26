@@ -98,7 +98,7 @@ export interface LaneHost<B extends Bitmap> {
 }
 
 interface Sent {
-  id: number; owner?: string; request: number; pictures: Picture<Value>[]; h: number; c: number; lo: number; hi: number; binding: number;
+  id: number; owner?: string; request: number; seek: number; pictures: Picture<Value>[]; h: number; c: number; lo: number; hi: number; binding: number;
   contents: Record<string, string>; fieldKeys: string[]; surfaceCount: number; mode: Entry['mode']; reason?: string;
   open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit']; supply: number;
 }
@@ -1778,9 +1778,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       widget.cost = widget.cost * 0.8 + paintMs * 0.2;
       widget.served = this.requests + Math.min(4, Math.floor(paintMs / budget));
       if (motion) this.stats.motion++;
-      const shownThrough = Math.max(widget.installed?.binding === widget.binding.generation ? widget.installed.hi : -Infinity,
-        widget.inflight?.binding === widget.binding.generation ? widget.inflight.hi : -Infinity);
-      const newest = request.speed > 0 && !request.exact && activeSelected.window[1] > shownThrough;
+      const shownFrom = (sent: Sent | null) => sent && sent.binding === widget.binding.generation && sent.seek === request.seek ? sent.lo : -Infinity;
+      const newest = request.speed > 0 && activeSelected.window[0] > Math.max(shownFrom(widget.installed), shownFrom(widget.inflight));
       if (this.targetOf(widget, request.now) > activeSelected.window[1] && !newest) {
         this.syncWindowTracking(widget);
         continue;
@@ -1909,7 +1908,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const key of base.fieldKeys) fields[key] = SAME;
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
-    const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+    const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, seek: gen.seek, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, ...(base.viewport ? { viewport: base.viewport } : {}), inspect: widget.inspect, hit: base.hit, supply: base.supply };
     widget.sent = { ...contents };
     widget.inflight = sent;
@@ -1940,7 +1939,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
     const primarySurface = widget.binding.surfaces[0];
     const viewport = painted.viewport ?? (primarySurface ? { width: primarySurface.width, height: primarySurface.height, dpr: primarySurface.dpr, scrollLeft: 0, scrollTop: 0 } : undefined);
-    const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+    const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, seek: gen.seek, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, ...(viewport ? { viewport } : {}), inspect: widget.inspect, hit: painted.hit, supply: widget.supply };
     widget.sent = { ...contents };
     widget.inflight = sent;

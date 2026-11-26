@@ -342,7 +342,7 @@ export class Pipeline {
   private commitSoon() {
     if (this.closed || this.framing) return;
     this.framing = true;
-    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
+    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); const pictures = this.page.takePictures(); if (perfLog && this.page.playing) perfLog.pictures(pictures, this.expiredNames()); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
   private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
@@ -380,9 +380,9 @@ export class Pipeline {
   private expiredNames(): string[] {
     const expired = this.page.expired();
     if (!expired.length) return [];
-    const ids = new Set(expired), names: string[] = [];
-    for (const held of this.shared.values()) if (ids.has(held.id)) names.push(held.widget);
-    return names;
+    const ids = new Set(expired), names = new Set<string>();
+    for (const held of this.shared.values()) if (ids.has(held.id)) names.add(held.widget);
+    return [...names];
   }
 
   acquire(key: string, options: MountOptions): number {

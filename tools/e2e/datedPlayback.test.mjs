@@ -132,7 +132,9 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
   const result = datedPlaybackVerdict([window], unpictured);
   assert.equal(result.pass, false, '60 main-thread frames with no new widget picture are not 60 frames the user sees');
   assert.ok(result.reasons.includes('frames with a new picture/s 0'));
-  assert.deepEqual([Math.round(result.metrics[0].mainFrames), result.metrics[0].pictureFrames, result.metrics[0].expiredShare, Math.round(result.metrics[0].expiredByWidget.w)], [60, 0, 1, 1]);
+  assert.deepEqual([Math.round(result.metrics[0].displayedFrames), Math.round(result.metrics[0].pageFps), result.metrics[0].pictureFrames, result.metrics[0].expiredShare, Math.round(result.metrics[0].expiredByWidget.w)], [60, 60, 0, 1, 1]);
+  const oneMissed = served.map(r => r.t === 'frame' && r.at === presented[30] ? { ...r, pictures: 0 } : r);
+  assert.ok(datedPlaybackVerdict([window], oneMissed).reasons.some(reason => reason.startsWith('frames with a new picture/s 59')), 'one refresh without a new picture is below 60');
 });
 
 test('a scrub that presents an empty remount frame judges the held placement', () => {
