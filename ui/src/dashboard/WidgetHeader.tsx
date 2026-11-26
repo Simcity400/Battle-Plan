@@ -204,7 +204,6 @@ export default function WidgetHeader({
     }
     cache.measuredOnce = true;
     cache.lastHeaderWidth = header.clientWidth;
-    cache.timeMode = widget.time.mode;
     const available = header.clientWidth - 16;
     const widthOf = (el: HTMLElement | null) => el ? Math.ceil(el.getBoundingClientRect().width) : 0;
     const iconEl = header.querySelector<HTMLElement>('.dash-widget-icon');
@@ -267,6 +266,7 @@ export default function WidgetHeader({
     const probeKey = `${summaryKey}\u0000${viewKey}\u0000${subjectKey}\u0000${filterKey}\u0000${timeKey}`;
     const needsFullMeasure = rawNeedsFull && cache.probeKey !== probeKey;
     if (needsFullMeasure) cache.probeKey = probeKey;
+    else cache.timeMode = widget.time.mode;
 
     const subjectPresent = hasSubject && (effectiveDrop.compactSubject ? !!subjectEl : cache.subjectFull > 0);
     const timePresent = showTime && (effectiveDrop.compactTime ? !!timeEl : cache.timeFull > 0);
