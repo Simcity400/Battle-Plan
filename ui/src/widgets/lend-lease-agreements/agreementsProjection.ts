@@ -49,9 +49,10 @@ export function fuelUnits(value: Value): Value {
   return whole(typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(Number(value.value))), FUEL_QUANTITY);
 }
 
-export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): Value {
+export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'sunk' | 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): Value {
   if (terms.lastDelivery > 0) return knownValue(terms.lastDelivery);
-  if (fuelDelivered(terms, fuelSent, fuelLost) || terms.delivered.some(item => BigInt(item.amountRaw) !== 0n)) return notRecorded('The last delivery date was not recorded, though deliveries were');
+  const sent = [...terms.delivered, ...terms.sunk].some(item => BigInt(item.amountRaw) !== 0n);
+  if (fuelDelivered(terms, fuelSent, fuelLost) || sent) return notRecorded('The last delivery date was not recorded, though deliveries were');
   if (fuelSent.kind === 'notRecorded') return notRecorded(`The last delivery date was not recorded, and whether fuel was sent is not known: ${fuelSent.reason}`);
   return notApplicable('No delivery yet');
 }

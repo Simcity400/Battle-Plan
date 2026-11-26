@@ -5,13 +5,14 @@ import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { emptyAgreements, fuelDelivered, fuelUnits, lastDelivery } from './agreementsProjection.ts';
 
 const item = (amountRaw: string) => ({ variant: '6', name: null, amountRaw });
-const terms = (lastDelivery: number, delivered: string[], lastFuelDeliveredRaw = '0') => ({ lastDelivery, delivered: delivered.map(item), lastFuelDeliveredRaw });
+const terms = (lastDelivery: number, delivered: string[], lastFuelDeliveredRaw = '0', sunk: string[] = []) => ({ lastDelivery, delivered: delivered.map(item), sunk: sunk.map(item), lastFuelDeliveredRaw });
 
 test('a last delivery is a date when recorded, no delivery only when neither equipment nor fuel was delivered, and otherwise not recorded', () => {
   const none = zeroValue(0n);
   assert.equal(lastDelivery(terms(60_800_000, []), none, zeroValue(0n)).kind, 'known');
   assert.equal(lastDelivery(terms(0, ['0']), none, zeroValue(0n)).kind, 'notApplicable');
   assert.equal(lastDelivery(terms(0, ['500000']), none, zeroValue(0n)).kind, 'notRecorded');
+  assert.equal(lastDelivery(terms(0, [], '0', ['100000']), none, zeroValue(0n)).kind, 'notRecorded', 'equipment lost on the way was sent');
   assert.equal(lastDelivery(terms(0, []), knownValue(32_768n), zeroValue(0n)).kind, 'notRecorded', 'fuel sent is a delivery');
   assert.equal(lastDelivery(terms(0, [], '32768'), none, zeroValue(0n)).kind, 'notRecorded', 'a last fuel delivery is a delivery');
   const unread = lastDelivery(terms(0, []), notRecorded('fuel unread'), zeroValue(0n));
