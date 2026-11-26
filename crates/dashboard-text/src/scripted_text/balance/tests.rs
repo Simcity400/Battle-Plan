@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use dashboard_core::test_fixtures::game;
 use replay_data::rows::*;
 
 pub fn fixture(
@@ -127,8 +129,7 @@ pub fn description(
 #[cfg(test)]
 #[test]
 fn active_range_mod_description() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, frame) = fixture(None);
     assert_eq!(
         description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap(),
@@ -139,8 +140,7 @@ fn active_range_mod_description() {
 #[cfg(test)]
 #[test]
 fn active_range_modifier_feature_gate() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, mut frame) = fixture(None);
     for (mask, eligibility, shown) in [
         (0b1010, 1, true),
@@ -176,8 +176,15 @@ fn active_range_modifier_feature_gate() {
 #[cfg(test)]
 #[test]
 fn active_range_rule_description() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::executable()
+        .auxiliary(|tables| {
+            tables.rules = Ok(vec![
+                ("can_create_factions", "CAN_CREATE_FACTIONS", false, true),
+                ("can_join_factions", "CAN_JOIN_FACTIONS", true, true),
+                ("can_send_volunteers", "FIXTURE_VOLUNTEERS", false, true),
+            ]);
+        })
+        .enter();
     let (catalogue, _folder, frame) = fixture(None);
     assert_eq!(
         description(&catalogue, &frame, "GetActiveRangeRuleDesc").unwrap(),
@@ -188,8 +195,7 @@ fn active_range_rule_description() {
 #[cfg(test)]
 #[test]
 fn balance_definition_and_side_names_use_empty_event_scope_while_active_range_uses_country_scope() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/country_tags/synthetic.txt",

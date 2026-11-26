@@ -34,6 +34,31 @@ impl Shaper<'_> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+mod test_readers {
+    use crate::{test_game::TriggerShape, trigger_keys::Reader};
+
+    pub(super) const FLAG_VALUE: u64 = 0x1414461e0;
+    pub(super) const FLAG_FIELDS: u64 = 0x1405972d0;
+    const TRAIT_VALUE: u64 = 0x140477CC0;
+    const TRAIT_FIELDS: u64 = 0x140319F20;
+    const AVAILABILITY_FIELDS: u64 = 0x140477D90;
+    const COUNT_VALUE: u64 = 0x140477CA0;
+    const COUNT_FIELDS: u64 = 0x140477D70;
+
+    impl TriggerShape {
+        pub(crate) fn readers(self) -> (Reader, u64) {
+            match self {
+                Self::Flag => (Reader::Own(FLAG_VALUE), FLAG_FIELDS),
+                Self::OrganisationTrait => (Reader::Own(TRAIT_VALUE), TRAIT_FIELDS),
+                Self::OrganisationTraitAvailability => (Reader::Own(TRAIT_VALUE), AVAILABILITY_FIELDS),
+                Self::CompletedOrganisationTraitCount => (Reader::Own(COUNT_VALUE), COUNT_FIELDS),
+                Self::VariableExpression => (Reader::Body, super::super::body_keys::VARIABLE_EXPRESSION_FIELDS),
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub fn register_non_damaged_building_level() {
     crate::test_game::with(|game| {
         game.trigger_at(
@@ -60,6 +85,8 @@ pub fn register_owns_any_state_of() {
 
 #[cfg(test)]
 mod tests {
+    use super::test_readers::{FLAG_FIELDS, FLAG_VALUE};
+    use crate::test_game::TriggerShape;
     use crate::{key_names::KeyNames, native::{self, Shape}, trigger_keys::Reader};
 
     fn own(rows: &[(&str, u64, u64)]) {
@@ -104,7 +131,8 @@ mod tests {
 
     #[test]
     fn completed_mio_trait_count_reads_its_assignment_body() {
-        own(&[("has_mio_number_of_completed_traits", 0x140477CA0, 0x140477D70)]);
+        crate::test_game::with(|game| TriggerShape::CompletedOrganisationTraitCount
+            .register(game, "has_mio_number_of_completed_traits", 0));
         let result = crate::triggers::read(
             b"has_mio_number_of_completed_traits = { @kept = 2 value > 3 } always = @kept",
             &KeyNames::default(),
@@ -120,11 +148,11 @@ mod tests {
 
     #[test]
     fn mio_trait_leaves_read_a_scalar_or_their_block_keys() {
-        own(&[
-            ("has_mio_trait", 0x140477CC0, 0x140319F20),
-            ("is_mio_trait_completed", 0x140477CC0, 0x140319F20),
-            ("is_mio_trait_available", 0x140477CC0, 0x140477D90),
-        ]);
+        crate::test_game::with(|game| {
+            let game = TriggerShape::OrganisationTrait.register(game, "has_mio_trait", 0);
+            let game = TriggerShape::OrganisationTrait.register(game, "is_mio_trait_completed", 0);
+            TriggerShape::OrganisationTraitAvailability.register(game, "is_mio_trait_available", 0)
+        });
         for (text, keys) in [
             (
                 "has_mio_trait = { trait = a show_modifiers = yes }",
@@ -180,7 +208,7 @@ mod tests {
     #[test]
     fn own_key_loops_skip_unknown_blocks_without_registering_definitions() {
         let rows = [
-            ("synthetic_flag", 0x1414461e0, 0x1405972d0, "flag"),
+            ("synthetic_flag", FLAG_VALUE, FLAG_FIELDS, "flag"),
             ("synthetic_target_value", 0x1404540c0, 0x141446BF0, "target"),
             ("synthetic_target_type", 0x140454870, 0x1405972d0, "type"),
             ("synthetic_scorer", 0x14049F250, 0x1404A0950, "var"),
@@ -216,7 +244,7 @@ mod tests {
     fn own_one_value_keys_leave_blocks_in_the_enclosing_loop() {
         let rows = [
             ("synthetic_target_value", 0x1404540c0, 0x141446BF0),
-            ("synthetic_flag_value", 0x1414461e0, 0x1405972d0),
+            ("synthetic_flag_value", FLAG_VALUE, FLAG_FIELDS),
         ];
         own(&rows);
         for class in rows.map(|(name, _, _)| name) {

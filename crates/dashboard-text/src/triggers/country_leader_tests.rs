@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalogue::tests::script_game;
 use replay_data::rows::{
     CharacterRow, CountryCharacterRow, PartyLeaderRow, PoliticalPartyRow, PoliticsRow,
     UnitLeaderRow,
@@ -69,8 +70,7 @@ fn leader_frame() -> DecodedFrame {
 
 #[test]
 fn is_country_leader_compares_only_the_ruling_partys_first_leader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let frame = leader_frame();
     with_world(&frame, "", Err("none"), |world| {
         for (character, leader) in [(7, true), (8, false), (9, false)] {
@@ -90,8 +90,7 @@ fn is_country_leader_compares_only_the_ruling_partys_first_leader() {
 
 #[test]
 fn is_country_leader_is_false_for_absent_or_retired_characters_for_both_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut frame = leader_frame();
     *frame.tables[TableId::CountryRetiredCharacters.index()] =
         TableView::Complete(TableRows::CountryRetiredCharacters(
@@ -126,8 +125,7 @@ fn is_country_leader_is_false_for_absent_or_retired_characters_for_both_operands
 
 #[test]
 fn is_country_leader_is_false_without_a_ruling_leader_for_both_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     for no_ruling_party in [false, true] {
         let mut frame = leader_frame();
         if no_ruling_party {
@@ -164,8 +162,7 @@ fn is_country_leader_is_false_without_a_ruling_leader_for_both_operands() {
 
 #[test]
 fn is_country_leader_uses_the_characters_canonical_country_over_the_scope_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut frame = leader_frame();
     let leader = (1u64 << 32) | 1;
     *frame.tables[TableId::UnitLeaders.index()] =
@@ -196,8 +193,7 @@ fn is_country_leader_uses_the_characters_canonical_country_over_the_scope_countr
 
 #[test]
 fn is_country_leader_refuses_each_unrecorded_input_by_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     for (table, name) in [
         (TableId::Characters, "Characters"),
         (
@@ -230,8 +226,7 @@ fn is_country_leader_refuses_each_unrecorded_input_by_name() {
 
 #[test]
 fn is_country_leader_refuses_missing_or_incomplete_politics_with_the_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     for politics in [
         TableView::Unavailable {
             reason: "synthetic politics gap".into(),
@@ -267,8 +262,7 @@ fn is_country_leader_refuses_missing_or_incomplete_politics_with_the_country() {
 
 #[test]
 fn is_country_leader_refuses_a_missing_politics_row_for_its_canonical_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut frame = leader_frame();
     for table in [
         TableId::Politics,
@@ -306,8 +300,7 @@ fn is_country_leader_refuses_a_missing_politics_row_for_its_canonical_country() 
 
 #[test]
 fn is_country_leader_is_false_for_a_recorded_none_ruling_party_for_both_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut frame = leader_frame();
     let TableView::Complete(TableRows::Politics(rows)) =
         &mut *frame.tables[TableId::Politics.index()]
@@ -347,8 +340,7 @@ fn is_country_leader_reevaluates_when_only_the_recorded_ruling_party_changes() {
         }
     }
 
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let ruling_read = TableRead::fields(TableId::Politics, &["ruling_party"]);
     for initially_ruling in [false, true] {
         let mut first = leader_frame();
@@ -408,8 +400,7 @@ fn is_country_leader_reevaluates_when_only_the_recorded_ruling_party_changes() {
 
 #[test]
 fn is_country_leader_refuses_operands_other_than_yes_or_no() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let frame = leader_frame();
     with_world(&frame, "", Err("none"), |world| {
         for operand in ["maybe", "YES", "THIS", "{}"] {
@@ -428,8 +419,7 @@ fn is_country_leader_refuses_operands_other_than_yes_or_no() {
 
 #[test]
 fn ita_advisor_availability_requires_a_nonleader_without_the_new_duce_flag() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut key_names = names();
     key_names
         .scripted

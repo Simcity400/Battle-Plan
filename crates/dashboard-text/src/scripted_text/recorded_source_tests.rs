@@ -1,9 +1,10 @@
 use super::*;
+use dashboard_core::test_fixtures::game;
 use replay_frame::frame::DecodedSource;
 
 #[test]
 fn decoded_source_keeps_resolved_mod_names_scripted_branches_and_scope_promotions() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let (_, base) = catalogue(SCRIPTED, "");
     let (_, overlay) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -48,7 +49,7 @@ fn decoded_source_keeps_resolved_mod_names_scripted_branches_and_scope_promotion
 
 #[test]
 fn decoded_source_keeps_missing_character_refusal_bytes() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let (catalogue, _folder) = catalogue(SCRIPTED, "");
     let content = catalogue.scripted_content().unwrap();
     let mut frame = frame();

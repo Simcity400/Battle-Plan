@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalogue::tests::script_game;
 use crate::triggers::inputs::{self, Key};
 use replay_data::rows::{LexicalTokenRow, PoliticsRow, TableId, TableRows};
 use std::sync::Arc;
@@ -11,7 +12,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        script_game::enter();
         let (catalogue, folder) = super::tests::catalogue("", "");
         let mut frame = super::tests::complete_frame();
         *frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![

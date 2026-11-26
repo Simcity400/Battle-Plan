@@ -128,11 +128,11 @@ impl<'a> ScriptedText<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_core::test_fixtures::game;
 
     #[test]
     fn fixed_seed_draw_and_cumulative_pick() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         assert_eq!(scope_seed(424242), 0xa4fb_a302);
         assert_eq!(scope_counter(424242), 0xf827_aabc);
         assert_eq!(scoped_draw(1, 0x5ea6_ba9e), 411_376_010);
@@ -142,8 +142,7 @@ mod tests {
 
     #[test]
     fn zero_single_negative_and_wrapping_weights() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let never = || Err("seed must not be read".into());
         assert_eq!(pick(0, |_| panic!(), never), Ok(None));
         assert_eq!(pick(1, |_| panic!(), never), Ok(Some(0)));

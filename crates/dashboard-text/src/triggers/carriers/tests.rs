@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalogue::tests::script_game;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use replay_data::rows::*;
 use std::{cell::RefCell, rc::Rc};
@@ -63,8 +64,7 @@ fn fixture() -> DecodedFrame {
 
 #[test]
 fn named_carriers_use_pool_country_and_roster_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -101,8 +101,7 @@ fn named_carriers_use_pool_country_and_roster_order() {
 
 #[test]
 fn the_scripted_text_selection_holds_every_carrier_input() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut f = fixture();
     for table in TableId::ALL {
         if !crate::scripted_text::TABLES.contains(&table) {
@@ -134,8 +133,7 @@ fn the_scripted_text_selection_holds_every_carrier_input() {
 
 #[test]
 fn named_carriers_resolve_the_last_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let tags = (0..24)
         .map(|i| {
             String::from_utf8(vec![
@@ -207,8 +205,7 @@ fn named_carriers_resolve_the_last_country() {
 
 #[test]
 fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -254,8 +251,7 @@ fn prefix_misses_clear_but_countryless_prefixes_keep_caller_and_faults_refuse() 
 
 #[test]
 fn carried_targets_round_trip_links_seeds_and_description_storage() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         for (scope, object) in [
@@ -328,8 +324,7 @@ fn carried_targets_round_trip_links_seeds_and_description_storage() {
 
 #[test]
 fn saved_carriers_follow_the_context_and_variable_readers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
@@ -368,8 +363,7 @@ fn saved_carriers_follow_the_context_and_variable_readers() {
 
 #[test]
 fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut f = fixture();
     *f.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -453,8 +447,7 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
 
 #[test]
 fn carrier_random_list_identity_uses_object_hash_arms() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -477,8 +470,7 @@ fn carrier_random_list_identity_uses_object_hash_arms() {
 
 #[test]
 fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut f = fixture();
     *f.tables[TableId::GlobalSavedEventTargets.index()] =
         TableView::Complete(TableRows::GlobalSavedEventTargets(
@@ -583,8 +575,7 @@ pub(super) fn in_organisation(world: &World, organisation: u64, trigger: &str) -
 
 #[test]
 fn organisation_size_compares_as_an_integer_trigger() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = sized(1, Some(SIZES));
     with_world(&f, "", Err("none"), |world| {
         for (operator, below, equal, above) in [
@@ -632,8 +623,7 @@ fn organisation_size_compares_as_an_integer_trigger() {
 
 #[test]
 fn organisation_size_operands_are_whole_units() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = sized(1, Some(SIZES));
     with_world(&f, "", Err("none"), |world| {
         for (trigger, expected) in [
@@ -681,8 +671,7 @@ fn organisation_size_operands_are_whole_units() {
 
 #[test]
 fn named_organisations_read_their_own_size() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = sized(1, Some(SIZES));
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -734,8 +723,7 @@ impl crate::triggers::inputs::TableChanges for DetailsChanged<'_> {
 #[test]
 fn organisation_size_inputs_follow_that_organisation_s_size() {
     use crate::triggers::inputs::{Key, Since, TableChange, TableRead, capture};
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let size = (0..64)
         .find(|&field| {
             TableId::IndustrialOrganisationDetails.field_name(field) == Some("state.size")
@@ -844,12 +832,15 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
 
 #[test]
 fn project_built_in_variables_are_refused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    const NAMES: [&str; 2] = ["fixture_project_cost", "fixture_project_duration"];
+    dashboard_core::test_fixtures::game::executable()
+        .variables(|variables| variables.project.extend(NAMES))
+        .trigger("check_variable", 0, content_reader_script::trigger_keys::Reader::Body, 0)
+        .enter();
     let f = fixture();
     with_world(&f, "", Err("none"), |world| {
         let scope = Scopes::of(Scope::Project { owner: 101, id: 9 });
-        for name in content_reader_script::variable_builtins::PROJECT.iter() {
+        for name in NAMES {
             let value = world.evaluate(&items(&format!("check_variable = {{ {name} > 0 }}")), scope);
             assert!(
                 matches!(&value, Eval::Unknown(_)) && format!("{value:?}").contains("built-in"),
@@ -861,8 +852,7 @@ fn project_built_in_variables_are_refused() {
 
 #[test]
 fn a_completed_project_is_known_only_from_the_countrys_accepted_project_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut f = fixture();
     let TableView::Complete(TableRows::Projects(rows)) = &mut *f.tables[TableId::Projects.index()] else { unreachable!() };
     rows[0].completed = 1;

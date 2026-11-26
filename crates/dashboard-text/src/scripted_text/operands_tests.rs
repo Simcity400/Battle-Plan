@@ -1,4 +1,5 @@
 use super::*;
+use dashboard_core::test_fixtures::game;
 use crate::scope::tests::positive_frame as frame;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
 use content_reader_localisation::localisation::Localisation;
@@ -34,8 +35,7 @@ fn party_frame() -> DecodedFrame {
 
 #[test]
 fn recorded_operands_expand_a_text_as_its_hour_did() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = super::super::tests::catalogue(SCRIPTED, TEXTS);
     let content = catalogue.scripted_content().unwrap();
     let frame = party_frame();
@@ -102,8 +102,7 @@ fn recorded_operands_expand_a_text_as_its_hour_did() {
 
 #[test]
 fn recorded_refusals_and_values_match_the_hour() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = super::super::tests::catalogue(SCRIPTED, TEXTS);
     let content = catalogue.scripted_content().unwrap();
     let frame = party_frame();
@@ -150,8 +149,7 @@ fn recorded_refusals_and_values_match_the_hour() {
 
 #[test]
 fn a_key_keeps_its_first_recording() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = super::super::tests::catalogue(SCRIPTED, TEXTS);
     let content = catalogue.scripted_content().unwrap();
     let frame = frame();
@@ -201,8 +199,7 @@ fn a_key_keeps_its_first_recording() {
 
 #[test]
 fn recorded_variables_keep_their_value_and_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = super::super::tests::catalogue(SCRIPTED, "");
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
@@ -255,8 +252,7 @@ fn recorded_variables_keep_their_value_and_order() {
 
 #[test]
 fn a_property_expanding_text_inside_records_only_its_text() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for (range, expected, stateful) in [
         ("[ROOT.GetTag]", "GER range|SOV", false),
         ("[GetRangeText]", "Mod range|SOV", true),
@@ -337,8 +333,7 @@ fn balance_range(range: &str, expected: &str, stateful: bool) {
 
 #[test]
 fn a_scripted_localisation_leaving_out_what_later_values_read_is_refused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let command = |inner: &str, value: Value| Command {
         inner: inner.to_owned(),
         value,
@@ -391,8 +386,7 @@ fn a_scripted_localisation_leaving_out_what_later_values_read_is_refused() {
 
 #[test]
 fn scripted_localisations_nested_to_the_backstop_are_read_again() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = super::super::tests::catalogue("", " DEEP:0 \"[Deep]\"\n");
     let content = catalogue.scripted_content().unwrap();
     let deep = |value: Value| {

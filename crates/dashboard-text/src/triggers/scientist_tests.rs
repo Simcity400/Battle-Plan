@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalogue::tests::script_game;
 use replay_data::rows::{CountryCharacterRow, ScientistRow, ScientistSkillRow};
 
 fn scientist_frame() -> DecodedFrame {
@@ -63,8 +64,7 @@ fn scientist_frame() -> DecodedFrame {
 }
 
 fn with_scientists(frame: &DecodedFrame, check: impl FnOnce(&World)) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/special_projects/specialization/test.txt",
         "specialization_land={} specialization_air={}",

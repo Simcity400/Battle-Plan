@@ -1,4 +1,5 @@
 use super::*;
+use crate::catalogue::tests::script_game;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use std::{cell::RefCell, rc::Rc};
 
@@ -24,8 +25,7 @@ fn graph() -> Rc<RefCell<EventScopes>> {
 
 #[test]
 fn cursored_scope_without_a_bound_graph_refuses_instead_of_panicking() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = frame(&countries(), &[]);
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -69,8 +69,7 @@ fn cursored_scope_without_a_bound_graph_refuses_instead_of_panicking() {
 
 #[test]
 fn graph_cursors_preserve_nested_from_and_restore_root_prev() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = frame(&countries(), &[]);
     with_world(&f, "", Err("none"), |world| {
         let graph = graph();
@@ -122,8 +121,7 @@ fn graph_cursors_preserve_nested_from_and_restore_root_prev() {
 
 #[test]
 fn description_cleanup_keeps_distinct_root_storage_and_predicate_saved_only() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = frame(&countries(), &[]);
     with_world(&f, "", Err("none"), |world| {
         let graph = graph();
@@ -189,8 +187,7 @@ fn description_cleanup_keeps_distinct_root_storage_and_predicate_saved_only() {
 
 #[test]
 fn nested_description_checks_share_temps_and_outer_sessions_reset() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = frame(&countries(), &[]);
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
@@ -214,8 +211,7 @@ fn nested_description_checks_share_temps_and_outer_sessions_reset() {
 
 #[test]
 fn owned_state_builtin_and_scoped_predicate_use_recorded_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::{rows::ProvinceRow, rows::StateRow};
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::States.index()] =
@@ -292,8 +288,7 @@ fn owned_state_builtin_and_scoped_predicate_use_recorded_operands() {
 
 #[test]
 fn compatibility_template_fallback_key_is_unknown_but_explicit_name_remains_usable() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::{rows::DivisionTemplateRow, rows::Recorded};
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::DivisionTemplates.index()] =
@@ -324,8 +319,7 @@ fn compatibility_template_fallback_key_is_unknown_but_explicit_name_remains_usab
 
 #[test]
 fn templates_compare_explicit_display_names_exactly() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::rows::DivisionTemplateRow;
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::DivisionTemplates.index()] =
@@ -357,8 +351,7 @@ fn templates_compare_explicit_display_names_exactly() {
 
 #[test]
 fn broken_graph_and_storage_cycles_refuse_only_reached_links() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = frame(&countries(), &[]);
     with_world(&f, "", Err("none"), |world| {
         let graph = graph();
@@ -388,8 +381,7 @@ fn broken_graph_and_storage_cycles_refuse_only_reached_links() {
 
 #[test]
 fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::{rows::CharacterRow, rows::Recorded, rows::UnitLeaderRow};
     let leader = 9_u64 << 32 | 3;
     let mut f = with_variables(
@@ -602,8 +594,7 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
 
 #[test]
 fn controlled_state_roster_keeps_stored_order_and_wrapping_count() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::{rows::ProvinceRow, rows::Recorded, rows::StateRow};
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
@@ -694,8 +685,7 @@ fn controlled_state_roster_keeps_stored_order_and_wrapping_count() {
 
 #[test]
 fn scope_keys_precede_an_unavailable_scripted_catalogue() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let f = frame(&countries(), &[]);
     let dlcs = BTreeSet::new();
     let names = TriggerNames::default();
@@ -732,8 +722,7 @@ fn scope_keys_precede_an_unavailable_scripted_catalogue() {
 
 #[test]
 fn state_roster_distinguishes_older_fields_from_failed_capture() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::{rows::ProvinceRow, rows::StateRow};
     let mut f = frame(&countries(), &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
@@ -802,8 +791,7 @@ fn state_roster_distinguishes_older_fields_from_failed_capture() {
 
 #[test]
 fn controlled_state_rosters_admit_every_country_without_map_reads() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     use replay_data::rows::StateRow;
     let tags = (1..=24)
         .map(|id| format!("Synthetic{id}"))

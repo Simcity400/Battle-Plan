@@ -1,4 +1,5 @@
 use super::*;
+use dashboard_core::test_fixtures::game;
 use crate::triggers::Scopes;
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CountryLinkRow, rows::FactionMemberRow,
@@ -47,8 +48,7 @@ fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(World<'_>) -> T) -> T {
 
 #[test]
 fn genuine_member_zero_does_not_poison_positive_faction_absence() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut frame = frame();
     set::<tables::FactionMembers>(
         &mut frame,
@@ -91,8 +91,7 @@ fn genuine_member_zero_does_not_poison_positive_faction_absence() {
 
 #[test]
 fn reserved_faction_uses_its_fresh_getter_including_null_and_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut frame = frame();
     for (captured, expected) in [
         (Recorded::Value(Some(7)), Some(Ok(Some(7)))),
@@ -250,8 +249,7 @@ fn assert_reserved_empty(world: &World<'_>) {
 
 #[test]
 fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for unavailable in [
         TableId::ArmyOrders,
         TableId::ArmyOrderPlans,
@@ -309,8 +307,7 @@ fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
 
 #[test]
 fn empty_primary_roots_ignore_unavailable_order_payloads() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for unavailable in [TableId::ArmyOrders, TableId::ArmyOrderPlans] {
         let mut frame = empty_reserved_group_and_positive_invasion();
         *frame.tables[unavailable.index()] = TableView::Unavailable {
@@ -385,8 +382,7 @@ fn empty_primary_roots_ignore_unavailable_order_payloads() {
 
 #[test]
 fn reserved_theatre_group_faults_stay_with_their_owner() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut frame = frame();
     theatres(&mut frame, Recorded::Value(Some(1)));
     set::<tables::OrdersGroups>(
@@ -414,8 +410,7 @@ fn reserved_theatre_group_faults_stay_with_their_owner() {
 
 #[test]
 fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unknown() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut frame = frame();
     theatres(&mut frame, Recorded::Value(Some(1)));
     set::<tables::OrdersGroups>(
@@ -537,8 +532,7 @@ fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unkn
 
 #[test]
 fn reserved_invasion_certificate_never_substitutes_zero_for_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut frame = frame();
     for count in [
         Recorded::NotRecorded,

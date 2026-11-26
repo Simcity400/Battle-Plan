@@ -49,6 +49,7 @@ impl<'a> ScriptedText<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalogue::tests::script_game;
     use replay_data::{
         rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::TableId, rows::TableRows,
     };
@@ -98,8 +99,7 @@ mod tests {
 
     #[test]
     fn reached_numeric_directives_share_fixed5_formatting() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        script_game::enter();
         let (catalogue, _folder, frame) = fixture("", " TARGET:0 \"[?target@ROOT|0]\"\n");
         let text = ScriptedText::new(
             &frame,
@@ -146,8 +146,7 @@ mod tests {
 
     #[test]
     fn script_entry_numeric_text_retains_temps_and_next_outer_trigger_resets_them() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        script_game::enter();
         let (catalogue, _folder, frame) = fixture(
             r#"
             defined_text = { name = Attack text = { trigger = { set_temp_variable = { attack = .05 } } localization_key = ATTACK } }
@@ -174,8 +173,7 @@ mod tests {
 
     #[test]
     fn random_selection_keeps_literal_numeric_text() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        script_game::enter();
         let (catalogue, _folder, frame) = fixture(
             r#"
             defined_text = { name = Roll text = { random_list = {
@@ -200,8 +198,7 @@ mod tests {
 
     #[test]
     fn explicit_random_seed_retains_tag_alias_trigger_temps() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        script_game::enter();
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "localisation/mod_l_english.yml",
@@ -242,8 +239,7 @@ mod tests {
 
     #[test]
     fn missing_runtime_inputs_keep_their_named_refusals() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        script_game::enter();
         let (catalogue, _folder, mut frame) = fixture("", "");
         let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         {

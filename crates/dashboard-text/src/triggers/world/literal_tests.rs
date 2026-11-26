@@ -1,5 +1,6 @@
 use super::super::{inputs, refusal};
 use super::*;
+use dashboard_core::test_fixtures::game;
 use literals::Lookup;
 use replay_data::rows::{LexicalTokenRow, TableId, TableRows};
 
@@ -113,7 +114,7 @@ fn check(frame: &DecodedFrame) {
 
 #[test]
 fn token_lookup_matches_map_values_refusals_and_demand_across_hours() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let cases: &[&[u32]] = &[
         &[],
         &[0],
@@ -148,7 +149,7 @@ fn token_lookup_matches_map_values_refusals_and_demand_across_hours() {
 
 #[test]
 fn token_lookup_keeps_partial_missing_and_wrong_table_failures() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     for (hour, view) in [
         TableView::Truncated {
             rows: TableRows::LexicalTokens(rows(&[7, 1, 7])),
@@ -171,7 +172,7 @@ fn token_lookup_keeps_partial_missing_and_wrong_table_failures() {
 
 #[test]
 fn public_token_lookup_keeps_null_and_last_duplicate_semantics() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let frame = frame(
         0,
         TableView::Complete(TableRows::LexicalTokens(rows(&[7, 0, 7]))),
@@ -202,7 +203,7 @@ fn public_token_lookup_keeps_null_and_last_duplicate_semantics() {
 
 #[test]
 fn mod_defined_folded_names_remain_independent_of_literal_lookup() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let frame = frame(
         0,
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
