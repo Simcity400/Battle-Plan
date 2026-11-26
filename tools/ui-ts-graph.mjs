@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { API, SignatureKind, SymbolFlags, TypeFlags } from 'typescript/unstable/sync';
-import { SyntaxKind } from 'typescript/unstable/ast';
+import { NodeFlags, SyntaxKind } from 'typescript/unstable/ast';
 import { extractImportSpecifiers, relPosix, resolveLocalImport, toPosix } from './ui-import-graph.mjs';
 
 const PURE_NEW_CONSTRUCTORS = new Set([
@@ -999,7 +999,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
 
     const resolveCallableDecls = calleeNode => {
       const callee = unwrapTsExpr(calleeNode);
-      if (!callee) return null;
+      if (!callee || callee.kind !== SyntaxKind.Identifier) return null;
       let sym = checker.getSymbolAtLocation(callee);
       if (!sym || checker.isUnknownSymbol(sym)) return null;
       if (sym.flags & SymbolFlags.Alias) {
@@ -1014,17 +1014,16 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         if (!declRel || !sfByRel.has(declRel)) return null;
         const decl = handle.resolve(project);
         if (!decl) return null;
-        if (decl.kind === SyntaxKind.FunctionDeclaration || decl.kind === SyntaxKind.MethodDeclaration) {
-          if (decl.body) fns.push(decl);
+        if (decl.kind === SyntaxKind.FunctionDeclaration) {
+          if (decl.body) fns.push({ declRel, fn: decl });
         } else if (decl.kind === SyntaxKind.VariableDeclaration && decl.initializer) {
-          const sf = sfByRel.get(declRel);
           const list = decl.parent;
           const isConst = list?.kind === SyntaxKind.VariableDeclarationList
-            && sf?.text?.slice(list.pos, decl.name.pos).trimStart().startsWith('const');
+            && Boolean(list.flags & NodeFlags.Const);
           if (!isConst) return null;
           const init = unwrapTsExpr(decl.initializer);
           if ((init?.kind === SyntaxKind.ArrowFunction || init?.kind === SyntaxKind.FunctionExpression) && init.body) {
-            fns.push(init);
+            fns.push({ declRel, fn: init });
           } else {
             return null;
           }
@@ -1035,31 +1034,132 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       return fns.length > 0 ? fns : null;
     };
 
-    const consumedMembersOfLocalSymbol = (sym, symName, body, visitedFnParams, visitedSyms) => {
-      const members = new Set();
-      const localParentOf = new Map();
-      const identHits = [];
-      const shorthandHits = [];
-      const scan = (node, parent, inType) => {
+    const collectReachableValueSubtree = (rootNodes, onNode) => {
+      const parentOfLocal = new Map();
+      const deferredNodes = new Set();
+      const liveDeferred = new Set();
+      const deferredBySymId = new Map();
+      const deferredNames = new Set();
+      const allIdents = [];
+      const allShorthands = [];
+      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null }));
+
+      const walkReachable = (node, parent, rootNode, newlyDeferred) => {
         if (!node) return;
-        localParentOf.set(node, parent);
-        const nextInType = inType || TYPE_NODE_KINDS.has(node.kind);
-        if (!nextInType) {
-          if (node.kind === SyntaxKind.ShorthandPropertyAssignment && node.name?.text === symName) {
-            shorthandHits.push(node);
-          } else if (node.kind === SyntaxKind.Identifier && node.text === symName && !isSkippedIdent(node, parent)) {
-            identHits.push(node);
+        parentOfLocal.set(node, parent);
+        if (TYPE_NODE_KINDS.has(node.kind)) return;
+        if (isDeferredNestedDecl(node, rootNode)) {
+          if (!deferredNodes.has(node)) {
+            deferredNodes.add(node);
+            deferredNames.add(node.name.text);
+            newlyDeferred.push({ node, parent });
           }
+          return;
+        }
+        onNode(node, parent, parentOfLocal);
+        if (node.kind === SyntaxKind.ShorthandPropertyAssignment) {
+          allShorthands.push(node);
+        } else if (node.kind === SyntaxKind.Identifier && !isSkippedIdent(node, parent)) {
+          allIdents.push(node);
         }
         node.forEachChild(child => {
-          const childInType = nextInType
-            || (node.type === child)
+          const childInType = (node.type === child)
             || (Array.isArray(node.typeArguments) && node.typeArguments.includes(child))
             || (Array.isArray(node.typeParameters) && node.typeParameters.includes(child));
-          scan(child, node, childInType);
+          if (!childInType) walkReachable(child, node, rootNode, newlyDeferred);
         });
       };
-      scan(body, null, false);
+
+      let identCursor = 0;
+      let shorthandCursor = 0;
+      const activate = sym => {
+        const targets = deferredBySymId.get(sym.id);
+        if (!targets) return;
+        for (const target of targets) {
+          if (!liveDeferred.has(target.node)) {
+            liveDeferred.add(target.node);
+            pending.push(target);
+          }
+        }
+      };
+
+      while (pending.length > 0) {
+        const newlyDeferred = [];
+        const batch = pending.splice(0, pending.length);
+        for (const item of batch) {
+          walkReachable(item.node, item.parent, item.node, newlyDeferred);
+        }
+        if (newlyDeferred.length > 0) {
+          const declSyms = checker.getSymbolAtLocation(newlyDeferred.map(item => item.node.name));
+          for (let i = 0; i < newlyDeferred.length; i += 1) {
+            const sym = declSyms[i];
+            if (!sym) continue;
+            let list = deferredBySymId.get(sym.id);
+            if (!list) deferredBySymId.set(sym.id, list = []);
+            list.push(newlyDeferred[i]);
+          }
+          identCursor = 0;
+          shorthandCursor = 0;
+        }
+        if (deferredBySymId.size > 0) {
+          const matching = [];
+          for (let i = identCursor; i < allIdents.length; i += 1) {
+            if (deferredNames.has(allIdents[i].text)) matching.push(allIdents[i]);
+          }
+          identCursor = allIdents.length;
+          if (matching.length > 0) {
+            const syms = checker.getSymbolAtLocation(matching);
+            for (const sym of syms) {
+              if (sym) activate(sym);
+            }
+          }
+          for (let i = shorthandCursor; i < allShorthands.length; i += 1) {
+            const sh = allShorthands[i];
+            if (!deferredNames.has(sh.name?.text)) continue;
+            const sym = checker.getShorthandAssignmentValueSymbol(sh);
+            if (sym) activate(sym);
+          }
+          shorthandCursor = allShorthands.length;
+        }
+      }
+      return parentOfLocal;
+    };
+
+    const functionUsesArguments = (fn, rootNodes) => {
+      if (fn.kind === SyntaxKind.ArrowFunction) return false;
+      const hits = [];
+      collectReachableValueSubtree(rootNodes, (node, parent) => {
+        if (node.kind === SyntaxKind.Identifier && node.text === 'arguments' && !isSkippedIdent(node, parent)) {
+          hits.push(node);
+        }
+      });
+      if (hits.length === 0) return false;
+      const syms = checker.getSymbolAtLocation(hits);
+      for (let i = 0; i < hits.length; i += 1) {
+        const sym = syms[i];
+        if (!sym || checker.isUnknownSymbol(sym)) return true;
+        const decls = sym.declarations ?? [];
+        if (decls.length === 0) return true;
+        const isLocalShadow = decls.every(handle => {
+          const d = handle.resolve(project);
+          return d && d.pos >= fn.pos && d.end <= fn.end;
+        });
+        if (!isLocalShadow) return true;
+      }
+      return false;
+    };
+
+    const consumedMembersOfLocalSymbol = (sym, symName, rootNodes, visitedFnParams, visitedSyms) => {
+      const members = new Set();
+      const identHits = [];
+      const shorthandHits = [];
+      const localParentOf = collectReachableValueSubtree(rootNodes, (node, parent) => {
+        if (node.kind === SyntaxKind.ShorthandPropertyAssignment && node.name?.text === symName) {
+          shorthandHits.push(node);
+        } else if (node.kind === SyntaxKind.Identifier && node.text === symName && !isSkippedIdent(node, parent)) {
+          identHits.push(node);
+        }
+      });
 
       for (const sh of shorthandHits) {
         const shSym = checker.getShorthandAssignmentValueSymbol(sh);
@@ -1098,7 +1198,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
               if (!aliasSym) return null;
               if (!visitedSyms.has(aliasSym.id)) {
                 visitedSyms.add(aliasSym.id);
-                const nested = consumedMembersOfLocalSymbol(aliasSym, parent.name.text, body, visitedFnParams, visitedSyms);
+                const nested = consumedMembersOfLocalSymbol(aliasSym, parent.name.text, rootNodes, visitedFnParams, visitedSyms);
                 if (!nested) return null;
                 for (const k of nested) members.add(k);
               }
@@ -1129,14 +1229,17 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       const fns = resolveCallableDecls(callNode.expression);
       if (!fns) return null;
       const allMembers = new Set();
-      for (const fn of fns) {
-        const params = fn.parameters ?? [];
+      for (const { declRel, fn } of fns) {
+        const rawParams = fn.parameters ?? [];
+        const params = rawParams.filter((p, i) => !(i === 0 && p.name?.kind === SyntaxKind.Identifier && p.name.text === 'this'));
+        const rootNodes = [fn.body, ...params.map(p => p.initializer).filter(Boolean)];
+        if (functionUsesArguments(fn, rootNodes)) return null;
         for (let i = 0; i <= argIdx && i < params.length; i += 1) {
           if (params[i]?.dotDotDotToken) return null;
         }
         const param = params[argIdx];
         if (!param) continue;
-        const visitKey = `${nodeKey(fn)}:${argIdx}`;
+        const visitKey = `${declRel}:${nodeKey(fn)}:${argIdx}`;
         if (visitedFnParams.has(visitKey)) continue;
         visitedFnParams.add(visitKey);
         if (param.name.kind === SyntaxKind.ObjectBindingPattern) {
@@ -1146,7 +1249,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         } else if (param.name.kind === SyntaxKind.Identifier) {
           const paramSym = checker.getSymbolAtLocation(param.name);
           if (!paramSym) return null;
-          const used = consumedMembersOfLocalSymbol(paramSym, param.name.text, fn.body, visitedFnParams, new Set([paramSym.id]));
+          const used = consumedMembersOfLocalSymbol(paramSym, param.name.text, rootNodes, visitedFnParams, new Set([paramSym.id]));
           if (!used) return null;
           for (const k of used) allMembers.add(k);
         } else {
@@ -1183,10 +1286,12 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         parentOf.set(node, parent);
         const nextInType = inType || TYPE_NODE_KINDS.has(node.kind);
 
-        if (isDeferredNestedDecl(node, rootNode) && !deferredNodes.has(node)) {
-          deferredNodes.add(node);
-          deferredNames.add(node.name.text);
-          newlyDeferred.push({ node, parent, inType: nextInType });
+        if (isDeferredNestedDecl(node, rootNode)) {
+          if (!deferredNodes.has(node)) {
+            deferredNodes.add(node);
+            deferredNames.add(node.name.text);
+            newlyDeferred.push({ node, parent, inType: nextInType });
+          }
           return;
         }
 
@@ -1197,7 +1302,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           }
         }
 
-        if (node.kind === SyntaxKind.NewExpression
+        if (!nextInType && node.kind === SyntaxKind.NewExpression
           && node.expression?.kind === SyntaxKind.Identifier && node.expression.text === 'URL'
           && (node.arguments?.length ?? 0) >= 2
           && isTsImportMetaUrl(node.arguments[1])) {
@@ -1224,7 +1329,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           if (spec !== null) {
             const target = resolveLocalImport(info.full, spec, root);
             if (target) {
-              dynamicImports.push({ node, targetRel: relPosix(root, target) });
+              dynamicImports.push({ node, targetRel: relPosix(root, target), isType: nextInType });
             }
           }
         }
@@ -1354,7 +1459,8 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
 
       if (!unitIsType) {
         for (const dyn of dynamicImports) {
-          addModuleEdge(rel, dyn.targetRel, false, null);
+          const dynIsType = dyn.isType;
+          addModuleEdge(rel, dyn.targetRel, dynIsType, null);
           let cur = dyn.node;
           let p = parentOf.get(cur);
           while (p && (p.kind === SyntaxKind.ParenthesizedExpression || p.kind === SyntaxKind.AsExpression || p.kind === SyntaxKind.SatisfiesExpression)) {
@@ -1365,20 +1471,20 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             const fnNode = p.kind === SyntaxKind.ArrowFunction ? p : parentOf.get(parentOf.get(p));
             const fnParent = fnNode ? parentOf.get(fnNode) : null;
             if (fnParent && isTsLazyCall(fnParent)) {
-              addModuleEdge(rel, dyn.targetRel, false, 'default');
+              addModuleEdge(rel, dyn.targetRel, dynIsType, 'default');
               continue;
             }
             if (isWidgetManifestFile && fnParent?.kind === SyntaxKind.PropertyAssignment && fnParent.name?.text === 'load') {
-              addModuleEdge(rel, dyn.targetRel, false, 'default');
+              addModuleEdge(rel, dyn.targetRel, dynIsType, 'default');
               continue;
             }
             if (fnNode) {
               const ctxType = checker.getContextualType(fnNode);
               if (ctxType) {
                 if (isDefaultOnlyContextualType(ctxType, checker)) {
-                  addModuleEdge(rel, dyn.targetRel, false, 'default');
+                  addModuleEdge(rel, dyn.targetRel, dynIsType, 'default');
                 } else if (isOpaqueWideningType(ctxType, checker)) {
-                  addModuleEdge(rel, dyn.targetRel, false, '*');
+                  addModuleEdge(rel, dyn.targetRel, dynIsType, '*');
                 }
               }
             }
@@ -1392,85 +1498,95 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         const objBindings = [];
         const potentialEscapes = [];
 
-        const walkMod = (node, inType) => {
+        const walkMod = (node, inTypeSyntax, bodyIsTypeOnly) => {
           if (!node) return;
-          if (deferredNodes.has(node) && !liveDeferredRuntime.has(node) && !(unitIsType && liveDeferredType.has(node))) return;
-          const nextInType = inType || TYPE_NODE_KINDS.has(node.kind);
-          if (node.kind === SyntaxKind.PropertyAccessExpression && !nextInType) {
-            propAccesses.push(node);
-          } else if (node.kind === SyntaxKind.ElementAccessExpression && !nextInType) {
-            elemAccesses.push(node);
-          } else if (node.kind === SyntaxKind.ObjectBindingPattern && !nextInType) {
-            objBindings.push(node);
+          let nextBodyIsTypeOnly = bodyIsTypeOnly;
+          if (deferredNodes.has(node)) {
+            if (!liveDeferredRuntime.has(node) && !liveDeferredType.has(node)) return;
+            nextBodyIsTypeOnly = bodyIsTypeOnly || !liveDeferredRuntime.has(node);
+          }
+          const nextInTypeSyntax = inTypeSyntax || TYPE_NODE_KINDS.has(node.kind);
+          if (node.kind === SyntaxKind.PropertyAccessExpression && !nextInTypeSyntax) {
+            propAccesses.push({ node, isType: nextBodyIsTypeOnly });
+          } else if (node.kind === SyntaxKind.ElementAccessExpression && !nextInTypeSyntax) {
+            elemAccesses.push({ node, isType: nextBodyIsTypeOnly });
+          } else if (node.kind === SyntaxKind.ObjectBindingPattern && !nextInTypeSyntax) {
+            objBindings.push({ node, isType: nextBodyIsTypeOnly });
           } else if (node.kind === SyntaxKind.IndexedAccessType) {
-            elemAccesses.push(node);
-          } else if (!nextInType && (
+            elemAccesses.push({ node, isType: true });
+          } else if (!nextInTypeSyntax && (
             node.kind === SyntaxKind.Identifier
             || node.kind === SyntaxKind.AwaitExpression
             || node.kind === SyntaxKind.CallExpression
           )) {
-            const parent = parentOf.get(node);
+            let cur = node;
+            let parent = parentOf.get(cur);
+            while (parent && (
+              parent.kind === SyntaxKind.ParenthesizedExpression
+              || parent.kind === SyntaxKind.AsExpression
+              || parent.kind === SyntaxKind.SatisfiesExpression
+              || parent.kind === SyntaxKind.NonNullExpression
+            )) {
+              cur = parent;
+              parent = parentOf.get(cur);
+            }
             const consumedCleanly = !parent
-              || (parent.kind === SyntaxKind.PropertyAccessExpression && parent.expression === node)
-              || (parent.kind === SyntaxKind.ElementAccessExpression && parent.expression === node)
-              || (parent.kind === SyntaxKind.VariableDeclaration && (parent.name === node || parent.initializer === node))
-              || (parent.kind === SyntaxKind.Parameter && parent.name === node)
+              || (parent.kind === SyntaxKind.PropertyAccessExpression && parent.expression === cur)
+              || (parent.kind === SyntaxKind.ElementAccessExpression && parent.expression === cur)
+              || (parent.kind === SyntaxKind.VariableDeclaration && (parent.name === cur || parent.initializer === cur))
+              || (parent.kind === SyntaxKind.Parameter && parent.name === cur)
               || (parent.kind === SyntaxKind.BindingElement)
-              || (parent.kind === SyntaxKind.AwaitExpression && parent.expression === node)
-              || (parent.kind === SyntaxKind.ParenthesizedExpression)
-              || (parent.kind === SyntaxKind.AsExpression)
-              || (parent.kind === SyntaxKind.SatisfiesExpression)
-              || (parent.kind === SyntaxKind.NonNullExpression)
+              || (parent.kind === SyntaxKind.AwaitExpression && parent.expression === cur)
               || (parent.kind === SyntaxKind.ReturnStatement)
-              || (parent.kind === SyntaxKind.ArrowFunction && parent.body === node)
+              || (parent.kind === SyntaxKind.ArrowFunction && parent.body === cur)
               || (parent.kind === SyntaxKind.ExpressionStatement)
               || (parent.kind === SyntaxKind.VoidExpression)
-              || (parent.kind === SyntaxKind.PropertyAccessExpression && parent.name === node)
-              || (parent.kind === SyntaxKind.PropertyAssignment && parent.name === node)
-              || (parent.kind === SyntaxKind.CallExpression && parent.expression === node)
+              || (parent.kind === SyntaxKind.PropertyAccessExpression && parent.name === cur)
+              || (parent.kind === SyntaxKind.PropertyAssignment && parent.name === cur)
+              || (parent.kind === SyntaxKind.CallExpression && parent.expression === cur)
               || (parent.kind === SyntaxKind.TypeQuery);
             if (!consumedCleanly) {
-              potentialEscapes.push(node);
+              potentialEscapes.push({ node, isType: nextBodyIsTypeOnly });
             }
           }
           node.forEachChild(child => {
-            const childInType = nextInType || (node.type === child);
-            walkMod(child, childInType);
+            const childInTypeSyntax = nextInTypeSyntax || (node.type === child);
+            walkMod(child, childInTypeSyntax, nextBodyIsTypeOnly);
           });
         };
 
-        walkMod(unit.node, unitIsType || unit.isTypeOnly);
+        walkMod(unit.node, false, unitIsType || unit.isTypeOnly);
 
         const typeQueryNodes = [];
-        for (const n of propAccesses) typeQueryNodes.push(n.expression);
-        for (const n of elemAccesses) {
-          if (n.kind === SyntaxKind.ElementAccessExpression) {
-            typeQueryNodes.push(n.expression, n.argumentExpression);
+        for (const item of propAccesses) typeQueryNodes.push(item.node.expression);
+        for (const item of elemAccesses) {
+          if (item.node.kind === SyntaxKind.ElementAccessExpression) {
+            typeQueryNodes.push(item.node.expression, item.node.argumentExpression);
           } else {
-            typeQueryNodes.push(n.objectType, n.indexType);
+            typeQueryNodes.push(item.node.objectType, item.node.indexType);
           }
         }
-        for (const n of objBindings) typeQueryNodes.push(n);
-        for (const n of potentialEscapes) typeQueryNodes.push(n);
+        for (const item of objBindings) typeQueryNodes.push(item.node);
+        for (const item of potentialEscapes) typeQueryNodes.push(item.node);
 
         if (typeQueryNodes.length > 0) {
           const types = checker.getTypeAtLocation(typeQueryNodes);
           let cursor = 0;
 
-          for (const n of propAccesses) {
+          for (const item of propAccesses) {
             const objType = types[cursor++];
             const targetRel = moduleRelFromType(objType, modSymIdToRel, checker);
             if (targetRel) {
-              addModuleEdge(rel, targetRel, unitIsType, n.name.text);
+              addModuleEdge(rel, targetRel, item.isType, item.node.name.text);
             }
           }
 
-          for (const n of elemAccesses) {
+          for (const item of elemAccesses) {
             const objType = types[cursor++];
             const keyType = types[cursor++];
             const targetRel = moduleRelFromType(objType, modSymIdToRel, checker);
             if (targetRel) {
-              const isTypeAccess = unitIsType || n.kind === SyntaxKind.IndexedAccessType;
+              const isTypeAccess = item.isType || item.node.kind === SyntaxKind.IndexedAccessType;
               const keys = stringLiteralsFromType(keyType);
               if (keys) {
                 for (const k of keys) addModuleEdge(rel, targetRel, isTypeAccess, k);
@@ -1480,37 +1596,38 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             }
           }
 
-          for (const n of objBindings) {
+          for (const item of objBindings) {
             const patType = types[cursor++];
             const targetRel = moduleRelFromType(patType, modSymIdToRel, checker);
             if (targetRel) {
-              for (const el of n.elements ?? []) {
+              for (const el of item.node.elements ?? []) {
                 if (el.dotDotDotToken) {
-                  addModuleEdge(rel, targetRel, unitIsType, '*');
+                  addModuleEdge(rel, targetRel, item.isType, '*');
                 } else if (el.propertyName) {
                   if (el.propertyName.kind === SyntaxKind.Identifier || el.propertyName.kind === SyntaxKind.StringLiteral) {
-                    addModuleEdge(rel, targetRel, unitIsType, el.propertyName.text);
+                    addModuleEdge(rel, targetRel, item.isType, el.propertyName.text);
                   } else if (el.propertyName.kind === SyntaxKind.ComputedPropertyName) {
                     const kt = checker.getTypeAtLocation(el.propertyName.expression);
                     const keys = stringLiteralsFromType(kt);
                     if (keys) {
-                      for (const k of keys) addModuleEdge(rel, targetRel, unitIsType, k);
+                      for (const k of keys) addModuleEdge(rel, targetRel, item.isType, k);
                     } else {
-                      addModuleEdge(rel, targetRel, unitIsType, '*');
+                      addModuleEdge(rel, targetRel, item.isType, '*');
                     }
                   } else {
-                    addModuleEdge(rel, targetRel, unitIsType, '*');
+                    addModuleEdge(rel, targetRel, item.isType, '*');
                   }
                 } else if (el.name?.kind === SyntaxKind.Identifier) {
-                  addModuleEdge(rel, targetRel, unitIsType, el.name.text);
+                  addModuleEdge(rel, targetRel, item.isType, el.name.text);
                 } else {
-                  addModuleEdge(rel, targetRel, unitIsType, '*');
+                  addModuleEdge(rel, targetRel, item.isType, '*');
                 }
               }
             }
           }
 
-          for (const n of potentialEscapes) {
+          for (const item of potentialEscapes) {
+            const n = item.node;
             const exprType = types[cursor++];
             const directMod = moduleRelFromType(exprType, modSymIdToRel, checker);
             if (directMod) {
@@ -1530,15 +1647,15 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
                 if (argIdx >= 0) {
                   const consumed = consumedMembersOfCallArg(p, argIdx, new Set());
                   if (consumed) {
-                    addModuleEdge(rel, directMod, unitIsType, null);
+                    addModuleEdge(rel, directMod, item.isType, null);
                     for (const member of consumed) {
-                      addModuleEdge(rel, directMod, unitIsType, member);
+                      addModuleEdge(rel, directMod, item.isType, member);
                     }
                     continue;
                   }
                 }
               }
-              addModuleEdge(rel, directMod, unitIsType, '*');
+              addModuleEdge(rel, directMod, item.isType, '*');
               continue;
             }
             const p = parentOf.get(n);
@@ -1549,13 +1666,13 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
                 : null;
               if (loaderTarget) {
                 if (isTsLazyCall(p)) {
-                  addModuleEdge(rel, loaderTarget, false, 'default');
+                  addModuleEdge(rel, loaderTarget, item.isType, 'default');
                 } else {
                   const ctxType = checker.getContextualType(n);
                   if (ctxType && isDefaultOnlyContextualType(ctxType, checker)) {
-                    addModuleEdge(rel, loaderTarget, false, 'default');
+                    addModuleEdge(rel, loaderTarget, item.isType, 'default');
                   } else if (ctxType && isOpaqueWideningType(ctxType, checker)) {
-                    addModuleEdge(rel, loaderTarget, false, '*');
+                    addModuleEdge(rel, loaderTarget, item.isType, '*');
                   }
                 }
               }

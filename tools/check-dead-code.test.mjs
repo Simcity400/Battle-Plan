@@ -538,7 +538,10 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
     'ui/src/nestedDead.ts': 'export const deadFromNested = () => 1;',
     'ui/src/nestedArrowDead.ts': 'export const deadFromArrow = () => 2;',
     'ui/src/nestedLive.ts': 'export const liveFromNested = () => 3;',
-    'ui/src/nestedNs.ts': 'export const usedNs = () => 4; export const deadNs = () => 5;',
+    'ui/src/nestedKeepDeadChild.ts': 'export const deadChildHelper = () => 4;',
+    'ui/src/nestedNs.ts': 'export const usedNs = () => 5; export const deadNs = () => 6;',
+    'ui/src/typeOnlyNs.ts': 'export const draw = () => 7; export const spare = () => 8;',
+    'ui/src/typeOnlyDyn.ts': 'export const sideEffectValue = 9;',
     'ui/src/main.tsx': `
       import './styles.css';
       import type { SharedType } from './types.ts';
@@ -546,7 +549,9 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
       import { deadFromNested } from './nestedDead.ts';
       import { deadFromArrow } from './nestedArrowDead.ts';
       import { liveFromNested } from './nestedLive.ts';
+      import { deadChildHelper } from './nestedKeepDeadChild.ts';
       import * as nestedNs from './nestedNs.ts';
+      import * as typeOnlyNs from './typeOnlyNs.ts';
       function start() {
         const result = usedHoisted();
         function unusedInner() {
@@ -556,7 +561,24 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
         function usedHoisted() {
           return liveFromNested() + nestedNs.usedNs();
         }
-        return result;
+        function keep() {
+          function deadChild() {
+            return deadChildHelper();
+          }
+          return 1;
+        }
+        type KeepType = typeof keep;
+        const keepRef: KeepType = keep;
+        function loadTypeOnly() {
+          return typeOnlyNs.draw();
+        }
+        function dynTypeOnly() {
+          return import('./typeOnlyDyn.ts');
+        }
+        type LoadedDraw = ReturnType<typeof loadTypeOnly>;
+        type LoadedDyn = ReturnType<typeof dynTypeOnly>;
+        const typed: [LoadedDraw | null, LoadedDyn | null] = [null, null];
+        return result + keepRef() + typed.length;
       }
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
@@ -568,16 +590,34 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
     'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
   }), async root => {
     const result = await runDeadCodeCheck(root);
-    assert.deepEqual(result.ui.deadProduction, ['ui/src/nestedArrowDead.ts', 'ui/src/nestedDead.ts']);
-    assert.deepEqual(result.exports.unusedExports.map(e => e.key), ['ui/src/nestedNs.ts:deadNs']);
+    assert.deepEqual(result.ui.deadProduction, [
+      'ui/src/nestedArrowDead.ts',
+      'ui/src/nestedDead.ts',
+      'ui/src/nestedKeepDeadChild.ts',
+    ]);
+    assert.equal(result.ui.runtimeLive.has('ui/src/typeOnlyDyn.ts'), false);
+    assert.deepEqual(result.exports.unusedExports.map(e => e.key), [
+      'ui/src/nestedNs.ts:deadNs',
+      'ui/src/typeOnlyDyn.ts:sideEffectValue',
+      'ui/src/typeOnlyNs.ts:spare',
+    ]);
   });
 });
 
-test('R3-S19: namespace passed to a local reader credits only consumed members, and unused local export aliases are reported', async () => {
+test('R3-S19: namespace passed to a local reader credits only consumed members, handles edge calls safely, and flags unused local export aliases', async () => {
   await withRepo(baseFiles({
     'ui/src/nsTarget.ts': 'export const draw = () => 1; export const spare = () => 2;',
     'ui/src/nsDestructured.ts': 'export const draw = () => 3; export const spare = () => 4;',
     'ui/src/nsEscaped.ts': 'export const a = () => 5; export const b = () => 6;',
+    'ui/src/nsMethod.ts': 'export const draw = () => 7; export const spare = () => 8;',
+    'ui/src/nsDefaultInit.ts': 'export const draw = () => 9; export const spare = () => 10;',
+    'ui/src/nsThisParam.ts': 'export const draw = () => 11; export const spare = () => 12;',
+    'ui/src/nsArgsObj.ts': 'export const draw = () => 13; export const spare = () => 14;',
+    'ui/src/nsSameOffset.ts': 'export const draw = () => 15; export const spare = () => 16;',
+    'ui/src/nsParenEscape.ts': 'export const a = () => 17; export const b = () => 18;',
+    'ui/src/nsDocComment.ts': 'export const draw = () => 19; export const spare = () => 20;',
+    'ui/src/helperA.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.draw(); }\n',
+    'ui/src/helperB.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.spare(); }\n',
     'ui/src/aliasedMod.ts': `
       function draw() { return 10; }
       export const run = () => draw();
@@ -590,8 +630,20 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       import * as nsTarget from './nsTarget.ts';
       import * as nsDestructured from './nsDestructured.ts';
       import * as nsEscaped from './nsEscaped.ts';
+      import * as nsMethod from './nsMethod.ts';
+      import * as nsDefaultInit from './nsDefaultInit.ts';
+      import * as nsThisParam from './nsThisParam.ts';
+      import * as nsArgsObj from './nsArgsObj.ts';
+      import * as nsSameOffset from './nsSameOffset.ts';
+      import * as nsParenEscape from './nsParenEscape.ts';
+      import * as nsDocComment from './nsDocComment.ts';
+      import { read as readA } from './helperA.ts';
+      import { read as readB } from './helperB.ts';
       import { run } from './aliasedMod.ts';
       function callDraw(m: typeof nsTarget) {
+        function unusedNested() {
+          return m.spare();
+        }
         return m.draw();
       }
       function forwardDraw(m: typeof nsTarget) {
@@ -603,6 +655,22 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       function escapeAll(m: typeof nsEscaped) {
         return Object.keys(m).length;
       }
+      const api = { read(m: typeof nsMethod) { return m.spare(); } };
+      api.read = m => m.draw();
+      function readDefault(m: { draw(): number }, value = m.draw()) {
+        return value;
+      }
+      function readWithThis(this: unknown, m: { draw(): number }) {
+        return m.draw();
+      }
+      function readArguments(_m: { draw(): number }) {
+        return (arguments[0] as { draw(): number }).draw();
+      }
+      function forwardBoth(m: typeof nsSameOffset) {
+        return readA(m) + readB(m);
+      }
+      /** Reads draw. */
+      const readDoc = (m: typeof nsDocComment) => m.draw();
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline;
@@ -610,7 +678,10 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       const ref: Ref = { ok: true };
       console.log(
         loadLazy, worker, used, ref, REQUEST_PATHS,
-        forwardDraw(nsTarget), callDestructured(nsDestructured), escapeAll(nsEscaped), run(),
+        forwardDraw((nsTarget)), callDestructured(nsDestructured), escapeAll(nsEscaped),
+        api.read(nsMethod), readDefault(nsDefaultInit),
+        readWithThis(nsThisParam), readArguments(nsArgsObj), forwardBoth(nsSameOffset),
+        (nsParenEscape), readDoc(nsDocComment), run(),
       );
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
@@ -621,8 +692,11 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       result.exports.unusedExports.map(e => e.key),
       [
         'ui/src/aliasedMod.ts:spare',
+        'ui/src/nsDefaultInit.ts:spare',
         'ui/src/nsDestructured.ts:spare',
+        'ui/src/nsDocComment.ts:spare',
         'ui/src/nsTarget.ts:spare',
+        'ui/src/nsThisParam.ts:spare',
       ],
     );
   });

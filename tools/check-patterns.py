@@ -75,13 +75,17 @@ TS_REGEX_PRECEDING_KEYWORDS = frozenset({
 CSS_PERCENT_PROP = re.compile(
     r"""\b(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*:\s*$"""
 )
-CSS_PERCENT_FN = re.compile(
-    r"""\b(?:rgb|rgba|hsl|hsla|oklch|oklab|lch|lab|color-mix|linear-gradient|radial-gradient|conic-gradient|translate[XY]?|scale[XY]?)\([^)]*$"""
+CSS_PERCENT_BINDING = re.compile(
+    r"""\b(?:const|let)\s+(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*=\s*(?:(?:async\s+)?(?:\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$]\w*\s*=>)\s*)?$"""
+)
+CSS_PERCENT_FN_OPEN = re.compile(
+    r"""\b(?:rgb|rgba|hsl|hsla|oklch|oklab|lch|lab|color-mix|linear-gradient|radial-gradient|conic-gradient|translate[XY]?|scale[XY]?)\("""
 )
 HAND_PERCENT_CONCAT = re.compile(
-    r"""(?:[A-Za-z0-9_$)\]])\s*\+\s*['"`]%"""
+    r"""[A-Za-z0-9_$)\]]\s*\+\s*['"`]"""
 )
 TEMPLATE_PERCENT_SUFFIX = re.compile(r"""[ \t]*%""")
+JSX_PERCENT = re.compile(r"""\}[ \t]*%""")
 FAMILY_PRIVATE_ART_CACHE = re.compile(
     rf"\.stateOfUrl\s*\(|\b(?:function\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\b|(?:const|let)\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\s*=\s*{TS_FN_RHS})"
 )
@@ -689,6 +693,8 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
                     cursor += 1
                     continue
                 if c == "/" and not in_class:
+                    if is_tsx and cursor > at + 1 and text[cursor - 1] == "<" and cursor + 1 < end and (text[cursor + 1].isalpha() or text[cursor + 1] == ">"):
+                        break
                     slash_end = cursor
                     cursor += 1
                     while cursor < end and text[cursor].isalpha():
@@ -813,6 +819,17 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
         elif ch in (")", "]", "."):
             expect_expr = False
             at += 1
+        elif ch == "=" and at + 1 < end and text[at + 1] == ">":
+            expect_expr = True
+            at += 2
+        elif ch == ">" and at + 1 < end and text[at + 1] == "=":
+            expect_expr = True
+            at += 2
+        elif ch == ">":
+            expect_expr = False
+            at += 1
+        elif ch == "!" and not (at + 1 < end and text[at + 1] == "="):
+            at += 1
         elif ch in ("+", "-") and at + 1 < end and text[at + 1] == ch:
             at += 2
         else:
@@ -848,24 +865,62 @@ def at_least_wording_lines(text, *, is_tsx=False):
     return sorted(lines)
 
 
-def hand_percent_lines(text, code_with_strings, *, is_tsx=False):
+def _inside_open_css_fn(prefix):
+    for match in CSS_PERCENT_FN_OPEN.finditer(prefix):
+        depth = 1
+        for ch in prefix[match.end():]:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+        if depth > 0:
+            return True
+    return False
+
+
+def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
     lines = []
 
-    def on_template_interp(tpl_start, prev_chunk, interp_start, _chunk_start, body):
+    def on_template_interp(tpl_start, _prev_chunk, interp_start, _chunk_start, body):
         if not TEMPLATE_PERCENT_SUFFIX.match(body):
             return
-        before_tpl = code_with_strings[max(0, tpl_start - 64):tpl_start]
-        if CSS_PERCENT_PROP.search(before_tpl) or CSS_PERCENT_FN.search(prev_chunk):
+        before_tpl = code_with_strings[max(0, tpl_start - 96):tpl_start]
+        if CSS_PERCENT_PROP.search(before_tpl) or CSS_PERCENT_BINDING.search(before_tpl):
+            return
+        if _inside_open_css_fn(code_with_strings[tpl_start + 1:interp_start]):
             return
         lines.append(line_of(text, interp_start))
 
     _scan_ts_range(text, 0, len(text), blank_strings=False, is_tsx=is_tsx, on_template_interp=on_template_interp)
-    for hit in HAND_PERCENT_CONCAT.finditer(code_with_strings):
-        line_start = code_with_strings.rfind("\n", 0, hit.start()) + 1
-        before_expr = code_with_strings[line_start:hit.start()]
-        if CSS_PERCENT_PROP.search(re.sub(r"[A-Za-z0-9_$.()[\]]+\s*$", "", before_expr)):
+    for hit in HAND_PERCENT_CONCAT.finditer(code):
+        if hit.end() >= len(text) or text[hit.end()] != "%":
+            continue
+        line_start = code.rfind("\n", 0, hit.start()) + 1
+        before_expr = code[line_start:hit.start()]
+        stripped = re.sub(r"[A-Za-z0-9_$.()[\]]+\s*$", "", before_expr)
+        if CSS_PERCENT_PROP.search(stripped) or CSS_PERCENT_BINDING.search(stripped):
             continue
         lines.append(line_of(text, hit.start()))
+    if is_tsx:
+        for hit in JSX_PERCENT.finditer(code):
+            depth = 1
+            cursor = hit.start() - 1
+            while cursor >= 0 and depth > 0:
+                if code[cursor] == "}":
+                    depth += 1
+                elif code[cursor] == "{":
+                    depth -= 1
+                cursor -= 1
+            if depth != 0:
+                continue
+            open_brace = cursor + 1
+            probe = open_brace - 1
+            while probe >= 0 and code[probe] not in "<>;={}":
+                probe -= 1
+            if probe >= 0 and code[probe] == ">" and not (probe > 0 and code[probe - 1] == "="):
+                lines.append(line_of(text, open_brace))
     return sorted(lines)
 
 
@@ -912,7 +967,7 @@ def family_ts_matches(name, text):
         locale_lines = [line_of(text, offset) for offset in sorted(locale_offsets)]
         if locale_lines:
             found["family-locale-string"] = locale_lines
-        percent_lines = hand_percent_lines(text, code_with_strings, is_tsx=is_tsx)
+        percent_lines = hand_percent_lines(text, code_with_strings, code, is_tsx=is_tsx)
         if percent_lines:
             found["family-hand-percent"] = percent_lines
     if ".measureText" in code:
