@@ -176,7 +176,7 @@ test('air kills & losses lines projects slot-keyed dual lines, whole-number axis
   assert.deepEqual(model.legend?.map(l => l.label), ['Solid: enemy losses', 'Dashed: own losses']);
 });
 
-test('a partial total is labelled and audited as at least its recorded subtotal, never as exact', () => {
+test('a partial total is labelled partial and audited as a recorded subtotal with its reason, never as exact or as a bound', () => {
   const k1 = countryKey(1);
   const reason = "Some events since the totals' start have no recorded country";
   const rows = airReply().rows.map(row => ({ ...row, complete: false, partial: reason, ratioHundredths: null }));
@@ -188,7 +188,7 @@ test('a partial total is labelled and audited as at least its recorded subtotal,
   const model = airKillsLossesLinesProjection.project(readView, makeOptions({ rankMetric: 'taken' }));
   assert.equal(model.series[1]!.endLabel?.value, '450 / 200 (partial)', 'a partial total is named as one, never as a bound: losses can be corrected downwards');
   const audited = model.auditRows?.find(row => row.key === `${k1}\u0000taken`);
-  assert.ok(audited && String(audited.value).includes(reason), `the audit says the total is partial: ${JSON.stringify(audited)}`);
+  assert.equal(audited?.value, `200 (recorded subtotal: ${reason})`, `the audit gives the recorded figure and why it is a subtotal: ${JSON.stringify(audited)}`);
 });
 
 test('unrecorded air losses stay not recorded with their reason, never zero or blank', () => {
