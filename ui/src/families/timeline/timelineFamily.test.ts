@@ -364,3 +364,39 @@ test('a pointer within the slack of a bar names that bar at an hour inside it', 
   assert.equal(hit.spanId, 'a');
   assert.ok(hit.hour! <= H(1938) - 1, `hour ${hit.hour} lies inside the bar it names`);
 });
+
+test('zoomed out, a merged bar still answers a hover with the holding under the pointer', () => {
+  const lanes: TimelineLane[] = [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [
+    { id: 'first', firstHour: FIRST + 2000, lastHour: FIRST + 2000, color: '#fff', open: false, label: 'Same' },
+    { id: 'second', firstHour: FIRST + 2004, lastHour: FIRST + 2004, color: '#fff', open: false, label: 'Same' },
+  ] }];
+  const model: TimelineModel = { hour: H(1946) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 120, warnings: [], nextChangeAt: Infinity };
+  const layout = frameTimeline(placeTimeline(model, 400, 200, {}), H(1946));
+  const resolution = resolutionFor(null, model, layout);
+  assert.equal(coalescedSpans(resolution, lanes[0]!).length, 1, 'painted as one bar');
+  const span = (FIRST + 2004 - FIRST) / (H(1946) - FIRST);
+  const x = layout.plotLeft + span * (layout.plotRight - layout.plotLeft) + 0.6;
+  const hit = hitTimeline(layout, resolution, x, layout.lanes[0]!.y + 10, 0)!;
+  assert.equal(hit.spanId, 'second');
+});
+
+test('a direct hit on a marker widened to a pixel and a half keeps the marker hour', () => {
+  const lanes: TimelineLane[] = [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [
+    { id: 'm', firstHour: FIRST + 2000, lastHour: FIRST + 2000, color: '#fff', open: false, diamond: { color: '#fff' } },
+  ] }];
+  const model: TimelineModel = { hour: H(1946) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 120, warnings: [], nextChangeAt: Infinity };
+  const layout = frameTimeline(placeTimeline(model, 400, 200, {}), H(1946));
+  const resolution = resolutionFor(null, model, layout);
+  const x = layout.plotLeft + ((2000) / (H(1946) - FIRST)) * (layout.plotRight - layout.plotLeft) + 1.4;
+  const hit = hitTimeline(layout, resolution, x, layout.lanes[0]!.y + 10, 0)!;
+  assert.deepEqual([hit.spanId, hit.hour], ['m', FIRST + 2000]);
+});
+
+test('a short widget keeps the trait meters that fit rather than dropping them all', () => {
+  const items = Array.from({ length: 4 }, (_, i) => ({ key: `t${i}`, label: `Trait ${i}`, figure: `${i}`, fraction: 0.5 }));
+  const model = timelineModel({ hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, labelWidth: 72, axisPosition: 'top',
+    header: { title: 'General' }, meters: { title: 'Traits in training', items },
+    lanes: [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [] }] });
+  const layout = frameTimeline(placeTimeline(model, 640, 240, {}), H(1940));
+  assert.ok(layout.metersHeight >= METERS_HEADER_HEIGHT + 2 * METERS_ROW_HEIGHT, `both rows of four meters are shown (${layout.metersHeight})`);
+});

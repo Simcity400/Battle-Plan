@@ -128,6 +128,10 @@ export function sideTree(sides: readonly CivilWarSide[]): { index: number; depth
   return order;
 }
 
+function fightingEnd(war: CivilWar): number {
+  return war.atWar.at(-1)?.lastHour ?? war.lastHour;
+}
+
 function namedSide(war: CivilWar): number {
   const index = war.sides.findIndex(side => side.existedBefore);
   return index < 0 ? 0 : index;
@@ -266,7 +270,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
     }
     if (!reply) return timelineModel(base);
     const nextChangeAt = reply.nextChange ?? Infinity;
-    const unread = unknownHours([], reply.known, opt.firstHour, reply.hour);
+    const unread = unknownHours([], reply.known, opt.branchFirstHour, reply.hour);
     const notes: string[] = [];
 
     if (!reply.known.length && !reply.wars.length) {
@@ -288,7 +292,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
     let unnamedCount = 0;
 
     for (const war of reply.wars) {
-      if (war.firstHour > reply.hour || war.lastHour < opt.firstHour) continue;
+      if (war.firstHour > reply.hour || fightingEnd(war) < opt.firstHour) continue;
       if (opt.selected && !war.sides.some(side => sideMatchesSelected(side, reply.hour, opt.selected!, opt.holders, opt.membership))) {
         continue;
       }
@@ -371,14 +375,14 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       const topColor = pair ? pair[0].colour : (sides[0]?.colour ?? colour(opt.surface, 0));
       let bottomColor = pair ? pair[1].colour : colour(opt.surface, 1);
       if (bottomColor === topColor) bottomColor = colour(opt.surface, 1);
-      const endHour = ongoing ? hour : Math.min(war.atWar.at(-1)?.lastHour ?? war.lastHour, hour);
+      const endHour = ongoing ? hour : Math.min(fightingEnd(war), hour);
       const span: TimelineSpan = {
         id: 'war',
         firstHour: war.firstHour,
         lastHour: endHour,
         color: topColor,
         halves: [topColor, bottomColor],
-        endCap: !ongoing,
+        endCap: !ongoing && war.atWar.length > 0,
         open: ongoing,
         startBy: startUnseen(war.firstHour, opt.branchFirstHour, unread),
         endUnseen: !ongoing && state.kind === 'ended' && state.lastSeen !== null,
@@ -491,7 +495,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       }
       return {
         title: lane.label,
-        subtitle: `${formatDateOnly(war.firstHour)} – ${lane.outcome?.mark === 'ongoing' ? 'ongoing' : formatDateOnly(war.lastHour)}`,
+        subtitle: `${formatDateOnly(war.firstHour)} – ${lane.outcome?.mark === 'ongoing' ? 'ongoing' : formatDateOnly(fightingEnd(war))}`,
         hour: at,
         items,
       };

@@ -39,7 +39,7 @@ import {
   type TimelineLayout,
 } from './layout.ts';
 import { laneOpen, type TimelineHit, type TimelineLane, type TimelineModel, type TimelineSideLabel, type TimelineSpan } from './model.ts';
-import { coalescedGaps, paintedSpans, type TimelineResolution } from './resolution.ts';
+import { coalescedGaps, paintedSpans, spanUnder, type TimelineResolution } from './resolution.ts';
 
 export interface TimelinePaintInput {
   readonly model: TimelineModel;
@@ -516,7 +516,15 @@ function drawMeters(ctx: Canvas2D, input: TimelinePaintInput): void {
   const cols = METERS_PER_ROW;
   const gap = 16;
   const colW = Math.max(80, (layout.width - LABEL_PAD * 2 - gap * (cols - 1)) / cols);
-  meters.items.forEach((item, index) => {
+  const capacity = cols * Math.max(1, Math.floor((layout.metersHeight - METERS_HEADER_HEIGHT - 8) / METERS_ROW_HEIGHT));
+  const overflow = meters.items.length > capacity ? meters.items.length - capacity + 1 : 0;
+  if (overflow) {
+    const index = capacity - 1;
+    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.fillStyle = theme.muted;
+    ctx.fillText(`+${overflow} more`, LABEL_PAD + (index % cols) * (colW + gap), layout.metersTop + METERS_HEADER_HEIGHT + Math.floor(index / cols) * METERS_ROW_HEIGHT + 6);
+  }
+  meters.items.slice(0, overflow ? capacity - 1 : capacity).forEach((item, index) => {
     const col = index % cols;
     const row = Math.floor(index / cols);
     const x = LABEL_PAD + col * (colW + gap);
@@ -743,11 +751,11 @@ export function hitTimeline(layout: TimelineLayout, resolution: TimelineResoluti
   const hour = Math.floor(xToHour(layout, x));
   let nearest: { readonly span: TimelineSpan; readonly distance: number } | null = null;
   for (const { span, x0, x1 } of paintedSpans(resolution, lane, layout)) {
-    if (x >= x0 && x < x1) return { kind: 'span', laneKey: lane.key, spanId: span.id, hour };
-    const distance = x < x0 ? x0 - x : x - x1;
+    const distance = x >= x0 && x < x1 ? 0 : x < x0 ? x0 - x : x - x1;
     if (distance <= HIT_SLACK && (!nearest || distance < nearest.distance)) nearest = { span, distance };
+    if (distance === 0) break;
   }
   if (!nearest) return { kind: 'lane', laneKey: lane.key, hour };
-  const { span } = nearest;
+  const span = spanUnder(resolution, nearest.span, hour);
   return { kind: 'span', laneKey: lane.key, spanId: span.id, hour: Math.max(span.firstHour, span.open ? hour : Math.min(hour, span.lastHour)) };
 }

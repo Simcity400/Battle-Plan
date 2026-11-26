@@ -76,19 +76,25 @@ export function sampleSparkline(series: BoundedSeries | undefined, hour: number,
   const last = pieces[pieces.length - 1]!.last;
   if (last <= first) return undefined;
   const missing = [...series.missing];
-  const unread = (at: number) => missing.some(span => span.firstHour <= at && at <= span.lastHour);
+  const unreadBetween = (from: number, to: number) => missing.some(span => span.firstHour <= to && from <= span.lastHour);
   const out: (number | null)[] = [];
   let cursor = 0;
   let known = 0;
+  let previous: { readonly hour: number; readonly piece: number } | null = null;
   for (let i = 0; i < points; i++) {
     const target = first + ((last - first) * i) / (points - 1);
     while (cursor < pieces.length && pieces[cursor]!.last + 1 <= target && cursor + 1 < pieces.length) cursor++;
     const piece = pieces[cursor]!;
-    if (piece.first <= target && target < piece.last + 1 && !unread(Math.floor(target))) {
+    const at = Math.floor(target);
+    const inside = piece.first <= target && target < piece.last + 1 && !unreadBetween(at, at);
+    const broken = previous !== null && (unreadBetween(previous.hour + 1, at) || pieces.slice(previous.piece, cursor).some((held, k) => held.last + 1 < pieces[previous!.piece + k + 1]!.first));
+    if (inside && !broken) {
       out.push(target >= piece.last ? piece.lastValue : piece.firstValue);
       known++;
+      previous = { hour: at, piece: cursor };
     } else {
       out.push(null);
+      previous = inside ? { hour: at, piece: cursor } : null;
     }
   }
   return known >= 2 ? out : undefined;

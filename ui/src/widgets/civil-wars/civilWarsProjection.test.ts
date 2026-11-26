@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { assertQuietFrames, LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import { createLaneView } from '../../families/laneRuntime.ts';
@@ -205,4 +206,26 @@ test('a quiet stretch of played hours makes no extra civil-wars requests and pai
     assert.deepEqual(civilWarsProof(quietReply, [0, h], h), [400, 899]);
   }
   assert.equal(civilWarsDeclaration.kind, 'civil-wars');
+});
+
+test('the war ends where its fighting ends for the Range, the bar and the tooltip alike, and a war never fought has no dated end cap', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const sides = [side(1, tags([0, 'SPA']), 100, 120, null, true), side(2, tags([100, 'SPR']), 100, 120, 0)];
+  const data = validateCivilWarsReply(reply(200, [war('w', 100, 120, sides, null, [{ firstHour: 100, lastHour: 115 }])]));
+  const view = createBoundedReadView({ hour: 200, identity, panels: new Map([['main', data]]) });
+  assert.equal(civilWarsProjection.project(view, { ...OPTIONS, firstHour: 116 }).summaryText, '0 civil wars · 0 ongoing', 'fighting ended at 115, before the Range');
+  const model = civilWarsProjection.project(view, OPTIONS);
+  const tip = civilWarsProjection.tooltip!(model, { kind: 'span', laneKey: 'cw:w', spanId: 'war', hour: 110 }, view, OPTIONS);
+  assert.match(String(tip?.subtitle), new RegExp(`${formatDateOnly(115)}$`), 'the tooltip names the same end as the bar');
+  const unfought = validateCivilWarsReply(reply(200, [war('u', 100, 120, sides, null, [])]));
+  const bar = civilWarsProjection.project(createBoundedReadView({ hour: 200, identity, panels: new Map([['main', unfought]]) }), OPTIONS).lanes[0]!.spans[0]!;
+  assert.equal(bar.endCap, false, 'no observed end to mark');
+});
+
+test('a gap before the Range start still makes a war first seen after it a cut start', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const sides = [side(1, tags([0, 'SPA']), 100, 150, null, true), side(2, tags([100, 'SPR']), 100, 150, 0)];
+  const data = validateCivilWarsReply(reply(150, [war('w', 100, 150, sides)], { known: [{ firstHour: 0, lastHour: 89 }, { firstHour: 100, lastHour: 150 }] }));
+  const model = civilWarsProjection.project(createBoundedReadView({ hour: 150, identity, panels: new Map([['main', data]]) }), { ...OPTIONS, firstHour: 100 });
+  assert.equal(model.lanes[0]!.spans[0]!.startBy, true, 'hours 90-99 were not read: the start is not definite');
 });

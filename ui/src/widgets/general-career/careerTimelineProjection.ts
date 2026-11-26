@@ -279,8 +279,9 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
         };
       });
 
-    const observed: Span[] = career.observed.map(([first, last]) => [first, Math.min(last, hour)] as const);
-    const service: Span[] = career.runs.map(run => [run.firstHour, Math.min(run.lastHour, hour)] as const);
+    const through = (last: number) => (last === career.hour ? hour : Math.min(last, hour));
+    const observed: Span[] = career.observed.map(([first, last]) => [first, through(last)] as const);
+    const service: Span[] = career.runs.map(run => [run.firstHour, through(run.lastHour)] as const);
     const inService = intersect(observed, service);
     const months = battleMonths(career.battles, opt.firstHour, hour);
     const maxMonthly = months.reduce((top, m) => Math.max(top, m.won, m.lost), 1);
@@ -288,7 +289,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
       const pieces = intersect(inService, [[m.first, m.last]]);
       const partial = coveredHours(observed, m.first, m.last) < m.last - m.first + 1;
       const meta = { kind: 'battle', ...m, partial };
-      return (pieces.length ? pieces : [[m.first, m.last] as const]).map(([first, last]) => ({
+      return pieces.map(([first, last]) => ({
         id: `bat:${index}:${first}`,
         firstHour: first,
         lastHour: last,
@@ -301,20 +302,19 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
 
     const gainsAt = new Map<number, { readonly name: string; readonly gainClass: number }[]>();
     for (const [at, idx, gainClass] of career.traitGains) {
-      if (at > hour) continue;
+      if (at > hour || at < opt.firstHour) continue;
       const list = gainsAt.get(at);
       const entry = { name: traitName(career.traits[idx]), gainClass };
       if (list) list.push(entry);
       else gainsAt.set(at, [entry]);
     }
     const traitSpans: TimelineSpan[] = [...gainsAt].sort((a, b) => a[0] - b[0]).map(([at, entries]) => {
-      const clamped = Math.max(opt.firstHour, at);
       const gained = entries.filter(entry => entry.gainClass !== 0);
       const colour = gained.length ? GAINED_DIAMOND : HELD_DIAMOND;
       return {
         id: `trait:${at}`,
-        firstHour: clamped,
-        lastHour: clamped,
+        firstHour: at,
+        lastHour: at,
         color: colour,
         open: false,
         diamond: { color: colour, ...(gained.length ? { text: gained.map(entry => entry.name).join(', ') } : {}) },

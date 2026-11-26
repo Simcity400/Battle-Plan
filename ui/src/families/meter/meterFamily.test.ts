@@ -683,3 +683,18 @@ test('autonomy meters ask for every subject the recording names, with no fixed c
   const loading = autonomyLevelsDeclaration.sources({ ...ctx, countries: { every: [] } } as never, {} as never).entries;
   assert.ok(!loading.some(entry => entry.name === 'trend'), 'no ranked trend is asked before the population is known');
 });
+
+test('an autonomy sparkline breaks across a short unread stretch that falls between two samples', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak: false, hasBreak: false });
+  const tile = {
+    tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice([bucket(hour - 300, hour - 152, 0.2), null, bucket(hour - 148, hour, 0.8)], 3),
+    missing: createBoundedSlice([{ firstHour: hour - 151, lastHour: hour - 149, reason: 'Subjects not read' }], 1),
+    validInterval: [hour - 300, hour] as const,
+  };
+  const line = sampleSparkline(tile as never, hour)!;
+  const joins = line.slice(1).some((value, i) => value !== null && line[i] !== null && line[i] !== value);
+  assert.ok(!joins, `no stroke joins 20% to 80% across the gap: ${JSON.stringify(line)}`);
+});

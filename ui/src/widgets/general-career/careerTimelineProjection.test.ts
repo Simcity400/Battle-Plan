@@ -197,3 +197,29 @@ test('traits gained at the same hour are one marker that names each of them', ()
   const text = JSON.stringify(tip);
   assert.ok(text.includes('Infantry Leader') && text.includes('Skilled Staffer'), text);
 });
+
+test('a career reply shown after its read hour runs its service and coverage on to the shown hour', () => {
+  const read = H(1938, 1, 10);
+  const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
+    runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }],
+    battles: careerReply().battles.slice(0, 2) };
+  const shown = H(1938, 1, 20);
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: shown, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  assert.deepEqual(model.unobserved, [], 'nothing is hatched inside the proven interval');
+  const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
+  assert.equal(bar.lastHour, shown, 'the month bar advances to the shown hour');
+});
+
+test('a battle dated in a month with no recorded hour in service draws no bar but still counts', () => {
+  const career: LeaderCareerReply = { ...careerReply(), observed: [[FIRST, H(1937, 12, 31)], [H(1938, 2, 1), AT]] };
+  const model = projectAt(undefined, career);
+  assert.deepEqual(model.lanes.find(lane => lane.key === 'battles')!.spans, [], 'January 1938 was not recorded');
+  assert.equal(model.header?.kpis?.find(kpi => kpi.label === 'fought')?.value, '3');
+});
+
+test('with a Range, trait gains before it are not piled onto its first hour', () => {
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: AT, panels: new Map<string, unknown>([['career', validateLeaderCareer(careerReply())]]) }),
+    { ...OPTIONS, firstHour: H(1938, 1, 1) });
+  const traits = model.lanes.find(lane => lane.key === 'traits')!.spans;
+  assert.deepEqual(traits.map(span => span.firstHour), [H(1938, 4, 1)], 'the gain held before 1936 lies outside the Range');
+});
