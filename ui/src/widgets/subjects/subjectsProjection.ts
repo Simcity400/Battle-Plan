@@ -1,8 +1,12 @@
 import { unavailableArt } from '../../families/art/types.ts';
 import { colour, neutralColour, readableColour } from '../../charts/palette.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { Lineage } from '../../dashboard/identity.ts';
+import type { CountrySelection } from '../../dashboard/model';
 import { formatDateOnly } from '../../families/valueFormat.ts';
+import { nextTimelineSelectionChange, resolveTimelineSelection } from '../../families/groupFilter.ts';
+import type { HourRanges } from '../../families/holders.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, inHourSpans, timelineModel, spanStart, clipSpansToHour } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
@@ -29,6 +33,10 @@ export interface SubjectsOptions {
   readonly branchFirstHour: number;
   readonly surface: string;
   readonly selected: readonly string[] | null;
+  readonly selection?: CountrySelection;
+  readonly fallback?: readonly string[];
+  readonly membership?: Readonly<Record<string, HourRanges>> | null;
+  readonly unobserved?: HourRanges;
 }
 
 const views = new WeakMap<SubjectReply, WeakMap<CountryGroupReply, ReturnType<typeof overlordViews>>>();
@@ -45,11 +53,12 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
   family: 'timeline',
   kind: 'subjects',
 
-  nextChange(readView) {
+  nextChange(readView, opt) {
     const main = subjectsAt(readView, 'main');
     const groups = groupsAt(readView, 'groups');
     const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
-    return main ? Math.min(counts, main.nextChange, groups?.nextChange ?? Infinity) : Infinity;
+    const selectionNext = nextTimelineSelectionChange(opt, readView.hour);
+    return main ? Math.min(counts, main.nextChange, groups?.nextChange ?? Infinity, selectionNext) : Infinity;
   },
 
   project(readView, opt) {
@@ -61,25 +70,34 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
     const base = { hour, firstHour: opt.firstHour, labelWidth: 230 };
     if (!reply || !groups) return timelineModel(base);
     const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
-    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, main!.nextChange, groupsRead!.nextChange);
+    const nextChangeAt = Math.min(
+      counts?.nextChange ?? Infinity,
+      main!.nextChange,
+      groupsRead!.nextChange,
+      nextTimelineSelectionChange(opt, hour),
+    );
     const warnings = [...reply.warnings, ...groups.warnings];
+    const identities = countryIdentityIndex(groups.countryIdentities);
+    const resolved = resolveTimelineSelection(opt, groups, identities, hour);
+    if (resolved.kind === 'empty') {
+      return timelineModel({ ...base, empty: resolved.reason, emptyKind: resolved.emptyKind, warnings, nextChangeAt });
+    }
     if (!reply.runs.length) return timelineModel({ ...base, empty: 'No subjects recorded', warnings, nextChangeAt });
     const overlords = viewsOf(reply, groups);
     const levels = new Map<string, SubjectLevel>(reply.levels.map(level => [level.token, level]));
     const other = readableColour(neutralColour('other', opt.surface), opt.surface);
     const fills = levelColours(reply.levels, reply.levels.map((_, index) => colour(opt.surface, index)), other);
     const unobserved = clipSpansToHour(overlords[0]?.unknown ?? reply.unobserved, hour);
-    const selected = opt.selected ? new Set(opt.selected) : null;
     const built = subjectLanes(overlords, levels, fills, hour, {
       order: opt.order,
       subjects: opt.subjects,
       ended: opt.showEnded,
-      countries: selected,
-      countryIds: selected ? overlords[0]?.identities?.selected([...selected]) ?? null : null,
+      countries: resolved.kind === 'filtered' ? resolved.countries : null,
+      countryIds: resolved.kind === 'filtered' ? resolved.countryIds : null,
       counts,
     }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, unobserved);
     if (!built.lanes.length) {
-      return timelineModel({ ...base, empty: selected ? 'None of the chosen countries has been an overlord or a subject yet' : 'No subjects yet', warnings, nextChangeAt });
+      return timelineModel({ ...base, empty: resolved.kind === 'filtered' ? 'None of the chosen countries has been an overlord or a subject yet' : 'No subjects yet', warnings, nextChangeAt });
     }
     const tagOf = new Map<string, string>();
     for (const lane of built.lanes) {
@@ -159,7 +177,7 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   subject: 'subjects',
   emptyCampaign: 'Load a campaign to see its overlords and subjects.',
   icon: 'hierarchy',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', datedAtHour: true },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => {
@@ -182,5 +200,9 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
     branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
     selected: ctx.countries.all ? null : ctx.countries.tags,
+    selection: ctx.widget.countries,
+    fallback: selectedCountryKeys(ctx.widget.countries, ctx.track),
+    membership: ctx.countries.membership,
+    unobserved: ctx.countries.unobserved,
   }),
 };

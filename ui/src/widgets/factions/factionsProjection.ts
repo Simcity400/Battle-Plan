@@ -1,5 +1,9 @@
 import { unavailableArt } from '../../families/art/types.ts';
 import { colour, readableColour } from '../../charts/palette.ts';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
+import type { CountrySelection } from '../../dashboard/model';
+import { nextTimelineSelectionChange, resolveTimelineSelection } from '../../families/groupFilter.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import { bridgeGaps } from '../../charts/timeline/runState.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
@@ -32,9 +36,12 @@ export interface FactionsOptions {
   readonly branchFirstHour: number;
   readonly surface: string;
   readonly selected: readonly string[] | null;
+  readonly selection?: CountrySelection;
+  readonly fallback?: readonly string[];
   readonly styles: Readonly<Record<string, { readonly colour?: string; readonly name?: string }>>;
   readonly shared: Readonly<Record<string, { readonly colour: string }>>;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
+  readonly unobserved?: HourRanges;
 }
 
 export interface FactionLaneMeta {
@@ -77,23 +84,15 @@ function viewsOf(readView: BoundedReadView, reply: CountryGroupReply, opt: Facti
   );
 }
 
-function selectedAt(opt: FactionsOptions, hour: number): Set<string> | null {
-  if (!opt.selected) return null;
-  const membership = opt.membership;
-  return new Set(opt.selected.filter(tag => {
-    const ranges = membership?.[tag];
-    return !ranges || ranges.some(([first, last]) => first <= hour && hour <= last);
-  }));
-}
-
 export const factionsProjection: TimelineProjection<FactionsOptions> = registerFamilyProjection<TimelineProjection<FactionsOptions>>({
   family: 'timeline',
   kind: 'factions',
 
-  nextChange(readView) {
+  nextChange(readView, opt) {
     const at = groupsAt(readView, 'main');
     const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
-    return at ? Math.min(counts, at.nextChange) : Infinity;
+    const selectionNext = nextTimelineSelectionChange(opt, readView.hour);
+    return at ? Math.min(counts, at.nextChange, selectionNext) : Infinity;
   },
 
   project(readView, opt) {
@@ -102,22 +101,30 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
     const reply = at?.groups;
     const base = { hour, firstHour: opt.firstHour, labelWidth: 240 };
     if (!reply) return timelineModel(base);
-    const views = viewsOf(readView, reply, opt);
     const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
-    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, at!.nextChange);
+    const nextChangeAt = Math.min(
+      counts?.nextChange ?? Infinity,
+      at!.nextChange,
+      nextTimelineSelectionChange(opt, hour),
+    );
+    const identities = countryIdentityIndex(reply.countryIdentities);
+    const resolved = resolveTimelineSelection(opt, reply, identities, hour);
+    if (resolved.kind === 'empty') {
+      return timelineModel({ ...base, empty: resolved.reason, emptyKind: resolved.emptyKind, warnings: reply.warnings, nextChangeAt });
+    }
     if (!reply.factions.length) return timelineModel({ ...base, empty: 'No factions recorded', warnings: reply.warnings, nextChangeAt });
+    const views = viewsOf(readView, reply, opt);
     const gaps = factionGaps(reply);
-    const selected = selectedAt(opt, hour);
     const built = factionLanes(views, hour, {
       order: opt.order,
       members: opt.members,
       ended: opt.showEnded,
-      countries: selected,
-      countryIds: selected ? views[0]?.identities.selected([...selected]) ?? null : null,
+      countries: resolved.kind === 'filtered' ? resolved.countries : null,
+      countryIds: resolved.kind === 'filtered' ? resolved.countryIds : null,
       counts,
     }, { country: tag => ({ name: countryLook(readView, tag, hour).name }), day: formatDateOnly }, gaps, opt.branchFirstHour);
     if (!built.lanes.length) {
-      return timelineModel({ ...base, empty: selected ? 'None of the chosen countries has been in a faction yet' : 'No factions yet', warnings: reply.warnings, nextChangeAt });
+      return timelineModel({ ...base, empty: resolved.kind === 'filtered' ? 'None of the chosen countries has been in a faction yet' : 'No factions yet', warnings: reply.warnings, nextChangeAt });
     }
     let headerKey = '';
     const lanes: TimelineLane[] = built.lanes.map(source => {
@@ -199,7 +206,7 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
   subject: 'factions',
   emptyCampaign: 'Load a campaign to see its factions.',
   icon: 'shield',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', datedAtHour: true },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => ({
@@ -227,7 +234,10 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
     branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
     selected: ctx.countries.all ? null : ctx.countries.tags,
+    selection: ctx.widget.countries,
+    fallback: selectedCountryKeys(ctx.widget.countries, ctx.track),
     membership: ctx.countries.membership,
+    unobserved: ctx.countries.unobserved,
     styles: {},
     shared: {},
   }),

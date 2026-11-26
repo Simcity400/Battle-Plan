@@ -6,7 +6,8 @@ import { LEADER_GLYPH, UNNAMED, factionGaps, factionLabel, factionLanes, faction
 import { factionsProjection } from './factionsProjection.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { LaneOptions } from './factionsData';
-import { worldFilter } from '../../dashboard/groups.ts';
+import { EVER_UNRECORDED, worldFilter } from '../../dashboard/groups.ts';
+import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 
@@ -355,4 +356,116 @@ test('a followed reply shown after its read hour, inside its proven interval, ke
   assert.deepEqual(later.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]), atReadHour.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]),
     'nothing left, dissolved or lost its country between the read and the shown hour');
   assert.ok(later.lanes.every(lane => lane.spans.at(-1)?.open), 'every run held at the read hour runs on to the shown hour');
+});
+
+test('factions projection resolves reused group tags to the active holder and marks unrecorded membership', () => {
+  const dated: CountryGroupReply = {
+    branchId: '1', warnings: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    humans: [{ tag: 'AAA', firstHour: 200, lastHour: 299 }, { tag: 'BBB', firstHour: 350, lastHour: 400 }],
+    factions: [
+      {
+        id: '1', name: 'Pact Alpha', recordedName: 'Pact Alpha', firstHour: 0, lastHour: 99, nameReason: null,
+        names: [{ firstHour: 0, lastHour: 99, name: 'Pact Alpha', reason: null, token: null }],
+        members: [run('AAA', 0, 99)], leaders: [run('AAA', 0, 99)], incomplete: [],
+      },
+      {
+        id: '2', name: 'Pact Beta', recordedName: 'Pact Beta', firstHour: 200, lastHour: 400, nameReason: null,
+        names: [{ firstHour: 200, lastHour: 400, name: 'Pact Beta', reason: null, token: null }],
+        members: [run('AAA', 200, 400)], leaders: [run('AAA', 200, 400)], incomplete: [],
+      },
+      {
+        id: '3', name: 'Pact Gamma', recordedName: 'Pact Gamma', firstHour: 50, lastHour: 400, nameReason: null,
+        names: [{ firstHour: 50, lastHour: 400, name: 'Pact Gamma', reason: null, token: null }],
+        members: [run('BBB', 50, 400)], leaders: [run('BBB', 50, 400)], incomplete: [],
+      },
+    ],
+    countryIdentities: [
+      { tag: 'AAA', identities: [{ slot: 1, countryId: 10, firstHour: 0, lastHour: 99 }, { slot: 2, countryId: 20, firstHour: 200, lastHour: 400 }] },
+      holder('BBB', 3, 0, 400, 30),
+    ],
+    unobserved: { humans: [{ firstHour: 310, lastHour: 320 }], factions: [], wars: [], unattributed: [] },
+  };
+  const cut = <T extends { firstHour: number; lastHour: number }>(spans: readonly T[], upTo: number) =>
+    spans.filter(span => span.firstHour <= upTo).map(span => ({ ...span, lastHour: Math.min(span.lastHour, upTo) }));
+  const at = (hour: number, nextChange: number | null = null) => createBoundedReadView({
+    hour,
+    panels: new Map([[
+      'main',
+      {
+        hour,
+        nextChange,
+        groups: {
+          ...dated,
+          humans: cut(dated.humans, hour),
+          factions: cut(dated.factions, hour).map(faction => ({
+            ...faction,
+            names: cut(faction.names, hour),
+            members: cut(faction.members, hour),
+            leaders: cut(faction.leaders, hour),
+            incomplete: cut(faction.incomplete, hour),
+          })),
+          countryIdentities: dated.countryIdentities.map(item => ({ ...item, identities: cut(item.identities, hour) })).filter(item => item.identities.length > 0),
+          unobserved: { ...dated.unobserved, humans: cut(dated.unobserved.humans, hour) },
+        },
+      },
+    ]]),
+  });
+  const baseOpt = {
+    order: 'founded' as const, members: 'joined' as const, showEnded: true,
+    firstHour: 0, branchFirstHour: 0, surface: '#161616',
+    selected: ['AAA', 'BBB'],
+    membership: { AAA: [[200, 299]] as const, BBB: [[350, 400]] as const },
+    unobserved: [[310, 320]] as const,
+    styles: {}, shared: {},
+  };
+  const hourOpt = { ...baseOpt, selection: { kind: 'group' as const, group: { type: 'humans' as const }, membership: 'hour' as const, aggregate: false } };
+
+  const before = factionsProjection.project(at(150), hourOpt);
+  assert.equal(before.lanes.length, 0);
+  assert.equal(before.empty, NO_MEMBERS.hour);
+  assert.equal(factionsProjection.nextChange!(at(150), hourOpt), 200);
+
+  const reused = factionsProjection.project(at(250), hourOpt);
+  assert.deepEqual(reused.lanes.filter(lane => lane.kind === 'group').map(lane => lane.label), ['Pact Beta']);
+  assert.equal(factionsProjection.nextChange!(at(250), hourOpt), 300);
+
+  const legacyReused = factionsProjection.project(at(250), baseOpt);
+  assert.deepEqual(legacyReused.lanes.filter(lane => lane.kind === 'group').map(lane => lane.label), ['Pact Beta']);
+
+  const unrecorded = factionsProjection.project(at(315), hourOpt);
+  assert.equal(unrecorded.lanes.length, 0);
+  assert.equal(unrecorded.emptyKind, 'unavailable');
+  assert.equal(factionsProjection.nextChange!(at(315), hourOpt), 321);
+
+  const everOpt = {
+    ...baseOpt,
+    membership: { AAA: [[200, 309]] as const },
+    unobserved: [[310, Number.MAX_SAFE_INTEGER]] as const,
+    selection: { kind: 'group' as const, group: { type: 'humans' as const }, membership: 'ever' as const, aggregate: false },
+  };
+  assert.equal(factionsProjection.project(at(150), everOpt).empty, NO_MEMBERS.yet);
+  assert.deepEqual(factionsProjection.project(at(305), everOpt).lanes.filter(lane => lane.kind === 'group').map(lane => lane.label), ['Pact Beta']);
+  const everUnseen = factionsProjection.project(at(360), everOpt);
+  assert.equal(everUnseen.emptyKind, 'unavailable');
+  assert.equal(everUnseen.empty, EVER_UNRECORDED);
+
+  const guardedGroups: CountryGroupReply = {
+    ...dated,
+    humans: [{ tag: 'AAA', firstHour: 200, lastHour: 250 }],
+    factions: cut(dated.factions, 250).map(faction => ({
+      ...faction,
+      names: cut(faction.names, 250),
+      members: cut(faction.members, 250),
+      leaders: cut(faction.leaders, 250),
+      incomplete: cut(faction.incomplete, 250),
+    })),
+    countryIdentities: dated.countryIdentities.map(item => ({ ...item, identities: cut(item.identities, 250) })).filter(item => item.identities.length > 0),
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+  };
+  Object.defineProperty(guardedGroups, 'wars', { get() { throw new Error('human selection must not scan unrelated wars'); } });
+  const guardedView = createBoundedReadView({
+    hour: 250,
+    panels: new Map([['main', { hour: 250, nextChange: null, groups: guardedGroups }]]),
+  });
+  assert.deepEqual(factionsProjection.project(guardedView, hourOpt).lanes.filter(lane => lane.kind === 'group').map(lane => lane.label), ['Pact Beta']);
 });

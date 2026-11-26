@@ -18,14 +18,56 @@ export function groupRuns(reply: CountryGroupReply, group: CountryGroup): Member
 
 function warEnemies(reply: CountryGroupReply, chosen: string): MembershipRun[] {
   const slot = countryFromKey(chosen);
-  const held = typeof slot === 'number'
-    ? reply.countryIdentities.flatMap(history => history.identities.filter(run => run.slot === slot).map(run => ({ tag: history.tag, firstHour: run.firstHour, lastHour: run.lastHour })))
-    : [{ tag: chosen, firstHour: -Infinity, lastHour: Infinity }];
-  return reply.wars.flatMap(pair => held.flatMap(own => {
-    const enemy = pair.first === own.tag ? pair.second : pair.second === own.tag ? pair.first : null;
-    const firstHour = Math.max(pair.firstHour, own.firstHour), lastHour = Math.min(pair.lastHour, own.lastHour);
-    return enemy !== null && firstHour <= lastHour ? [{ tag: enemy, firstHour, lastHour }] : [];
-  }));
+  if (typeof slot !== 'number') {
+    const out: MembershipRun[] = [];
+    for (let i = 0; i < reply.wars.length; i++) {
+      const pair = reply.wars[i]!;
+      const enemy = pair.first === chosen ? pair.second : pair.second === chosen ? pair.first : null;
+      if (enemy !== null && pair.firstHour <= pair.lastHour) {
+        out.push({ tag: enemy, firstHour: pair.firstHour, lastHour: pair.lastHour });
+      }
+    }
+    return out;
+  }
+  const byTag = new Map<string, { readonly firstHour: number; readonly lastHour: number }[]>();
+  for (let i = 0; i < reply.countryIdentities.length; i++) {
+    const history = reply.countryIdentities[i]!;
+    for (let j = 0; j < history.identities.length; j++) {
+      const run = history.identities[j]!;
+      if (run.slot !== slot) continue;
+      let list = byTag.get(history.tag);
+      if (!list) byTag.set(history.tag, list = []);
+      list.push(run);
+    }
+  }
+  if (!byTag.size) return [];
+  const out: MembershipRun[] = [];
+  const collect = (held: readonly { readonly firstHour: number; readonly lastHour: number }[], enemy: string, pairFirst: number, pairLast: number) => {
+    let low = 0;
+    let high = held.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (held[mid]!.lastHour < pairFirst) low = mid + 1;
+      else high = mid;
+    }
+    for (let j = low; j < held.length; j++) {
+      const own = held[j]!;
+      if (own.firstHour > pairLast) break;
+      const firstHour = Math.max(pairFirst, own.firstHour);
+      const lastHour = Math.min(pairLast, own.lastHour);
+      if (firstHour <= lastHour) out.push({ tag: enemy, firstHour, lastHour });
+    }
+  };
+  for (let i = 0; i < reply.wars.length; i++) {
+    const pair = reply.wars[i]!;
+    const firstHeld = byTag.get(pair.first);
+    if (firstHeld) collect(firstHeld, pair.second, pair.firstHour, pair.lastHour);
+    if (pair.second !== pair.first) {
+      const secondHeld = byTag.get(pair.second);
+      if (secondHeld) collect(secondHeld, pair.first, pair.firstHour, pair.lastHour);
+    }
+  }
+  return out;
 }
 
 export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): HourSpan[] {

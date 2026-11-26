@@ -63,6 +63,7 @@ import { gatedByCountry, planFamilySources } from './planSources.ts';
 import { factionPooledResourcesDeclaration } from '../../widgets/faction-pooled-strength/factionPooledStrengthProjection.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { countryMatch, EVER_UNRECORDED, everBounds, everStateAt, groupMembers, groupRuns, groupUnobserved, membershipUnrecordedAt, rankedCandidates, resolveCountries, tagsAt, worldFilter } from '../../dashboard/groups.ts';
+import { GROUP_UNAVAILABLE, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import { effectiveCountryUnobserved } from '../sources.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
@@ -2248,4 +2249,48 @@ test('ranking interval updates preserve tiled series identity and reuse valid un
   const u3 = reuseTileUnrecorded(u2, s2, 25);
   assert.notEqual(u3, u2);
   assert.equal(u3?.result?.reason, null);
+});
+
+test('dated-at-hour widgets distinguish recorded empty hours from unobserved spans and retain pinned ever history (#1031)', () => {
+  const groups = {
+    ...everFaction([]),
+    wars: [],
+    unobserved: { humans: [], factions: [], wars: [{ firstHour: 500, lastHour: 550 }], unattributed: [] },
+  } as unknown as CountryGroupReply;
+  const selection = { ...everOf({ type: 'war', tag: 'GER' }), membership: 'hour' as const };
+  const resolved = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
+  assert.equal(resolved.tags.length, 0);
+  assert.equal(resolved.reason, 'Group membership is incomplete for this campaign.');
+  const unobserved = effectiveCountryUnobserved(selection, resolved.unobserved);
+  const s200 = incompleteHourStateAt(unobserved, 200);
+  assert.deepEqual(s200, { kind: 'empty', from: -Infinity, until: 499 });
+  assert.deepEqual(incompleteGroupBodyStatus(s200.kind, true), { kind: 'no-members', reason: NO_MEMBERS.hour });
+  assert.deepEqual(incompleteGroupBodyStatus(s200.kind, false), { kind: 'no-members', reason: NO_MEMBERS.date });
+  const s525 = incompleteHourStateAt(unobserved, 525);
+  assert.deepEqual(s525, { kind: 'unrecorded', from: 500, until: 550 });
+  assert.deepEqual(incompleteGroupBodyStatus(s525.kind, true), { kind: 'not-recorded', reason: GROUP_UNAVAILABLE });
+  const s600 = incompleteHourStateAt(unobserved, 600);
+  assert.deepEqual(s600, { kind: 'empty', from: 551, until: Infinity });
+  assert.deepEqual(incompleteGroupBodyStatus(s600.kind, true), { kind: 'no-members', reason: NO_MEMBERS.hour });
+
+  const pastEverGroups = {
+    ...everFaction([], [{ tag: 'AAA', firstHour: 0, lastHour: 5 }]),
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 10, slot: 1, countryId: 101 }] }],
+  } as unknown as CountryGroupReply;
+  const pastEverSel = everOf({ type: 'faction', id: '42' });
+  const pastEverResolved = resolveCountries(pastEverSel, [], pastEverGroups, 100, Number.MAX_SAFE_INTEGER);
+  assert.equal(
+    staticDatedGroupBodyStatus(pastEverSel, pastEverResolved, pastEverGroups, { AAA: [[0, 10]] }, 15, []),
+    null,
+    'pinned ever after a past member loses its tag still allows Subjects and Factions to render its history',
+  );
+
+  const gappedEndGroups = everFaction([{ firstHour: 90, lastHour: 100 }], [{ tag: 'AAA', firstHour: 0, lastHour: 89 }]);
+  const gappedHourSel = { ...everOf({ type: 'faction', id: '42' }), membership: 'hour' as const };
+  const gappedResolved = resolveCountries(gappedHourSel, [], gappedEndGroups, 100, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual(
+    staticDatedGroupBodyStatus(gappedHourSel, gappedResolved, gappedEndGroups, { AAA: [[0, 89]] }, 100, []),
+    { kind: 'not-recorded', reason: GROUP_UNAVAILABLE },
+    'a pinned read inside a roster gap reports not-recorded',
+  );
 });
