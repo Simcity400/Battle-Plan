@@ -144,7 +144,7 @@ struct Losses {
 
 #[derive(Default)]
 struct Line {
-    key: String,
+    written: Option<i32>,
     exact: bool,
     states: Steps<u8>,
     place: Steps<(Option<u32>, Option<u32>)>,
@@ -223,7 +223,7 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
     }
     let mut handles: Vec<u64> = found.keys().map(|key| key.0).collect();
     handles.dedup();
-    let data = combats(query, columns, span.run, span.first, span.last, &handles)?;
+    let data = combats(query, columns, span.run, span.first, span.last, &handles, false)?;
     let mut out = Vec::with_capacity(found.len());
     for (key, battle) in found {
         let (combat, _, _) = key;
@@ -286,9 +286,9 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
             }
         }
         if let Some(end) = battle.end {
-            let status = match (end.result, end.winners) {
-                (Some(_), Some(1)) => LandBattleStatus::AttackerWon,
-                (Some(_), Some(2)) => LandBattleStatus::DefenderWon,
+            let status = match (end.resulted(), end.winners) {
+                (true, Some(1)) => LandBattleStatus::AttackerWon,
+                (true, Some(2)) => LandBattleStatus::DefenderWon,
                 _ => LandBattleStatus::Unknown,
             };
             let hour = end.written;
@@ -299,7 +299,7 @@ fn scan_block(query: &Query<'_>, columns: &Columns, span: Stretch, readings: &Re
             }
             let mut sides = known_sides(&end.sides, end.countries_unknown, Some);
             sides.read = [end.last_read; 2];
-            if end.result.is_some() {
+            if end.resulted() {
                 let result = known_sides(&end.result_sides, end.result_unknown, Some);
                 for (i, countries) in result.countries.into_iter().enumerate() {
                     if !countries.is_empty() || sides.countries[i].is_empty() {
@@ -442,10 +442,11 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
     for ((combat, start, written), mut line) in lines {
         let observed = line.states[0].0;
         let id = (u128::from(combat) << 64) | (u128::from(start as u32) << 32) | u128::from(written.map_or(0, |h| h as u32));
-        line.key = format!("{}:{combat}:{start}", query.timeline.id);
-        if let Some(h) = written {
-            line.key.push_str(&format!(":{h}"));
-        }
+        line.written = written;
+        line.place.shrink_to_fit();
+        line.divisions.shrink_to_fit();
+        line.sides.shrink_to_fit();
+        line.losses.shrink_to_fit();
         let roles = line
             .sides
             .iter()
@@ -477,6 +478,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
 struct Branches(HashMap<u64, Arc<Index<Line>>>);
 
 struct Prepared {
+    branch: u64,
     index: Arc<Index<Line>>,
     selection: Option<Selection>,
 }
@@ -491,7 +493,7 @@ fn prepare(source: &Source, query: &Query<'_>, load: &LoadContext, params: &Land
     drop(branches);
     let selection =
         dashboard_world::products::group_members::dated(source, query, load, params.countries.as_deref(), params.group.as_ref(), cancelled)?;
-    Ok(Prepared { index, selection })
+    Ok(Prepared { branch: query.timeline.id, index, selection })
 }
 
 fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams, hour: i32) -> io::Result<LandBattlesTailReply> {
@@ -542,7 +544,10 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
                 _ => LandBattleStatus::Unknown,
             };
             LandBattleLogRow {
-                key: line.key.clone(),
+                key: match line.written {
+                    Some(written) => format!("{}:{}:{}:{written}", prepared.branch, (entry.id >> 64) as u64, entry.date),
+                    None => format!("{}:{}:{}", prepared.branch, (entry.id >> 64) as u64, entry.date),
+                },
                 hour: entry.date,
                 exact: line.exact,
                 province,

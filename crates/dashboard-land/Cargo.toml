@@ -64,6 +64,7 @@ engine-heap = { workspace = true }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
+replay-journal = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -14,6 +14,7 @@ pub struct Held {
 #[derive(Debug, Default)]
 pub struct RunLexicon {
     by_literal: HashMap<Box<[u8]>, Vec<Held>>,
+    changes: Vec<(u32, i32)>,
 }
 
 impl RunLexicon {
@@ -22,9 +23,11 @@ impl RunLexicon {
         let (first, last) = (held.first_hour, held.first_hour + held.ordinals as i32 - 1);
         let mut open: HashMap<u32, (u32, i32)> = HashMap::default();
         let mut spans: Vec<(u32, Held)> = Vec::new();
+        let mut changes = Vec::new();
         let (_, texts) = dashboard_query::cost::storage(|| {
             points::cells(recording, run, TableId::LexicalTokens, &[0], Keys::All, first, last, None, &mut |hour, key, cells| {
                 let token = key as u32;
+                changes.push((token, hour));
                 if let Some((text, since)) = open.remove(&token) {
                     spans.push((text, Held { token, first: since, last: hour - 1 }));
                 }
@@ -44,7 +47,13 @@ impl RunLexicon {
         for spans in by_literal.values_mut() {
             spans.sort_unstable_by_key(|span| (span.token, span.first));
         }
-        Ok(Self { by_literal })
+        changes.sort_unstable();
+        Ok(Self { by_literal, changes })
+    }
+
+    pub fn changes(&self, token: u32, after: i32, through: i32) -> impl Iterator<Item = i32> + '_ {
+        let start = self.changes.partition_point(|&held| held <= (token, after));
+        self.changes[start..].iter().take_while(move |&&(held, hour)| held == token && hour <= through).map(|&(_, hour)| hour)
     }
 
     pub fn tokens(&self, literal: &[u8], from: i32, to: i32) -> impl Iterator<Item = u32> + '_ {

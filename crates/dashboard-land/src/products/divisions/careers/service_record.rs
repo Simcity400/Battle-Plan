@@ -1,7 +1,10 @@
 mod roster;
-use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe, enemy_killed};
+use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe, enemy_killed, manpower_of, status_of};
 use crate::products::{army::ArmyAttribution, division_log};
-use dashboard_base::queries::country_ids::{RunLinks, run_links};
+use dashboard_base::queries::{
+    country_ids::{RunLinks, run_links},
+    lexicon::RunLexicon,
+};
 use dashboard_base::{
     Source,
     products::{
@@ -23,11 +26,12 @@ use dashboard_query::{
 };
 use dashboard_text::metadata::check_cancel;
 use replay_data::rows::{DivisionEventRow, DivisionHistoryRow, DivisionRow, TableId, TableRows, tables};
+use replay_frame::frame::TableView;
 use replay_lanes::lanes::{self, Cell, Keys as LaneKeys};
 use roster::{Roster, Scope};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
@@ -82,7 +86,7 @@ pub struct ServiceDivision {
     pub template: Option<String>,
     pub sprite: Option<String>,
     pub medals: Option<i32>,
-    pub last_seen: i32,
+    pub last_seen: Option<i32>,
     pub removed: Option<String>,
     pub removed_at: Option<i32>,
 }
@@ -133,10 +137,54 @@ impl OccurrenceReply for ServiceRecordTailReply {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Entry {
-    History(usize),
-    Battle { combat: u128, start: i32, province: Option<u32>, owner: Option<u32>, other: Option<u32> },
-    Event(Box<ServiceEntry>),
+    Battle(u32),
+    History(u32),
+    Event(u32),
+}
+
+struct Battle {
+    id: u32,
+    hour: i32,
+    start: i32,
+    combat: u64,
+    province: Option<u32>,
+    owner: Option<u32>,
+    other: Option<u32>,
+}
+
+struct History {
+    id: u32,
+    key: u128,
+    read: i32,
+    date: i32,
+    observed: i32,
+    retired: Option<i32>,
+    token: Option<u32>,
+}
+
+struct Event {
+    id: u32,
+    key: u128,
+    hour: i32,
+    observed: i32,
+    kind: u8,
+    disposition: Option<i64>,
+    cause: Option<i64>,
+    slot: Option<u32>,
+    killer: Option<u32>,
+    province: Option<u32>,
+    place_hour: Option<i32>,
+    exact: bool,
+}
+
+#[derive(Default)]
+struct Record {
+    battles: Vec<Battle>,
+    history: Vec<History>,
+    events: Vec<Event>,
+    gaps: Vec<MissingSpan>,
 }
 
 #[derive(Clone)]
@@ -146,37 +194,71 @@ struct Summary {
     notes: Refusals,
 }
 
-#[derive(Default)]
-struct Rendered {
+struct Shown {
+    subject: Option<u64>,
+    entries: Index<Entry>,
     rows: HashMap<u32, (ServiceEntry, Refusals)>,
-    last_seen: HashMap<(u64, i32), Summary>,
+    summaries: HashMap<(i32, Option<u32>, bool), Summary>,
 }
 
 struct Tail {
     roster: Roster,
     content: Content,
-    rendered: Mutex<Rendered>,
-    history: Vec<(ServiceEntry, Refusals)>,
-    entries: Index<Entry>,
+    gaps: Vec<MissingSpan>,
+    records: HashMap<u64, Record>,
+    shown: Mutex<VecDeque<Shown>>,
 }
 
 const TITLE: &str = "Division service record";
 const CAREER: u16 = 0;
 const AWARD: u16 = 1;
+const SHOWN: usize = 4;
+const SUMMARIES: usize = 64;
 const PARTIAL_ROSTER: &str = "Some divisions' countries or medal totals were not recorded at this hour";
 
-fn occurrence(id: usize, division: u64, date: i32, observed: i32, kind: u16, payload: Entry) -> Occurrence<Entry> {
+fn award(key: u128) -> bool {
+    (key >> 32) & 3 == u128::from(DivisionHistoryRow::AWARDS)
+}
+
+fn occurrence(id: u32, subject: u128, date: i32, states: Box<[(i32, u8)]>, kind: u16, payload: Entry) -> Occurrence<Entry> {
     Occurrence {
-        id: id as u128,
+        id: u128::from(id),
         date,
-        observed,
+        observed: states[0].0,
         kind,
         roles: Box::new([]),
-        subjects: Box::new([u128::from(division)]),
-        states: Box::new([(observed, 1)]),
+        subjects: Box::new([subject]),
+        states,
         sort_keys: Box::new([]),
         text: Box::default(),
         payload,
+    }
+}
+
+impl Tail {
+    fn entries_of(&self, subject: Option<u64>) -> io::Result<Index<Entry>> {
+        let key = subject.map_or(u128::MAX, u128::from);
+        let Some(record) = subject.and_then(|id| self.records.get(&id)) else {
+            return Index::new(Vec::new(), self.gaps.clone(), &[]);
+        };
+        let mut entries = Vec::with_capacity(record.battles.len() + record.history.len() + record.events.len());
+        for (at, battle) in record.battles.iter().enumerate() {
+            entries.push(occurrence(battle.id, key, battle.hour, Box::new([(battle.hour, 1)]), CAREER, Entry::Battle(at as u32)));
+        }
+        for (at, history) in record.history.iter().enumerate() {
+            let states: Box<[(i32, u8)]> = match history.retired {
+                Some(retired) if retired > history.observed => Box::new([(history.observed, 1), (retired, 0)]),
+                Some(_) => Box::new([(history.observed, 0)]),
+                None => Box::new([(history.observed, 1)]),
+            };
+            let kind = if award(history.key) { AWARD } else { CAREER };
+            entries.push(occurrence(history.id, key, history.date, states, kind, Entry::History(at as u32)));
+        }
+        for (at, event) in record.events.iter().enumerate() {
+            entries.push(occurrence(event.id, key, event.hour, Box::new([(event.observed.max(event.hour), 1)]), CAREER, Entry::Event(at as u32)));
+        }
+        let index = Index::new(entries, self.gaps.clone(), &[])?;
+        Ok(if record.gaps.is_empty() { index } else { index.with_subject_gaps(HashMap::from([(key, record.gaps.clone())])) })
     }
 }
 
@@ -184,10 +266,9 @@ fn battle_entries(
     query: &Query<'_>,
     stretch: &dashboard_query::timeline::Stretch,
     links: &RunLinks,
-    entries: &mut Vec<Occurrence<Entry>>,
     participated: &mut BTreeSet<(u128, i32, u64)>,
     cancelled: &AtomicBool,
-) -> io::Result<()> {
+) -> io::Result<Vec<(u64, Battle)>> {
     let recording = query.replay.recording();
     let (run, first, last) = (stretch.run, stretch.first, stretch.last);
     let start = dashboard_declare::field(TableId::LandBattles, "start_hour")?;
@@ -266,20 +347,43 @@ fn battle_entries(
         }
         Ok(())
     })?;
-    for (at, combat, start, id, province, defending) in joined {
-        let owner = owners.get(&(at, id)).copied().flatten();
-        let other = sides.get(&(at, combat)).and_then(|s| if defending { s.0 } else { s.1 });
-        entries.push(occurrence(entries.len(), id, at, at, CAREER, Entry::Battle { combat, start, province, owner, other }));
-    }
-    Ok(())
+    Ok(joined
+        .into_iter()
+        .map(|(hour, combat, start, id, province, defending)| {
+            let owner = owners.get(&(hour, id)).copied().flatten();
+            let other = sides.get(&(hour, combat)).and_then(|s| if defending { s.0 } else { s.1 });
+            (id, Battle { id: 0, hour, start, combat: combat as u64, province, owner, other })
+        })
+        .collect())
 }
 
-fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Result<Tail> {
+fn history_lanes(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<(lanes::History, Arc<RunLexicon>, Vec<lanes::StatusRun>)> {
+    let recording = query.replay.recording();
+    let history = lanes::history(
+        recording,
+        run,
+        TableId::DivisionHistory,
+        &(0..TableId::DivisionHistory.field_count()).collect::<Vec<_>>(),
+        LaneKeys::All,
+        first,
+        last,
+    )?;
+    let statuses = dashboard_query::read::statuses(recording, run, TableId::LexicalTokens, first, last)?;
+    Ok((history, dashboard_base::queries::lexicon(source, run)?, statuses))
+}
+
+fn award_token(cells: &[Cell]) -> Option<u32> {
+    match (cells[16], cells[8]) {
+        (Cell::Number(1), Cell::Number(token)) => Some(token as u32),
+        _ => None,
+    }
+}
+
+fn scan(source: &Source, query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Result<Tail> {
     let timeline = &query.timeline;
     let recording = query.replay.recording();
     let mut roster = Roster::default();
-    let divisions = &mut roster.divisions;
-    let mut entries = Vec::new();
+    let mut records = HashMap::<u64, Record>::new();
     let mut gaps: Vec<_> = timeline
         .unheld_within(timeline.first, timeline.last)
         .into_iter()
@@ -289,15 +393,23 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
         query,
         dashboard_declare::log("division-events").ok_or_else(|| dashboard_core::invalid("Division events log is not declared"))?,
     )?;
-    let mut subject_gaps = HashMap::<u128, Vec<MissingSpan>>::new();
     let mut versions = HashMap::<u128, (i32, usize)>::new();
     let mut participated = BTreeSet::new();
-    let mut history_reads = Vec::new();
+    let mut next = 0u32;
+    let mut next_id = || {
+        next += 1;
+        next - 1
+    };
     for stretch in &timeline.stretches {
         let links = run_links(recording, stretch.run)?;
-        battle_entries(query, stretch, &links, &mut entries, &mut participated, cancelled)?;
         let (first, last, run) = (stretch.first, stretch.last, stretch.run);
-        roster::scan(query, stretch, &links, divisions, &mut roster.templates, &content, cancelled)?;
+        let Roster { divisions, templates, .. } = &mut roster;
+        let ((joined, inserted), (scanned, lanes)) = rayon::join(
+            || rayon::join(|| battle_entries(query, stretch, &links, &mut participated, cancelled), || reader.inserted(run, &[(first, last)])),
+            || rayon::join(|| roster::scan(query, stretch, &links, divisions, templates, &content, cancelled), || history_lanes(source, query, run, first, last)),
+        );
+        let (joined, inserted, (history, lexicon, statuses)) = (joined?, inserted?, lanes?);
+        scanned?;
         if recording.predates(TableId::DivisionKills.index()).is_none() {
             let kills = lanes::history(recording, run, TableId::DivisionKills, &[dashboard_declare::field(TableId::DivisionKills, "killed_raw")?, dashboard_declare::field(TableId::DivisionKills, "incomplete_from")?], LaneKeys::All, first, last)?;
             for (key, steps) in &kills.keys {
@@ -308,6 +420,10 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
             for change in kills.statuses.windows(2).filter(|pair| pair[0].status != pair[1].status) {
                 divisions.values_mut().for_each(|division| division.facts.push(change[1].first));
             }
+        }
+        for (division, mut battle) in joined {
+            battle.id = next_id();
+            records.entry(division).or_default().battles.push(battle);
         }
         for (table, reason) in [
             (TableId::Divisions, "Division census incomplete"),
@@ -323,136 +439,100 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
                 reason: reason.into(),
             }));
         }
-        {
-            let history = lanes::history(
-                recording,
-                run,
-                TableId::DivisionHistory,
-                &(0..TableId::DivisionHistory.field_count()).collect::<Vec<_>>(),
-                LaneKeys::All,
-                first,
-                last,
-            )?;
-            let tokens = lanes::history(
-                recording,
-                run,
-                TableId::LexicalTokens,
-                &[dashboard_declare::field(TableId::LexicalTokens, "literal")?],
-                LaneKeys::All,
-                first,
-                last,
-            )?;
-            for (&id, roster) in divisions.iter() {
-                let seen = &roster.seen[roster.seen.partition_point(|&(_, end)| end < first)..];
-                if seen.is_empty() {
-                    continue;
+        for (&id, roster) in divisions.iter() {
+            let seen = &roster.seen[roster.seen.partition_point(|&(_, end)| end < first)..];
+            if seen.is_empty() {
+                continue;
+            }
+            for (start, end, reading) in history.readings(u128::from(id) << 34) {
+                let reason = match reading {
+                    lanes::Reading::Cells(cells) if cells[0] == Cell::Number(0) => history
+                        .text(cells[1])
+                        .and_then(|text| std::str::from_utf8(text).ok())
+                        .filter(|why| !why.is_empty())
+                        .unwrap_or("This division's history was not recorded"),
+                    lanes::Reading::Absent => "This division's history was not recorded",
+                    _ => continue,
+                };
+                let at = seen.partition_point(|&(_, last)| last < start);
+                for &(a, b) in seen[at..].iter().take_while(|&&(a, _)| a <= end) {
+                    records.entry(id).or_default().gaps.push(MissingSpan { first_hour: a.max(start), last_hour: b.min(end), reason: reason.into() });
                 }
-                for (start, end, reading) in history.readings(u128::from(id) << 34) {
-                    let reason = match reading {
-                        lanes::Reading::Cells(cells) if cells[0] == Cell::Number(0) => history
-                            .text(cells[1])
-                            .and_then(|text| std::str::from_utf8(text).ok())
-                            .filter(|why| !why.is_empty())
-                            .unwrap_or("This division's history was not recorded"),
-                        lanes::Reading::Absent => "This division's history was not recorded",
-                        _ => continue,
-                    };
-                    let at = seen.partition_point(|&(_, last)| last < start);
-                    for &(a, b) in seen[at..].iter().take_while(|&&(a, _)| a <= end) {
-                        subject_gaps.entry(u128::from(id)).or_default().push(MissingSpan {
-                            first_hour: a.max(start),
-                            last_hour: b.min(end),
-                            reason: reason.into(),
-                        });
+            }
+        }
+        for (key, steps) in &history.keys {
+            check_cancel(cancelled)?;
+            let list = ((key >> 32) & 3) as u8;
+            let division = divisions.entry((key >> 34) as u64).or_default();
+            if list == DivisionHistoryRow::SUMMARY {
+                for step in steps {
+                    let medal = step.cells.as_ref().and_then(|cells| match cells[2] {
+                        Cell::Number(n) if cells[0] == Cell::Number(1) => Some(n as i32),
+                        _ => None,
+                    });
+                    division.medals.put(step.hour, medal);
+                    division.facts.push(step.hour);
+                }
+                continue;
+            }
+            if list == DivisionHistoryRow::AWARDS {
+                let mut previous = None;
+                for (i, step) in steps.iter().enumerate() {
+                    let award = step.cells.as_ref().filter(|cells| cells[16] == Cell::Number(1)).map(|cells| (cells[8], cells[9]));
+                    if award != previous || i == 0 {
+                        division.facts.push(step.hour);
+                        previous = award;
+                    }
+                    if let Some((Cell::Number(token), _)) = award {
+                        let key = u128::from(token as u32);
+                        division.tokens.insert(key);
+                        let end = steps.get(i + 1).map_or(last, |next| next.hour - 1);
+                        division.facts.extend(lexicon.changes(token as u32, step.hour, end));
+                        let start = statuses.partition_point(|s| s.first <= step.hour);
+                        division.facts.extend(statuses[start..].iter().take_while(|s| s.first <= end).map(|s| s.first));
                     }
                 }
             }
-            for (key, steps) in &history.keys {
-                check_cancel(cancelled)?;
-                let list = ((key >> 32) & 3) as u8;
-                let division = divisions.entry((key >> 34) as u64).or_default();
-                if list == DivisionHistoryRow::SUMMARY {
-                    for step in steps {
-                        let medal = step.cells.as_ref().and_then(|cells| match cells[2] {
-                            Cell::Number(n) if cells[0] == Cell::Number(1) => Some(n as i32),
-                            _ => None,
-                        });
-                        division.medals.put(step.hour, medal);
-                        division.facts.push(step.hour);
-                    }
+            let division = (key >> 34) as u64;
+            let award = list == DivisionHistoryRow::AWARDS;
+            for step in steps {
+                let date = step.cells.as_ref().and_then(|cells| match cells[7] {
+                    Cell::Number(date) if !award || cells[16] == Cell::Number(1) => Some(date as i32),
+                    _ => None,
+                });
+                let old = versions.get(key).copied();
+                if step.cells.is_none()
+                    && (divisions.get(&division).and_then(|roster| roster.seen_at(step.hour)) != Some(step.hour)
+                        || !matches!(history.reading(u128::from(division) << 34, step.hour), lanes::Reading::Cells(summary) if summary[0] == Cell::Number(1))
+                        || !matches!(history.reading(*key, step.hour), lanes::Reading::Absent))
+                {
                     continue;
                 }
-                if list == DivisionHistoryRow::AWARDS {
-                    let mut previous = None;
-                    for (i, step) in steps.iter().enumerate() {
-                        let award = step.cells.as_ref().filter(|cells| cells[16] == Cell::Number(1)).map(|cells| (cells[8], cells[9]));
-                        if award != previous || i == 0 {
-                            division.facts.push(step.hour);
-                            previous = award;
-                        }
-                        if let Some((Cell::Number(token), _)) = award {
-                            let key = u128::from(token as u32);
-                            division.tokens.insert(key);
-                            let end = steps.get(i + 1).map_or(last, |next| next.hour - 1);
-                            if let Ok(at) = tokens.keys.binary_search_by_key(&key, |row| row.0) {
-                                let spellings = &tokens.keys[at].1;
-                                let start = spellings.partition_point(|s| s.hour <= step.hour);
-                                division.facts.extend(spellings[start..].iter().take_while(|s| s.hour <= end).map(|s| s.hour));
-                            }
-                            let start = tokens.statuses.partition_point(|s| s.first <= step.hour);
-                            division.facts.extend(tokens.statuses[start..].iter().take_while(|s| s.first <= end).map(|s| s.first));
-                        }
-                    }
+                if old.map(|(date, _)| date) == date {
+                    continue;
                 }
-                let division = (key >> 34) as u64;
-                let award = list == DivisionHistoryRow::AWARDS;
-                for step in steps {
-                    let date = step.cells.as_ref().and_then(|cells| match cells[7] {
-                        Cell::Number(date) if !award || cells[16] == Cell::Number(1) => Some(date as i32),
-                        _ => None,
+                let record = records.entry(division).or_default();
+                if let Some((_, at)) = versions.remove(key) {
+                    record.history[at].retired = Some(step.hour);
+                }
+                if let Some(date) = date {
+                    versions.insert(*key, (date, record.history.len()));
+                    record.history.push(History {
+                        id: next_id(),
+                        key: *key,
+                        read: step.hour,
+                        date,
+                        observed: step.hour.max(date),
+                        retired: None,
+                        token: step.cells.as_deref().filter(|_| award).and_then(award_token),
                     });
-                    let old = versions.get(key).copied();
-                    if step.cells.is_none()
-                        && (divisions.get(&division).and_then(|roster| roster.seen_at(step.hour)) != Some(step.hour)
-                            || !matches!(history.reading(u128::from(division) << 34, step.hour), lanes::Reading::Cells(summary) if summary[0] == Cell::Number(1))
-                            || !matches!(history.reading(*key, step.hour), lanes::Reading::Absent))
-                    {
-                        continue;
-                    }
-                    if old.map(|(date, _)| date) == date {
-                        continue;
-                    }
-                    if let Some((_, at)) = versions.remove(key) {
-                        let event: &mut Occurrence<Entry> = &mut entries[at];
-                        let mut states = event.states.to_vec();
-                        if step.hour > event.observed {
-                            states.push((step.hour, 0));
-                        } else {
-                            states[0].1 = 0;
-                        }
-                        event.states = states.into();
-                    }
-                    if let Some(date) = date {
-                        let observed = step.hour.max(date);
-                        versions.insert(*key, (date, entries.len()));
-                        let index = history_reads.len();
-                        history_reads.push((step.hour, *key, date, index));
-                        entries.push(occurrence(
-                            entries.len(),
-                            division,
-                            date,
-                            observed,
-                            if award { AWARD } else { CAREER },
-                            Entry::History(index),
-                        ));
-                    }
                 }
             }
         }
         for division in divisions.values_mut() {
             division.medals.put(last.saturating_add(1), None);
         }
-        for row in reader.inserted(run, &[(first, last)])? {
+        for row in inserted {
             let kind = (row.key >> 96) as u8;
             if kind == DivisionEventRow::VANISHED {
                 continue;
@@ -461,37 +541,33 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
             let num = |column| division_log::number(&row.cells, column);
             use division_log::column as c;
             let hour = num(c::NATIVE_HOUR).map_or(row.hour, |at| at as i32);
-            let tag = |column| division_log::slot(num(column)).and_then(|slot| query.holders.slot_tag(slot, row.hour)).map(str::to_owned);
-            let status = division_log::status(kind, num(c::DISPOSITION), num(c::CAUSE));
+            let (disposition, cause) = (num(c::DISPOSITION), num(c::CAUSE));
             if kind != DivisionEventRow::CREATED {
-                divisions.entry(division).or_default().removals.push((row.hour, hour, status.clone()));
+                divisions.entry(division).or_default().removals.push((row.hour, hour, division_log::status(kind, disposition, cause)));
             }
-            let data = ServiceEntry {
-                key: format!("event:{}", row.key),
+            records.entry(division).or_default().events.push(Event {
+                id: next_id(),
+                key: row.key,
                 hour,
                 observed: row.hour,
-                kind: if kind == DivisionEventRow::CREATED { "created" } else { "removed" }.into(),
-                title: None,
-                status: (kind != DivisionEventRow::CREATED).then_some(status),
-                tag: tag(c::SLOT),
-                other: tag(c::KILLER_SLOT),
+                kind,
+                disposition,
+                cause,
+                slot: division_log::slot(num(c::SLOT)),
+                killer: division_log::slot(num(c::KILLER_SLOT)),
                 province: num(c::PROVINCE).map(|id| id as u32),
                 place_hour: num(c::PLACE_HOUR).map(|at| at as i32),
-                medal: None,
                 exact: num(c::EXACT) == Some(1),
-            };
-            entries.push(occurrence(entries.len(), division, hour, row.hour.max(hour), CAREER, Entry::Event(Box::new(data))));
+            });
         }
     }
-    let history = render_history(query, &content, history_reads, cancelled)?;
     roster.finish(query.timeline.last);
-    Ok(Tail {
-        roster,
-        content,
-        rendered: Mutex::default(),
-        history,
-        entries: Index::new(entries, gaps, &[])?.with_subject_gaps(subject_gaps),
-    })
+    for record in records.values_mut() {
+        record.battles.shrink_to_fit();
+        record.history.shrink_to_fit();
+        record.events.shrink_to_fit();
+    }
+    Ok(Tail { roster, content, gaps, records, shown: Mutex::default() })
 }
 
 #[derive(Default)]
@@ -521,7 +597,7 @@ fn prepare(
     let tail = if let Some(tail) = cached {
         Arc::clone(tail)
     } else {
-        let tail = Arc::new(scan(query, content, cancelled)?);
+        let tail = Arc::new(scan(source, query, content, cancelled)?);
         records.0.insert(query.timeline.id, Arc::clone(&tail));
         tail
     };
@@ -533,23 +609,23 @@ fn prepare(
 fn render_history(
     query: &Query<'_>,
     content: &Content,
-    mut reads: Vec<(i32, u128, i32, usize)>,
+    mut reads: Vec<(i32, u128, i32, Option<u32>, u32)>,
     cancelled: &AtomicBool,
-) -> io::Result<Vec<(ServiceEntry, Refusals)>> {
+) -> io::Result<Vec<(u32, (ServiceEntry, Refusals))>> {
     reads.sort_unstable();
     let mut frames = at_hour::Frames::new(query)?;
     let mut rendered = Vec::with_capacity(reads.len());
     for group in reads.chunk_by(|a, b| a.0 == b.0) {
         check_cancel(cancelled)?;
         let at = group[0].0;
-        let award = |key: u128| (key >> 32) & 3 == u128::from(DivisionHistoryRow::AWARDS);
         let mut reads = vec![
             Read::these(TableId::Divisions, group.iter().map(|g| g.1 >> 34)),
             Read::these(TableId::DivisionHistory, group.iter().map(|g| g.1)),
             Read::all(TableId::CountryLinks),
         ];
-        if group.iter().any(|g| award(g.1)) {
-            reads.push(Read::all(TableId::LexicalTokens));
+        let tokens: Vec<u128> = group.iter().filter(|g| award(g.1)).filter_map(|g| g.3).map(u128::from).collect();
+        if !tokens.is_empty() {
+            reads.push(Read::these(TableId::LexicalTokens, tokens));
         }
         let frame = frames.frame_with(at, &reads, DecoratedDivisions::columns, TITLE)?;
         let provinces: BTreeSet<_> = witnessed_rows::<tables::DivisionHistory>(&frame)
@@ -567,7 +643,7 @@ fn render_history(
             None
         };
         let countries = Countries::witnessed(&frame).0.named(&query.holders, at);
-        for &(at, history_key, date, index) in group {
+        for &(at, history_key, date, _, shown) in group {
             let mut notes = Refusals::default();
             let key = history_key >> 34;
             let tag =
@@ -607,11 +683,56 @@ fn render_history(
                 medal,
                 exact: true,
             };
-            rendered.push((index, (row, notes)));
+            rendered.push((shown, (row, notes)));
         }
     }
-    rendered.sort_unstable_by_key(|r| r.0);
-    Ok(rendered.into_iter().map(|(_, row)| row).collect())
+    Ok(rendered)
+}
+
+fn render(query: &Query<'_>, record: &Record, entry: Entry) -> Option<ServiceEntry> {
+    let tag = |slot: Option<u32>, hour: i32| slot.and_then(|s| query.holders.slot_tag(s, hour)).map(str::to_owned);
+    match entry {
+        Entry::History(_) => None,
+        Entry::Battle(at) => {
+            let battle = &record.battles[at as usize];
+            Some(ServiceEntry {
+                key: format!("battle:{}:{}", battle.combat, battle.start),
+                hour: battle.hour,
+                observed: battle.hour,
+                kind: "battle".into(),
+                title: Some("Land battle".into()),
+                status: Some("Took part".into()),
+                tag: tag(battle.owner, battle.hour),
+                other: tag(battle.other, battle.hour),
+                province: battle.province,
+                place_hour: battle.province.map(|_| battle.hour),
+                medal: None,
+                exact: true,
+            })
+        }
+        Entry::Event(at) => {
+            let event = &record.events[at as usize];
+            let created = event.kind == DivisionEventRow::CREATED;
+            Some(ServiceEntry {
+                key: format!("event:{}", event.key),
+                hour: event.hour,
+                observed: event.observed,
+                kind: if created { "created" } else { "removed" }.into(),
+                title: None,
+                status: (!created).then(|| division_log::status(event.kind, event.disposition, event.cause)),
+                tag: tag(event.slot, event.observed),
+                other: tag(event.killer, event.observed),
+                province: event.province,
+                place_hour: event.place_hour,
+                medal: None,
+                exact: event.exact,
+            })
+        }
+    }
+}
+
+fn opens(query: &Query<'_>, hour: i32) -> bool {
+    query.timeline.at(hour).and_then(|stretch| query.replay.recording().run(stretch.run).ok()).is_some_and(|run| run.first_hour == hour)
 }
 
 fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &roster::Division) -> io::Result<Summary> {
@@ -621,22 +742,27 @@ fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &ro
         Read { table: TableId::DivisionHistory, keys: at_hour::Keys::Ranges(vec![(key, key), (awards, awards | u128::from(u32::MAX))]) },
         Read::these(TableId::LexicalTokens, division.tokens.iter().copied()),
         Read::these(TableId::DivisionKills, [u128::from(id)]),
+        Read::these(TableId::DivisionStatus, [u128::from(id)]),
+        Read::these(TableId::DivisionLandInputs, [u128::from(id)]),
     ];
     let frame = at_hour::frame_with(
         query,
         at,
         &reads,
-        |table| {
-            (table == TableId::DivisionHistory).then(|| {
-                at_hour::field_columns(table, &["available", "reason", "amount", "medal_token", "medal_definition", "medal_enabled"])
-            })
+        |table| match table {
+            TableId::DivisionHistory => {
+                Some(at_hour::field_columns(table, &["available", "reason", "amount", "medal_token", "medal_definition", "medal_enabled"]))
+            }
+            _ => DecoratedDivisions::columns(table),
         },
         TITLE,
     )?;
+    let opening = opens(query, at) && matches!(&*frame.tables[TableId::DivisionStatus.index()], TableView::Truncated { .. });
+    let status = status_of(&frame, id).filter(|_| !opening);
+    let manpower = manpower_of(&frame, id);
     let mut details = Facts { frame: &frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     let mut notes = Refusals::default();
-    let (experience, casualties) = division.measures.at(at).copied().unwrap_or_default();
-    let facts = details.measured(witnessed_rows::<tables::DivisionHistory>(&frame).rows, experience, casualties, enemy_killed(&frame, id), &mut notes);
+    let facts = details.of(witnessed_rows::<tables::DivisionHistory>(&frame).rows, status, manpower, enemy_killed(&frame, id), &mut notes);
     Ok(Summary { facts, medals: details.medals.medals, notes })
 }
 
@@ -658,14 +784,28 @@ fn reply(
         None => tail.roster.leader(&scope, hour),
     };
     let division = subject.and_then(|id| tail.roster.divisions.get(&id));
-    let choice = subject.and_then(|id| tail.roster.choice(id, hour, &scope, &mut ambiguous));
+    let (choice, last_seen) = subject.and_then(|id| tail.roster.choice(id, hour, &scope, &mut ambiguous)).unzip();
     let subject = subject.filter(|_| choice.is_some());
     let show = match params.show {
         Some(ServiceEntries::Career) => Some(&[CAREER][..]),
         Some(ServiceEntries::Awards) => Some(&[AWARD][..]),
         _ => None,
     };
-    let answer = tail.entries.ask_with_gap_end(
+    let mut shown = tail.shown.lock().unwrap_or_else(PoisonError::into_inner);
+    match shown.iter().position(|held| held.subject == subject) {
+        Some(0) => {}
+        Some(at) => {
+            let held = shown.remove(at).expect("a held subject");
+            shown.push_front(held);
+        }
+        None => {
+            let entries = tail.entries_of(subject)?;
+            shown.push_front(Shown { subject, entries, rows: HashMap::new(), summaries: HashMap::new() });
+            shown.truncate(SHOWN);
+        }
+    }
+    let current = &mut shown[0];
+    let answer = current.entries.ask_with_gap_end(
         &query.holders,
         &Ask {
             hour,
@@ -687,57 +827,56 @@ fn reply(
     let mut entries = Vec::new();
     let mut facts = None;
     let mut medals = Vec::new();
-    if let (Some(id), Some(choice), Some(division)) = (subject, &choice, division) {
-        let mut rendered = tail.rendered.lock().unwrap_or_else(PoisonError::into_inner);
-        let summary = if choice.last_seen == hour && choice.removed_at.is_none() {
-            summary(query, content, id, hour, division)?
-        } else {
-            let saved = match rendered.last_seen.entry((id, choice.last_seen)) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(summary(query, content, id, choice.last_seen, division)?),
-            };
-            saved.clone()
+    if let (Some(id), Some(last_seen), Some(division)) = (subject, last_seen, division) {
+        let epoch = division.facts[..division.facts.partition_point(|&at| at <= last_seen)].last().copied().unwrap_or(i32::MIN);
+        let key = (epoch, query.timeline.at(last_seen).map(|stretch| stretch.run), opens(query, last_seen));
+        let summary = match current.summaries.get(&key) {
+            Some(held) => held.clone(),
+            None => {
+                let made = summary(query, content, id, last_seen, division)?;
+                if made.notes.0.is_empty() {
+                    if current.summaries.len() >= SUMMARIES {
+                        current.summaries.clear();
+                    }
+                    current.summaries.insert(key, made.clone());
+                }
+                made
+            }
         };
         facts = Some(summary.facts);
         medals = summary.medals;
         warnings = summary.notes;
-        for shown in &answer.rows {
+        let record = tail.records.get(&id);
+        let mut reads = Vec::new();
+        let missing: Vec<u32> = answer.rows.iter().map(|row| row.at).filter(|at| !current.rows.contains_key(at)).collect();
+        for at in missing {
             check_cancel(cancelled)?;
-            let event = tail.entries.get(shown.at);
-            let (row, notes) = match &event.payload {
-                Entry::Event(row) => {
-                    entries.push((**row).clone());
-                    continue;
+            let payload = current.entries.get(at).payload;
+            let Some(record) = record else { continue };
+            match render(query, record, payload) {
+                Some(rendered) => {
+                    current.rows.insert(at, (rendered, Refusals::default()));
                 }
-                Entry::History(index) => &tail.history[*index],
-                Entry::Battle { combat, start, province, owner, other } => rendered.rows.entry(shown.at).or_insert_with(|| {
-                    let tag = |slot: Option<u32>| slot.and_then(|s| query.holders.slot_tag(s, event.observed)).map(str::to_owned);
-                    (
-                        ServiceEntry {
-                            key: format!("battle:{combat}:{start}"),
-                            hour: event.date,
-                            observed: event.observed,
-                            kind: "battle".into(),
-                            title: Some("Land battle".into()),
-                            status: Some("Took part".into()),
-                            tag: tag(*owner),
-                            other: tag(*other),
-                            province: *province,
-                            place_hour: province.map(|_| event.observed),
-                            medal: None,
-                            exact: true,
-                        },
-                        Refusals::default(),
-                    )
-                }),
-            };
+                None => {
+                    if let Entry::History(index) = payload {
+                        let history = &record.history[index as usize];
+                        reads.push((history.read, history.key, history.date, history.token, at));
+                    }
+                }
+            }
+        }
+        current.rows.extend(render_history(query, content, reads, cancelled)?);
+        for row in &answer.rows {
+            let Some((row, notes)) = current.rows.get(&row.at) else { continue };
             entries.push(row.clone());
             for (reason, count) in &notes.0 {
                 warnings.note_times(reason, *count);
             }
         }
     }
-    let next_change = [answer.next_change, scope.next, leader_change, division.and_then(|d| d.next_change(hour, &tail.roster, &scope))]
+    drop(shown);
+    let opening = (subject.is_some() && opens(query, hour)).then(|| hour.saturating_add(1));
+    let next_change = [answer.next_change, scope.next, leader_change, opening, division.and_then(|d| d.next_change(hour, &tail.roster, &scope))]
         .into_iter()
         .flatten()
         .filter(|&at| at <= query.timeline.last)
@@ -829,7 +968,7 @@ impl Product for DivisionServiceRecordChoices {
         let roster = &prepared.tail.roster;
         let scope = Scope::at(&query, prepared.selection.as_ref(), hour);
         let mut partial = scope.unknown;
-        let mut choices: Vec<_> = roster.divisions.keys().filter_map(|&id| roster.choice(id, hour, &scope, &mut partial)).collect();
+        let mut choices: Vec<_> = roster.divisions.keys().filter_map(|&id| roster.choice(id, hour, &scope, &mut partial).map(|(choice, _)| choice)).collect();
         choices.sort_by(|a, b| {
             b.removed_at.cmp(&a.removed_at).then(b.medals.cmp(&a.medals)).then(a.name.cmp(&b.name)).then(a.division.cmp(&b.division))
         });

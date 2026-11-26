@@ -58,7 +58,6 @@ pub(super) struct Division {
     pub(super) medals: Steps<Option<i32>>,
     posting: Steps<Posting>,
     name: Steps<Option<String>>,
-    pub(super) measures: Steps<(Option<i64>, Option<i32>)>,
     experience: Steps<(Option<i64>, Option<i32>)>,
     manpower: Steps<Option<i32>>,
 }
@@ -156,6 +155,7 @@ impl Roster {
                 .collect();
             hours.sort_unstable();
             hours.dedup();
+            let mut measures = Steps::default();
             let mut held = None;
             for hour in hours.into_iter().take_while(|&h| h <= last) {
                 let serving = d.seen_at(hour) == Some(hour);
@@ -164,7 +164,7 @@ impl Roster {
                 let experience = manpower.at(hour).copied().flatten().and_then(|manpower| {
                     DivisionStatusRow { experience: Recorded::Value(raw), ..Default::default() }.normalized_experience(manpower)
                 });
-                d.measures.put(hour, (experience, casualties));
+                measures.put(hour, (experience, casualties));
                 let slot = d.posting.at(hour).and_then(|p| p.slot);
                 let next = if serving && d.removed(hour).is_none() && medals.is_none_or(|n| n > 0) {
                     Some((slot, medals.map(|n| (n, experience, casualties, Reverse(id)))))
@@ -181,11 +181,12 @@ impl Roster {
                     held = next;
                 }
             }
-            d.facts.extend(d.measures.0.iter().map(|s| s.0));
+            d.facts.extend(measures.0.iter().map(|s: &(i32, (Option<i64>, Option<i32>))| s.0));
             d.facts.extend(d.name.0.iter().map(|s| s.0));
             d.facts.extend(d.posting.0.iter().map(|s| s.0));
             d.facts.sort_unstable();
             d.facts.dedup();
+            d.facts.shrink_to_fit();
         }
         let mut world = Ranking::default();
         let mut by_slot = HashMap::<_, Ranking>::new();
@@ -236,7 +237,7 @@ impl Roster {
         }
     }
 
-    pub(super) fn choice(&self, id: u64, hour: i32, scope: &Scope, partial: &mut bool) -> Option<ServiceDivision> {
+    pub(super) fn choice(&self, id: u64, hour: i32, scope: &Scope, partial: &mut bool) -> Option<(ServiceDivision, i32)> {
         let d = self.divisions.get(&id)?;
         let at = d.seen_at(hour)?;
         let posting = d.posting.at(at)?;
@@ -248,9 +249,9 @@ impl Roster {
         let removed = d.removed(hour);
         let medals = d.medals.at(at).copied().flatten();
         *partial |= at == hour && removed.is_none() && medals.is_none();
-        Some(ServiceDivision {
+        Some((ServiceDivision {
             division: id.to_string(),
-            last_seen: at,
+            last_seen: (at < hour).then_some(at),
             name: d.name.at(at).cloned().flatten(),
             tag: posting.tag.clone(),
             medals,
@@ -258,7 +259,7 @@ impl Roster {
             sprite: template.and_then(|t| t.sprite.clone()),
             removed: removed.map(|r| r.2.clone()),
             removed_at: removed.map(|r| r.1),
-        })
+        }, at))
     }
 }
 
@@ -329,9 +330,33 @@ pub(super) fn scan(
     let (first, last, run) = (stretch.first, stretch.last, stretch.run);
     let recording = query.replay.recording();
     let history = |table, columns: &[usize]| lanes::history(recording, run, table, columns, Keys::All, first, last);
+    let census_columns = at_hour::field_columns(TableId::Divisions, &["roster_owner", "expeditionary_owner", "template", "reveal_skip"]);
+    let experience_columns = at_hour::field_columns(TableId::DivisionStatus, &["experience", "career_counter"]);
+    let names = |rows: Option<TableRows>| match rows {
+        Some(TableRows::DivisionStatus(rows)) => content.division_name(rows.first()).ok(),
+        _ => None,
+    };
+    let manpower = |rows: Option<TableRows>| match rows {
+        Some(TableRows::DivisionLandInputs(rows)) => rows.first().map(|r| r.manpower.iter().fold(0i32, |sum, m| sum.wrapping_add(m.amount))),
+        _ => None,
+    };
+    let ((census, status), ((named, manned), shown)) = rayon::join(
+        || rayon::join(|| history(TableId::Divisions, &census_columns), || history(TableId::DivisionStatus, &experience_columns)),
+        || {
+            rayon::join(
+                || {
+                    rayon::join(
+                        || changes(query, stretch, TableId::DivisionStatus, &["naming", "country_ordinal", "name"], cancelled, names),
+                        || changes(query, stretch, TableId::DivisionLandInputs, &["manpower"], cancelled, manpower),
+                    )
+                },
+                || template_steps(query, stretch, templates, content, cancelled),
+            )
+        },
+    );
+    let (census, status, named, manned) = (census?, status?, named?, manned?);
+    shown?;
     let names = Names::new(&query.holders);
-    let columns = at_hour::field_columns(TableId::Divisions, &["roster_owner", "expeditionary_owner", "template", "reveal_skip"]);
-    let census = history(TableId::Divisions, &columns)?;
     for (key, steps) in &census.keys {
         let d = divisions.entry(*key as u64).or_default();
         for (i, step) in steps.iter().enumerate() {
@@ -361,30 +386,12 @@ pub(super) fn scan(
             }
         }
     }
-    for table in [TableId::DivisionStatus, TableId::DivisionLandInputs] {
-        let fields: &[&str] = if table == TableId::DivisionStatus { &["naming", "country_ordinal", "name"] } else { &["manpower"] };
-        let columns = at_hour::field_columns(table, fields);
-        let hist = history(table, &columns)?;
-        let mask = at_hour::field_mask(table, fields);
-        let asks: Vec<_> = hist.keys.iter().flat_map(|(key, steps)| steps.iter().map(move |s| (s.hour, *key))).collect();
-        lanes::at_each(recording, run, table, Some(&columns), &asks, &mut |hour, key, row| {
-            check_cancel(cancelled)?;
-            let d = divisions.entry(key as u64).or_default();
-            let rows = row
-                .map(|(view, index)| replay_frame::frame::cells_rows_of(table, &view, &[(key, index)], recording.format(), mask))
-                .transpose()?;
-            match rows {
-                Some(TableRows::DivisionStatus(rows)) => d.name.put(hour, content.division_name(rows.first()).ok()),
-                Some(TableRows::DivisionLandInputs(rows)) => {
-                    d.manpower.put(hour, rows.first().map(|r| r.manpower.iter().fold(0i32, |sum, m| sum.wrapping_add(m.amount))))
-                }
-                _ if table == TableId::DivisionStatus => d.name.put(hour, None),
-                _ => d.manpower.put(hour, None),
-            }
-            Ok(())
-        })?;
+    for (key, hour, name) in named {
+        divisions.entry(key).or_default().name.put(hour, name);
     }
-    let status = history(TableId::DivisionStatus, &at_hour::field_columns(TableId::DivisionStatus, &["experience", "career_counter"]))?;
+    for (key, hour, men) in manned {
+        divisions.entry(key).or_default().manpower.put(hour, men);
+    }
     for (key, steps) in status.keys {
         let d = divisions.entry(key as u64).or_default();
         for s in steps {
@@ -400,10 +407,44 @@ pub(super) fn scan(
         d.experience.put(last.saturating_add(1), (None, None));
         d.manpower.put(last.saturating_add(1), None);
     }
+    Ok(())
+}
+
+fn changes<T>(
+    query: &Query<'_>,
+    stretch: &Stretch,
+    table: TableId,
+    fields: &[&str],
+    cancelled: &AtomicBool,
+    value: impl Fn(Option<TableRows>) -> T,
+) -> io::Result<Vec<(u64, i32, T)>> {
+    let recording = query.replay.recording();
+    let columns = at_hour::field_columns(table, fields);
+    let hist = lanes::history(recording, stretch.run, table, &columns, Keys::All, stretch.first, stretch.last)?;
+    let mask = at_hour::field_mask(table, fields);
+    let asks: Vec<_> = hist.keys.iter().flat_map(|(key, steps)| steps.iter().map(move |s| (s.hour, *key))).collect();
+    let mut out = Vec::with_capacity(asks.len());
+    lanes::at_each(recording, stretch.run, table, Some(&columns), &asks, &mut |hour, key, row| {
+        check_cancel(cancelled)?;
+        let rows = row.map(|(view, index)| replay_frame::frame::cells_rows_of(table, &view, &[(key, index)], recording.format(), mask)).transpose()?;
+        out.push((key as u64, hour, value(rows)));
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+fn template_steps(
+    query: &Query<'_>,
+    stretch: &Stretch,
+    templates: &mut HashMap<u64, Steps<Template>>,
+    content: &Content,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let recording = query.replay.recording();
     let mut hours = BTreeMap::<i32, BTreeSet<u128>>::new();
     for table in [TableId::DivisionTemplates, TableId::DivisionTemplateIcons] {
         let columns = template_columns(table).unwrap_or_default();
-        let hist = history(table, &columns)?;
+        let hist = lanes::history(recording, stretch.run, table, &columns, Keys::All, stretch.first, stretch.last)?;
         for (key, steps) in &hist.keys {
             for step in steps {
                 hours.entry(step.hour).or_default().insert(*key);
@@ -439,7 +480,7 @@ pub(super) fn scan(
         }
     }
     for steps in templates.values_mut() {
-        steps.put(last.saturating_add(1), Template::default());
+        steps.put(stretch.last.saturating_add(1), Template::default());
     }
     Ok(())
 }
