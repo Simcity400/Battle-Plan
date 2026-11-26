@@ -483,7 +483,11 @@ pub(super) fn kind_of(row: &PowerItemRow, category: &str, token: Option<&str>, c
         return Some(Err(if decision { "The decision was not recorded" } else { "The advisor's role was not recorded" }.into()));
     };
     let key = if decision {
-        match content.power_content().and_then(|power| power.decisions.decision(token.as_bytes())) {
+        let decisions = match content.decisions() {
+            Ok(decisions) => decisions,
+            Err(reason) => return Some(Err(reason)),
+        };
+        match decisions.decision(token.as_bytes()) {
             Err(reason) => return Some(Err(reason)),
             Ok(None) => return Some(Err(format!("Decision {token} is not defined in the installed content"))),
             Ok(Some(found)) => String::from_utf8_lossy(&found.category).into_owned(),
@@ -566,10 +570,9 @@ impl<'a> Scripted<'a> {
             .get_or_init(|| match self.content.catalogue.scripted_content().and_then(|scripted| scripted.recorded_world_in(HourFrame::from(self.frame))) {
                 Ok(world) => Ok(world),
                 Err(_) => {
-                    let power = self.content.power_content()?;
                     Ok(dashboard_text::triggers::World::read_in(
                         HourFrame::from(self.frame),
-                        dashboard_text::triggers::ContentFacts::content_only(&power.dlcs, &power.triggers, &power.aliases),
+                        self.content.trigger_facts()?,
                     ))
                 }
             })
@@ -654,8 +657,8 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
     };
     if matches!(row.cause, PowerCause::Decision | PowerCause::TargetedDecision | PowerCause::DecisionTimeout) {
         let result = (|| -> Result<(), String> {
-            let power = content.power_content()?;
-            let decision = power.decisions.decision(token.as_bytes())?.ok_or_else(|| format!("decision {token} is not defined in recorded content"))?;
+            let decisions = content.decisions()?;
+            let decision = decisions.decision(token.as_bytes())?.ok_or_else(|| format!("decision {token} is not defined in recorded content"))?;
             let name = (|| -> Result<Option<String>, String> {
                 let own = own.ok_or_else(|| format!("decision {token}: country identity is unavailable at action hour"))?;
                 let look = own.naming.look.as_ref().ok_or_else(|| format!("decision {token}: country appearance is unavailable at action hour"))?;
@@ -708,8 +711,8 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
     }
     if row.cause == PowerCause::Focus {
         let result = (|| -> Result<(), String> {
-            let power = content.power_content()?;
-            let focus = power.national_focus(token).map_err(|gap| format!("focus {token}: {gap}"))?.ok_or_else(|| format!("focus {token} is not defined in recorded content"))?;
+            let focuses = content.national_focuses()?;
+            let focus = focuses.get(token).map_err(|gap| format!("focus {token}: {gap}"))?.ok_or_else(|| format!("focus {token} is not defined in recorded content"))?;
             match localise_at(scripted, content, &focus.localisation, own.map(|own| own.naming.slot), None, true) {
                 Ok(name) => found.name = name,
                 Err(reason) => found.unknown = Some(reason),
@@ -812,13 +815,13 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
             } else if let Some(token) = token.as_deref()
                 && row.cause == PowerCause::AbilityActivation
             {
-                match content.power_content() {
+                match content.abilities() {
                     Err(reason) => item.unknown = Some(reason),
-                    Ok(power) => {
-                        if let Some(key) = power.abilities.name_key(token.as_bytes()) {
+                    Ok(abilities) => {
+                        if let Some(key) = abilities.name_key(token.as_bytes()) {
                             item.name = content.localised(key, View::Plain);
                         }
-                        if let Some(sprite) = power.abilities.static_sprite(token.as_bytes()) {
+                        if let Some(sprite) = abilities.static_sprite(token.as_bytes()) {
                             art = Some(Art::Sprite(sprite.to_owned()));
                         }
                     }
@@ -866,17 +869,17 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
             if row.cause == PowerCause::LeaderTrait
                 && let Some(token) = token.as_deref()
             {
-                match content.power_content() {
+                match content.unit_traits() {
                     Err(reason) => item.unknown = Some(reason),
-                    Ok(power) => {
+                    Ok(traits) => {
                         match own.as_ref() {
-                            Some(own) => match power.unit_traits.name_key(token, &own.tag, |key| content.defines(key)) {
+                            Some(own) => match traits.name_key(token, &own.tag, |key| content.defines(key)) {
                                 Ok(key) => item.name = key.and_then(|key| content.localised(&key, View::Plain)),
                                 Err(reason) => item.unknown = Some(reason.into()),
                             },
                             None => item.unknown = Some(format!("trait {token}: country identity unavailable at action hour")),
                         }
-                        match power.unit_traits.assignment_sprite(token) {
+                        match traits.assignment_sprite(token) {
                             Ok(Some(sprite)) => art = Some(Art::Sprite(sprite)),
                             Ok(None) => item.unknown = Some(format!("trait {token} is not registered in recorded content")),
                             Err(reason) => item.unknown = Some(reason.into()),

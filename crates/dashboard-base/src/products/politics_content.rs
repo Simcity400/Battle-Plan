@@ -53,33 +53,19 @@ pub struct PoliticsContent {
     artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
     portraits: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
     portrait_thumbnails: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
-    power: OnceLock<Arc<PowerContent>>,
-    power_result: catalogue::CachedResult<PowerContent>,
-    power_requested: std::sync::atomic::AtomicBool,
+    abilities: catalogue::CachedResult<content_reader_abilities::abilities::AbilitySprites>,
+    focuses: catalogue::CachedResult<content_reader_focus::focus::Focuses>,
+    unit_traits: catalogue::CachedResult<content_reader_key_names::unit_leader::Traits>,
+    trigger_content: OnceLock<Arc<TriggerContent>>,
+    trigger_result: catalogue::CachedResult<TriggerContent>,
     fixed_text: catalogue::KeyedResults<String, Option<String>>,
     idea_classes: catalogue::KeyedResults<String, Option<bool>>,
 }
 
-pub struct PowerContent {
-    pub decisions: content_reader_politics::decisions::Database,
-    pub abilities: content_reader_abilities::abilities::AbilitySprites,
-    focuses: content_reader_focus::focus::Focuses,
-    pub warnings: Vec<String>,
-    pub unit_traits: content_reader_key_names::unit_leader::Traits,
-    pub triggers: content_reader_script::trigger_keys::TriggerNames,
-    pub aliases: Arc<content_reader_key_names::tag_aliases::TagAliases>,
-    pub dlcs: std::collections::BTreeSet<String>,
-}
-
-impl PowerContent {
-    pub fn national_focus(
-        &self,
-        id: &str,
-    ) -> Result<Option<&content_reader_focus::focus::FocusDefinition>, &content_reader_parser::coverage::Gap>
-    {
-        self.focuses
-            .get_in(content_reader_focus::focus::Database::National, id)
-    }
+struct TriggerContent {
+    triggers: content_reader_script::trigger_keys::TriggerNames,
+    aliases: Arc<content_reader_key_names::tag_aliases::TagAliases>,
+    dlcs: std::collections::BTreeSet<String>,
 }
 
 type CachedPolitics = Option<(
@@ -164,7 +150,8 @@ pub fn content_loads(source: &Source) -> usize {
         .map(|(_, result)| {
             let loads = result.loads();
             match result.get_or_init(|| unreachable!("binding was loaded")) {
-                Ok(content) => loads + content.power_result.loads(),
+                Ok(content) => loads + content.abilities.loads() + content.focuses.loads()
+                    + content.unit_traits.loads() + content.trigger_result.loads(),
                 Err(_) => loads,
             }
         })
@@ -246,9 +233,11 @@ impl PoliticsContent {
             warnings,
             artwork: Mutex::new(BTreeMap::new()),
             portraits: Mutex::new(BTreeMap::new()),
-            power: OnceLock::new(),
-            power_result: Default::default(),
-            power_requested: Default::default(),
+            abilities: Default::default(),
+            focuses: Default::default(),
+            unit_traits: Default::default(),
+            trigger_content: OnceLock::new(),
+            trigger_result: Default::default(),
             fixed_text: Default::default(),
 
             idea_classes: Default::default(),
@@ -256,105 +245,52 @@ impl PoliticsContent {
         })
     }
 
-    pub fn power_content(&self) -> Result<&PowerContent, String> {
-        self.power_requested
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.prepare_power_content()
+    pub fn decisions(&self) -> Result<Arc<content_reader_politics::decisions::Database>, String> {
+        content_reader_politics::decisions::read(&self.catalogue.content.layers)
+            .map_err(|error| error.to_string())
     }
 
-    pub fn prepare_power_content(&self) -> Result<&PowerContent, String> {
-        let power = self
-            .power_result
-            .get_or_init(|| {
-                let layers = &self.catalogue.content.layers;
-                let (
-                    decisions,
-                    abilities,
-                    focuses,
-                    unit_traits,
-                    scripted_triggers,
-                    buildings,
-                    resources,
-                    aliases,
-                ) = std::thread::scope(|threads| {
-                    use content_reader_layers::parallel::spawn;
-                    let abilities = spawn(threads, || content_reader_abilities::abilities::read(layers));
-                    let focuses = spawn(threads, || content_reader_focus::focus::read_national(layers));
-                    let unit_traits = spawn(threads, || {
-                        content_reader_key_names::unit_leader::Traits::registered(layers)
-                    });
-                    let scripted_triggers =
-                        spawn(threads, || content_reader_key_names::scripted_triggers::read(layers));
-                    let buildings = spawn(threads, || content_reader_key_names::buildings::read(layers));
-                    let resources = spawn(threads, || content_reader_key_names::resources::read(layers));
-                    let aliases = spawn(threads, || content_reader_key_names::tag_aliases::read(layers));
-                    (
-                        content_reader_politics::decisions::read(layers),
-                        abilities.join(),
-                        focuses.join(),
-                        unit_traits.join(),
-                        scripted_triggers.join(),
-                        buildings.join(),
-                        resources.join(),
-                        aliases.join(),
-                    )
-                });
-                let decisions = decisions?;
-                let abilities = settled(abilities)?;
-                let (focuses, focus_warnings) = settled(focuses)?;
-                let unit_traits = settled(unit_traits)?;
-                let triggers = content_reader_script::trigger_keys::TriggerNames::new(
-                    settled(scripted_triggers)?,
-                    content_reader_key_names::key_name_products::count_trigger_names(
-                        &settled(buildings)?,
-                        &self.ideologies,
-                        &settled(resources)?.0,
-                    ),
-                );
-                let aliases = Arc::new(settled(aliases)?);
-                let dlcs = layers.dlc_names()?;
-                let warnings = decisions
-                    .notes
-                    .iter()
-                    .cloned()
-                    .chain(focus_warnings.into_iter().map(|(_, message)| message))
-                    .chain(
-                        abilities
-                            .warnings
-                            .iter()
-                            .map(|(_, message)| message.clone()),
-                    )
-                    .collect();
-                Ok(PowerContent {
-                    decisions,
-                    abilities,
-                    focuses,
-                    warnings,
-                    unit_traits,
-                    triggers,
-                    aliases,
-                    dlcs,
-                })
+    pub fn abilities(&self) -> Result<Arc<content_reader_abilities::abilities::AbilitySprites>, String> {
+        self.abilities.get_or_init(|| content_reader_abilities::abilities::read(&self.catalogue.content.layers))
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn national_focuses(&self) -> Result<Arc<content_reader_focus::focus::Focuses>, String> {
+        self.focuses.get_or_init(|| {
+            content_reader_focus::focus::read_national(&self.catalogue.content.layers)
+                .map(|(focuses, _)| focuses)
+        }).map_err(|error| error.to_string())
+    }
+
+    pub fn unit_traits(&self) -> Result<Arc<content_reader_key_names::unit_leader::Traits>, String> {
+        self.unit_traits.get_or_init(|| content_reader_key_names::unit_leader::Traits::registered(&self.catalogue.content.layers))
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn trigger_facts(&self) -> Result<crate::triggers::ContentFacts<'_>, String> {
+        let content = self.trigger_result.get_or_init(|| {
+            let layers = &self.catalogue.content.layers;
+            let (scripted, buildings, resources, aliases) = std::thread::scope(|threads| {
+                use content_reader_layers::parallel::spawn;
+                let buildings = spawn(threads, || content_reader_key_names::buildings::read(layers));
+                let resources = spawn(threads, || content_reader_key_names::resources::read(layers));
+                let aliases = spawn(threads, || content_reader_key_names::tag_aliases::read(layers));
+                (content_reader_key_names::scripted_triggers::read(layers), buildings.join(), resources.join(), aliases.join())
+            });
+            let triggers = content_reader_script::trigger_keys::TriggerNames::new(
+                scripted?,
+                content_reader_key_names::key_name_products::count_trigger_names(
+                    &settled(buildings)?, &self.ideologies, &settled(resources)?.0,
+                ),
+            );
+            Ok(TriggerContent {
+                triggers,
+                aliases: Arc::new(settled(aliases)?),
+                dlcs: layers.dlc_names()?,
             })
-            .map_err(|error| error.to_string())?;
-        Ok(self.power.get_or_init(|| power).as_ref())
-    }
-
-    pub fn power_requested(&self) -> bool {
-        self.power_requested
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub fn power_warnings(&self) -> &[String] {
-        if !self
-            .power_requested
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return &[];
-        }
-        self.power
-            .get()
-            .map_or(&[], |power| power.warnings.as_slice())
+        }).map_err(|error| error.to_string())?;
+        let content = self.trigger_content.get_or_init(|| content);
+        Ok(crate::triggers::ContentFacts::content_only(&content.dlcs, &content.triggers, &content.aliases))
     }
 
     pub fn defines(&self, key: &str) -> bool {

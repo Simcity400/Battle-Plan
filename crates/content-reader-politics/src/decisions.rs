@@ -5,7 +5,7 @@ use content_reader_script::{key_names::KeyNames, modifiers, native::{self, Field
 use content_reader_parser::parser::{self, Item};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
+    io, sync::Arc,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -532,7 +532,11 @@ fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
     Ok(icon)
 }
 
-pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<Arc<Database>> {
+    layers.retained_product("political decision definitions", 1, &[], read_database)
+}
+
+fn read_database(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut categories = BTreeSet::new();
     let mut database = Database::default();

@@ -35,6 +35,8 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
         Some(b"SYN_CATEGORY".as_slice())
     );
     let decision = database.decision(b"SYN_DECISION").unwrap().unwrap();
+    let second = read(&layers).unwrap();
+    assert!(std::ptr::eq(decision, second.decision(b"SYN_DECISION").unwrap().unwrap()));
     assert!(decision.power_balance);
     assert_eq!(decision.category, b"syn_category");
     for body in [
@@ -75,6 +77,20 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
     assert_eq!(decision.days_remove, b"var:duration");
     assert!(decision.modifier[0].keyword_is("political_power_gain"));
     assert!(!database.decision(b"OTHER").unwrap().unwrap().power_balance);
+    let overlay = root.join("overlay");
+    std::fs::create_dir_all(overlay.join("common/decisions")).unwrap();
+    std::fs::write(
+        overlay.join("common/decisions/a.txt"),
+        b"SYN_CATEGORY={BROKEN={allowed={synthetic_prefix:target={always=yes}}}}",
+    )
+    .unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[]), (&overlay, &[])]).unwrap();
+    let first = read(&layers).unwrap();
+    let second = read(&layers).unwrap();
+    let why = first.decision(b"SYN_DECISION").unwrap_err();
+    assert!(why.contains("common/decisions/a.txt"), "{why}");
+    assert_eq!(second.decision(b"SYN_DECISION").unwrap_err(), why);
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
     std::fs::remove_dir_all(root).unwrap();
 }
 
