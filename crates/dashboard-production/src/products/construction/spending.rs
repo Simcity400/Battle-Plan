@@ -279,12 +279,18 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             let (read, repair_tick) = steps.get(&line.id).map(|(read, tick)| (read.as_slice(), *tick)).unwrap_or_default();
             let gaps = dated_gaps(read, line.last, line.output_reason, line.had_output);
             if !attributed {
-                let owner_gap = gaps.iter().find(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
-                let first_output = read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
-                if line.country.is_none() && owner_gap.is_none() && first_output.is_none() {
-                    seen.remove(&line.id);
+                let owner_gaps = gaps.iter().filter(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
+                if line.country.is_some() {
+                    out.unattributed.push(owner_gaps.min().unwrap_or(line.first));
+                    continue;
                 }
-                out.unattributed.extend(owner_gap.or(if line.country.is_none() { first_output } else { Some(line.first) }));
+                let first_output = read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
+                match owner_gaps.chain(first_output).filter(|&hour| stretch.first <= hour && hour <= stretch.last).min() {
+                    Some(hour) => out.unattributed.push(hour),
+                    None => {
+                        seen.remove(&line.id);
+                    }
+                }
                 continue;
             }
             ids.extend(line.building);
