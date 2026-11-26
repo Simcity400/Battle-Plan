@@ -10,7 +10,7 @@ use replay::{campaign::QuietHours, campaign::TableFields};
 use replay_data::{
     BranchId, Hour, rows::DeltaRow, rows::TableId, rows::full_mask, rows::tables,
 };
-use replay_data::rows::{RowCodec, RowsVisit, TableRows};
+use replay_data::rows::{Field, List, Opaque, RowCodec, RowsVisit, TableRows};
 use replay_frame::frame::{DecodedFrame, HourFrame, OperandStatus, Rowset, TableView, ViewIdentity, kept, view_reads};
 use std::sync::LazyLock;
 
@@ -882,12 +882,89 @@ impl Fingerprint for super::world::Invasion<'_> {
     }
 }
 
+static UNREUSABLE: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn row_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) {
+    if wire_fingerprint(row, into).is_err() {
+        into.write_u64(u64::MAX);
+        into.write_u64(UNREUSABLE.fetch_add(1, Ordering::Relaxed));
+    }
+}
+
+fn wire_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) -> std::io::Result<()> {
+    if row.has_display_steps() {
+        let mut rounded = row.clone();
+        rounded.round_to_display();
+        if rounded != *row {
+            return Err(std::io::Error::other("a row holds a value between its display steps"));
+        }
+    }
     into.write_u128(row.key());
-    let mut fields = Vec::new();
-    match row.encode_fields(&mut fields) {
-        Ok(()) => into.write(&fields),
-        Err(error) => error.to_string().hash(into),
+    row.visit_wire(&mut |index, field| {
+        into.write_usize(index);
+        field_fingerprint(field, into)
+    })
+}
+
+fn list_fingerprint<T: Hash>(list: List<'_, T>, into: &mut DefaultHasher) {
+    match list {
+        List::Native(values) => {
+            into.write_u8(0);
+            values.hash(into);
+        }
+        List::Encoded(bytes) => {
+            into.write_u8(1);
+            bytes.hash(into);
+        }
+    }
+}
+
+fn field_fingerprint(field: Field<'_>, into: &mut DefaultHasher) -> std::io::Result<()> {
+    match field {
+        Field::Empty => into.write_u8(0),
+        Field::NotRecorded => into.write_u8(1),
+        Field::U8(value) => (2_u8, value).hash(into),
+        Field::I8(value) => (3_u8, value).hash(into),
+        Field::U16(value) => (4_u8, value).hash(into),
+        Field::I16(value) => (5_u8, value).hash(into),
+        Field::U32(value) => (6_u8, value).hash(into),
+        Field::I32(value) => (7_u8, value).hash(into),
+        Field::U64(value) => (8_u8, value).hash(into),
+        Field::I64(value) => (9_u8, value).hash(into),
+        Field::Bool(value) => (10_u8, value).hash(into),
+        Field::OptionalI32(value) => (11_u8, value).hash(into),
+        Field::OptionalU32(value) => (12_u8, value).hash(into),
+        Field::OptionalI64(value) => (13_u8, value).hash(into),
+        Field::OptionalU64(value) => (14_u8, value).hash(into),
+        Field::Bytes(bytes) => (15_u8, bytes).hash(into),
+        Field::U32List(list) => {
+            into.write_u8(16);
+            list_fingerprint(list, into);
+        }
+        Field::U64List(list) => {
+            into.write_u8(17);
+            list_fingerprint(list, into);
+        }
+        Field::Opaque(Opaque::Encoded(bytes, version)) => (18_u8, version, bytes).hash(into),
+        Field::Opaque(Opaque::Native(value)) => {
+            let mut encoded = Vec::new();
+            value.encode_value(&mut encoded)?;
+            (19_u8, encoded).hash(into);
+        }
+    }
+    Ok(())
+}
+
+impl Fingerprint for replay_data::rows::IndustrialOrganisationFlag {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        (self.token, self.set_hour, self.value, self.remaining_days).hash(into);
+    }
+}
+
+impl Fingerprint for replay_data::rows::IndustrialOrganisationTask {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        self.technology.as_ref().map(|technology| (technology.country, technology.handle, technology.index, technology.token)).hash(into);
+        self.line.hash(into);
     }
 }
 

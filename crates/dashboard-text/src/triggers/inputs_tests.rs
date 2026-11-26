@@ -2382,17 +2382,23 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
 }
 
 #[test]
-fn two_tables_whose_texts_differ_only_in_bytes_that_are_not_text_have_different_fingerprints() {
-    use replay_data::{event_feed_rows::{EventFeedScope, EventFeedText}, rows::{EventFeedHistoryRow, RowCodec}};
-    let table = |name: &[u8]| {
+fn feed_tables_differing_in_bytes_that_are_not_text_or_in_an_older_format_have_different_fingerprints() {
+    use replay_data::{event_feed_rows::{EventFeedCoverage, EventFeedScope, EventFeedText}, rows::{EventFeedHistoryRow, Recorded}};
+    let row = |name: &[u8], read_hour: i32, windows_recorded: bool| {
         let names = [EventFeedText::new(name).unwrap(), EventFeedText::default(), EventFeedText::default()];
-        let row = EventFeedHistoryRow { script_scopes: vec![EventFeedScope { country_names: Some(names), ..Default::default() }], ..Default::default() };
-        row.encode_fields(&mut Vec::new()).expect("the row is one the recording can hold");
-        TableView::Complete(TableRows::EventFeedHistory(vec![row]))
+        let scope = EventFeedScope { country: 5, country_attempted: true, country_id: Some(9), country_names: Some(names), ..Default::default() };
+        let mut row = EventFeedHistoryRow { read_hour, coverage: EventFeedCoverage::Partial, script_scopes: vec![scope], ..Default::default() };
+        if !windows_recorded {
+            row.windows = Recorded::NotRecorded;
+        }
+        row.validate().expect("a row the recording accepts");
+        row
     };
-    let (first, second) = (table(b"Reich \xff"), table(b"Reich \xfe"));
-    assert_ne!(first, second);
-    assert_eq!(format!("{first:?}"), format!("{second:?}"), "both read the same as text, which is what a diagnostic fingerprint saw");
-    assert_ne!(fingerprint(&first), fingerprint(&second), "the typed fingerprint keeps the recorded bytes");
-    assert_eq!(fingerprint(&first), fingerprint(&table(b"Reich \xff")));
+    let table = |rows: Vec<EventFeedHistoryRow>| TableView::Complete(TableRows::EventFeedHistory(rows));
+    for windows_recorded in [true, false] {
+        let first = table(vec![row(b"Reich \xff", 10, windows_recorded)]);
+        assert_eq!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xff", 10, windows_recorded)])), "windows recorded: {windows_recorded}: the same table, the same fingerprint");
+        assert_ne!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xfe", 10, windows_recorded)])), "windows recorded: {windows_recorded}: texts differing only in bytes that are not text");
+        assert_ne!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xff", 11, windows_recorded)])), "windows recorded: {windows_recorded}: another read hour");
+    }
 }

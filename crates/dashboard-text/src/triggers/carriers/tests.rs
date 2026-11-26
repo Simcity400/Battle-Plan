@@ -802,6 +802,19 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
         confirm(&inputs, &other, TableChange::Rows(&rows, &[])),
         (true, true, 0)
     );
+    let mut funded = sized(2, Some(SIZES));
+    if let TableView::Complete(TableRows::IndustrialOrganisationDetails(rows)) = &mut *funded.tables[TableId::IndustrialOrganisationDetails.index()] {
+        rows.iter_mut().filter(|row| row.organisation == MIO).for_each(|row| row.state.funds_raw += 1);
+    }
+    let funds = (0..64)
+        .find(|&field| TableId::IndustrialOrganisationDetails.field_name(field) == Some("state.funds_raw"))
+        .expect("the details table names its funds field");
+    let rows = [DeltaRow { mask: 1 << funds, ..changed(MIO) }];
+    assert_eq!(
+        confirm(&inputs, &funded, TableChange::Rows(&rows, &[])),
+        (true, true, 0),
+        "a change to the organisation's funds alone leaves its size, and the evaluation, as they were"
+    );
     let shrunk = sized(2, Some(&[(OTHER, 5), (MIO, 5), (HELD, 8)]));
     let rows = [changed(MIO)];
     assert_eq!(

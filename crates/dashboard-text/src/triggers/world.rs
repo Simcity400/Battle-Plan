@@ -337,6 +337,29 @@ fn state_list(inputs: &CountryCounterInputRow, controlled: bool) -> &[u32] {
     }
 }
 
+type OrganisationDetails<'a> = Cow<'a, replay_data::rows::IndustrialOrganisationDetailsRow>;
+
+fn organisation_size(row: OrganisationDetails<'_>) -> i32 {
+    row.state.size
+}
+
+fn organisation_unlocked(row: OrganisationDetails<'_>) -> Cow<'_, [u32]> {
+    part(row, |row| row.unlocked.as_slice())
+}
+
+fn organisation_policies(row: OrganisationDetails<'_>) -> (Cow<'_, [u32]>, u32) {
+    let policy = row.state.policy;
+    (part(row, |row| row.allowed_policies.as_slice()), policy)
+}
+
+fn organisation_flags(row: OrganisationDetails<'_>) -> Cow<'_, [replay_data::rows::IndustrialOrganisationFlag]> {
+    part(row, |row| row.flags.as_slice())
+}
+
+fn organisation_tasks(row: OrganisationDetails<'_>) -> Cow<'_, [replay_data::rows::IndustrialOrganisationTask]> {
+    part(row, |row| row.tasks.as_slice())
+}
+
 fn part<'a, R: Clone, T: ToOwned + ?Sized>(
     row: Cow<'a, R>,
     field: impl for<'r> Fn(&'r R) -> &'r T,
@@ -884,12 +907,20 @@ impl World<'_> {
             Query::IndustrialOrganisation(reference) => {
                 super::inputs::fingerprint(&self.industrial_organisation_unrecorded(*reference))
             }
-            Query::IndustrialOrganisationSize(reference)
-            | Query::IndustrialOrganisationUnlocked(reference)
-            | Query::IndustrialOrganisationPolicies(reference)
-            | Query::IndustrialOrganisationFlags(reference)
-            | Query::IndustrialOrganisationTasks(reference) => {
-                super::inputs::fingerprint(&self.organisation_details(*reference))
+            Query::IndustrialOrganisationSize(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_size))
+            }
+            Query::IndustrialOrganisationUnlocked(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_unlocked))
+            }
+            Query::IndustrialOrganisationPolicies(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_policies))
+            }
+            Query::IndustrialOrganisationFlags(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_flags))
+            }
+            Query::IndustrialOrganisationTasks(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_tasks))
             }
             Query::Clock => super::inputs::digest(&self.hour),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
@@ -1705,49 +1736,48 @@ impl<'a> World<'a> {
         )
     }
 
-    fn organisation_part<T>(
-        &self,
-        query: Query,
-        reference: u64,
-        project: impl FnOnce(Cow<'a, replay_data::rows::IndustrialOrganisationDetailsRow>) -> T,
-    ) -> Result<T, Failure> {
-        let details = super::inputs::query_typed_resolved(
-            || super::inputs::Key::World(query),
-            || self.organisation_details(reference),
-        );
-        Ok(project(details?))
-    }
-
     pub(crate) fn industrial_organisation_size(&self, reference: u64) -> Result<i32, Failure> {
-        self.organisation_part(Query::IndustrialOrganisationSize(reference), reference, |row| row.state.size)
+        super::inputs::query_typed_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationSize(reference)),
+            || self.organisation_details(reference).map(organisation_size),
+        )
     }
 
     pub(crate) fn organisation_unlocked(&self, reference: u64) -> Result<Cow<'a, [u32]>, Failure> {
-        self.organisation_part(Query::IndustrialOrganisationUnlocked(reference), reference, |row| part(row, |row| row.unlocked.as_slice()))
+        super::inputs::query_typed_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationUnlocked(reference)),
+            || self.organisation_details(reference).map(organisation_unlocked),
+        )
     }
 
     pub(crate) fn organisation_policies(
         &self,
         reference: u64,
     ) -> Result<(Cow<'a, [u32]>, u32), Failure> {
-        self.organisation_part(Query::IndustrialOrganisationPolicies(reference), reference, |row| {
-            let policy = row.state.policy;
-            (part(row, |row| row.allowed_policies.as_slice()), policy)
-        })
+        super::inputs::query_typed_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationPolicies(reference)),
+            || self.organisation_details(reference).map(organisation_policies),
+        )
     }
 
     pub(crate) fn organisation_flags(
         &self,
         reference: u64,
     ) -> Result<Cow<'a, [replay_data::rows::IndustrialOrganisationFlag]>, Failure> {
-        self.organisation_part(Query::IndustrialOrganisationFlags(reference), reference, |row| part(row, |row| row.flags.as_slice()))
+        super::inputs::query_typed_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationFlags(reference)),
+            || self.organisation_details(reference).map(organisation_flags),
+        )
     }
 
     pub(crate) fn organisation_tasks(
         &self,
         reference: u64,
     ) -> Result<Cow<'a, [replay_data::rows::IndustrialOrganisationTask]>, Failure> {
-        self.organisation_part(Query::IndustrialOrganisationTasks(reference), reference, |row| part(row, |row| row.tasks.as_slice()))
+        super::inputs::query_typed_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationTasks(reference)),
+            || self.organisation_details(reference).map(organisation_tasks),
+        )
     }
 
     fn organisation_details(
