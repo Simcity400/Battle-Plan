@@ -279,6 +279,16 @@ impl Executable {
             .insert(at, (id, leak(&format!("synthetic_effect_class_{class:x}")), class));
     }
 
+    pub fn effect_renderer(mut self, name: &str, class: u64) -> Self {
+        let token = self.token(name).expect("existing synthetic keyword");
+        let identities = &mut self.registries.effect_identities;
+        let at = identities
+            .binary_search_by_key(&token, |&(id, _, _)| id)
+            .expect("existing synthetic effect");
+        identities[at] = (token, leak(&format!("synthetic_effect_class_{class:x}")), class);
+        self
+    }
+
     pub fn auxiliary(mut self, change: impl FnOnce(&mut AuxiliaryTables)) -> Self {
         change(&mut self.auxiliary);
         self
