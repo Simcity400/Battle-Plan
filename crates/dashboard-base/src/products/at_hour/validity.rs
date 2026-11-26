@@ -109,18 +109,25 @@ impl ScriptedInputs {
     }
 
     pub fn evaluate<T>(&self, frame: &DecodedFrame, tables: &[TableId], cancelled: &AtomicBool, evaluate: impl FnOnce(&DecodedFrame) -> T) -> io::Result<(T, i32)> {
+        self.evaluate_with_reads(frame, tables, cancelled, |world| (evaluate(world), Vec::new()))
+    }
+
+    pub fn evaluate_with_reads<T>(&self, frame: &DecodedFrame, tables: &[TableId], cancelled: &AtomicBool, evaluate: impl FnOnce(&DecodedFrame) -> (T, Vec<TableRead>)) -> io::Result<(T, i32)> {
         let Some(block) = self.replay.block_at(frame.branch, frame.hour) else {
             return Err(io::Error::other("Scripted text hour is not recorded"));
         };
         let SeekResult::Frame(recorded) = self.replay.seek_selected_with(frame.branch, frame.hour, Some(tables), || check_cancel(cancelled))? else {
             return Err(io::Error::other("Scripted text hour is not recorded"));
         };
-        let (value, inputs) = dashboard_text::triggers::inputs::capture(&recorded, || evaluate(&recorded));
+        let ((value, mut watched), inputs) = dashboard_text::triggers::inputs::capture(&recorded, || evaluate(&recorded));
         let through = match inputs.footprint() {
             None => frame.hour,
-            Some([]) => i32::MAX,
-            Some(reads) => self.dates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .through(&self.replay, block.run, reads, block.first_hour, frame.hour, block.last_hour, cancelled)?,
+            Some([]) if watched.is_empty() => i32::MAX,
+            Some(reads) => {
+                watched.extend_from_slice(reads);
+                self.dates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .through(&self.replay, block.run, &watched, block.first_hour, frame.hour, block.last_hour, cancelled)?
+            }
         };
         Ok((value, through))
     }

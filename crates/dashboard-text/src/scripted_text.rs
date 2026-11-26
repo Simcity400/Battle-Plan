@@ -638,7 +638,7 @@ pub struct ScriptedText<'a> {
     viewer: Option<u32>,
     pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
-    accepted_projects: Option<std::sync::Arc<crate::triggers::AcceptedProjects>>,
+    accepted_projects: Option<crate::triggers::ProjectReads<'a>>,
 }
 
 fn named(segment: &str, name: &str) -> bool {
@@ -903,12 +903,12 @@ impl<'a> ScriptedText<'a> {
             viewer: self.viewer,
             nato_counters: self.nato_counters,
             world: std::sync::OnceLock::new(),
-            accepted_projects: self.accepted_projects.clone(),
+            accepted_projects: self.accepted_projects,
         }
     }
 
-    pub fn with_accepted_projects(mut self, accepted: crate::triggers::AcceptedProjects) -> Self {
-        self.accepted_projects = Some(std::sync::Arc::new(accepted));
+    pub fn with_accepted_projects(mut self, accepted: crate::triggers::ProjectReads<'a>) -> Self {
+        self.accepted_projects = Some(accepted);
         self
     }
 

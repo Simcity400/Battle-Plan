@@ -1,5 +1,5 @@
 use dashboard_effects::ScriptedEffects;
-use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, branch, context, definition, effect_tables, owner_read, owners_of, accepted_projects, project_slices, spelled, supplied_project};
+use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, branch, context, definition, effect_tables, owner_read, owners_of, with_projects, project_slices, spelled, supplied_project};
 use dashboard_base::{
     Source,
     products::{
@@ -228,7 +228,7 @@ fn shown(text: &str, refusals: &mut BTreeMap<String, usize>) -> Option<Vec<GameR
     runs(text).map_err(|why| *refusals.entry(why).or_default() += 1).ok()
 }
 
-fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_military::special_projects::PrototypeOption, accepted: dashboard_text::triggers::AcceptedProjects, out: &mut SpecialProjectIteration) -> Result<(), String> {
+fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_military::special_projects::PrototypeOption, accepted: dashboard_text::triggers::ProjectReads<'_>, out: &mut SpecialProjectIteration) -> Result<(), String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
     let project = &listing.project;
@@ -284,8 +284,7 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     if let Err(why) = same_project(&choice, &reads, &listing) {
         return Ok(Err(why));
     }
-    let accepted = accepted_projects(&reads, &choice);
-    Ok(chosen(content, &listing).and_then(|option| render(content, &choice, holder.slot, &listing, option, accepted, out)))
+    Ok(chosen(content, &listing).and_then(|option| with_projects(&reads, &choice, |accepted| render(content, &choice, holder.slot, &listing, option, accepted, out)).0))
 }
 
 impl AtHour for SpecialProjectIterationAt {

@@ -4,6 +4,7 @@ use dashboard_base::products::Country;
 use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, RunLinks, country_key, needs_scope};
 use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read, ScriptedInputs}, game_text::{GameRun, runs}}};
 use dashboard_query::{Index, Query, cost};
+use dashboard_text::triggers::{AcceptedProjects, ProjectReads, ProjectScope, inputs::TableRead};
 use replay::campaign::Replay;
 use replay_lanes::lanes;
 use replay_data::{
@@ -13,10 +14,9 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock, atomic::{AtomicI32, Ordering}},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -225,6 +225,8 @@ impl From<dashboard_effects::effect_description::Description> for ProjectEffects
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectEffects {
+    #[serde(skip)]
+    through: i32,
     pub hour: i32,
     #[doc = " The project read every effect is rendered from; none where no read supplies it."]
     pub read_hour: Option<i32>,
@@ -311,7 +313,7 @@ enum Withheld {
 }
 
 struct Reads<'r, 'q> {
-    through: Option<&'r Cell<i32>>,
+    through: Option<&'r AtomicI32>,
     query: &'r Query<'q>,
     coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
     links: &'r Links,
@@ -323,7 +325,7 @@ struct Reads<'r, 'q> {
 
 impl Reads<'_, '_> {
     fn hold_through(&self, through: i32) {
-        if let Some(bound) = self.through { bound.set(bound.get().min(through)); }
+        if let Some(bound) = self.through { bound.fetch_min(through, Ordering::Relaxed); }
     }
 
     fn spans<T>(&self, table: TableId, what: &str, of: impl FnOnce(&Coverage) -> T) -> Result<T, String> {
@@ -568,46 +570,55 @@ fn supplied_project(reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(Proje
     stamped_project(reads, owner, id).map(|(row, read, _)| (row, read))
 }
 
-fn accepted_projects(reads: &Reads<'_, '_>, frame: &DecodedFrame) -> dashboard_text::triggers::AcceptedProjects {
-    let mut accepted = dashboard_text::triggers::AcceptedProjects::default();
-    let Ok(links) = frame.complete::<tables::CountryLinks>() else { return accepted };
+fn with_projects<T>(reads: &Reads<'_, '_>, frame: &DecodedFrame, render: impl FnOnce(ProjectReads<'_>) -> T) -> (T, Vec<TableRead>) {
+    let links = OnceLock::new();
+    let found = Mutex::new(HashMap::new());
+    let get = |scope| {
+        let mut found = found.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (accepted, _) = found.entry(scope).or_insert_with(|| dashboard_text::triggers::inputs::unrecorded(|| {
+            let links = links.get_or_init(|| frame.complete::<tables::CountryLinks>().ok().map(dashboard_text::metadata::link_slots));
+            let mut link = TableRead::fields(TableId::CountryLinks, &["canonical_slot"]);
+            if let ProjectScope::Owner(raw) = scope { link = link.row(u128::from(raw)); }
+            let mut watched = vec![link];
+            let accepted = links.as_ref().and_then(|links| accepted_projects(reads, frame, scope, links, &mut watched)).unwrap_or_default();
+            (Arc::new(accepted), watched)
+        }));
+        Arc::clone(accepted)
+    };
+    let value = render(&get);
+    let watched = found.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).into_values().flat_map(|(_, watched)| watched).collect();
+    (value, watched)
+}
+
+fn accepted_projects(reads: &Reads<'_, '_>, frame: &DecodedFrame, scope: ProjectScope, links: &HashMap<u32, u32>, watched: &mut Vec<TableRead>) -> Option<AcceptedProjects> {
+    let (slot, owners) = match scope {
+        ProjectScope::Owner(owner) => (*links.get(&owner)?, vec![owner]),
+        ProjectScope::Country(slot) => (slot, links.iter().filter_map(|(&raw, &held)| (held == slot).then_some(raw)).collect()),
+    };
+    if owners.is_empty() { return None; }
+    let country = Country::Slot(slot);
+    reads.hold_through(reads.query.holders.interval(reads.hour).1);
+    let dashboard_query::identity::Holder::Found { id, .. } = reads.query.holders.at(&country, reads.hour)?.holder else { return None };
+    let at = Reads { tag: &country, holder: Owner { slot, id }, ..*reads };
     let slices = frame.complete::<tables::SliceReads>().unwrap_or(&[]);
-    let mut by_slot: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    for (raw, slot) in dashboard_text::metadata::link_slots(links) {
-        by_slot.entry(slot).or_default().push(raw);
-    }
+    let mut accepted = AcceptedProjects::default();
     let mut by_stamp: BTreeMap<i32, BTreeSet<u32>> = BTreeMap::new();
-    for (&slot, owners) in &by_slot {
-        let country = Country::Slot(slot);
-        let Some(dashboard_query::identity::Holder::Found { id, .. }) = reads.query.holders.at(&country, reads.hour).map(|run| run.holder) else { continue };
-        let at = Reads { tag: &country, holder: Owner { slot, id }, ..*reads };
-        let mut whole = true;
-        for &owner in owners {
-            match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| at.usable(TableId::Projects, owner, read).is_ok()) {
-                Some(read) => {
-                    by_stamp.entry(read).or_default().insert(owner);
-                    accepted.owners.insert(owner);
-                }
-                None => whole = false,
-            }
-        }
-        if whole {
-            accepted.slots.insert(slot);
+    for &owner in &owners {
+        watched.push(TableRead::fields(TableId::SliceReads, &["sample_hour"]).row(slice_read(TableId::Projects, owner)));
+        if let Some(stamp) = replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| at.usable(TableId::Projects, owner, read).is_ok()) {
+            by_stamp.entry(stamp).or_default().insert(owner);
         }
     }
     for (read, owners) in by_stamp {
-        let found = dashboard_base::products::at_hour::frame(reads.query, read, &[Read { table: TableId::Projects, keys: owner_ranges(&owners, 32) }], SpecialProjectDetailsAt::TITLE)
-            .ok()
-            .and_then(|stamp| stamp.complete::<tables::Projects>().ok().map(|rows| rows.iter().filter(|row| owners.contains(&row.owner)).cloned().collect::<Vec<_>>()));
-        match found {
-            Some(rows) => accepted.rows.extend(rows.into_iter().map(|row| ((row.owner, row.local_id), row))),
-            None => {
-                accepted.owners.retain(|owner| !owners.contains(owner));
-                accepted.slots.retain(|slot| by_slot[slot].iter().all(|owner| !owners.contains(owner)));
-            }
+        if let Ok(stamp) = dashboard_base::products::at_hour::frame(reads.query, read, &[Read { table: TableId::Projects, keys: owner_ranges(&owners, 32) }], SpecialProjectDetailsAt::TITLE)
+            && let Ok(rows) = stamp.complete::<tables::Projects>()
+        {
+            accepted.rows.extend(rows.iter().filter(|row| owners.contains(&row.owner)).map(|row| ((row.owner, row.local_id), row.clone())));
+            accepted.owners.extend(owners);
         }
     }
-    accepted
+    if owners.len() == accepted.owners.len() { accepted.slots.insert(slot); }
+    Some(accepted)
 }
 
 fn owners_of(frame: &DecodedFrame, slot: u32) -> io::Result<BTreeSet<u32>> {
@@ -625,28 +636,11 @@ fn prefixed<T>(rows: &[T], prefix: u32, of: impl Fn(&T) -> u32) -> &[T] {
     &rows[first..last]
 }
 
-fn scientist_references(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> (BTreeSet<u32>, BTreeSet<u32>) {
-    let roster: BTreeSet<u32> =
-        frame.complete::<tables::Scientists>().map(|rows| rows.iter().filter(|row| owners.contains(&row.country)).map(|row| row.character).collect()).unwrap_or_default();
-    let mut assigned = BTreeSet::new();
-    for program in frame.complete::<tables::ProjectPrograms>().unwrap_or(&[]).iter().filter(|row| owners.contains(&row.owner)) {
-        if let Recorded::Value(Some(assignments)) = &program.assignments {
-            assigned.extend(assignments.iter().filter(|value| value.scientist as u32 == CHARACTER_REFERENCE).map(|value| (value.scientist >> 32) as u32));
-        }
-    }
-    (roster, assigned)
-}
-
-fn tokens(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> BTreeSet<u32> {
+fn tokens(frame: &DecodedFrame) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
     out.extend(frame.complete::<tables::ProjectBreakthroughs>().unwrap_or(&[]).iter().map(|row| row.specialization));
     out.extend(frame.complete::<tables::ScientistSkills>().unwrap_or(&[]).iter().map(|row| row.token));
     out.extend(frame.complete::<tables::CharacterRoleTraits>().unwrap_or(&[]).iter().flat_map(|row| row.tokens.iter().copied()));
-    for program in frame.complete::<tables::ProjectPrograms>().unwrap_or(&[]).iter().filter(|row| owners.contains(&row.owner)) {
-        if let Recorded::Value(Some(operands)) = &program.facility {
-            out.extend(operands.iter().map(|operand| operand.token).filter(|token| *token != 0));
-        }
-    }
     out.extend(frame.complete::<tables::Characters>().unwrap_or(&[]).iter().filter_map(|row| u32::try_from(row.name_token_id).ok()));
     out
 }
@@ -711,22 +705,39 @@ impl AtHour for SpecialProjectDetailsAt {
 
 
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
-        (table == TableId::Projects).then(|| dashboard_base::products::at_hour::field_columns(table, &["definition_id", "runtime"]))
+        let fields: &[&str] = match table {
+            TableId::Projects => &["definition_id", "runtime"],
+            TableId::Scientists => &["country", "active"],
+            _ => return None,
+        };
+        Some(dashboard_base::products::at_hour::field_columns(table, fields))
     }
 
     fn compares_previous(table: TableId) -> bool {
-        table == TableId::SliceReads
+        matches!(table, TableId::SliceReads | TableId::Scientists)
     }
 
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
         match stage {
-            1 => [TableId::CountryLinks, TableId::Scientists, TableId::ProjectPrograms].iter().any(|&t| edits.fields(t, u64::MAX)),
-            2 => DETAIL_TABLES.iter().any(|&t| t != TableId::SliceReads && t != TableId::LexicalTokens && edits.fields(t, u64::MAX)),
+            1 => edits.fields(TableId::CountryLinks, u64::MAX) || edits.fields(TableId::Scientists, dashboard_base::products::at_hour::field_mask(TableId::Scientists, &["country"])),
+            2 => [TableId::ProjectBreakthroughs, TableId::ScientistSkills, TableId::CharacterRoleTraits, TableId::Characters].iter().any(|&t| edits.fields(t, u64::MAX)),
             _ => false,
         }
     }
 
     fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        if edits.only_columns(TableId::Scientists, u64::MAX)
+            && let Some(changes) = edits.tables.get(&TableId::Scientists)
+            && let Some(TableView::Complete(before)) = edits.previous.get(&TableId::Scientists).map(|held| held.held())
+            && let Some(before) = before.rows::<tables::Scientists>()
+            && let Ok(now) = frame.complete::<tables::Scientists>()
+            && let Some(owner) = at.owner
+        {
+            let owners = owners_of(frame, owner.slot)?;
+            if changes.keys().all(|&key| [before, now].into_iter().all(|rows| rows.binary_search_by_key(&key, |row| u128::from(row.character)).ok().is_none_or(|i| !owners.contains(&rows[i].country)))) {
+                return Ok(true);
+            }
+        }
         reread(frame, params, at, edits, data)
     }
 
@@ -737,25 +748,13 @@ impl AtHour for SpecialProjectDetailsAt {
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
-            0 => [TableId::CountryLinks, TableId::Scientists, TableId::ProjectPrograms].into_iter().map(Read::all).collect(),
+            0 => [TableId::CountryLinks, TableId::Scientists].into_iter().map(Read::all).collect(),
             1 => {
                 let Ok(owners) = owners_of(held, owner.slot) else { return Vec::new() };
                 if owners.is_empty() {
                     return Vec::new();
                 }
-                let (roster, assigned) = scientist_references(held, &owners);
-                let characters: BTreeSet<u32> = roster.union(&assigned).copied().collect();
-                let modifiers: BTreeSet<u32> = held
-                    .complete::<tables::ProjectPrograms>()
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|row| owners.contains(&row.owner))
-                    .filter_map(|row| match &row.facility {
-                        Recorded::Value(Some(operands)) => Some(operands.iter().map(|operand| operand.key).filter(|key| *key != 0)),
-                        _ => None,
-                    })
-                    .flatten()
-                    .collect();
+                let roster: BTreeSet<_> = held.complete::<tables::Scientists>().unwrap_or(&[]).iter().filter(|row| owners.contains(&row.country)).map(|row| row.character).collect();
                 vec![
                     Read { table: TableId::Projects, keys: owner_ranges(&owners, 32) },
                     Read { table: TableId::ProjectHistory, keys: owner_ranges(&owners, 64) },
@@ -764,14 +763,12 @@ impl AtHour for SpecialProjectDetailsAt {
                     Read::these(TableId::ScientistDaily, roster.iter().map(|&id| u128::from(id))),
                     Read { table: TableId::ScientistSkills, keys: owner_ranges(&roster, 32) },
                     Read::these(TableId::CharacterRoleTraits, roster.iter().map(|&id| u128::from(id) << 40 | u128::from(CharacterRoleTraitRow::SCIENTIST) << 32)),
-                    Read::these(TableId::Characters, characters.iter().map(|&id| u128::from(id))),
-                    Read::these(TableId::CharacterPortraits, characters.iter().map(|&id| u128::from(id))),
-                    Read::these(TableId::ModifierDefinitions, modifiers.into_iter().map(u128::from)),
+                    Read::these(TableId::Characters, roster.iter().map(|&id| u128::from(id))),
+                    Read::these(TableId::CharacterPortraits, roster.iter().map(|&id| u128::from(id))),
                 ]
             }
             2 => {
-                let Ok(owners) = owners_of(held, owner.slot) else { return Vec::new() };
-                vec![Read::these(TableId::LexicalTokens, tokens(held, &owners).into_iter().map(u128::from))]
+                vec![Read::these(TableId::LexicalTokens, tokens(held).into_iter().map(u128::from))]
             }
             _ => Vec::new(),
         }
@@ -789,7 +786,7 @@ impl AtHour for SpecialProjectDetailsAt {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project details name no country"))?;
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project details hour is not recorded"))?.run;
-        let through = Cell::new(i32::MAX);
+        let through = AtomicI32::new(i32::MAX);
         let reads = Reads { through: Some(&through), query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
         let mut namer = Namer::new(at.context, frame, at.cancelled, owner.slot);
         let mut out = SpecialProjectDetails { through: i32::MAX, hour: at.hour, scientists: None, programs: None, breakthroughs: None, projects: None, unavailable: Vec::new(), warnings: Vec::new() };
@@ -809,7 +806,7 @@ impl AtHour for SpecialProjectDetailsAt {
         out.projects = projects(&owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
         let scoped = !namer.scoped.is_empty();
         at.context.scoped_details.store(scoped, std::sync::atomic::Ordering::Relaxed);
-        out.through = namer.through.min(through.get());
+        out.through = namer.through.min(through.load(Ordering::Relaxed));
         out.warnings = namer.warnings();
         Ok(out)
     }
@@ -1309,30 +1306,34 @@ fn effects(
     slot: u32,
     project: &ProjectRow,
     output: &content_reader_military::special_projects::Output,
-    scientist: &Result<Option<u32>, String>,
-    accepted: &dashboard_text::triggers::AcceptedProjects,
+    reads: &Reads<'_, '_>,
+    accepted: ProjectReads<'_>,
+    watched: &mut Vec<TableRead>,
 ) -> ProjectEffects {
-    let render = || -> Result<_, String> {
+    let mut render = || -> Result<_, String> {
         let catalogue = &content.politics.catalogue;
         let scripted = catalogue.scripted_content()?;
-        let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_accepted_projects(accepted.clone());
+        let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_accepted_projects(accepted);
         let cache = scripted.effects()?;
         let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project output", cache.view(None)).with_entity_links();
-        let facility = (|| {
-            if project.program_reference == 0 {
+        let facility = dashboard_text::triggers::inputs::unrecorded(|| {
+            if output.facility_state_effects.is_empty() || project.program_reference == 0 {
                 return Ok(None);
             }
             if project.program_reference as u32 != PROGRAM_REFERENCE {
                 return Err("Unknown program reference type".to_owned());
             }
             let id = (project.program_reference >> 32) as u32;
+            watched.push(TableRead::fields(TableId::RaidFacilities, &["province"]).row(u128::from(id)));
             let facility =
                 frame.complete::<tables::RaidFacilities>().map_err(|why| why.to_string())?.iter().find(|row| row.id == id).ok_or("raid facilities lacks the selected project program")?;
+            watched.push(TableRead::fields(TableId::Provinces, &["state"]).row(u128::from(facility.province)));
             let provinces = frame.complete::<tables::Provinces>().map_err(|why| why.to_string())?;
             let state = provinces.iter().find(|row| row.id == facility.province).ok_or("Provinces lacks the facility province")?.state;
             Ok(Some((facility.province, state)))
-        })();
-        Ok(dashboard_effects::effect_description::project_output_description(output, &context, project.owner, project.local_id, scientist.clone(), facility))
+        });
+        let scientist = if output.scientist_effects.is_empty() { Ok(None) } else { assigned(reads, project).scientist() };
+        Ok(dashboard_effects::effect_description::project_output_description(output, &context, project.owner, project.local_id, scientist, facility))
     };
     match render() {
         Ok(description) => description.into(),
@@ -1344,7 +1345,8 @@ impl AtHour for SpecialProjectEffectsAt {
     const KEY: &'static str = "special-project-effects";
     const TITLE: &'static str = "Special project effects";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads staggered project coverage spans and custody history and stamps at.hour into reply");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
+    const REPLY_DATES_REQUEST_HOUR: bool = true;
     type Params = SpecialProjectEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project];
     type Reply = SpecialProjectEffects;
@@ -1365,30 +1367,44 @@ impl AtHour for SpecialProjectEffectsAt {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        effect_tables()
+        vec![TableId::CountryLinks, TableId::SliceReads]
     }
 
-    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
+    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         if step != 0 {
             return Vec::new();
         }
-        effect_tables().into_iter().map(Read::all).collect()
+        vec![Read::these(TableId::CountryLinks, [u128::from(params.owner)]), Read::these(TableId::SliceReads, [slice_read(TableId::Projects, params.owner)])]
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(context(source, load))
     }
 
+    fn holds_refusal(frame: &DecodedFrame) -> bool {
+        frame.complete::<tables::CountryLinks>().is_ok() && frame.complete::<tables::SliceReads>().is_ok()
+    }
+
+    fn valid_through(frame: &DecodedFrame, params: &Self::Params, _: &At<'_, Context>) -> i32 {
+        owner_read(frame, TableId::Projects, params.owner).ok().filter(|&stamp| super::current(stamp, frame.hour)).map_or(frame.hour, |stamp| stamp.saturating_add(STAGGER_PERIOD - 1))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, Context>, reply: &Self::Reply, _: bool) -> i32 {
+        let refusals = reply.output.iter().chain(reply.pending.iter().flat_map(|pending| pending.options.iter().map(|option| &option.effects))).flat_map(|effects| effects.refusals.keys());
+        reply.through.min(dashboard_base::products::at_hour::warnings_through(frame.hour, refusals.chain(&reply.unavailable).chain(&reply.warnings).map(String::as_str)))
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project effects name no country"))?;
-        let mut out = SpecialProjectEffects { hour: at.hour, read_hour: None, output: None, pending: None, unavailable: None, warnings: Vec::new() };
+        let mut out = SpecialProjectEffects { through: i32::MAX, hour: at.hour, read_hour: None, output: None, pending: None, unavailable: None, warnings: Vec::new() };
         if !owners_of(frame, owner.slot)?.contains(&params.owner) {
             out.unavailable = Some("The project's owner is not this country at this hour".into());
             return Ok(out);
         }
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
-        let reads = Reads { through: None, query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
+        let through = AtomicI32::new(i32::MAX);
+        let reads = Reads { through: Some(&through), query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
         let (project, spellings) = match stamped_project(&reads, params.owner, params.project) {
             Ok((project, read, spellings)) => {
                 out.read_hour = Some(read);
@@ -1396,6 +1412,7 @@ impl AtHour for SpecialProjectEffectsAt {
             }
             Err(why) => {
                 out.unavailable = Some(why);
+                out.through = through.load(Ordering::Relaxed);
                 return Ok(out);
             }
         };
@@ -1404,36 +1421,44 @@ impl AtHour for SpecialProjectEffectsAt {
             Ok(token) => token,
             Err(why) => {
                 out.unavailable = Some(why);
+                out.through = through.load(Ordering::Relaxed);
                 return Ok(out);
             }
         };
         let Some(found) = definition(content, &token) else {
             out.unavailable = Some(format!("Definition {token} is absent from content"));
+            out.through = through.load(Ordering::Relaxed);
             return Ok(out);
         };
         let project = &project;
-        let scientist = assigned(&reads, project).scientist();
-        let accepted = accepted_projects(&reads, frame);
-        out.output = Some(effects(content, frame, owner.slot, project, &found.output, &scientist, &accepted));
-        if let Recorded::Value(runtime) = &project.runtime
-            && let Some(id) = runtime.pending_reward
-        {
-            let found = runtime.pending_ordinal.ok_or_else(|| "Pending reward object occurrence is unavailable".to_owned()).and_then(|ordinal| {
-                let reward = spelled(&spellings, id)?;
-                content.definitions.reward_at(&token, ordinal, &reward).map(|found| (reward, ordinal, found))
-            });
-            match found {
-                Ok((reward, ordinal, found)) => {
-                    let options = found
-                        .options
-                        .iter()
-                        .map(|option| OptionEffects { token: option.token.clone(), effects: effects(content, frame, owner.slot, project, &option.output, &scientist, &accepted) })
-                        .collect();
-                    out.pending = Some(PendingEffects { reward, ordinal, options });
+        let ((), rendered) = at.context.text_inputs.evaluate_with_reads(frame, &effect_tables(), at.cancelled, |world| {
+            let mut facilities = Vec::new();
+            let ((), mut watched) = with_projects(&reads, world, |accepted| {
+                out.output = Some(effects(content, world, owner.slot, project, &found.output, &reads, accepted, &mut facilities));
+                if let Recorded::Value(runtime) = &project.runtime
+                    && let Some(id) = runtime.pending_reward
+                {
+                    let found = runtime.pending_ordinal.ok_or_else(|| "Pending reward object occurrence is unavailable".to_owned()).and_then(|ordinal| {
+                        let reward = spelled(&spellings, id)?;
+                        content.definitions.reward_at(&token, ordinal, &reward).map(|found| (reward, ordinal, found))
+                    });
+                    match found {
+                        Ok((reward, ordinal, found)) => {
+                            let options = found
+                                .options
+                                .iter()
+                                .map(|option| OptionEffects { token: option.token.clone(), effects: effects(content, world, owner.slot, project, &option.output, &reads, accepted, &mut facilities) })
+                                .collect();
+                            out.pending = Some(PendingEffects { reward, ordinal, options });
+                        }
+                        Err(why) => out.unavailable = Some(why),
+                    }
                 }
-                Err(why) => out.unavailable = Some(why),
-            }
-        }
+            });
+            watched.extend(facilities);
+            ((), watched)
+        })?;
+        out.through = rendered.min(through.load(Ordering::Relaxed));
         Ok(out)
     }
 }

@@ -573,8 +573,16 @@ pub struct World<'a> {
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
     appearance: Index<Linked<BTreeMap<u32, u128>>>,
     template_names: Option<TemplateNames<'a>>,
-    accepted_projects: Option<Arc<AcceptedProjects>>,
+    accepted_projects: Option<ProjectReads<'a>>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectScope {
+    Owner(u32),
+    Country(u32),
+}
+
+pub type ProjectReads<'a> = &'a (dyn Fn(ProjectScope) -> Arc<AcceptedProjects> + Sync);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AcceptedProjects {
@@ -1618,13 +1626,13 @@ impl<'a> World<'a> {
         }
     }
 
-    pub fn with_accepted_projects(mut self, accepted: Option<Arc<AcceptedProjects>>) -> Self {
+    pub fn with_accepted_projects(mut self, accepted: Option<ProjectReads<'a>>) -> Self {
         self.accepted_projects = accepted;
         self
     }
 
-    pub(crate) fn accepted_projects(&self) -> Option<&AcceptedProjects> {
-        self.accepted_projects.as_deref()
+    pub(crate) fn accepted_projects(&self, scope: ProjectScope) -> Option<Arc<AcceptedProjects>> {
+        self.accepted_projects.map(|read| read(scope))
     }
 
     #[cfg(test)]
@@ -2374,7 +2382,7 @@ impl<'a> World<'a> {
         const COMPLETED: u64 =
             mask::<replay_data::rows::ProjectRow>(&["completed", "definition_id"]);
         let token = self.token_of(name)?;
-        if let Some(accepted) = self.accepted_projects() {
+        if let Some(accepted) = self.accepted_projects(ProjectScope::Country(slot)) {
             let Some(token) = token else {
                 return Err(format!("project {} has no recorded spelling at this hour, so whether it was completed is not recorded", String::from_utf8_lossy(name)).into());
             };

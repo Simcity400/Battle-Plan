@@ -7,7 +7,7 @@ dashboard_base::register_products! {
     @hourly
     RESEARCH_SLOTS_RESEARCHSLOTS => exact<crate::products::research::slots::ResearchSlots>,
     SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTDETAILSAT => exact<crate::products::special_projects::details::SpecialProjectDetailsAt>,
-    SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTEFFECTSAT => whole_frame<crate::products::special_projects::details::SpecialProjectEffectsAt>,
+    SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTEFFECTSAT => exact<crate::products::special_projects::details::SpecialProjectEffectsAt>,
     SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTITERATIONAT => exact<crate::products::special_projects::details::SpecialProjectIterationAt>,
     TECHNOLOGY_EFFECTS_TECHNOLOGYEFFECTSAT => exact<crate::products::technology_effects::TechnologyEffectsAt>,
     ENTITY_STATS_ENTITYSTATSAT => exact<crate::products::entity_stats::EntityStatsAt>,

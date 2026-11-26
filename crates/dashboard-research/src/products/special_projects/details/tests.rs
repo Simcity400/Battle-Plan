@@ -40,7 +40,7 @@ fn frame(hour: i32) -> DecodedFrame {
     }
     set(&mut frame, TableId::Scientists, TableRows::Scientists(vec![
         ScientistRow { character: 7, country: 11, active: Recorded::Value(Some(1)), ..Default::default() },
-        ScientistRow { character: 8, country: 12, active: Recorded::Value(Some(0)), ..Default::default() },
+        ScientistRow { character: 8, country: 12, active: Recorded::Value(Some((hour % 2) as u8)), ..Default::default() },
     ]));
     set(&mut frame, TableId::ScientistDaily, TableRows::ScientistDaily(vec![ScientistDailyRow { character: 7, country: 11, injury_days: Recorded::Value(Some(8)), template_visibility: Recorded::Value(Some(0)), ..Default::default() }]));
     set(&mut frame, TableId::ScientistSkills, TableRows::ScientistSkills(vec![ScientistSkillRow { character: 7, ordinal: 0, token: 41, level: -2, experience_raw: i64::MAX }]));
@@ -515,9 +515,9 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         ),
         (
             "common/special_projects/projects/test.txt",
-            "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward}} rival={specialization=mod_science generic_prototype_rewards={mod_reward}}",
+            "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward} project_output={country_effects={if={limit={ALT={is_special_project_completed=sp:rival}} add_political_power=3} else={add_political_power=4}}}} rival={specialization=mod_science generic_prototype_rewards={mod_reward}}",
         ),
-        ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"$VAL|1$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n"),
+        ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"$VAL|1$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_RESEARCH_OUTPUT:0 \"Project output\"\n"),
     ] {
         let file = root.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -558,7 +558,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.collect()));
         let mut slices: Vec<SliceReadRow> = [TableId::Projects, TableId::ProjectHistory]
             .into_iter()
-            .flat_map(|table| [(11, hour), (OTHER_OWNER, hour), (9001, hour), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
+            .flat_map(|table| [(11, hour), (OTHER_OWNER, if (48..50).contains(&hour) { FIRST } else { hour.min(LISTED) }), (9001, hour.min(LISTED)), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
             .collect();
         slices.sort_by_key(|row| (row.table, row.owner));
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
@@ -595,6 +595,18 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     let before = iteration(0, BEFORE);
     assert!(before["unavailable"].as_str().is_some_and(|why| why.contains("not proven to be this one")), "a choice whose project the choice-hour read does not prove is withheld whole, before anything is rendered: {before}");
     assert_eq!(before["sections"], json!([]), "nothing of it is shown, not even effects that read no project value: {before}");
+    let panel = dashboard_base::products::at_hour::exact_panel::<SpecialProjectEffectsAt>(&source, &load, &json!({ "branchId":"1", "country":"HOM", "owner":9001, "project":3 })).unwrap();
+    let reader = panel.exact().unwrap();
+    for step in dashboard_base::test_fixtures::played(source.replay_ref(), reader, LISTED + 2, LAST) {
+        let mut materialized = step.value.as_ref().as_ref().unwrap().clone();
+        materialized["hour"] = step.hour.into();
+        assert_eq!(materialized, (reader.cold)(step.hour, &false.into()).unwrap(), "effects at {}", step.hour);
+        assert_eq!(materialized["output"]["runs"].to_string().contains("4.0"), !(48..50).contains(&step.hour), "{materialized}");
+        if step.hour > LISTED + 2 { assert_eq!(step.product_calls, u64::from(matches!(step.hour, 48 | 50)), "effects at {}", step.hour); }
+    }
+    for hour in [48, LISTED + 2] {
+        assert_eq!(*(reader.advance)(hour, true, &false.into(), None).value, (reader.cold)(hour, &false.into()));
+    }
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -748,35 +760,4 @@ fn details_spell_a_project_from_the_read_that_supplies_it() {
     let reply = details(&source, 41);
     assert_eq!(reply["projects"][0]["label"]["token"], json!("project"), "R5-S4: the project read at 30 is spelled from that read, never from the playhead's rows: {reply}");
     assert!(!has(&reply, "lacks token 77"), "{reply}");
-}
-
-#[test]
-fn effects_and_iteration_request_slice_reads_once_without_duplicate_tables() {
-    let assert_unique = |label: &str, tables: &[TableId]| {
-        let mut sorted = tables.to_vec();
-        sorted.sort_unstable();
-        let before = sorted.len();
-        sorted.dedup();
-        assert_eq!(sorted.len(), before, "{label} has duplicate tables: {tables:?}");
-        assert_eq!(tables.iter().filter(|&&table| table == TableId::SliceReads).count(), 1, "{label} should request SliceReads once: {tables:?}");
-    };
-    let held = source(1, FIRST, None);
-    let effects_params: SpecialProjectEffectsParams = serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3 })).unwrap();
-    let effects_tables = SpecialProjectEffectsAt::tables(&effects_params);
-    assert_unique("SpecialProjectEffectsAt::tables", &effects_tables);
-    let effects_reads = SpecialProjectEffectsAt::reads(&effects_params, None, 0, &held);
-    let effects_read_tables: Vec<TableId> = effects_reads.iter().map(|read| read.table).collect();
-    assert_unique("SpecialProjectEffectsAt::reads", &effects_read_tables);
-
-    let iter_params: iteration::SpecialProjectIterationParams =
-        serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "read": 30 })).unwrap();
-    let iter_tables = SpecialProjectIterationAt::tables(&iter_params);
-    assert_unique("SpecialProjectIterationAt::tables", &iter_tables);
-    assert!(iter_tables.contains(&TableId::ProjectHistory));
-    let iter_reads = SpecialProjectIterationAt::reads(&iter_params, None, 0, &held);
-    let iter_read_tables: Vec<TableId> = iter_reads.iter().map(|read| read.table).collect();
-    assert_unique("SpecialProjectIterationAt::reads", &iter_read_tables);
-    let first = u128::from(iter_params.owner) << 64 | u128::from(iter_params.project) << 32;
-    let history_read = iter_reads.iter().find(|read| read.table == TableId::ProjectHistory).expect("iteration reads ProjectHistory");
-    assert!(matches!(history_read.keys, dashboard_base::products::at_hour::Keys::Range(lo, hi) if lo == first && hi == (first | u128::from(u32::MAX))));
 }

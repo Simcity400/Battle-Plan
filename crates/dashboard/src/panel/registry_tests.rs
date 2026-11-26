@@ -157,7 +157,7 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
         "decryption",
         "faction-details", "factory-parts",
         "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
-        "production-licences", "resource-balance", "special-project-effects",
+        "production-licences", "resource-balance",
         "stability-part-names", "stockpile-artwork",
         "territory-breakdown", "trade-flow",
         "volunteer-flow", "war-contributions",

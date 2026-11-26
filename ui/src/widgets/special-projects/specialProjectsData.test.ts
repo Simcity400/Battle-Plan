@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ProjectEntry, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
-import { runtimeProject, shownCard, episodeBound, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { runtimeProject, shownCard, episodeBound, projectWindowRequest, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import type { GatedHour } from '../../dashboard/regionTime';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -75,18 +76,19 @@ test('a project window joins its runtime project on the owner and local id, read
   assert.match(runtimeProject(details(null),card,120) as string, /not read/);
   const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],statuses:[data.projects[0].statuses[0]],entries:[]}]};
   const running=shownCard(open,147,open.projects[0].id)!;
-  const pinned = shownCard(open, 120, running.project.id)!;
-  const pinnedBound = episodeBound(open, pinned.project, null);
-  assert.equal(runtimeProject(details([runtime(9, 3, 'Later reward', 160)], 160), pinned, 120, pinnedBound), null);
+  const playhead = 147;
+  const pinnedRequest = projectWindowRequest({ id: 'campaign', revision: '1' }, '1', { tag: 'GER', hour: 120 },
+    hour => typeof hour === 'number' && hour <= playhead ? hour as GatedHour : null);
+  assert.equal(pinnedRequest?.params.hour, 120);
+  const pinned = shownCard(open, pinnedRequest!.params.hour!, running.project.id)!;
+  const pinnedBound = episodeBound(open, pinned.project, 120);
+  assert.deepEqual(pinnedBound, { through: 120, open: true });
+  assert.equal(runtimeProject(details([runtime(9, 3, 'Later reward', 140)], 140), pinned, 120, pinnedBound), null);
   assert.deepEqual(runtimeProject(details([runtime(9, 3, 'Pinned reward', 120)], 120), pinned, 120, pinnedBound), joined(runtime(9, 3, 'Pinned reward', 120)));
-  for (const through of [null, 147]) {
-    const shown = runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,through));
-    assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
-      'a running project read after the list stands is not yet joined');
-  }
-  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), joined(runtime(9,3,'Mod project name',160)),
-    'a running project the list still covers takes its later read');
-  assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'a project no longer listed keeps its last status');
+  const shown = runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,160));
+  assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
+    'a running project read after the list stands is not yet joined');
+  assert.deepEqual(episodeBound(data,card.project,205), { through: 199, open: false }, 'a project no longer listed keeps its last status');
 });
 
 test('the card, text mirror, history and hover show the played hour inside a held project span, including after a backward seek', async () => {
