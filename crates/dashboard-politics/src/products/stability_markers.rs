@@ -171,7 +171,7 @@ fn party_markers(out: &mut Markers, reply: &RulingParties) {
     }
 }
 
-fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply) {
+fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, hidden: &[HourSpan]) {
     for war in &groups.war_starts {
         let other = if holds(&war.attacking, war.hour) {
             &war.defending
@@ -184,7 +184,9 @@ fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &Co
         made.verb = Some(StabilityMarkerVerb::Began);
         made.other = Some(other.clone());
         made.alert = true;
-        out.push(made);
+        if !within(hidden, made.hour) {
+            out.push(made);
+        }
     }
     let mut fought: BTreeMap<&str, Vec<(&str, &groups::WarPairRun)>> = BTreeMap::new();
     for war in &groups.wars {
@@ -195,7 +197,9 @@ fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &Co
         if holds(&event.tag, event.hour) {
             let mut made = marker(format!("cap:{}:{}", event.tag, event.hour), event.hour, StabilityMarkerKind::War, "Capitulated".to_owned());
             made.alert = true;
-            out.push(made);
+            if !within(hidden, made.hour) {
+                out.push(made);
+            }
             continue;
         }
         let ends_now = |war: &groups::WarPairRun| event.hour == war.last_hour + 1 && !within(&groups.unobserved.wars, event.hour);
@@ -207,7 +211,9 @@ fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &Co
             made.verb = Some(StabilityMarkerVerb::Capitulated);
             made.other = Some(event.tag.clone());
             made.alert = true;
-            out.push(made);
+            if !within(hidden, made.hour) {
+                out.push(made);
+            }
         }
     }
 }
@@ -376,10 +382,10 @@ impl Product for StabilityMarkers {
         if params.wars || params.factions {
             let groups = groups::shared(source, &query, context, cancelled)?;
             let holds = |tag: &str, at: i32| query.holders.tag_at(&params.country, at) == Some(tag);
-            if params.wars {
-                war_markers(&mut out, &holds, &groups);
-            }
             let unheld: Vec<HourSpan> = holder_gaps(&query.holders, &params.country, query.timeline.first).into_iter().map(|(first_hour, last_hour, _)| HourSpan { first_hour, last_hour }).collect();
+            if params.wars {
+                war_markers(&mut out, &holds, &groups, &unheld);
+            }
             let joins = if params.factions { faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last), &unheld) } else { Vec::new() };
             if params.wars {
                 warnings.extend(unattributed_note(&mut out, &groups.unobserved.unattributed));
