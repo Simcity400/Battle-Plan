@@ -14,6 +14,7 @@ export interface BreakdownPart {
   readonly value: number | null;
   readonly text: string;
   readonly exact?: string;
+  readonly raw?: string;
   readonly share?: number | null;
   readonly parentShare?: number | null;
   readonly color?: string;

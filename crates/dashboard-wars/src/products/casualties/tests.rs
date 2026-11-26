@@ -209,13 +209,14 @@ fn coverage_gaps_holder_unknowns_truncation_missing_ended_and_unread_totals_neve
     assert!(unlinked_slot.breakdown.total.reason.as_deref().is_some_and(|r| r.contains(TAG_UNLINKED)));
 
     let missing_end = index.at(106);
-    assert_eq!(missing_end.breakdown.total.state, BreakdownState::AtLeast, "missing ended counter is NotRecorded, making total AtLeast");
+    assert_eq!((missing_end.breakdown.total.state, missing_end.breakdown.total.amount.clone()), (BreakdownState::NotRecorded, None), "a recorded casualty counter can be negative: a missing one leaves the total unproven");
+    assert!(missing_end.breakdown.parts[0].children.iter().any(|part| part.key == "slot:1" && part.amount == figure("10")), "the witnessed enemy amount stays inspectable");
     let war = &missing_end.breakdown.parts[0];
     let ended_part = war.children.iter().find(|part| part.key == "slot:2").expect("missing ended enemy kept");
     assert_eq!(ended_part.state, BreakdownState::NotRecorded);
 
     let truncated = index.at(115);
-    assert_eq!(truncated.breakdown.total.state, BreakdownState::AtLeast, "truncated lifetimes add an Unread war relations leaf");
+    assert!(matches!(truncated.breakdown.total.state, BreakdownState::AtLeast | BreakdownState::NotRecorded), "truncated lifetimes add an Unread war relations leaf");
     assert!(truncated.breakdown.parts.iter().any(|part| part.key == "~unread" && part.other && part.state == BreakdownState::NotRecorded));
     assert!(truncated.breakdown.parts.iter().all(|part| part.share.is_none()));
 

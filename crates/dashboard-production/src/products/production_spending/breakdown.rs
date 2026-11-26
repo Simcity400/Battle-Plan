@@ -24,6 +24,7 @@ use std::{
 const SPENT_SCALE: i128 = 100_000;
 const REPAIR_SCALE: i128 = REPAIR_DENOMINATOR as i128 * SPENT_SCALE;
 const UNRESOLVED_TYPE_KEY: &str = "~unresolved";
+const REPAIR_KEY: &str = "repair";
 const UNASSIGNED: &str = "Some designs\u{2019} equipment types are not recorded at this hour, so which factories spent their IC is not known";
 
 pub(crate) fn unknown_reason(why: ProductionSpendingUnknown) -> &'static str {
@@ -145,10 +146,7 @@ impl IndexedSpan {
         let classified = designs
             .iter()
             .filter(|(_, design)| design.domain.is_some())
-            .filter_map(|(&variant, design)| {
-                let defined = design.names.first().filter(|name| name.known).map(|name| name.first_hour);
-                read.archetype_since.get(&variant).copied().or(defined).map(|hour| (variant, hour))
-            })
+            .filter_map(|(&variant, design)| read.archetype_since.get(&variant).copied().into_iter().chain(design.typed_since).min().map(|hour| (variant, hour)))
             .collect();
         Self { read, designs, type_ordinals, classified, notes }
     }
@@ -234,13 +232,15 @@ struct RepairSummary {
     split_incomplete: bool,
 }
 
-fn repair_summary(repairs: &RepairRead, hour: i32) -> RepairSummary {
-    let Some(since) = repair_since(repairs, hour) else {
+fn repair_summary(repairs: &RepairRead, hour: i32, floor: Option<i32>) -> RepairSummary {
+    let start = repairs.total.first().map_or(i32::MIN, |piece| piece.0).max(floor.unwrap_or(i32::MIN));
+    let Some(known) = repair_since(repairs, hour) else {
         return RepairSummary { recorded: false, designs: BTreeMap::new(), unattributed: 0, gap: None, split_incomplete: false };
     };
+    let since = known.max(start);
     let mut designs: BTreeMap<u64, i128> = BTreeMap::new();
     let mut unattributed: i128 = 0;
-    let mut gap: Option<ProductionSpendingUnknown> = repairs.total.first().filter(|piece| piece.0 < since).map(|_| ProductionSpendingUnknown::NotRecorded);
+    let mut gap: Option<ProductionSpendingUnknown> = (known > start).then_some(ProductionSpendingUnknown::NotRecorded);
     let mut split_incomplete = false;
     let mut edges: BTreeSet<i32> = BTreeSet::new();
     edges.insert(since);
@@ -396,7 +396,8 @@ impl Built {
     }
 
     fn minus(mut self, start: &Built, classified: impl Fn(u64) -> bool) -> Built {
-        let held: HashMap<Vec<String>, &Amount> = start.leaves.iter().map(|leaf| (leaf_key(leaf), &leaf.amount)).collect();
+        let counters: Vec<&Leaf> = start.leaves.iter().filter(|leaf| leaf.path.first().is_none_or(|node| node.key != REPAIR_KEY)).collect();
+        let held: HashMap<Vec<String>, &Amount> = counters.iter().map(|leaf| (leaf_key(leaf), &leaf.amount)).collect();
         for leaf in &mut self.leaves {
             let before = held.get(&leaf_key(leaf)).copied();
             let next = match (&leaf.amount, before) {
@@ -416,20 +417,20 @@ impl Built {
         }
         let keep: std::collections::HashSet<Vec<String>> = self.leaves.iter().map(leaf_key).collect();
         let design = |leaf: &Leaf| leaf.path.last().and_then(|node| node.key.strip_prefix("variant:")).and_then(|id| id.parse::<u64>().ok());
-        for leaf in &start.leaves {
+        for leaf in counters {
             if keep.contains(&leaf_key(leaf)) || matches!(leaf.amount, Amount::Known(value) if value.numerator() == 0) || design(leaf).is_some_and(&classified) {
                 continue;
             }
             self.leaves.push(Leaf { path: leaf.path.clone(), amount: Amount::NotRecorded("Spent before the range start and not found at its end".into()), count: None, last: None });
         }
         self.leaves.retain(|leaf| !matches!(leaf.amount, Amount::Known(value) if value.numerator() == 0));
-        self.unassigned = self.leaves.iter().any(|leaf| leaf.path.first().is_some_and(|node| node.key == UNRESOLVED_TYPE_KEY));
+        self.unassigned = self.leaves.iter().any(|leaf| leaf.path.iter().any(|node| node.key == UNRESOLVED_TYPE_KEY || node.key.starts_with(UNRESOLVED_MARK)));
         self
     }
 }
 
 impl SpendingIndex {
-    fn build(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> Result<Built, Box<ProductionSpendingReply>> {
+    fn build(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool, repairs_from: Option<i32>) -> Result<Built, Box<ProductionSpendingReply>> {
         let held = self.spans.iter().any(|span| span.read.span.first <= hour && hour <= span.read.span.last);
         let held_from = next_span_start(&self.spans, hour, |span| span.read.span.first).map_or(i32::MAX, |first| first - 1);
         if !held && let Some((_, last, reason)) = covering(&self.unknown, hour, |&(first, last, _)| (first, last)) {
@@ -698,7 +699,6 @@ impl SpendingIndex {
                     leaves.push(Leaf { path: vec![purpose_node(ProductionPurpose::Refit, true)], amount: Amount::NotRecorded(text.into()), count: None, last: None });
                 } else {
                     let mut unproven_purpose = false;
-                    let mut unresolved_purposes: BTreeSet<ProductionPurpose> = BTreeSet::new();
                     for key in span.read.rows.keys() {
                         let (rocket, variant, purpose) = *key;
                         if rocket {
@@ -717,11 +717,8 @@ impl SpendingIndex {
                                 unproven_purpose = true;
                             }
                         }
-                        if domain.is_none() {
-                            if !matches!(spent_at, RunAmount::Known(0)) {
-                                unresolved_purposes.insert(purpose);
-                            }
-                            continue;
+                        if domain.is_none() && !matches!(spent_at, RunAmount::Known(0)) {
+                            unassigned = true;
                         }
                         let amount = match spent_at {
                             RunAmount::Known(0) => continue,
@@ -735,20 +732,12 @@ impl SpendingIndex {
                             last: None,
                         });
                     }
-                    for purpose in unresolved_purposes {
-                        leaves.push(Leaf {
-                            path: vec![purpose_node(purpose, true), Node::new(UNRESOLVED_TYPE_KEY, "Type not resolved", u32::MAX).other()],
-                            amount: Amount::NotRecorded("Some designs\u{2019} equipment types are unknown".into()),
-                            count: None,
-                            last: None,
-                        });
-                    }
                     if unproven_purpose {
                         reasons.push("Whether some of it was refits was not recorded".into());
                     }
                 }
-                let repair_root = Node::new("repair", "Repairs", 2);
-                match span.read.repairs.as_ref().map(|repairs| repair_summary(repairs, hour)) {
+                let repair_root = Node::new(REPAIR_KEY, "Repairs", 2);
+                match span.read.repairs.as_ref().map(|repairs| repair_summary(repairs, hour, repairs_from)) {
                     None | Some(RepairSummary { recorded: false, .. }) => {
                         leaves.push(Leaf { path: vec![repair_root], amount: Amount::NotRecorded("Spending was not recorded".into()), count: None, last: None });
                     }
@@ -812,7 +801,6 @@ impl SpendingIndex {
                     }));
                 }
                 let mut unproven_purpose = false;
-                let mut unresolved_purposes: BTreeSet<ProductionPurpose> = BTreeSet::new();
                 for key in span.read.rows.keys() {
                     let (rocket, variant, purpose) = *key;
                     if rocket {
@@ -831,11 +819,8 @@ impl SpendingIndex {
                             unproven_purpose = true;
                         }
                     }
-                    if domain.is_none() {
-                        if !matches!(spent_at, RunAmount::Known(0)) {
-                            unresolved_purposes.insert(purpose);
-                        }
-                        continue;
+                    if domain.is_none() && !matches!(spent_at, RunAmount::Known(0)) {
+                        unassigned = true;
                     }
                     let amount = match spent_at {
                         RunAmount::Known(0) => continue,
@@ -845,14 +830,6 @@ impl SpendingIndex {
                     leaves.push(Leaf {
                         path: vec![purpose_node(purpose, false), span.type_node(variant, hour), span.design_node(variant, false, hour)],
                         amount,
-                        count: None,
-                        last: None,
-                    });
-                }
-                for purpose in unresolved_purposes {
-                    leaves.push(Leaf {
-                        path: vec![purpose_node(purpose, false), Node::new(UNRESOLVED_TYPE_KEY, "Type not resolved", u32::MAX).other()],
-                        amount: Amount::NotRecorded("Some designs\u{2019} equipment types are unknown".into()),
                         count: None,
                         last: None,
                     });
@@ -870,30 +847,31 @@ impl SpendingIndex {
     }
 
     pub(crate) fn at(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> ProductionSpendingReply {
-        match self.build(hour, scope, include_refits) {
+        match self.build(hour, scope, include_refits, None) {
             Ok(built) => built.reply(hour),
             Err(reply) => *reply,
         }
     }
 
+    fn counted_before(&self, from: i32, until: i32) -> bool {
+        self.spans.iter().any(|span| span.read.span.first < until && span.read.span.last >= from)
+    }
+
     pub(crate) fn between(&self, from: i32, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> ProductionSpendingReply {
-        let Some(before) = from.checked_sub(1).filter(|&before| before >= self.from) else { return self.at(hour, scope, include_refits) };
-        let end = match self.build(hour, scope, include_refits) {
+        let end = match self.build(hour, scope, include_refits, Some(from)) {
             Ok(end) => end,
             Err(reply) => return ProductionSpendingReply { from, ..*reply },
         };
         let through = end.through;
         let refused = |reason: &str| ProductionSpendingReply { from, hour, through, breakdown: not_recorded(reason), warnings: end.warnings.clone() };
-        if end.from == from {
-            return end.reply(hour);
-        }
-        if end.from > from {
-            return match self.build(before, scope, include_refits) {
-                Err(_) if self.spans.iter().all(|span| span.read.span.last < from || span.read.span.first >= end.from) => ProductionSpendingReply { from, ..end.reply(hour) },
-                _ => refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted)),
+        if end.from >= from {
+            return if end.from > from && self.counted_before(from, end.from) {
+                refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted))
+            } else {
+                ProductionSpendingReply { from, ..end.reply(hour) }
             };
         }
-        let start = match self.build(before, scope, include_refits) {
+        let start = match self.build(from - 1, scope, include_refits, None) {
             Ok(start) if start.span == end.span && start.from == end.from => start,
             Ok(_) => return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted)),
             Err(reply) => return refused(reply.breakdown.total.reason.as_deref().unwrap_or(unknown_reason(ProductionSpendingUnknown::NotRecorded))),

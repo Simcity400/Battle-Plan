@@ -122,6 +122,14 @@ impl Exact {
         self.denominator
     }
 
+    pub fn plus(self, other: Self) -> Option<Self> {
+        self.checked_add(other)
+    }
+
+    pub fn minus(self, other: Self) -> Option<Self> {
+        self.checked_add(Self { numerator: other.numerator.checked_neg()?, denominator: other.denominator })
+    }
+
     fn checked_add(self, other: Self) -> Option<Self> {
         let divisor = i128::try_from(gcd(self.denominator.unsigned_abs(), other.denominator.unsigned_abs())).ok()?;
         let denominator = self.denominator.checked_mul(other.denominator / divisor)?;

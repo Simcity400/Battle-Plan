@@ -428,7 +428,7 @@ impl CasualtyIndex {
                     Some(reason) => Amount::Partial(Exact::whole(i128::from(value)), reason.clone()),
                     None => Amount::Known(Exact::whole(i128::from(value))),
                 },
-                Err(reason) => Amount::NotRecorded(reason),
+                Err(reason) => Amount::NotRecordedSigned(reason),
             };
             let last = pair_last.get(&(war.key.clone(), life.enemy.0)).copied().flatten();
             let enemy_hour = last.unwrap_or(hour);

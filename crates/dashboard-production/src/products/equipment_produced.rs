@@ -404,7 +404,7 @@ fn design_row(purpose: u8, read: impl Fn(usize) -> Option<i64>) -> DesignRow {
 }
 
 fn unnamed(key: DesignKey) -> spending::Design {
-    spending::Design { type_key: format!("{}variant/{}", spending::UNRESOLVED_MARK, key.1), name: None, domain: None, names: Vec::new() }
+    spending::Design { type_key: format!("{}variant/{}", spending::UNRESOLVED_MARK, key.1), name: None, domain: None, names: Vec::new(), typed_since: None }
 }
 
 fn type_recorded(design: &spending::Design) -> bool {

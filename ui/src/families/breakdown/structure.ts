@@ -59,7 +59,7 @@ export function deriveBreakdownAudit(model: BreakdownModel, layout: BreakdownLay
   for (const item of layout?.items ?? []) rows.push(auditRow(item.key, drawn(item)));
   const drawnPart = (key: string, kind: string) => {
     const found = findBreakdownPart(model.parts, key)?.part;
-    if (found) rows.push(auditRow(`${key}:${kind}`, `${found.exact ?? found.text}|${found.parentShare ?? ''}`));
+    if (found) rows.push(auditRow(`${key}:${kind}`, `${found.raw ?? found.missingReason ?? ''}|${found.parentShare ?? ''}`));
   };
   if (layout?.view === 'parts') {
     for (const row of layout.rows) for (const segment of row.segments) drawnPart(segment.key, 'segment');

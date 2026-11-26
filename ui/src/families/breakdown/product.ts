@@ -35,6 +35,7 @@ function part(wire: WirePart, words: BreakdownWords, parent: string | null): Bre
     value: known?.value ?? null,
     text: known?.text ?? '',
     ...(known?.exact ? { exact: known.exact } : {}),
+    ...(wire.amount ? { raw: `${wire.amount.numerator}/${wire.amount.denominator}` } : {}),
     share: wire.share,
     parentShare: wire.parentShare,
     ...(wire.other ? { neutral: true } : {}),

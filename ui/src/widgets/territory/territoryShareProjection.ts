@@ -111,6 +111,8 @@ export const territoryShare: BreakdownWidgetSpec<TerritoryShareOptions> = {
     const selection = ctx.widget.countries;
     if (selection.kind === 'factions') return 'World share shows countries; a faction’s combined share is in Race and Lines.';
     if (selection.kind === 'group' && selection.aggregate) return 'World share shows each member; a group’s combined share is in Race and Lines.';
+    const asked = chosen(ctx).countries;
+    if (Array.isArray(asked) && asked.length === 0) return 'Choose a country to see its share of the world.';
     return null;
   },
   projection: territoryShareProjection,

@@ -122,6 +122,7 @@ fn breakdown_scopes_answer_at_hour_with_exact_fractions_and_quiet_through_bounds
         name: Some(name.into()),
         domain: Some(domain),
         names: vec![StockVariantName { first_hour, name: Some(label.into()), known: true, design: None }],
+        typed_since: Some(first_hour),
     };
     let designs = HashMap::from([
         (1, design("infantry_equipment", "Infantry Equipment", Domain::Land, "Rifle I", 0)),
@@ -234,6 +235,7 @@ fn a_design_counts_under_its_type_only_from_the_hour_its_classification_is_recor
         name: Some(type_key.into()),
         domain: Some(domain),
         names: vec![StockVariantName { first_hour: 60, name: Some(format!("{type_key} I")), known: true, design: None }],
+        typed_since: None,
     };
     let designs = HashMap::from([(1, design("infantry_equipment", Domain::Land)), (2, design("destroyer", Domain::Naval))]);
     let index = SpendingIndex {
@@ -273,7 +275,7 @@ fn a_range_counts_only_what_was_spent_inside_it_and_refuses_a_baseline_across_a_
         equipment_observations: BTreeSet::new(),
         repairs: None,
     };
-    let design = Design { type_key: "infantry_equipment".into(), name: Some("Infantry".into()), domain: Some(Domain::Land), names: vec![StockVariantName { first_hour: 0, name: Some("Rifle".into()), known: true, design: None }] };
+    let design = Design { type_key: "infantry_equipment".into(), name: Some("Infantry".into()), domain: Some(Domain::Land), names: vec![StockVariantName { first_hour: 0, name: Some("Rifle".into()), known: true, design: None }], typed_since: None };
     let index = |spans: Vec<IndexedSpan>| SpendingIndex { from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), spans, rocket_source: None, warnings: Vec::new() };
     let whole = index(vec![IndexedSpan::new(span_read(0, 100), HashMap::from([(1, design.clone())]), Vec::new())]);
     let ranged = whole.between(50, 80, ProductionSpendingScope::Military, false);
@@ -299,7 +301,7 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
         equipment_observations: BTreeSet::from([0, 50]),
         repairs: None,
     };
-    let design = |key: &str, domain: Domain| Design { type_key: key.into(), name: Some(key.into()), domain: Some(domain), names: vec![StockVariantName { first_hour: 0, name: Some(key.into()), known: true, design: None }] };
+    let design = |key: &str, domain: Domain| Design { type_key: key.into(), name: Some(key.into()), domain: Some(domain), names: vec![StockVariantName { first_hour: 0, name: Some(key.into()), known: true, design: None }], typed_since: None };
     let index = SpendingIndex {
         from: 0,
         to: 100,
@@ -313,6 +315,7 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
     assert_eq!(index.at(80, ProductionSpendingScope::Military, false).from, 50, "a counter restarted at 50 counts from 50, not the holding's start");
     assert_eq!(index.at(20, ProductionSpendingScope::Military, false).through, 49);
     assert_eq!(index.between(30, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "400 then 10 is no difference of one counter");
+    assert_eq!(index.between(0, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "a range from the branch start across the restart is not the new counter alone");
     let at_restart = index.between(50, 80, ProductionSpendingScope::Military, false);
     assert_eq!((at_restart.from, at_restart.breakdown.total.amount), (50, Some(BreakdownAmount { numerator: "20".into(), denominator: "1".into() })), "a range starting at the restart is the new counter");
     let quiet = index.between(60, 80, ProductionSpendingScope::Military, false);

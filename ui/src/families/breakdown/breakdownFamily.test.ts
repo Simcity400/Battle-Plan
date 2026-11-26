@@ -661,6 +661,8 @@ test('territory share resolves slot-keyed countries, keeps Rest of the world neu
   assert.deepEqual((picked.entries[0]!.read as { params: unknown }).params, { branchId: '1', measure: 'controlledStates', countries: ['LUX'] }, 'a chosen small country is asked for, never the world top ten');
   const faction = territoryShare.sources(ctx({ kind: 'group', group: { type: 'faction', id: '4' }, membership: 'hour', aggregate: false }), view);
   assert.deepEqual((faction.entries[0]!.read as { params: { group?: unknown } }).params.group, { type: 'faction', id: '4', membership: 'hour' });
+  assert.equal(territoryShare.unavailable!(ctx({ kind: 'tags', tags: [] } as CountrySelection)), 'Choose a country to see its share of the world.', 'an empty explicit choice is never the whole world');
+  assert.equal(territoryShare.unavailable!(ctx({ kind: 'group', group: { type: 'faction', id: '4' }, membership: 'hour', aggregate: true })), 'World share shows each member; a group’s combined share is in Race and Lines.');
 });
 
 test('production, dockyard and military factory spending share one at-hour product, follow it, and separate owners by scope', () => {

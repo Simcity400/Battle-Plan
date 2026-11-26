@@ -370,6 +370,7 @@ pub(crate) struct Design {
     pub(crate) name: Option<String>,
     pub(crate) domain: Option<Domain>,
     pub(crate) names: Vec<StockVariantName>,
+    pub(crate) typed_since: Option<i32>,
 }
 
 pub(crate) struct Content {
@@ -532,7 +533,8 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
             }
             None => StockVariantName { first_hour: span.first, name: None, known: false, design: None },
         };
-        out.insert(variant, Design { type_key, name, domain, names: vec![names] });
+        let typed_since = definition.filter(|definition| definition.archetype_token > 0).and_then(|_| since.get(&variant).copied());
+        out.insert(variant, Design { type_key, name, domain, names: vec![names], typed_since });
     }
     Ok(out)
 }

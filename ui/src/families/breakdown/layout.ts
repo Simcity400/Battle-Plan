@@ -282,8 +282,7 @@ function undrawnParts(parts: readonly BreakdownPart[], drawn: ReadonlySet<string
 
 function undrawnNote(parts: readonly BreakdownPart[], drawnCount: number, total: BreakdownTotal): string | null {
   if (drawnCount > 0 || !parts.length) return null;
-  const reason = total.reason ?? parts.find(part => part.missingReason)?.missingReason;
-  return reason ? `Nothing here can be drawn to scale: ${reason}` : 'Nothing here can be drawn to scale.';
+  return total.reason ?? parts.find(part => part.missingReason)?.missingReason ?? 'Nothing here can be drawn to scale.';
 }
 
 function comparisonBox(
@@ -592,8 +591,9 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
   let sumRecorded = 0;
   for (const part of recorded) sumRecorded += part.value!;
 
-  const gapRad = recorded.length > 1 ? Math.min(1.5 / Math.max(1, r1o), Math.PI / recorded.length) : 0;
-  const usableAngle = (Math.PI * 2 - gapRad * recorded.length) * (sumRecorded > 0 ? sumRecorded / wholeOf(level, sumRecorded) : 1);
+  const allocated = Math.PI * 2 * (sumRecorded > 0 ? sumRecorded / wholeOf(level, sumRecorded) : 1);
+  const gapRad = recorded.length > 1 ? Math.min(1.5 / Math.max(1, r1o), allocated / (2 * recorded.length)) : 0;
+  const usableAngle = allocated - gapRad * recorded.length;
   const hatchedRing = level.total.atLeast === true;
   const outerFont = `600 10.5px ${theme.font}`;
 
