@@ -706,10 +706,7 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
 
 fn recorded_factory_cap(content: &Content) -> Result<i32, String> {
     match content.catalogue() {
-        Ok(catalogue) => match catalogue.defines() {
-            Ok(defines) => factory_cap(Ok(defines)),
-            Err(_) => factory_cap(content_reader_defines::defines::read(&catalogue.content.layers).as_ref().map_err(|why| why.to_string())),
-        },
+        Ok(catalogue) => factory_cap(content_reader_defines::defines::read(&catalogue.content.layers).as_ref().map_err(|why| why.to_string())),
         Err(why) => factory_cap(Err(why.to_owned())),
     }
 }
