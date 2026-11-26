@@ -767,8 +767,16 @@ export function layoutTimeChart(
       const gap = model.gaps[i]!;
       const ga = Math.max(xDomain[0], gap.firstHour);
       const gb = Math.min(xDomain[1], model.hour, gap.lastHour);
-      if (gb <= ga) continue;
-      placedGaps.push({ index: i, gap, ongoing: gap.lastHour > model.hour, x0: toX(ga), x1: toX(gb) });
+      if (gb < ga) continue;
+      const rawX0 = toX(ga);
+      const rawX1 = toX(gb);
+      let x0 = rawX0;
+      let x1 = Math.max(rawX0 + 2, rawX1);
+      if (x1 > left + plotWidth) {
+        x1 = left + plotWidth;
+        x0 = Math.max(left, Math.min(rawX0, x1 - 2));
+      }
+      placedGaps.push({ index: i, gap, ongoing: gap.lastHour > model.hour, x0, x1 });
     }
   }
 

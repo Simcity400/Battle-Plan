@@ -817,19 +817,48 @@ test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of rep
   const axisY = layout.axisTop + layout.axisHeight / 2;
   const axisTexts = ops.filter(op => op.op === 'fillText' && op.args[2] === axisY).map(op => String(op.args[0]));
   assert.deepEqual(axisTexts, ['0', '1']);
+
+  const scaledModel: BarsModel = {
+    form: 'ordered',
+    hour: h,
+    showAxis: true,
+    scaleMax: 100,
+    scaleFormat: { decimals: 2, maxDecimals: 0, unit: 'HP' },
+    rows: [
+      { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(100) }, numeric: 100 },
+    ],
+  };
+  const scaledLayout = layoutFamilyBars(scaledModel, 600, 300);
+  const scaledCtx = makeFakeCtx();
+  drawFamilyBars(scaledCtx.ctx, { model: scaledModel, layout: scaledLayout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const scaledAxisY = scaledLayout.axisTop + scaledLayout.axisHeight / 2;
+  const scaledTexts = scaledCtx.ops.filter(op => op.op === 'fillText' && op.args[2] === scaledAxisY).map(op => String(op.args[0]));
+  assert.deepEqual(scaledTexts, ['0.00 HP', '0.25 HP', '0.50 HP', '0.75 HP', '1.00 HP']);
 });
 
-test('C1.7: offscreen rank swaps in a 1,500-country Race trigger no glide motion', () => {
+test('C1.7: offscreen rank swaps and scrolling unchanged ranks in a 1,500-country Race trigger no glide motion', () => {
   const h = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const probeRows = Array.from({ length: 1500 }, (_, idx) => ({
+    kind: 'data' as const, key: `C${idx}`, label: `Country ${idx}`, value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx,
+  }));
+  const offscreenStart = visibleBarsRange(layoutFamilyBars({ form: 'ordered', hour: h, rows: probeRows }, 480, 240), 0, 0).last;
   registerFamilyProjection<BarsProjection<Record<string, never>>>({
     kind: 'test-bars-offscreen-swap',
     family: 'bars',
     project(readView) {
       const rows = Array.from({ length: 1500 }, (_, idx) => {
-        const swapped = readView.hour > h && idx === 1200 ? 1201 : readView.hour > h && idx === 1201 ? 1200 : idx;
-        return { kind: 'data' as const, key: `C${swapped}`, label: `Country ${swapped}`, value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx };
+        let keyIdx = idx;
+        if (readView.hour >= h + 1) {
+          if (idx === offscreenStart) keyIdx = offscreenStart + 1;
+          else if (idx === offscreenStart + 1) keyIdx = offscreenStart;
+        }
+        if (readView.hour >= h + 3) {
+          if (idx === 2) keyIdx = 3;
+          else if (idx === 3) keyIdx = 2;
+        }
+        return { kind: 'data' as const, key: `C${keyIdx}`, label: `Country ${keyIdx}`, value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx };
       });
-      return { form: 'ordered', hour: readView.hour, animateOrder: true, rows };
+      return { form: 'ordered', hour: readView.hour, animateOrder: true, nextChangeAt: readView.hour + 1, rows };
     },
   });
   const origOffscreen = globalThis.OffscreenCanvas;
@@ -845,17 +874,26 @@ test('C1.7: offscreen rank swaps in a 1,500-country Race trigger no glide motion
     const view = createLaneView(barsLane, () => {});
     const state = new Map<string, unknown>();
     let seq = 0;
-    const model = new LaneTransport().carry({
-      family: 'bars', kind: 'test-bars-offscreen-swap', options: {}, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME,
+    const transport = new LaneTransport();
+    const options: Record<string, never> = {};
+    const sources = {};
+    const bindingAt = (scrollTop: number) => transport.carry({
+      family: 'bars', kind: 'test-bars-offscreen-swap', options, sources, width: 480, height: 240, scrollTop, theme: THEME,
     } satisfies FamilyBarsBinding<Record<string, never>>);
-    const input = (hour: number, now: number): PaintInput => ({
+    const atTop = bindingAt(0);
+    const scrolled = bindingAt(30);
+    const input = (hour: number, now: number, model = atTop): PaintInput => ({
       widget: 1, subs: [], pictures: [], hour, seek: 0, speed: 24, now, inspect: null,
-      binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
+      binding: { generation: 1, surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null },
       model,
     });
-    view.paint(input(h, 100), state, () => `c${++seq}`);
-    const afterOffscreenSwap = view.paint(input(h + 1, 120), state, () => `c${++seq}`);
-    assert.equal(afterOffscreenSwap.motion, false, 'swapping rows 1200 and 1201 offscreen triggers no glide motion');
+    view.paint(input(h, 1000, atTop), state, () => `c${++seq}`);
+    const afterOffscreenSwap = view.paint(input(h + 1, 1020, atTop), state, () => `c${++seq}`);
+    assert.equal(afterOffscreenSwap.motion, false, 'swapping the first two fully offscreen rows triggers no glide motion');
+    const afterScrollUnchanged = view.paint(input(h + 2, 1040, scrolled), state, () => `c${++seq}`);
+    assert.equal(afterScrollUnchanged.motion, false, 'scrolling 30px when ranks did not change triggers no glide motion');
+    const afterVisibleSwap = view.paint(input(h + 3, 1060, scrolled), state, () => `c${++seq}`);
+    assert.equal(afterVisibleSwap.motion, true, 'swapping two visible rows still glides');
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }

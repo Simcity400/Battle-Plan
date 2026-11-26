@@ -34,20 +34,22 @@ function glideOf(frame: BarsFrame): Glide {
   if (duration === 0 || !before || before.hour === frame.hour || frame.now - frame.changedAt >= duration) return { ...STILL, duration };
   let held = glides.get(layout);
   if (!held || held.continuity !== frame.continuity || held.scrollTop !== binding.scrollTop) {
-    const visible = visibleBarsRange(layout, binding.scrollTop);
-    const bandTop = before.binding.scrollTop - layout.bodyHeight;
-    const bandBottom = before.binding.scrollTop + before.layout.bodyHeight + layout.bodyHeight;
-    const priorRange = barsRangeForBand(before.layout, bandTop, bandBottom, 2);
+    const visible = visibleBarsRange(layout, binding.scrollTop, 0);
+    const bandTop = binding.scrollTop - layout.bodyHeight;
+    const bandBottom = binding.scrollTop + layout.bodyHeight * 2;
+    const priorRange = barsRangeForBand(before.layout, bandTop, bandBottom, 0);
     const prior = new Map<string, number>();
     for (let i = priorRange.first; i < priorRange.last; i++) {
-      prior.set(before.model.rows[i]!.key, before.layout.bodyTop + before.layout.rowTops[i]! - before.binding.scrollTop);
+      prior.set(before.model.rows[i]!.key, before.layout.rowTops[i]!);
     }
     const offsets = new Map<string, BarsGlideOffset>();
     for (let i = visible.first; i < visible.last; i++) {
       const key = model.rows[i]!.key;
-      const fromY = prior.get(key);
-      const nextY = layout.bodyTop + layout.rowTops[i]! - binding.scrollTop;
-      if (fromY !== undefined && Math.abs(fromY - nextY) > 1 && Math.abs(fromY - nextY) <= layout.bodyHeight) offsets.set(key, { fromY, startedAt: frame.changedAt });
+      const beforeRowTop = prior.get(key);
+      const nextRowTop = layout.rowTops[i]!;
+      if (beforeRowTop !== undefined && Math.abs(beforeRowTop - nextRowTop) > 1 && Math.abs(beforeRowTop - nextRowTop) <= layout.bodyHeight) {
+        offsets.set(key, { fromY: layout.bodyTop + beforeRowTop - binding.scrollTop, startedAt: frame.changedAt });
+      }
     }
     glides.set(layout, held = { continuity: frame.continuity, scrollTop: binding.scrollTop, offsets });
   }

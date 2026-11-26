@@ -553,6 +553,35 @@ describe('time-chart PR2 regressions (C1.6, C1.8, C7, R3-S12)', () => {
     assert.ok(keys.includes(`plot:${enter}`), 'keyboard stops include contributor entry');
     assert.ok(keys.includes(`plot:${leave}`), 'keyboard stops include contributor exit');
     assert.equal(keys.at(-1), `plot:${end}`, 'playhead stays last');
+
+    const manyPoints = Array.from({ length: 260 }, (_, idx) => ({ hour: H1936 + idx * 10, value: idx % 2 === 0 ? 5 : 0 }));
+    const manyEnd = H1936 + 2600;
+    const manyModel: TimeChartModel = {
+      ...model,
+      hour: manyEnd,
+      extent: [H1936, manyEnd],
+      series: [{ ...model.series[0]!, points: manyPoints }],
+    };
+    const manyKeys = new Set(chartNavStops(manyModel, layoutTimeChart(manyModel, 640, 240, FONT, measure)).map(stop => stop[0]));
+    assert.ok(manyKeys.has(`plot:${manyPoints[256]!.hour}`), 'the 257th recorded transition remains reachable by keyboard');
+    assert.ok(manyKeys.has(`plot:${manyPoints[259]!.hour}`), 'every recorded transition stays reachable without an arbitrary cap');
+  });
+
+  it('C3: a single-hour unread gap keeps a visible, hittable band in layout', () => {
+    const model: TimeChartModel = {
+      kind: 'balance-of-power',
+      measureTitle: 'Balance of power',
+      mode: 'lines',
+      hour: H1936 + 20,
+      extent: [H1936, H1936 + 20],
+      yAxis: { format: 'signed1', fixed: [-1, 1] },
+      series: [],
+      gaps: [{ firstHour: H1936, lastHour: H1936, reason: 'Balance of power was not recorded during this stretch' }],
+    };
+    const layout = layoutTimeChart(model, 640, 240, FONT, measure);
+    assert.equal(layout.gaps.length, 1);
+    assert.ok(layout.gaps[0]!.x1 - layout.gaps[0]!.x0 >= 2, 'single-hour gap has a visible, hittable width');
+    assert.equal(hitTestTimeChart(model, layout, [layout.gaps[0]!.x0 + 1, layout.top + 10]), 'gap:0');
   });
 
   it('C1.8: summary-only ranked row with empty points samples and hovers at its witnessed head hour', () => {

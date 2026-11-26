@@ -252,7 +252,7 @@ describe('world-tension projections', () => {
     assert.equal(model.series.length, 3);
     assert.equal(model.series[0]?.key, 'slot:1');
     assert.equal(model.series[0]?.step, true);
-    assert.equal(model.series[0]?.endLabel?.value, '60%');
+    assert.equal(model.series[0]?.endLabel?.value, '+60%');
     assert.equal(model.series[0]?.points?.length, 3);
   });
 
@@ -816,8 +816,8 @@ describe('world-tension projections', () => {
       createBoundedReadView({ hour: H1941, panels: new Map([['main', recReply]]), identity: makeIdentity() }),
       { extent: [H1936, H1941], surface: '#111111', gaps: [] },
     );
-    assert.equal(linesModel.series[0]?.endLabel?.value, '9,999,999,999,999.99999%');
-    assert.equal(linesModel.auditRows?.find(r => r.row === 'slot:1')?.value, '9,999,999,999,999.99999%');
+    assert.equal(linesModel.series[0]?.endLabel?.value, '+9,999,999,999,999.99999%');
+    assert.equal(linesModel.auditRows?.find(r => r.row === 'slot:1')?.value, '+9,999,999,999,999.99999%');
     const linesLayout = layoutTimeChart(linesModel, 960, 280, 'Segoe UI', measure);
     const linesTip = deriveTimeChartTooltip(linesModel, linesLayout, `plot:${H1941}`);
     assert.equal(linesTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+9,999,999,999,999.99999%');
@@ -888,7 +888,7 @@ describe('world-tension projections', () => {
     const lines = await project('lines', 'recorded');
     assert.equal(lines.series.filter(s => s.role === 'tail').length, 2);
     assert.equal(audit(lines).size, lines.series.length, 'every line is audited, tail lines included');
-    assert.equal(audit(lines).get('slot:16'), '2%');
+    assert.equal(audit(lines).get('slot:16'), '+2%');
     assert.equal(audit(lines).get('slot:17'), 'This country\'s threat contribution was not recorded at this hour.');
   });
 });

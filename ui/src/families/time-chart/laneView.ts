@@ -21,13 +21,10 @@ interface ChartLayout {
 
 type ChartFrame = LaneFrame<TimeChartBinding, TimeChartModel, ChartLayout>;
 
-const MAX_CHANGE_STOPS = 256;
-
 function collectChangeHours(model: TimeChartModel, layout: TimeChartLayout): number[] {
   const minHour = layout.xDomain[0];
   const maxHour = Math.min(layout.xDomain[1], model.hour);
-  const edgeHours = new Set<number>();
-  const otherHours = new Set<number>();
+  const hours = new Set<number>();
   if (model.mode === 'lines') {
     for (const s of model.series) {
       if (!s.points?.length) continue;
@@ -36,48 +33,28 @@ function collectChangeHours(model: TimeChartModel, layout: TimeChartLayout): num
       for (const pt of s.points) {
         if (pt.hour > maxHour) break;
         const val = pt.value !== null && Number.isFinite(pt.value) ? pt.value : null;
-        if (pt.hour >= minHour) {
-          const prevActive = started && prev !== null && prev !== 0;
-          const nextActive = val !== null && val !== 0;
-          if (!started && val !== null) edgeHours.add(pt.hour);
-          else if (prevActive !== nextActive) edgeHours.add(pt.hour);
-          else if (started && val !== prev) otherHours.add(pt.hour);
+        if (pt.hour >= minHour && ((!started && val !== null) || (started && val !== prev))) {
+          hours.add(pt.hour);
         }
         prev = val;
         started = true;
       }
     }
   } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
-    const { hours, bands } = model.stack;
+    const { hours: stackHours, bands } = model.stack;
     for (const band of bands) {
       let prevActive = false;
-      for (let i = 0; i < hours.length; i++) {
-        const h = hours[i]!;
+      for (let i = 0; i < stackHours.length; i++) {
+        const h = stackHours[i]!;
         if (h > maxHour) break;
         const v = band.values[i];
         const active = v !== null && v !== undefined && Number.isFinite(v) && v !== 0;
-        if (h >= minHour && active !== prevActive) edgeHours.add(h);
+        if (h >= minHour && active !== prevActive) hours.add(h);
         prevActive = active;
       }
     }
   }
-  const merged = [...edgeHours];
-  for (const h of otherHours) {
-    if (!edgeHours.has(h)) merged.push(h);
-  }
-  merged.sort((a, b) => a - b);
-  if (merged.length <= MAX_CHANGE_STOPS) return merged;
-  const edges = [...edgeHours].sort((a, b) => a - b);
-  if (edges.length >= MAX_CHANGE_STOPS) {
-    const step = edges.length / MAX_CHANGE_STOPS;
-    return Array.from({ length: MAX_CHANGE_STOPS }, (_, i) => edges[Math.floor(i * step)]!);
-  }
-  const out = new Set<number>(edges);
-  const rest = [...otherHours].filter(h => !out.has(h)).sort((a, b) => a - b);
-  const room = MAX_CHANGE_STOPS - out.size;
-  const step = rest.length / room;
-  for (let i = 0; i < room; i++) out.add(rest[Math.floor(i * step)]!);
-  return [...out].sort((a, b) => a - b);
+  return [...hours].sort((a, b) => a - b);
 }
 
 export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {

@@ -1566,6 +1566,30 @@ export function timeAxisLabels(
     if (date !== null) placedYear = date.year;
     lastRight = x + half;
   }
+  if (placed.length === 0 && ticks.length > 0) {
+    const midX = (options.plotLeft + options.plotRight) / 2;
+    const candidates = ticks
+      .map(tick => ({ tick, x: timeAxisX(options, tick.hour) }))
+      .sort((a, b) => Math.abs(a.x - midX) - Math.abs(b.x - midX));
+    for (const { tick, x } of candidates) {
+      const date = gameDate(tick.hour);
+      const fallback = tick.label
+        ? (date !== null && !tick.label.includes(String(date.year)) ? `${tick.label} ${date.year}` : tick.label)
+        : date !== null
+          ? (date.month === 1 && date.day === 1
+            ? String(date.year)
+            : date.day === 1
+              ? `${shortMonth(date.month)} ${date.year}`
+              : `${date.day} ${shortMonth(date.month)} ${date.year}`)
+          : formatDateOnly(tick.hour);
+      if (!fallback) continue;
+      const half = measure(fallback) / 2;
+      if (x - half < options.plotLeft - 4 || x + half > options.plotRight + 4) continue;
+      if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
+      placed.push({ hour: tick.hour, x, label: fallback, major: tick.major !== false });
+      break;
+    }
+  }
   return placed;
 }
 

@@ -264,6 +264,12 @@ export function formatExactScalar(raw: Scalar, format?: ValueFormat): string {
   if (typeof raw === 'string') return raw;
   if (format === 'clockSeconds') return formatClockSeconds(raw);
   if (format === 'share') {
+    if (typeof raw === 'bigint') {
+      if (raw < 0n || raw > 1n) {
+        throw new InvalidFamilyValueError(`formatExactScalar: share out of [0, 1] (${raw})`);
+      }
+      return raw === 0n ? '0%' : '100%';
+    }
     assertFiniteNumber(raw, 'formatExactScalar');
     const { units, scale } = decimalOf(raw);
     if (units < 0n || units > 10n ** BigInt(scale)) {

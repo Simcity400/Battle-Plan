@@ -99,7 +99,7 @@ function mergeGaps(
   const push = (firstHour: number, lastHour: number, reason: string) => {
     const a = Math.max(extent[0], firstHour);
     const b = Math.min(hour, lastHour);
-    if (b <= a) return;
+    if (b < a) return;
     out.push({ firstHour: a, lastHour: b, reason });
   };
   for (const g of branchGaps) push(g.firstHour, g.lastHour, g.reason);

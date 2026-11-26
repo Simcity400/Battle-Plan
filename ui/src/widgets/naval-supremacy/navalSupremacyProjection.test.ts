@@ -150,3 +150,19 @@ test('a hundred played hours share the naval history and grow only the last run'
   assert.equal(at(275, corrected).inspect!(0, 130)?.missingReason, 'No sample');
   assert.equal(original.inspect!(0, 130)?.missingReason, data.unknown[0]!.reason);
 });
+
+test('a recorded 55% / 45% supremacy split formats from integer numerator and scale without float subtraction understating enemy share', () => {
+  const base = reply(60);
+  const split = {
+    ...base,
+    scale: 100000,
+    regions: [{
+      ...base.regions[0]!,
+      readout: { kind: 'control' as const, as_of_hour: 60, control: 1, friendly: '55', enemy: '45', share: '55000', own: '20' },
+    }],
+  };
+  const shares = projectSupremacyShares(view(60, split), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+  const row = shares.rows.find(r => r.kind === 'data')!;
+  assert.equal(row.kind === 'data' ? row.segments?.[0]?.inlineLabel : null, 'Friendly 55%');
+  assert.equal(row.kind === 'data' ? row.segments?.[1]?.inlineLabel : null, 'Enemy 45%');
+});

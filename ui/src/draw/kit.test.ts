@@ -380,6 +380,19 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
     [1936, 1938, 1940, 1942, 1944],
     'R3-S10: a 32px decade keeps distinguishable January marks independently of label spacing',
   );
+  const h1941Jan = engineHour({ year: 1941, month: 1, day: 1, hour: 1 })!;
+  const h1950Jan = engineHour({ year: 1950, month: 1, day: 1, hour: 1 })!;
+  const narrowEdgeDecade = computeTimeAxisTicks(h1941Jan, h1950Jan, 32);
+  const narrowEdgePlaced = timeAxisLabels(narrowEdgeDecade, {
+    plotLeft: 0,
+    plotRight: 32,
+    startHour: h1941Jan,
+    endHour: h1950Jan,
+    playhead: null,
+    playheadLabel: '',
+  }, text => text.length * 6);
+  assert.equal(narrowEdgePlaced.length, 1, 'an interior mark receives its year label when the scheduled edge label clips');
+  assert.equal(narrowEdgePlaced[0]!.label, '1946');
   const weekPlaced = timeAxisLabels(week, {
     plotLeft: 0,
     plotRight: 600,
