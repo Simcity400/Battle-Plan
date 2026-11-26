@@ -787,8 +787,8 @@ fn race_reply(
             return Ok(EquipmentProducedRaceReply {
                 branch_id: params.branch_id.clone(),
                 hour,
-                first_hour: members.from.max(stretch.first).min(hour),
-                last_hour: members.until.min(stretch.last).max(hour),
+                first_hour: members.from.max(first_hour).min(hour),
+                last_hour: members.until.min(last_hour).max(hour),
                 count: params.count,
                 measure: params.measure,
                 decimals: decimals(params.count),
@@ -813,7 +813,10 @@ fn race_reply(
                     .into_iter()
                     .map(|tag| {
                         let country = Country::from(tag);
-                        query.holders.slot_at(&country, hour).map_or(country, Country::Slot)
+                        match query.holders.at(&country, hour).map(|run| run.holder) {
+                            Some(held @ Holder::Found { slot, .. }) if query.holders.at(&Country::Slot(slot), hour).is_some_and(|run| run.holder == held) => Country::Slot(slot),
+                            _ => country,
+                        }
                     })
                     .collect(),
                 true,

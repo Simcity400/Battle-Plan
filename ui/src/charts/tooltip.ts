@@ -129,7 +129,7 @@ function lines(text: string, role: TextRole, metrics: TooltipMetrics | null, roo
     }
     if (used > 0) count++;
     used = 0;
-    for (const glyph of Array.from(word)) {
+    for (const glyph of glyphsOf(word)) {
       const glyphWidth = metrics.measure(glyph, font);
       if (used > 0 && used + glyphWidth > width) {
         count++;
@@ -139,6 +139,12 @@ function lines(text: string, role: TextRole, metrics: TooltipMetrics | null, roo
     }
   }
   return count;
+}
+
+const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+
+function glyphsOf(word: string): string[] {
+  return graphemes ? Array.from(graphemes.segment(word), part => part.segment) : Array.from(word);
 }
 
 function textWidth(text: string, role: TextRole, metrics: TooltipMetrics): number {

@@ -298,7 +298,8 @@ impl<'q, 'a> Line<'q, 'a> {
                 Some((_, before)) => {
                     match value_of(before, &keys, rest) {
                         Ok(Some(before)) => at - before,
-                        Ok(None) => at,
+                        Ok(None) if i64::try_from(at).is_ok_and(|value| !keep(value)) => continue,
+                        Ok(None) => return Ok(Err(TOTALS_WINDOW_UNRECORDED.to_owned())),
                         Err(reason) => return Ok(Err(reason.to_owned())),
                     }
                 }

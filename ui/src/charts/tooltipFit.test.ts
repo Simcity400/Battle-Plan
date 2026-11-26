@@ -134,6 +134,9 @@ test('rows wrap by their width in the active font, so a wide font cuts rows the 
   assert.equal(tooltipRowHeight(flagged, even), 34, 'the flag and the gap between label and value take the room the text needs, so the row wraps');
   assert.equal(tooltipRowHeight({ label: 'A', value: '1'.repeat(40) }, even), 34, 'a value wider than its share wraps even beside a short label');
   assert.equal(tooltipRowHeight({ label: 'A', value: '1'.repeat(39) }, metrics(9)), 51, 'an unbroken value wraps where its glyphs stop fitting: 19, 19 and 1');
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const byGlyph = { ...metrics(1), measure: (text: string) => Array.from(segmenter.segment(text)).length * 16.48 };
+  assert.equal(tooltipRowHeight({ label: 'A', value: '\u{1F469}\u200D\u{1F4BB}'.repeat(11) }, byGlyph), 34, 'a joined emoji is one glyph: ten fit on the first line, one on the second');
   const larger = { ...metrics(6), sizes: { xs: 13, sm: 15, md: 16 } };
   assert.equal(tooltipRowHeight({ label: 'A', value: '1' }, larger), 21, 'a larger interface type has taller lines');
   const title = 'The Kingdom of the Netherlands in exile';
