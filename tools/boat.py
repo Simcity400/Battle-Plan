@@ -52,6 +52,7 @@ for the workspace crates of a test build, which compile incrementally as a check
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 import hashlib
 import importlib.util
 import io
@@ -924,6 +925,7 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
     raise Failure("Could not claim a VM after three attempts")
 
 
+@cache
 def content_guard():
     spec = importlib.util.spec_from_file_location("check_game_content", TOOLS / "check-game-content.py")
     guard = importlib.util.module_from_spec(spec)
@@ -931,10 +933,9 @@ def content_guard():
     return guard
 
 
-def refuse_content(guard, rules, name, data):
-    findings = guard.offenders([(name, data)], rules)
+def refuse_content(findings):
     if findings:
-        raise Refused("Boat would send a file that may be game content: " + findings[0])
+        raise Refused("Boat would send files that may be game content:\n" + "\n".join(sorted(findings)))
 
 
 def source_manifest(worktree, cache=None):
@@ -943,6 +944,7 @@ def source_manifest(worktree, cache=None):
     names = subprocess.run(command, capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
     guard = content_guard()
     rules = guard.allow_rules(worktree)
+    findings = []
     try:
         known = json.loads(cache.read_text()) if cache else {}
     except (FileNotFoundError, ValueError):
@@ -970,12 +972,13 @@ def source_manifest(worktree, cache=None):
         previous = known.get(name)
         if tag == b"?":
             data = path.read_bytes()
-            refuse_content(guard, rules, name, data)
+            findings.extend(guard.offenders([(name, data)], rules))
             files[name] = hashlib.sha256(data).hexdigest()
         else:
             files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
         if status.st_mtime_ns < settled:
             kept[name] = [*stamp, files[name]]
+    refuse_content(findings)
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
         atomic_json(cache, kept)
@@ -1038,15 +1041,20 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     say(f"Source: {len(manifest)} files; uploading {len(changed)} changed, removing {len(deleted)}")
     guard = content_guard()
     rules = guard.allow_rules(worktree)
+    findings = []
     bundle = io.BytesIO()
     with tarfile.open(fileobj=bundle, mode="w:xz", preset=2) as archive:
         for name in changed:
             data = (worktree / name).read_bytes()
-            refuse_content(guard, rules, name, data)
+            issues = guard.offenders([(name, data)], rules)
+            if issues:
+                findings.extend(issues)
+                continue
             manifest[name] = hashlib.sha256(data).hexdigest()
             entry = tarfile.TarInfo("files/" + name)
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
+        refuse_content(findings)
         delta = json.dumps({"changed": {name: manifest[name] for name in changed}, "deleted": deleted, "digest": manifest_digest(manifest)}).encode()
         entry = tarfile.TarInfo("delta.json")
         entry.size = len(delta)

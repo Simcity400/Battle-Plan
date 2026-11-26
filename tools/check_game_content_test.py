@@ -29,9 +29,9 @@ class Tree(unittest.TestCase):
                           "tools/game-content.allow: stale-allow ui/art/*.png matches no file"])
 
     def test_an_entry_without_provenance_is_refused(self):
-        _, errors = cgc.allowed("# comment\n\nui/a.png\nui/b.rs game-value\n")
-        self.assertEqual(errors, ["tools/game-content.allow:3: allow entry gives no provenance",
-                                  "tools/game-content.allow:4: allow entry gives no provenance"])
+        _, errors = cgc.allowed("\nui/a.png\nui/b.rs game-value\n")
+        self.assertEqual(errors, ["tools/game-content.allow:2: allow entry gives no provenance",
+                                  "tools/game-content.allow:3: allow entry gives no provenance"])
 
     def test_a_kind_entry_exempts_one_finding_and_never_an_asset(self):
         rules, _ = cgc.allowed("ui/b.rs game-value until #1 lands\nui/*.png drawn here\n")
@@ -87,7 +87,7 @@ class Text(unittest.TestCase):
 
 class Values(unittest.TestCase):
     def test_a_define_with_the_installed_value_is_found_but_not_trivial_or_other_values(self):
-        installed = cgc.define_values("NDefines = {\n NGame = {\n  DEPTH = 30, -- note\n  SCALE = 0.25\n  OFF = 0\n }\n}\n")
+        installed = cgc.define_values("NDefines = {\n NGame = {\n  DEPTH = 30, -- DEPTH = 47\n -- OFF = 72\n  SCALE = 0.25\n  OFF = 0\n }\n}\n")
         self.assertEqual(installed, {"DEPTH": {30.0}, "SCALE": {0.25}, "OFF": {0.0}})
         text = '"NDefines={NGame={DEPTH=30}}"\n"SCALE = .25, OFF = 0"\n"DEPTH = 17"\n"DEPTH = 300"\n'
         self.assertEqual(cgc.game_values(text, installed), [(1, "DEPTH"), (2, "SCALE")])

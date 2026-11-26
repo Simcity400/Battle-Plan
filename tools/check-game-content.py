@@ -14,7 +14,7 @@ In the tree, on every machine:
 Against the installation, where one is found (--game or BATTLEPLAN_GAME_DIR, else the Steam
 registry entry) with its mods (each installed workshop item, and the mods of --user-dir or
 BATTLEPLAN_USER_DIR, else the Paradox user folder):
-- `copy`: a file whose bytes equal a file of the game or a mod;
+- `copy`: a file whose bytes equal a file of the game or a mod, including files on the allow list;
 - `copied-text`: prose shared with the installation, or three consecutive substantial script
   lines shared in the same order. A single identifier or interface element name is allowed.
 - `game-value`: `KEY = number` where KEY is one of the game's or a mod's defines and the number is
@@ -47,7 +47,7 @@ ALLOW_NAME = "tools/game-content.allow"
 ALLOW = ROOT / ALLOW_NAME
 APP = "394360"
 GAME_FOLDER = "Hearts of Iron IV"
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 
 ASSET_TYPES = {
     "image": {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".dds", ".tga", ".webp", ".ico", ".svg", ".psd", ".pdn", ".tif", ".tiff", ".cur", ".ani"},
@@ -106,11 +106,11 @@ TEXT_KINDS = ("copied-text", "game-value")
 def allowed(text):
     """Each entry as (glob, kind, provenance): `<glob> <provenance>` allows an asset file, and
     `<glob> copied-text|game-value <provenance>` exempts a text file from that finding alone.
-    Blank and `#` lines are ignored; every entry needs a provenance."""
+    Every nonblank line names a file and its provenance."""
     rules, errors = [], []
     for number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
         glob, _, rest = line.partition(" ")
         kind, _, after = rest.strip().partition(" ")
@@ -138,12 +138,11 @@ def asset_kind(name, head):
     return "binary" if is_binary(head) else None
 
 
-def tree_findings(files, rules, names=None):
+def tree_findings(files, rules):
     """`asset`, `embedded` and `stale-allow` findings for (name, bytes) pairs: an entry that
     matches no file is stale."""
     found = offenders(files, rules)
-    if names is None:
-        names = {name for name, _ in files}
+    names = {name for name, _ in files}
     found += [f"{ALLOW_NAME}: stale-allow {glob}{f' {kind}' if kind else ''} matches no file"
               for glob, kind, _ in rules if (glob not in names and not ("*" in glob and any(glob_match(name, glob) for name in names)))]
     return found
@@ -223,7 +222,7 @@ def define_values(text):
     """Each define key and the values `KEY = number` lines give it."""
     values = {}
     for line in text.splitlines():
-        for match in DEFINE.finditer(line.split("#", 1)[0]):
+        for match in DEFINE.finditer(line.partition("--")[0].partition("#")[0]):
             values.setdefault(match.group(1), set()).add(float(match.group(2)))
     return values
 
@@ -542,9 +541,8 @@ def main(argv=None):
     rules, found = allowed(ALLOW.read_text(encoding="utf-8")) if ALLOW.exists() else ([], [])
     names = candidates()
     selected = names & changed_since(args.against) if args.against else names
-    tree = names if selected.intersection({ALLOW_NAME, "tools/check-game-content.py"}) else selected
-    files = [(name, (ROOT / name).read_bytes()) for name in sorted(tree)]
-    found += tree_findings(files, rules, names)
+    files = [(name, (ROOT / name).read_bytes()) for name in sorted(names)]
+    found += tree_findings(files, rules)
     say(f"tree: {len(files)} files checked for assets and embedded data")
     if args.tree_only:
         say("not run here: installation comparison (--tree-only)")
