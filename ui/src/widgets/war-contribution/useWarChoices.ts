@@ -5,17 +5,21 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetBase, WidgetSpec } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
+import { type ProductState, useProduct } from '../../dashboard/products';
 import type { WarsReply } from '../../generated/dashboard';
 import { validateWarsReply } from '../wars/warsData';
 import { warName } from './warContributionData';
 import { productRequest } from '../../dashboard/request.ts';
 
-export function useWars(widget: WidgetBase, runtime: WidgetRuntime, active: boolean): WarsReply | undefined {
+export function useWarsReply(widget: WidgetBase, runtime: WidgetRuntime, active: boolean): ProductState<WarsReply> {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   return useProduct<WarsReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } }) : null, active, validateWarsReply, track?.source).data;
+    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } }) : null, active, validateWarsReply, track?.source);
+}
+
+export function useWars(widget: WidgetBase, runtime: WidgetRuntime, active: boolean): WarsReply | undefined {
+  return useWarsReply(widget, runtime, active).data;
 }
 
 export function useWarChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
