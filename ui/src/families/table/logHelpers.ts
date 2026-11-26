@@ -270,7 +270,6 @@ export function resolveSelectedCountryRefs(
             out.push(slot);
           }
         }
-        continue;
       }
     }
     if (!seenTags.has(parsed)) {

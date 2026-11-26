@@ -5,6 +5,7 @@ import { daysLeft, decisionAt, decisionCard, lifecycleLine, STATUS_CHOICES, stat
 import { plainScripted, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { resolveSelectedCountryRefs } from '../../families/table/logHelpers.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { decisionsDeclaration, decisionsProjection } from './decisionsProjection.ts';
@@ -245,7 +246,8 @@ test('S16: explicit tag selection resolves to recorded slots while keeping empty
     { tag: 'BBB', identities: [{ firstHour: 151, lastHour: 200, slot: 7, countryId: 9001 }] },
   ]);
   const resolvedSlots = resolveSelectedCountryRefs({ kind: 'tags', tags: ['AAA'] }, ['AAA'], identities);
-  assert.deepEqual(resolvedSlots, [7], 'explicit tag AAA resolves through CountryIdentityIndex to recorded slot 7');
+  assert.deepEqual(resolvedSlots, [7, 'AAA'], 'saved tag AAA keeps resolved slot 7 together with tag AAA so Rust reports unknown-holder gaps');
+  assert.deepEqual(resolveSelectedCountryRefs({ kind: 'selected' }, [countryKey(7)], identities), [7], 'explicitly selected slot sends only the slot');
   assert.deepEqual(resolveSelectedCountryRefs({ kind: 'tags', tags: [] }, [], identities), [], 'empty explicit selection stays []');
   assert.equal(resolveSelectedCountryRefs({ kind: 'all' }, [], identities), undefined, 'all returns undefined');
   assert.deepEqual(resolveSelectedCountryRefs({ kind: 'tags', tags: ['ZZZ'] }, ['ZZZ'], identities), ['ZZZ'], 'unresolved tag keeps its tag so Rust can report unknown-holder gaps');
@@ -267,7 +269,7 @@ test('S16: explicit tag selection resolves to recorded slots while keeping empty
   const entry = decisionsDeclaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!;
   if (entry.read.shape !== 'paged-rows') throw new Error('expected paged-rows');
   const ask = entry.read.tailQuery.ask as { countries?: unknown };
-  assert.deepEqual(ask.countries, [7], 'explicit tag AAA sends resolved recorded slot 7 so later tag B events stay in the log');
+  assert.deepEqual(ask.countries, [7, 'AAA'], 'saved tag AAA sends both slot 7 (preserving renamed-tag history) and tag AAA (preserving unknown-holder coverage)');
 });
 
 test('S20: frozen Decisions page derives row state, timer, and detail asOfHour from source.at rather than playhead hour', () => {
