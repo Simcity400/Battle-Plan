@@ -92,7 +92,7 @@ impl Captured {
         self.drained = Some(drained);
         let mut fold = observer.damage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.damage_refused = if drained.complete {
-            fold.apply(&self.words[..drained.words], drained.first, drained.to_hour, &mut self.damage).err()
+            fold.apply(&self.words[..drained.words], drained.first, (drained.from_hour, drained.to_hour), &mut self.damage).err()
         } else {
             fold.clear();
             self.damage.clear();

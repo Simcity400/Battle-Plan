@@ -299,7 +299,7 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
         let (first, last, run) = (stretch.first, stretch.last, stretch.run);
         roster::scan(query, stretch, &links, divisions, &mut roster.templates, &content, cancelled)?;
         if recording.predates(TableId::DivisionKills.index()).is_none() {
-            let kills = lanes::history(recording, run, TableId::DivisionKills, &[dashboard_declare::field(TableId::DivisionKills, "killed_raw")?], LaneKeys::All, first, last)?;
+            let kills = lanes::history(recording, run, TableId::DivisionKills, &[dashboard_declare::field(TableId::DivisionKills, "killed_raw")?, dashboard_declare::field(TableId::DivisionKills, "incomplete_from")?], LaneKeys::All, first, last)?;
             for (key, steps) in &kills.keys {
                 if let Some(division) = divisions.get_mut(&(*key as u64)) {
                     division.facts.extend(steps.iter().map(|step| step.hour));

@@ -211,11 +211,14 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     use replay_data::rows::{DivisionHistoryRow, LandCombatEdgesRow, LandCombatRow, LandDivisionDamageRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use serde_json::json;
-    let source = decorated_source((100..=106).map(|hour| {
+    let source = decorated_source((100..=107).map(|hour| {
         let mut frame = decorated_world(hour, |id| 20 * id as i64);
         let (damage, exits) = if hour == 106 {
             (vec![LandDivisionDamageRow { id: 50 << 16, hour, combat: 4, target: 9, attacker: 2, army: None, strength_raw: 100 }],
                 vec![LandCombatEdgesRow { id: 50, kind: LandCombatEdgesRow::EXITED, hour, combat: 4, division: Some(9), casualties_before: Some(0), casualties_after: Some(3), pending_strength_raw: Some(100), ..Default::default() }])
+        } else if hour == 107 {
+            (vec![LandDivisionDamageRow { id: 60 << 16, hour, combat: 4, target: 8, attacker: 2, army: None, strength_raw: 100 }],
+                vec![LandCombatEdgesRow { id: 60, kind: LandCombatEdgesRow::EXITED, hour, combat: 4, division: Some(8), casualties_before: Some(0), casualties_after: Some(3), pending_strength_raw: None, ..Default::default() }])
         } else {
             (Vec::new(), Vec::new())
         };
@@ -266,7 +269,11 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     let quiet = ask(105, Some("2"));
     assert_eq!(quiet.facts.as_ref().and_then(|facts| facts.enemy_killed), Some(0));
     assert_eq!(quiet.next_change, Some(106), "an hour when only the division's kills change is a change");
-    assert_eq!(ask(106, Some("2")).facts.and_then(|facts| facts.enemy_killed), Some(3));
+    let counted = ask(106, Some("2"));
+    assert_eq!(counted.facts.as_ref().and_then(|facts| facts.enemy_killed), Some(3));
+    assert_eq!(counted.next_change, Some(107), "a total that becomes unknown is a change");
+    let unknown = ask(107, Some("2")).facts.unwrap();
+    assert!(unknown.enemy_killed.is_none() && unknown.enemy_killed_missing.is_some());
 }
 
 #[test]

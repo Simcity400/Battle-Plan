@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub(crate) const HIT_UNREADABLE: &str = "a division damage hit could not be read";
 pub(crate) const EXIT_UNREADABLE: &str = "a division's combat exit could not be read, so its damage could not be closed";
 const FRAMING: &str = "division damage record framing invalid";
+pub(crate) const EDGE_OUTSIDE: &str = "a land combat edge lies outside the drained hours, so the hour's division damage is withheld";
 const OVERFLOW: &str = "division damage total overflow";
 const ATTACKERS: &str = "a division was damaged by more attackers than a row id can number";
 const ALLOCATION: &str = "collector allocation failed";
@@ -35,11 +36,11 @@ impl Fold {
         &mut self,
         words: &[u64],
         first: u64,
-        to_hour: i32,
+        hours: (i32, i32),
         out: &mut Vec<LandDivisionDamageRow>,
     ) -> Result<(), &'static str> {
         out.clear();
-        let result = self.fold(words, first, to_hour, out);
+        let result = self.fold(words, first, hours, out);
         if result.is_err() {
             self.clear();
             out.clear();
@@ -51,7 +52,7 @@ impl Fold {
         &mut self,
         words: &[u64],
         first: u64,
-        to_hour: i32,
+        (from_hour, to_hour): (i32, i32),
         out: &mut Vec<LandDivisionDamageRow>,
     ) -> Result<(), &'static str> {
         let open = self.open.get_or_insert_with(HashMap::new);
@@ -63,6 +64,12 @@ impl Fold {
                 .filter(|&end| size >= 2 && end <= words.len())
                 .ok_or(FRAMING)?;
             let record = &words[at + 1..end];
+            if matches!(record[0], edges::OPENED | edges::EXITED) {
+                let hour = edges::unpack(*record.get(2).ok_or(FRAMING)?).unwrap_or(to_hour);
+                if hour < from_hour || hour > to_hour {
+                    return Err(EDGE_OUTSIDE);
+                }
+            }
             match record[0] {
                 edges::HIT => {
                     let hit = edges::Hit::decode(record).ok_or(FRAMING)?;
@@ -149,7 +156,7 @@ mod tests {
     fn folded(fold: &mut Fold, records: &[Vec<u64>], first: u64) -> Result<Vec<LandDivisionDamageRow>, &'static str> {
         let words = records.concat();
         let mut out = Vec::new();
-        fold.apply(&words, first, 90, &mut out).map(|()| out)
+        fold.apply(&words, first, (80, 90), &mut out).map(|()| out)
     }
 
     fn row(id: u64, combat: u64, target: u64, attacker: u64, army: Option<u64>, strength_raw: i64) -> LandDivisionDamageRow {
@@ -214,5 +221,8 @@ mod tests {
         let rows = folded(&mut fold, &[exit(BATTLE, THIRD, 81, 0)], 0).unwrap();
         assert!(rows.is_empty(), "damage from before a refused hour is never published");
         assert_eq!(folded(&mut fold, &[vec![9, edges::HIT]], 0), Err(FRAMING));
+        folded(&mut fold, &[hit(BATTLE, FIRST, THIRD, GROUP, 9)], 0).unwrap();
+        assert_eq!(folded(&mut fold, &[hit(BATTLE, FIRST, SECOND, GROUP, 9), exit(OTHER, FIRST, 95, 0)], 0), Err(EDGE_OUTSIDE));
+        assert!(folded(&mut fold, &[exit(BATTLE, THIRD, 81, 0), exit(BATTLE, SECOND, 81, 0)], 0).unwrap().is_empty(), "an hour withheld for an edge outside it leaves no damage behind");
     }
 }

@@ -586,7 +586,9 @@ pub fn compare_damage(replay: &Replay, frame: &DecodedFrame, report: &mut Report
                         recorded.observers.extend_from_slice(observers);
                         for edge in edges {
                             if edge.kind == replay_data::rows::LandCombatEdgesRow::OPENED {
-                                recorded.opened.entry(edge.combat).or_insert(decoded.hour);
+                                if *recorded.opened.entry(edge.combat).or_insert(decoded.hour) != decoded.hour {
+                                    recorded.reused.insert(edge.combat);
+                                }
                             } else if let Some(division) = edge.division {
                                 recorded.exits.insert(edge.id, (division, edge.pending_strength_raw));
                             }
@@ -595,7 +597,9 @@ pub fn compare_damage(replay: &Replay, frame: &DecodedFrame, report: &mut Report
                             recorded.wiped.extend(row.combats.iter().chain(row.triggering_combat.as_ref()).map(|&combat| (combat, row.division)));
                         }
                         for observer in observers {
-                            recorded.ended.insert(observer.combat, decoded.hour);
+                            if recorded.ended.insert(observer.combat, decoded.hour).is_some_and(|hour| hour != decoded.hour) {
+                                recorded.reused.insert(observer.combat);
+                            }
                         }
                     }
                     (damage, ..) => {
@@ -623,6 +627,7 @@ struct Recorded {
     wiped: BTreeSet<(u64, u64)>,
     unrecorded: BTreeSet<i32>,
     exits: BTreeMap<u64, (u64, Option<i64>)>,
+    reused: BTreeSet<u64>,
 }
 
 fn check_damage(recorded: &Recorded, report: &mut Report) {
@@ -657,6 +662,10 @@ fn check_damage(recorded: &Recorded, report: &mut Report) {
     for key in expected.keys().chain(actual.keys()).copied().collect::<BTreeSet<_>>() {
         let (combat, army, target) = key;
         if !recorded.ended.contains_key(&combat) {
+            continue;
+        }
+        if recorded.reused.contains(&combat) {
+            partial.insert(combat);
             continue;
         }
         if !whole(combat) {
@@ -695,7 +704,7 @@ fn check_damage(recorded: &Recorded, report: &mut Report) {
     }
     report.compared("LandDivisionDamage within its target's pending strength damage", dealt.len());
     if !partial.is_empty() {
-        report.limitation("a battle not recorded from its opening to its end has damage from before or between recorded hours; it is not compared", format!("{} battles", partial.len()));
+        report.limitation("a battle not recorded from its opening to its end, or a combat handle that opened or ended more than once, is not compared", format!("{} battles", partial.len()));
     }
     if armyless > 0 {
         report.limitation("the game logs no activity for a division in no army, so its damage has nothing to compare with", format!("{armyless} rows"));
@@ -813,6 +822,13 @@ mod tests {
         let mut gapped = Report::default();
         check_damage(&recorded, &mut gapped);
         assert!(gapped.differences.is_empty(), "a battle with an unrecorded hour is not compared: {:?}", gapped.differences);
+        let mut reused = Recorded { unrecorded: BTreeSet::new(), reused: BTreeSet::from([9]), ..std::mem::take(&mut recorded) };
+        let mut ambiguous = Report::default();
+        check_damage(&reused, &mut ambiguous);
+        assert!(ambiguous.differences.iter().all(|line| !line.contains("activity")), "a reused combat handle is not compared: {:?}", ambiguous.differences);
+        recorded = std::mem::take(&mut reused);
+        recorded.unrecorded.insert(15);
+        recorded.reused.clear();
         recorded.exits.insert(5, (5, Some(1_000)));
         recorded.exits.remove(&6);
         let mut overdrawn = Report::default();
