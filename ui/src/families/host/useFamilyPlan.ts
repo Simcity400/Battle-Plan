@@ -365,7 +365,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const effectiveMulti = useMemo(() => {
     if (!resolvedMulti) return null;
-    if (typeof singleSlotId !== 'number') return withSoFarMembership(resolvedMulti, widget.countries, groups.data, lastHour, slots);
+    if (typeof singleSlotId !== 'number') return withSoFarMembership(resolvedMulti, widget.countries, groups.data, lastHour);
     const runs = [...(slots?.tagRuns(singleSlotId) ?? [])];
     return {
       ...resolvedMulti,

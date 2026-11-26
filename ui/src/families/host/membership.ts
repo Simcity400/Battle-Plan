@@ -1,36 +1,23 @@
+import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import { groupRuns, type ResolvedCountries } from '../../dashboard/groups.ts';
 import type { CountrySelection } from '../../dashboard/model.ts';
 import type { CountryGroupReply, MembershipRun } from '../../generated/dashboard';
-import type { HolderRun } from '../holders.ts';
-
-export interface SlotRuns {
-  tagRuns(slot: number): readonly HolderRun[];
-  runsForKey(key: string): readonly HolderRun[];
-}
 
 export function withSoFarMembership(
   resolved: ResolvedCountries,
   selection: CountrySelection,
   groups: CountryGroupReply | undefined,
   lastHour: number,
-  slots: SlotRuns | undefined,
 ): ResolvedCountries {
-  if (resolved.membership || selection.kind !== 'group' || selection.membership !== 'ever' || !groups || !slots) return resolved;
+  if (resolved.membership || selection.kind !== 'group' || selection.membership !== 'ever' || !groups) return resolved;
   const runs = groupRuns(groups, selection.group);
   if (!runs) return resolved;
-  const joined = new Map<number, number>();
   const spans: MembershipRun[] = [];
-  for (const run of runs) {
-    const holder = slots.runsForKey(run.tag).find(held => held.firstHour <= run.firstHour && run.firstHour <= held.lastHour);
-    if (holder?.countryId === undefined || holder.unresolved) spans.push(run);
-    else joined.set(holder.countryId, Math.min(joined.get(holder.countryId) ?? Infinity, run.firstHour));
-  }
-  for (const [slot, from] of joined) {
-    for (const held of slots.tagRuns(slot)) {
-      const firstHour = Math.max(from, held.firstHour), last = Math.min(lastHour, held.lastHour);
-      if (firstHour <= last) spans.push({ tag: held.tag, firstHour, lastHour: last });
-    }
-  }
+  if (validCountryIdentityHistories(groups.countryIdentities)) {
+    const index = countryIdentityIndex(groups.countryIdentities);
+    for (const [key, from] of index.firstHoursDuring(runs)) spans.push(...index.aliasRuns(new Set([key]), from, lastHour));
+    for (const run of runs) spans.push(...uncovered(run, index.membershipRuns([run])));
+  } else spans.push(...runs);
   spans.sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const membership = new Map<string, MembershipRun[]>();
   for (const span of spans) {
@@ -41,4 +28,15 @@ export function withSoFarMembership(
     else own.push({ ...span });
   }
   return { ...resolved, tags: [...membership.keys()], membership };
+}
+
+function uncovered(run: MembershipRun, covered: readonly MembershipRun[]): MembershipRun[] {
+  const gaps: MembershipRun[] = [];
+  let at = run.firstHour;
+  for (const piece of [...covered].sort((a, b) => a.firstHour - b.firstHour)) {
+    if (piece.firstHour > at) gaps.push({ tag: run.tag, firstHour: at, lastHour: piece.firstHour - 1 });
+    at = Math.max(at, piece.lastHour + 1);
+  }
+  if (at <= run.lastHour) gaps.push({ tag: run.tag, firstHour: at, lastHour: run.lastHour });
+  return gaps;
 }
