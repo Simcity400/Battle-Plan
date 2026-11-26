@@ -105,6 +105,362 @@ fn catalogue_playback_skips_changes_to_power_and_live_organisation_counters() {
 }
 
 #[test]
+fn production_licences_played_steps_match_whole_frame_across_edits_groups_damage_seeks_and_branches() {
+    use crate::registrations::PRODUCTION_PRODUCTIONLICENCES;
+    use dashboard_base::products::at_hour::frame_panel;
+    use dashboard_base::test_fixtures::{materialized_frame, played};
+    use replay_data::rows::{FactionMemberRow, FactionRow};
+
+    let build_frame = |branch: u64, h: i32, variant_branch: bool| {
+        let mut f = frame(h);
+        f.branch = branch;
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *f.tables[TableId::Countries.index()] {
+            rows.push(CountryRow { id: 9003, canonical_slot: 9, tag: b"FRA".to_vec(), ..CountryRow::default() });
+            rows.push(CountryRow { id: 9004, canonical_slot: 10, tag: b"SOV".to_vec(), ..CountryRow::default() });
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *f.tables[TableId::CountryLinks.index()] {
+            let slot_9003 = if !variant_branch && h >= FIRST + 8 { 7 } else { 9 };
+            rows.push(CountryLinkRow { id: 9003, canonical_slot: slot_9003 });
+            rows.push(CountryLinkRow { id: 9004, canonical_slot: 10 });
+        }
+        *f.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
+            FactionRow { id: 10, name: b"SynBloc".to_vec(), ..FactionRow::default() },
+        ]));
+        let mut members = vec![FactionMemberRow { country: 9001, faction: 10, ordinal: 0 }];
+        if variant_branch || h >= FIRST + 10 {
+            members.push(FactionMemberRow { country: 9002, faction: 10, ordinal: 1 });
+        }
+        *f.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+
+        let mut licences = if variant_branch {
+            vec![ProductionLicenseRecordRow { owner: 9003, ordinal: 0, giver: 11, lended_cic: h, ..Default::default() }]
+        } else {
+            let ger_giver = if h >= FIRST + 3 { 9003 } else { 9002 };
+            let mut list = vec![
+                ProductionLicenseRecordRow { owner: 11, ordinal: 0, giver: ger_giver, lended_cic: h, ..Default::default() },
+                ProductionLicenseRecordRow { owner: 9002, ordinal: 0, giver: if h % 2 == 0 { 9002 } else { 9004 }, lended_cic: h * 3, ..Default::default() },
+            ];
+            if h % 3 == 0 {
+                list.push(ProductionLicenseRecordRow { owner: 9004, ordinal: 1, giver: 9002, lended_cic: h, ..Default::default() });
+            }
+            if h == FIRST + 5 || (FIRST + 17..=FIRST + 18).contains(&h) {
+                list.push(ProductionLicenseRecordRow { owner: 9002, ordinal: 2, giver: 777, ..Default::default() });
+            }
+            list
+        };
+        licences.sort_by_key(|row| (row.owner, row.ordinal));
+        *f.tables[TableId::ProductionLicenseRecords.index()] = TableView::Complete(TableRows::ProductionLicenseRecords(licences.clone()));
+
+        if !variant_branch {
+            if (FIRST + 12..=FIRST + 14).contains(&h) {
+                *f.tables[TableId::ProductionLicenseRecords.index()] = TableView::Unavailable { reason: "licences damaged".into() };
+            } else if (FIRST + 15..=FIRST + 16).contains(&h) {
+                *f.tables[TableId::ProductionLicenseRecords.index()] = TableView::Truncated {
+                    rows: TableRows::ProductionLicenseRecords(licences[..1].to_vec()),
+                    missing: 2,
+                };
+            }
+            if (FIRST + 17..=FIRST + 18).contains(&h) {
+                let TableView::Complete(TableRows::CountryLinks(links)) = f.tables[TableId::CountryLinks.index()].held().clone() else {
+                    panic!("expected country links");
+                };
+                *f.tables[TableId::CountryLinks.index()] = TableView::Truncated {
+                    rows: TableRows::CountryLinks(links),
+                    missing: 3,
+                };
+            }
+            if (FIRST + 19..=FIRST + 20).contains(&h) {
+                *f.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries damaged".into() };
+            }
+        }
+        f
+    };
+
+    let branch1: Vec<DecodedFrame> = (FIRST..=FIRST + 23).map(|h| build_frame(1, h, false)).collect();
+    let replay = Replay::from_records(
+        recorder_derive::writers(),
+        CAMPAIGN.into(),
+        &[records(1, branch1.clone())],
+    )
+    .unwrap()
+    .into_timelines(&Default::default())
+    .unwrap();
+    let source = Arc::new(
+        Source::from_replay(
+            dashboard_base::SourceKey { source_id: "licences-played".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+
+    let requests = [
+        json!({"branchId": "1", "subject": "GER"}),
+        json!({"branchId": "1", "countries": ["GER", "FRA"], "between": true}),
+        json!({"branchId": "1", "countries": ["GER", "FRA"], "between": false}),
+        json!({"branchId": "1", "group": {"type": "faction", "id": "10", "membership": "hour"}, "between": false}),
+    ];
+    for params in &requests {
+        let mut whole = frame_panel::<ProductionLicences>(&source, &load(), params).unwrap();
+        let panel = (PRODUCTION_PRODUCTIONLICENCES.panel.unwrap().open)(&source, &load(), params).unwrap();
+        let reader = panel.exact().unwrap();
+        let steps = played(source.replay_ref(), reader, FIRST, FIRST + 23);
+        let mut previous = None;
+        for step in &steps {
+            let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour);
+            assert_eq!(*step.value, expected, "{params} at {}", step.hour);
+            if let Some(prior) = &previous
+                && step.hour != FIRST + 10
+                && step.hour != FIRST + 8
+                && step.hour != FIRST + 17
+                && step.hour != FIRST + 19
+                && step.hour != FIRST + 21
+            {
+                assert_eq!(step.product_calls, u64::from(*prior != expected), "{params} calls at {}", step.hour);
+            }
+            previous = Some(expected);
+        }
+        assert_eq!(steps[1].product_calls, 0, "{params}: quiet foreign/unused-column hour must not call product");
+        assert_eq!(steps[2].product_calls, 0, "{params}: quiet foreign/unused-column hour must not call product");
+        if params["between"] == json!(true) {
+            assert_eq!(steps[5].product_calls, 0, "between=true ignores unlinked licence with proven non-chosen owner");
+        }
+        for h in [FIRST + 2, FIRST + 13, FIRST + 15, FIRST + 17, FIRST + 19, FIRST + 22] {
+            let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, h);
+            assert_eq!(*(reader.advance)(h, true, &false.into(), None).value, expected, "{params} seek {h}");
+        }
+    }
+
+    let branch2: Vec<DecodedFrame> = (FIRST..=FIRST + 4).map(|h| build_frame(2, h, true)).collect();
+    let multi = Replay::from_records(
+        recorder_derive::writers(),
+        CAMPAIGN.into(),
+        &[records(1, branch1), records(2, branch2)],
+    )
+    .unwrap()
+    .into_timelines(&Default::default())
+    .unwrap();
+    let multi_source = Arc::new(
+        Source::from_replay(
+            dashboard_base::SourceKey { source_id: "licences-branches".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let branches = multi_source.metadata().unwrap().branches;
+    assert_eq!(branches.len(), 2);
+    for branch in &branches {
+        let id: u64 = branch.id.parse().unwrap();
+        let req = json!({"branchId": branch.id, "subject": "GER"});
+        let mut whole_b = frame_panel::<ProductionLicences>(&multi_source, &load(), &req).unwrap();
+        let panel_b = (PRODUCTION_PRODUCTIONLICENCES.panel.unwrap().open)(&multi_source, &load(), &req).unwrap();
+        let reader_b = panel_b.exact().unwrap();
+        for h in FIRST..=FIRST + 4 {
+            let expected = materialized_frame(&mut *whole_b, multi_source.replay_ref(), id, h);
+            assert_eq!(*(reader_b.advance)(h, h == FIRST, &false.into(), None).value, expected, "branch {} at {h}", branch.id);
+        }
+    }
+}
+
+#[test]
+fn stockpile_artwork_played_steps_match_whole_frame_across_edits_damage_seeks_and_branches() {
+    use crate::products::stockpile::StockpileArtwork;
+    use crate::registrations::STOCKPILE_STOCKPILEARTWORK;
+    use dashboard_base::products::at_hour::{AtHour, frame_panel};
+    use dashboard_base::test_fixtures::{content_identity, materialized_frame, played, source_with_content, visual_mods::Machine, with_facts};
+    use replay_data::rows::{
+        AvailableEquipmentVariantRow, CountryAppearanceRow, FactionRow, LexicalTokenRow, PoliticsRow,
+        ReservedCountryNamingRow, SimulationFeatureRow, StateRow, VariantUpgradeRow,
+    };
+
+    let machine = Machine::new("stockpile-artwork-played");
+    machine.write("map/default.map", b"definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=continent.txt");
+    machine.write("map/definition.csv", b"0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;plains;1\n2;2;0;0;land;false;plains;2\n");
+    machine.write("map/continent.txt", b"continents={ syn_west syn_east }");
+    machine.write("common/defines/test.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NBuildings={MAX_BUILDING_LEVELS=10}}");
+    machine.write("common/units/equipment/upgrades/syn.txt", b"upgrades={}");
+    machine.write("common/units/equipment/modules/syn.txt", b"equipment_modules={}");
+    machine.write("common/units/equipment/syn.txt", b"equipments={ syn_gun={ is_archetype=yes type=infantry } syn_gun_a={ archetype=syn_gun } }");
+
+    let art = json!({"branchId": "1", "country": "GER", "variants": ["500", "503"]});
+    let build_frame = |branch: u64, h: i32, variant_branch: bool| {
+        let mut f = frame(h);
+        f.branch = branch;
+        for table in StockpileArtwork::tables(&serde_json::from_value(art.clone()).unwrap()) {
+            if matches!(f.tables[table.index()].held(), TableView::Unavailable { .. }) {
+                *f.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+            }
+        }
+        *f.tables[TableId::CountryAppearance.index()] = TableView::Complete(TableRows::CountryAppearance(vec![
+            CountryAppearanceRow { country: 9001, graphical_culture: b"syn_gfx".to_vec(), graphical_culture_2d: b"syn_2d".to_vec(), ..Default::default() },
+            CountryAppearanceRow { country: 9002, graphical_culture: b"syn_gfx".to_vec(), graphical_culture_2d: b"syn_2d".to_vec(), ..Default::default() },
+        ]));
+        *f.tables[TableId::ReservedCountryNaming.index()] = TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow { dynamic_tag_boundary: Recorded::Value(Some(50)), ..Default::default() },
+        ]));
+        *f.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
+            FactionRow { id: 10, name: format!("Renamed{h}").into_bytes(), ..Default::default() },
+        ]));
+        let ger_capital = if !variant_branch && h >= FIRST + 10 { 2 } else { 1 };
+        *f.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![
+            PoliticsRow { country: 9001, capital: ger_capital, original_capital: ger_capital, ..Default::default() },
+            PoliticsRow { country: 9002, capital: 1, original_capital: 1, ..Default::default() },
+        ]));
+        *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+            StateRow { id: 1, continent: Recorded::Value(Some(701)), ..Default::default() },
+            StateRow { id: 2, continent: Recorded::Value(Some(702)), ..Default::default() },
+        ]));
+        *f.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 35, literal: b"syn_gun_a".to_vec() },
+            LexicalTokenRow { token: 701, literal: b"syn_west".to_vec() },
+            LexicalTokenRow { token: 702, literal: b"syn_east".to_vec() },
+        ]));
+        *f.tables[TableId::SimulationFeatures.index()] = TableView::Complete(TableRows::SimulationFeatures(vec![
+            SimulationFeatureRow { dlc_mask: 0, human_ai: (h & 1) as u8, ..Default::default() },
+        ]));
+        let name_500 = if variant_branch {
+            b"BranchTwo".to_vec()
+        } else if h < FIRST + 3 {
+            b"Alpha".to_vec()
+        } else {
+            b"Beta".to_vec()
+        };
+        let name_503 = if variant_branch {
+            b"ExplicitBranchTwo".to_vec()
+        } else if h < FIRST + 3 {
+            b"ExplicitA".to_vec()
+        } else {
+            b"ExplicitB".to_vec()
+        };
+        *f.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(vec![
+            VariantDefinitionRow { id: 500, equipment_token: 35, creator_link: 9001, obsolete: (h & 1) as u8, display_name: name_500, ..Default::default() },
+            VariantDefinitionRow { id: 501, equipment_token: 35, creator_link: 9002, display_name: format!("Foreign{h}").into_bytes(), ..Default::default() },
+            VariantDefinitionRow { id: 502, equipment_token: 35, creator_link: 9001, display_name: b"Challenger".to_vec(), ..Default::default() },
+            VariantDefinitionRow { id: 503, equipment_token: 35, creator_link: 9002, display_name: name_503, ..Default::default() },
+        ]));
+        let level_502 = if !variant_branch && h >= FIRST + 5 { 3 } else { 0 };
+        *f.tables[TableId::VariantUpgrades.index()] = TableView::Complete(TableRows::VariantUpgrades(vec![
+            VariantUpgradeRow { variant: 500, source_ordinal: 0, definition_token: 35, level: 1 },
+            VariantUpgradeRow { variant: 502, source_ordinal: 0, definition_token: 35, level: level_502 },
+        ]));
+        let mut available = vec![
+            AvailableEquipmentVariantRow { country: 9001, roster_kind: 0, ordinal: 0, variant: h as u64 },
+            AvailableEquipmentVariantRow { country: 9001, roster_kind: 2, ordinal: 0, variant: 500 },
+            AvailableEquipmentVariantRow { country: 9001, roster_kind: 2, ordinal: 1, variant: 502 },
+            AvailableEquipmentVariantRow { country: 9002, roster_kind: 0, ordinal: 0, variant: h as u64 },
+            AvailableEquipmentVariantRow { country: 9002, roster_kind: 2, ordinal: 0, variant: h as u64 },
+        ];
+        if !variant_branch && h == FIRST + 7 {
+            available.push(AvailableEquipmentVariantRow { country: 777, roster_kind: 2, ordinal: 0, variant: 501 });
+        }
+        available.sort_by_key(|row| (row.country, row.roster_kind, row.ordinal));
+        *f.tables[TableId::AvailableEquipmentVariants.index()] = TableView::Complete(TableRows::AvailableEquipmentVariants(available.clone()));
+
+        if !variant_branch {
+            if (FIRST + 12..=FIRST + 14).contains(&h) {
+                *f.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable { reason: "variants damaged".into() };
+            } else if (FIRST + 15..=FIRST + 16).contains(&h) {
+                *f.tables[TableId::AvailableEquipmentVariants.index()] = TableView::Truncated {
+                    rows: TableRows::AvailableEquipmentVariants(available[..1].to_vec()),
+                    missing: 2,
+                };
+            } else if (FIRST + 17..=FIRST + 18).contains(&h) {
+                *f.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links damaged".into() };
+            }
+        }
+        f
+    };
+
+    let frames_b1: Vec<DecodedFrame> = (FIRST..=FIRST + 21).map(|h| build_frame(1, h, false)).collect();
+    let (source, content_load) = source_with_content(frames_b1.clone(), &machine.root);
+    let source = Arc::new(source);
+    let mut whole = frame_panel::<StockpileArtwork>(&source, &content_load, &art).unwrap();
+    let panel = (STOCKPILE_STOCKPILEARTWORK.panel.unwrap().open)(&source, &content_load, &art).unwrap();
+    let reader = panel.exact().unwrap();
+    let steps = played(source.replay_ref(), reader, FIRST, FIRST + 21);
+    for step in &steps {
+        let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour);
+        assert_eq!(*step.value, expected, "stockpile-artwork at {}", step.hour);
+    }
+    for quiet in [1usize, 2, 4, 6, 9, 11, 20, 21] {
+        assert_eq!(steps[quiet].product_calls, 0, "quiet hour {} must not call product", FIRST + quiet as i32);
+    }
+    let entry_name = |step: usize, key: &str| {
+        steps[step].value.as_ref().as_ref().unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["key"] == key)
+            .and_then(|entry| entry["name"].as_str())
+            .map(str::to_owned)
+    };
+    assert_eq!(entry_name(2, "variant:503").as_deref(), Some("ExplicitA"));
+    assert_eq!(entry_name(3, "variant:503").as_deref(), Some("ExplicitB"));
+    let at_4 = steps[4].value.as_ref().as_ref().unwrap();
+    let at_5 = steps[5].value.as_ref().as_ref().unwrap();
+    assert_ne!(at_4["entries"], at_5["entries"], "VariantUpgrades level change must flip best variant");
+    assert!(steps[7].value.as_ref().as_ref().unwrap()["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|s| s.contains("777"))));
+    for damaged in [12usize, 13, 14, 15, 16] {
+        let h = FIRST + damaged as i32;
+        assert!(steps[damaged].value.as_ref().as_ref().unwrap()["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|s| s.contains(&format!("hour {h} ")))));
+    }
+    for refused in [17usize, 18] {
+        assert!(steps[refused].value.as_ref().as_ref().unwrap_err().contains("CountryLinks"));
+    }
+    for h in [FIRST + 2, FIRST + 6, FIRST + 13, FIRST + 15, FIRST + 17, FIRST + 20] {
+        let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, h);
+        assert_eq!(*(reader.advance)(h, true, &false.into(), None).value, expected, "seek {h}");
+    }
+
+    let (options, identity) = content_identity(&machine.root);
+    let mut b1 = records(1, frames_b1);
+    let replay_capture_spool::spool::Record::SessionStart(session) = &mut b1[0] else {
+        unreachable!()
+    };
+    session.identity = identity.clone();
+    let mut b2 = records(2, (FIRST..=FIRST + 4).map(|h| build_frame(2, h, true)).collect());
+    b2.remove(0);
+    if let replay_capture_spool::spool::Record::BranchStart(start) = &mut b2[0] {
+        start.session = 1;
+        start.reason = replay_frame::branches::BranchReason::LoadSignal;
+    }
+    b1.extend(b2);
+    let multi = with_facts(&options, &identity, b1).into_timelines(&Default::default()).unwrap();
+    let multi_source = Arc::new(
+        Source::from_replay(
+            dashboard_base::SourceKey { source_id: "stockpile-artwork-branches".into(), revision: "1".into() },
+            "memory.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let multi_load = LoadContext { content: Some(options) };
+    let branches = multi_source.metadata().unwrap().branches;
+    assert_eq!(branches.len(), 2);
+    let mut first_entries = Vec::new();
+    for branch in &branches {
+        let id: u64 = branch.id.parse().unwrap();
+        let req = json!({"branchId": branch.id, "country": "GER", "variants": ["500", "503"]});
+        let mut whole_b = frame_panel::<StockpileArtwork>(&multi_source, &multi_load, &req).unwrap();
+        let panel_b = (STOCKPILE_STOCKPILEARTWORK.panel.unwrap().open)(&multi_source, &multi_load, &req).unwrap();
+        let reader_b = panel_b.exact().unwrap();
+        for h in FIRST..=FIRST + 4 {
+            let expected = materialized_frame(&mut *whole_b, multi_source.replay_ref(), id, h);
+            let got = (reader_b.advance)(h, h == FIRST, &false.into(), None).value;
+            assert_eq!(*got, expected, "branch {} at {h}", branch.id);
+            if h == FIRST {
+                first_entries.push(got.as_ref().as_ref().unwrap()["entries"].clone());
+            }
+        }
+    }
+    assert_ne!(first_entries[0], first_entries[1], "branches must produce distinct artwork names at the same hour");
+}
+
+#[test]
 fn catalogue_refusals_follow_table_availability_and_missing_row_counts() {
     use dashboard_base::products::at_hour::exact_panel;
     const CAUSE: &str = "unread since hour 1000 in this recording";

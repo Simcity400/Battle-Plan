@@ -15,8 +15,8 @@ dashboard_base::register_products! {
 
     @hourly
     PRODUCTION_PRODUCTIONLINESAT => exact<crate::products::production::ProductionLinesAt>,
-    PRODUCTION_PRODUCTIONLICENCES => whole_frame<crate::products::production::ProductionLicences>,
+    PRODUCTION_PRODUCTIONLICENCES => exact<crate::products::production::ProductionLicences>,
     PRODUCTION_INDUSTRIALORGANISATIONS => exact<crate::products::production::IndustrialOrganisations>,
     PRODUCTION_EQUIPMENTDESIGNS => exact<crate::products::production::EquipmentDesigns>,
-    STOCKPILE_STOCKPILEARTWORK => whole_frame<crate::products::stockpile::StockpileArtwork>,
+    STOCKPILE_STOCKPILEARTWORK => exact<crate::products::stockpile::StockpileArtwork>,
 }

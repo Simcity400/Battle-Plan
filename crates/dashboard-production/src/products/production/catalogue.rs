@@ -1,17 +1,17 @@
 use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, VariantName};
 
 use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowEnd, FlowEndpoint, FlowGap, FlowPart, FlowShape, build_flows}};
-use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
+use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt, before, field_columns}}};
 use dashboard_follow::live::Source as Cell;
-use dashboard_query::series::ranked::GroupSelection;
+use dashboard_query::{identity::Holders, series::ranked::GroupSelection};
 use dashboard_world::products::group_members::GroupsAt;
 use dashboard_query::coverage::{Witness, witnessed, witnessed_rows};
 use dashboard_text::{metadata::link_slot, variant_names::Texts};
-use replay_data::rows::{IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, TableId, VariantDefinitionRow, column, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::rows::{IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, RowCodec, TableId, VariantDefinitionRow, column, tables};
+use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     io,
 };
 #[cfg(any(test, feature = "export-types"))]
@@ -185,6 +185,27 @@ fn licence_parts() -> Vec<FlowPart> {
     vec![FlowPart { key: "licences".to_owned(), name: Some("Licences".to_owned()), name_missing: None, ordinal: 0, icon: None }]
 }
 
+fn licences_unavailable(params: &ProductionLicencesParams, holders: &Holders, context: &GroupsAt, hour: i32) -> bool {
+    params.subject.as_ref().is_some_and(|country| holders.slot_at(country, hour).is_none())
+        || matches!(context.chosen_slots(params.group.as_ref(), &params.countries, holders, hour), Ok(Err(_)))
+}
+
+fn licence_reaches(from: FlowEnd, to: FlowEnd, subject: Option<u32>, chosen: Option<&HashSet<u32>>, between: bool) -> bool {
+    if let Some(subject) = subject {
+        return (from.slot().is_none_or(|slot| slot == subject) || to.slot().is_none_or(|slot| slot == subject))
+            && !(from == FlowEnd::Slot(subject) && to == from);
+    }
+    if from.slot().is_some() && from == to {
+        return false;
+    }
+    let Some(chosen) = chosen else { return true };
+    let ends = [from.slot(), to.slot()];
+    let unknown = ends.iter().any(Option::is_none);
+    let mut known = ends.iter().flatten();
+    let decided = if between { known.any(|slot| !chosen.contains(slot)) } else { known.any(|slot| chosen.contains(slot)) };
+    !matches!((decided, between, unknown), (true, true, _) | (false, false, false))
+}
+
 impl AtHour for ProductionLicences {
     const KEY: &'static str = "production-licences";
     const TITLE: &'static str = "Production licences";
@@ -211,6 +232,83 @@ impl AtHour for ProductionLicences {
         vec![TableId::ProductionLicenseRecords, TableId::CountryLinks]
     }
 
+    fn reads_in(params: &Self::Params, _: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if licences_unavailable(params, at.holders, at.context, at.hour) {
+            return Vec::new();
+        }
+        match stage {
+            0 => vec![Read::all(TableId::ProductionLicenseRecords)],
+            1 => {
+                let rows = witnessed_rows::<tables::ProductionLicenseRecords>(frame);
+                if rows.rows.is_empty() {
+                    return Vec::new();
+                }
+                vec![Read::these(TableId::CountryLinks, rows.rows.iter().flat_map(|row| [u128::from(row.owner), u128::from(row.giver)]))]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let until = if stage == 0 {
+            before(at.holders.next_change(at.hour)).min(at.context.valid_through(params.group.as_ref(), at.hour))
+        } else {
+            i32::MAX
+        };
+        (Self::reads_in(params, owner, stage, frame, at), until)
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        (table == TableId::ProductionLicenseRecords).then(|| field_columns(table, &["giver"]))
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _: &DecodedFrame, _: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1 && edits.fields(TableId::ProductionLicenseRecords, u64::MAX)
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        matches!(table, TableId::ProductionLicenseRecords | TableId::CountryLinks)
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _: &dashboard_follow::live::Live, _: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() {
+            return Ok(false);
+        }
+        let licences = TableId::ProductionLicenseRecords;
+        let links = TableId::CountryLinks;
+        let Some(keys) = edits.tables.get(&licences) else {
+            return Ok(false);
+        };
+        let Some(prior_licences) = edits.previous.get(&licences) else {
+            return Ok(false);
+        };
+        let Some(prior_links) = edits.previous.get(&links) else {
+            return Ok(false);
+        };
+        let now_links = &frame.tables[links.index()];
+        if edits.tables.get(&links).is_some_and(|rows| rows.keys().any(|&id| prior_links.keys().contains(id) && now_links.keys().contains(id))) {
+            return Ok(false);
+        }
+        let subject = params.subject.as_ref().map(|country| at.holders.slot_at(country, at.hour));
+        if subject == Some(None) {
+            return Ok(true);
+        }
+        let Ok(chosen) = at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? else {
+            return Ok(true);
+        };
+        let relevant = |licences: &SharedView, links: &SharedView, key: u128| {
+            let TableView::Complete(rows) = licences.held() else { return None };
+            let rows = rows.rows::<tables::ProductionLicenseRecords>()?;
+            let row = &rows[rows.binary_search_by_key(&key, RowCodec::key).ok()?];
+            let TableView::Complete(rows) = links.held() else { return None };
+            let links = rows.rows::<tables::CountryLinks>()?;
+            let end = |raw| link_slot(links, raw).map_or(FlowEnd::Raw(raw), FlowEnd::Slot);
+            let (from, to) = (end(row.giver), end(row.owner));
+            licence_reaches(from, to, subject.flatten(), chosen.as_ref(), params.between).then_some((from, to))
+        };
+        Ok(keys.keys().all(|&key| relevant(prior_licences, prior_links, key) == relevant(&frame.tables[licences.index()], now_links, key)))
+    }
+
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(GroupsAt::default())
     }
@@ -220,7 +318,11 @@ impl AtHour for ProductionLicences {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        if params.subject.is_some() { i32::MAX } else { at.context.valid_through(params.group.as_ref(), at.hour) }
+        before(at.holders.next_change(at.hour)).min(at.context.valid_through(params.group.as_ref(), at.hour))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _: &Self::Reply, _: bool) -> i32 {
+        Self::valid_through(frame, params, at)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

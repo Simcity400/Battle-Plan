@@ -1,7 +1,8 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::{Content, archetype_of};
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, before, field_columns, warnings_through}}};
+use dashboard_world::products::equipment_names as names;
 use dashboard_base::products::{
     artwork::ICON_EDGE,
     equipment_icon::{self, IconChoice, IconContent, IconHour},
@@ -14,7 +15,7 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
@@ -280,8 +281,96 @@ impl AtHour for StockpileArtwork {
         TABLES.to_vec()
     }
 
-    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
-        if step == 0 { TABLES.map(Read::all).into() } else { Vec::new() }
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        let Some(owner) = owner else { return Vec::new(); };
+        let (Ok(_), Ok(units), Some(_)) = (&at.context.content.catalogue, &at.context.content.units, &at.context.held) else {
+            return Vec::new();
+        };
+        let best = units.lost.is_none();
+        match stage {
+            0 => names::WHOLE.iter().copied().map(Read::all).collect(),
+            1 => {
+                let Ok(links) = frame.complete::<tables::CountryLinks>() else { return Vec::new(); };
+                let mut reads = vec![names::capital_state_read(frame)];
+                if best {
+                    let mut ranges = Vec::new();
+                    let mut first = 0u128;
+                    for link in links {
+                        let base = u128::from(link.id) << 34;
+                        if first < base {
+                            ranges.push((first, base - 1));
+                        }
+                        if link.canonical_slot == owner.slot {
+                            let chosen = base | (2u128 << 32);
+                            ranges.push((chosen, chosen | u128::from(u32::MAX)));
+                        }
+                        first = base + (1u128 << 34);
+                    }
+                    if first < (1u128 << 66) {
+                        ranges.push((first, (1u128 << 66) - 1));
+                    }
+                    reads.push(Read { table: TableId::AvailableEquipmentVariants, keys: Keys::Ranges(ranges) });
+                }
+                reads
+            }
+            2 => {
+                let Ok(links) = frame.complete::<tables::CountryLinks>() else { return Vec::new(); };
+                let candidates: Vec<u64> = if best {
+                    frame
+                        .complete::<tables::AvailableEquipmentVariants>()
+                        .into_iter()
+                        .flatten()
+                        .filter(|row| row.roster_kind == 2 && link_slot(links, row.country) == Some(owner.slot))
+                        .map(|row| row.variant)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let variants = candidates.iter().copied().chain(params.variants.iter().filter_map(|id| id.parse::<u64>().ok()));
+                let mut reads = vec![Read::these(TableId::VariantDefinitions, variants.map(u128::from))];
+                if best {
+                    let upgrades: BTreeSet<(u128, u128)> = candidates
+                        .iter()
+                        .map(|&id| {
+                            let lo = u128::from(id) << 32;
+                            (lo, lo | u128::from(u32::MAX))
+                        })
+                        .collect();
+                    reads.push(Read { table: TableId::VariantUpgrades, keys: Keys::Ranges(upgrades.into_iter().collect()) });
+                    reads.push(Read::all(TableId::SimulationFeatures));
+                }
+                reads
+            }
+            3 => names::spelling_reads(frame, names::variant_tokens(frame).collect(), true),
+            _ => Vec::new(),
+        }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::Factions => Some(Vec::new()),
+            TableId::VariantUpgrades => Some(field_columns(table, &["level"])),
+            TableId::SimulationFeatures => Some(field_columns(table, &["dlc_mask"])),
+            _ => names::naming_columns(table),
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _: &DecodedFrame, _: &ReadsAt<'_, Self::Context>) -> bool {
+        let changed = |table| edits.fields(table, u64::MAX);
+        match stage {
+            1 => changed(TableId::CountryLinks) || changed(TableId::Politics),
+            2 => changed(TableId::CountryLinks) || changed(TableId::AvailableEquipmentVariants),
+            3 => changed(TableId::VariantDefinitions) || changed(TableId::States),
+            _ => false,
+        }
+    }
+
+    fn valid_through(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        before(at.holders.next_change(frame.hour))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _: bool) -> i32 {
+        Self::valid_through(frame, params, at).min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
