@@ -366,8 +366,11 @@ impl EventWindow {
         }
     }
 
-    pub(super) fn shown(&self, slots: Option<&HashSet<u32>>) -> Vec<TensionStackEvent> {
-        let Some(slots) = slots else { return self.rows.values().cloned().collect() };
+    pub(super) fn visit(&self, slots: Option<&HashSet<u32>>, mut visit: impl FnMut(u32, &TensionStackEvent)) {
+        let Some(slots) = slots else {
+            for (key, row) in &self.rows { visit(key.2, row); }
+            return;
+        };
         let mut streams: Vec<_> = slots.iter().filter_map(|slot| self.by_slot.get(slot)).map(BTreeSet::iter).collect();
         let mut next = BinaryHeap::new();
         for (i, stream) in streams.iter_mut().enumerate() {
@@ -375,13 +378,11 @@ impl EventWindow {
                 next.push(Reverse((key, i)));
             }
         }
-        let mut rows = Vec::new();
         while let Some(Reverse((key, i))) = next.pop() {
-            rows.push(self.rows[&key].clone());
+            visit(key.2, &self.rows[&key]);
             if let Some(&following) = streams[i].next() {
                 next.push(Reverse((following, i)));
             }
         }
-        rows
     }
 }

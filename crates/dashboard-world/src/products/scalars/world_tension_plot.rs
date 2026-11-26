@@ -1,5 +1,5 @@
 use super::{
-    DatedGroupFilter, Sample, SlotIndex, StackInput, TensionValueMode, collect_change_hours, is_complete, lookup_run, lookup_slot,
+    DatedGroupFilter, PieceWindow, Sample, SlotIndex, StackInput, TensionValueMode, collect_change_hours, is_complete, lookup_run, lookup_slot,
 };
 use engine_stability::{cthreat_source, cworld_threat};
 use std::collections::{HashMap, VecDeque};
@@ -147,6 +147,7 @@ impl Plot {
         first: i32,
         last: i32,
         limit: usize,
+        piece: Option<PieceWindow>,
     ) -> (Vec<Sample>, bool, Sample) {
         let mut hours = Vec::new();
         if let Some(start) = self.world.extend(first, last) {
@@ -233,12 +234,18 @@ impl Plot {
             }
             sample
         };
-        let samples = hours
-            .iter()
-            .enumerate()
-            .map(|(i, &hour)| {
+        let selection = piece.map_or(0..hours.len(), |piece| {
+            let witnessed = std::iter::once(&self.world).chain(columns.iter().copied()).filter_map(|curve| {
+                let at = curve.points.partition_point(|p| p.0 < piece.start);
+                at.checked_sub(1).map(|i| curve.points[i].0)
+            }).max().unwrap_or(first);
+            let closed = hours.partition_point(|&hour| hour < witnessed).saturating_sub(1);
+            if piece.history { 0..closed } else { closed..hours.len() }
+        });
+        let samples = selection
+            .map(|i| {
                 let end = reduced.then(|| hours.get(i + 1).map_or(last, |&next| next - 1));
-                sample(hour, end)
+                sample(hours[i], end)
             })
             .collect();
         (samples, reduced, sample(last, None))

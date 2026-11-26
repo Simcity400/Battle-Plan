@@ -11,7 +11,10 @@ dashboard_base::register_products! {
     HISTORY_AT_COUNTRYGROUPSAT => crate::products::history_at::CountryGroupsAt; interval(at_hour, |r| before(r.next_change)),
     HISTORY_AT_SUBJECTSAT => crate::products::history_at::SubjectsAt; interval(at_hour, |r| before(r.next_change)),
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
-    SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
+    SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack; interval(
+        |params, hour| params["lastHour"] = hour.into(),
+        |r| r.read_through.unwrap_or_else(|| before(r.next_change_hour))
+    ),
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
     PLACE_NAME_RUNS_PLACENAMERUNS => crate::products::place_name_runs::PlaceNameRuns,
     SEA_REGIONS_STRATEGICREGIONS => crate::products::sea_regions::StrategicRegions,
