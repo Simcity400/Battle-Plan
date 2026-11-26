@@ -1,4 +1,5 @@
 use super::{bytes, column, number, opaque, slot, status, unread};
+use dashboard_query::log::Cell;
 use crate::products::divisions::Content;
 use dashboard_base::{
     Source,
@@ -155,14 +156,60 @@ impl OccurrenceReply for DivisionLogTailReply {
 }
 
 struct Event {
-    row: Row,
-    kind: u8,
+    key: u128,
+    observed: i32,
     hour: i32,
+    kind: u8,
     slot: Option<u32>,
-    tag: Option<String>,
     template: Option<u32>,
     template_tag: Option<String>,
-    detail: OnceLock<DivisionEventDetail>,
+    recorded: Fields,
+    detail: OnceLock<Box<DivisionEventDetail>>,
+}
+
+const NUMBERS: [usize; 11] = [
+    column::DISPOSITION,
+    column::CAUSE,
+    column::EXACT,
+    column::AFTER,
+    column::PROVINCE,
+    column::PLACE_HOUR,
+    column::ICON_UNIT,
+    column::ICON_CUSTOM,
+    column::KILLER_SLOT,
+    column::KILLER_DIVISION,
+    column::MATCHED_DEATHS,
+];
+
+struct Fields {
+    numbers: [Option<i64>; NUMBERS.len()],
+    name: Option<Box<[u8]>>,
+    naming: Option<Box<[u8]>>,
+    icon_name: Option<Box<[u8]>>,
+    template_literal: Option<Box<[u8]>>,
+    template_key: Option<Box<[u8]>>,
+}
+
+impl Fields {
+    fn new(cells: &[Cell]) -> Self {
+        let list = |column| match cells.get(column) {
+            Some(Cell::List(bytes)) => Some(bytes.as_slice().into()),
+            _ => None,
+        };
+        let text = |column| bytes(cells, column).map(Box::from);
+        Self {
+            numbers: NUMBERS.map(|column| number(cells, column)),
+            name: list(column::NAME),
+            naming: list(column::NAMING),
+            icon_name: text(column::ICON_NAME),
+            template_literal: text(column::TEMPLATE_LITERAL),
+            template_key: text(column::TEMPLATE_KEY),
+        }
+    }
+
+    fn number(&self, column: usize) -> Option<i64> {
+        NUMBERS.iter().position(|&held| held == column).and_then(|at| self.numbers[at])
+    }
 }
 
 fn named(result: Result<String, String>) -> (Option<String>, Option<String>) {
@@ -175,45 +222,51 @@ fn named(result: Result<String, String>) -> (Option<String>, Option<String>) {
 impl Event {
     fn new(row: Row, holders: &Holders, links: &RunLinks) -> Self {
         let cells = &row.cells;
-        let slot = slot(number(cells, column::SLOT));
-        let tag = slot.and_then(|id| holders.slot_tag(id, row.hour)).map(str::to_owned);
         let template_tag = number(cells, column::TEMPLATE_COUNTRY)
             .and_then(|id| links.slot_at(id as u32, row.hour))
             .and_then(|id| holders.slot_tag(id, row.hour))
             .map(str::to_owned);
         Self {
-            kind: (row.key >> 96) as u8,
+            key: row.key,
+            observed: row.hour,
             hour: number(cells, column::NATIVE_HOUR).map_or(row.hour, |h| h as i32),
-            slot,
-            tag,
+            kind: (row.key >> 96) as u8,
+            slot: slot(number(cells, column::SLOT)),
             template: number(cells, column::TEMPLATE_ID).map(|id| id as u32),
             template_tag,
-            row,
+            recorded: Fields::new(cells),
             detail: OnceLock::new(),
         }
     }
 
+    fn tag(&self, holders: &Holders) -> Option<String> {
+        self.slot.and_then(|id| holders.slot_tag(id, self.observed)).map(str::to_owned)
+    }
+
+    fn group(&self) -> String {
+        format!("group:{}:{}:{}", self.observed, self.hour, self.slot.map_or(String::new(), |slot| slot.to_string()))
+    }
+
     fn template_name(&self, art: &Content) -> Result<String, String> {
-        let cells = &self.row.cells;
-        let literal = bytes(cells, column::TEMPLATE_LITERAL).ok_or_else(|| "Template name not recorded at this observation".to_owned())?;
-        art.template_name_of(literal, bytes(cells, column::TEMPLATE_KEY), self.template_tag.as_deref())
+        let literal = self.recorded.template_literal.as_deref().ok_or_else(|| "Template name not recorded at this observation".to_owned())?;
+        art.template_name_of(literal, self.recorded.template_key.as_deref(), self.template_tag.as_deref())
     }
 
     fn detail(&self, art: &Content, holders: &Holders) -> &DivisionEventDetail {
         self.detail.get_or_init(|| {
-            let cells = &self.row.cells;
-            let num = |at| number(cells, at);
+            let recorded = &self.recorded;
+            let num = |at| recorded.number(at);
             let kind = self.kind;
-            let division = self.row.key as u64;
+            let division = self.key as u64;
             let killer_slot = slot(num(column::KILLER_SLOT));
-            let (name, name_missing) = named(art.division_name_of(division, &opaque(cells, column::NAME), &opaque(cells, column::NAMING)));
-            let icon = match (num(column::ICON_UNIT), num(column::ICON_CUSTOM), bytes(cells, column::ICON_NAME)) {
+            let (name, name_missing) = named(art.division_name_of(division, &opaque(recorded.name.as_deref()), &opaque(recorded.naming.as_deref())));
+            let icon = match (num(column::ICON_UNIT), num(column::ICON_CUSTOM), recorded.icon_name.as_deref()) {
                 (Some(unit), Some(custom), Some(text)) => art.icon(unit as u32, custom as i32, text),
                 _ => Err("Division template artwork not recorded at this observation".into()),
             };
             let (icon, icon_missing) = named(icon);
             let (template_name, template_missing) = named(self.template_name(art));
-            DivisionEventDetail {
+            Box::new(DivisionEventDetail {
                 division: division.to_string(),
                 kind,
                 status: status(kind, num(column::DISPOSITION), num(column::CAUSE)),
@@ -229,14 +282,13 @@ impl Event {
                 province: num(column::PROVINCE).map(|id| id as u32),
                 place_hour: num(column::PLACE_HOUR).map(|h| h as i32),
                 killer_slot,
-                killer_tag: killer_slot.and_then(|id| holders.slot_tag(id, self.row.hour)).map(str::to_owned),
+                killer_tag: killer_slot.and_then(|id| holders.slot_tag(id, self.observed)).map(str::to_owned),
                 killer_division: num(column::KILLER_DIVISION).filter(|&id| id != 0).map(|id| (id as u64).to_string()),
                 matched_deaths: num(column::MATCHED_DEATHS).map(|n| n as u32),
-            }
+            })
         })
     }
 }
-
 #[derive(PartialEq)]
 struct Filters {
     templates: Option<BTreeSet<u32>>,
@@ -246,14 +298,14 @@ struct Filters {
 
 enum Line {
     Single(usize),
-    Header { first: usize, group: String, members: usize, open: bool },
-    Child { event: usize, group: String },
+    Header { first: usize, members: usize, open: bool },
+    Child(usize),
 }
 
 impl Line {
     fn event(&self) -> usize {
         match self {
-            Self::Single(at) | Self::Header { first: at, .. } | Self::Child { event: at, .. } => *at,
+            Self::Single(at) | Self::Header { first: at, .. } | Self::Child(at) => *at,
         }
     }
 }
@@ -309,7 +361,7 @@ fn scan(source: &Source, query: &Query<'_>, art: Content, cancelled: &AtomicBool
             if event.kind != DivisionEventRow::VANISHED
                 && let Some(id) = event.template
             {
-                let observed = event.row.hour;
+                let observed = event.observed;
                 if chips.get(&id).is_none_or(|chip: &DivisionTemplateChip| observed < chip.first_hour) {
                     chips.insert(id, DivisionTemplateChip { id, first_hour: observed, name: event.template_name(&art).ok() });
                 }
@@ -324,7 +376,7 @@ fn scan(source: &Source, query: &Query<'_>, art: Content, cancelled: &AtomicBool
         None => art.group_note_lines(),
     };
     let has_vanished = events.iter().any(|event| event.kind == DivisionEventRow::VANISHED);
-    let first_read = first_read.into_iter().chain(events.iter().map(|event| event.row.hour)).min();
+    let first_read = first_read.into_iter().chain(events.iter().map(|event| event.observed)).min();
     Ok(Tail { art, first_read, has_vanished, events, chips, gaps, removal_gaps, warnings, view: Mutex::default() })
 }
 
@@ -349,11 +401,11 @@ impl Tail {
             lines.push(Occurrence {
                 id: u128::MAX - lines.len() as u128,
                 date: event.hour,
-                observed: event.row.hour,
+                observed: event.observed,
                 kind: u16::from(event.kind),
-                roles: Box::new([Role { slot: event.slot, at: event.row.hour }]),
+                roles: Box::new([Role { slot: event.slot, at: event.observed }]),
                 subjects: Box::new([]),
-                states: Box::new([(event.row.hour, state)]),
+                states: Box::new([(event.observed, state)]),
                 sort_keys: Box::new([]),
                 text: Box::default(),
                 payload: line,
@@ -373,21 +425,20 @@ impl Tail {
                 continue;
             }
             if created && let Some(slot) = event.slot {
-                groups.entry((event.hour, event.row.hour, slot)).or_default().push(at);
+                groups.entry((event.hour, event.observed, slot)).or_default().push(at);
             } else {
                 push(Line::Single(at), SINGLE);
             }
         }
-        for ((hour, observed, slot), members) in groups {
+        for members in groups.into_values() {
             if members.len() == 1 {
                 push(Line::Single(members[0]), SINGLE);
                 continue;
             }
-            let key = format!("group:{observed}:{hour}:{slot}");
-            let open = filters.expanded.contains(&key);
-            push(Line::Header { first: members[0], group: key.clone(), members: members.len(), open }, HEADER);
+            let open = filters.expanded.contains(&self.events[members[0]].group());
+            push(Line::Header { first: members[0], members: members.len(), open }, HEADER);
             for at in members {
-                push(Line::Child { event: at, group: key.clone() }, if open { CHILD } else { HIDDEN_CHILD });
+                push(Line::Child(at), if open { CHILD } else { HIDDEN_CHILD });
             }
         }
         let mut gaps = self.gaps.clone();
@@ -492,18 +543,18 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
             let line = &prepared.index.get(shown.at).payload;
             let event = &tail.events[line.event()];
             let (key, detail, parent, members, open) = match line {
-                Line::Header { group, members, open, .. } => (group.clone(), None, None, *members, *open),
-                Line::Single(_) | Line::Child { .. } => {
-                    let parent = if let Line::Child { group, .. } = line { Some(group.clone()) } else { None };
-                    (event.row.key.to_string(), Some(event.detail(&tail.art, holders).clone()), parent, 0, false)
+                Line::Header { members, open, .. } => (event.group(), None, None, *members, *open),
+                Line::Single(_) | Line::Child(_) => {
+                    let parent = matches!(line, Line::Child(_)).then(|| event.group());
+                    (event.key.to_string(), Some(event.detail(&tail.art, holders).clone()), parent, 0, false)
                 }
             };
             DivisionLogRow {
                 key,
                 hour: event.hour,
-                observed: event.row.hour,
+                observed: event.observed,
                 slot: event.slot,
-                tag: event.tag.clone(),
+                tag: event.tag(holders),
                 event: detail,
                 parent,
                 members,

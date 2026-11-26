@@ -2376,7 +2376,7 @@ export type DivisionLogRow = { key: string, hour: number, observed: number, slot
 export type DivisionLogTailReply = { branchId: string, available: boolean, unavailable: string | null, total: string, offset: string, counts: Array<OccurrenceCount>, censusIncomplete: boolean, templates: Array<DivisionTemplateChip>, rows: Array<DivisionLogRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
 export type ServiceRecordParams = { branchId: string, hour?: number, from?: number, division?: string, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, show?: ServiceEntries, limit: number, };
 export type ServiceEntries = "both" | "career" | "awards";
-export type ServiceDivision = { division: string, name: string | null, tag: string | null, template: string | null, sprite: string | null, medals: number | null, lastSeen: number, removed: string | null, removedAt: number | null, };
+export type ServiceDivision = { division: string, name: string | null, tag: string | null, template: string | null, sprite: string | null, medals: number | null, lastSeen: number | null, removed: string | null, removedAt: number | null, };
 export type ServiceEntry = { key: string, hour: number, observed: number, kind: string, title: string | null, status: string | null, tag: string | null, other: string | null, province: number | null, placeHour: number | null, medal: CareerMedal | null, exact: boolean, };
 export type ServiceRecordTailReply = { branchId: string, selected: ServiceDivision | null, facts: CareerFacts | null, medals: Array<CareerMedal>, total: string, offset: string, rows: Array<ServiceEntry>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: string | null, warnings: Array<string>, };
 export type ServiceChoicesParams = { branchId: string, hour: number, countries?: Array<CountryRef>, group?: GroupSelection, };
@@ -2393,9 +2393,9 @@ export type LandBattleRun = { firstHour: number, lastHour: number, counts: [numb
 /**
  * The native counter at `first_hour`.
  */
-duration: number, };
+duration: number | null, };
 export type LandManpower = number | string;
-export type LandBattleResultRead = { hour: number | null, duration: number, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
+export type LandBattleResultRead = { hour: number | null, duration: number | null, winner: BattleWinner, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], };
 export type LandBattleCourseParams = { branchId: string,
 /**
  * A battle id of this branch.

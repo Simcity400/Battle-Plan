@@ -52,11 +52,8 @@ fn bytes(cells: &[Cell], column: usize) -> Option<&[u8]> {
     }
 }
 
-fn opaque<T: replay_data::value::Value>(cells: &[Cell], column: usize) -> Recorded<T> {
-    match cells.get(column) {
-        Some(Cell::List(bytes)) => T::decode(&mut Decoder::new(bytes)).map_or(Recorded::NotRecorded, Recorded::Value),
-        _ => Recorded::NotRecorded,
-    }
+fn opaque<T: replay_data::value::Value>(bytes: Option<&[u8]>) -> Recorded<T> {
+    bytes.map_or(Recorded::NotRecorded, |bytes| T::decode(&mut Decoder::new(bytes)).map_or(Recorded::NotRecorded, Recorded::Value))
 }
 
 pub fn status(kind: u8, disposition: Option<i64>, cause: Option<i64>) -> String {

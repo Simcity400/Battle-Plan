@@ -84,7 +84,7 @@ export const serviceRecordProjection: TableProjection<Options> = registerFamilyP
     const icon = spriteUrl(chosen?.sprite);
     const facts = head?.facts;
     const insignia = facts?.level == null ? undefined : spriteUrl('GFX_unit_level', facts.level);
-    const country = chosen?.tag ? resolveIdentity(view, 'country', chosen.tag, { atHour: chosen.lastSeen, boundary }) : null;
+    const country = chosen?.tag ? resolveIdentity(view, 'country', chosen.tag, { atHour: chosen.lastSeen ?? hour, boundary }) : null;
     const filter = { key: 'division', noun: 'divisions', allLabel: 'Follow most decorated', items: [], selected: options.chosen ? [options.chosen] : [],
       single: { selected: chosen?.division, pinned: !!options.chosen, countryTag: chosen?.tag ?? undefined, countryLabel: country?.name, countryFlag: country?.art?.status === 'ready' ? country.art.url : undefined,
         label: chosen ? nameOf(chosen) : 'Choose division', ...(icon ? { icon } : {}) } };

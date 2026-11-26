@@ -211,8 +211,9 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     use replay_data::rows::{DivisionHistoryRow, LandCombatEdgesRow, LandCombatRow, LandDivisionDamageRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use serde_json::json;
+    let experience = |id: u64, hour: i32| 20 * id as i64 + 1_000 * i64::from(hour - 100);
     let source = decorated_source((100..=107).map(|hour| {
-        let mut frame = decorated_world(hour, |id| 20 * id as i64);
+        let mut frame = decorated_world(hour, |id| experience(id, hour));
         let (damage, exits) = if hour == 106 {
             (vec![LandDivisionDamageRow { id: 50 << 16, hour, combat: 4, target: 9, attacker: 2, army: None, strength_raw: 100 }],
                 vec![LandCombatEdgesRow { id: 50, kind: LandCombatEdgesRow::EXITED, hour, combat: 4, division: Some(9), casualties_before: Some(0), casualties_after: Some(3), pending_strength_raw: Some(100), ..Default::default() }])
@@ -226,8 +227,8 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
         *frame.tables[TableId::LandCombatEdges.index()] = TableView::Complete(TableRows::LandCombatEdges(exits));
         frame.metrics.table_ns[TableId::Divisions.index()] = 1;
         frame.metrics.table_ns[TableId::DivisionHistory.index()] = 1;
-        if hour < 102 && let TableView::Complete(TableRows::Divisions(rows)) = &mut *frame.tables[TableId::Divisions.index()] {
-            rows.retain(|row| row.id != 3);
+        if let TableView::Complete(TableRows::Divisions(rows)) = &mut *frame.tables[TableId::Divisions.index()] {
+            rows.retain(|row| row.id != 3 || (102..104).contains(&hour));
         }
         frame.metrics.table_ns[TableId::LandCombats.index()] = 1;
         *frame.tables[TableId::LandCombats.index()] = TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
@@ -265,6 +266,17 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     assert!(ask(104, Some("2")).missing.iter().all(|gap| !gap.reason.contains("division's history")));
     let career: Vec<_> = pinned.rows.iter().filter(|row| row.kind == "career").map(|row| row.hour).collect();
     assert_eq!(career, [91]);
+    let measured = |id, hour| {
+        replay_data::rows::DivisionStatusRow { experience: Recorded::Value(Some(experience(id, hour))), ..Default::default() }.normalized_experience(10).map(|raw| raw.to_string())
+    };
+    let facts = pinned.facts.as_ref().unwrap();
+    assert_eq!((facts.experience_raw.clone(), facts.casualties_taken), (measured(1, 104), Some(10)), "a serving division's facts are its own at the hour");
+    let gone = ask(104, Some("3"));
+    assert_eq!(gone.selected.as_ref().map(|d| d.last_seen), Some(Some(103)));
+    assert_eq!(pinned.selected.as_ref().map(|d| d.last_seen), Some(None), "a division in the census at the hour asked holds no hour that would change with it");
+    assert_ne!(measured(3, 103), measured(3, 104));
+    let facts = gone.facts.as_ref().unwrap();
+    assert_eq!((facts.experience_raw.clone(), facts.casualties_taken), (measured(3, 103), Some(10)), "a division out of the census shows its facts when last seen");
     assert!(pinned.missing.iter().any(|gap| gap.first_hour == 103 && gap.last_hour == 103 && gap.reason.contains("history")), "{:?}", pinned.missing);
     let quiet = ask(105, Some("2"));
     assert_eq!(quiet.facts.as_ref().and_then(|facts| facts.enemy_killed), Some(0));
@@ -274,6 +286,73 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     assert_eq!(counted.next_change, Some(107), "a total that becomes unknown is a change");
     let unknown = ask(107, Some("2")).facts.unwrap();
     assert!(unknown.enemy_killed.is_none() && unknown.enemy_killed_missing.is_some());
+}
+
+#[test]
+fn a_service_record_reads_a_status_read_in_part_at_a_run_s_first_hour_as_its_change_hours_do_whichever_hour_is_asked_first() {
+    use super::careers::service_record::DivisionServiceRecordTail;
+    use dashboard_base::products::{LoadContext, Product, at_hour};
+    use replay_data::{
+        identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow, DivisionStatusRow, TableId},
+    };
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    use replay_journal::synthetic::{Input, Sample};
+    let session = SessionStart {
+        id: 1, process_id: 1, process_start_time: 1, qpc_frequency: 10_000_000, sample_boundary: SampleBoundary::EndOfHour, capture_mode: CaptureMode::Full,
+        identity: Identity {
+            game_version: "synthetic".into(), exe_hash: [1; 32], exe_size: 1, vanilla_hash: [2; 32], dlc: vec![], mods: vec![], coverage_policy: 1,
+            language: "l_english".into(), recorder_version: "test".into(), collector_hash: [3; 32],
+            verification: Verification::Verified { launcher: Roster::default(), memory: Roster::default() },
+        },
+    };
+    let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 120, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+    let campaign = CampaignRow { id: b"opening-status".to_vec() };
+    let countries = [CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }];
+    let links = [CountryLinkRow { id: 9001, canonical_slot: 7 }];
+    let divisions = [DivisionRow { id: 1, roster_owner: 9001, logical_owner: 9001, template: 1, ..Default::default() }];
+    let status = [DivisionStatusRow { division: 1, experience: Recorded::Value(Some(40)), career_counter: Recorded::Value(Some(10)), ..Default::default() }];
+    let inputs = [DivisionLandInputsRow { division: 1, manpower: vec![DivisionManpowerContributor { country: 9001, amount: 10 }], ..Default::default() }];
+    let history = [DivisionHistoryRow { division: 1, list: DivisionHistoryRow::SUMMARY, available: 1, amount: 0, ..Default::default() }];
+    let snapshot = |partial| (partial, true, Sample::FromReadBit);
+    let make = |status_partial: &dyn Fn(i32) -> Option<u32>| {
+        let replay = replay::campaign::Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session.clone(), branch.clone(), 122, |frame, hour| {
+            let (partial, read, sample) = snapshot(None);
+            frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial, read, sample })?;
+            frame.table(TableId::Campaign, Input::Snapshot { rows: std::slice::from_ref(&campaign), partial, read, sample })?;
+            frame.table(TableId::Countries, Input::Snapshot { rows: &countries, partial, read, sample })?;
+            frame.table(TableId::CountryLinks, Input::Snapshot { rows: &links, partial, read, sample })?;
+            frame.table(TableId::Divisions, Input::Snapshot { rows: &divisions, partial, read, sample })?;
+            let (inputs_partial, read, sample) = snapshot((hour == 120).then_some(1));
+            frame.table(TableId::DivisionLandInputs, Input::Snapshot { rows: &inputs, partial: inputs_partial, read, sample })?;
+            frame.table(TableId::DivisionHistory, Input::Snapshot { rows: &history, partial, read, sample })?;
+            frame.table(TableId::DivisionStatus, Input::Snapshot { rows: &status, partial: status_partial(hour), read, sample })
+        })
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+        dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "opening".into(), revision: "1".into() }, "opening.battleplan".into(), std::sync::Arc::new(replay), &std::sync::atomic::AtomicBool::new(false)).unwrap()
+    };
+    let source = || make(&|hour| (hour == 120).then_some(1));
+    let asked = |source: &dashboard_base::Source, hour: i32| {
+        let params = serde_json::from_value(serde_json::json!({"branchId": "1", "hour": hour, "division": "1", "limit": 12})).unwrap();
+        DivisionServiceRecordTail::load(source, &params, &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap()
+    };
+    let casualties = |source: &dashboard_base::Source, hour: i32| {
+        let reply = asked(source, hour);
+        (reply.facts.and_then(|facts| facts.casualties_taken), reply.next_change)
+    };
+    let first = source();
+    let query = dashboard_base::queries::query(&first, 1).unwrap();
+    let keyed = at_hour::frame(&query, 120, &[at_hour::Read::these(TableId::DivisionStatus, [1])], "Opening").unwrap();
+    assert!(dashboard_query::coverage::witnessed::<replay_data::rows::tables::DivisionStatus>(&keyed, 1).row().is_some(), "the keyed read at the opening hour sees the row");
+    assert_eq!(casualties(&first, 120), (None, Some(121)), "the summary leaves it unread there, as its change hours do, and holds only to the next hour");
+    assert_eq!(casualties(&first, 121).0, Some(10));
+    let later = source();
+    assert_eq!((casualties(&later, 121).0, casualties(&later, 120).0), (Some(10), None), "whichever hour is asked first");
+    let measured = DivisionStatusRow { experience: Recorded::Value(Some(40)), ..Default::default() }.normalized_experience(10).map(|raw| raw.to_string());
+    let complete = make(&|_| None);
+    assert_eq!(asked(&complete, 120).facts.and_then(|facts| facts.experience_raw), measured, "manpower read in part at the opening hour is still its witnessed row");
 }
 
 #[test]

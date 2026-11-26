@@ -37,6 +37,12 @@ fn a_literal_is_every_token_holding_it_within_the_hours_asked_and_an_empty_one_i
     assert_eq!(tokens("spy_other", 100, 130), [8]);
     assert_eq!(tokens("", 100, 130), Vec::<u32>::new(), "a token holding no text names nothing");
     assert_eq!(tokens("unheld", 100, 130), Vec::<u32>::new());
+    let changes = |token: u32, after: i32, through: i32| lexicon.changes(token, after, through).collect::<Vec<_>>();
+    assert_eq!(changes(8, 100, 130), [110], "8 is spelled anew at 110");
+    assert_eq!(changes(8, 110, 130), Vec::<i32>::new(), "a change is after the hour asked");
+    assert_eq!(changes(9, 100, 119), Vec::<i32>::new(), "nor past the last hour asked");
+    assert_eq!(changes(9, 100, 130), [120]);
+    assert_eq!(changes(7, 100, 130), Vec::<i32>::new());
 }
 
 #[test]

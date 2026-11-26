@@ -34,7 +34,7 @@ export const serviceRecordPicker: TablePicker = {
       value: subjectToken(track.source.metadata.campaignKey, row.division), label: nameOf(row), checked: row.division === selected,
       ...(row.sprite ? { sprite: row.sprite } : {}), ...(row.tag ? { country: row.tag } : {}), ...(row.template ? { detail: row.template } : { detailMissing: 'Template not recorded' }),
       group: row.removedAt !== null ? DESTROYED.has(row.removed ?? '') ? 'Recently destroyed' : 'Other removals'
-        : row.lastSeen < hour ? 'Last observed' : 'Most decorated',
+        : row.lastSeen !== null ? 'Last observed' : 'Most decorated',
       ...(row.removedAt !== null
         ? { state: { kind: 'ended' as const, label: `${removals[row.removed ?? ''] ?? 'Removed'} ${removedOn(row.removedAt, hour)}` } }
         : { quantity: { value: row.medals === null ? notRecorded('Honours not recorded') : knownValue(row.medals), unit: row.medals === 1 ? 'honour' : 'honours' } }),
