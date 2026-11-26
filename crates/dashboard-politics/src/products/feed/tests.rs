@@ -372,10 +372,10 @@ fn incomplete_reads_raise_the_notices_a_walk_of_the_reads_asked_raises() {
 fn two_projects_completing_in_one_hour_are_two_rows() {
     use dashboard_research::products::special_projects::ProjectCompletion;
     let completion = |project, ordinal| ProjectCompletion { tag: Some("GER".into()), date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
-    let ids: std::collections::BTreeSet<String> = [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().map(families::completion_row).map(|row| row.id).collect();
+    let ids: std::collections::BTreeSet<String> = [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
-    let row = families::completion_row(completion(1, 4));
-    assert_eq!((row.hour, row.read_hour, row.name_hour, row.participants), (100, 101, 100, Some([Some("GER".to_owned()), None])), "named, flagged and coloured at its completion, not at the read");
+    let row = families::completion_row(completion(1, 4)).unwrap();
+    assert_eq!((row.hour, row.read_hour, row.name_hour, row.tags.as_slice()), (100, 101, 100, ["GER".to_owned()].as_slice()), "named, flagged and coloured at its completion, not at the read");
 }
 
 #[test]

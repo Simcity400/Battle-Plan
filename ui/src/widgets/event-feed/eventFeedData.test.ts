@@ -210,14 +210,13 @@ test('a firing whose options come only from its choice lists them from the choic
   assert.deepEqual(options(120, choice), ['Option A: Receive', 'Option B: Refuse'], 'after it, the choice the page shows supplies them');
 });
 
-test('a witnessed cessation, guarantee or completion with an unidentified country keeps its row and says the country is not identified', () => {
+test('a witnessed cessation or guarantee with an unidentified country keeps its row and says the country is not identified', () => {
   const ceased = validateFeedRow(row('ceasedToExist', 100, [], { exact: false, participants: [null, null] }));
   const guarantee = validateFeedRow(row('guaranteeGranted', 101, ['NOR'], { category: 'diplomacy', exact: false, participants: ['NOR', null] }));
-  const finished = validateFeedRow(row('projectFinished', 102, ['NOR'], { category: 'milestones', exact: false, participants: ['NOR', null] }));
   assert.throws(() => validateFeedRow(row('peace', 103, ['NOR', 'SWE'])), /malformed/, 'a family row that names its countries lists no roles');
-  assert.throws(() => validateFeedRow(row('projectFinished', 102, ['NOR'], { category: 'milestones', exact: false, participants: [null, 'NOR'] })), /malformed/,
+  assert.throws(() => validateFeedRow(row('ceasedToExist', 102, ['NOR'], { exact: false, participants: [null, 'NOR'] })), /malformed/,
     'a one-country row has no second role');
-  const all = [ceased, guarantee, finished];
+  const all = [ceased, guarantee];
   const head = {
     branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: String(all.length),
     rows: all.map((r, i) => ({ hour: r.hour, key: `k${i}`, ordinal: String(i), cells: [], row: r })),
@@ -231,7 +230,6 @@ test('a witnessed cessation, guarantee or completion with an unidentified countr
   assert.deepEqual(country('k0').flags?.map(flag => flag.tag), ['?']);
   assert.equal(country('k1').value.kind, 'partial', 'the guaranteed country is missing beside the guarantor');
   assert.deepEqual(country('k1').flags?.map(flag => flag.tag), ['NOR', '?']);
-  assert.deepEqual(country('k2').flags?.map(flag => flag.tag), ['NOR'], 'a completion has one country');
   const tip = (key: string) => {
     const extra = model.rows.find(r => r.key === key)!.tooltipExtra;
     return ((typeof extra === 'function' ? extra() : extra) ?? []).map(r => r.label);
