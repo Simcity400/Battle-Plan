@@ -733,7 +733,7 @@ fn tail(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, can
         return Ok(Arc::clone(found));
     }
     let built = Arc::new(std::thread::scope(|scope| {
-        let cap = scope.spawn(|| recorded_factory_cap(&content));
+        let cap = job_priority::spawn_in(scope, || recorded_factory_cap(&content));
         scan(source, query, &content, cancelled, || cap.join().unwrap_or_else(|_| Err("The most factories a construction line takes is not recorded: its read failed".to_owned())))
     })?);
     kept.lock().unwrap_or_else(PoisonError::into_inner).0.insert(branch, (made, Arc::clone(&built)));
