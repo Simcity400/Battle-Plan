@@ -865,6 +865,15 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         ),
         alone
     );
+    let full_inputs = buffers.inputs[..2].to_vec();
+    let mixed = Selection {
+        extra_inputs: &|state| state == 1,
+        ..only_two
+    };
+    let read = walk(&m, 0, GS, &mut buffers, mixed);
+    assert_eq!(read.outcomes, [2, 0, 0, 0].map(|len| Outcome::Rows { len }));
+    assert_eq!(buffers.inputs[..2], full_inputs);
+    assert!(buffers.read_countries.is_empty());
     let read = walk(&m, 0, GS, &mut buffers, only_two);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 0, 0, 0]);
     assert!(buffers.read_countries.is_empty());
