@@ -555,6 +555,7 @@ impl<P> Index<P> {
         let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
         let mut live_count = 0u64;
         let mut live_flip: Option<i32> = None;
+        let state_changes = ask.live_first || ask.states.is_some() || !ask.chips.is_empty();
         let mut history: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history_total = 0u64;
         let mut changing_keys = Vec::new();
@@ -586,7 +587,7 @@ impl<P> Index<P> {
             }
             let live = state.is_some_and(|state| self.live & 1 << state != 0);
             live_count += u64::from(live);
-            if self.live != 0 {
+            if self.live != 0 && !state_changes {
                 let after = entry.states.partition_point(|step| step.0 <= hour);
                 if let Some(flip) = entry.states[after..].iter().find(|step| (self.live & 1 << step.1 != 0) != live) {
                     live_flip = live_flip.into_iter().chain([flip.0]).min();
@@ -671,7 +672,6 @@ impl<P> Index<P> {
             ordinal += 1;
         }
         let unattributed = filtered.unattributed.partition_point(|&observed| observed <= hour) as u64;
-        let state_changes = ask.live_first || ask.states.is_some() || !ask.chips.is_empty();
         let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes).into_iter().chain(live_flip).min();
         if !state_changes {
             for shown in &rows {
