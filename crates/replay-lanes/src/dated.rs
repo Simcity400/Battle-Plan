@@ -65,7 +65,7 @@ fn blockwise(recording: &Recording, run: u32, table: TableId, columns: &[usize],
             continue;
         }
         let (from, to) = (held.first_hour + first as i32, held.first_hour + (first + hours) as i32 - 1);
-        let part = match lanes::witnessed_history(recording, run, table, columns, keys, from, to) {
+        let part = match lanes::history(recording, run, table, columns, keys, from, to) {
             Ok(part) => part,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
             Err(error) => return Err(error),
@@ -130,7 +130,7 @@ impl Dated {
             uncovered: Vec::new(),
             changes: vec![from],
         };
-        let history = match lanes::witnessed_history(recording, run, table, &made.columns, keys, from, to) {
+        let history = match lanes::history(recording, run, table, &made.columns, keys, from, to) {
             Ok(history) => history,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => blockwise(recording, run, table, &made.columns, keys)?,
             Err(error) => return Err(error),

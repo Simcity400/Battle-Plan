@@ -384,18 +384,9 @@ pub fn table_statuses(recording: &Recording, run: u32, table: TableId) -> io::Re
 }
 
 pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
-    history_of(recording, run, table, columns, keys, (from, to), false)
-}
-
-pub fn witnessed_history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> io::Result<History> {
-    history_of(recording, run, table, columns, keys, (from, to), true)
-}
-
-fn history_of(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, (from, to): (i32, i32), witnessed: bool) -> io::Result<History> {
     let mut held: HashMap<u128, Vec<Step>, foldhash::fast::RandomState> = HashMap::default();
     let mut statuses = Vec::new();
-    let cells = if witnessed { crate::points::witnessed_cells } else { crate::points::cells };
-    let (columns, texts) = cells(recording, run, table, columns, keys, from, to, Some(&mut statuses), &mut |hour, key, cells| {
+    let (columns, texts) = crate::points::cells(recording, run, table, columns, keys, from, to, Some(&mut statuses), &mut |hour, key, cells| {
         held.entry(key).or_default().push(Step { hour, cells: cells.map(Box::from) });
         true
     })?;
@@ -1321,13 +1312,16 @@ pub fn chart_at(
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
-        .map(|bytes| -> io::Result<(Piece<'_>, ColumnFrame)> {
+        .map(|bytes| -> io::Result<Option<(Piece<'_>, ColumnFrame)>> {
             let piece = Piece::read(bytes)?;
-            let column = piece.column_of(source).ok_or_else(|| invalid("The summary holds no such column"))?;
+            let Some(column) = piece.column_of(source) else { return Ok(None) };
             let frame = piece.column(column)?;
-            Ok((piece, frame))
+            Ok(Some((piece, frame)))
         })
-        .collect::<io::Result<Vec<_>>>()?;
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
         .filter_map(|(piece, _)| {
@@ -2105,13 +2099,16 @@ fn top_with(
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
-        .map(|bytes| -> io::Result<(Piece<'_>, ColumnFrame, usize)> {
+        .map(|bytes| -> io::Result<Option<(Piece<'_>, ColumnFrame, usize)>> {
             let piece = Piece::read(bytes)?;
-            let column = piece.column_of(source).ok_or_else(|| invalid("The summary holds no such column"))?;
+            let Some(column) = piece.column_of(source) else { return Ok(None) };
             let frame = piece.column(column)?;
-            Ok((piece, frame, column))
+            Ok(Some((piece, frame, column)))
         })
-        .collect::<io::Result<Vec<_>>>()?;
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
         .filter_map(|(piece, _, _)| {

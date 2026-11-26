@@ -1038,3 +1038,71 @@ fn format_143_recording_opens_withholds_variant_tables_and_unverified_required_t
         )]
     );
 }
+
+fn power_recording(summarized: bool) -> (Recording, usize) {
+    use replay_journal::synthetic::{Input, Sample};
+    use replay_data::rows::CountryRow;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 103, 6)];
+    let column = field(TableId::Countries, "political_power_raw");
+    let mut registry = replay_recording::summaries::registry().unwrap();
+    if !summarized {
+        let (_, shape) = registry.iter_mut().find(|(table, _)| *table == TableId::Countries.index()).unwrap();
+        let Shape::Values(columns) = shape else { panic!("Countries has no value summaries") };
+        columns.retain(|held| !matches!(held.source, summary::Source::Cell(cell) if cell == column));
+    }
+    let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"power synthetic", &RUNS, &[TableId::Countries], registry, |synthetic, _, ordinal| {
+        let rows: Vec<CountryRow> = (1..=8_u32)
+            .filter(|&id| (ordinal / (29 + id * 13)) % 5 != 0)
+            .map(|id| CountryRow { id, political_power_raw: Some(i64::from((ordinal / 24 + id * 5) % 11) * 3), ..Default::default() })
+            .collect();
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    (Recording::open(bytes).unwrap(), column)
+}
+
+#[test]
+fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themselves() {
+    let (bare, column) = power_recording(false);
+    let (summarized, _) = power_recording(true);
+    let source = summary::Source::Cell(column).id();
+    let held = bare.run(0).unwrap();
+    let (from, to) = (held.first_hour, held.last_hour());
+    let bin_hours = summary::bucket_hours(1) * 4;
+    let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, 1, bin_hours).unwrap();
+    let walked = chart_at(&bare, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
+    assert!(chart.walked > 0, "the hours the pieces do not summarize are walked");
+    assert_eq!((&chart.keys, &chart.values, &chart.life, &chart.totals), (&walked.keys, &walked.values, &walked.life, &walked.totals));
+    let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
+    for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min)] {
+        let read = values(top(&bare, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap());
+        assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap()), "width {width} n {n}");
+    }
+}
+
+#[test]
+fn a_history_at_a_truncated_first_hour_holds_the_rows_that_hour_read() {
+    use replay_journal::synthetic::{Input, Sample};
+    use replay_data::rows::CountryRow;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 100, 1)];
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"truncated start", &RUNS, &[TableId::Countries], |synthetic, _, ordinal| {
+        let rows: Vec<CountryRow> = (1..=6).map(|id| CountryRow { id, tag: format!("tag {id} {}", ordinal / 90).into_bytes(), ..Default::default() }).collect();
+        let input = if ordinal % 61 == 0 {
+            Input::Snapshot { rows: &rows[..3], partial: Some(2), read: true, sample: Sample::FromReadBit }
+        } else {
+            Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }
+        };
+        synthetic.table(TableId::Countries, input).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let tag = field(TableId::Countries, "tag");
+    let held = recording.run(0).unwrap();
+    let history = history(&recording, 0, TableId::Countries, &[tag], Keys::All, held.first_hour, held.last_hour()).unwrap();
+    for hour in [held.first_hour, held.first_hour + 61] {
+        let decoded = crate::at::frame(&recording, 0, hour, &[crate::at::Read::all(TableId::Countries)]).unwrap();
+        let replay_frame::frame::TableView::Truncated { rows, .. } = &*decoded.tables[TableId::Countries.index()] else { panic!("hour {hour} is not truncated") };
+        let read: Vec<u128> = rows.rows::<replay_data::rows::tables::Countries>().unwrap().iter().map(|row| u128::from(row.id)).collect();
+        let shown: Vec<u128> = history.keys.iter().filter(|(_, steps)| steps.iter().rev().find(|step| step.hour <= hour).is_some_and(|step| step.cells.is_some())).map(|(key, _)| *key).collect();
+        assert!(!read.is_empty());
+        assert_eq!(shown, read, "hour {hour}");
+    }
+}

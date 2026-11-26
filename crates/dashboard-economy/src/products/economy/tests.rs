@@ -333,6 +333,8 @@ mod market {
     const FRA: u32 = 44;
     const UNREAD: i32 = 117;
     const ENDS: i32 = 124;
+    const UNKNOWN: i32 = 105;
+    const PARTLY: i32 = 120;
 
     fn equipment(variant: u64, amount_raw: i64) -> SharedMarketPool {
         MarketPool { allow_zero: false, items: vec![MarketEquipment { variant, amount_raw }] }.into()
@@ -385,7 +387,16 @@ mod market {
         } else {
             Vec::new()
         };
-        set::<tables::LendLeaseAgreements>(&mut frame, leases);
+        if hour == PARTLY {
+            let mut read = leases;
+            read.push(LendLeaseAgreementRow { country: GER, id: 10, receiver: 77, active_since: FIRST, ..LendLeaseAgreementRow::default() });
+            *frame.tables[TableId::LendLeaseAgreements.index()] = TableView::Truncated { rows: replay_data::rows::TableRows::LendLeaseAgreements(read), missing: 3 };
+        } else {
+            set::<tables::LendLeaseAgreements>(&mut frame, leases);
+        }
+        if hour == UNKNOWN {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries unreadable".into() };
+        }
         frame
     }
 
@@ -424,6 +435,66 @@ mod market {
         assert_eq!(side("received")["agreements"], json!([]), "GER receives nothing");
         let ended = asked::<MarketLendLease>(&source, params, ENDS).unwrap();
         assert_eq!(ended["agreements"], json!([]));
+    }
+
+    #[test]
+    fn a_country_known_to_hold_nothing_lists_nothing_and_an_unknown_holder_refuses() {
+        let source = recording();
+        let unheld = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["ITA"] }), 110).unwrap();
+        assert_eq!((&unheld["agreements"], &unheld["contracts"], unheld["unattributed"].as_u64(), &unheld["refused"]), (&json!([]), &json!([]), Some(0), &Value::Null), "no country holds ITA, so no row can be ITA's");
+        let unknown = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"] }), UNKNOWN).unwrap();
+        assert_eq!((&unknown["agreements"], &unknown["offers"]), (&Value::Null, &Value::Null), "who holds GER is not known, so no list is given");
+        assert!(unknown["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known")), "{}", unknown["refused"]);
+    }
+
+    #[test]
+    fn a_partly_read_agreements_table_lists_the_rows_it_read_and_names_why_a_side_is_unnamed() {
+        let source = recording();
+        let reply = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [], "only": "agreements" }), PARTLY).unwrap();
+        let agreements = reply["agreements"].as_array().unwrap();
+        assert_eq!(agreements.len(), 2, "both read rows are listed");
+        assert_eq!((&agreements[0]["receiver"], &agreements[0]["receiverMissing"]), (&json!("FRA"), &Value::Null));
+        assert_eq!(agreements[1]["receiver"], Value::Null);
+        assert!(agreements[1]["receiverMissing"].as_str().is_some_and(|reason| reason.contains("77")), "{}", agreements[1]["receiverMissing"]);
+        assert!(reply["warnings"].as_array().unwrap().iter().any(|line| line.as_str().is_some_and(|line| line.contains("listed only where they were read"))));
+    }
+
+    #[test]
+    fn hours_where_only_an_agreements_fuel_counters_move_reread_no_row() {
+        let source = recording();
+        let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "agreements" })).unwrap();
+        let exact = panel.exact().unwrap();
+        let advance = exact.advance.clone();
+        let hosted = dashboard_follow::panel::AtHour {
+            advance: Arc::new(move |hour, values, cancelled, step| {
+                let mut read = advance(hour, values, cancelled, step);
+                let mut joined: std::collections::BTreeMap<usize, playhead::Declared> = std::collections::BTreeMap::new();
+                for lane in read.lanes {
+                    let held = joined.entry(lane.table).or_insert_with(|| playhead::Declared { columns: Vec::new(), ..lane.clone() });
+                    held.columns.extend(lane.columns);
+                    held.columns.sort_unstable();
+                    held.columns.dedup();
+                }
+                read.lanes = joined.into_values().collect();
+                read
+            }),
+            cold: exact.cold.clone(),
+            read: exact.read.clone(),
+        };
+        let reads = dashboard_base::test_fixtures::played(&source.replay(), &hosted, FIRST, UNKNOWN - 1);
+        assert!(reads.len() >= 4 && reads.iter().all(|read| !read.pending));
+        for read in reads.iter().skip(1) {
+            assert_eq!(read.rows, 0, "hour {}: the reply shows no fuel counter, so a fuel count alone re-reads nothing", read.hour);
+        }
+    }
+
+    #[test]
+    fn an_agreement_key_with_bits_above_its_width_is_refused_before_it_is_narrowed() {
+        use replay_data::rows::RowCodec;
+        let key = 7_u128 << 64 | 9;
+        let row = LendLeaseAgreementRow::from_wire_fields(key, 0, &mut |_| unreachable!("no field is asked")).unwrap();
+        assert_eq!((row.country, row.id), (7, 9));
+        assert!(LendLeaseAgreementRow::from_wire_fields(key | 1 << 96, 0, &mut |_| unreachable!("no field is asked")).is_err());
     }
 
     #[test]
@@ -520,7 +591,8 @@ mod market {
         let every = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [], "only": "offers" }), LINKS_UNREAD).unwrap();
         assert_eq!(every["offers"].as_array().unwrap().len(), 2, "under All, witnessed offers are kept when countries are unread");
         let chosen = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"], "only": "offers" }), LINKS_UNREAD).unwrap();
-        assert_eq!((chosen["offers"].as_array().unwrap().len(), chosen["unattributed"].as_u64()), (0, Some(2)), "a chosen country cannot be matched: the rows are counted, not dropped silently");
+        assert_eq!(chosen["offers"], Value::Null, "who holds the chosen country is not known at the hour: no list, never an empty one");
+        assert!(chosen["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known")), "{}", chosen["refused"]);
         assert!(row("contracts", key(FRA, 0x53, 0), 110)["contracts"].as_array().unwrap().is_empty(), "a key with no row at the hour is no row");
     }
 

@@ -5709,7 +5709,15 @@ export type LeaseTerms = { key: string,
 /**
  * The handle, hexadecimal.
  */
-id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>,
+id: string, giver: string | null,
+/**
+ * Why `giver` is null at this hour.
+ */
+giverMissing: string | null, receiver: string | null,
+/**
+ * Why `receiver` is null at this hour.
+ */
+receiverMissing: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>,
 /**
  * Production shares, /1000 percent.
  */

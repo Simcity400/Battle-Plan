@@ -39,6 +39,13 @@ const whole = (raw: bigint, denominator: bigint): Value => {
 
 const dateCell = (hour: number | null, none: Value): TableCell => (hour === null ? { value: none } : { value: knownValue(hour) });
 
+export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered'>): Value {
+  if (terms.lastDelivery > 0) return knownValue(terms.lastDelivery);
+  return terms.delivered.every(item => BigInt(item.amountRaw) === 0n)
+    ? notApplicable('No delivery yet')
+    : notRecorded('The last delivery date was not recorded, though deliveries were');
+}
+
 function amounts(list: readonly MarketItem[]): Map<string, bigint> {
   const out = new Map<string, bigint>();
   for (const item of list) out.set(item.variant, (out.get(item.variant) ?? 0n) + BigInt(item.amountRaw));
@@ -79,9 +86,14 @@ function agreementRows(
   const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
   const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
   const country: TableCell = { value: knownValue(pair), flags };
-  const last = dateCell(terms.lastDelivery > 0 ? terms.lastDelivery : null, notApplicable('No delivery yet'));
+  const last: TableCell = { value: lastDelivery(terms) };
   const since = dateCell(terms.activeSince, notRecorded('Start date not recorded'));
+  const unnamed: TooltipExtraRow[] = [
+    ...(terms.giverMissing !== null ? [{ label: 'Giver', value: notRecorded(terms.giverMissing) }] : []),
+    ...(terms.receiverMissing !== null ? [{ label: 'Receiver', value: notRecorded(terms.receiverMissing) }] : []),
+  ];
   const extra = (lost: Value, schedule: string | null): readonly TooltipExtraRow[] => [
+    ...unnamed,
     ...(schedule ? [{ label: 'Schedule', value: knownValue(schedule), divider: true }] : []),
     { label: 'Lost on the way', value: lost, format: 'integer' },
   ];
