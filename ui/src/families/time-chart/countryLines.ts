@@ -6,6 +6,7 @@ import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
+import { auditRow } from '../auditRow.ts';
 import { formatChartAxisValue } from './layout.ts';
 import { chartAxis, chartWindow, DEFAULT_LINE_SETTINGS, lineChartSettings, type LineChartSettings } from './settings.ts';
 import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
@@ -154,7 +155,11 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const top = options.top !== null;
       if (top) {
         const answered = readView.answer('main');
-        const refused = readView.refused('main') ?? (answered?.kind === 'notRecorded' ? answered.reason : undefined);
+        const ranked = answered ? undefined : readView.panel<{ readonly refused?: string | null }>('main');
+        const refused = readView.refused('main')
+          ?? (answered?.kind === 'notRecorded' ? answered.reason : undefined)
+          ?? ranked?.refused
+          ?? undefined;
         if (refused) {
           return {
             kind: spec.kind,
@@ -165,7 +170,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
             yAxis: { format: spec.format },
             series: [],
             empty: { message: refused, kind: 'unavailable' },
-            auditRows: [],
+            auditRows: [auditRow('__rank__', refused)],
           };
         }
       }

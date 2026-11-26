@@ -1286,6 +1286,12 @@ describe('several countries, one measure', () => {
     const refusedAnswer = parseFollowed(message(hour, [{ id: 1, answer: { notRecorded: 'Navy size was not read for a contender' } }])).answers[0]!.answer;
     const refused = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['main', refusedAnswer]]) }), options);
     assert.deepEqual(refused.empty, { message: 'Navy size was not read for a contender', kind: 'unavailable' }, 'never the older tile ranking');
+    const exactRefused = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', { hour, measures: [{ name: 'm', decimals: 0 }], rows: [], refused: 'Navy size was not read for a contender', from: hour, until: hour }]]) }), options);
+    const exactEmpty = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', { hour, measures: [{ name: 'm', decimals: 0 }], rows: [], refused: null, from: hour, until: hour }]]) }), options);
+    const audit = (model: TimeChartModel) => model.auditRows?.map(row => `${row.row}=${row.value}`);
+    assert.deepEqual(audit(refused), ['__rank__=Navy size was not read for a contender'], 'a refused ranking is audited with its reason');
+    assert.deepEqual(audit(exactRefused), audit(refused), 'and the exact read refuses it the same way');
+    assert.deepEqual(audit(exactEmpty), [], 'a ranking proved empty audits no row, so the two never agree by accident');
     const one = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n], columns: 1, values: [9000n], names: ['A09'] } }])).answers[0]!.answer;
     const view = createBoundedReadView({ hour, series: new Map([['main', new Map([['A09', lines.get('A09')!]])]]), answers: new Map([['main', one]]) });
     assert.deepEqual(headReading(view, 'main', { tag: 'A09', reading: 1 }, 0), { missing: 'Not recorded at this hour' }, 'the second reading is missing until evidence holding it arrives');
