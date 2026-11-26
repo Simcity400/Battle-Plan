@@ -158,6 +158,7 @@ pub(crate) struct Leader {
 pub(crate) struct Parties {
     pub parties: BTreeMap<String, PartySeries>,
     ruling: RulingHistory,
+    any_party: bool,
     pub leaders: Vec<LeaderRun>,
     pub people: Vec<Leader>,
     pub elections: Vec<Election>,
@@ -230,20 +231,28 @@ impl RulingHistory {
 
 const SOURCES: [TableId; 3] = [TableId::PoliticalParties, TableId::CountryAppearance, TableId::Politics];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PartyRead {
+    Ruling,
+    Full,
+}
+
 struct Columns {
+    scope: PartyRead,
     party: [usize; 5],
     look: [usize; 2],
     election: usize,
 }
 
 impl Columns {
-    fn new() -> io::Result<Self> {
+    fn new(scope: PartyRead) -> io::Result<Self> {
         let field = dashboard_declare::field;
         let mut party = [0; 5];
         for (at, name) in ["is_ruling", "token", "tag", "name_default", "name"].into_iter().enumerate() {
             party[at] = field(TableId::PoliticalParties, name)?;
         }
         Ok(Self {
+            scope,
             party,
             look: [field(TableId::CountryAppearance, "leader_ideology")?, field(TableId::CountryAppearance, "leader_character")?],
             election: field(TableId::Politics, "last_election")?,
@@ -331,8 +340,8 @@ fn reads_kept(recording: &replay_recording::columnar_frames::Recording, run: u32
         .collect())
 }
 
-pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Parties> {
-    let columns = Columns::new()?;
+fn read(query: &Query<'_>, tag: &Country, scope: PartyRead, cancelled: &AtomicBool) -> io::Result<Parties> {
+    let columns = Columns::new(scope)?;
     let mut parties = Parties::default();
     let runs = query.holders.runs(tag);
     let mut holes: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|unheld| (unheld.first, unheld.last)).collect();
@@ -376,11 +385,21 @@ impl Parties {
         let key = u128::from(who.1);
         let mut observed = Vec::with_capacity(SOURCES.len());
         for table in SOURCES {
-            observed.push(cost::storage(|| observed_reads(recording, run, table, first, last))?);
+            let reads = if table == TableId::PoliticalParties || columns.scope == PartyRead::Full {
+                cost::storage(|| observed_reads(recording, run, table, first, last))?
+            } else {
+                Vec::new()
+            };
+            observed.push(reads);
         }
         let held = cost::storage(|| lanes::history(recording, run, TableId::PoliticalParties, &columns.party, Keys::Range(key << 32, key << 32 | 0xFFFF_FFFF), first, last))?;
-        let looks = cost::storage(|| lanes::history(recording, run, TableId::CountryAppearance, &columns.look, Keys::These(&[key]), first, last))?;
-        let politics = cost::storage(|| lanes::history(recording, run, TableId::Politics, &[columns.election], Keys::These(&[key]), first, last))?;
+        let (looks, politics) = match columns.scope {
+            PartyRead::Ruling => (History::default(), History::default()),
+            PartyRead::Full => (
+                cost::storage(|| lanes::history(recording, run, TableId::CountryAppearance, &columns.look, Keys::These(&[key]), first, last))?,
+                cost::storage(|| lanes::history(recording, run, TableId::Politics, &[columns.election], Keys::These(&[key]), first, last))?,
+            ),
+        };
         check_cancel(cancelled)?;
         let mut held = Stepper::new(&held);
         let mut looks = Stepper::new(&looks);
@@ -440,11 +459,14 @@ impl Parties {
         if let [Some(ruling), Some(token), Some(party_tag), Some(default), Some(name)] = places {
             for (key, cells) in held.keyed() {
                 let Some(token) = held.text(cells[token]).filter(|token| !token.is_empty()).and_then(|token| std::str::from_utf8(token).ok()) else { continue };
-                let series = self.parties.entry(token.to_owned()).or_insert_with(|| PartySeries { token: token.to_owned(), parts: Vec::new() });
-                let part = key as u32;
-                match series.parts.iter_mut().rev().find(|owned| owned.part == part) {
-                    Some(owned) if continues && i64::from(owned.last_hour) + 1 == i64::from(hour) => owned.last_hour = end,
-                    _ => series.parts.push(PartOwnership { part, first_hour: hour, last_hour: end }),
+                self.any_party = true;
+                if columns.scope == PartyRead::Full {
+                    let series = self.parties.entry(token.to_owned()).or_insert_with(|| PartySeries { token: token.to_owned(), parts: Vec::new() });
+                    let part = key as u32;
+                    match series.parts.iter_mut().rev().find(|owned| owned.part == part) {
+                        Some(owned) if continues && i64::from(owned.last_hour) + 1 == i64::from(hour) => owned.last_hour = end,
+                        _ => series.parts.push(PartOwnership { part, first_hour: hour, last_hour: end }),
+                    }
                 }
                 if number(cells[ruling]).is_none_or(|ruling| ruling == 0) {
                     continue;
@@ -598,8 +620,7 @@ pub(crate) fn stack_order(parties: &BTreeMap<String, PartySeries>, ideologies: &
     order.into_iter().cloned().collect()
 }
 
-pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &CountryParams, tag: &str, parties: &Parties, cancelled: &AtomicBool) -> io::Result<PartyHistoryReply> {
-    let mut warnings = Vec::new();
+fn ideology_content<'a>(politics: Result<&'a PoliticsContent, String>, warnings: &mut Vec<String>) -> (Option<&'a PoliticsContent>, Vec<IdeologyInfo>) {
     let politics = match politics {
         Ok(politics) => {
             warnings.extend(politics.warnings.iter().cloned());
@@ -610,7 +631,22 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
             None
         }
     };
-    let ideologies = politics.map_or_else(Vec::new, |politics| ideology_infos(politics, &mut warnings));
+    let ideologies = politics.map_or_else(Vec::new, |politics| ideology_infos(politics, warnings));
+    (politics, ideologies)
+}
+
+fn finish_warnings(parties: &Parties, politics: Option<&PoliticsContent>, tag: &str, warnings: &mut Vec<String>) {
+    if !parties.any_party {
+        warnings.push(format!("{tag}: no recorded parties in this branch"));
+    }
+    if let Some(politics) = politics {
+        warnings.extend(politics.catalogue.refusal_lines());
+    }
+}
+
+pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &CountryParams, tag: &str, parties: &Parties, cancelled: &AtomicBool) -> io::Result<PartyHistoryReply> {
+    let mut warnings = Vec::new();
+    let (politics, ideologies) = ideology_content(politics, &mut warnings);
     let types: BTreeSet<&str> = parties.leaders.iter().map(|run| run.ideology.as_str()).filter(|token| !token.is_empty()).collect();
     let ideology_types = types.into_iter().map(|token| IdeologyTypeInfo { token: token.to_owned(), name: politics.and_then(|politics| politics.localised(token, View::Plain)) }).collect();
     let mut people = Vec::with_capacity(parties.people.len());
@@ -635,12 +671,7 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
             dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
         ));
     }
-    if parties.parties.is_empty() {
-        warnings.push(format!("{tag}: no recorded parties in this branch"));
-    }
-    if let Some(politics) = politics {
-        warnings.extend(politics.catalogue.refusal_lines());
-    }
+    finish_warnings(parties, politics, tag, &mut warnings);
     Ok(PartyHistoryReply {
         branch_id: params.branch_id.clone(),
         tag: tag.to_owned(),
@@ -661,18 +692,48 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
 }
 
 #[derive(Default)]
-struct Kept(Option<(u64, Country, Arc<Parties>)>);
+struct Kept(Option<(u64, Country, PartyRead, Arc<Parties>)>);
 
-fn history(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<Parties>> {
+impl Kept {
+    fn for_country(&self, params: &CountryParams, want: PartyRead) -> Option<Arc<Parties>> {
+        let (branch, country, held, parties) = self.0.as_ref()?;
+        (*branch == params.branch() && *country == params.country && (*held == PartyRead::Full || *held == want)).then(|| Arc::clone(parties))
+    }
+}
+
+fn history(source: &Source, query: &Query<'_>, params: &CountryParams, scope: PartyRead, cancelled: &AtomicBool) -> io::Result<Arc<Parties>> {
     let state = source.state::<Kept>();
-    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, read)| Arc::clone(read));
-    if let Some(read) = held {
+    if let Some(read) = state.lock().unwrap_or_else(PoisonError::into_inner).for_country(params, scope) {
         return Ok(read);
     }
-    let query = dashboard_base::queries::query(source, branch)?;
-    let read = Arc::new(read(&query, tag, cancelled)?);
-    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.clone(), Arc::clone(&read)));
+    let read = Arc::new(read(query, &params.country, scope, cancelled)?);
+    let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(ready) = kept.for_country(params, scope) {
+        return Ok(ready);
+    }
+    kept.0 = Some((params.branch(), params.country.clone(), scope, Arc::clone(&read)));
     Ok(read)
+}
+
+pub(super) struct RulingParties {
+    pub runs: Vec<RulingRun>,
+    pub unobserved: Vec<HourSpan>,
+    pub ideologies: Vec<IdeologyInfo>,
+    pub warnings: Vec<String>,
+}
+
+fn present_ruling(politics: Result<&PoliticsContent, String>, tag: &str, parties: &Parties) -> RulingParties {
+    let mut warnings = Vec::new();
+    let (politics, ideologies) = ideology_content(politics, &mut warnings);
+    parties.ruling.party_names(politics, &mut warnings);
+    finish_warnings(parties, politics, tag, &mut warnings);
+    RulingParties { runs: parties.ruling.runs.clone(), unobserved: parties.unobserved.clone(), ideologies, warnings }
+}
+
+pub(super) fn ruling(source: &Source, query: &Query<'_>, params: &CountryParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<RulingParties> {
+    let parties = history(source, query, params, PartyRead::Ruling, cancelled)?;
+    let politics = context.content().and_then(|content| politics_content(source, content)).map_err(|error| error.to_string());
+    Ok(present_ruling(politics.as_deref().map_err(Clone::clone), &query.holders.nearest_name(&params.country, query.timeline.last), &parties))
 }
 
 pub struct PartyHistory;
@@ -706,9 +767,9 @@ impl Product for PartyHistory {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let parties = history(source, params.branch(), &params.country, cancelled)?;
-        let politics = context.content().and_then(|content| politics_content(source, content)).map_err(|error| error.to_string());
         let query = dashboard_base::queries::query(source, params.branch())?;
+        let parties = history(source, &query, params, PartyRead::Full, cancelled)?;
+        let politics = context.content().and_then(|content| politics_content(source, content)).map_err(|error| error.to_string());
         let reply = present(politics.as_deref().map_err(Clone::clone), params, &query.holders.nearest_name(&params.country, query.timeline.last), &parties, cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)

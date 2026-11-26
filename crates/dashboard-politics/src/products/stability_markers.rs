@@ -1,6 +1,6 @@
 use super::ideas::{IdeaHistory, IdeaHistoryParams, IdeaHistoryReply, HoldingStart};
 use super::national_focus::{FocusReply, NationalFocus};
-use super::party_history::{PartyHistory, PartyHistoryReply};
+use super::party_history::{self, RulingParties};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, CountryParams, LoadContext, Product, check_reply_budget};
 use dashboard_base::span::HourSpan;
@@ -155,10 +155,10 @@ fn idea_markers(out: &mut Markers, reply: &IdeaHistoryReply) {
     out.later(reply.next_change);
 }
 
-fn party_markers(out: &mut Markers, reply: &PartyHistoryReply) {
+fn party_markers(out: &mut Markers, reply: &RulingParties) {
     let names: HashMap<&str, &str> = reply.ideologies.iter().filter_map(|ideology| Some((ideology.token.as_str(), ideology.name.as_deref()?))).collect();
     let name = |token: &str| names.get(token).copied().unwrap_or(IDEOLOGY_UNNAMED).to_owned();
-    for pair in reply.ruling.windows(2) {
+    for pair in reply.runs.windows(2) {
         let (previous, run) = (&pair[0], &pair[1]);
         if run.starts_segment || previous.last_hour + 1 != run.first_hour || previous.token == run.token || within(&reply.unobserved, run.first_hour - 1) {
             continue;
@@ -269,7 +269,7 @@ impl Product for StabilityMarkers {
             let ideas = IdeaHistory::load(source, &IdeaHistoryParams { branch_id: params.branch_id.clone(), country: params.country.clone(), hour }, context, cancelled)?;
             idea_markers(&mut out, &ideas);
             warnings.extend(ideas.warnings);
-            let parties = PartyHistory::load(source, &country, context, cancelled)?;
+            let parties = party_history::ruling(source, &query, &country, context, cancelled)?;
             party_markers(&mut out, &parties);
             warnings.extend(parties.warnings);
         }
