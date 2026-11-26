@@ -21,6 +21,7 @@ const wars: WarsReply = {
     observations: [{ firstHour: 10, lastHour: 200, viewpointTag: 'GER', viewpointSide: ['GER'], opposingSide: ['POL'], attackersAreViewpoint: true, representative: null,
       name: { text: 'German-Polish War', known: true, reason: null, key: null } }] }],
 } as unknown as WarsReply;
+clock.seek(wars.wars[0].observations[0].firstHour);
 
 const waiting = new Promise<never>(() => {});
 let release = () => {};
