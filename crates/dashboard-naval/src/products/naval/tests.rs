@@ -223,7 +223,7 @@ mod details {
             sinking_details::ShipSinkingBattle,
             sunk::tail::ShipsSunkTail,
         };
-        use replay_data::rows::NavalCombatRow;
+        use replay_data::rows::{NavalCombatRow, TableId};
         let entry = |sink_hour: i32, ship: &[u8]| SunkShipEntry {
             ship_name: ship.to_vec(),
             attribution_name: b"Killer".to_vec(),
@@ -240,11 +240,14 @@ mod details {
                 set::<tables::NavalCombats>(&mut frame, vec![NavalCombatRow { id: 20, province: if hour < 103 { 600 } else { 601 }, ..NavalCombatRow::default() }]);
                 set::<tables::NavalCombatParticipants>(&mut frame, Vec::new());
                 if hour == 102 {
-                    *frame.tables[replay_data::rows::TableId::SunkShips.index()] = TableView::Unavailable { reason: "unread".into() };
+                    *frame.tables[TableId::SunkShips.index()] = TableView::Unavailable { reason: "unread".into() };
                 } else {
                     let entries = match hour {
-                        101 => vec![entry(101, b"Before")],
-                        105.. => vec![entry(104, b"After")],
+                        101 => vec![
+                            entry(101, b"Before"), entry(101, b"First escort"),
+                            SunkShipEntry { battle: 0, ..entry(101, b"Unlinked") },
+                        ],
+                        105.. => vec![entry(104, b"After"), entry(104, b"Second escort")],
                         _ => Vec::new(),
                     };
                     set::<tables::SunkShips>(&mut frame, vec![SunkShipsRow { entries }]);
@@ -254,10 +257,23 @@ mod details {
             .collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "restarted".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-        let sunk = ShipsSunkTail::load(&source, &serde_json::from_value(serde_json::json!({"branchId":"1","limit":64})).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
-        let filtered = |hour| ShipsSunkTail::load(&source, &serde_json::from_value(serde_json::json!({
+        let page = |params| {
+            let params = serde_json::from_value(params).unwrap();
+            ShipsSunkTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
+        };
+        let (sunk, reads) = replay_recording::cells::count_reads(|| page(serde_json::json!({"branchId":"1","limit":64})));
+        let reads = &reads[&TableId::NavalCombats];
+        assert_eq!(
+            (reads.opened, reads.stretches, reads.visited_ordinals), (1, 1, 0),
+            "four linked sinkings in two battles share one province history"
+        );
+        let provinces: Vec<_> = sunk.rows.iter().map(|row| (row.name.as_deref().unwrap(), row.battle_province)).collect();
+        assert_eq!(provinces, [
+            ("Second escort", Some(601)), ("After", Some(601)), ("Unlinked", None), ("First escort", Some(600)), ("Before", Some(600)),
+        ]);
+        let filtered = |hour| page(serde_json::json!({
             "branchId":"1", "hour":hour, "limit":64, "classes":[104]
-        })).unwrap(), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        }));
         let early = filtered(101);
         assert!(early.rows.is_empty());
         assert_eq!(early.classes.iter().map(|chip| chip.class.token).collect::<Vec<_>>(), [101]);
