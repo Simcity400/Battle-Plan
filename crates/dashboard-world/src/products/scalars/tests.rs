@@ -578,7 +578,7 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
     use std::sync::{Arc, atomic::AtomicBool};
     use world_tension_stack::{WorldTensionStack, WorldTensionStackParams, TensionValueMode};
 
-    let frames = (100..=102).map(|hour| {
+    let frames = (100..=104).map(|hour| {
         let mut frame = test_fixtures::source(1, hour, None);
         if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
             links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
@@ -588,12 +588,12 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
                 ordinal: index as u32, country, date: 100, reason: b"fixture".to_vec(), final_raw: 4, ..Default::default()
             }).collect()
         ));
-        *frame.tables[TableId::ThreatCountryAggregates.index()] = if hour == 102 {
+        *frame.tables[TableId::ThreatCountryAggregates.index()] = if matches!(hour, 102 | 104) {
             TableView::Unavailable { reason: "Fixture contributions unread".into() }
         } else {
             TableView::Complete(TableRows::ThreatCountryAggregates(
                 [(7, 3), (8, 6)].map(|(country_slot, peak)| ThreatCountryAggregateRow {
-                    country_slot, total_raw: if hour == 100 { peak } else { 0 },
+                    country_slot, total_raw: match hour { 100 => peak, 103 if country_slot == 7 => 2, _ => 0 },
                 }).to_vec()
             ))
         };
@@ -604,11 +604,11 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
     let source = Source::from_replay(SourceKey { source_id: "tension-top".into(), revision: "1".into() },
         "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
     for (stack, events, mode) in [(true, true, TensionValueMode::Share), (true, false, TensionValueMode::Recorded), (false, true, TensionValueMode::Share)] {
-        let read = |last_hour| WorldTensionStack::load(&source, &WorldTensionStackParams {
+        let read = |last_hour, top| WorldTensionStack::load(&source, &WorldTensionStackParams {
             branch_id: "1".into(), first_hour: 100, last_hour, layers: 1, values: mode, countries: None,
-            top: Some(1), group: None, width: None, include_stack: Some(stack), include_events: Some(events),
+            top, group: None, width: None, include_stack: Some(stack), include_events: Some(events),
         }, &LoadContext { content: None }, &cancelled).unwrap();
-        let ranked = read(101);
+        let ranked = read(101, Some(1));
         assert_eq!(ranked.refused, None);
         if stack {
             assert_eq!(ranked.bands.iter().map(|b| (b.slot, &b.tag)).collect::<Vec<_>>(), [(8, &None)]);
@@ -616,9 +616,15 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
         if events {
             assert_eq!(ranked.events.iter().map(|e| e.slot).collect::<Vec<_>>(), [Some(8)]);
         }
-        let unread = read(102);
+        let unread = read(102, Some(1));
         assert_eq!(unread.refused.as_deref(), Some("Fixture contributions unread"));
+        assert_eq!(unread.next_change_hour, Some(103));
         assert!(unread.bands.is_empty() && unread.events.is_empty());
+        if stack {
+            let all = read(104, None);
+            assert_eq!(all.bands[0].slot, 7, "the historical band remains the last witnessed leader through a gap");
+            assert_eq!(all.bands[0].end_raw, None);
+        }
     }
 }
 

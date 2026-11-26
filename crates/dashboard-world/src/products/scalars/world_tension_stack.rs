@@ -708,12 +708,11 @@ impl DatedGroupFilter {
         for member in members {
             for held in holders.within(&member.tag, member.first_hour, member.last_hour) {
                 if let Holder::Found { slot, .. } = held.holder {
-                    let first = held.first.max(member.first_hour);
                     let last = match membership {
-                        GroupMembership::Hour => held.last.min(member.last_hour),
+                        GroupMembership::Hour => held.last,
                         GroupMembership::Ever => i32::MAX,
                     };
-                    runs_by_slot.entry(slot).or_default().push((first, last));
+                    runs_by_slot.entry(slot).or_default().push((held.first, last));
                 }
             }
         }
@@ -789,15 +788,31 @@ pub(super) fn compute_stack(
         bump(&mut next_change, next_opt_run_change(runs, last));
         bump(&mut next_change, slot_next_change(slot, last));
     }
-    for span in mode_missing {
-        if span.first_hour > last {
-            bump(&mut next_change, Some(span.first_hour));
-            break;
-        } else if span.last_hour >= last {
-            bump(&mut next_change, span.last_hour.checked_add(1));
+    let rank_missing = (top_limit.is_some() && mode == TensionValueMode::Share).then_some(input.aggregates_missing);
+    for spans in Some(mode_missing).into_iter().chain(rank_missing) {
+        for span in spans {
+            if span.first_hour > last {
+                bump(&mut next_change, Some(span.first_hour));
+                break;
+            } else if span.last_hour >= last {
+                bump(&mut next_change, span.last_hour.checked_add(1));
+            }
         }
     }
     let last_complete = is_complete(input.aggregates_complete, last);
+    let rank_hour = if top_limit.is_some() || last_complete {
+        last
+    } else {
+        let complete = input.aggregates_complete;
+        let at = complete.partition_point(|span| span.0 <= last);
+        let complete_hour = complete[..at].last().map(|span| span.1);
+        input.slots.values().filter_map(|runs| {
+            let at = runs.partition_point(|run| run.0 <= last);
+            runs[..at].iter().rev().take_while(|run| run.1 >= first)
+                .find(|run| run.2.is_some()).map(|run| run.1.min(last))
+        }).chain(complete_hour).filter(|hour| *hour >= first).max().unwrap_or(last)
+    };
+    let rank_complete = is_complete(input.aggregates_complete, rank_hour);
     let capped_end_raw_val = lookup_run(input.tension, last);
     let capped_end_tension = capped_end_raw_val.map(|raw| raw as f64 / tension_scale);
     let capped_end_tension_raw = capped_end_raw_val.map(|raw| raw.to_string());
@@ -818,11 +833,11 @@ pub(super) fn compute_stack(
         }
         let unrestricted = [(first, last)];
         let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, last));
-        if spans.is_empty() {
+        let member_at_rank = is_complete(spans, rank_hour);
+        if spans.is_empty() || (top_limit.is_some() && !member_at_rank) {
             continue;
         }
-        let end = spans.last().filter(|span| span.1 >= last)
-            .and_then(|_| lookup_slot(Some(runs), last_complete, last));
+        let end = member_at_rank.then(|| lookup_slot(Some(runs), rank_complete, rank_hour)).flatten();
         unknown |= end.is_none();
         let mut peak_abs = 0;
         for &(lo, hi) in spans {
@@ -840,15 +855,6 @@ pub(super) fn compute_stack(
         }
     }
     if top_limit.is_some() && unknown {
-        for span in input.aggregates_missing {
-            if span.first_hour > last {
-                bump(&mut next_change, Some(span.first_hour));
-                break;
-            }
-            if span.last_hour >= last {
-                bump(&mut next_change, span.last_hour.checked_add(1));
-            }
-        }
         let reason = reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN);
         return StackOutput { refused: Some(reason.to_owned()), next_change_hour: next_change, ..Default::default() };
     }
