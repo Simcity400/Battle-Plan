@@ -1073,6 +1073,9 @@ test('the lanes of every pipeline on a clock are asked for what the dashboard ne
   assert.equal(pipeline.prepared(), true, 'a lane whose worker never started counts as answered, so nothing waits on it');
   prepareLanes(clock, { families: ['card'], projections: [] });
   assert.deepEqual(asked.slice(2), ['0:2:card', '1:2:card'], 'a change in what the dashboard needs asks the current pipeline');
+  assert.equal(pipeline.prepared(), false, 'a lane that answered and later reported an error still has to answer each later ask');
+  lanes[0]!.onmessage!({ data: { type: 'prepared', lane: 0, ask: 2 } } as MessageEvent);
+  assert.equal(pipeline.prepared(), true);
   const next = restartPipeline(pipeline)!;
   assert.deepEqual(asked.slice(4), ['2:1:card', '3:1:card'], 'the restarted pipeline is asked for what the dashboard needs now');
   prepareLanes(clock, { families: [], projections: [] });

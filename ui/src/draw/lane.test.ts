@@ -4,6 +4,8 @@ import { Decoder, encode } from '@msgpack/msgpack';
 import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
 import { cropAll, cropSurfaces, macrotaskSchedule, markCanvasPainted, type WakeChannel } from './laneDispatch.ts';
 import { startLaneWorker } from './lane.worker.ts';
+import { prepareProjections } from './views/drawn.ts';
+import { bindFamilyManifest } from '../families/registry.ts';
 import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
@@ -3932,4 +3934,19 @@ test('a lane answers a prepare once every family and the projections have settle
   release();
   await turn();
   assert.deepEqual(posted.filter(message => message.type === 'prepared'), [{ type: 'prepared', lane: -1, ask: 7 }]);
+});
+
+test('preparing projections waits for every projection to settle, when another throws as its load starts', async () => {
+  let release: (module: never) => void = () => {};
+  bindFamilyManifest([
+    { family: 'bars', kind: 'prepare-throws', loadSpec: () => { throw new Error('the chunk is missing'); } },
+    { family: 'bars', kind: 'prepare-held', loadSpec: () => new Promise(resolve => { release = resolve; }) as never },
+  ]);
+  let done = false;
+  const prepared = prepareProjections([['bars', 'prepare-throws', 'default'], ['bars', 'prepare-held', 'default']]).then(() => { done = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(done, false, 'a projection that throws does not settle its held sibling');
+  release({ projection: { family: 'bars', kind: 'prepare-held', project: () => null } } as never);
+  await prepared;
+  assert.equal(done, true);
 });

@@ -44,7 +44,7 @@ function panelTexts(): LaneView {
 }
 
 export function prepareProjections(keys: readonly ProjectionKey[]): Promise<void> {
-  return Promise.all(keys.map(([family, kind, view]) => new Promise<void>(resolve => {
+  return Promise.allSettled(keys.map(([family, kind, view]) => new Promise<void>(resolve => {
     if (ensureFamilyProjection(family as FamilyId, kind, view, resolve) !== 'loading') resolve();
   }))).then(() => {});
 }
