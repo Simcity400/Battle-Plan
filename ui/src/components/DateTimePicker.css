@@ -8,7 +8,7 @@
 .date-time-trigger[aria-invalid='true'] { border-color: var(--error); }
 .date-time-trigger > svg { width: 16px; height: 16px; color: var(--accent); }
 .date-time-trigger > svg:last-child { width: 14px; height: 14px; color: var(--muted); }
-.date-time-value { position: relative; display: flex; flex: 1; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.date-time-value { position: relative; display: flex; flex: 1; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; font-variant-numeric: tabular-nums; white-space: nowrap; contain: layout style; }
 .date-time-value[data-face] > span { opacity: 0; }
 .date-time-face { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .date-time-hour { color: var(--muted); font-size: 0.75rem; font-weight: 500; }
