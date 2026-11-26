@@ -723,7 +723,7 @@ describe('time-chart laneView integration', () => {
     assert.deepEqual(model.markers?.map(marker => [marker.hour, marker.items?.map(item => `${item.title}: ${item.detail}`)]), [
       [H1936 + 20, ['Mobilise: −50', 'Hire advisor: −75.5']],
       [H1936 + 90, [`Law change: −150 · 3 payments from ${formatDateOnly(H1936 + 40)} to ${formatDateOnly(H1936 + 90)}`]],
-      [H1936 + 120, [`Unknown: Cost not recorded · Paid ${formatDateOnly(H1936 + 120)}`]],
+      [H1936 + 120, [`Unknown: Cost not recorded · Paid by ${formatDateOnly(H1936 + 120)}`]],
     ], 'one marker per hour a payment was made, never one at a bin’s closing hour');
     assert.equal(model.warnings?.length, 1, 'an hour whose spending was not recorded is said');
 
