@@ -29,8 +29,8 @@ import { assertFreshPaint, assertQuietFrames, installRecordingCanvas, LANE_THEME
 import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
-import { buildLineSubpaths, collectVisibleChartArt, fitTimeChartLegend, lineOf } from './painter.ts';
-import { pathCalls, type RecordedPath2D } from './path2d.fixture.ts';
+import { buildLineSubpaths, collectVisibleChartArt, fillLineBuffer, fitTimeChartLegend } from './painter.ts';
+import { pathCalls } from './path2d.fixture.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, countrySeriesLooks, headReading, headValueOf } from './seriesHelpers.ts';
@@ -2287,8 +2287,15 @@ describe('playback cost', () => {
       const model: TimeChartModel = { kind: 'k', measureTitle: 'M', mode: 'lines', hour, extent: [T0, T0 + 40 * BIN], yAxis: { format: 'number' }, series: [series] };
       const layout = layoutTimeChart(model, 720, 260, FONT, measure);
       const points = buildLineSubpaths(series, layout, hour);
-      const drawn = lineOf(series, layout, hour);
-      const vertices = drawn.paths.map(item => (item.path as unknown as RecordedPath2D).subpaths()).flat();
+      const drawn = fillLineBuffer(series, layout, hour);
+      const vertices: [number, number][][] = [];
+      for (let si = 0; si < drawn.subpathCount; si++) {
+        const sub: [number, number][] = [];
+        const start = drawn.starts[si]!;
+        const count = drawn.counts[si]!;
+        for (let k = 0; k < count; k++) sub.push([drawn.coords[start + k * 2]!, drawn.coords[start + k * 2 + 1]!]);
+        vertices.push(sub);
+      }
       assert.equal(vertices.length, points.subpaths.length, `${step ? 'step' : 'line'} at ${hour - T0}: the same subpaths`);
       vertices.forEach((sub, at) => {
         const expected = points.subpaths[at]!;
@@ -2297,7 +2304,8 @@ describe('playback cost', () => {
           assert.ok(Math.abs(x - expected[k]![0]) < 1e-6 && Math.abs(y - expected[k]![1]) < 1e-6, `subpath ${at} vertex ${k} at ${hour - T0}: ${x},${y} is ${expected[k]}`);
         });
       });
-      assert.deepEqual(drawn.end?.map(v => Math.round(v * 1e6)), points.end?.map(v => Math.round(v * 1e6)), 'the same end dot');
+      const drawnEnd = drawn.hasEnd ? [drawn.endX, drawn.endY] : null;
+      assert.deepEqual(drawnEnd?.map(v => Math.round(v * 1e6)), points.end?.map(v => Math.round(v * 1e6)), 'the same end dot');
     };
     for (const tiled of [line, runLine]) {
       for (const step of [false, true]) {
@@ -2647,5 +2655,74 @@ describe('time-chart PR 1 fixed-work caches', () => {
     );
     assert.deepEqual(replayedProj.identityDemands, firstProj.identityDemands);
     assert.deepEqual(replayedProj.artUrls, firstProj.artUrls);
+  });
+});
+
+describe('time-chart PR 2 lines zero-Path2D drawing', () => {
+  it('draws lines without allocating Path2D, hoists one plot clip, and grows vertex buffers past initial capacity', () => {
+    const bin = 24;
+    const count = 400;
+    const buckets: (ChartBucket | null)[] = [];
+    for (let i = 0; i < count; i++) {
+      if (i % 20 === 19) buckets.push(null);
+      else buckets.push(makeBucket(H1936 + i * bin, H1936 + (i + 1) * bin - 1, 20 + (i % 9) * 3, 15, 50, 22 + (i % 7) * 2));
+    }
+    const tiled: TiledLine = {
+      tag: 'GER',
+      head: 'h',
+      decimals: 0,
+      summary: { from: H1936, to: H1936 + count * bin - 1, width: count, buckets, tiles: { binHours: bin, valueAt: () => null } },
+      missing: [],
+      parts: [],
+      marks: null,
+    };
+    const hour = H1936 + (count - 1) * bin + 6;
+    const bounded = boundTiledSeries(tiled, displayedHour(hour), { headValue: knownValue(30) });
+    const series = Array.from({ length: 12 }, (_, idx) => ({
+      id: `C${idx}`,
+      key: `C${idx}`,
+      name: `Country ${idx}`,
+      color: idx < 2 ? LANE_THEME.blue : LANE_THEME.grey,
+      role: (idx < 2 ? 'primary' : 'tail') as 'primary' | 'tail',
+      bounded,
+      headValue: 30,
+      headHour: hour,
+      area: idx === 0,
+      negRed: idx === 0,
+      endLabel: idx < 2 ? { name: `C${idx}`, fullName: `Country ${idx}`, value: '30' } : null,
+    }));
+    const model: TimeChartModel = {
+      kind: 'k',
+      measureTitle: 'M',
+      mode: 'lines',
+      hour,
+      extent: [H1936, H1936 + count * bin],
+      yAxis: { format: 'number', fixed: [-10, 60] },
+      series,
+    };
+    const layout = layoutTimeChart(model, 720, 280, FONT, measure);
+
+    const buf = fillLineBuffer(series[0]!, layout, hour);
+    const ref = buildLineSubpaths(series[0]!, layout, hour);
+    assert.ok(buf.subpathCount > 16, 'grew subpath capacity past initial 16 subpaths');
+    assert.ok(buf.coordLen > 512, 'grew coordinate buffer past initial 512 floats');
+    assert.equal(buf.subpathCount, ref.subpaths.length);
+
+    let clips = 0;
+    const { ctx } = mockCanvas(720, 280);
+    const origClip = ctx.clip.bind(ctx);
+    ctx.clip = () => { clips++; origClip(); };
+    pathCalls.count = 0;
+    drawTimeChart(ctx, model, layout, LANE_THEME, null, 1, null);
+    assert.equal(pathCalls.count, 0, 'cached line draw constructs no Path2D');
+    assert.equal(clips, 1 + buf.subpathCount * 4, `only outer plot clip plus area/signed subpaths clip (clips=${clips})`);
+
+    const tailOnlyModel: TimeChartModel = { ...model, series: series.slice(2) };
+    const tailLayout = layoutTimeChart(tailOnlyModel, 720, 280, FONT, measure);
+    clips = 0;
+    pathCalls.count = 0;
+    drawTimeChart(ctx, tailOnlyModel, tailLayout, LANE_THEME, null, 1, null);
+    assert.equal(pathCalls.count, 0);
+    assert.equal(clips, 1, '10 plain lines share exactly one hoisted plot clip');
   });
 });

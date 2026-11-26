@@ -46,7 +46,7 @@ function makeTheme(mode: ThemeMode): FamilyTheme {
 
 interface ParityStep {
   readonly label: string;
-  readonly mode: 'lines' | 'stack' | 'columns';
+  readonly mode: 'lines' | 'stack' | 'columns' | 'styled-lines';
   readonly hour: number;
   readonly width: number;
   readonly height: number;
@@ -315,6 +315,85 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     };
   }
 
+  const signedTiled = makeTiled('SGN', d => Math.sin(d * 0.04) * 60 - 15, seriesMissing, []);
+  const ceilingTiled = makeTiled('CEIL', () => 55, [], []);
+
+  function buildStyledLinesModel(step: ParityStep, useCache: boolean): TimeChartModel {
+    const day = Math.max(0, Math.min(TOTAL_DAYS - 1, Math.floor((step.hour - H0) / BIN)));
+    const sgnHeadVal = signedTiled.summary.buckets[day]!.lastValue;
+    const ceilHeadVal = ceilingTiled.summary.buckets[day]!.lastValue;
+    const sgnBounded = useCache
+      ? (() => {
+          let c = cursors.get('SGN');
+          if (!c) cursors.set('SGN', c = new BoundedSeriesCursor());
+          return c.advance(signedTiled, step.hour, { headPoint: { hour: Math.floor(step.hour), value: sgnHeadVal }, headValue: knownValue(sgnHeadVal) });
+        })()
+      : boundTiledSeries(signedTiled, displayedHour(step.hour), { headPoint: { hour: Math.floor(step.hour), value: sgnHeadVal }, headValue: knownValue(sgnHeadVal) });
+    const ceilBounded = useCache
+      ? (() => {
+          let c = cursors.get('CEIL');
+          if (!c) cursors.set('CEIL', c = new BoundedSeriesCursor());
+          return c.advance(ceilingTiled, step.hour, { headPoint: { hour: Math.floor(step.hour), value: ceilHeadVal }, headValue: knownValue(ceilHeadVal) });
+        })()
+      : boundTiledSeries(ceilingTiled, displayedHour(step.hour), { headPoint: { hour: Math.floor(step.hour), value: ceilHeadVal }, headValue: knownValue(ceilHeadVal) });
+    return {
+      kind: 'parity-styled-lines',
+      measureTitle: 'Styled lines',
+      mode: 'lines',
+      hour: step.hour,
+      extent: EXTENT,
+      yAxis: { format: 'number' },
+      series: [
+        {
+          id: 'SGN',
+          key: 'SGN',
+          name: 'Signed Balance',
+          color: step.theme.blue,
+          role: 'primary',
+          area: true,
+          negRed: true,
+          bounded: sgnBounded,
+          headValue: sgnHeadVal,
+          headHour: step.hour,
+          missingSpans: missingSpansOf(sgnBounded),
+          endLabel: { name: 'Signed Balance', fullName: 'Signed Balance', value: sgnHeadVal.toFixed(1) },
+        },
+        {
+          id: 'CEIL',
+          key: 'CEIL',
+          name: 'Maximum',
+          color: step.theme.muted,
+          role: 'ceiling',
+          step: true,
+          bounded: ceilBounded,
+          headValue: ceilHeadVal,
+          headHour: step.hour,
+          endLabel: null,
+        },
+        {
+          id: 'PTS',
+          key: 'PTS',
+          name: 'Raw points',
+          color: step.theme.amber,
+          role: 'secondary',
+          dash: [4, 3],
+          points: [
+            { hour: H0 + 10 * BIN, value: 10 },
+            { hour: H0 + 120 * BIN, value: 35, min: 25, max: 42 },
+            { hour: H0 + 200 * BIN, value: null },
+            { hour: H0 + 260 * BIN, value: -20 },
+            { hour: H0 + 360 * BIN, value: 18 },
+          ],
+          headValue: 18,
+          headHour: step.hour,
+          endLabel: null,
+        },
+      ],
+      gaps: [gap1],
+      auditRows: [],
+    };
+  }
+
   const steps: ParityStep[] = [
     { label: 'day-ticks-1', mode: 'lines', hour: H0 + 18 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: ['GER', 'SOV', 'ENG'], inspect: null },
     { label: 'day-ticks-2', mode: 'lines', hour: H0 + 45 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: ['GER', 'SOV', 'ENG'], inspect: null },
@@ -338,6 +417,8 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     { label: 'stack-dpr-125', mode: 'stack', hour: H0 + 620 * BIN, width: 720, height: 320, dpr: 1.25, theme: darkTheme, tags: [], inspect: null },
     { label: 'stack-zoom-hover', mode: 'stack', hour: H0 + 820 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: [], zoom: [H0 + 100 * BIN, H0 + 600 * BIN], inspect: `plot:${H0 + 300 * BIN}` },
     { label: 'columns-folded-partial', mode: 'columns', hour: H0 + 400 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: [], inspect: null },
+    { label: 'styled-area-negred-dash-dpr1', mode: 'styled-lines', hour: H0 + 420 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: [], inspect: null },
+    { label: 'styled-area-negred-dash-dpr125', mode: 'styled-lines', hour: H0 + 435 * BIN, width: 720, height: 320, dpr: 1.25, theme: darkTheme, tags: [], inspect: null },
   ];
 
   const cachedCanvas = new OffscreenCanvas(720, 320);
@@ -360,7 +441,13 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
       cachedCanvas.height = bh;
     }
     const cachedLine = step.mode === 'lines' ? buildLineModel(step, true) : null;
-    const cachedModel = cachedLine ? cachedLine.model : step.mode === 'stack' ? buildStackModel(step, true) : buildColumnsModel(step);
+    const cachedModel = cachedLine
+      ? cachedLine.model
+      : step.mode === 'styled-lines'
+        ? buildStyledLinesModel(step, true)
+        : step.mode === 'stack'
+          ? buildStackModel(step, true)
+          : buildColumnsModel(step);
     const cachedLayout = layoutTimeChart(cachedModel, step.width, step.height, step.theme.font, cachedMeasure);
     const cachedLegend = fitTimeChartLegend(cachedModel, cachedLayout, step.theme, cachedMeasure);
     drawTimeChart(cachedCtx, cachedModel, cachedLayout, step.theme, step.inspect, step.dpr, cachedLegend);
@@ -393,7 +480,13 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
         return w;
       };
       const refLine = step.mode === 'lines' ? buildLineModel(step, false) : null;
-      const refModel = refLine ? refLine.model : step.mode === 'stack' ? buildStackModel(step, false) : buildColumnsModel(step);
+      const refModel = refLine
+        ? refLine.model
+        : step.mode === 'styled-lines'
+          ? buildStyledLinesModel(step, false)
+          : step.mode === 'stack'
+            ? buildStackModel(step, false)
+            : buildColumnsModel(step);
       const refLayout = layoutTimeChart(refModel, step.width, step.height, step.theme.font, refMeasure);
       const refLegend = fitTimeChartLegend(refModel, refLayout, step.theme, refMeasure);
       drawTimeChart(refCtx, refModel, refLayout, step.theme, step.inspect, step.dpr, refLegend);
