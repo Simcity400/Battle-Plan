@@ -111,12 +111,15 @@ const fixture = {
   },
   async play(frames: number, hours: number) {
     clock.playing = true; clock.anchor();
-    await frame(); await frame();
+    let laid = false;
+    await frame(); laid ||= fixture.hostShown();
+    await frame(); laid ||= fixture.hostShown();
     const before = { requests: requests.length, commits: visibleCommits, prepared: preparedRenders };
-    await frame();
+    await frame(); laid ||= fixture.hostShown();
     for (let at = 0; at < frames; at++) {
       clock.step(hours);
       await frame();
+      laid ||= fixture.hostShown();
     }
     clock.playing = false; clock.anchor();
     const asked = requests.slice(before.requests);
@@ -124,7 +127,7 @@ const fixture = {
       commits: visibleCommits - before.commits,
       preparedRenders: preparedRenders - before.prepared,
       asked: asked.map(item => item.product),
-      hostWhilePlaying: false,
+      hostWhilePlaying: laid,
     };
   },
   hostShown: () => !!document.querySelector('[data-prepare]'),
