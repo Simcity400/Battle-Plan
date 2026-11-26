@@ -892,10 +892,14 @@ impl Evaluator<'_, '_> {
     ) -> Eval {
         let world = self.world();
         let row = row.into();
+        let held;
         let visible: &[Item] = match visibility {
             LeaderVisibility::Decided(value) => return value,
             LeaderVisibility::Unconditioned => &[],
-            LeaderVisibility::Conditioned(index) => world.role_visible(index),
+            LeaderVisibility::Conditioned(index) => {
+                held = world.role_visible(index);
+                &held
+            }
         };
         let Some(slot) = world.slot(row.owner) else {
             return Eval::unknown(world.unlinked("unit leaders", row.owner));
