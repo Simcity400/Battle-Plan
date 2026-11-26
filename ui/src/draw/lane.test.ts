@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { encode } from '@msgpack/msgpack';
+import { Decoder, encode } from '@msgpack/msgpack';
 import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
 import { cropAll, cropSurfaces, macrotaskSchedule, markCanvasPainted, type WakeChannel } from './laneDispatch.ts';
 import { startLaneWorker } from './lane.worker.ts';
@@ -98,6 +98,29 @@ test('a panel installs its model and live values whole, dated from the actual ta
   lane.receive('panels', panels([{ id: 3, hour: 16, kind: 'data', stepped: true, data: { shape: 'A', n: 2 } }, { id: 0, hour: 20, kind: 'completed' }]));
   await step(17);
   assert.deepEqual([page.view(1).h, (page.view(1).fields?.['model:3'] as { structure?: string }).structure], [16, 'A'], 'an equal structure keeps the installed model; its date moves on');
+});
+
+test('identical panel bytes decode once within the subscription and seek', t => {
+  const { lane, mount } = rig();
+  const reads = t.mock.method(Decoder.prototype, 'decode');
+  const send = (id: number, hour: number, n: number, seek = 0) =>
+    lane.receive('panels', panels([{ id, hour, kind: 'data', data: { n } }], seek));
+  mount(1, [{ id: 3, channel: 'panel' }, { id: 4, channel: 'panel' }]);
+  send(3, 10, 1);
+  send(3, 11, 1);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  send(3, 12, 1);
+  assert.equal(reads.mock.callCount(), 1);
+  const first = lane.facts.latest(3);
+  lane.bindRoute(4, ROUTE, NATIVE);
+  send(4, 12, 1);
+  const other = lane.facts.latest(4);
+  assert.ok(first?.kind === 'panel' && other?.kind === 'panel');
+  assert.notEqual(first.data, other.data);
+  send(3, 13, 2);
+  lane.stream(ROUTE, 1, 13);
+  send(3, 13, 2, 1);
+  assert.equal(reads.mock.callCount(), 4);
 });
 
 test('records that arrive before their route is known are held and land once it is', async () => {

@@ -1278,7 +1278,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     let panel: ReturnType<typeof parseDatedPanelRecord>;
     let cells: ReturnType<typeof cellsOf> = [];
     try {
-      panel = parseDatedPanelRecord(record);
+      const previous = this.facts.latest(rawId);
+      panel = parseDatedPanelRecord(record, previous?.kind === 'panel' ? previous : undefined);
       if (panel.panel && panel.panel.refused === null) cells = cellsOf(panel.panel.data);
     } catch (error) {
       this.freed += size;
@@ -1303,7 +1304,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.gone.delete(cell.id);
     }
     return { kind: 'data', id: panel.id, hour: panel.hour, stepped: panel.stepped, bytes: size, cells,
-      value: { kind: 'panel', bytes: panel.panel.bytes ? panel.panel.bytes.slice() : null, data: panel.panel.data, refused: null } };
+      value: { kind: 'panel', bytes: panel.panel.bytes ?? null, data: panel.panel.data, refused: null } };
   }
 
   private panels(bytes: Uint8Array) {
