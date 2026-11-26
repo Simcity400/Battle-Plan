@@ -54,7 +54,7 @@ function gapsOf(reply: SpecialProjectsReply, hour: number, branchFirstHour: numb
   for (const span of reply.available) {
     if (span.firstHour > hour) break;
     if (span.firstHour > cursor + 1) gaps.push({ firstHour: cursor + 1, lastHour: span.firstHour - 1 });
-    cursor = Math.max(cursor, span.lastHour);
+    cursor = Math.max(cursor, Math.min(span.lastHour, hour));
   }
   if (cursor < hour) gaps.push({ firstHour: cursor + 1, lastHour: hour });
   return mergeSpans(clipSpansToHour([...gaps, ...reply.partial, ...reply.unresolved], hour));
@@ -257,7 +257,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     const lane = laneByKey(model, hit.laneKey);
     if (!lane || lane.kind !== 'item') return null;
     const span = spanAt(lane, hit);
-    const at = hit.hour ?? model.hour;
+    const at = Math.min(hit.hour ?? model.hour, readView.hour);
     const where = (span?.meta as LaneMeta | undefined) ?? (lane.meta as LaneMeta | undefined);
     const raw = where ? readView.panel<unknown>(entryName(where.sourceKey)) : undefined;
     const reply = raw === undefined ? undefined : validateSpecialProjectsReply(raw);

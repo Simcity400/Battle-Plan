@@ -228,7 +228,7 @@ thread_local! {
     static PRODUCT_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-pub(crate) fn product_called() {
+pub fn product_called() {
     PRODUCT_CALLS.set(PRODUCT_CALLS.get() + 1);
 }
 

@@ -75,6 +75,10 @@ test('a project window joins its runtime project on the owner and local id, read
   assert.match(runtimeProject(details(null),card,120) as string, /not read/);
   const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],statuses:[data.projects[0].statuses[0]],entries:[]}]};
   const running=shownCard(open,147,open.projects[0].id)!;
+  const pinned = shownCard(open, 120, running.project.id)!;
+  const pinnedBound = episodeBound(open, pinned.project, null);
+  assert.equal(runtimeProject(details([runtime(9, 3, 'Later reward', 160)], 160), pinned, 120, pinnedBound), null);
+  assert.deepEqual(runtimeProject(details([runtime(9, 3, 'Pinned reward', 120)], 120), pinned, 120, pinnedBound), joined(runtime(9, 3, 'Pinned reward', 120)));
   for (const through of [null, 147]) {
     const shown = runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,through));
     assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
@@ -83,6 +87,42 @@ test('a project window joins its runtime project on the owner and local id, read
   assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), joined(runtime(9,3,'Mod project name',160)),
     'a running project the list still covers takes its later read');
   assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'a project no longer listed keeps its last status');
+});
+
+test('the card, text mirror, history and hover show the played hour inside a held project span, including after a backward seek', async () => {
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  const { deriveCardMirror } = await import('../../families/card/model.ts');
+  const { specialProjectsProjection } = await import('./specialProjectsProjection.ts');
+  const { specialProjectsHistoryProjection: history } = await import('./historyProjection.ts');
+  const options = { tags: ['GER'], membership: null, firstHour: 100, branchFirstHour: 100, surface: '#111111' };
+  const until = (lastHour: number) => {
+    const reply = fixture();
+    reply.tag = 'GER';
+    reply.available = [{ firstHour: 100, lastHour }];
+    reply.identities = [{ firstHour: 100, lastHour, slot: 5, countryId: 10 }];
+    reply.projects[0]!.statuses = [{ ...reply.projects[0]!.statuses[0]!, lastHour }];
+    reply.projects[0]!.entries = [];
+    reply.shown = { through: lastHour, running: [0], completed: [], unknown: [], undated: 0 };
+    return reply;
+  };
+  const held = until(147);
+  for (const hour of [100, 143, 118]) {
+    const view = (reply: SpecialProjectsReply) => createBoundedReadView({ hour, panels: new Map([['main', reply], ['projects:GER', reply]]) });
+    const current = view(held);
+    const cold = view(until(hour));
+    const card = specialProjectsProjection.project(current, {});
+    assert.deepEqual(card, specialProjectsProjection.project(cold, {}));
+    assert.ok(card.rows.some(row => row.kind === 'item'));
+    assert.deepEqual(deriveCardMirror(card), deriveCardMirror(specialProjectsProjection.project(cold, {})));
+    const model = history.project(current, options);
+    const direct = history.project(cold, options);
+    assert.deepEqual(model.lanes, direct.lanes);
+    const lane = model.lanes[0]!;
+    assert.equal(lane.spans[0]!.lastHour, hour);
+    const hit = { kind: 'span' as const, laneKey: lane.key, spanId: lane.spans[0]!.id, hour };
+    assert.deepEqual(history.tooltip!(model, hit, current, options), history.tooltip!(direct, hit, cold, options));
+    assert.deepEqual(history.tooltip!(model, { ...hit, hour: hour + 1 }, current, options), history.tooltip!(direct, hit, cold, options));
+  }
 });
 
 test('a pop-up joins only reads and choices made while the project was recorded', () => {

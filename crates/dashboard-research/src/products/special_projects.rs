@@ -859,7 +859,7 @@ fn stamp_at(stamps: &mut HashMap<u128, Cursor<'_>>, table: TableId, raw: u32, ho
     found
 }
 
-fn see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, cancelled: &AtomicBool) -> io::Result<()> {
+fn see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
     let mut projects: Vec<(u32, u32, Cursor<'_>)> = Vec::new();
     for (history, &raw) in read.projects.iter().zip(&read.owners) {
         projects.extend(history.keys.iter().map(|(key, steps)| (raw, *key as u32, Cursor::new(steps))));
@@ -948,12 +948,12 @@ fn see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, cancelled: &Ato
             },
             span_last,
         );
-        if span_last == i32::MAX {
-            break;
+        if span_last >= through.min(piece.last) {
+            return Ok(span_last);
         }
         hour = span_last + 1;
     }
-    Ok(())
+    Ok(piece.last)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

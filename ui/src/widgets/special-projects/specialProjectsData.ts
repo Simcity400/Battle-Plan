@@ -115,9 +115,9 @@ function recordedChoices(project: ProjectRecord, bound: EpisodeBound, found: Pro
 }
 
 export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound = ended(card)): RuntimeMatch | string | null {
+  if (details.hour > hour) return null;
   const found = joined(details, card);
   if (listStale(found, bound)) return `Project rewards were read ${dayLabel(found!.readHour)}, after the project list is known current (${dayLabel(bound.through)}).`;
-  if (details.hour > hour) return null;
   if (!details.projects) return 'Project rewards and output were not read at this time.';
   if (!found) return 'Project rewards and output were not recorded for this project at this time.';
   if (found.readHour < card.project.firstRead) return 'Project rewards and output were last read before this project was first recorded.';
