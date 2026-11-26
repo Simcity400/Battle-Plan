@@ -256,6 +256,10 @@ fn a_design_counts_under_its_type_only_from_the_hour_its_classification_is_recor
     assert_eq!(unresolved.share, None);
     let late = index.at(50, ProductionSpendingScope::Military, false);
     assert_eq!((late.breakdown.total.state, late.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "1".into(), denominator: "1".into() })), "once it is a destroyer, the military factories spent exactly 1");
+    let land = index.at(20, ProductionSpendingScope::LandPurposes, false);
+    assert_eq!(land.breakdown.total.state, BreakdownState::NotRecorded, "the unclassified design may be land");
+    let new = land.breakdown.parts.iter().find(|part| part.key == "new").expect("land's own new production");
+    assert_eq!(new.amount, Some(BreakdownAmount { numerator: "1".into(), denominator: "1".into() }), "the unclassified design is not counted in land's New");
     let docks = index.at(50, ProductionSpendingScope::Dockyards, false);
     assert_eq!(docks.breakdown.total.amount, Some(BreakdownAmount { numerator: "2".into(), denominator: "1".into() }));
 }

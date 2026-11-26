@@ -374,11 +374,16 @@ pub(crate) struct Built {
     warnings: Vec<String>,
 }
 
+const PURPOSE_KEYS: [&str; 5] = ["new", "refit", "converted", "purpose-unrecorded", "other-purpose"];
+
+fn unassigned_node() -> Node {
+    Node::new(UNRESOLVED_TYPE_KEY, "Type not resolved", u32::MAX).other()
+}
+
 fn leaf_key(leaf: &Leaf) -> Vec<String> {
     match leaf.path.last() {
         Some(node) if node.key.starts_with("variant:") || node.key.starts_with("rocket:") => {
-            let root = leaf.path.first().map_or("", |node| node.key.as_str());
-            let purpose = if matches!(root, "land" | "air" | "naval" | UNRESOLVED_TYPE_KEY) { "" } else { root };
+            let purpose = leaf.path.iter().find(|node| PURPOSE_KEYS.contains(&node.key.as_str())).map_or("", |node| node.key.as_str());
             vec![purpose.to_owned(), node.key.clone()]
         }
         _ => leaf.path.iter().map(|node| node.key.clone()).collect(),
@@ -424,7 +429,7 @@ impl Built {
             self.leaves.push(Leaf { path: leaf.path.clone(), amount: Amount::NotRecorded("Spent before the range start and not found at its end".into()), count: None, last: None });
         }
         self.leaves.retain(|leaf| !matches!(leaf.amount, Amount::Known(value) if value.numerator() == 0));
-        self.unassigned = self.leaves.iter().any(|leaf| leaf.path.iter().any(|node| node.key == UNRESOLVED_TYPE_KEY || node.key.starts_with(UNRESOLVED_MARK)));
+        self.unassigned = self.leaves.iter().any(|leaf| leaf.path.first().is_some_and(|node| node.key == UNRESOLVED_TYPE_KEY));
         self
     }
 }
@@ -726,7 +731,7 @@ impl SpendingIndex {
                             RunAmount::Unknown(why) => Amount::NotRecorded(unknown_reason(why).into()),
                         };
                         leaves.push(Leaf {
-                            path: vec![purpose_node(purpose, true), span.type_node(variant, hour), span.design_node(variant, false, hour)],
+                            path: if domain.is_some() { vec![purpose_node(purpose, true), span.type_node(variant, hour), span.design_node(variant, false, hour)] } else { vec![unassigned_node(), purpose_node(purpose, true), span.design_node(variant, false, hour)] },
                             amount,
                             count: None,
                             last: None,
@@ -828,7 +833,7 @@ impl SpendingIndex {
                         RunAmount::Unknown(why) => Amount::NotRecorded(unknown_reason(why).into()),
                     };
                     leaves.push(Leaf {
-                        path: vec![purpose_node(purpose, false), span.type_node(variant, hour), span.design_node(variant, false, hour)],
+                        path: if domain.is_some() { vec![purpose_node(purpose, false), span.type_node(variant, hour), span.design_node(variant, false, hour)] } else { vec![unassigned_node(), purpose_node(purpose, false), span.design_node(variant, false, hour)] },
                         amount,
                         count: None,
                         last: None,
