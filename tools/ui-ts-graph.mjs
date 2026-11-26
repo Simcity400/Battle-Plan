@@ -118,13 +118,16 @@ function isDeferredNestedDecl(node, rootNode) {
   return false;
 }
 
-function collectPatternInitializers(pattern, out) {
+function collectPatternExpressions(pattern, out) {
   if (!pattern) return;
   if (pattern.kind === SyntaxKind.ObjectBindingPattern || pattern.kind === SyntaxKind.ArrayBindingPattern) {
     for (const el of pattern.elements ?? []) {
-      if (!el) continue;
+      if (!el || el.kind === SyntaxKind.OmittedExpression) continue;
+      if (el.propertyName?.kind === SyntaxKind.ComputedPropertyName && el.propertyName.expression) {
+        out.push(el.propertyName.expression);
+      }
       if (el.initializer) out.push(el.initializer);
-      collectPatternInitializers(el.name, out);
+      collectPatternExpressions(el.name, out);
     }
   }
 }
@@ -883,6 +886,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       let cur = sym;
       let forceType = inType;
       const seen = new Set();
+      const demandedModules = new Set();
       let touchesModule = false;
 
       while (cur && !checker.isUnknownSymbol(cur) && !seen.has(cur.id)) {
@@ -908,19 +912,27 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
               if (mapped.targetRel) addModuleEdge(declRel, mapped.targetRel, forceType, null);
             } else if (mapped.targetRel) {
               addModuleEdge(declRel, mapped.targetRel, forceType, mapped.importedName);
+              demandedModules.add(mapped.targetRel);
             }
           } else if (mapped.kind === 'exportSpec') {
             handledHop = true;
             if (mapped.isType) forceType = true;
-            addModuleEdge(fromRel, declRel, forceType, mapped.exportedName);
+            if (declRel !== fromRel) {
+              addModuleEdge(fromRel, declRel, forceType, mapped.exportedName);
+              demandedModules.add(declRel);
+            }
             if (mapped.targetRel) {
               addModuleEdge(declRel, mapped.targetRel, forceType, mapped.localName);
+              demandedModules.add(mapped.targetRel);
             }
           } else if (mapped.kind === 'exportNs') {
             handledHop = true;
             if (mapped.isType) forceType = true;
             touchesModule = true;
-            addModuleEdge(fromRel, declRel, forceType, mapped.exportedName);
+            if (declRel !== fromRel) {
+              addModuleEdge(fromRel, declRel, forceType, mapped.exportedName);
+              demandedModules.add(declRel);
+            }
             if (mapped.targetRel) {
               addModuleEdge(declRel, mapped.targetRel, forceType, null);
             }
@@ -932,10 +944,12 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
               if (isType) markTypeUnit(declRel, mapped.unitIndex, true);
               else markRuntimeUnit(declRel, mapped.unitIndex, true);
             } else {
-              const expName = hasModifier(unit.parentStmt, SyntaxKind.DefaultKeyword) || unit.node.kind === SyntaxKind.ExportAssignment
-                ? 'default'
-                : cur.name;
-              addModuleEdge(fromRel, declRel, isType, expName);
+              if (!demandedModules.has(declRel)) {
+                const expName = hasModifier(unit.parentStmt, SyntaxKind.DefaultKeyword) || unit.node.kind === SyntaxKind.ExportAssignment
+                  ? 'default'
+                  : cur.name;
+                addModuleEdge(fromRel, declRel, isType, expName);
+              }
               if (isType) markTypeUnit(declRel, mapped.unitIndex, true);
               else markRuntimeUnit(declRel, mapped.unitIndex, true);
             }
@@ -986,10 +1000,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         }
       }
       if (sym.flags & SymbolFlags.Alias) {
-        const next = checker.getImmediateAliasedSymbol(sym);
-        if (next && !checker.isUnknownSymbol(next)) {
-          followSymbolReference(rel, next, effectiveType);
-        }
+        followSymbolReference(rel, sym, effectiveType);
       } else {
         for (const handle of sym.declarations ?? []) {
           const targetRel = toRel(handle.path);
@@ -1154,33 +1165,36 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       const deferredNames = new Set();
       const allIdents = [];
       const allShorthands = [];
-      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null }));
+      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null, owner: fn }));
 
-      const walkArgs = (node, parent, rootNode, newlyDeferred) => {
+      const walkArgs = (node, parent, rootNode, owner, newlyDeferred) => {
         if (!node) return;
         parentOfLocal.set(node, parent);
         if (TYPE_NODE_KINDS.has(node.kind)) return;
-        if (node !== fn && isOwnArgumentsScope(node)) return;
         if (isDeferredNestedDecl(node, rootNode)) {
           if (!deferredNodes.has(node)) {
             deferredNodes.add(node);
             deferredNames.add(node.name.text);
-            newlyDeferred.push({ node, parent });
+            newlyDeferred.push({ node, parent, owner });
           }
           return;
         }
+        const bodyOwner = (node !== fn && isOwnArgumentsScope(node)) ? node : owner;
         if (node.kind === SyntaxKind.ShorthandPropertyAssignment) {
           allShorthands.push(node);
-          if (node.name?.text === 'arguments') shorthandHits.push(node);
+          if (bodyOwner === fn && node.name?.text === 'arguments') shorthandHits.push(node);
         } else if (node.kind === SyntaxKind.Identifier && !isSkippedIdent(node, parent)) {
           allIdents.push(node);
-          if (node.text === 'arguments') identHits.push(node);
+          if (bodyOwner === fn && node.text === 'arguments') identHits.push(node);
         }
         node.forEachChild(child => {
           const childInType = (node.type === child)
             || (Array.isArray(node.typeArguments) && node.typeArguments.includes(child))
             || (Array.isArray(node.typeParameters) && node.typeParameters.includes(child));
-          if (!childInType) walkArgs(child, node, rootNode, newlyDeferred);
+          if (!childInType) {
+            const childOwner = (node.name === child && child.kind === SyntaxKind.ComputedPropertyName) ? owner : bodyOwner;
+            walkArgs(child, node, rootNode, childOwner, newlyDeferred);
+          }
         });
       };
 
@@ -1201,7 +1215,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         const newlyDeferred = [];
         const batch = pending.splice(0, pending.length);
         for (const item of batch) {
-          walkArgs(item.node, item.parent, item.node, newlyDeferred);
+          walkArgs(item.node, item.parent, item.node, item.owner, newlyDeferred);
         }
         if (newlyDeferred.length > 0) {
           const declSyms = checker.getSymbolAtLocation(newlyDeferred.map(item => item.node.name));
@@ -1350,7 +1364,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         const rootNodes = [fn.body];
         for (const p of params) {
           if (p.initializer) rootNodes.push(p.initializer);
-          collectPatternInitializers(p.name, rootNodes);
+          collectPatternExpressions(p.name, rootNodes);
         }
         if (functionUsesArguments(fn, rootNodes)) return null;
         for (let i = 0; i <= argIdx && i < params.length; i += 1) {

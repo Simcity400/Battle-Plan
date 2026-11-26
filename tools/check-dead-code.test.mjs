@@ -637,6 +637,8 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     'ui/src/nsPatternDefault.ts': 'export const draw = () => 21; export const spare = () => 22;',
     'ui/src/nsArgsShorthand.ts': 'export const draw = () => 23; export const spare = () => 24;',
     'ui/src/nsInnerOwnArgs.ts': 'export const draw = () => 25; export const spare = () => 26;',
+    'ui/src/nsComputedKey.ts': 'export const key = "k"; export const spare = () => 27;',
+    'ui/src/nsNestedOuterArgs.ts': 'export const draw = () => 28; export const spare = () => 29;',
     'ui/src/helperA.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.draw(); }\n',
     'ui/src/helperB.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.spare(); }\n',
     'ui/src/aliasedMod.ts': `
@@ -644,6 +646,15 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       export const run = () => draw();
       export { draw as spare };
     `,
+    'ui/src/aliasPair.ts': `
+      function draw() { return 11; }
+      export { draw, draw as spare };
+    `,
+    'ui/src/aliasBarrelSub.ts': `
+      function draw() { return 12; }
+      export { draw, draw as spare };
+    `,
+    'ui/src/aliasBarrel.ts': `export * from './aliasBarrelSub.ts';`,
     'ui/src/main.tsx': `
       import './styles.css';
       import type { SharedType } from './types.ts';
@@ -661,9 +672,13 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       import * as nsPatternDefault from './nsPatternDefault.ts';
       import * as nsArgsShorthand from './nsArgsShorthand.ts';
       import * as nsInnerOwnArgs from './nsInnerOwnArgs.ts';
+      import * as nsComputedKey from './nsComputedKey.ts';
+      import * as nsNestedOuterArgs from './nsNestedOuterArgs.ts';
+      import * as aliasBarrelNs from './aliasBarrel.ts';
       import { read as readA } from './helperA.ts';
       import { read as readB } from './helperB.ts';
       import { run } from './aliasedMod.ts';
+      import { spare as importedAliasOnly } from './aliasPair.ts';
       function callDraw(m: typeof nsTarget) {
         function unusedNested() {
           return m.spare();
@@ -687,6 +702,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       function readPatternDefault(m: { draw(): number }, [v = m.draw()]: number[] = []) {
         return v;
       }
+      function readComputedKey(m: { key: string }, { [m.key]: value }: Record<string, number> = {}) {
+        return value ?? 0;
+      }
       function readWithThis(this: unknown, m: { draw(): number }) {
         return m.draw();
       }
@@ -696,6 +714,13 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       function readArgsShorthand(_m: { draw(): number }) {
         const saved = { arguments };
         return (saved.arguments[0] as { draw(): number }).draw();
+      }
+      function readNestedOuterArgs(_m: { draw(): number }) {
+        const first = () => arguments[0] as { draw(): number };
+        function draw() {
+          return first().draw();
+        }
+        return draw();
       }
       function readWithInnerOwnArgs(m: { draw(): number }) {
         function inner(_x: number) {
@@ -717,9 +742,10 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         loadLazy, worker, used, ref, REQUEST_PATHS,
         forwardDraw((nsTarget)), callDestructured(nsDestructured), escapeAll(nsEscaped),
         api.read(nsMethod), readDefault(nsDefaultInit), readPatternDefault(nsPatternDefault),
-        readWithThis(nsThisParam), readArguments(nsArgsObj), readArgsShorthand(nsArgsShorthand),
+        readComputedKey(nsComputedKey), readWithThis(nsThisParam), readArguments(nsArgsObj),
+        readArgsShorthand(nsArgsShorthand), readNestedOuterArgs(nsNestedOuterArgs),
         readWithInnerOwnArgs(nsInnerOwnArgs), forwardBoth(nsSameOffset),
-        (nsParenEscape), readDoc(nsDocComment), run(),
+        (nsParenEscape), readDoc(nsDocComment), run(), importedAliasOnly(), aliasBarrelNs.spare(),
       );
     `,
     'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
@@ -729,7 +755,10 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     assert.deepEqual(
       result.exports.unusedExports.map(e => e.key),
       [
+        'ui/src/aliasBarrelSub.ts:draw',
+        'ui/src/aliasPair.ts:draw',
         'ui/src/aliasedMod.ts:spare',
+        'ui/src/nsComputedKey.ts:spare',
         'ui/src/nsDefaultInit.ts:spare',
         'ui/src/nsDestructured.ts:spare',
         'ui/src/nsDocComment.ts:spare',

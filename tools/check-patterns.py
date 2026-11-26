@@ -72,11 +72,12 @@ TS_REGEX_PRECEDING_KEYWORDS = frozenset({
     "in", "instanceof", "of", "new", "else", "do", "export", "default",
     "extends", "as", "satisfies",
 })
-CSS_PERCENT_PROP = re.compile(
-    r"""[{,]\s*(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*:\s*$"""
+STYLE_OBJ_OPEN = re.compile(
+    r"""(?:\bstyle\s*=\s*\{|:\s*(?:React\.)?CSSProperties\s*=)\s*$"""
 )
+DOM_STYLE_ASSIGN = re.compile(r"""\.style\.[A-Za-z_$]\w*\s*=\s*$""")
 CSS_PERCENT_BINDING = re.compile(
-    r"""\b(?:const|let)\s+(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*=\s*(?:(?:async\s+)?(?:\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$]\w*\s*=>)\s*)?$"""
+    r"""\b(?:const|let)\s+(?:width|height|minWidth|maxWidth|minHeight|maxHeight|inset|flexBasis|backgroundPosition|transformOrigin)\s*=\s*$"""
 )
 CSS_PERCENT_FN_OPEN = re.compile(
     r"""\b(?:rgb|rgba|hsl|hsla|oklch|oklab|lch|lab|color-mix|linear-gradient|radial-gradient|conic-gradient|translate[XY]?|scale[XY]?)\("""
@@ -676,7 +677,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
             out.append(_blank_slice(text, at, stop))
             at = stop
             plain_start = at
-        elif ch == "/" and expect_expr and not (at > start and text[at - 1] == "<") and not (is_tsx and at + 1 < end and text[at + 1] == ">" and text[at + 2:at + 3] != "/"):
+        elif ch == "/" and expect_expr and not (at > start and text[at - 1] == "<"):
             cursor = at + 1
             in_class = False
             slash_end = -1
@@ -896,7 +897,21 @@ def _inside_open_css_fn(prefix):
     return False
 
 
-def _expr_prefix(code, pos):
+def _is_css_percent_context(code, pos):
+    brace_depth = 0
+    cursor = pos
+    while cursor >= 0:
+        ch = code[cursor]
+        if ch == "}":
+            brace_depth += 1
+        elif ch == "{":
+            if brace_depth == 0:
+                if STYLE_OBJ_OPEN.search(code[max(0, cursor - 96):cursor]):
+                    return True
+                break
+            brace_depth -= 1
+        cursor -= 1
+
     depth = 0
     cursor = pos
     while cursor >= 0:
@@ -905,13 +920,19 @@ def _expr_prefix(code, pos):
             depth += 1
         elif ch in ("(", "[", "{"):
             if depth == 0:
-                return code[max(0, cursor - 96):cursor + 1]
+                return False
             depth -= 1
-        elif depth == 0 and ch in (":", "=", "?", ",", ";"):
-            end_idx = cursor + 2 if ch == "=" and cursor + 1 < len(code) and code[cursor + 1] == ">" else cursor + 1
-            return code[max(0, cursor - 96):end_idx]
+        elif depth == 0:
+            if ch in (";", ","):
+                return False
+            if ch == "=":
+                prev_ch = code[cursor - 1] if cursor > 0 else ""
+                next_ch = code[cursor + 1] if cursor + 1 < len(code) else ""
+                if next_ch not in ("=", ">") and prev_ch not in ("=", "!", "<", ">"):
+                    prefix = code[max(0, cursor - 96):cursor + 1]
+                    return bool(DOM_STYLE_ASSIGN.search(prefix) or CSS_PERCENT_BINDING.search(prefix))
         cursor -= 1
-    return code[:pos + 1]
+    return False
 
 
 def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
@@ -920,8 +941,7 @@ def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
     def on_template_interp(tpl_start, _prev_chunk, interp_start, _chunk_start, body):
         if not TEMPLATE_PERCENT_SUFFIX.match(body):
             return
-        before_tpl = code_with_strings[max(0, tpl_start - 96):tpl_start]
-        if CSS_PERCENT_PROP.search(before_tpl) or CSS_PERCENT_BINDING.search(before_tpl):
+        if _is_css_percent_context(code, tpl_start):
             return
         if _inside_open_css_fn(code_with_strings[tpl_start + 1:interp_start]):
             return
@@ -931,8 +951,7 @@ def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
     for hit in HAND_PERCENT_CONCAT.finditer(code):
         if hit.end() >= len(text) or text[hit.end()] != "%":
             continue
-        prefix = _expr_prefix(code, hit.start())
-        if CSS_PERCENT_PROP.search(prefix) or CSS_PERCENT_BINDING.search(prefix):
+        if _is_css_percent_context(code, hit.start()):
             continue
         lines.append(line_of(text, hit.start()))
     if is_tsx:
@@ -961,7 +980,7 @@ def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
                             skip -= 1
                         probe -= 1
                     continue
-                if ch in "<>;={":
+                if ch in "<>{":
                     break
                 probe -= 1
             if probe >= 0 and code[probe] == ">" and not (probe > 0 and code[probe - 1] == "="):
