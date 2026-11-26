@@ -341,17 +341,21 @@ export function barsRowIndex(model: BarsModel, key: string): number {
 export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left' | 'right'): FamilyTooltipPayload | null {
   const row = model.rows[barsRowIndex(model, rowKey)];
   if (row?.kind !== 'data') return null;
+  const tipHour = model.dataHours?.length === 1 ? model.dataHours[0]! : model.hour;
   if (side === 'right' && row.rightSide) {
     if (row.rightSide.tooltip) return row.rightSide.tooltip;
     const formatted = formatBarsValueField(row.rightSide.value);
     return {
       title: row.rightSide.labelMissing ? notRecordedLabel('Name') : row.rightSide.label,
-      hour: model.hour,
+      hour: tipHour,
       ...(formatted.missingReason ? { missingReason: formatted.missingReason } : { items: [{ label: model.rightHeader ?? 'Value', value: formatted.exact }] }),
     };
   }
   if (row.tooltip) {
-    return row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: model.hour };
+    return row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour: tipHour };
+  }
+  if (!row.label && !row.labelMissing && !row.value && !row.left && !row.right && !row.pair && !row.segments?.length && !row.readout) {
+    return null;
   }
   const title = row.labelMissing ? notRecordedLabel('Name') : row.label;
   const items: TooltipListItem[] = [];
@@ -426,7 +430,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   return {
     title,
     fullText: title,
-    hour: model.hour,
+    hour: tipHour,
     ...(exactValue ? { exactValue } : {}),
     ...(missingReason ? { missingReason } : {}),
     ...(items.length ? { items } : {}),
@@ -489,6 +493,9 @@ export function deriveBarsAudit(
   options?: { readonly window?: { readonly first: number; readonly count: number } },
 ): FamilyAuditRow[] {
   const rows: FamilyAuditRow[] = [];
+  if (model.dataHours?.some(h => h !== model.hour)) {
+    rows.push(auditCell('__bars__', 'dataHours', JSON.stringify(model.dataHours)));
+  }
   if (model.empty !== undefined && model.rows.length === 0) {
     const key = model.emptyKind ?? 'empty';
     rows.push(auditRow(key, model.empty));

@@ -275,6 +275,7 @@ export interface TableModel {
   readonly rows: readonly TableRow[];
   readonly slots?: readonly TableModelSlot[];
   readonly hour: number;
+  readonly tooltipHour?: number;
   readonly nextChangeAt?: number;
   readonly rowTimeBoundaries?: boolean;
   readonly changedKeys?: ReadonlySet<string>;
@@ -1086,6 +1087,7 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
         empty: hasData ? null : (model.empty ?? null),
         emptyKind: hasData ? null : (model.emptyKind ?? 'empty'),
         emptyDetail: hasData ? null : (model.emptyDetail ?? null),
+        ...(model.tooltipHour !== undefined ? { tooltipHour: model.tooltipHour } : {}),
       })),
   ];
   if (!hasData) return out;

@@ -135,4 +135,76 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   const zeroShare = warContributionMeasureProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['live', { ...reply, contributions: [both] }]]) }), { wars, saved: null, measure: 'casualties' });
   const zero = zeroShare.rows[0];
   assert.equal(zero?.kind === 'data' && zero.value?.value.kind, 'partial');
+
+  const { formatDateOnly } = await import('../../families/valueFormat.ts');
+  const { tableLane } = await import('../../families/table/laneView.ts');
+  const { deriveTableAudit } = await import('../../families/table/model.ts');
+  const { buildColumnLayouts } = await import('../../families/table/layout.ts');
+  const { tableDefaults } = await import('../../families/table/settings.ts');
+  const { barsLane } = await import('../../families/bars/laneView.ts');
+  const { deriveBarsAudit } = await import('../../families/bars/model.ts');
+
+  const endedAt = 500;
+  const shownAt = 900;
+  const expectedDate = `As of ${formatDateOnly(endedAt)}`;
+  const endedSides = warContributionSidesProjection.project(createBoundedReadView({ hour: shownAt, panels: new Map([['ended', { ...reply, hour: endedAt }]]) }), { wars, saved: null });
+  assert.equal(endedSides.tooltipHour, endedAt, 'Sides carries the ended war read hour for tooltips');
+  assert.equal(endedSides.titleSummary, expectedDate, 'Sides labels the evidence date in its summary');
+  const sidesFlat = endedSides.panes!.flatMap(pane => pane.rows.map((row, i) => ({
+    kind: 'data' as const, key: row.key, name: row.name, row, rank: i + 1, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0,
+  })));
+  const sidesTip = tableLane.tooltip({ model: endedSides, layout: { shape: { flatRows: sidesFlat } } } as never, 'row:opposing:CCC', false);
+  assert.equal(sidesTip?.hour, endedAt, 'Sides lane tooltip stamps the supplying read hour, not the display hour');
+  const sidesAudit = deriveTableAudit({ model: endedSides, flatRows: sidesFlat, visibleColumns: buildColumnLayouts(endedSides.columns, tableDefaults(endedSides.columns, { density: 'normal', sort: { column: 'participation', direction: 'descending' } })) });
+  const sidesMeta = JSON.parse(sidesAudit.find(r => r.key === '__table__:meta')!.value!) as { tooltipHour?: unknown; titleSummary?: string };
+  assert.deepEqual(sidesMeta.tooltipHour, ['int', String(endedAt)], 'Sides audit records the supplying read hour');
+  assert.deepEqual(sidesMeta.titleSummary, ['str', expectedDate]);
+
+  const endedMeasure = warContributionMeasureProjection.project(createBoundedReadView({ hour: shownAt, panels: new Map([['ended', { ...reply, hour: endedAt, contributions: [withWar] }]]) }), { wars, saved: null, measure: 'casualties' });
+  assert.equal(endedMeasure.summaryText, expectedDate, 'By measure puts the supplying read hour in summaryText (header, unaffected by narrow 714px caption width)');
+  const { layoutFamilyBars } = await import('../../families/bars/layout.ts');
+  const narrowLayout = layoutFamilyBars(endedMeasure, 714, 300, { font: 'sans-serif', fontSize: { small: 12, body: 13 } } as never, text => text.length * 7);
+  const narrowStructure = barsLane.structure({ model: endedMeasure, layout: narrowLayout } as never);
+  assert.equal((narrowStructure.meta as { summaryText?: string }).summaryText, expectedDate, 'summaryText stays intact in structure meta at the 714px picker threshold');
+  const barLeftTip = barsLane.tooltip({ model: endedMeasure } as never, 'row:opposing:CCC', false);
+  const barRightTip = barsLane.tooltip({ model: endedMeasure } as never, 'right:viewpoint:BBB', false);
+  const barPickTip = barsLane.tooltip({ model: endedMeasure } as never, 'pick:casualties', false);
+  assert.equal(barLeftTip?.hour, endedAt, 'By measure left-side tooltip stamps the supplying read hour');
+  assert.equal(barLeftTip?.payload?.hour, endedAt);
+  assert.equal(barRightTip?.hour, endedAt, 'By measure right-side tooltip stamps the supplying read hour');
+  assert.equal(barRightTip?.payload?.hour, endedAt);
+  assert.equal(barPickTip?.hour, endedAt, 'By measure measure-picker tooltip stamps the supplying read hour');
+  assert.equal(barPickTip?.payload?.hour, endedAt);
+  const barsAudit = deriveBarsAudit(endedMeasure);
+  assert.equal(barsAudit.find(r => r.key === '__bars__:dataHours')?.value, JSON.stringify([endedAt]), 'By measure audit records the supplying read hour');
+
+  const endedMissingSide = warContributionMeasureProjection.project(createBoundedReadView({ hour: shownAt, panels: new Map([['ended', { ...reply, hour: endedAt, contributions: [oneSide] }]]) }), { wars, saved: null, measure: 'casualties' });
+  const missingRightTip = barsLane.tooltip({ model: endedMissingSide } as never, 'right:viewpoint:BBB', false);
+  assert.equal(missingRightTip?.hour, endedAt, 'missing-member right-side tooltip stamps the supplying read hour');
+  assert.equal(missingRightTip?.payload?.hour, endedAt);
+
+  const leftMissingAndShorter = {
+    ...group,
+    viewpointSide: ['BBB', 'DDD'],
+    opposingSide: ['AAA'],
+    reason: missing,
+    measures: [{
+      ...casualties,
+      opposing: { total: null, partial: false, members: [], shareOfWar: null },
+      viewpoint: { total: '500000', partial: false, shareOfWar: null, members: [member('BBB', '300000', 6000), member('DDD', '200000', 4000)] },
+    }],
+  };
+  const rightLongerWars = {
+    available: true,
+    wars: [{
+      ...war,
+      observations: [{ ...observation(10, 500, ['BBB', 'DDD'], ['AAA']), attackersAreViewpoint: false }],
+    }],
+  } as unknown as WarsReply;
+  const rightLonger = warContributionMeasureProjection.project(createBoundedReadView({ hour: shownAt, panels: new Map([['ended', { ...reply, hour: endedAt, contributions: [leftMissingAndShorter] }]]) }), { wars: rightLongerWars, saved: null, measure: 'casualties' });
+  const missingLeftTip = barsLane.tooltip({ model: rightLonger } as never, 'row:opposing:AAA', false);
+  assert.equal(missingLeftTip?.hour, endedAt, 'missing-member left-side tooltip stamps the supplying read hour');
+  assert.equal(missingLeftTip?.payload?.hour, endedAt);
+  assert.deepEqual(missingLeftTip?.payload?.items, [{ label: 'Flag', missingReason: 'Loading' }], 'missing-member left-side tooltip preserves default art status items');
+  assert.equal(barsLane.tooltip({ model: rightLonger } as never, 'row:opposing:none:1', false), null, 'empty synthetic left half on a right-longer roster emits no tooltip');
 });
