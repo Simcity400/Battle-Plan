@@ -755,6 +755,13 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let sides: &[AssignedSide] = epoch.and_then(|epoch| epoch.sides.as_deref()).map_or(&[], Vec::as_slice);
     let roster = epoch.and_then(|epoch| epoch.sides.as_ref()).map(|sides| Roster::new(sides));
     let viewpoint = viewpoint_name(params.viewpoint.as_ref(), params.viewpoint_country == Some(true), holders, hour);
+    if params.mode == Some(AirMode::Viewpoint)
+        && params.viewpoint_country == Some(true)
+        && viewpoint.is_empty()
+        && let Some(reason) = params.viewpoint.as_ref().and_then(|country| holders.not_known(country, hour))
+    {
+        return Ok(reply(reason, warnings));
+    }
     let view = match params.mode.unwrap_or_default() {
         AirMode::Sides => View::Sides,
         AirMode::Viewpoint if params.viewpoint_country == Some(true) => View::Country(viewpoint),

@@ -278,6 +278,11 @@ impl AtHour for IntelNetworkCoverage {
             return Ok(IntelCoverageReply::empty(scale, read_hour, summaries.missing, None));
         }
         let unlisted = summaries.missing;
+        if params.group.is_none()
+            && let Some(reason) = params.countries.iter().flatten().find(|country| at.holders.tag_at(country, at.hour).is_none()).and_then(|country| at.holders.not_known(country, at.hour))
+        {
+            return Ok(IntelCoverageReply::empty(scale, read_hour, None, Some(reason)));
+        }
         let selected: Option<HashSet<String>> = match &params.group {
             Some(group) => {
                 let members = at.context.members(group, at.hour)?;

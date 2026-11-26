@@ -356,6 +356,9 @@ impl AtHour for OperativeMatrix {
             .complete::<tables::IntelligenceAgencies>()
             .map_err(|error| missing(frame, TableId::IntelligenceAgencies).unwrap_or_else(|| error.to_string()));
         let census = census(memberships, agencies, &tags, &at.context.content);
+        if let Some(reason) = params.countries.iter().find(|country| at.holders.tag_at(country, at.hour).is_none()).and_then(|country| at.holders.not_known(country, at.hour)) {
+            return Ok(empty_reply(read_hour, Some(reason), Vec::new()));
+        }
         let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| {
             params.countries.iter().filter_map(|country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned))).collect()
         });

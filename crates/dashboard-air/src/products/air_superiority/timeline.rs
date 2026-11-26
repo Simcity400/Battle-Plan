@@ -299,6 +299,11 @@ impl<'a> Days<'a> {
         }
     }
 
+    fn viewpoint_not_known(&self, hour: i32) -> Option<String> {
+        let viewpoint = self.params.viewpoint.as_ref().filter(|_| self.params.mode == Some(AirMode::Viewpoint) && self.params.viewpoint_country == Some(true))?;
+        self.holders.tag_at(viewpoint, hour).is_none().then(|| self.holders.not_known(viewpoint, hour)).flatten()
+    }
+
     fn theatre_reason(&self, day: usize, region: u32) -> Option<&'static str> {
         match self.theatres?.get(day)? {
             None | Some(Err(())) => Some("theatres-not-recorded"),
@@ -362,6 +367,9 @@ impl<'a> Days<'a> {
             None => return Ok(AtHourRank::unranked(NOT_RECORDED)),
             Some(_) => {}
         }
+        if let Some(reason) = self.days[day].as_ref().and_then(|read| self.viewpoint_not_known(read.hour)) {
+            return Ok(AtHourRank::unranked(&reason));
+        }
         let keep = self.keep();
         let mut active: Vec<(u32, u128)> = Vec::new();
         let mut outside = 0u32;
@@ -406,10 +414,12 @@ impl<'a> Days<'a> {
         let mut excluded = vec![0u32; self.days.len()];
         let mut viewpoints = vec![DayViewpoint::Keep; self.days.len()];
         self.each(regions, 0..self.days.len(), cancelled, |day, composed| {
+            let unknown = composed.and_then(|composed| self.viewpoint_not_known(composed.hour));
             for (row, &region) in cells.iter_mut().zip(regions) {
-                let cell = composed.map(|composed| match self.theatre_reason(day, region) {
-                    Some(reason) => AirDayCell::Reason { reason: reason.into() },
-                    None => day_cell(composed.compose.cell(Some(composed.pairs(region))), composed, region, keep.as_ref(), &mut |position| {
+                let cell = composed.map(|composed| match (&unknown, self.theatre_reason(day, region)) {
+                    (Some(reason), _) => AirDayCell::Reason { reason: reason.clone() },
+                    (None, Some(reason)) => AirDayCell::Reason { reason: reason.into() },
+                    (None, None) => day_cell(composed.compose.cell(Some(composed.pairs(region))), composed, region, keep.as_ref(), &mut |position| {
                         dictionary.index(index, composed.epoch, composed.hour, composed.sides, position, resolver)
                     }),
                 });

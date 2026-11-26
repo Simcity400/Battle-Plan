@@ -418,6 +418,9 @@ impl AtHour for CasualtyMatrix {
         let tags = HolderTags::from_holders(at.holders);
         let pairs = fold(&counters, |identity| tags.latest_at(identity, at.hour).map(str::to_owned), |identity| partial.contains(&identity));
         let resolve = |country: &Country| -> Option<String> { at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned)) };
+        if let Some(reason) = params.countries.iter().chain(&params.subject).find(|country| resolve(country).is_none()).and_then(|country| at.holders.not_known(country, at.hour)) {
+            return Ok(empty(Some(reason), warnings));
+        }
         let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
         let subject = params.subject.as_ref().and_then(resolve);
         if params.subject.is_some() && subject.is_none() {
