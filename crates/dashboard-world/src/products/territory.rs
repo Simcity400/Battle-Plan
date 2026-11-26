@@ -259,7 +259,7 @@ impl AtHour for TerritoryShare {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.valid_through(params.group.as_ref(), at.hour)
+        at.context.valid_through(params.group.as_ref(), at.hour).min(unknown_through(&at.holders.unknown, at.hour))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -289,6 +289,10 @@ impl AtHour for TerritoryShare {
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+fn unknown_through(unknown: &[(i32, i32, String)], hour: i32) -> i32 {
+    unknown.iter().flat_map(|&(first, last, _)| [Some(first), last.checked_add(1)]).flatten().filter(|&edge| edge > hour).min().map_or(i32::MAX, |edge| edge - 1)
 }
 
 pub struct TerritoryBreakdown;
@@ -606,6 +610,12 @@ mod tests {
 
     fn total(slot: u32, owned_states: Recorded<i64>, controlled_states: i64) -> TerritoryTotalRow {
         TerritoryTotalRow { slot, owned_states, controlled_states: Recorded::Value(controlled_states), ..TerritoryTotalRow::default() }
+    }
+
+    #[test]
+    fn a_share_holds_only_until_the_next_unknown_holder_interval_begins_or_ends() {
+        let unknown = [(100, 109, "first".to_owned()), (110, 119, "second".to_owned())];
+        assert_eq!((unknown_through(&unknown, 90), unknown_through(&unknown, 105), unknown_through(&unknown, 115), unknown_through(&unknown, 200)), (99, 109, 119, i32::MAX), "adjacent intervals with different reasons each end the reply");
     }
 
     #[test]
