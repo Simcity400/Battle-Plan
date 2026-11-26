@@ -281,6 +281,7 @@ pub struct Captured {
     project_owners: Vec<(u32, u32)>,
     project_read: Vec<(u32, u32)>,
     project_runtime: runtime::Runtime,
+    cold_parts: Vec<cold_parts::ProjectPart>,
     scientist_injury_read: bool,
     rest_lent: bool,
 }
@@ -372,6 +373,7 @@ impl Captured {
             project_owners: Vec::new(),
             project_read: Vec::new(),
             project_runtime: runtime::Runtime::default(),
+            cold_parts: Vec::new(),
             profile_acquisition: false,
             acquisition_phases: [0; 5],
             scientist_injury_read: false,
@@ -476,6 +478,12 @@ impl Captured {
             + self.project_links.capacity()
             + self.project_owners.capacity() * size_of::<(u32, u32)>()
             + self.project_read.capacity() * size_of::<(u32, u32)>()
+            + self.cold_parts.capacity() * size_of::<cold_parts::ProjectPart>()
+            + self
+                .cold_parts
+                .iter()
+                .map(cold_parts::ProjectPart::allocated_bytes)
+                .sum::<usize>()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -1303,6 +1311,7 @@ impl Captured {
                         &self.project_read,
                         force_full && self.project_runtime.is_empty(),
                         dispatch,
+                        &mut self.cold_parts,
                     )
                 } else {
                     None
@@ -1314,6 +1323,7 @@ impl Captured {
                         &mut self.projects.rows,
                         &mut self.history.rows,
                         &mut self.project_runtime,
+                        &mut self.cold_parts,
                     );
                     if let Some(started) = started {
                         self.acquisition_phases[4] = elapsed(started);

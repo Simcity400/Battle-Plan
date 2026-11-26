@@ -1,11 +1,39 @@
 use super::*;
 use collector_certificates::watch_registry::WatchRegistry;
+use std::hash::{BuildHasherDefault, Hasher};
+
+#[derive(Default)]
+struct PointerHasher(u64);
+
+impl Hasher for PointerHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (self.0 ^ (value as u64)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        self.0 ^= self.0 >> 32;
+    }
+}
+
+type PointerSet = std::collections::HashSet<usize, BuildHasherDefault<PointerHasher>>;
 
 static MARKS: WatchRegistry = WatchRegistry::marks_only();
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REPAIRING: AtomicBool = AtomicBool::new(false);
 static ADDED: AtomicBool = AtomicBool::new(false);
-static DIRTY: Mutex<Option<std::collections::HashSet<usize>>> = Mutex::new(None);
+static DIRTY: Mutex<Option<PointerSet>> = Mutex::new(None);
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }

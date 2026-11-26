@@ -324,6 +324,26 @@ pub struct VariableBaselines<'a> {
     pub values: Option<(BaselineToken, &'a [rows::ScriptVariableValueRow])>,
 }
 
+#[inline]
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut state = 0xcbf2_9ce4_8422_2325_u64 ^ (bytes.len() as u64);
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_ne_bytes(chunk.try_into().unwrap());
+        state = (state ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+        state = state.rotate_left(5);
+    }
+    let rem = chunks.remainder();
+    if !rem.is_empty() {
+        let mut tail = 0_u64;
+        for (i, &byte) in rem.iter().enumerate() {
+            tail |= u64::from(byte) << (i * 8);
+        }
+        state = (state ^ tail).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    state ^ (state >> 32)
+}
+
 struct FnvHasher(u64);
 
 impl Default for FnvHasher {
@@ -333,65 +353,153 @@ impl Default for FnvHasher {
 }
 
 impl std::hash::Hasher for FnvHasher {
+    #[inline]
     fn finish(&self) -> u64 {
         self.0
     }
 
+    #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        let mut state = self.0;
-        for &byte in bytes {
-            state ^= u64::from(byte);
-            state = state.wrapping_mul(0x0100_0000_01b3);
-        }
-        self.0 = state;
+        self.0 = (self.0 ^ hash_bytes(bytes)).wrapping_mul(0x517c_c1b7_2722_0a95);
     }
 }
 
-type FastMap<K, V> =
-    std::collections::HashMap<K, V, std::hash::BuildHasherDefault<FnvHasher>>;
 type FastSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<FnvHasher>>;
 
 #[derive(Default)]
 struct VariableInterner {
-    by_name: FastMap<Vec<u8>, u32>,
-    names: Vec<Vec<u8>>,
+    buckets: Vec<u64>,
+    spans: Vec<(u32, u32)>,
+    bytes: Vec<u8>,
     published: usize,
+    published_bytes: usize,
 }
 
 impl VariableInterner {
-    fn reset(&mut self) {
-        self.by_name.clear();
-        self.names.clear();
-        self.published = 0;
+    #[inline]
+    fn len(&self) -> usize {
+        self.spans.len()
     }
 
-    fn rollback(&mut self) {
-        while self.names.len() > self.published {
-            if let Some(name) = self.names.pop() {
-                self.by_name.remove(&name);
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    #[inline]
+    fn name(&self, id: usize) -> &[u8] {
+        let (start, len) = self.spans[id];
+        &self.bytes[start as usize..start as usize + len as usize]
+    }
+
+    fn reset(&mut self) {
+        self.buckets.clear();
+        self.spans.clear();
+        self.bytes.clear();
+        self.published = 0;
+        self.published_bytes = 0;
+    }
+
+    fn reindex(&mut self) {
+        self.buckets.fill(0);
+        if self.buckets.is_empty() {
+            return;
+        }
+        let mask = self.buckets.len() - 1;
+        for id in 0..self.spans.len() {
+            let (start, len) = self.spans[id];
+            let hash = hash_bytes(&self.bytes[start as usize..start as usize + len as usize]);
+            let tag = (hash >> 32) as u32;
+            let mut slot = (hash as usize) & mask;
+            while self.buckets[slot] != 0 {
+                slot = (slot + 1) & mask;
             }
+            self.buckets[slot] = (u64::from(tag) << 32) | (id as u64 + 1);
         }
     }
 
+    fn grow_buckets(&mut self, min_entries: usize) -> Option<()> {
+        let need = min_entries
+            .checked_mul(2)?
+            .max(64)
+            .checked_next_power_of_two()?;
+        if need <= self.buckets.len() {
+            return Some(());
+        }
+        let mut next = Vec::new();
+        reserve_exact(&mut next, need).ok()?;
+        next.resize(need, 0);
+        self.buckets = next;
+        self.reindex();
+        Some(())
+    }
+
+    fn reserve_capacity(&mut self, entries: usize, byte_len: usize) -> Option<()> {
+        reserve_exact(&mut self.spans, entries).ok()?;
+        if byte_len != 0 {
+            reserve(&mut self.bytes, byte_len).ok()?;
+        }
+        if entries != 0 {
+            self.grow_buckets(entries)?;
+        }
+        Some(())
+    }
+
+    fn rollback(&mut self) {
+        if self.spans.len() == self.published {
+            return;
+        }
+        self.spans.truncate(self.published);
+        self.bytes.truncate(self.published_bytes);
+        self.reindex();
+    }
+
     fn commit(&mut self) {
-        self.published = self.names.len();
+        self.published = self.spans.len();
+        self.published_bytes = self.bytes.len();
+    }
+
+    #[inline]
+    fn get(&self, name: &[u8]) -> Option<u32> {
+        if self.buckets.is_empty() {
+            return None;
+        }
+        let hash = hash_bytes(name);
+        let tag = (hash >> 32) as u32;
+        let mask = self.buckets.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        loop {
+            let entry = self.buckets[slot];
+            if entry == 0 {
+                return None;
+            }
+            if (entry >> 32) as u32 == tag {
+                let id = (entry as u32) - 1;
+                if self.name(id as usize) == name {
+                    return Some(id);
+                }
+            }
+            slot = (slot + 1) & mask;
+        }
     }
 
     fn sync(&mut self, previous: &[rows::ScriptVariableNameRow]) -> bool {
         if previous.len() == self.published
-            && self.names.len() == self.published
+            && self.spans.len() == self.published
             && (previous.is_empty()
                 || (previous[0].id == 0
-                    && previous[0].name == self.names[0]
+                    && previous[0].name == self.name(0)
                     && previous[previous.len() - 1].id as usize == previous.len() - 1
-                    && previous[previous.len() - 1].name == self.names[self.names.len() - 1]))
+                    && previous[previous.len() - 1].name == self.name(self.spans.len() - 1)))
         {
             return true;
         }
         self.reset();
-        if reserve(&mut self.names, previous.len()).is_err()
-            || engine_allocation::reserve_map(&mut self.by_name, previous.len()).is_err()
+        let total_bytes: usize = previous.iter().map(|row| row.name.len()).sum();
+        if u32::try_from(total_bytes).is_err()
+            || self.reserve_capacity(previous.len(), total_bytes).is_none()
         {
+            self.reset();
             return false;
         }
         for (index, row) in previous.iter().enumerate() {
@@ -399,35 +507,71 @@ impl VariableInterner {
                 self.reset();
                 return false;
             }
-            let Ok(name) = copy_vec(&row.name) else {
+            let Some(id) = self.intern(&row.name) else {
                 self.reset();
                 return false;
             };
-            let Ok(key) = copy_vec(&row.name) else {
-                self.reset();
-                return false;
-            };
-            if self.by_name.insert(key, row.id).is_some() {
+            if id != row.id {
                 self.reset();
                 return false;
             }
-            self.names.push(name);
         }
-        self.published = self.names.len();
+        self.commit();
         true
     }
 
+    #[inline]
     fn intern(&mut self, name: &[u8]) -> Option<u32> {
-        if let Some(&id) = self.by_name.get(name) {
-            return Some(id);
+        let hash = hash_bytes(name);
+        let tag = (hash >> 32) as u32;
+        if !self.buckets.is_empty() {
+            let mask = self.buckets.len() - 1;
+            let mut slot = (hash as usize) & mask;
+            loop {
+                let entry = self.buckets[slot];
+                if entry == 0 {
+                    if (self.spans.len() + 1) * 2 <= self.buckets.len() {
+                        let id = u32::try_from(self.spans.len())
+                            .ok()
+                            .filter(|&id| id < u32::MAX)?;
+                        let start = u32::try_from(self.bytes.len()).ok()?;
+                        let len = u32::try_from(name.len()).ok()?;
+                        start.checked_add(len)?;
+                        reserve(&mut self.spans, 1).ok()?;
+                        reserve(&mut self.bytes, name.len()).ok()?;
+                        self.bytes.extend_from_slice(name);
+                        self.spans.push((start, len));
+                        self.buckets[slot] = (u64::from(tag) << 32) | (u64::from(id) + 1);
+                        return Some(id);
+                    }
+                    break;
+                }
+                if (entry >> 32) as u32 == tag {
+                    let id = (entry as u32) - 1;
+                    if self.name(id as usize) == name {
+                        return Some(id);
+                    }
+                }
+                slot = (slot + 1) & mask;
+            }
         }
-        let id = u32::try_from(self.names.len()).ok()?;
-        reserve(&mut self.names, 1).ok()?;
-        engine_allocation::reserve_map(&mut self.by_name, 1).ok()?;
-        let stored = copy_vec(name).ok()?;
-        let key = copy_vec(name).ok()?;
-        self.names.push(stored);
-        self.by_name.insert(key, id);
+        let id = u32::try_from(self.spans.len())
+            .ok()
+            .filter(|&id| id < u32::MAX)?;
+        let start = u32::try_from(self.bytes.len()).ok()?;
+        let len = u32::try_from(name.len()).ok()?;
+        start.checked_add(len)?;
+        self.grow_buckets(self.spans.len().checked_add(1)?)?;
+        reserve(&mut self.spans, 1).ok()?;
+        reserve(&mut self.bytes, name.len()).ok()?;
+        self.bytes.extend_from_slice(name);
+        self.spans.push((start, len));
+        let mask = self.buckets.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        while self.buckets[slot] != 0 {
+            slot = (slot + 1) & mask;
+        }
+        self.buckets[slot] = (u64::from(tag) << 32) | (u64::from(id) + 1);
         Some(id)
     }
 }
@@ -3430,7 +3574,7 @@ impl Captured {
         let equal = ok
             && scope_edits.is_empty()
             && value_edits.is_empty()
-            && scratch.interner.names.len() == scratch.interner.published;
+            && scratch.interner.len() == scratch.interner.published;
         scratch.interner.rollback();
         equal
     }
@@ -3569,21 +3713,21 @@ impl Captured {
             let scopes_in = keyed_update(scopes_token, scope_edits, TableRows::ScriptVariables)?;
             let values_in =
                 keyed_update(values_token, value_edits, TableRows::ScriptVariableValues)?;
-            let names_in = if scratch.interner.names.len() == scratch.interner.published {
+            let names_in = if scratch.interner.len() == scratch.interner.published {
                 TableInput::ComparedEqual(names_token)
             } else {
                 let start = scratch.interner.published;
-                let added = scratch.interner.names.len() - start;
+                let added = scratch.interner.len() - start;
                 let mut keys = Vec::new();
                 let mut rows = Vec::new();
                 reserve_exact(&mut keys, added).ok()?;
                 reserve_exact(&mut rows, added).ok()?;
-                for (offset, name) in scratch.interner.names[start..].iter().enumerate() {
+                for offset in 0..added {
                     let id = (start + offset) as u32;
                     keys.push(u128::from(id));
                     rows.push(rows::ScriptVariableNameRow {
                         id,
-                        name: copy_vec(name).ok()?,
+                        name: copy_vec(scratch.interner.name(start + offset)).ok()?,
                     });
                 }
                 TableInput::SliceUpdate {
@@ -3799,11 +3943,11 @@ impl Captured {
             .map(|&i| self.variable_scope(i).unwrap().2.len())
             .sum();
         let mut live_existing = Vec::new();
-        if !interner.names.is_empty() {
-            if reserve_exact(&mut live_existing, interner.names.len()).is_err() {
+        if !interner.is_empty() {
+            if reserve_exact(&mut live_existing, interner.len()).is_err() {
                 return all_unavailable("script variable allocation failed");
             }
-            live_existing.resize(interner.names.len(), false);
+            live_existing.resize(interner.len(), false);
         }
         let mut added: Vec<&[u8]> = Vec::new();
         let mut seen_new: FastSet<&[u8]> = FastSet::default();
@@ -3811,7 +3955,7 @@ impl Captured {
             let (_, _, entries, names) = self.variable_scope(i).unwrap();
             for entry in entries {
                 let name = &names[entry.name_start..entry.name_start + entry.name_len];
-                if let Some(&id) = interner.by_name.get(name) {
+                if let Some(id) = interner.get(name) {
                     if let Some(flag) = live_existing.get_mut(id as usize) {
                         *flag = true;
                     }
@@ -3831,7 +3975,7 @@ impl Captured {
         let live_existing_count = if has_dead {
             live_existing.iter().filter(|&&alive| alive).count()
         } else {
-            interner.names.len()
+            interner.len()
         };
         if u32::try_from(live_existing_count.saturating_add(added.len())).is_err() {
             return all_unavailable("script variable name count exceeds its wire width");
@@ -3840,13 +3984,11 @@ impl Captured {
         if has_dead {
             let mut compacted = VariableInterner::default();
             let total = live_existing_count + added.len();
-            if reserve_exact(&mut compacted.names, total).is_err()
-                || engine_allocation::reserve_map(&mut compacted.by_name, total).is_err()
-            {
+            if compacted.reserve_capacity(total, 0).is_none() {
                 return all_unavailable("script variable allocation failed");
             }
-            for (name, alive) in interner.names.iter().zip(&live_existing) {
-                if *alive && compacted.intern(name).is_none() {
+            for (id, &alive) in live_existing.iter().enumerate() {
+                if alive && compacted.intern(interner.name(id)).is_none() {
                     return all_unavailable("script variable allocation failed");
                 }
             }
@@ -3872,12 +4014,12 @@ impl Captured {
             }
         };
         let mut name_rows = Vec::new();
-        if reserve_exact(&mut name_rows, interner.names.len()).is_err() {
+        if reserve_exact(&mut name_rows, interner.len()).is_err() {
             restore_interner(interner, previous_interner);
             return all_unavailable("script variable allocation failed");
         }
-        for (index, name) in interner.names.iter().enumerate() {
-            let Ok(copied) = copy_vec(name) else {
+        for index in 0..interner.len() {
+            let Ok(copied) = copy_vec(interner.name(index)) else {
                 restore_interner(interner, previous_interner);
                 return all_unavailable("script variable allocation failed");
             };
@@ -3911,7 +4053,7 @@ impl Captured {
             }
             for entry in entries {
                 let name = &names[entry.name_start..entry.name_start + entry.name_len];
-                let var_id = interner.by_name[name];
+                let var_id = interner.get(name).unwrap();
                 scope_vals.push((var_id, entry.value_raw));
             }
             scope_vals.sort_unstable_by_key(|&(id, _)| id);
@@ -4517,7 +4659,7 @@ fn scope_values_match(
             return None;
         }
         let name = &names[entry.name_start..entry.name_start + entry.name_len];
-        let Some(&var_id) = interner.by_name.get(name) else {
+        let Some(var_id) = interner.get(name) else {
             return Some(false);
         };
         if prev.var_id != var_id {
@@ -4545,7 +4687,7 @@ fn scope_values_match(
     }
     for entry in &current[from..] {
         let name = &names[entry.name_start..entry.name_start + entry.name_len];
-        let Some(&var_id) = interner.by_name.get(name) else {
+        let Some(var_id) = interner.get(name) else {
             return Some(false);
         };
         let Ok(index) = old.binary_search_by_key(&var_id, |row| row.var_id) else {
@@ -4617,6 +4759,7 @@ fn walk_variables(
         reuse.unwrap().finish_quiet(delta);
         return;
     }
+    let shallow = reuse.as_mut().is_some_and(VariableReuse::enable_shallow);
     capture_variables(rows, entries, names, |scopes, entries, names| {
         let _reads = read_accounting::table(TABLES[8]);
         let (scopes, entries, names) = (
@@ -4632,7 +4775,31 @@ fn walk_variables(
         }
     });
     if let Some(reuse) = reuse {
-        if matches!(rows.outcome, Outcome::Rows { .. }) {
+        if shallow {
+            if matches!(rows.outcome, Outcome::Rows { .. }) {
+                let len = rows.outcome.len();
+                if let Some((walk, snap)) = reuse.finish_shallow(
+                    true,
+                    &rows.rows[..len],
+                    &entries.first[..entries.len],
+                    &names.first[..names.len],
+                    delta,
+                ) {
+                    rows.outcome = walk.outcome;
+                    entries.len = 0;
+                    entries.required = 0;
+                    names.len = 0;
+                    names.required = 0;
+                    *snapshot = Some(snap);
+                } else {
+                    rows.outcome = Outcome::Unavailable {
+                        reason: "script variable snapshot allocation failed",
+                    };
+                }
+            } else {
+                let _ = reuse.finish_shallow(false, &[], &[], &[], delta);
+            }
+        } else if matches!(rows.outcome, Outcome::Rows { .. }) {
             let len = rows.outcome.len();
             reuse.finish(
                 true,

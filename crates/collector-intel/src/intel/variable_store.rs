@@ -48,6 +48,43 @@ impl HeldScope {
         })
     }
 
+    fn from_raw(
+        scope: Scope,
+        seed: Option<u32>,
+        raw_entries: &[Row],
+        all_names: &[u8],
+    ) -> Option<Arc<Self>> {
+        let mut total_bytes = 0_usize;
+        for entry in raw_entries {
+            let end = entry.name_start.checked_add(entry.name_len)?;
+            if end > all_names.len() {
+                return None;
+            }
+            total_bytes = total_bytes.checked_add(entry.name_len)?;
+        }
+        allocation::advisory(|| {
+            let mut entries = allocation::vec(raw_entries.len()).ok()?;
+            let mut names = allocation::vec(total_bytes).ok()?;
+            for entry in raw_entries {
+                let rel_start = names.len();
+                names.extend_from_slice(
+                    &all_names[entry.name_start..entry.name_start + entry.name_len],
+                );
+                entries.push(Row {
+                    name_start: rel_start,
+                    ..*entry
+                });
+            }
+            allocation::allocation_attempt().ok()?;
+            Some(Arc::new(Self {
+                scope,
+                seed,
+                entries,
+                names,
+            }))
+        })
+    }
+
     fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
             + self.entries.capacity() * size_of::<Row>()
@@ -181,6 +218,7 @@ pub struct VariableSnapshot {
     len: usize,
     entries_len: usize,
     bytes_len: usize,
+    override_count: usize,
 }
 
 impl VariableSnapshot {
@@ -198,6 +236,33 @@ impl VariableSnapshot {
 
     pub fn bytes_len(&self) -> usize {
         self.bytes_len
+    }
+
+    fn can_shallow_carry(&self) -> bool {
+        self.base.is_some() && self.override_count <= (self.len / 4).max(512)
+    }
+
+    fn slot(&self, ordinal: usize) -> Option<ScopeSlot> {
+        let chunk = self.chunks.get(ordinal / SCOPE_CHUNK)?;
+        let slot = ordinal % SCOPE_CHUNK;
+        match chunk {
+            ScopeChunk::Base(start, count) => {
+                (slot < *count).then_some(ScopeSlot::Base(start + slot))
+            }
+            ScopeChunk::Owned(slots) => slots.get(slot).cloned(),
+        }
+    }
+
+    fn base_index(&self, ordinal: usize) -> Option<usize> {
+        let chunk = self.chunks.get(ordinal / SCOPE_CHUNK)?;
+        let slot = ordinal % SCOPE_CHUNK;
+        match chunk {
+            ScopeChunk::Base(start, count) => (slot < *count).then_some(start + slot),
+            ScopeChunk::Owned(slots) => match slots.get(slot)? {
+                ScopeSlot::Base(index) => Some(*index),
+                ScopeSlot::Override(_) => None,
+            },
+        }
     }
 
     pub fn get(&self, ordinal: usize) -> Option<(Scope, Option<u32>, &[Row], &[u8])> {
@@ -225,6 +290,7 @@ impl VariableSnapshot {
         self.len = 0;
         self.entries_len = 0;
         self.bytes_len = 0;
+        self.override_count = 0;
     }
 
     fn shallow_clone(&self) -> Option<Self> {
@@ -239,6 +305,7 @@ impl VariableSnapshot {
             len: self.len,
             entries_len: self.entries_len,
             bytes_len: self.bytes_len,
+            override_count: self.override_count,
         })
     }
 
@@ -263,6 +330,103 @@ impl VariableSnapshot {
             len,
             entries_len,
             bytes_len,
+            override_count: 0,
+        })
+    }
+
+    fn rebuild_from_walk(
+        &self,
+        rows: &[ScopeRow],
+        plans: &[Plan],
+        entries: &[Row],
+        names: &[u8],
+    ) -> Option<Self> {
+        let base = self.base.as_ref()?;
+        if rows.len() != plans.len() {
+            return None;
+        }
+        let len = rows.len();
+        let chunk_count = len.div_ceil(SCOPE_CHUNK);
+        let mut chunks = allocation::advisory(|| allocation::vec(chunk_count).ok())?;
+        let mut entries_len = 0_usize;
+        let mut bytes_len = 0_usize;
+        let mut override_count = 0_usize;
+        let mut chunk_start = 0_usize;
+        while chunk_start < len {
+            let count = (len - chunk_start).min(SCOPE_CHUNK);
+            let contiguous_base = plans[chunk_start]
+                .carried
+                .then(|| plans[chunk_start].held.and_then(|h| self.base_index(h as usize)))
+                .flatten()
+                .filter(|&base_start| {
+                    base_start + count <= base.rows.len()
+                        && (0..count).all(|offset| {
+                            let j = chunk_start + offset;
+                            let plan = &plans[j];
+                            plan.carried
+                                && plan.held.and_then(|h| self.base_index(h as usize))
+                                    == Some(base_start + offset)
+                                && base.rows[base_start + offset].scope == rows[j].scope
+                                && base.rows[base_start + offset].seed == rows[j].seed
+                        })
+                });
+            if let Some(base_start) = contiguous_base {
+                for offset in 0..count {
+                    let b = base_start + offset;
+                    entries_len += base.rows[b].entries_len;
+                    bytes_len += base.name_spans[b].1;
+                }
+                chunks.push(ScopeChunk::Base(base_start, count));
+            } else {
+                let mut slots = allocation::advisory(|| allocation::vec(count).ok())?;
+                for offset in 0..count {
+                    let j = chunk_start + offset;
+                    let row = &rows[j];
+                    let plan = &plans[j];
+                    if plan.carried {
+                        let old_idx = plan.held? as usize;
+                        let (old_scope, old_seed, old_entries, old_names) = self.get(old_idx)?;
+                        if old_scope == row.scope && old_seed == row.seed {
+                            let slot = self.slot(old_idx)?;
+                            if matches!(slot, ScopeSlot::Override(_)) {
+                                override_count += 1;
+                            }
+                            entries_len += old_entries.len();
+                            bytes_len += old_names.len();
+                            slots.push(slot);
+                        } else {
+                            let held =
+                                HeldScope::from_normalized(row.scope, row.seed, old_entries, old_names)?;
+                            override_count += 1;
+                            entries_len += held.entries.len();
+                            bytes_len += held.names.len();
+                            slots.push(ScopeSlot::Override(held));
+                        }
+                    } else {
+                        let end = row.entries_start.checked_add(row.entries_len)?;
+                        let raw_entries = entries.get(row.entries_start..end)?;
+                        let held = HeldScope::from_raw(row.scope, row.seed, raw_entries, names)?;
+                        override_count += 1;
+                        entries_len += held.entries.len();
+                        bytes_len += held.names.len();
+                        slots.push(ScopeSlot::Override(held));
+                    }
+                }
+                let arc = allocation::advisory(|| {
+                    allocation::allocation_attempt().ok()?;
+                    Some(Arc::new(slots))
+                })?;
+                chunks.push(ScopeChunk::Owned(arc));
+            }
+            chunk_start += count;
+        }
+        Some(Self {
+            base: Some(Arc::clone(base)),
+            chunks,
+            len,
+            entries_len,
+            bytes_len,
+            override_count,
         })
     }
 
@@ -275,6 +439,7 @@ impl VariableSnapshot {
         let new_bytes = scope.names.len();
         let chunk_ref = self.chunks.get_mut(ordinal / SCOPE_CHUNK)?;
         let slot = ordinal % SCOPE_CHUNK;
+        let added_override;
         match chunk_ref {
             ScopeChunk::Base(start, count) => {
                 if slot >= *count {
@@ -295,11 +460,13 @@ impl VariableSnapshot {
                     Some(Arc::new(slots))
                 })?;
                 *chunk_ref = ScopeChunk::Owned(next);
+                added_override = true;
             }
             ScopeChunk::Owned(chunk_arc) => {
                 if slot >= chunk_arc.len() {
                     return None;
                 }
+                added_override = matches!(chunk_arc[slot], ScopeSlot::Base(_));
                 if let Some(chunk) = Arc::get_mut(chunk_arc) {
                     chunk[slot] = ScopeSlot::Override(scope);
                 } else {
@@ -313,6 +480,9 @@ impl VariableSnapshot {
                     *chunk_arc = next;
                 }
             }
+        }
+        if added_override {
+            self.override_count += 1;
         }
         self.entries_len = self.entries_len - old_entries + new_entries;
         self.bytes_len = self.bytes_len - old_bytes + new_bytes;
@@ -512,6 +682,12 @@ impl VariableDelta {
     }
 }
 
+#[inline]
+fn pointer_slot(container: usize, mask: usize) -> usize {
+    let hash = (container as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    ((hash ^ (hash >> 32)) as usize) & mask
+}
+
 #[derive(Default)]
 struct Held {
     snapshot: VariableSnapshot,
@@ -539,12 +715,23 @@ impl Held {
         self.quiet = None;
     }
 
+    #[inline]
     fn find(&self, container: usize) -> Option<usize> {
-        let at = self
-            .index
-            .binary_search_by_key(&container, |&(held, _)| held)
-            .ok()?;
-        Some(self.index[at].1 as usize)
+        if container == 0 || self.index.is_empty() {
+            return None;
+        }
+        let mask = self.index.len() - 1;
+        let mut slot = pointer_slot(container, mask);
+        loop {
+            let (held, index) = self.index[slot];
+            if held == 0 {
+                return None;
+            }
+            if held == container {
+                return (index != u32::MAX).then_some(index as usize);
+            }
+            slot = (slot + 1) & mask;
+        }
     }
 
     fn publish_from(&mut self, rows: &[ScopeRow], entries: &[Row], names: &[u8]) -> bool {
@@ -561,58 +748,86 @@ impl Held {
         true
     }
 
+    fn publish_shallow(
+        &mut self,
+        rows: &[ScopeRow],
+        plans: &[Plan],
+        entries: &[Row],
+        names: &[u8],
+    ) -> Option<VariableSnapshot> {
+        let next = self.snapshot.rebuild_from_walk(rows, plans, entries, names)?;
+        let published = next.shallow_clone()?;
+        self.snapshot = next;
+        Some(published)
+    }
+
     fn certify(&mut self, plans: &[Plan]) -> bool {
         let len = self.snapshot.len();
+        let buckets = if len == 0 {
+            0
+        } else {
+            let Some(buckets) = len
+                .checked_mul(2)
+                .and_then(|n| n.max(16).checked_next_power_of_two())
+            else {
+                return false;
+            };
+            buckets
+        };
         let stored = allocation::advisory(|| {
             self.meta.clear();
             self.index.clear();
             self.always.clear();
             self.fresh.clear();
             allocation::reserve(&mut self.meta, len)?;
-            allocation::reserve(&mut self.index, len)?;
+            allocation::reserve(&mut self.index, buckets)?;
             allocation::reserve(&mut self.always, len)?;
             allocation::reserve(&mut self.fresh, len)?;
             std::io::Result::Ok(())
         });
-        if stored.is_err() || plans.len() != len || u32::try_from(len).is_err() {
+        if stored.is_err() || plans.len() != len || u32::try_from(len).is_err() || len == u32::MAX as usize {
             return false;
         }
         self.meta.extend(plans.iter().map(|plan| plan.meta));
+        self.index.resize(buckets, (0, 0));
+        let mask = buckets.saturating_sub(1);
+        let mut had_duplicate = false;
         for (index, meta) in self.meta.iter().enumerate() {
-            match meta.certificate {
-                Some(_) => self.index.push((meta.container, index as u32)),
-                None => self.always.push(index as u32),
-            }
-        }
-        self.index.sort_unstable();
-        let mut kept = 0;
-        let mut at = 0;
-        while at < self.index.len() {
-            let container = self.index[at].0;
-            let mut end = at + 1;
-            while end < self.index.len() && self.index[end].0 == container {
-                end += 1;
-            }
-            if end - at == 1 {
-                self.index[kept] = self.index[at];
-                kept += 1;
-            } else {
-                for duplicate in at..end {
-                    let scope = self.index[duplicate].1;
-                    self.always.push(scope);
+            if meta.certificate.is_some() && meta.container != 0 && buckets != 0 {
+                let mut slot = pointer_slot(meta.container, mask);
+                loop {
+                    let (held, existing) = self.index[slot];
+                    if held == 0 {
+                        self.index[slot] = (meta.container, index as u32);
+                        break;
+                    }
+                    if held == meta.container {
+                        had_duplicate = true;
+                        if existing != u32::MAX {
+                            self.always.push(existing);
+                            self.index[slot] = (meta.container, u32::MAX);
+                        }
+                        self.always.push(index as u32);
+                        break;
+                    }
+                    slot = (slot + 1) & mask;
                 }
+            } else {
+                self.always.push(index as u32);
             }
-            at = end;
         }
-        self.index.truncate(kept);
-        self.always.sort_unstable();
-        self.fresh.extend(
-            self.index
-                .iter()
-                .map(|&(_, index)| index)
-                .filter(|&index| self.meta[index as usize].fresh),
-        );
-        self.fresh.sort_unstable();
+        if had_duplicate {
+            self.always.sort_unstable();
+        }
+        for (index, meta) in self.meta.iter().enumerate() {
+            if meta.fresh
+                && meta.certificate.is_some()
+                && meta.container != 0
+                && (!had_duplicate || self.find(meta.container) == Some(index))
+            {
+                self.fresh.push(index as u32);
+            }
+        }
         true
     }
 
@@ -661,6 +876,7 @@ pub struct VariableStore {
     pending_updates: Vec<(usize, Arc<HeldScope>)>,
     unlisted: bool,
     quiet: bool,
+    shallow_carry: bool,
     renewed: bool,
     broken: bool,
     counts: Counts,
@@ -697,11 +913,16 @@ impl VariableStore {
         }
         self.since = self.held.generation;
         self.plans.clear();
+        let target_plans = self.held.meta.len();
+        if self.plans.capacity() < target_plans {
+            let _ = allocation::advisory(|| allocation::reserve(&mut self.plans, target_plans));
+        }
         self.visits.clear();
         self.visiting = None;
         self.pending_updates.clear();
         self.clear_changed();
         self.quiet = false;
+        self.shallow_carry = false;
         self.renewed = false;
         self.broken = false;
         self.counts = Counts::default();
@@ -816,11 +1037,16 @@ impl VariableStore {
 
     fn restart(&mut self) {
         self.plans.clear();
+        let target_plans = self.held.meta.len();
+        if self.plans.capacity() < target_plans {
+            let _ = allocation::advisory(|| allocation::reserve(&mut self.plans, target_plans));
+        }
         self.visits.clear();
         self.visiting = None;
         self.pending_updates.clear();
         self.clear_changed();
         self.quiet = false;
+        self.shallow_carry = false;
         self.renewed = false;
         self.broken = false;
         self.counts = Counts::default();
@@ -867,6 +1093,15 @@ impl<'a> VariableReuse<'a> {
     pub fn begin(store: &'a mut VariableStore, changes: &'a dyn Changes) -> Self {
         store.begin(changes);
         Self { store, changes }
+    }
+
+    pub fn enable_shallow(&mut self) -> bool {
+        if self.store.held.snapshot.can_shallow_carry() {
+            self.store.shallow_carry = true;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn quiet_hour_snapshot(
@@ -1038,6 +1273,66 @@ impl<'a> VariableReuse<'a> {
         crate::variable_changes::record(&store.counts, held.then_some(scopes));
     }
 
+    pub fn finish_shallow(
+        self,
+        complete: bool,
+        rows: &[ScopeRow],
+        entries: &[Row],
+        names: &[u8],
+        delta: &mut VariableDelta,
+    ) -> Option<(ScopeWalk, VariableSnapshot)> {
+        let store = self.store;
+        delta.clear();
+        if complete {
+            store.delta(rows, delta);
+        }
+        let holds = complete && !store.broken && store.plans.len() == rows.len();
+        let published = if holds {
+            store.held.publish_shallow(rows, &store.plans, entries, names)
+        } else {
+            None
+        };
+        let result = if let Some(snapshot) = published
+            && store.held.certify(&store.plans)
+        {
+            store.held.generation = Some(collector_projection::projection::generation());
+            delta.generation = store.held.generation;
+            store.held.taken = store.hour.taken;
+            let global = store.plans.first().map(|plan| plan.meta.container);
+            let key = store
+                .hour
+                .key()
+                .filter(|_| store.witness.agrees(rows, global));
+            store.held.quiet = key;
+            if key.is_some() {
+                std::mem::swap(&mut store.held.witness, &mut store.witness);
+            }
+            let walk = ScopeWalk {
+                outcome: Outcome::Rows {
+                    len: snapshot.len(),
+                },
+                entries_len: snapshot.entries_len(),
+                required_entries: snapshot.entries_len(),
+                bytes_len: snapshot.bytes_len(),
+                required_bytes: snapshot.bytes_len(),
+            };
+            Some((walk, snapshot))
+        } else {
+            store.held.clear();
+            None
+        };
+        store.plans.clear();
+        store.visits.clear();
+        store.shallow_carry = false;
+        store.counts.quiet = store.quiet;
+        store.measure();
+        crate::variable_changes::record(
+            &store.counts,
+            result.as_ref().map(|(_, snap)| snap.len()),
+        );
+        result
+    }
+
     pub fn finish(
         self,
         complete: bool,
@@ -1123,12 +1418,18 @@ impl VariableCarry for VariableReuse<'_> {
                 && (!unmarked || meta.fresh || row_seed == store.seed)
         });
         let carry = current.and_then(|index| {
-            let (_, _, row_entries, row_names) = held.snapshot.get(index)?;
-            Some((row_entries.len(), row_names.len()))
+            if state.shallow_carry && state.visiting.is_none() {
+                Some((0, 0))
+            } else {
+                let (_, _, row_entries, row_names) = held.snapshot.get(index)?;
+                Some((row_entries.len(), row_names.len()))
+            }
         });
         let plans = &mut state.plans;
         let token = plans.len();
-        if allocation::advisory(|| allocation::reserve(plans, 1)).is_err() {
+        if plans.len() == plans.capacity()
+            && allocation::advisory(|| allocation::reserve(plans, 1)).is_err()
+        {
             state.broken = true;
             return (usize::MAX, None);
         }
@@ -1157,10 +1458,12 @@ impl VariableCarry for VariableReuse<'_> {
             return;
         };
         plan.carried = true;
-        entries.copy_from_slice(held_entries);
-        names.copy_from_slice(held_names);
+        if !(state.shallow_carry && state.visiting.is_none()) {
+            entries.copy_from_slice(held_entries);
+            names.copy_from_slice(held_names);
+        }
         state.counts.reused += 1;
-        state.counts.reused_rows += entries.len() as u64;
+        state.counts.reused_rows += held_entries.len() as u64;
     }
 
     fn read(&mut self, token: usize, _: Outcome, entries: &[Row], _: &[u8]) {

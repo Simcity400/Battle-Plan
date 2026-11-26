@@ -464,6 +464,7 @@ struct Variant {
     certificate: Option<(u64, u64)>,
     count: u32,
     availability: Option<u64>,
+    values: Vec<i64>,
 }
 struct State {
     slot: usize,
@@ -496,6 +497,7 @@ pub struct Store {
     membership_scratch: Vec<(u32, u64, usize)>,
     membership_changed: bool,
     membership_bytes: usize,
+    variant_value_bytes: usize,
     context_changed: bool,
     dirty: Vec<usize>,
     variant_epoch: Option<u64>,
@@ -527,6 +529,7 @@ impl Default for Store {
             membership_scratch: Vec::new(),
             membership_changed: false,
             membership_bytes: 0,
+            variant_value_bytes: 0,
             context_changed: false,
             dirty: Vec::new(),
             variant_epoch: None,
@@ -571,6 +574,7 @@ impl Store {
         self.memo.clear();
         self.pools.clear();
         self.membership_bytes = 0;
+        self.variant_value_bytes = 0;
         self.variants.clear();
         self.states.clear();
         self.variant_handles.clear();
@@ -591,6 +595,7 @@ impl Store {
             + self.leaders.bytes
             + self.pools.bytes
             + self.membership_bytes
+            + self.variant_value_bytes
             + self.variants.bytes
             + self.variant_handles.bytes
             + self.states.bytes
@@ -1286,7 +1291,17 @@ impl Store {
         {
             return Ok(());
         }
-        let old = self.variants.get(&handle).map_or(0, |held| held.count);
+        let (old, mut cached_values) = match self.variants.get_mut(&handle) {
+            Some(held) => {
+                let values = std::mem::take(&mut held.values);
+                self.variant_value_bytes = self
+                    .variant_value_bytes
+                    .saturating_sub(values.capacity() * std::mem::size_of::<i64>());
+                (held.count, values)
+            }
+            None => (0, Vec::new()),
+        };
+        let mut next_values = Vec::new();
         let result = (|| {
             certificate.ok_or("held variant terrain writer certificate unavailable")?;
             let result = if let Some(observed) = reads.and_then(|reads| {
@@ -1298,18 +1313,58 @@ impl Store {
                     self.settling_owned,
                 )
             }) {
-                for (ordinal, &raw) in observed.values.iter().enumerate() {
-                    self.terrain_operand(handle, ordinal as u32, raw)?;
+                let same = observed.result.is_ok()
+                    && cached_values.len() == observed.values.len()
+                    && cached_values.as_slice() == observed.values.as_slice();
+                if same {
+                    next_values = std::mem::take(&mut cached_values);
+                } else {
+                    for (ordinal, &raw) in observed.values.iter().enumerate() {
+                        if cached_values.get(ordinal).copied() != Some(raw) {
+                            self.terrain_operand(handle, ordinal as u32, raw)?;
+                        }
+                    }
+                    if observed.result.is_ok() {
+                        cached_values.clear();
+                        if engine_allocation::reserve(&mut cached_values, observed.values.len())
+                            .is_ok()
+                        {
+                            cached_values.extend_from_slice(&observed.values);
+                            next_values = std::mem::take(&mut cached_values);
+                        }
+                    }
                 }
                 observed.result
             } else {
-                engine_native_land::division_panel_operands::terrain(
+                let old_slice = cached_values.as_slice();
+                let mut recorded = Vec::new();
+                let mut record_ok = true;
+                let res = engine_native_land::division_panel_operands::terrain(
                     memory,
                     base,
                     pointer,
                     handle,
-                    |ordinal, raw| self.terrain_operand(handle, ordinal, raw),
-                )
+                    |ordinal, raw| {
+                        if old_slice.get(ordinal as usize).copied() != Some(raw) {
+                            self.terrain_operand(handle, ordinal as u32, raw)?;
+                        }
+                        if record_ok {
+                            if recorded.len() == ordinal as usize
+                                && (recorded.len() < recorded.capacity()
+                                    || engine_allocation::reserve(&mut recorded, 1).is_ok())
+                            {
+                                recorded.push(raw);
+                            } else {
+                                record_ok = false;
+                            }
+                        }
+                        Ok(())
+                    },
+                );
+                if res.is_ok() && record_ok {
+                    next_values = recorded;
+                }
+                res
             };
             result.and_then(|count| {
                 if self.settling_owned
@@ -1331,6 +1386,7 @@ impl Store {
                 count
             }
             Err(reason) => {
+                next_values.clear();
                 operands::refused();
                 self.rows
                     .remove_range(key(3, handle, 1)..owner_range(3, handle).end)?;
@@ -1345,6 +1401,9 @@ impl Store {
             self.variant_handles.remove(&old.pointer);
         }
         self.variant_handles.put(pointer, handle);
+        self.variant_value_bytes = self
+            .variant_value_bytes
+            .saturating_add(next_values.capacity() * std::mem::size_of::<i64>());
         self.variants.put(
             handle,
             Variant {
@@ -1358,6 +1417,7 @@ impl Store {
                 certificate,
                 count,
                 availability,
+                values: next_values,
             },
         );
         Ok(())
@@ -1655,6 +1715,9 @@ impl Store {
         gone.sort_unstable();
         for handle in gone {
             let held = self.variants.remove(&handle).unwrap();
+            self.variant_value_bytes = self
+                .variant_value_bytes
+                .saturating_sub(held.values.capacity() * std::mem::size_of::<i64>());
             if self.variant_handles.get(&held.pointer) == Some(&handle) {
                 self.variant_handles.remove(&held.pointer);
             }

@@ -1,7 +1,37 @@
 use super::*;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    hash::{BuildHasherDefault, Hasher},
+};
 
-pub(super) const MAX_WITNESS_BYTES: usize = 12 * 1024 * 1024;
+#[derive(Default)]
+struct PointerHasher(u64);
+
+impl Hasher for PointerHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (self.0 ^ (value as u64)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        self.0 ^= self.0 >> 32;
+    }
+}
+
+type PointerMap<V> = HashMap<usize, V, BuildHasherDefault<PointerHasher>>;
+
+pub(super) const MAX_WITNESS_BYTES: usize = 48 * 1024 * 1024;
 const MAX_COALESCED_SPAN: usize = 4096;
 
 pub(super) struct Witness {
@@ -119,8 +149,8 @@ fn copy_scattered_batch<const N: usize>(
     memory.copy_scattered_prefetched(addresses, &mut destinations) == N
 }
 
-static WITNESSES: Mutex<Option<HashMap<usize, Witness>>> = Mutex::new(None);
-fn witnesses() -> std::sync::MutexGuard<'static, Option<HashMap<usize, Witness>>> {
+static WITNESSES: Mutex<Option<PointerMap<Witness>>> = Mutex::new(None);
+fn witnesses() -> std::sync::MutexGuard<'static, Option<PointerMap<Witness>>> {
     WITNESSES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -145,7 +175,7 @@ static WITNESS_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 pub(super) fn keep_all(kept: Vec<(usize, Witness)>) {
     let mut held = witnesses();
-    let held = held.get_or_insert_with(HashMap::new);
+    let held = held.get_or_insert_with(PointerMap::default);
     let stamp = WITNESS_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if engine_allocation::advisory(|| engine_allocation::reserve_map(held, kept.len())).is_ok() {
         for (pointer, mut witness) in kept {
@@ -170,7 +200,6 @@ pub(super) fn keep_all(kept: Vec<(usize, Witness)>) {
                     total = total.saturating_sub(bytes);
                 }
             }
-            held.shrink_to_fit();
         }
     }
 }

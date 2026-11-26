@@ -5,10 +5,7 @@ use replay_data::{
 use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::TableInput, frame::TableView};
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
-use std::sync::{
-    Mutex, PoisonError,
-    atomic::{AtomicI64, AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Target {
@@ -391,12 +388,6 @@ impl Counters {
     }
 }
 
-fn vacant() -> TableInput {
-    TableInput::Sampled(TableView::Unavailable {
-        reason: String::new(),
-    })
-}
-
 pub(crate) fn compare_frame(
     encoder: &FrameEncoder,
     target: Target,
@@ -422,19 +413,16 @@ pub(crate) fn compare_frame(
         return;
     }
     let active = &active[..active_len];
-    let slots: [Mutex<TableInput>; TABLES.len()] = std::array::from_fn(|index| {
-        if matches!(
-            source.tables[TABLES[index].index()],
-            TableInput::Sampled(TableView::Complete(_))
-        ) {
-            Mutex::new(std::mem::replace(
-                &mut source.tables[TABLES[index].index()],
-                vacant(),
-            ))
-        } else {
-            Mutex::new(vacant())
+    struct SharedTables(*mut [TableInput; replay_data::rows::TableId::ALL.len()]);
+    impl SharedTables {
+        fn ptr(&self, table_slot: usize) -> *mut TableInput {
+            self.0.cast::<TableInput>().wrapping_add(table_slot)
         }
-    });
+    }
+    // SAFETY: each worker claims a unique index in `active` via `next.fetch_add(1)`, and
+    // `TABLES` entries map to distinct `TableId::index()` slots, so workers touch disjoint slots.
+    unsafe impl Sync for SharedTables {}
+    let shared = SharedTables(std::ptr::from_mut(&mut source.tables));
     let next = AtomicUsize::new(0);
     let work = || {
         let mut indices = Vec::new();
@@ -446,15 +434,17 @@ pub(crate) fn compare_frame(
             if collector_memory::terminal::failed() {
                 break;
             }
-            let mut input = slots[index].lock().unwrap_or_else(PoisonError::into_inner);
+            let table_slot = TABLES[index].index();
+            // SAFETY: `slot` is uniquely claimed by this thread and every `TABLES[index]` has a
+            // unique `table_slot`, so no other thread accesses `tables[table_slot]`.
+            let input = unsafe { &mut *shared.ptr(table_slot) };
             let _outcome = COMPARE[index](
                 encoder,
                 target,
-                &mut input,
+                input,
                 &mut indices,
                 &counters.dense_at[index],
             );
-            drop(input);
             #[cfg(test)]
             counters.record(index, _outcome);
         }
@@ -488,10 +478,6 @@ pub(crate) fn compare_frame(
             work();
             span.finish();
         }
-    }
-    let mut slots = slots.map(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner));
-    for &index in active {
-        source.tables[TABLES[index].index()] = std::mem::replace(&mut slots[index], vacant());
     }
 }
 
@@ -554,7 +540,12 @@ fn compare<T: TableSchema>(
         return Outcome::Kept;
     };
     owned.extend_from_slice(indices);
-    let TableInput::Sampled(TableView::Complete(rows)) = std::mem::replace(input, vacant()) else {
+    let TableInput::Sampled(TableView::Complete(rows)) = std::mem::replace(
+        input,
+        TableInput::Sampled(TableView::Unavailable {
+            reason: String::new(),
+        }),
+    ) else {
         unreachable!("checked complete above");
     };
     let Ok(all) = T::take(rows) else {

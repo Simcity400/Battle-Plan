@@ -18,6 +18,26 @@ pub struct ProjectPart {
     runtime_done: bool,
 }
 impl ProjectPart {
+    pub(super) fn allocated_bytes(&self) -> usize {
+        self.owners.capacity() * size_of::<u32>()
+            + self.projects.capacity() * size_of::<nproject_cproject::Row>()
+            + self.history.capacity() * size_of::<nproject_sproject_history::Row>()
+            + self.runtime.allocated_bytes()
+    }
+
+    fn reset(&mut self) {
+        self.owners.clear();
+        self.projects.clear();
+        self.history.clear();
+        self.outcomes = (Outcome::Rows { len: 0 }, Outcome::Rows { len: 0 });
+        self.census_error = None;
+        self.runtime.clear();
+        self.acquire_runtime = false;
+        self.runtime_phase = false;
+        self.acquired = false;
+        self.runtime_done = false;
+    }
+
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         let _reads = read_accounting::table(TABLES[1]);
         if self.runtime_phase {
@@ -72,6 +92,23 @@ impl Acquired {
     }
     pub(super) fn join(
         mut self,
+        projects: &mut Vec<nproject_cproject::Row>,
+        history: &mut Vec<nproject_sproject_history::Row>,
+        runtime: &mut runtime::Runtime,
+        pool: &mut Vec<ProjectPart>,
+    ) -> (Outcome, Outcome) {
+        let out = self.join_inner(projects, history, runtime);
+        for mut part in self.parts.drain(..) {
+            part.reset();
+            if pool.len() < pool.capacity() || engine_allocation::reserve(pool, 1).is_ok() {
+                pool.push(part);
+            }
+        }
+        out
+    }
+
+    fn join_inner(
+        &mut self,
         projects: &mut Vec<nproject_cproject::Row>,
         history: &mut Vec<nproject_sproject_history::Row>,
         runtime: &mut runtime::Runtime,
@@ -177,6 +214,7 @@ pub(super) fn capture(
     read: &[(u32, u32)],
     empty_runtime: bool,
     dispatch: Option<ProjectDispatch<'_>>,
+    pool: &mut Vec<ProjectPart>,
 ) -> Option<Acquired> {
     let dispatch = dispatch.filter(|dispatch| dispatch.lanes > 1 && read.len() >= 32)?;
     let parts = engine_allocation::advisory(|| {
@@ -189,13 +227,10 @@ pub(super) fn capture(
         }
         let width = owners.len().div_ceil(dispatch.lanes);
         let mut parts = engine_allocation::vec(owners.len().div_ceil(width)).ok()?;
-        for (ordinal, owners) in owners.chunks(width).enumerate() {
-            let mut owners = copy_vec(owners).ok()?;
-            owners.sort_unstable();
-            owners.dedup();
-            parts.push(ProjectPart {
+        for (ordinal, chunk) in owners.chunks(width).enumerate() {
+            let mut part = pool.pop().unwrap_or_else(|| ProjectPart {
                 ordinal,
-                owners,
+                owners: Vec::new(),
                 projects: Vec::new(),
                 history: Vec::new(),
                 outcomes: (Outcome::Rows { len: 0 }, Outcome::Rows { len: 0 }),
@@ -206,6 +241,13 @@ pub(super) fn capture(
                 acquired: false,
                 runtime_done: false,
             });
+            part.reset();
+            part.ordinal = ordinal;
+            engine_allocation::reserve(&mut part.owners, chunk.len()).ok()?;
+            part.owners.extend_from_slice(chunk);
+            part.owners.sort_unstable();
+            part.owners.dedup();
+            parts.push(part);
         }
         Some(parts)
     })?;

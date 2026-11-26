@@ -26,11 +26,11 @@ pub fn table<S: TableSchema, T>(
 
 #[derive(Default)]
 pub struct RowOrder {
-    indices: Vec<usize>,
+    entries: Vec<(u128, usize)>,
 }
 impl RowOrder {
     pub fn allocated_bytes(&self) -> usize {
-        self.indices.capacity() * std::mem::size_of::<usize>()
+        self.entries.capacity() * std::mem::size_of::<(u128, usize)>()
     }
 
     pub fn table<S: TableSchema, T>(
@@ -63,30 +63,32 @@ impl RowOrder {
         if let Outcome::Unavailable { reason } = outcome {
             return unavailable(reason);
         }
-        let natural = source.windows(2).all(|pair| key(&pair[0]) < key(&pair[1]));
-        if !natural {
-            if self.indices.len() != source.len() {
-                self.indices.clear();
-                if engine_allocation::reserve_exact(&mut self.indices, source.len()).is_err() {
-                    return TableView::Unavailable {
-                        reason: String::new(),
-                    };
+        let mut natural = true;
+        if let Some((first, rest)) = source.split_first() {
+            let mut prev = key(first);
+            for item in rest {
+                let next = key(item);
+                if next <= prev {
+                    natural = false;
+                    break;
                 }
-                self.indices.extend(0..source.len());
+                prev = next;
             }
-            if !self
-                .indices
-                .windows(2)
-                .all(|pair| key(&source[pair[0]]) < key(&source[pair[1]]))
+        }
+        if !natural {
+            self.entries.clear();
+            if self.entries.capacity() < source.len()
+                && engine_allocation::reserve_exact(&mut self.entries, source.len()).is_err()
             {
-                self.indices
-                    .sort_unstable_by_key(|&index| key(&source[index]));
+                return TableView::Unavailable {
+                    reason: String::new(),
+                };
             }
-            if self
-                .indices
-                .windows(2)
-                .any(|pair| key(&source[pair[0]]) == key(&source[pair[1]]))
-            {
+            for (index, item) in source.iter().enumerate() {
+                self.entries.push((key(item), index));
+            }
+            self.entries.sort_unstable_by_key(|&(k, _)| k);
+            if self.entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return unavailable("walker produced duplicate engine ids");
             }
         }
@@ -98,14 +100,23 @@ impl RowOrder {
                 };
             }
         };
-        for index in 0..source.len() {
-            rows.push(convert(
-                &source[if natural { index } else { self.indices[index] }],
-            ));
-            if crate::allocation::failed() {
-                return TableView::Unavailable {
-                    reason: String::new(),
-                };
+        if natural {
+            for item in source {
+                rows.push(convert(item));
+                if crate::allocation::failed() {
+                    return TableView::Unavailable {
+                        reason: String::new(),
+                    };
+                }
+            }
+        } else {
+            for &(_, index) in &self.entries {
+                rows.push(convert(&source[index]));
+                if crate::allocation::failed() {
+                    return TableView::Unavailable {
+                        reason: String::new(),
+                    };
+                }
             }
         }
         let rows = TableRows::from_rows::<S>(rows);

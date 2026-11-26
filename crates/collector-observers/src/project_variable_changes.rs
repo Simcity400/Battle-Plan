@@ -1,11 +1,39 @@
 use crate::country_input_changes::{self, Marks};
 use std::{
     collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
     sync::{
         RwLock, RwLockReadGuard,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
+
+#[derive(Default)]
+struct FastHasher(u64);
+
+impl Hasher for FastHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (self.0 ^ (value as u64)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        self.0 ^= self.0 >> 32;
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
 
 struct Entry {
     owner: u32,
@@ -15,7 +43,7 @@ struct Entry {
     pending_revision: AtomicU64,
     pending_active: AtomicUsize,
 }
-static OWNERS: RwLock<Option<HashMap<usize, Entry>>> = RwLock::new(None);
+static OWNERS: RwLock<Option<FastMap<usize, Entry>>> = RwLock::new(None);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -41,7 +69,7 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
         });
     }
     let mut entries = OWNERS.try_write().ok()?;
-    let entries = entries.get_or_insert_with(HashMap::new);
+    let entries = entries.get_or_insert_with(FastMap::default);
     if !entries.contains_key(&store) {
         engine_allocation::reserve_map(entries, 1).ok()?;
         entries.insert(
@@ -72,7 +100,7 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
 }
 
 pub struct Write {
-    entries: Option<RwLockReadGuard<'static, Option<HashMap<usize, Entry>>>>,
+    entries: Option<RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>>,
     store: usize,
     _marks: Marks<'static>,
 }
@@ -139,40 +167,40 @@ pub fn retain_live(mut keep: impl FnMut(u32, u32) -> bool) {
     }
 }
 
-pub struct StampReader(RwLockReadGuard<'static, Option<HashMap<usize, Entry>>>);
+pub struct StampReader(RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>);
 
 pub fn stamp_reader() -> Option<StampReader> {
     OWNERS.try_read().ok().map(StampReader)
 }
 
 impl StampReader {
+    #[inline]
     pub fn stamps(
         &self,
         store: usize,
         owner: u32,
         id: u32,
     ) -> Option<(Option<(u64, u64)>, Option<(u64, u64)>)> {
-        let enabled = ENABLED.load(Ordering::SeqCst);
+        let enabled = ENABLED.load(Ordering::Acquire);
+        let project_hooks = PROJECT_HOOKS.load(Ordering::Acquire);
         let entry = self.0.as_ref().and_then(|entries| entries.get(&store));
+        let epoch = if enabled || project_hooks {
+            EPOCH.load(Ordering::SeqCst)
+        } else {
+            0
+        };
         let stamp = if !enabled {
             None
         } else {
             let entry = entry.filter(|entry| entry.owner == owner && entry.id == id)?;
-            (entry.active.load(Ordering::SeqCst) == 0).then(|| {
-                (
-                    EPOCH.load(Ordering::SeqCst),
-                    entry.revision.load(Ordering::SeqCst),
-                )
-            })
+            (entry.active.load(Ordering::SeqCst) == 0)
+                .then(|| (epoch, entry.revision.load(Ordering::SeqCst)))
         };
-        let pending_stamp = if !PROJECT_HOOKS.load(Ordering::SeqCst) {
+        let pending_stamp = if !project_hooks {
             None
         } else {
             entry.and_then(|entry| {
-                let stamp = (
-                    EPOCH.load(Ordering::SeqCst),
-                    entry.pending_revision.load(Ordering::SeqCst),
-                );
+                let stamp = (epoch, entry.pending_revision.load(Ordering::SeqCst));
                 (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
             })
         };
@@ -198,7 +226,7 @@ pub fn pending_stamp(store: usize) -> Option<(u64, u64)> {
     (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
 }
 pub struct ProjectWrite {
-    entries: Option<RwLockReadGuard<'static, Option<HashMap<usize, Entry>>>>,
+    entries: Option<RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>>,
     store: usize,
 }
 impl Drop for ProjectWrite {

@@ -1,6 +1,35 @@
 use super::*;
 use collector_observers::project_variable_changes;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
+
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = self.0;
+        for &byte in bytes {
+            state = (state ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        self.0 = state;
+    }
+
+    #[inline]
+    fn write_u32(&mut self, value: u32) {
+        self.0 = (self.0 ^ u64::from(value)).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
 
 #[derive(Default)]
 struct PendingRaw {
@@ -76,12 +105,18 @@ impl Held {
 
 #[derive(Default)]
 pub(super) struct Runtime {
-    held: HashMap<(u32, u32), Held>,
+    held: FastMap<(u32, u32), Held>,
     heap_bytes: usize,
     pending: Vec<(u32, u32)>,
 }
 
 impl Runtime {
+    pub(super) fn clear(&mut self) {
+        self.held.clear();
+        self.pending.clear();
+        self.heap_bytes = 0;
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.held.is_empty() && self.pending.is_empty()
     }
@@ -165,18 +200,34 @@ impl Runtime {
         let mut reader = project_variable_changes::stamp_reader();
         for row in rows {
             let key = (row.owner, row.local_id);
-            if !self.held.contains_key(&key) {
+            let held = if let Some(held) = self.held.get_mut(&key) {
+                held
+            } else {
                 if engine_allocation::reserve_map(&mut self.held, 1).is_err() {
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                     PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);
                     continue;
                 }
-                self.held.insert(key, Held::default());
+                self.held.entry(key).or_default()
+            };
+            let pointer = row.source_pointer;
+            if !force
+                && pointer == held.pointer
+                && held.pending_known
+                && held.variables_known
+                && row.state.iterations == held.iterations
+                && let Some(store) = pointer.checked_add(nproject_cproject::VARIABLES)
+                && let Some(r) = reader.as_ref()
+                && let Some((stamp, pending_stamp)) = r.stamps(store, row.owner, row.local_id)
+                && stamp.is_some()
+                && stamp == held.stamp
+                && pending_stamp.is_some()
+                && pending_stamp == held.pending_stamp
+            {
+                continue;
             }
-            let held = self.held.get_mut(&key).unwrap();
             self.heap_bytes -= held.allocated_bytes();
             (|| {
-                let pointer = row.source_pointer;
                 if pointer != held.pointer {
                     *held = Held {
                         pointer,

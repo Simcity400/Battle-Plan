@@ -29,9 +29,9 @@ const FILL_MINIMUM: usize = 16;
 const NEW: u32 = u32::MAX;
 const EMPTY: u32 = u32::MAX;
 const INSERT_SCRATCH_LIMIT: usize = 16 * 1024;
-const HOUR_SCRATCH_LIMIT: usize = 32 * 1024;
+const HOUR_SCRATCH_LIMIT: usize = 256 * 1024;
 const SECTION_SCRATCH_LIMIT: usize = 16 * 1024;
-const BATCH_SCRATCH_LIMIT: usize = 256 * 1024;
+const BATCH_SCRATCH_LIMIT: usize = 2 * 1024 * 1024;
 
 fn drop_over<T>(values: &mut Vec<T>, limit_bytes: usize) {
     values.clear();

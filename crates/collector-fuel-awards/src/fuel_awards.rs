@@ -521,9 +521,9 @@ fn stamp() -> Stamp {
     )
 }
 
-fn held(pending: &Pending) -> Option<native::Located> {
+fn held(pending: &Pending, epoch_current: bool) -> Option<native::Located> {
     (!pending.refused
-        && pending.epoch == LOG.epoch.load(Ordering::SeqCst)
+        && epoch_current
         && pending.stamp == stamp()
         && !crate::world_lifetime::invalidating())
     .then_some(pending.located)
@@ -790,22 +790,18 @@ fn append(
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    let attempted = match &name {
-        Some(name) => {
-            let bytes = name.byte_len() as u64;
-            NAME_ATTEMPTS
-                .fetch_add(bytes, Ordering::Relaxed)
-                .wrapping_add(bytes)
-        }
-        None => NAME_ATTEMPTS.load(Ordering::Relaxed),
-    };
-    raise(
-        &NAME_DEMAND,
-        attempted_since(attempted, &NAME_CONSUMED),
-        Ordering::Release,
-    );
     if let Some(name) = &name {
-        raise(&NAME_STRIDE, name.byte_len(), Ordering::Release);
+        let len = name.byte_len();
+        let bytes = len as u64;
+        let attempted = NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes);
+        raise(
+            &NAME_DEMAND,
+            attempted_since(attempted, &NAME_CONSUMED),
+            Ordering::Release,
+        );
+        raise(&NAME_STRIDE, len, Ordering::Release);
     }
     let Some(buffer) = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing)
     else {
@@ -872,7 +868,12 @@ fn append_buffer(
     {
         return spill.push(index, entry, name, memory);
     }
-    let slot = index as usize % buffer.entries.len();
+    let entries_len = buffer.entries.len();
+    let slot = if entries_len.is_power_of_two() {
+        index as usize & (entries_len - 1)
+    } else {
+        index as usize % entries_len
+    };
     let name_required = name.as_ref().map_or(0, native::StoredName::byte_len);
     let Ok(name_required_u32) = u32::try_from(name_required) else {
         return spill.push(index, entry, name, memory);
@@ -1117,11 +1118,12 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         COUNTERS[1].fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if pending.epoch != LOG.epoch.load(Ordering::Acquire) {
+    let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
+    if !epoch_current {
         pending.refused = true;
         pending.cause.get_or_insert(0);
     }
-    let located = held(&pending);
+    let located = held(&pending, epoch_current);
     if tag == 1 {
         PENDING.set(None);
         let settled = native::settle_held(
