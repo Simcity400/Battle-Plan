@@ -1143,7 +1143,9 @@ export function deriveTableMirror(
   window?: { readonly first: number; readonly count: number } | readonly { readonly first: number; readonly count: number }[],
   focusedKey?: string | null,
   focusedIndex?: number,
+  place?: { readonly offset: number; readonly total: number },
 ): MirrorModel {
+  const offset = place?.offset ?? 0;
   const windows = window === undefined ? [{ first: 0, count: flatRows.length }] : 'first' in window ? [window] : window;
   const indices: number[] = [];
   for (const shown of windows) {
@@ -1166,7 +1168,7 @@ export function deriveTableMirror(
       return {
         key: item.key,
         name: item.label,
-        rowIndex: index,
+        rowIndex: offset + index,
         groupHeader: true,
         cells: [{ column: columns[0]?.key ?? 'group', spoken: item.label }],
       };
@@ -1176,7 +1178,7 @@ export function deriveTableMirror(
       return {
         key: item.key,
         name: label,
-        rowIndex: index,
+        rowIndex: offset + index,
         cells: [{ column: columns[0]?.key ?? 'gap', spoken: label }],
       };
     }
@@ -1184,7 +1186,7 @@ export function deriveTableMirror(
       return {
         key: item.key,
         name: item.reason,
-        rowIndex: index,
+        rowIndex: offset + index,
         cells: [{ column: columns[0]?.key ?? 'refused', spoken: item.reason }],
       };
     }
@@ -1192,14 +1194,14 @@ export function deriveTableMirror(
       return {
         key: item.key,
         name: 'Loading',
-        rowIndex: index,
+        rowIndex: offset + index,
         cells: [{ column: columns[0]?.key ?? 'loading', spoken: 'Loading' }],
       };
     }
     return {
       key: item.key,
       name: item.name,
-      rowIndex: index,
+      rowIndex: offset + index,
       ...(rankShown ? { rank: item.rank } : {}),
       level: item.level,
       ...(item.isTreeGroup ? { group: true, open: item.isOpen } : {}),
@@ -1215,7 +1217,7 @@ export function deriveTableMirror(
       }),
     };
   });
-  return { first: Math.max(0, Math.min(windows[0]?.first ?? 0, flatRows.length)), total: flatRows.length, rows };
+  return { first: offset + Math.max(0, Math.min(windows[0]?.first ?? 0, flatRows.length)), total: place?.total ?? flatRows.length, rows };
 }
 
 function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, extra?: Partial<TooltipRow>): TooltipRow {

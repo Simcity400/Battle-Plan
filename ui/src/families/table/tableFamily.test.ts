@@ -2240,6 +2240,38 @@ test('after a refresh with the same flags, a one-row scroll hands the art cache 
   }
 });
 
+test('a log scrolled deep into its rows numbers them from the top of the log, in its navigation and its mirror', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+  ];
+  registerFamilyProjection({
+    kind: 'test-deep-log',
+    family: 'table', theme: TEST_THEME,
+    project: readView => ({
+      hour: readView.hour, columns, unsorted: true, windowOffset: 600, totalRows: 2000,
+      rows: Array.from({ length: 20 }, (_, i) => ({ key: `R${600 + i}`, name: `R${600 + i}`, cells: { name: { value: knownValue(`R${600 + i}`) } } })),
+    }),
+  });
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 300, dpr: 1 });
+    const step = lane.paint({
+      label: 'deep',
+      binding: { family: 'table' as const, theme: TEST_THEME, kind: 'test-deep-log', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: {} }, width: 400, height: 300, scrollLeft: 0, scrollTop: 610 * ROW_HEIGHT.normal, focusedKey: null, reducedMotion: false },
+      hour: 1, now: 1000,
+    });
+    const nav = step.fields.nav?.value as readonly (readonly [string, string, number])[];
+    assert.deepEqual([nav[0]![0], nav[0]![2], nav.at(-1)![2]], ['R600', 600, 619], 'each row carries its ordinal in the whole log');
+    const mirror = step.fields.mirror?.value as { readonly first: number; readonly total: number; readonly rows: readonly { readonly key: string; readonly rowIndex: number }[] };
+    assert.equal(mirror.total, 2000, 'the mirror counts the whole log');
+    assert.equal(mirror.first, 610 - TABLE_WINDOW_OVERSCAN, 'the mirror window starts at the row on screen, counted from the top of the log');
+    assert.ok(mirror.rows.length > 0 && mirror.rows.every(row => row.rowIndex === Number(row.key.slice(1))), 'each mirrored row is numbered from the top of the log');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('the movers a viewport evaluates are exactly those whose path crosses it', () => {
   const N = 1500;
   const rows = Array.from({ length: N }, (_, i): FlatTableRow => ({ kind: 'data', key: `R${i}`, name: `R${i}`, level: 1, rank: i + 1, row: { key: `R${i}`, name: `R${i}`, cells: {} } } as FlatTableRow));
