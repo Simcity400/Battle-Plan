@@ -3040,3 +3040,289 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     let rows = asked.take().expect("answer ready when on_done fires").unwrap();
     assert_eq!(rows.ordinals(), &[0]);
 }
+
+#[test]
+fn paused_seed_redeclare_holds_read_ahead_until_join_lands_at_head() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
+    let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let gate_hook = Arc::clone(&gate);
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let hook: super::Hook = Box::new(move |step, lanes| {
+        let _ = seen_tx.send((step.epoch(), step.last(), lanes.get(1).and_then(Lane::head)));
+        if step.reset() && step.last() == 0 {
+            let mut s = gate_hook.0.lock().unwrap();
+            if !s.1 {
+                s.0 = true;
+                gate_hook.1.notify_all();
+                while !s.1 {
+                    s = gate_hook.1.wait(s).unwrap();
+                }
+            }
+        }
+    });
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 4, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
+    let reader = playhead.declare(every(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    consumer.set_blocking(true);
+    playhead.pause();
+    playhead.seek(0);
+    {
+        let mut s = gate.0.lock().unwrap();
+        while !s.0 {
+            s = gate.1.wait(s).unwrap();
+        }
+    }
+    struct OpenOnDrop<'a>(&'a Gated);
+    impl Drop for OpenOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.open();
+        }
+    }
+    let epoch_at_0 = playhead.epoch();
+    pages.extents[0].close(0, u64::MAX);
+    let open_gate = OpenOnDrop(&pages.extents[0]);
+    playhead.redeclare_seeding(reader, every(&[0, 1]), true).unwrap();
+    {
+        let mut s = gate.0.lock().unwrap();
+        s.1 = true;
+        gate.1.notify_all();
+    }
+    playhead.wait_until(|| playhead.newest() == Some(0) && playhead.held().2.joins_open == 1);
+    let mut steps = Vec::new();
+    let _ = consumer.take(0, &mut steps);
+    consumer.advance(0);
+    pages.extents[0].wait_blocked();
+    assert_eq!(playhead.newest(), Some(0), "read-ahead holds at paused head while the seeded join prepares");
+    assert_eq!(playhead.held().2.joins_open, 1);
+    drop(open_gate);
+    loop {
+        let (epoch, hour, table1) = seen_rx.recv().unwrap();
+        if table1 == Some(0) {
+            assert_eq!(epoch, epoch_at_0, "join landing at paused head needs 0 seeks");
+            assert_eq!(hour, 0);
+            break;
+        }
+    }
+    playhead.wait_until(|| playhead.held().2.joins_open == 0 && playhead.newest().is_some_and(|newest| newest >= 3));
+    assert_eq!(playhead.epoch(), epoch_at_0, "resuming read-ahead after the join lands causes 0 seeks");
+}
+
+#[test]
+fn paused_cross_piece_join_seeks_once_and_covered_redeclare_does_not() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
+    let timeline = Timeline::new(&*pages, vec![super::Piece { run: 0, first: 0, last: 3 }, super::Piece { run: 0, first: 5, last: 24 }]).unwrap();
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 10, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline, settings, None).unwrap();
+    let cols = |columns: &[usize]| vec![Declared { table: 0, columns: columns.to_vec(), keyed: false, passing: false, hourly: false }];
+    let reader_a = playhead.declare(cols(&[0]), None).unwrap();
+    let mut consumer_a = playhead.consumer(reader_a);
+    consumer_a.set_blocking(true);
+    playhead.pause();
+    playhead.seek(0);
+    playhead.wait_until(|| playhead.newest().is_some());
+    let mut steps = Vec::new();
+    let _ = consumer_a.take(0, &mut steps);
+    consumer_a.advance(0);
+    playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= 8));
+
+    let epoch_before_grow = playhead.epoch();
+    let reader_b = playhead.declare(cols(&[0, 1]), None).unwrap();
+    playhead.wait_until(|| {
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0 && playhead.newest().is_some_and(|newest| newest >= 8)
+    });
+    let _ = consumer_a.take(0, &mut steps);
+    assert_eq!(playhead.epoch(), epoch_before_grow + 1, "adding an uncovered column across pieces takes one clean seek");
+
+    let epoch_before_covered = playhead.epoch();
+    playhead.redeclare(reader_a, cols(&[0, 1])).unwrap();
+    playhead.wait_until(|| {
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0
+    });
+    assert_eq!(playhead.epoch(), epoch_before_covered, "a redeclare already covered by another reader causes 0 seeks across pieces");
+
+    playhead.retire(reader_b);
+    let epoch_before_shrink = playhead.epoch();
+    playhead.redeclare(reader_a, cols(&[0])).unwrap();
+    playhead.wait_until(|| {
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0 && playhead.newest().is_some_and(|newest| newest >= 8)
+    });
+    let _ = consumer_a.take(0, &mut steps);
+    assert_eq!(playhead.epoch(), epoch_before_shrink + 1, "shrinking a table across pieces takes one clean seek and settles");
+}
+
+#[test]
+fn paused_gap_seek_column_expansion_clears_join_without_stalling() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
+    let timeline = Timeline::new(&*pages, vec![super::Piece { run: 0, first: 0, last: 3 }, super::Piece { run: 0, first: 5, last: 24 }]).unwrap();
+    let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let gate_hook = Arc::clone(&gate);
+    let hook_at_gap = Arc::new(Mutex::new(Vec::new()));
+    let hook_at_gap_seen = Arc::clone(&hook_at_gap);
+    let hook: super::Hook = Box::new(move |step, _| {
+        if step.last() == 4 {
+            hook_at_gap_seen.lock().unwrap().push((step.reset(), step.gap(), step.table(0).is_some()));
+        }
+        if step.reset() && step.last() == 4 {
+            let mut s = gate_hook.0.lock().unwrap();
+            if !s.1 {
+                s.0 = true;
+                gate_hook.1.notify_all();
+                while !s.1 {
+                    s = gate_hook.1.wait(s).unwrap();
+                }
+            }
+        }
+    });
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 10, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap();
+    let cols = |columns: &[usize]| vec![Declared { table: 0, columns: columns.to_vec(), keyed: false, passing: false, hourly: false }];
+    let reader = playhead.declare(cols(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    consumer.set_blocking(true);
+    playhead.pause();
+    playhead.seek(4);
+    {
+        let mut s = gate.0.lock().unwrap();
+        while !s.0 {
+            s = gate.1.wait(s).unwrap();
+        }
+    }
+    let epoch_at_gap = playhead.epoch();
+    playhead.redeclare_seeding(reader, cols(&[0, 1]), true).unwrap();
+    {
+        let mut s = gate.0.lock().unwrap();
+        s.1 = true;
+        gate.1.notify_all();
+    }
+    playhead.wait_until(|| playhead.newest().is_some());
+    let mut steps = Vec::new();
+    let _ = consumer.take(4, &mut steps);
+    consumer.advance(4);
+    playhead.wait_until(|| {
+        let _ = consumer.take(4, &mut steps);
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0 && playhead.newest().is_some_and(|newest| newest >= 8)
+    });
+    let _ = consumer.take(4, &mut steps);
+    assert_eq!(playhead.epoch(), epoch_at_gap, "expanding a column during a paused gap reset lands cleanly with 0 seeks and clears the join");
+    assert_eq!(playhead.held().2.joins_open, 0);
+    let hook_steps = hook_at_gap.lock().unwrap();
+    assert!(hook_steps.len() >= 2, "hook saw both the gap reset and the join delivery at hour 4: {hook_steps:?}");
+    assert!(hook_steps.iter().all(|&(_, gap, _)| gap), "every hook delivery at gap hour 4 preserves gap=true: {hook_steps:?}");
+    assert!(steps.len() >= 2, "consumer received both the gap reset and the join step at hour 4");
+    assert!(steps.iter().all(|step| step.last() == 4 && step.gap()), "every consumer step at gap hour 4 preserves gap=true");
+}
+
+#[test]
+fn paused_gap_entry_with_stalled_lane_clears_column_expansion_via_seek() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
+    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let held = parts.iter().position(|part| part.first > 200).expect("a part past initial read-ahead");
+    let frames = &parts[held].frames;
+    let from = frames.iter().map(|frame| frame.offset).min().unwrap();
+    let to = frames.iter().map(|frame| frame.offset + u64::from(frame.stored)).max().unwrap();
+    let missing = i32::from(parts[held].first);
+    let piece0_last = missing + 2;
+    let gap_hour = piece0_last + 1;
+    let timeline = Timeline::new(
+        &*pages,
+        vec![
+            super::Piece { run: 0, first: 0, last: piece0_last },
+            super::Piece { run: 0, first: gap_hour + 1, last: 2 * BLOCK as i32 - 1 },
+        ],
+    ).unwrap();
+    struct OpenOnDrop<'a>(&'a Gated);
+    impl Drop for OpenOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.open();
+        }
+    }
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 4, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline, settings, None).unwrap();
+    pages.extents[0].close(from, to);
+    let open_gate = OpenOnDrop(&pages.extents[0]);
+    let cols = |columns: &[usize]| vec![Declared { table: 0, columns: columns.to_vec(), keyed: false, passing: false, hourly: false }];
+    let reader = playhead.declare(cols(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    consumer.set_blocking(true);
+    playhead.pause();
+    playhead.seek(0);
+    let mut steps = Vec::new();
+    playhead.wait_until(|| playhead.newest().is_some());
+    let _ = consumer.take(0, &mut steps);
+    playhead.place(gap_hour);
+    consumer.advance(gap_hour);
+    steps.clear();
+    playhead.wait_until(|| {
+        let _ = consumer.take(gap_hour, &mut steps);
+        playhead.newest() == Some(gap_hour) && steps.last().is_some_and(|step| step.last() == gap_hour)
+    });
+    assert!(steps.iter().any(|step| step.table(0).is_some_and(|table| table.stalled())), "table 0 stalled before entering the gap");
+    assert!(steps.last().unwrap().gap(), "consumer reached the gap hour");
+    let epoch_at_gap = playhead.epoch();
+    playhead.redeclare_seeding(reader, cols(&[0, 1]), true).unwrap();
+    drop(open_gate);
+    let mut after = Vec::new();
+    playhead.wait_until(|| {
+        let _ = consumer.take(gap_hour, &mut after);
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0 && playhead.newest().is_some_and(|newest| newest >= gap_hour + 2)
+    });
+    let _ = consumer.take(gap_hour, &mut after);
+    assert_eq!(playhead.epoch(), epoch_at_gap + 1, "unlandable gap join on a stalled lane resolves with one seek");
+    assert_eq!(playhead.held().2.joins_open, 0);
+    assert!(after.iter().any(|step| step.reset() && step.last() == gap_hour && step.gap()), "the seek to the gap hour preserves gap=true");
+}
+
+#[test]
+fn paused_seed_hold_allows_stalled_slot_catch_up_at_head() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
+    let parts = &pages.runs[0].pages[0].tables[0].parts;
+    let held = parts.iter().position(|part| part.first > 200).expect("a part past initial read-ahead");
+    let frames = &parts[held].frames;
+    let from = frames.iter().map(|frame| frame.offset).min().unwrap();
+    let to = frames.iter().map(|frame| frame.offset + u64::from(frame.stored)).max().unwrap();
+    let missing = i32::from(parts[held].first);
+    struct OpenOnDrop<'a>(&'a Gated);
+    impl Drop for OpenOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.open();
+        }
+    }
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 4, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings, None).unwrap();
+    pages.extents[0].close(from, to);
+    let open_gate = OpenOnDrop(&pages.extents[0]);
+    let cols = |columns: &[usize]| vec![Declared { table: 0, columns: columns.to_vec(), keyed: false, passing: false, hourly: false }];
+    let reader = playhead.declare(cols(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    consumer.set_blocking(true);
+    playhead.pause();
+    playhead.seek(0);
+    let mut steps = Vec::new();
+    playhead.wait_until(|| playhead.newest().is_some());
+    let _ = consumer.take(0, &mut steps);
+    let target = missing + 2;
+    playhead.place(target);
+    consumer.advance(target);
+    steps.clear();
+    playhead.wait_until(|| {
+        let _ = consumer.take(target, &mut steps);
+        playhead.newest() == Some(target) && steps.last().is_some_and(|step| step.last() == target)
+    });
+    assert!(steps.last().unwrap().table(0).is_some_and(|table| table.stalled()), "table 0 stalled behind the paused head");
+    let epoch_at_stall = playhead.epoch();
+    playhead.redeclare_seeding(reader, cols(&[0, 1]), true).unwrap();
+    playhead.wait_until(|| playhead.held().2.joins_open == 1);
+    drop(open_gate);
+    playhead.wait_until(|| {
+        let (declared, counters) = (playhead.declarations(), playhead.held().2);
+        counters.declarations_applied == declared && counters.joins_open == 0 && playhead.newest().is_some_and(|newest| newest > target)
+    });
+    assert_eq!(playhead.epoch(), epoch_at_stall, "same-hour catch-up runs under the paused-seed hold so the join lands without stalling or seeking");
+    assert_eq!(playhead.held().2.joins_open, 0);
+}

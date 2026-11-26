@@ -180,16 +180,60 @@ impl Follow {
         rehooker_for(&self.shared)
     }
 
-    pub(crate) fn product_lanes(&self, id: u32, lanes: Vec<Declared>) -> io::Result<()> {
-        let result = {
+    pub(crate) fn retain_product_lanes(&self, id: u32, read: &[Declared]) -> io::Result<()> {
+        if read.is_empty() {
+            return Ok(());
+        }
+        let changed = {
             let mut control = lock(&self.shared.control);
-            if lanes.is_empty() { control.products.remove(&id); } else { control.products.insert(id, lanes); }
-            redeclare(&mut control, false)
+            let mut next = control.products.get(&id).cloned().unwrap_or_default();
+            for wanted in read {
+                match next.iter_mut().find(|lane| lane.table == wanted.table) {
+                    Some(lane) => {
+                        lane.columns.extend(&wanted.columns);
+                        lane.columns.sort_unstable();
+                        lane.columns.dedup();
+                        lane.keyed |= wanted.keyed;
+                        lane.passing |= wanted.passing;
+                        lane.hourly |= wanted.hourly;
+                    }
+                    None => {
+                        let mut lane = wanted.clone();
+                        lane.columns.sort_unstable();
+                        lane.columns.dedup();
+                        next.push(lane);
+                    }
+                }
+            }
+            next.sort_by_key(|lane| lane.table);
+            if control.products.get(&id).is_some_and(|held| *held == next) {
+                false
+            } else {
+                control.products.insert(id, next);
+                redeclare(&mut control, false)?;
+                true
+            }
         };
-        if result.is_ok() {
+        if changed {
             self.shared.notify_wake();
         }
-        result
+        Ok(())
+    }
+
+    pub(crate) fn clear_product_lanes(&self, id: u32) -> io::Result<()> {
+        let changed = {
+            let mut control = lock(&self.shared.control);
+            if control.products.remove(&id).is_some() {
+                redeclare(&mut control, false)?;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.shared.notify_wake();
+        }
+        Ok(())
     }
 
     pub fn bind(&self, declare: impl Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
@@ -202,12 +246,16 @@ impl Follow {
     }
 
     pub fn follow(&self, id: u32, query: Query) -> io::Result<()> {
+        self.follow_cells(id, query, true)
+    }
+
+    pub(crate) fn follow_cells(&self, id: u32, query: Query, seed_paused: bool) -> io::Result<()> {
         query.check()?;
         let result = {
             let mut control = lock(&self.shared.control);
             control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
             control.ops.push(Op::Follow(id, Box::new(query)));
-            redeclare(&mut control, true)
+            redeclare(&mut control, seed_paused)
         };
         if result.is_ok() {
             self.shared.notify_wake();

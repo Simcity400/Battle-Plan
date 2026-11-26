@@ -526,6 +526,7 @@ struct Control {
     next_reader: u64,
     selection: u64,
     hook_requested: bool,
+    seed_paused: bool,
     lands: Vec<usize>,
     done: Vec<Done>,
     newest: Option<Hour>,
@@ -685,6 +686,7 @@ impl Shared {
             control.asks.clear();
             control.newest = None;
             control.caught_up_at = None;
+            control.seed_paused = false;
         });
     }
 
@@ -1127,6 +1129,7 @@ impl Playhead {
                 next_reader: 0,
                 selection: 0,
                 hook_requested: false,
+                seed_paused: false,
                 lands: Vec::new(),
                 done: Vec::new(),
                 newest: None,
@@ -1199,12 +1202,21 @@ impl Playhead {
     }
 
     pub fn redeclare(&self, reader: Reader, tables: Vec<Declared>) -> io::Result<()> {
+        self.redeclare_seeding(reader, tables, false)
+    }
+
+    pub fn redeclare_seeding(&self, reader: Reader, tables: Vec<Declared>, seed_paused: bool) -> io::Result<()> {
         if self.shared.leads() {
+            let clock = seed_paused.then(|| lock_clock(&self.shared.clock));
             let mut control = lock(&self.shared.control);
             if control.readers.get(&reader).is_some_and(|held| held.tables == tables) {
                 control.hook_requested = true;
+                if clock.as_ref().is_some_and(|clock| !clock.playing()) {
+                    control.seed_paused = true;
+                }
                 control.version += 1;
                 drop(control);
+                drop(clock);
                 self.shared.wake.notify_all();
                 self.shared.notify_control();
                 return Ok(());
@@ -1212,6 +1224,7 @@ impl Playhead {
         }
         self.check(&tables)?;
         let mut found = false;
+        let clock = seed_paused.then(|| lock_clock(&self.shared.clock));
         self.shared.nudge(|control| {
             let stamp = control.selection + 1;
             if let Some(held) = control.readers.get_mut(&reader) {
@@ -1219,9 +1232,13 @@ impl Playhead {
                 held.tables = tables;
                 control.selection = stamp;
                 control.caught_up_at = None;
+                if clock.as_ref().is_some_and(|clock| !clock.playing()) {
+                    control.seed_paused = true;
+                }
                 found = true;
             }
         });
+        drop(clock);
         if found {
             self.shared.notify_control();
             Ok(())
@@ -1296,7 +1313,11 @@ impl Playhead {
         }
         clock.anchor(position, playing, speed, at);
         drop(clock);
-        self.shared.nudge(|_| {});
+        self.shared.nudge(|control| {
+            if playing {
+                control.seed_paused = false;
+            }
+        });
         self.shared.notify_control();
     }
 
@@ -1354,7 +1375,12 @@ impl Playhead {
     pub fn play(&self, speed: f64) {
         if speed > 0.0 {
             lock_clock(&self.shared.clock).play(speed, Instant::now());
-            self.pace(speed);
+            self.shared.nudge(|control| {
+                control.pace = speed;
+                control.seed_paused = false;
+            });
+            if self.shared.leads() { self.shared.resize(); }
+            self.shared.notify_control();
         }
     }
 
@@ -1389,22 +1415,9 @@ impl Playhead {
     }
 
     pub fn seed_paused_query(&self) {
-        let sought = {
-            let mut clock = lock_clock(&self.shared.clock);
-            if !clock.playing() && clock.held().is_none() {
-                let hour = clock.head(Instant::now());
-                if self.newest().is_some_and(|newest| newest > hour) {
-                    self.shared.seek_locked(&mut clock, hour);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-        if sought {
-            self.shared.notify_control();
+        let clock = lock_clock(&self.shared.clock);
+        if !clock.playing() {
+            self.shared.nudge(|control| control.seed_paused = true);
         }
     }
 
@@ -1784,6 +1797,7 @@ struct Stepper {
     selection_seen: u64,
     selection_applied: bool,
     hook_requested: bool,
+    seed_paused: bool,
     generation: u64,
     joining: BTreeMap<usize, Join>,
     owed: BTreeMap<Reader, BTreeSet<usize>>,
@@ -1827,6 +1841,7 @@ impl Stepper {
             selection_seen: 0,
             selection_applied: true,
             hook_requested: false,
+            seed_paused: false,
             generation: 0,
             joining: BTreeMap::new(),
             owed: BTreeMap::new(),
@@ -1894,6 +1909,7 @@ impl Stepper {
                 self.pace = control.pace;
                 self.rate = control.rate;
                 self.hook_requested |= std::mem::take(&mut control.hook_requested);
+                self.seed_paused |= std::mem::take(&mut control.seed_paused);
                 let readers = (control.selection != self.selection_seen).then(|| {
                     self.selection_seen = control.selection;
                     control.readers.iter().map(|(&reader, declaration)| (reader, declaration.clone())).collect::<Vec<_>>()
@@ -1932,32 +1948,43 @@ impl Stepper {
                     }
 
                 } else if self.newest.is_some() {
-                    if !self.selection_applied {
-                        if !self.apply_selection() {
-                            self.hook_declared();
-                        }
-                        moved = true;
-                    } else if self.hook_requested
-                        && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock_clock(&self.shared.clock).playing())
-                    {
-                        self.hook_declared();
-                        moved = true;
-                    }
-                    moved |= self.read_for_standing();
-                    moved |= self.land_joins()?;
-                    moved |= self.restep_ahead()?;
-                    moved |= self.adopt_parked();
-                    moved |= self.land_owed()?;
-                    moved |= self.land_catch_ups()?;
-                    self.schedule();
-                    let declared = lock(&self.shared.control).selection != self.selection_seen;
-                    if declared {
+                    if self.reset_paused() {
                         moved = true;
                     } else {
-                        moved |= self.build()?;
+                        if !self.selection_applied {
+                            if !self.apply_selection() {
+                                self.hook_declared();
+                            }
+                            moved = true;
+                        } else if self.hook_requested
+                            && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock_clock(&self.shared.clock).playing())
+                        {
+                            self.hook_declared();
+                            moved = true;
+                        }
+                        if self.reset_paused() {
+                            moved = true;
+                        } else {
+                            moved |= self.read_for_standing();
+                            moved |= self.land_joins()?;
+                            moved |= self.restep_ahead()?;
+                            moved |= self.adopt_parked();
+                            moved |= self.land_owed()?;
+                            moved |= self.land_catch_ups()?;
+                            self.schedule();
+                            let declared = {
+                                let control = lock(&self.shared.control);
+                                control.selection != self.selection_seen || control.seed_paused
+                            };
+                            if declared {
+                                moved = true;
+                            } else {
+                                moved |= self.build()?;
+                            }
+                            self.schedule();
+                            self.prepare_next_piece();
+                        }
                     }
-                    self.schedule();
-                    self.prepare_next_piece();
                 }
                 Ok::<(), io::Error>(())
             })();
@@ -1999,6 +2026,7 @@ impl Stepper {
 
     fn begin_seek(&mut self, hour: Hour, epoch: u64, asked: Instant) {
         self.epoch = epoch;
+        self.seed_paused = false;
         let catching: Vec<_> = std::mem::take(&mut self.catching).into_iter().map(CatchUp::lanes).collect();
         if !catching.is_empty() {
             self.shared.free(catching);
@@ -2152,7 +2180,8 @@ impl Stepper {
         *lock(&held.states) = states;
         built.fetched = std::mem::take(&mut self.fetching);
         let keep = self.ends_kept();
-        self.slots.iter_mut().for_each(|slot| slot.ended(hour, keep));
+        let ended = hour.min(self.shared.timeline.pieces[self.piece].last);
+        self.slots.iter_mut().for_each(|slot| slot.ended(ended, keep));
         (held.first, held.last, held.piece, held.reset, held.built) = (hour, hour, piece, true, built);
         self.publish(step)?;
         self.slots.iter_mut().for_each(|slot| slot.lane.clear_texts());
@@ -2377,13 +2406,71 @@ impl Stepper {
         lock(&self.shared.control).readers.values().any(|declaration| declaration.tables.iter().any(|declared| declared.table == table))
     }
 
-    fn hook_declared(&mut self) {
-        self.hook_requested = false;
-        let (Some(newest), Some(hook)) = (self.newest, &mut self.hook) else { return };
-        let piece = match self.shared.timeline.region(newest) {
+    fn reset_paused(&mut self) -> bool {
+        let Some(newest) = self.newest else { return false };
+        let sought = {
+            let mut clock = lock_clock(&self.shared.clock);
+            if clock.playing() {
+                self.seed_paused = false;
+                return false;
+            }
+            let head = clock.head(Instant::now());
+            let need_seed = self.seed_paused && newest > head;
+            let piece = self.shared.timeline.pieces[self.piece];
+            let unlandable_join = !self.joining.is_empty()
+                && (head < piece.first
+                    || (newest > piece.last
+                        && self.joining.keys().any(|&table| self.slot_of(table).is_some_and(|old| !self.slots[old].whole_at(piece.last)))));
+            if need_seed || unlandable_join {
+                if self.current() {
+                    self.shared.seek_locked(&mut clock, head);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                if self.selection_applied && !self.hook_requested && self.joining.is_empty() {
+                    self.seed_paused = false;
+                }
+                false
+            }
+        };
+        if sought {
+            self.seed_paused = false;
+            self.shared.notify_control();
+        }
+        sought
+    }
+
+    fn hold_for_paused_seed(&mut self) -> bool {
+        if !self.seed_paused {
+            return false;
+        }
+        let clock = lock_clock(&self.shared.clock);
+        if clock.playing() {
+            self.seed_paused = false;
+            return false;
+        }
+        let head = clock.head(Instant::now());
+        if self.joining.is_empty() && self.selection_applied && !self.hook_requested && self.newest.is_some_and(|newest| newest <= head) {
+            self.seed_paused = false;
+            return false;
+        }
+        !self.joining.is_empty() && self.newest.is_some_and(|newest| newest >= head)
+    }
+
+    fn piece_at(&self, hour: Hour) -> Option<usize> {
+        match self.shared.timeline.region(hour) {
             Region::Piece(piece) => Some(piece),
             Region::Gap { .. } => None,
-        };
+        }
+    }
+
+    fn hook_declared(&mut self) {
+        self.hook_requested = false;
+        let Some(newest) = self.newest else { return };
+        let piece = self.piece_at(newest);
+        let Some(hook) = &mut self.hook else { return };
         let step = Step { epoch: self.epoch, first: newest + 1, last: newest, piece, restep: self.restep, ..Step::default() };
         hook(&step, &Lanes { slots: &self.slots });
     }
@@ -2578,7 +2665,7 @@ impl Stepper {
             landed.push((table, join.readers, states));
         }
         let places: Vec<usize> = ready.iter().map(|&table| self.slot_of(table).expect("landed")).collect();
-        let mut view = Step { epoch: self.epoch, first: hour + 1, last: hour, piece: Some(piece), tables: resets, ..Step::default() };
+        let mut view = Step { epoch: self.epoch, first: hour + 1, last: hour, piece: self.piece_at(hour), tables: resets, ..Step::default() };
         hook_fresh(&mut self.hook, &self.slots, &mut view, &fresh);
         places.iter().for_each(|&place| self.slots[place].lane.clear_texts());
         let mut rounds: Vec<(Option<u64>, Vec<Option<Changes>>)> = vec![(None, std::mem::take(&mut view.tables).into_iter().map(Some).collect())];
@@ -2627,16 +2714,17 @@ impl Stepper {
             rounds.push((Some(span.seq), round));
             end = span.last;
         }
-        if fresh.contains(&false)
-            && let Some(hook) = &mut self.hook
-        {
-            let mut view = Step { epoch: self.epoch, first: end + 1, last: end, piece: Some(piece), ..Step::default() };
-            for (&place, _) in places.iter().zip(&fresh).filter(|(_, fresh)| !**fresh) {
-                let mut changes = Changes::default();
-                self.slots[place].lane.reset_into(&mut changes)?;
-                view.tables.push(changes);
+        if fresh.contains(&false) {
+            let view_piece = self.piece_at(end);
+            if let Some(hook) = &mut self.hook {
+                let mut view = Step { epoch: self.epoch, first: end + 1, last: end, piece: view_piece, ..Step::default() };
+                for (&place, _) in places.iter().zip(&fresh).filter(|(_, fresh)| !**fresh) {
+                    let mut changes = Changes::default();
+                    self.slots[place].lane.reset_into(&mut changes)?;
+                    view.tables.push(changes);
+                }
+                hook(&view, &Lanes { slots: &self.slots });
             }
-            hook(&view, &Lanes { slots: &self.slots });
         }
         let mut cursors = Vec::new();
         places.iter().for_each(|&place| self.slots[place].lane.retire_into(&mut cursors));
@@ -2682,7 +2770,7 @@ impl Stepper {
                 if tables.is_empty() && round > 0 {
                     continue;
                 }
-                let step = Step { epoch: self.epoch, seq: position, first: now + 1, last: now, piece: Some(piece), tables, ..Step::default() };
+                let step = Step { epoch: self.epoch, seq: position, first: now + 1, last: now, piece: self.piece_at(now), tables, ..Step::default() };
                 if round == 0 {
                     *lock(&step.states) = states.remove(&reader).unwrap_or_default();
                 }
@@ -2926,7 +3014,7 @@ impl Stepper {
             return;
         }
         let shown: Vec<usize> = (0..places.len()).filter(|&index| round[index].is_some()).collect();
-        let mut view = Step { epoch: self.epoch, first, last, piece: Some(self.piece), tables: shown.iter().map(|&index| round[index].take().expect("shown")).collect(), ..Step::default() };
+        let mut view = Step { epoch: self.epoch, first, last, piece: self.piece_at(last), tables: shown.iter().map(|&index| round[index].take().expect("shown")).collect(), ..Step::default() };
         let mask: Vec<bool> = shown.iter().map(|&index| fresh[index]).collect();
         hook_fresh(&mut self.hook, &self.slots, &mut view, &mask);
         for (index, changes) in shown.into_iter().zip(view.tables) {
@@ -3433,8 +3521,7 @@ impl Stepper {
             self.hold();
             return Ok(false);
         }
-        let timeline = &self.shared.timeline;
-        if timeline.region(newest) == Region::Piece(self.piece) {
+        if self.shared.timeline.region(newest) == Region::Piece(self.piece) {
             let behind = |slot: &&Slot| slot.lane.head().is_some_and(|head| head < newest);
             let (mut waiting, mut ready) = (false, false);
             for slot in self.slots.iter().filter(behind) {
@@ -3450,6 +3537,10 @@ impl Stepper {
                 return Ok(false);
             }
         }
+        if self.hold_for_paused_seed() {
+            return Ok(false);
+        }
+        let timeline = &self.shared.timeline;
         if newest >= timeline.last() {
             self.why = IDLE_END;
             return Ok(false);
