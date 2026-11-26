@@ -148,6 +148,7 @@ pub trait AtHour: 'static {
     const CLOCK: Clock;
 
     const REPLY_NAMES_NO_HOUR: bool = false;
+    const REPLY_DATES_REQUEST_HOUR: bool = false;
 
     fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
         i32::MAX

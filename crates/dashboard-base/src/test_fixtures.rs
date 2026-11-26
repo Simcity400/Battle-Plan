@@ -237,7 +237,7 @@ pub fn played(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel
     use std::sync::{Arc, atomic::AtomicBool};
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let seed = (exact.advance)(first, true, &AtomicBool::new(false), None);
-    assert!(seed.rows > 0, "the seed reads populated rows");
+    assert!(!seed.pending, "the seed is ready before playback");
     let (send, played) = std::sync::mpsc::channel();
     let advance = exact.advance.clone();
     let hook: playhead::Hook = Box::new(move |step, lanes| {

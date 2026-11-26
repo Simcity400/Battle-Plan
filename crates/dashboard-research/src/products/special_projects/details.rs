@@ -1,8 +1,8 @@
 
 use dashboard_effects::ScriptedEffects;
 use dashboard_base::products::Country;
-use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, RunLinks, country_key, needs_scope, scoped_at};
-use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}, game_text::{GameRun, runs}}};
+use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, RunLinks, country_key, needs_scope};
+use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read, ScriptedInputs}, game_text::{GameRun, runs}}};
 use dashboard_query::{Index, Query, cost};
 use replay::campaign::Replay;
 use replay_lanes::lanes;
@@ -13,6 +13,7 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::Arc,
@@ -185,6 +186,8 @@ pub struct ProjectRuntimeDetails {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectDetails {
+    #[serde(skip)]
+    through: i32,
     pub hour: i32,
     #[doc = " None where the hour's scientist roster is not known (never an empty one)."]
     pub scientists: Option<Vec<ScientistDetails>>,
@@ -255,6 +258,7 @@ pub struct OptionEffects {
 dashboard_base::reply_warnings!(SpecialProjectEffects);
 
 pub struct Context {
+    text_inputs: ScriptedInputs,
     content: Result<Arc<ProjectContent>, String>,
     replay: Arc<Replay>,
     index: Arc<Index>,
@@ -268,6 +272,7 @@ type Links = std::sync::Mutex<HashMap<u32, Arc<RunLinks>>>;
 
 fn context(source: &Source, load: &LoadContext) -> Context {
     Context {
+        text_inputs: ScriptedInputs::new(source.replay()),
         content: super::content(source, load).map_err(|error| format!("Recorded special-project content is unavailable: {error}")),
         replay: source.replay(),
         index: dashboard_base::queries::index(source),
@@ -306,6 +311,7 @@ enum Withheld {
 }
 
 struct Reads<'r, 'q> {
+    through: Option<&'r Cell<i32>>,
     query: &'r Query<'q>,
     coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
     links: &'r Links,
@@ -316,15 +322,20 @@ struct Reads<'r, 'q> {
 }
 
 impl Reads<'_, '_> {
+    fn hold_through(&self, through: i32) {
+        if let Some(bound) = self.through { bound.set(bound.get().min(through)); }
+    }
+
     fn spans<T>(&self, table: TableId, what: &str, of: impl FnOnce(&Coverage) -> T) -> Result<T, String> {
         let recording = self.query.replay.recording();
         let run = recording.run(self.run).map_err(|e| e.to_string())?;
         let block = run.ordinal(self.hour).ok_or_else(|| format!("{what}: hour not recorded"))? / replay_columnar::unit::BLOCK;
+        let last = run.block_first_hour(block).saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(run.last_hour());
+        self.hold_through(last);
         let mut cache = self.coverage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = (self.run, table);
         if cache.get(&key).is_none_or(|c| c.block != block) {
             let first = run.block_first_hour(block).saturating_sub(STAGGER_PERIOD - 1);
-            let last = run.block_first_hour(block).saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(run.last_hour());
             let reads = cost::storage(|| lanes::available_reads(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
             let whole_reads = cost::storage(|| lanes::complete_reads(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
             let statuses = cost::storage(|| lanes::statuses(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
@@ -337,8 +348,9 @@ impl Reads<'_, '_> {
     }
 
     fn latest(&self, spans: &[(i32, i32)]) -> Option<i32> {
-        let at = spans.partition_point(|s| s.0 <= self.hour);
-        at.checked_sub(1).map(|i| spans[i].1.min(self.hour)).filter(|&h| super::current(h, self.hour))
+        let (last, next) = super::last_read_next(spans, self.hour);
+        if next != i32::MAX { self.hold_through(next.saturating_sub(1)); }
+        last
     }
 
     fn last(&self, table: TableId, what: &str) -> Result<i32, String> {
@@ -373,6 +385,11 @@ impl Reads<'_, '_> {
 
 
     fn usable(&self, table: TableId, owner: u32, read: i32) -> Result<(), Withheld> {
+        if self.hour < read {
+            self.hold_through(read.saturating_sub(1));
+        } else if super::current(read, self.hour) {
+            self.hold_through(read.saturating_add(STAGGER_PERIOD - 1));
+        }
         if !super::current(read, self.hour) {
             return Err(Withheld::Unread);
         }
@@ -384,7 +401,7 @@ impl Reads<'_, '_> {
     }
 
     fn continued(&self, previous: i32, table: TableId, what: &str) -> Option<Option<i32>> {
-        let before = Self { hour: previous, ..*self };
+        let before = Self { hour: previous, through: None, ..*self };
         match (before.last(table, what), self.last(table, what)) {
             (Ok(_), Ok(hour)) => Some(Some(hour)),
             (Err(old), Err(new)) if old == new => Some(None),
@@ -396,19 +413,21 @@ impl Reads<'_, '_> {
 struct Namer<'c, 'r, 'q> {
     naming: Option<Naming<'c>>,
     missing: Option<String>,
-    query: &'r Query<'q>,
-    hour: i32,
+    inputs: &'c ScriptedInputs,
+    frame: &'r DecodedFrame,
+    cancelled: &'q std::sync::atomic::AtomicBool,
+    through: i32,
     slot: u32,
     scoped: HashMap<String, Option<String>>,
 }
 
 impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
-    fn new(content: &'c Result<Arc<ProjectContent>, String>, query: &'r Query<'q>, hour: i32, slot: u32) -> Self {
-        let (naming, missing) = match content {
+    fn new(context: &'c Context, frame: &'r DecodedFrame, cancelled: &'q std::sync::atomic::AtomicBool, slot: u32) -> Self {
+        let (naming, missing) = match &context.content {
             Ok(content) => (Some(Naming::new(content)), None),
             Err(why) => (None, Some(why.clone())),
         };
-        Self { naming, missing, query, hour, slot, scoped: HashMap::new() }
+        Self { naming, missing, inputs: &context.text_inputs, frame, cancelled, through: i32::MAX, slot, scoped: HashMap::new() }
     }
 
     fn content(&self) -> Option<&'c ProjectContent> {
@@ -424,7 +443,16 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
         if let Some(found) = self.scoped.get(key) {
             return found.clone();
         }
-        let found = scoped_at(self.query, content, key, self.hour, self.slot).unwrap_or_else(|reason| {
+        let catalogue = &content.politics.catalogue;
+        let found = catalogue.scripted_content().and_then(|scripted| {
+            let (value, through) = self.inputs.evaluate(self.frame, dashboard_text::scripted_text::TABLES, self.cancelled, |world| {
+                let text = dashboard_text::scripted_text::ScriptedText::new(world, &catalogue.localisation, scripted, self.slot);
+                catalogue.localise_in(key, &text)
+            }).map_err(|why| format!("The project's name needs its country's scope: {why}"))?;
+            self.through = self.through.min(through);
+            Ok(value)
+        }).unwrap_or_else(|reason| {
+            self.through = self.frame.hour;
             naming.note(reason, key);
             None
         });
@@ -644,7 +672,8 @@ impl AtHour for SpecialProjectDetailsAt {
     const KEY: &'static str = "special-project-details";
     const TITLE: &'static str = "Special project details";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads staggered project coverage spans, custody history, scoped content and stamps at.hour into reply");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
+    const REPLY_DATES_REQUEST_HOUR: bool = true;
     type Params = SpecialProjectDetailsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = SpecialProjectDetails;
@@ -752,13 +781,18 @@ impl AtHour for SpecialProjectDetailsAt {
         Ok(context(source, load))
     }
 
+    fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, Context>, reply: &Self::Reply, _: bool) -> i32 {
+        reply.through.min(dashboard_base::products::at_hour::warnings_through(frame.hour, reply.unavailable.iter().chain(&reply.warnings).map(String::as_str)))
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project details name no country"))?;
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project details hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
-        let mut namer = Namer::new(&at.context.content, &query, at.hour, owner.slot);
-        let mut out = SpecialProjectDetails { hour: at.hour, scientists: None, programs: None, breakthroughs: None, projects: None, unavailable: Vec::new(), warnings: Vec::new() };
+        let through = Cell::new(i32::MAX);
+        let reads = Reads { through: Some(&through), query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
+        let mut namer = Namer::new(at.context, frame, at.cancelled, owner.slot);
+        let mut out = SpecialProjectDetails { through: i32::MAX, hour: at.hour, scientists: None, programs: None, breakthroughs: None, projects: None, unavailable: Vec::new(), warnings: Vec::new() };
         if let Some(why) = &namer.missing {
             out.unavailable.push(why.clone());
         }
@@ -773,7 +807,9 @@ impl AtHour for SpecialProjectDetailsAt {
         out.breakthroughs = breakthroughs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
         out.programs = programs(&owners, &reads, &mut namer, &mut out.unavailable);
         out.projects = projects(&owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
-        if !namer.scoped.is_empty() { at.context.scoped_details.store(true, std::sync::atomic::Ordering::Relaxed); }
+        let scoped = !namer.scoped.is_empty();
+        at.context.scoped_details.store(scoped, std::sync::atomic::Ordering::Relaxed);
+        out.through = namer.through.min(through.get());
         out.warnings = namer.warnings();
         Ok(out)
     }
@@ -783,7 +819,7 @@ fn reread(frame: &DecodedFrame, params: &SpecialProjectDetailsParams, at: &At<'_
     if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
     let Some(holder) = at.owner else { return Ok(false) };
     let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
-    let reads = Reads { query: &q, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
+    let reads = Reads { through: None, query: &q, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
     let Some(previous) = data["hour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
     if (Reads { hour: previous, ..reads }).last_complete(TableId::ProjectPrograms, "Program assignments") != reads.last_complete(TableId::ProjectPrograms, "Program assignments") {
         return Ok(false);
@@ -1104,7 +1140,7 @@ struct Listed {
 }
 
 fn listed(reads: &Reads<'_, '_>, owner: u32, read: i32, history: DecodedFrame) -> Result<Listed, String> {
-    let (_, projects) = stamped(&Reads { hour: read, ..*reads }, TableId::Projects, owner).map_err(|_| UNREAD_WITH_HISTORY.to_owned())?;
+    let (_, projects) = stamped(&Reads { hour: read, through: None, ..*reads }, TableId::Projects, owner).map_err(|_| UNREAD_WITH_HISTORY.to_owned())?;
     let rows = projects.complete::<tables::Projects>().map_err(|why| format!("The Projects read supplying the choice history is unavailable: {why}"))?;
     let definitions: BTreeMap<u32, u32> = prefixed(rows, owner, |row| row.owner).iter().map(|row| (row.local_id, row.definition_id)).collect();
     let mut ids: BTreeSet<u32> = definitions.values().copied().collect();
@@ -1352,7 +1388,7 @@ impl AtHour for SpecialProjectEffectsAt {
         }
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
+        let reads = Reads { through: None, query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
         let (project, spellings) = match stamped_project(&reads, params.owner, params.project) {
             Ok((project, read, spellings)) => {
                 out.read_hour = Some(read);

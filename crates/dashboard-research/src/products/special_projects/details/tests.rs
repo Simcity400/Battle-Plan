@@ -163,7 +163,11 @@ fn followed_as_direct(source: &Source) -> impl Fn(i32) -> Value + use<> {
     for hour in FIRST..=LAST {
         let followed = (exact.advance)(hour, hour == FIRST, &cancelled, None);
         match (exact.cold)(hour, &cancelled) {
-            Ok(direct) => assert_eq!(followed.value.as_ref().as_ref().ok(), Some(&direct), "hour {hour}"),
+            Ok(direct) => {
+                let mut materialized = followed.value.as_ref().as_ref().unwrap().clone();
+                if !followed.fresh { materialized["hour"] = hour.into(); }
+                assert_eq!(materialized, direct, "hour {hour}");
+            }
             Err(_) => assert!(followed.value.is_err(), "hour {hour}"),
         }
     }
@@ -173,7 +177,23 @@ fn followed_as_direct(source: &Source) -> impl Fn(i32) -> Value + use<> {
 
 #[test]
 fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_returns() {
-    let at = followed_as_direct(&recording());
+    let source = recording();
+    let at = followed_as_direct(&source);
+    let panel = dashboard_base::products::at_hour::exact_panel::<SpecialProjectDetailsAt>(&source, &load(), &json!({"branchId":"1", "country":"GER"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let mut previous = None;
+    for step in dashboard_base::test_fixtures::played(source.replay_ref(), reader, FIRST, LAST) {
+        let structure = |data: &dashboard_follow::panel::PanelData| data.clone().map(|mut reply| {
+            reply.as_object_mut().unwrap().remove("hour");
+            reply
+        });
+        let current = structure(&(reader.cold)(step.hour, &false.into()));
+        assert_eq!(structure(&step.value), current, "played hour {}", step.hour);
+        if previous.as_ref() == Some(&current) {
+            assert_eq!(step.product_calls, 0, "unchanged project details at {}", step.hour);
+        }
+        previous = Some(current);
+    }
     assert_eq!(at(HISTORY_UNSTAMPED[1] - 1)["projects"][0]["choices"].as_array().map(Vec::len), Some(4));
     assert_eq!(at(HISTORY_UNSTAMPED[1])["projects"][0]["choices"], Value::Null, "an unproven history read is not recorded, never the last one's choices");
     let expired = HISTORY_LISTED + STAGGER_PERIOD;
@@ -394,6 +414,25 @@ fn an_iteration_is_the_listing_projects_choice_rendered_with_that_projects_defin
     assert_eq!(unavailable(2, MARKER, MARKER), "This history entry is the project's completion, not an iteration");
     assert_eq!(unavailable(0, CHOICE, UNPROVEN), "This iteration's choices were not read at the hour that lists them");
     assert_eq!(unavailable(0, CHOICE, UNHELD + 1), "This iteration's choice was listed after this country stopped holding the tag");
+    let panel = dashboard_base::products::at_hour::exact_panel::<SpecialProjectIterationAt>(&source, &load(), &json!({"branchId":"1", "country":"GER", "owner":9001, "project":3, "ordinal":0, "read":REPLACED})).unwrap();
+    let reader = panel.exact().unwrap();
+    let mut previous = None;
+    for step in dashboard_base::test_fixtures::played(source.replay_ref(), reader, FIRST, LAST) {
+        let structural = |data: &dashboard_follow::panel::PanelData| data.clone().map(|mut value| {
+            value.as_object_mut().unwrap().remove("hour");
+            value
+        });
+        let current = structural(&(reader.cold)(step.hour, &false.into()));
+        assert_eq!(structural(&step.value), current, "iteration at {}", step.hour);
+        if step.hour > FIRST && step.hour < UNHELD {
+            assert_eq!(step.product_calls, u64::from(previous.as_ref() != Some(&current)), "iteration at {}", step.hour);
+        }
+        previous = Some(current);
+    }
+    for hour in [OWN_CHOICE, CHOICE, REPLACED + 1] {
+        let seed = (reader.advance)(hour, true, &false.into(), None);
+        assert_eq!(*seed.value, (reader.cold)(hour, &false.into()));
+    }
 }
 
 #[test]
@@ -588,11 +627,12 @@ fn operands(history: impl Fn(i32) -> Vec<(u32, u32, i32)>, stamp: impl Fn(i32) -
     let holder = Owner { slot, id };
     let (cells, cancelled) = (dashboard_follow::live::Cells::default(), AtomicBool::new(false));
     let at = At { owner: Some(holder), holders: &query.holders, hour: choice, context: &context, cancelled: &cancelled, live: &cells };
-    let listing = iteration::listed(&query, &at, &params, holder).unwrap().unwrap();
+    let mut through = i32::MAX;
+    let listing = iteration::listed(&query, &at, &params, holder, &mut through).unwrap().unwrap();
     let reads = [Read::all(TableId::Projects), Read::all(TableId::ProjectHistory), Read::all(TableId::SliceReads)];
     let frame = dashboard_base::products::at_hour::frame(&query, choice, &reads, SpecialProjectIterationAt::TITLE).unwrap();
     let run = query.timeline.at(choice).unwrap().run;
-    let reads = Reads { query: &query, coverage: &context.coverage, links: &context.links, tag: &params.country, holder, run, hour: choice };
+    let reads = Reads { through: None, query: &query, coverage: &context.coverage, links: &context.links, tag: &params.country, holder, run, hour: choice };
     iteration::same_project(&frame, &reads, &listing)
 }
 
