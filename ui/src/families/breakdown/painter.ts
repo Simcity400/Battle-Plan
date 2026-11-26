@@ -463,7 +463,8 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
     if (layout.innerSlices.length) {
       ctx.fillText(fitText(ctx, layout.center.unitLine, maxHoleW), layout.cx, layout.cy + 21);
     } else {
-      const room = Math.max(40, layout.width - layout.padX * 2);
+      const right = layout.sideList ? layout.sideList.x - 12 : layout.width - layout.padX;
+      const room = Math.max(40, 2 * Math.min(layout.cx - layout.padX, right - layout.cx));
       const lines: string[] = [];
       for (const word of layout.center.unitLine.split(' ')) {
         const held = lines.length ? `${lines[lines.length - 1]} ${word}` : word;

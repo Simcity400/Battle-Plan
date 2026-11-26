@@ -129,31 +129,54 @@ struct ShipRow {
     count: u32,
 }
 
-type ShipCounts = BTreeMap<Option<u32>, i128>;
+#[derive(Default)]
+struct ShipIndex {
+    hours: Vec<i32>,
+    variants: BTreeMap<Option<u32>, Vec<(i32, i128)>>,
+}
 
-fn ship_steps(rows: Vec<ShipRow>) -> Vec<(i32, ShipCounts)> {
-    let mut order: Vec<(i32, usize)> = rows.iter().enumerate().map(|(at, ship)| (ship.listed_hour.max(ship.sink_hour), at)).collect();
-    order.sort_unstable();
-    let mut most: HashMap<&str, (usize, Option<u32>, u32)> = HashMap::new();
-    let mut counts = ShipCounts::new();
-    let mut steps: Vec<(i32, ShipCounts)> = Vec::new();
-    for (visible, at) in order {
-        let ship = &rows[at];
-        let held = most.get(ship.signature.as_str()).copied();
-        if held.is_some_and(|(index, _, count)| ship.count < count || (ship.count == count && index < at)) {
-            continue;
+impl ShipIndex {
+    fn of(rows: Vec<ShipRow>) -> Self {
+        let mut order: Vec<(i32, usize)> = rows.iter().enumerate().map(|(at, ship)| (ship.listed_hour.max(ship.sink_hour), at)).collect();
+        order.sort_unstable();
+        let mut most: HashMap<&str, (usize, Option<u32>, u32)> = HashMap::new();
+        let mut index = Self::default();
+        let add = |variants: &mut BTreeMap<Option<u32>, Vec<(i32, i128)>>, variant: Option<u32>, hour: i32, change: i128| {
+            let steps = variants.entry(variant).or_default();
+            let before = steps.last().map_or(0, |step| step.1);
+            match steps.last_mut() {
+                Some(step) if step.0 == hour => step.1 += change,
+                _ => steps.push((hour, before + change)),
+            }
+        };
+        for (visible, at) in order {
+            let ship = &rows[at];
+            let held = most.get(ship.signature.as_str()).copied();
+            if held.is_some_and(|(index, _, count)| ship.count < count || (ship.count == count && index < at)) {
+                continue;
+            }
+            if let Some((_, variant, count)) = held {
+                add(&mut index.variants, variant, visible, -i128::from(count));
+            }
+            add(&mut index.variants, ship.variant, visible, i128::from(ship.count));
+            most.insert(ship.signature.as_str(), (at, ship.variant, ship.count));
+            if index.hours.last() != Some(&visible) {
+                index.hours.push(visible);
+            }
         }
-        if let Some((_, variant, count)) = held {
-            *counts.entry(variant).or_default() -= i128::from(count);
-        }
-        *counts.entry(ship.variant).or_default() += i128::from(ship.count);
-        most.insert(ship.signature.as_str(), (at, ship.variant, ship.count));
-        match steps.last_mut() {
-            Some(step) if step.0 == visible => step.1.clone_from(&counts),
-            _ => steps.push((visible, counts.clone())),
-        }
+        index
     }
-    steps
+
+    fn next_after(&self, hour: i32) -> Option<i32> {
+        self.hours.get(self.hours.partition_point(|&at| at <= hour)).copied()
+    }
+
+    fn counts_at(&self, hour: i32) -> impl Iterator<Item = (Option<u32>, i128)> + '_ {
+        self.variants.iter().filter_map(move |(&variant, steps)| {
+            let count = steps[..steps.partition_point(|step| step.0 <= hour)].last().map_or(0, |step| step.1);
+            (count != 0).then_some((variant, count))
+        })
+    }
 }
 
 struct SegmentData {
@@ -163,7 +186,7 @@ struct SegmentData {
     total_pos: usize,
     incomplete_pos: usize,
     covered: Covered,
-    ships: Vec<(i32, ShipCounts)>,
+    ships: ShipIndex,
 }
 
 struct CauseMeta {
@@ -230,7 +253,7 @@ impl LossesIndex {
                 tighten(&mut through, Some(next.hour));
             }
         }
-        tighten(&mut through, seg.ships.get(seg.ships.partition_point(|step| step.0 <= hour)).map(|step| step.0));
+        tighten(&mut through, seg.ships.next_after(hour));
         for &(a, b, _) in &seg.covered.run {
             if a > hour {
                 tighten(&mut through, Some(a));
@@ -408,8 +431,7 @@ impl LossesIndex {
             }
         }
 
-        let none = ShipCounts::new();
-        let ship_counts = seg.ships[..seg.ships.partition_point(|step| step.0 <= hour)].last().map_or(&none, |step| &step.1);
+        let ship_counts: Vec<(Option<u32>, i128)> = seg.ships.counts_at(hour).collect();
 
         let mut leaves: Vec<Leaf> = Vec::new();
         let mut destruction_qualified = false;
@@ -425,7 +447,7 @@ impl LossesIndex {
             }
             if meta.source == LossSource::SunkShips {
                 let mut had_ship = false;
-                for (&variant, &count) in ship_counts {
+                for &(variant, count) in &ship_counts {
                     if count == 0 {
                         continue;
                     }
@@ -570,7 +592,7 @@ fn build_index(source: &Source, query: &Query<'_>, params: &EquipmentLossesParam
                 }
                 ship_rows.push(ShipRow { signature, listed_hour, sink_hour, variant, count });
             }
-            segments.push(SegmentData { first: seg_first, last: seg_last, totals, total_pos, incomplete_pos, covered, ships: ship_steps(ship_rows) });
+            segments.push(SegmentData { first: seg_first, last: seg_last, totals, total_pos, incomplete_pos, covered, ships: ShipIndex::of(ship_rows) });
         }
     }
     segments.sort_by_key(|seg| seg.first);
@@ -628,15 +650,16 @@ pub(super) fn load(source: &Source, params: &EquipmentLossesParams, context: &Lo
 
 #[cfg(test)]
 mod ship_tests {
-    use super::{ShipRow, ship_steps};
+    use super::{ShipIndex, ShipRow};
 
     #[test]
     fn ship_counts_step_at_each_hour_a_ship_is_both_listed_and_sunk_and_a_ship_counts_once_at_its_largest_listing() {
         let ship = |signature: &str, listed_hour: i32, sink_hour: i32, variant: u32, count: u32| ShipRow { signature: signature.into(), listed_hour, sink_hour, variant: Some(variant), count };
-        let steps = ship_steps(vec![ship("a", 10, 20, 1, 1), ship("b", 5, 8, 2, 1), ship("a", 30, 20, 1, 2), ship("c", 30, 25, 3, 1)]);
-        let hours: Vec<i32> = steps.iter().map(|step| step.0).collect();
-        assert_eq!(hours, [8, 20, 30]);
-        assert_eq!(steps[1].1.get(&Some(1)), Some(&1));
-        assert_eq!((steps[2].1.get(&Some(1)), steps[2].1.get(&Some(3))), (Some(&2), Some(&1)), "the larger listing replaces the smaller, never adds to it");
+        let index = ShipIndex::of(vec![ship("a", 10, 20, 1, 1), ship("b", 5, 8, 2, 1), ship("a", 30, 20, 1, 2), ship("c", 30, 25, 3, 1)]);
+        assert_eq!(index.hours, [8, 20, 30]);
+        assert_eq!((index.next_after(8), index.next_after(30)), (Some(20), None));
+        assert_eq!(index.counts_at(20).collect::<Vec<_>>(), [(Some(1), 1), (Some(2), 1)]);
+        assert_eq!(index.counts_at(30).collect::<Vec<_>>(), [(Some(1), 2), (Some(2), 1), (Some(3), 1)], "the larger listing replaces the smaller, never adds to it");
+        assert_eq!(index.variants[&Some(1)], [(20, 1), (30, 2)], "one entry per change of a design, not a copy of every count");
     }
 }

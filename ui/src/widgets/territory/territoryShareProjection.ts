@@ -81,9 +81,11 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
   const rule = ruleOf(ctx.options.rule);
   const asked = chosen(ctx);
   const params = { branchId: ctx.branch.id, measure: territorySeriesMeasure(measure, rule), ...asked };
+  const none = Array.isArray(asked.countries) && asked.countries.length === 0;
   return {
     owner: `territory-share:${ctx.track.source.id}:${ctx.track.source.revision}:${JSON.stringify(params)}`,
-    entries: Array.isArray(asked.countries) && asked.countries.length === 0 ? [] : [{
+    ...(none ? { allowEmptyFollow: true } : {}),
+    entries: none ? [] : [{
       name: 'main',
       source: ctx.track.source,
       branch: ctx.branch.id,

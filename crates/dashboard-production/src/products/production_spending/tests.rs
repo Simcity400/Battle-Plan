@@ -274,7 +274,13 @@ fn a_design_is_typed_from_its_first_archetype_and_named_only_from_its_last_renam
     let history = History { texts: vec![b"Old".to_vec().into_boxed_slice(), b"New".to_vec().into_boxed_slice(), b"New".to_vec().into_boxed_slice()], ..History::default() };
     let cells = |name: u32, archetype: i64| Some(vec![Cell::Number(1), Cell::Number(0), Cell::Number(0), Cell::Number(0), Cell::Text(name), Cell::Text(name), Cell::Text(name), Cell::Number(archetype)].into_boxed_slice());
     let steps = [Step { hour: 10, cells: cells(0, 0) }, Step { hour: 40, cells: cells(0, 7) }, Step { hour: 60, cells: cells(1, 7) }, Step { hour: 70, cells: cells(2, 7) }];
-    assert_eq!(super::definition_dates(&history, &steps, 0), Some(super::DefinitionDates { since: 10, typed: Some(40), named: 60 }), "typed when the archetype is first read, named from the rename, and an equal spelling is no rename");
+    let dates = super::definition_dates(&history, &steps, 0).unwrap();
+    assert_eq!((dates.since, dates.typed), (10, Some(40)), "typed when the archetype is first read");
+    assert_eq!(
+        dates.names.iter().map(|(hour, fields)| (*hour, fields.as_ref().map(|fields| fields.display_name.clone()))).collect::<Vec<_>>(),
+        [(10, Some(b"Old".to_vec())), (60, Some(b"New".to_vec()))],
+        "each recorded name holds from its own hour, and an equal spelling is no rename"
+    );
 }
 
 #[test]
@@ -383,9 +389,28 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
     let steady_index = SpendingIndex { spans: vec![IndexedSpan::new(steady_read, HashMap::from([(1, design("infantry_equipment", Domain::Land))]), Vec::new())], from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), rocket_source: None, warnings: Vec::new() };
     let steady_range = steady_index.between(50, 80, ProductionSpendingScope::Military, false);
     assert_eq!(steady_range.breakdown.total.amount, Some(BreakdownAmount { numerator: "10".into(), denominator: "1".into() }), "equipment counts from its restart and the rocket counter, running on, subtracts its own baseline");
+    let steady_at = steady_index.at(80, ProductionSpendingScope::Military, false);
+    assert_eq!((steady_at.from, steady_at.breakdown.total.amount), (50, Some(BreakdownAmount { numerator: "10".into(), denominator: "1".into() })), "the plain reply counts every counter from the date it publishes");
     let rocket_index = SpendingIndex { spans: vec![IndexedSpan::new(rocket_read, HashMap::from([(2, design("fighter", Domain::Air))]), Vec::new())], ..index };
     assert_eq!(rocket_index.between(30, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "a rocket counter restarted inside the range is no difference either");
     assert_eq!(rocket_index.at(20, ProductionSpendingScope::Military, false).through, 49, "the answer stands no later than the rocket restart");
+    let mut zeroed = BTreeMap::new();
+    zeroed.insert((false, 2, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(1_000_000)))]);
+    zeroed.insert((true, 9, None), vec![(0, 49, row(Some(500_000))), (50, 100, row(Some(0)))]);
+    let zeroed_read = SpanRead {
+        span: span(0, 100, false),
+        lines: vec![(0, 100, Context::Known)],
+        rocket: vec![(0, 100, Context::Known)],
+        country: vec![(0, 100, Some((Some(1_000_000), Some(1_000_000))))],
+        rows: zeroed,
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(2, 0)]),
+        equipment_observations: BTreeSet::new(),
+        rocket_observations: BTreeSet::from([0, 50]),
+        repairs: None,
+    };
+    let zeroed_index = SpendingIndex { spans: vec![IndexedSpan::new(zeroed_read, HashMap::from([(2, design("fighter", Domain::Air))]), Vec::new())], from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), rocket_source: None, warnings: Vec::new() };
+    assert_eq!(zeroed_index.between(30, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "a rocket restart is checked even when the rocket counter reads zero at the end");
     let index = rocket_index;
     let quiet = index.between(60, 80, ProductionSpendingScope::Military, false);
     assert_eq!((quiet.breakdown.total.state, quiet.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "0".into(), denominator: "1".into() })), "nothing spent inside the range is exactly zero");

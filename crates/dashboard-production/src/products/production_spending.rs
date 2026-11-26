@@ -524,23 +524,31 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         };
         let names = match definition {
             Some(definition) => {
-                let mut raw = match &tags {
-                    Ok(tags) => variant_names::raw_variant(definition, span.last, tags, lexical),
-                    Err(_) => variant_names::raw_variant(definition, span.last, &empty, lexical),
+                let named = |row: &VariantDefinitionRow, first_hour: i32| {
+                    let mut raw = match &tags {
+                        Ok(tags) => variant_names::raw_variant(row, span.last, tags, lexical),
+                        Err(_) => variant_names::raw_variant(row, span.last, &empty, lexical),
+                    };
+                    let own = of_variant(modules.as_deref(), variant, |row: &VariantModuleRow| row.variant);
+                    let upgraded = of_variant(upgrades.as_deref(), variant, |row: &VariantUpgradeRow| row.variant);
+                    if let (Some(own), Some(upgraded)) = (own, upgraded) {
+                        let own: Vec<&VariantModuleRow> = own.iter().collect();
+                        let upgraded: Vec<&VariantUpgradeRow> = upgraded.iter().collect();
+                        variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
+                    }
+                    let (name, _) = variant_names::variant_names(&raw, texts);
+                    StockVariantName { first_hour, name, known: true, design: raw.design }
                 };
-                let own = of_variant(modules.as_deref(), variant, |row: &VariantModuleRow| row.variant);
-                let upgraded = of_variant(upgrades.as_deref(), variant, |row: &VariantUpgradeRow| row.variant);
-                if let (Some(own), Some(upgraded)) = (own, upgraded) {
-                    let own: Vec<&VariantModuleRow> = own.iter().collect();
-                    let upgraded: Vec<&VariantUpgradeRow> = upgraded.iter().collect();
-                    variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
-                }
-                let (name, _) = variant_names::variant_names(&raw, texts);
-                let dates = dated.get(&variant);
-                let named = StockVariantName { first_hour: dates.map_or(span.last, |dates| dates.named), name, known: true, design: raw.design };
-                match dates {
-                    Some(dates) if dates.named > dates.since => vec![StockVariantName { first_hour: dates.since, name: None, known: false, design: None }, named],
-                    _ => vec![named],
+                match dated.get(&variant) {
+                    Some(dates) if !dates.names.is_empty() => dates
+                        .names
+                        .iter()
+                        .map(|(hour, fields)| match fields {
+                            Some(fields) => named(&fields.applied(definition), *hour),
+                            None => StockVariantName { first_hour: *hour, name: None, known: false, design: None },
+                        })
+                        .collect(),
+                    _ => vec![named(definition, span.last)],
                 }
             }
             None => vec![StockVariantName { first_hour: span.first, name: None, known: false, design: None }],
@@ -558,7 +566,50 @@ const ARCHETYPE_AT: usize = 7;
 pub(crate) struct DefinitionDates {
     pub(crate) since: i32,
     pub(crate) typed: Option<i32>,
-    pub(crate) named: i32,
+    pub(crate) names: Vec<(i32, Option<NameFields>)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NameFields {
+    pub(crate) equipment_token: u32,
+    pub(crate) creator_link: u32,
+    pub(crate) origin_link: u32,
+    pub(crate) append_variant_name: u8,
+    pub(crate) display_name: Vec<u8>,
+    pub(crate) variant_name: Vec<u8>,
+    pub(crate) explicit_entity: Vec<u8>,
+}
+
+impl NameFields {
+    fn of(history: &History, cells: &[Cell]) -> Self {
+        let number = |at: usize| match cells.get(at) {
+            Some(Cell::Number(value)) => *value,
+            _ => 0,
+        };
+        let text = |at: usize| cells.get(at).and_then(|cell| history.text(*cell)).map(<[u8]>::to_vec).unwrap_or_default();
+        Self {
+            equipment_token: u32::try_from(number(0)).unwrap_or(0),
+            creator_link: u32::try_from(number(1)).unwrap_or(0),
+            origin_link: u32::try_from(number(2)).unwrap_or(0),
+            append_variant_name: u8::try_from(number(3)).unwrap_or(0),
+            display_name: text(4),
+            variant_name: text(5),
+            explicit_entity: text(6),
+        }
+    }
+
+    fn applied(&self, definition: &VariantDefinitionRow) -> VariantDefinitionRow {
+        VariantDefinitionRow {
+            equipment_token: self.equipment_token,
+            creator_link: self.creator_link,
+            origin_link: self.origin_link,
+            append_variant_name: self.append_variant_name,
+            display_name: self.display_name.clone(),
+            variant_name: self.variant_name.clone(),
+            explicit_entity: self.explicit_entity.clone(),
+            ..definition.clone()
+        }
+    }
 }
 
 pub(crate) fn definition_dates(history: &History, steps: &[Step], floor: i32) -> Option<DefinitionDates> {
@@ -571,22 +622,21 @@ pub(crate) fn definition_dates(history: &History, steps: &[Step], floor: i32) ->
     let mut dates: Option<DefinitionDates> = None;
     let mut last: Option<&[Cell]> = None;
     for step in steps {
+        let hour = step.hour.max(floor);
         let Some(cells) = step.cells.as_deref() else {
+            if let Some(held) = dates.as_mut().filter(|_| last.is_some()) {
+                held.names.push((hour, None));
+            }
             last = None;
             continue;
         };
-        let hour = step.hour.max(floor);
         let typed = matches!(cells.get(ARCHETYPE_AT), Some(Cell::Number(token)) if *token > 0);
-        match &mut dates {
-            None => dates = Some(DefinitionDates { since: hour, typed: typed.then_some(hour), named: hour }),
-            Some(held) => {
-                if typed && held.typed.is_none() {
-                    held.typed = Some(hour);
-                }
-                if last.is_none_or(|before| !same(before, cells)) {
-                    held.named = hour;
-                }
-            }
+        let held = dates.get_or_insert_with(|| DefinitionDates { since: hour, typed: None, names: Vec::new() });
+        if typed && held.typed.is_none() {
+            held.typed = Some(hour);
+        }
+        if last.is_none_or(|before| !same(before, cells)) {
+            held.names.push((hour, Some(NameFields::of(history, cells))));
         }
         last = Some(cells);
     }

@@ -430,7 +430,11 @@ fn unassigned_node() -> Node {
 fn leaf_key(leaf: &Leaf) -> Vec<String> {
     match leaf.path.last() {
         Some(node) if node.key.starts_with("variant:") || node.key.starts_with("rocket:") => {
-            let purpose = leaf.path.iter().find(|node| PURPOSE_KEYS.contains(&node.key.as_str())).map_or("", |node| node.key.as_str());
+            let root = match leaf.path.first() {
+                Some(first) if first.key == UNRESOLVED_TYPE_KEY => leaf.path.get(1),
+                first => first,
+            };
+            let purpose = root.filter(|node| PURPOSE_KEYS.contains(&node.key.as_str())).map_or("", |node| node.key.as_str());
             vec![purpose.to_owned(), node.key.clone()]
         }
         _ => leaf.path.iter().map(|node| node.key.clone()).collect(),
@@ -451,6 +455,9 @@ impl Built {
         let counters: Vec<&Leaf> = start.leaves.iter().filter(|leaf| leaf.path.first().is_none_or(|node| node.key != REPAIR_KEY)).collect();
         let held: HashMap<Vec<String>, &Amount> = counters.iter().map(|leaf| (leaf_key(leaf), &leaf.amount)).collect();
         for leaf in &mut self.leaves {
+            if leaf.path.first().is_some_and(|node| node.key == REPAIR_KEY) {
+                continue;
+            }
             let before = held.get(&leaf_key(leaf)).copied();
             let next = match (&leaf.amount, before) {
                 (amount, None) => amount.clone(),
@@ -902,6 +909,7 @@ impl SpendingIndex {
 
     pub(crate) fn at(&self, hour: i32, scope: ProductionSpendingScope, include_refits: bool) -> ProductionSpendingReply {
         match self.build(hour, scope, include_refits, None) {
+            Ok(built) if scope == ProductionSpendingScope::Military && built.rocket_from != built.from => self.between(built.from.max(built.rocket_from), hour, scope, include_refits),
             Ok(built) => built.reply(hour),
             Err(reply) => *reply,
         }
@@ -919,7 +927,7 @@ impl SpendingIndex {
         let through = end.through;
         let refused = |reason: &str| ProductionSpendingReply { from, hour, through, breakdown: not_recorded(reason), warnings: end.warnings.clone() };
         let rocket = |leaf: &Leaf| leaf.path.iter().any(|node| node.key == "rocket" || node.key.starts_with("rocket:"));
-        let rockets = end.leaves.iter().any(rocket);
+        let rockets = scope == ProductionSpendingScope::Military;
         let counters = [Some(end.from), rockets.then_some(end.rocket_from)];
         if counters.into_iter().flatten().any(|since| since > from && self.counted_before(from, since)) {
             return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted));
@@ -994,4 +1002,19 @@ pub(crate) fn load(source: &Source, params: &ProductionSpendingParams, context: 
     };
     check_reply_budget(&reply)?;
     Ok(reply)
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::{Leaf, Node, REPAIR_KEY, leaf_key};
+    use dashboard_base::products::breakdown::{Amount, Exact};
+
+    #[test]
+    fn a_counter_leaf_is_keyed_by_its_purpose_position_never_by_a_type_named_like_a_purpose() {
+        let leaf = |path: Vec<Node>| Leaf { path, amount: Amount::Known(Exact::whole(1)), count: None, last: None };
+        let repair = leaf(vec![Node::new(REPAIR_KEY, "Repairs", 2), Node::new("new", "A type named new", 0), Node::new("variant:7", "Design", 7)]);
+        let built = leaf(vec![Node::new("new", "New ships", 0), Node::new("hull", "Hull", 0), Node::new("variant:7", "Design", 7)]);
+        assert_ne!(leaf_key(&repair), leaf_key(&built), "a repair is never matched to a shipbuilding baseline");
+        assert_eq!(leaf_key(&built), ["new", "variant:7"]);
+    }
 }
