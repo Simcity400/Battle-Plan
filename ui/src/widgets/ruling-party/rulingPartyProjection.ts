@@ -170,8 +170,14 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
     if (!list.length) {
       const witnessed = buildRulingMarkers(history, list, options, hour);
       const message = history.leaders.length ? 'Party popularity is unavailable.' : 'Party data is unavailable.';
+      const unrecorded: ChartGap[] = [
+        ...options.gaps,
+        ...history.governmentUnobserved
+          .filter(span => span.firstHour <= hour)
+          .map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: 'Government changes were not recorded' })),
+      ];
       return witnessed.length
-        ? { ...base, summaryText, markers: witnessed, warnings: [...history.warnings, message], empty: null }
+        ? { ...base, summaryText, markers: witnessed, ...(unrecorded.length ? { gaps: unrecorded } : {}), warnings: [...history.warnings, message], empty: null }
         : { ...base, summaryText, warnings: history.warnings, empty: { message, kind: 'unavailable' } };
     }
 

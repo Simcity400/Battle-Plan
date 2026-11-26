@@ -1940,6 +1940,12 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const bare = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: { ...history, parties: [] } });
     assert.deepEqual(bare.markers?.map(marker => marker.hour), [base + 48], 'witnessed elections are drawn without a popularity plot');
     assert.equal(layoutTimeChart(bare, 720, 260, FONT, measure).markers.length, 1, 'and placed on the chart');
+    const unrecorded = { ...history, parties: [], governmentUnobserved: [{ firstHour: base, lastHour: hour + 200 }] };
+    const older = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: unrecorded });
+    assert.deepEqual(older.gaps, [{ firstHour: base, lastHour: hour + 200, reason: 'Government changes were not recorded' }]);
+    const olderLayout = layoutTimeChart(older, 720, 260, FONT, measure);
+    const gapTip = deriveTimeChartTooltip(older, olderLayout, `gap:${olderLayout.gaps[0]!.index}`);
+    assert.ok(JSON.stringify(gapTip).includes('Government changes were not recorded'), 'a chart of markers alone says where government changes were not recorded');
 
     const exact = (raw: string, part: string) => ({ country: 7, part, hour, run: { valueRaw: raw }, missing: null });
     const audited = rulingPartyProjection.project(createBoundedReadView({ hour, panels: new Map([['popularity', { decimals: 5, states: [exact('7000000', '1'), exact('3000000', '0')] }]]) }), options);
