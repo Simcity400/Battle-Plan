@@ -64,9 +64,6 @@ pub struct TensionSource {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTensionReply {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub values: Option<TensionValueMode>,
     #[doc = " Tension units a percentage point."]
     pub tension_scale: u32,
     #[doc = " Contribution units a percentage point."]
@@ -77,7 +74,6 @@ pub struct WorldTensionReply {
     #[doc = " (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the"]
     #[doc = " sum from slots no tag ever held), both in contribution units."]
     pub unnamed: bool,
-    #[doc = " Every nonzero contribution, greatest first, ties by slot."]
     pub contributions: Vec<TensionContribution>,
     #[doc = " In the game's list order."]
     pub sources: Vec<TensionSource>,
@@ -183,7 +179,6 @@ impl AtHour for WorldTension {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = WorldTensionReply {
-            values: params.values,
             tension_scale: (cthreat_source::FIXED_POINT_SCALE / cworld_threat::SCALAR_DIVISOR) as u32,
             contribution_scale: cthreat_source::FIXED_POINT_SCALE as u32,
             ceiling_raw: cworld_threat::CLAMP_CEILING.to_string(),

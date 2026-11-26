@@ -888,7 +888,7 @@ pub(super) fn compute_stack(
             if shown.contains(&slot) { continue; }
             let start = runs.partition_point(|run| run.1 < first);
             present |= runs[start..].iter().take_while(|run| run.0 <= last).any(|run| run.2.is_some_and(|value| value != 0));
-            count += u32::from(lookup_slot(Some(runs), last_complete, last).is_some_and(|value| value != 0));
+            count += u32::from(rank_hour.and_then(|hour| lookup_slot(Some(runs), rank_complete, hour)).is_some_and(|value| value != 0));
         }
         (present, count)
     } else {

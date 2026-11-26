@@ -22,7 +22,6 @@ export interface WorldTensionLinesOptions {
   readonly extent: readonly [number, number];
   readonly surface: string;
   readonly gaps: readonly ChartGap[];
-  readonly membership?: FamilyPlanContext['countries']['membership'];
 }
 
 function parseRawInt(raw: string | null | undefined): bigint | null {
@@ -116,7 +115,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         flagChoice: id.flagChoice?.status === 'ready' ? id.flagChoice.value : null,
       };
     });
-    const hover = tensionHover(readView, 'recorded', options.membership);
+    const hover = tensionHover(readView);
     const topColors = resolveLineColors(reply.bands.slice(0, TOP_NAMED).map((band, i) => ({ key: band.slot, color: infos[i]!.color })), options.surface);
     const scaleBig = reply.contributionScale > 0 ? BigInt(reply.contributionScale) : null;
     const endTexts = new Map<string, string>();
@@ -265,7 +264,6 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
       extent,
       surface,
       gaps: branchGapsOf(ctx.branch),
-      membership: ctx.countries.membership,
     };
   },
 };

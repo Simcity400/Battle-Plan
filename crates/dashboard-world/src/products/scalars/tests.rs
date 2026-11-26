@@ -697,6 +697,29 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
         assert_eq!(full.bands.iter().map(|band| band.slot).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(full.bands[1].end_value, Some(9.0));
     }
+
+    use crate::products::group_members::GroupsAt;
+    use dashboard_base::products::at_hour::{At, AtHour};
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use replay_data::rows::{TableId, TableRows, ThreatCountryAggregateRow};
+    use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
+
+    let holders = Holders::new(["GER", "ITA"].into_iter().enumerate().map(|(index, tag)| {
+        let slot = index as u32 + 1;
+        (tag.to_owned(), vec![HolderRun { first: 10, last: 40, holder: Holder::Found { slot, id: slot }, starts_segment: true }])
+    }).collect(), Vec::new());
+    let groups = GroupsAt::new(groups_reply.into(), 10);
+    let params = world_tension::WorldTensionParams { branch_id: "1".into(), countries: Some(vec![2]), values: Some(TensionValueMode::Recorded), group: Some(sel) };
+    for (hour, raw, expected) in [(24, Some(300_000), None), (24, None, None), (25, Some(300_000), Some("300000")), (25, None, Some("0"))] {
+        let mut tables = std::array::from_fn(|_| not_selected());
+        let rows = raw.into_iter().map(|total_raw| ThreatCountryAggregateRow { country_slot: 2, total_raw }).collect();
+        tables[TableId::ThreatCountryAggregates.index()] = TableView::Complete(TableRows::ThreatCountryAggregates(rows)).into();
+        let frame = DecodedFrame { branch: 1, hour, tables, metrics: Metrics::default() };
+        let at = At { hour, holders: &holders, owner: None, context: &groups, cancelled: &false.into(), live: &Default::default() };
+        let reply = world_tension::WorldTension::reply(&frame, &params, &at).unwrap();
+        assert_eq!(reply.contributions[0].reading.as_ref().unwrap().as_deref().map_err(String::as_str),
+            expected.ok_or("Not a member of the selected group at this hour."));
+    }
 }
 
 #[test]

@@ -79,7 +79,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'pixel-binned':
       return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
     case 'exact-hover':
-      return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params, read.readsOf ?? '', read.countriesOf ?? '', read.membership ?? null, read.countryParamsOf ?? null];
+      return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params, read.readsOf ?? '', read.countriesOf ?? '', read.membership ?? null, read.countryParamsOf ?? null, read.allowEmptyCountries ?? false];
     case 'paged-rows':
       return ['paged-rows', read.tailQuery, read.pageSize ?? 0, read.followQuery];
   }
@@ -794,7 +794,7 @@ function resolveHoverParams(
     const shown = displayed(read.countriesOf);
     if (!shown) return null;
     const eligible = shown.filter(key => hoverEligible(read.membership, key, hour));
-    if (!eligible.length) return null;
+    if (!eligible.length && !read.allowEmptyCountries) return null;
     return { ...read.params, countries: eligible.map(countryFromKey), [hourParam]: hour };
   }
   const countries = (read.params as { countries?: unknown }).countries;

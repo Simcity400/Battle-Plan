@@ -76,6 +76,10 @@ test('hover requests the installed ranking and projection slots while older tile
   const ask = (drawn?: typeof keys) => hoverAsks(plan, 15, name => displayedHoverKeys(name, drawn, tiled), undefined, drawn).map(item => item.request.params);
   assert.deepEqual(ask(keys), [{ reads: [{ country: 'NEW', hour: 15 }] }, { countries: [9], hour: 15 }]);
   assert.deepEqual(ask({ ...keys, bands: [] }), [{ reads: [{ country: 'NEW', hour: 15 }] }]);
+  const world: SourcePlan = { owner: 'world', entries: [
+    { name: 'hover', source, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'world-tension', params: {}, countriesOf: 'bands', allowEmptyCountries: true } },
+  ] };
+  assert.deepEqual(hoverAsks(world, 15, () => []).map(item => item.request.params), [{ countries: [], hour: 15 }]);
   assert.deepEqual(ask()[0], { reads: [{ country: 'OLD', hour: 15 }] });
   const modelsPlan: SourcePlan = { owner: 'production', entries: [{
     name: 'hover', source, branch: '1', offset: 0, read: {
