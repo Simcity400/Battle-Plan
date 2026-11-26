@@ -42,10 +42,9 @@ export function replacePagers(previous: PagerSet, sig: string, entries: readonly
 }
 
 function atHead(window: FamilyRowWindow, limit: number): boolean {
-  if (Math.floor(window.count) <= 0) return false;
   const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
   const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
-  return first + count <= limit;
+  return count > 0 && first + count <= limit;
 }
 
 export function pagerWindow(held: PagerSet, entry: PagedEntry, window: FamilyRowWindow, installedHour: number | null): { readonly pager: SnapshotPager; readonly step: PagerStep } {
