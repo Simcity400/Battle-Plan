@@ -2293,3 +2293,504 @@ fn a_followed_top_of_chosen_countries_is_not_recorded_where_their_holders_are_no
     assert_eq!(answer.not_recorded.as_deref(), Some(wanted.as_str()), "never a successful empty ranking");
     assert_eq!(answer, harness.fresh(&chosen, hour), "the incremental ranking and the answer at the hour agree");
 }
+
+#[test]
+fn paused_cells_dropping_across_a_gap_do_not_reset_the_playhead_and_new_cross_piece_tables_seek_once() {
+    use crate::{
+        host::PlayheadHost,
+        live::{CellValue, Cells, GroupState, Source},
+        panel::{AtHour, ExactReader, PanelRows, ProductRead, ProductReader, dated},
+        push::{PANEL, Push},
+        registry::{Anchor, Hosted},
+    };
+
+    struct NoRows;
+    impl PanelRows for NoRows {
+        fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+            Err(io::Error::other("unused"))
+        }
+    }
+    fn product(advance: ProductReader) -> Box<AtHour> {
+        let cold: ExactReader = Arc::new(|_, _| unreachable!("the incremental reader supplies the seed"));
+        Box::new(AtHour { read: cold.clone(), cold, advance })
+    }
+    fn live_cell(column: usize, key: u128, value: i64) -> (Arc<crate::live::Live>, Arc<crate::panel::PanelData>) {
+        let cells = Cells::default();
+        cells.value("r", "v", Source { table: TableId::ALL[TABLE], column, key }, 1.0);
+        let live = Arc::new(cells.finish());
+        let json = serde_json::json!({ "live": live.json(&[GroupState::Values(vec![CellValue::Number(value)])]) });
+        (live, Arc::new(Ok(json)))
+    }
+    fn take_panel_where(
+        seen: &mut Vec<(u32, Hour, u8, Option<serde_json::Value>)>,
+        push: &Push,
+        matches: impl Fn(u32, Hour, u8, Option<&serde_json::Value>) -> bool,
+    ) -> Option<serde_json::Value> {
+        loop {
+            if let Some(at) = seen.iter().position(|(id, hour, kind, value)| matches(*id, *hour, *kind, value.as_ref())) {
+                return seen.remove(at).3;
+            }
+            let (kind, bytes, session) = push.take_sent().expect("panel packet");
+            push.credit(session, u64::MAX);
+            if kind != PANEL {
+                continue;
+            }
+            for r in dated::records(&bytes).unwrap() {
+                let value = (r.kind == dated::DATA).then(|| rmp_serde::from_slice(r.body).expect("panel value"));
+                seen.push((r.id, r.hour, r.kind, value));
+            }
+        }
+    }
+    fn take_panel_data(seen: &mut Vec<(u32, Hour, u8, Option<serde_json::Value>)>, push: &Push, target_id: u32, target_hour: Hour) -> serde_json::Value {
+        take_panel_where(seen, push, |id, hour, kind, _| id == target_id && hour == target_hour && kind == dated::DATA).expect("panel data")
+    }
+    let mut seen_panel: Vec<(u32, Hour, u8, Option<serde_json::Value>)> = Vec::new();
+
+    let pages = record(quiet);
+    let timeline = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 24 }]).unwrap();
+    let follow = Follow::new(0);
+    let (follow_tx, follow_rx) = mpsc::channel();
+    let hook = follow.hook(Box::new(move |_, message| {
+        if let Some(message) = message {
+            let _ = follow_tx.send(message.bytes);
+        }
+    }));
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 32, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline, settings, Some(hook)).unwrap());
+    let anchored = |playhead: &Playhead, anchor: Anchor| {
+        playhead.frame_rate(anchor.frame_rate);
+        playhead.pace(anchor.speed);
+        if anchor.sought {
+            playhead.seek(anchor.hour);
+        }
+        if !anchor.playing {
+            playhead.pause();
+        }
+    };
+    let held = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host = PlayheadHost::new(Arc::clone(&playhead), |p| p, anchored, follow, held).unwrap();
+    let push = Arc::new(Push::default());
+    host.show_panels(Arc::new(NoRows), Arc::clone(&push));
+
+    host.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    playhead.wait_newest(0).unwrap();
+
+    host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        if hour == 4 {
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "gap": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        } else {
+            let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }
+    }))).unwrap()(10, 1).unwrap();
+
+    let seeded = take_panel_data(&mut seen_panel, &push, 10, 0);
+    assert_eq!(seeded["live"]["groups"][0]["seedHour"], 0);
+    assert!(seeded["live"]["groups"][0]["follow"].is_u64());
+    playhead.wait_declarations().unwrap();
+    let epoch_after_settle = playhead.epoch();
+    playhead.pace(16.0);
+
+    let returned = take_panel_data(&mut seen_panel, &push, 10, 5);
+    assert!(returned["live"]["groups"][0]["follow"].is_u64(), "returning cell group after gap receives a follow id");
+    playhead.wait_newest(8).unwrap();
+    playhead.wait_declarations().unwrap();
+    assert_eq!(playhead.epoch(), epoch_after_settle, "cells dropping at the gap and returning after it must cause 0 resets after first settle");
+    assert_eq!(playhead.held().2.joins_open, 0);
+
+    let epoch_before_cross_piece = playhead.epoch();
+    host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        if hour < 5 {
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "empty": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        } else {
+            let (live, value) = live_cell(3, 105, i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }
+    }))).unwrap()(11, 1).unwrap();
+
+    let joined = take_panel_data(&mut seen_panel, &push, 11, 5);
+    assert!(joined["live"]["groups"][0]["follow"].is_u64());
+    playhead.wait_newest(8).unwrap();
+    playhead.wait_declarations().unwrap();
+    assert_eq!(playhead.epoch(), epoch_before_cross_piece + 1, "a new cross-piece column join takes exactly one clean seek and terminates");
+    assert_eq!(playhead.held().2.joins_open, 0);
+
+    let epoch_before_same_table_seed = playhead.epoch();
+    host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        let (live, value) = live_cell(0, 101, i64::from(hour) * 10 + 1);
+        ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+    }))).unwrap()(12, 1).unwrap();
+
+    let seeded_extra = take_panel_data(&mut seen_panel, &push, 12, 0);
+    assert_eq!(seeded_extra["live"]["groups"][0]["seedHour"], 0);
+    assert_eq!(seeded_extra["live"]["groups"][0]["values"], serde_json::json!([1]));
+    assert!(seeded_extra["live"]["groups"][0]["follow"].is_u64());
+    let catchup_extra = take_panel_data(&mut seen_panel, &push, 12, 3);
+    assert_eq!(catchup_extra["live"]["groups"][0]["seedHour"], 3, "catch-up delivers dated cell values before follow coverage starts");
+    assert_eq!(catchup_extra["live"]["groups"][0]["values"], serde_json::json!([31]));
+    playhead.wait_newest(8).unwrap();
+    playhead.wait_declarations().unwrap();
+    assert_eq!(playhead.epoch(), epoch_before_same_table_seed, "an exact-seeded panel on an already-declared column causes 0 resets");
+
+    let epoch_before_wide = playhead.epoch();
+    let cached_wide: Arc<Mutex<Option<(Arc<crate::live::Live>, Arc<crate::panel::PanelData>)>>> = Arc::new(Mutex::new(None));
+    let cached_wide_ref = Arc::clone(&cached_wide);
+    host.prepare_panel(product(Arc::new(move |hour, values, _, _| {
+        if hour < 3 {
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        } else if hour < 12 {
+            let mut slot = cached_wide_ref.lock().unwrap();
+            let (live, value) = match (&*slot, values) {
+                (Some(held), false) => held.clone(),
+                _ => {
+                    let built = live_cell(3, 105, 9_007_199_254_740_990 + i64::from(hour));
+                    *slot = Some(built.clone());
+                    built
+                }
+            };
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        } else {
+            let (live, value) = live_cell(3, 105, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }
+    }))).unwrap()(13, 1).unwrap();
+
+    let wide_h3 = take_panel_data(&mut seen_panel, &push, 13, 3);
+    assert_eq!(
+        wide_h3["live"]["groups"][0]["rawValues"],
+        serde_json::json!(["9007199254740993"]),
+        "catch-up preserves an exact 64-bit cell value in its hour packet"
+    );
+    assert!(wide_h3["live"]["groups"][0].get("follow").is_none(), "catch-up does not strip wide integers into an unseeded follow");
+    let wide_h4 = take_panel_data(&mut seen_panel, &push, 13, 4);
+    assert_eq!(
+        wide_h4["live"]["groups"][0]["rawValues"],
+        serde_json::json!(["9007199254740994"]),
+        "a persistent wide integer advances during catch-up instead of freezing on a cached Arc"
+    );
+    playhead.wait_newest(8).unwrap();
+    playhead.wait_declarations().unwrap();
+    assert_eq!(playhead.epoch(), epoch_before_wide, "catch-up wide integer on an already-declared column causes 0 resets");
+    take_panel_where(&mut seen_panel, &push, |id, hour, kind, _| id == 13 && hour >= 8 && kind == dated::STANDS);
+    playhead.pace(48.0);
+    playhead.wait_newest(16).unwrap();
+    let wide_stepped_h9 = take_panel_data(&mut seen_panel, &push, 13, 9);
+    assert_eq!(
+        wide_stepped_h9["live"]["groups"][0]["rawValues"],
+        serde_json::json!(["9007199254740999"]),
+        "a persistent wide integer keeps exact inline coverage across its first ordinary step"
+    );
+    let wide_followed = take_panel_data(&mut seen_panel, &push, 13, 12);
+    assert!(wide_followed["live"]["groups"][0]["follow"].is_u64(), "returning to a safe integer attaches follow with an exact seed");
+    assert_eq!(wide_followed["live"]["groups"][0]["seedHour"], 12);
+    assert_eq!(playhead.epoch(), epoch_before_wide, "wide inline coverage and safe handoff cause 0 resets");
+
+    let mut emitted_follow_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let collect_follow_id = |emitted: &mut std::collections::BTreeSet<u32>, value: &serde_json::Value| {
+        if let Some(id) = value["live"]["groups"][0]["follow"].as_u64() {
+            emitted.insert(id as u32);
+        }
+    };
+    collect_follow_id(&mut emitted_follow_ids, &seeded);
+    collect_follow_id(&mut emitted_follow_ids, &returned);
+    collect_follow_id(&mut emitted_follow_ids, &joined);
+    collect_follow_id(&mut emitted_follow_ids, &seeded_extra);
+    collect_follow_id(&mut emitted_follow_ids, &wide_followed);
+    for (_, _, _, value) in &seen_panel {
+        if let Some(value) = value {
+            collect_follow_id(&mut emitted_follow_ids, value);
+        }
+    }
+    playhead.wait_newest(24).unwrap();
+    playhead.wait_declarations().unwrap();
+    while follow_rx.try_recv().is_ok() {}
+    let queries_before_transient = host.follow().held().queries;
+    let epoch_before_transient = playhead.epoch();
+    host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        if (3..=4).contains(&hour) {
+            let (live, value) = live_cell(3, 105, 9_007_199_254_740_990 + i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        } else {
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "transient": hour }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        }
+    }))).unwrap()(15, 1).unwrap();
+    let wide_transient_h3 = take_panel_data(&mut seen_panel, &push, 15, 3);
+    assert_eq!(wide_transient_h3["live"]["groups"][0]["rawValues"], serde_json::json!(["9007199254740993"]));
+    assert!(wide_transient_h3["live"]["groups"][0].get("follow").is_none(), "transient wide cell during catch-up emits no follow id");
+    let _wide_transient_h5 = take_panel_data(&mut seen_panel, &push, 15, 5);
+    playhead.wait_newest(24).unwrap();
+    playhead.wait_declarations().unwrap();
+    for (_, _, _, value) in &seen_panel {
+        if let Some(value) = value {
+            collect_follow_id(&mut emitted_follow_ids, value);
+        }
+    }
+    assert_eq!(playhead.epoch(), epoch_before_transient);
+    assert_eq!(host.follow().held().queries, queries_before_transient, "a wide group that exists only during catch-up registers no native follow");
+    while let Ok(bytes) = follow_rx.try_recv() {
+        for (id, _, _) in decode(&bytes).expect("valid follow message").answers {
+            assert!(emitted_follow_ids.contains(&id), "a transient catch-up wide group emits no unreferenced native follow answers (saw {id}, emitted {emitted_follow_ids:?})");
+        }
+    }
+
+    let catchup_seeds = Arc::new(Mutex::new(Vec::new()));
+    let catchup_seeds_ref = Arc::clone(&catchup_seeds);
+    host.prepare_panel(product(Arc::new(move |hour, seed, _, step| {
+        if step.is_none() && (1..=8).contains(&hour) {
+            catchup_seeds_ref.lock().unwrap().push((hour, seed));
+        }
+        ProductRead { value: Arc::new(Ok(serde_json::json!({ "interval": hour }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+    }))).unwrap()(14, 1).unwrap();
+    let _interval_h8 = take_panel_data(&mut seen_panel, &push, 14, 8);
+    let seen_seeds = catchup_seeds.lock().unwrap().clone();
+    assert!(!seen_seeds.is_empty() && seen_seeds.iter().all(|&(_, seed)| !seed), "quantum-1 catch-up preserves interval reuse (seed=false) for panels without live cells: {seen_seeds:?}");
+
+    host.unpanel(13);
+    host.unpanel(11);
+    playhead.wait_newest(8).unwrap();
+    playhead.wait_declarations().unwrap();
+    assert_eq!(playhead.held().2.joins_open, 0, "shrinking a retained table's columns on unpanel settles cleanly across a piece boundary");
+
+    let other_reader = playhead
+        .declare(vec![playhead::Declared { table: TABLE, columns: vec![0, 3], keyed: false, passing: false, hourly: false }], None)
+        .unwrap();
+    playhead.wait_newest(8).unwrap();
+    playhead.wait_declarations().unwrap();
+    let epoch_before_covered = playhead.epoch();
+    host.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        let (live, value) = live_cell(3, 105, i64::from(hour));
+        ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+    }))).unwrap()(16, 1).unwrap();
+    let covered_seed = take_panel_data(&mut seen_panel, &push, 16, 0);
+    assert_eq!(covered_seed["live"]["groups"][0]["seedHour"], 0);
+    playhead.wait_declarations().unwrap();
+    assert_eq!(playhead.epoch(), epoch_before_covered, "a declaration already covered by another reader causes 0 seeks across a piece boundary");
+    assert_eq!(playhead.held().2.joins_open, 0);
+    host.unpanel(16);
+    playhead.redeclare(other_reader, Vec::new()).unwrap();
+    playhead.wait_declarations().unwrap();
+
+    let epoch_before_external = playhead.epoch();
+    host.follow().follow(99, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+    let seeded_answer = loop {
+        let bytes = follow_rx.recv().expect("follow message");
+        let decoded = decode(&bytes).expect("valid follow message");
+        if let Some((_, _, body)) = decoded.answers.into_iter().find(|&(id, hour, _)| id == 99 && hour == 0) {
+            break Answer::parse(body).expect("valid answer");
+        }
+    };
+    assert!(playhead.epoch() > epoch_before_external, "a real new subscriber while paused still triggers its paused seed");
+    assert_eq!(seeded_answer.values, vec![0]);
+    drop(host);
+
+    let timeline2 = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 12 }]).unwrap();
+    let follow2 = Follow::new(0);
+    let hook2 = follow2.hook(Box::new(|_, _| {}));
+    let settings2 = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead2 = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline2, settings2, Some(hook2)).unwrap());
+    let held2 = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host2 = PlayheadHost::new(Arc::clone(&playhead2), |p| p, anchored, follow2, held2).unwrap();
+    let push2 = Arc::new(Push::default());
+    host2.show_panels(Arc::new(NoRows), Arc::clone(&push2));
+    host2.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    playhead2.wait_newest(0).unwrap();
+
+    host2.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        if hour < 5 {
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "before": true }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        } else {
+            let (live, value) = live_cell(3, 105, i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }
+    }))).unwrap()(20, 1).unwrap();
+
+    let mut seen_panel2: Vec<(u32, Hour, u8, Option<serde_json::Value>)> = Vec::new();
+    let _before = take_panel_data(&mut seen_panel2, &push2, 20, 0);
+    let epoch_before_boundary = playhead2.epoch();
+    assert!(playhead2.newest().is_some_and(|n| n < 5), "panel is installed before read-ahead crosses the gap");
+    playhead2.pace(24.0);
+    let boundary_joined = take_panel_data(&mut seen_panel2, &push2, 20, 5);
+    assert!(boundary_joined["live"]["groups"][0]["follow"].is_u64());
+    playhead2.wait_newest(8).unwrap();
+    playhead2.wait_declarations().unwrap();
+    assert_eq!(playhead2.epoch(), epoch_before_boundary + 1, "a column first declared right at the piece boundary takes exactly one clean seek and settles");
+    assert_eq!(playhead2.held().2.joins_open, 0);
+    drop(host2);
+
+    struct SinkGate {
+        state: Mutex<(Option<Hour>, bool, bool)>,
+        cv: std::sync::Condvar,
+    }
+    impl SinkGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { state: Mutex::new((None, false, false)), cv: std::sync::Condvar::new() })
+        }
+        fn arm(&self, hour: Hour) {
+            *self.state.lock().unwrap() = (Some(hour), false, false);
+        }
+        fn hit(&self, hour: Hour) {
+            let mut s = self.state.lock().unwrap();
+            if s.0 == Some(hour) && !s.2 {
+                s.1 = true;
+                self.cv.notify_all();
+                while !s.2 {
+                    s = self.cv.wait(s).unwrap();
+                }
+                s.0 = None;
+            }
+        }
+        fn wait_entered(&self) {
+            let mut s = self.state.lock().unwrap();
+            while !s.1 {
+                s = self.cv.wait(s).unwrap();
+            }
+        }
+        fn release(&self) {
+            let mut s = self.state.lock().unwrap();
+            s.2 = true;
+            self.cv.notify_all();
+        }
+    }
+
+    let timeline3 = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 3 }, playhead::Piece { run: 0, first: 5, last: 12 }]).unwrap();
+    let follow3 = Follow::new(0);
+    let gate3 = SinkGate::new();
+    let gate3_hook = Arc::clone(&gate3);
+    let hook3 = follow3.hook(Box::new(move |stats, _| {
+        gate3_hook.hit(stats.last);
+    }));
+    let settings3 = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead3 = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline3, settings3, Some(hook3)).unwrap());
+    let held3 = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host3 = PlayheadHost::new(Arc::clone(&playhead3), |p| p, anchored, follow3, held3).unwrap();
+    let push3 = Arc::new(Push::default());
+    host3.show_panels(Arc::new(NoRows), Arc::clone(&push3));
+    host3.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    playhead3.wait_newest(0).unwrap();
+    host3.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        let (live, value) = live_cell(0, 100, i64::from(hour));
+        ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+    }))).unwrap()(30, 1).unwrap();
+    host3.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        let (live, value) = live_cell(3, 105, i64::from(hour));
+        ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+    }))).unwrap()(31, 1).unwrap();
+    let mut seen_panel3: Vec<(u32, Hour, u8, Option<serde_json::Value>)> = Vec::new();
+    let _ = take_panel_data(&mut seen_panel3, &push3, 30, 0);
+    let _ = take_panel_data(&mut seen_panel3, &push3, 31, 0);
+    playhead3.wait_declarations().unwrap();
+    gate3.arm(5);
+    playhead3.pace(10.0);
+    gate3.wait_entered();
+    let epoch_at_piece1 = playhead3.epoch();
+    host3.unpanel(31);
+    gate3.release();
+    playhead3.wait_declarations().unwrap();
+    playhead3.wait_newest(5).unwrap();
+    assert_eq!(playhead3.epoch(), epoch_at_piece1 + 1, "shrinking a retained table as piece 1 fills the ring wakes the driver and settles cleanly");
+    assert_eq!(playhead3.held().2.joins_open, 0);
+    drop(host3);
+
+    let timeline4 = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 12 }]).unwrap();
+    let follow4 = Follow::new(0);
+    let gate4 = SinkGate::new();
+    let gate4_hook = Arc::clone(&gate4);
+    let (follow_tx4, follow_rx4) = mpsc::channel();
+    let hook4 = follow4.hook(Box::new(move |stats, message| {
+        if let Some(message) = message {
+            let _ = follow_tx4.send(message.bytes);
+        }
+        gate4_hook.hit(stats.last);
+    }));
+    let settings4 = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 1, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let playhead4 = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline4, settings4, Some(hook4)).unwrap());
+    let held4 = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host4 = PlayheadHost::new(Arc::clone(&playhead4), |p| p, anchored, follow4, held4).unwrap();
+    host4.follow().follow(1, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+    gate4.arm(1);
+    host4.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: false, speed: 1.0, sought: true });
+    loop {
+        let bytes = follow_rx4.recv().expect("initial follow message");
+        if decode(&bytes).unwrap().answers.iter().any(|&(id, hour, _)| id == 1 && hour == 0) {
+            break;
+        }
+    }
+    playhead4.pace(4.0);
+    gate4.wait_entered();
+    playhead4.seek(0);
+    let held_epoch = playhead4.epoch();
+    assert_eq!(playhead4.holding(), Some(held_epoch));
+    host4.follow().follow(2, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+    assert_eq!(playhead4.epoch(), held_epoch, "registration during a held seek does not seek before the held reset runs");
+    gate4.release();
+    let held_answer = loop {
+        let bytes = follow_rx4.recv().expect("held reset follow message");
+        let decoded = decode(&bytes).expect("valid follow message");
+        if let Some((_, _, body)) = decoded.answers.into_iter().find(|&(id, hour, _)| id == 2 && hour == 0) {
+            break Answer::parse(body).expect("valid answer");
+        }
+    };
+    assert_eq!(held_answer.values, vec![0]);
+    playhead4.pace(16.0);
+    playhead4.wait_newest(3).unwrap();
+    playhead4.wait_declarations().unwrap();
+    assert_eq!(playhead4.epoch(), held_epoch, "once the held reset satisfies the subscriber, advancing read-ahead causes 0 redundant resets");
+
+    gate4.arm(0);
+    playhead4.pace(1.0);
+    playhead4.seek(0);
+    let reset_sink_epoch = playhead4.epoch();
+    gate4.wait_entered();
+    host4.follow().follow(3, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Keys(vec![100]) }).unwrap();
+    gate4.release();
+    let rehook_answer = loop {
+        let bytes = follow_rx4.recv().expect("rehook follow message");
+        let decoded = decode(&bytes).expect("valid follow message");
+        if let Some((_, _, body)) = decoded.answers.into_iter().find(|&(id, hour, _)| id == 3 && hour == 0) {
+            break Answer::parse(body).expect("valid answer");
+        }
+    };
+    assert_eq!(rehook_answer.values, vec![0]);
+    playhead4.pace(16.0);
+    playhead4.wait_newest(3).unwrap();
+    playhead4.wait_declarations().unwrap();
+    assert_eq!(playhead4.epoch(), reset_sink_epoch, "a subscriber registered during the reset sink and answered on the next hook causes 0 redundant resets");
+    drop(host4);
+
+    let timeline5 = Timeline::new(&*pages, vec![playhead::Piece { run: 0, first: 0, last: 48 }]).unwrap();
+    let follow5 = Follow::new(0);
+    let hook5 = follow5.hook(Box::new(|_, _| {}));
+    let settings5 = Settings { step_threads: 1, fetch_threads: 1, ahead: 64, ring: 8, speed: 120.0, rate: 60.0, ..Settings::default() };
+    let playhead5 = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, timeline5, settings5, Some(hook5)).unwrap());
+    let held5 = crate::host::held_tables(&*pages, pages.kinds.len());
+    let host5 = PlayheadHost::new(Arc::clone(&playhead5), |p| p, anchored, follow5, held5).unwrap();
+    let push5 = Arc::new(Push::default());
+    host5.show_panels(Arc::new(NoRows), Arc::clone(&push5));
+    host5.anchor(Anchor { seek: 1, frame_rate: 60.0, hour: 0, position: 0.0, timestamps: None, playing: true, speed: 120.0, sought: true });
+    playhead5.play(120.0);
+    playhead5.wait_newest(8).unwrap();
+    assert!(playhead5.playing() && playhead5.step_hours() > 1, "coarse playback is playing with step_hours() > 1");
+    host5.prepare_panel(product(Arc::new(|hour, _, _, _| {
+        if hour < 2 {
+            ProductRead { value: Arc::new(Ok(serde_json::json!({ "coarse": hour }))), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        } else if hour < 14 {
+            let (live, value) = live_cell(0, 100, 9_007_199_254_740_990 + i64::from(hour));
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        } else {
+            let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
+            ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new() }
+        }
+    }))).unwrap()(50, 1).unwrap();
+    let mut seen_panel5: Vec<(u32, Hour, u8, Option<serde_json::Value>)> = Vec::new();
+    let coarse_wide = take_panel_where(&mut seen_panel5, &push5, |id, hour, kind, value| {
+        id == 50 && (8..14).contains(&hour) && kind == dated::DATA && value.is_some_and(|v| v["live"]["groups"][0]["rawValues"].is_array())
+    })
+    .expect("coarse inline wide packet");
+    assert!(coarse_wide["live"]["groups"][0].get("follow").is_none(), "coarse playback preserves exact inline wide coverage without an unseeded follow gap");
+    let coarse_handoff = take_panel_where(&mut seen_panel5, &push5, |id, hour, kind, value| {
+        id == 50 && hour >= 14 && kind == dated::DATA && value.is_some_and(|v| v["live"]["groups"][0]["follow"].is_u64())
+    })
+    .expect("coarse safe handoff packet");
+    assert!(coarse_handoff["live"]["groups"][0]["seedHour"].is_i64(), "handoff to native follow on coarse playback carries seedHour for exact coverage");
+    drop(host5);
+}

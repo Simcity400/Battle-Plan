@@ -19,7 +19,7 @@ use std::{
     io, mem,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -72,7 +72,7 @@ pub struct Held {
 }
 
 enum Op {
-    Follow(u32, Box<Query>),
+    Follow(u32, u64, Box<Query>),
     Unfollow(u32),
 }
 
@@ -86,7 +86,7 @@ struct Reads {
 struct Control {
     products: BTreeMap<u32, Vec<Declared>>,
     ops: Vec<Op>,
-    followed: BTreeMap<u32, Reads>,
+    followed: BTreeMap<u32, (u64, Reads)>,
     declare: Option<Declare>,
     logs: Option<LogReads>,
     classes: BTreeMap<usize, bool>,
@@ -103,6 +103,10 @@ struct Shared {
     control: Mutex<Control>,
     report: Mutex<(Counters, Held)>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    step_head: Mutex<(u64, Hour)>,
+    follow_seq: AtomicU64,
+    last_joining: Mutex<(u32, u64)>,
+    delivered: Mutex<HashMap<u32, (u64, u64, Hour)>>,
 }
 
 impl Shared {
@@ -138,8 +142,29 @@ impl Follow {
                 control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new(), session: 0 }),
                 report: Mutex::default(),
                 wake: Mutex::default(),
+                step_head: Mutex::new((u64::MAX, Hour::MIN)),
+                follow_seq: AtomicU64::new(0),
+                last_joining: Mutex::new((0, 0)),
+                delivered: Mutex::default(),
             }),
         }
+    }
+
+    pub(crate) fn step_head(&self) -> (u64, Hour) {
+        *lock(&self.shared.step_head)
+    }
+
+    pub(crate) fn last_joining(&self) -> (u32, u64) {
+        *lock(&self.shared.last_joining)
+    }
+
+    pub(crate) fn still_needs_seed(&self, id: u32, seq: u64, epoch: u64, head: Hour) -> bool {
+        if lock(&self.shared.control).followed.get(&id).is_none_or(|&(held_seq, _)| held_seq != seq) {
+            return false;
+        }
+        !lock(&self.shared.delivered)
+            .get(&id)
+            .is_some_and(|&(d_seq, d_epoch, d_hour)| d_seq == seq && d_epoch == epoch && d_hour <= head)
     }
 
     pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
@@ -158,6 +183,7 @@ impl Follow {
     pub fn hook(&self, sink: Sink) -> Hook {
         let mut engine = Engine::new(Arc::clone(&self.shared), sink);
         Box::new(move |step: &Step, lanes: &Lanes<'_>| {
+            *lock(&engine.shared.step_head) = (step.epoch(), step.last());
             engine.step(step, lanes);
             let products = lock(&engine.shared.products).clone();
             if let Some(products) = products { products(step, lanes); }
@@ -202,12 +228,20 @@ impl Follow {
     }
 
     pub fn follow(&self, id: u32, query: Query) -> io::Result<()> {
+        self.follow_cells(id, query, true)
+    }
+
+    pub(crate) fn follow_cells(&self, id: u32, query: Query, seed_paused: bool) -> io::Result<()> {
         query.check()?;
         let result = {
             let mut control = lock(&self.shared.control);
-            control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
-            control.ops.push(Op::Follow(id, Box::new(query)));
-            redeclare(&mut control, true)
+            let seq = self.shared.follow_seq.fetch_add(1, Ordering::AcqRel) + 1;
+            control.followed.insert(id, (seq, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() }));
+            control.ops.push(Op::Follow(id, seq, Box::new(query)));
+            if seed_paused {
+                *lock(&self.shared.last_joining) = (id, seq);
+            }
+            redeclare(&mut control, seed_paused)
         };
         if result.is_ok() {
             self.shared.notify_wake();
@@ -224,6 +258,7 @@ impl Follow {
         let changed = {
             let mut control = lock(&self.shared.control);
             if control.followed.remove(&id).is_some() {
+                lock(&self.shared.delivered).remove(&id);
                 control.ops.push(Op::Unfollow(id));
                 redeclare(&mut control, false)?;
                 true
@@ -265,7 +300,7 @@ fn redeclare(control: &mut Control, joining: bool) -> io::Result<()> {
 
 fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
     let mut tables: BTreeMap<usize, (BTreeSet<usize>, bool, bool, bool)> = BTreeMap::new();
-    for reads in control.followed.values().filter(|reads| reads.table != head::TABLE) {
+    for (_, reads) in control.followed.values().filter(|(_, reads)| reads.table != head::TABLE) {
         let entry = tables.entry(reads.table).or_default();
         entry.0.extend(&reads.columns);
         entry.1 |= reads.appended;
@@ -299,6 +334,7 @@ enum Phase {
 
 struct Followed {
     id: u32,
+    seq: u64,
     query: Query,
     table: usize,
     declared: Vec<usize>,
@@ -630,7 +666,7 @@ impl Engine {
             self.evaluate(step, lanes, &mut stats);
         }
         self.answer_heads(step, &mut stats);
-        let message = self.send(step, lanes, &mut stats);
+        let (message, sent) = self.send(step, lanes, &mut stats);
         let held = (changed || step.reset() || self.counters.steps.is_multiple_of(HELD_EVERY)).then(|| self.held());
         stats.ns = start.elapsed().as_nanos() as u64;
         let counters = &mut self.counters;
@@ -650,6 +686,20 @@ impl Engine {
         }
         drop(report);
         (self.sink)(&stats, message);
+        if !sent.is_empty() {
+            let epoch = step.epoch();
+            let mut delivered = lock(&self.shared.delivered);
+            for (id, seq, hour) in sent {
+                delivered
+                    .entry(id)
+                    .and_modify(|held| {
+                        if seq > held.0 || (seq == held.0 && (held.1 != epoch || hour < held.2)) {
+                            *held = (seq, epoch, hour);
+                        }
+                    })
+                    .or_insert((seq, epoch, hour));
+            }
+        }
     }
 
     fn apply_ops(&mut self) -> (bool, u64) {
@@ -660,9 +710,9 @@ impl Engine {
         let changed = !ops.is_empty();
         for op in ops {
             match op {
-                Op::Follow(id, query) => {
+                Op::Follow(id, seq, query) => {
                     self.remove(id);
-                    self.add(id, *query);
+                    self.add(id, seq, *query);
                 }
                 Op::Unfollow(id) => self.remove(id),
             }
@@ -688,9 +738,10 @@ impl Engine {
         }
     }
 
-    fn add(&mut self, id: u32, query: Query) {
+    fn add(&mut self, id: u32, seq: u64, query: Query) {
         let followed = Followed {
             id,
+            seq,
             table: query.table(),
             declared: query.declared(),
             query,
@@ -1192,9 +1243,10 @@ impl Engine {
         }
     }
 
-    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, stats: &mut StepStats) -> Option<Message> {
+    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, stats: &mut StepStats) -> (Option<Message>, Vec<(u32, u64, Hour)>) {
         let (first_epoch, seek) = *lock(&self.shared.page_seek);
-        if step.epoch() < first_epoch { return None; }
+        if step.epoch() < first_epoch { return (None, Vec::new()); }
+        let mut sent = Vec::new();
         answer::begin(&mut self.message, self.shared.route, self.shared.clock, step.last(), seek, step.reset());
         if !step.gap() {
             for (&table, index) in &self.tables {
@@ -1225,6 +1277,7 @@ impl Engine {
                 &followed.pending
             };
             answer::push_held(&mut self.message, followed.id, followed.pending_hour, body, if followed.query.appended() { 0 } else { followed.pending_held });
+            sent.push((followed.id, followed.seq, followed.pending_hour));
             stats.sent += 1;
             followed.queued = false;
             if followed.query.appended() && followed.phase != Phase::Refused {
@@ -1239,11 +1292,11 @@ impl Engine {
             }
         }
         if stats.sent == 0 && !step.reset() && self.ids.is_empty() {
-            return None;
+            return (None, Vec::new());
         }
         stats.messages = 1;
         stats.bytes = self.message.len() as u32;
-        Some(Message { hour: step.last(), reset: step.reset(), answers: stats.sent, bytes: mem::take(&mut self.message) })
+        (Some(Message { hour: step.last(), reset: step.reset(), answers: stats.sent, bytes: mem::take(&mut self.message) }), sent)
     }
 
     fn held(&self) -> Held {
@@ -1270,7 +1323,7 @@ fn reset_discards_an_abandoned_append_and_pending_body() {
     let follow = Follow::new(0);
     let mut engine = Engine::new(follow.shared, Box::new(|_, _| {}));
     for (id, rows) in [(0, Rows::Appended), (1, Rows::All)] {
-        engine.add(id, Query::Cells { table: 2, columns: vec![0], rows });
+        engine.add(id, u64::from(id) + 1, Query::Cells { table: 2, columns: vec![0], rows });
         let q = engine.slab[id as usize].as_mut().unwrap();
         q.queued = true;
         q.has_pending = true;
