@@ -81,6 +81,42 @@ function sampleStack(): WorldTensionStackReply {
 }
 
 describe('world-tension projections', () => {
+  it('hovers only installed contributors and Other in Share mode and withholds pre-membership readings', () => {
+    const at = H1936 + 5;
+    const base = sampleStack();
+    const main = { ...base, bands: [base.bands[0]!], other: { ...base.other!, count: 1 } };
+    const data = {
+      tensionScale: 1000, contributionScale: 100000, contributions: [
+        { slot: 2, tag: 'JAP', remembered: false }, { slot: 1, tag: 'GER', remembered: false },
+      ], sources: [], warnings: [], missing: null,
+      live: {
+        rows: ['world', '1', '2'],
+        kinds: ['tension', 'sum', 'value'].map(id => ({ id, op: 'value', scale: 1 })),
+        groups: [
+          { table: 1, columns: [0], keys: ['0'], values: [50000] },
+          { table: 2, columns: [0], keys: ['0'], values: [20000000] },
+          { table: 3, columns: [0], keys: ['1', '2'], values: [8000000, 12000000] },
+        ],
+        cells: [0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 2, 1, 2, 0, 0, 2, 2, 1, 2, 1, 0],
+      },
+    };
+    const view = (detail: typeof data) => createBoundedReadView({
+      hour: H1941, panels: new Map([['main', main]]), identity: makeIdentity(),
+      hovers: new Map([['hover', { hour: at, data: detail }]]),
+    });
+    const opts = { extent: [H1936, H1941] as const, surface: '#111111', gaps: [] };
+    const stack = worldTensionProjection.project(view(data), { ...opts, layers: 1, values: 'share', showMarkers: false });
+    const items = stack.hoverDetail!.items.filter(item => !['World tension', 'Uncapped sum'].includes(item.label));
+    assert.deepEqual(items.map(item => [item.label, item.value]), [['German Reich', '20%'], ['Other (1)', '30%']]);
+    for (const detail of [data, { ...data, contributions: [] }]) {
+      const lines = worldTensionLinesProjection.project(view(detail), {
+        ...opts, membership: { GER: [[at + 1, H1941]] },
+      });
+      assert.equal(lines.series[0]?.exact?.value, null);
+      assert.match(lines.series[0]?.exact?.reason ?? '', /not a member/i);
+    }
+  });
+
   it('projects stepped stack with Other at bottom, leader on top, shortName at small, and clamps future events', () => {
     const reply = sampleStack();
     const readView = createBoundedReadView({
