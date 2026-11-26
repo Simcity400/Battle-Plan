@@ -316,14 +316,27 @@ test('a cold projection or lane code load walks no history, keeps one waiter per
     assert.ok(lazyLane.paint({ label: 'lane loaded', binding: shown, hour: 10 }).surfaces.length > 0);
     assert.deepEqual(lazyLane.picture(), ['t:0:0=#eef1f6|A 1  1']);
 
-    const failing = lazyLaneView('test-lane', () => { laneLoads++; return Promise.reject(new Error('lane chunk missing')); }, () => {});
-    const failed = driveLane(failing, recording.canvases);
-    failed.paint({ label: 'lane broken', binding: shown, hour: 10 });
+    let releasePrepared: (lane: LaneFamily<Binding, Model, Layout>) => void = () => {};
+    const prepared = lazyLaneView('test-lane', () => { laneLoads++; return new Promise(resolve => { releasePrepared = resolve; }); }, () => {});
+    let ready = false;
+    const preparing = prepared.prepare!().then(() => { ready = true; });
+    void prepared.prepare!();
     await settle();
+    assert.deepEqual([ready, laneLoads], [false, 2], 'preparing starts the one import and is not ready until it lands');
+    releasePrepared(family);
+    await preparing;
+    const preparedLane = driveLane(prepared, recording.canvases);
+    const first = preparedLane.paint({ label: 'prepared', binding: shown, hour: 10 });
+    assert.ok(!first.waiting && first.surfaces.length > 0, 'a prepared lane paints on its first ask, without waiting');
+    assert.equal(laneLoads, 2);
+
+    const failing = lazyLaneView('test-lane', () => { laneLoads++; return Promise.reject(new Error('lane chunk missing')); }, () => {});
+    await failing.prepare!();
+    const failed = driveLane(failing, recording.canvases);
     for (let i = 0; i < 3; i++) assert.throws(() => failed.paint({ label: 'lane broken', binding: shown, hour: 10 }), /The test-lane lane did not load: lane chunk missing/);
-    assert.equal(laneLoads, 2, 'a failed lane import is not retried on every paint');
+    assert.equal(laneLoads, 3, 'preparing settles on a failed lane import, and the failure is not retried on every paint');
     assert.equal(failed.paint({ label: 'lane retried', binding: shown, hour: 10, generation: 2 }).surfaces.length, 0, 'a re-bind clears the failure and loads the lane code again');
-    assert.equal(laneLoads, 3);
+    assert.equal(laneLoads, 4);
   } finally {
     recording.restore();
   }

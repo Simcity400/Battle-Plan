@@ -87,7 +87,7 @@ function createLane(): LaneWorker {
   return worker;
 }
 const host: PipelineHost = { lanes: [createLane(), createLane()], open: list => client.openFollow!(list), channel: () => new MessageChannel(), frameRate: () => 60, rate: () => 1 };
-pipelineFor(clock, client, () => host);
+const pipeline = pipelineFor(clock, client, () => host);
 void ports;
 
 interface Shown { readonly width: number; readonly height: number; readonly bitmap: ImageBitmap }
@@ -458,7 +458,9 @@ const api = {
     document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;flex-direction:column"><div style="flex:0 0 41.7px"></div><div id="dashboard-scroll" style="flex:1;min-height:0;overflow:auto;padding-left:10.3px"><div id="dashboard-root"></div></div></div>';
     look = { layout: START_LAYOUT, width: Math.floor(scroller().clientWidth - 10.3 - 4) + 0.4, zoom: {} };
     root = createRoot(document.getElementById('dashboard-root')!);
+    pipeline.prepare(PLACED.map(item => item.family), []);
     flushSync(() => root!.render(<WidgetFrameContext.Provider value={frame as never}><Dashboard /></WidgetFrameContext.Provider>));
+    await pipeline.whenPrepared();
     return { ...await settle(20_000), dpr: devicePixelRatio };
   },
   settle,

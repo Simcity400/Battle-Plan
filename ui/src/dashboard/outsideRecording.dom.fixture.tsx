@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import '../styles.css';
 import '../widgets';
 import { loadEveryWidgetModule } from './widgetModules.fixture.ts';
+import { pipelineOf } from './follow/useFollowed.ts';
+import { laneModules } from '../widgets/manifest';
 import type { EngineFrame, FrameEngine } from '../engine/frame';
 import { PHASES } from '../engine/frame';
 import { widgetDefinitions } from './definitions';
@@ -107,10 +109,14 @@ Object.assign(window, { outsideFixture: {
     });
     mounted = built.map(entry => entry.item);
     const specs = built.map(entry => entry.spec);
+    const pipeline = pipelineOf(clock, client as never);
+    const needs = laneModules(definitions.map(definition => definition.kind));
+    pipeline.prepare(needs.families, needs.projections);
     createRoot(document.body.appendChild(document.createElement('div'))).render(<>{specs.map(widget =>
       <section key={widget.id} id={widget.id} style={{ width: 480, height: 320, overflow: 'hidden', position: 'relative' }}>
         <Profiler id={widget.id} onRender={counted(widget.id)}><WidgetBody widget={widget} runtime={runtime} /></Profiler>
       </section>)}</>);
+    await pipeline.whenPrepared();
     for (let turn = 0; turn < 20; turn++) await settle();
     await quiet();
     return { mounted, ...shown(new Map(renders)) };

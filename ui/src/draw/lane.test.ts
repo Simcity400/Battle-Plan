@@ -4,6 +4,8 @@ import { Decoder, encode } from '@msgpack/msgpack';
 import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
 import { cropAll, cropSurfaces, macrotaskSchedule, markCanvasPainted, type WakeChannel } from './laneDispatch.ts';
 import { startLaneWorker } from './lane.worker.ts';
+import { prepareProjections } from './views/drawn.ts';
+import { bindFamilyManifest, familyProjectionFailure } from '../families/registry.ts';
 import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
@@ -3910,4 +3912,44 @@ test('cropSurfaces transfers registered canvases synchronously with zero copies,
   };
   await assert.rejects(cropSurfaces<MockBmp>([ok, boom], fallback), /transfer boom/);
   assert.equal(okClosed, true, 'already-created sibling bitmaps are closed if a synchronous transfer throws');
+});
+
+test('a lane answers a prepare once every family and the projections have settled, each started on its own, even when building one throws', async () => {
+  const posted: FromLane[] = [];
+  const started: string[] = [];
+  let release = () => {};
+  const turn = () => new Promise(resolve => setImmediate(resolve));
+  const dispatch = startLaneWorker(message => { posted.push(message); }, {
+    views: kind => {
+      if (kind === 'broken') throw new Error('the broken lane has no export');
+      return { paint: () => ({ surfaces: [], fields: {}, motion: false }), prepare: () => { started.push(kind); return new Promise<void>(resolve => { release = resolve; }); } } as unknown as LaneView;
+    },
+    prepare: async keys => { started.push(`projections ${keys.length}`); },
+    schedule: undefined,
+  });
+  dispatch({ type: 'prepare', ask: 7, families: ['broken', 'slow'], projections: [['bars', 'kind', 'main']] });
+  await turn();
+  assert.deepEqual(started, ['slow', 'projections 1'], 'a family that throws does not stop the others or the projections from starting');
+  assert.deepEqual(posted.filter(message => message.type === 'prepared'), [], 'no answer while a family is still loading');
+  release();
+  await turn();
+  assert.deepEqual(posted.filter(message => message.type === 'prepared'), [{ type: 'prepared', lane: -1, ask: 7 }]);
+});
+
+test('preparing projections waits for every projection to settle, when another throws as its load starts', async () => {
+  let release: (module: never) => void = () => {};
+  bindFamilyManifest([
+    { family: 'bars', kind: 'prepare-throws', loadSpec: () => { throw new Error('the chunk is missing'); } },
+    { family: 'bars', kind: 'prepare-held', loadSpec: () => new Promise(resolve => { release = resolve; }) as never },
+    { family: 'bars', kind: 'prepare-blank', loadSpec: () => { throw new Error(); } },
+  ]);
+  let done = false;
+  const prepared = prepareProjections([['bars', 'prepare-throws', 'default'], ['bars', 'prepare-held', 'default'], ['bars', 'prepare-blank', 'default']]).then(() => { done = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(done, false, 'a projection that throws does not settle its held sibling');
+  release({ projection: { family: 'bars', kind: 'prepare-held', project: () => null } } as never);
+  await prepared;
+  assert.equal(done, true);
+  assert.equal(familyProjectionFailure('bars', 'prepare-throws'), 'the chunk is missing', 'a load that throws as it starts is recorded as that projection failing, and its waiter is woken');
+  assert.equal(familyProjectionFailure('bars', 'prepare-blank'), 'Error', 'a failure without a message is still recorded as a failure, never as a missing projection');
 });

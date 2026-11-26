@@ -1,4 +1,7 @@
 import { lazyLaneView } from '../../families/laneRuntime.ts';
+import { ensureFamilyProjection } from '../../families/registry.ts';
+import type { FamilyId } from '../../families/plan.ts';
+import type { ProjectionKey } from '../laneMessages';
 import { FAMILY_MANIFESTS } from '../../widgets/familyManifest.ts';
 import type { LaneView, Painted, PaintInput } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
@@ -38,6 +41,12 @@ function panelTexts(): LaneView {
       return { surfaces: [], fields, motion: false };
     },
   };
+}
+
+export function prepareProjections(keys: readonly ProjectionKey[]): Promise<void> {
+  return Promise.allSettled(keys.map(([family, kind, view]) => new Promise<void>(resolve => {
+    if (ensureFamilyProjection(family as FamilyId, kind, view, resolve) !== 'loading') resolve();
+  }))).then(() => {});
 }
 
 export function drawnViews(kind: string, wake: (widget: number) => void): LaneView | undefined {

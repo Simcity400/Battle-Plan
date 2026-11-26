@@ -31,12 +31,13 @@ export function lanesHost(client: DashboardClient): PipelineHost {
   };
 }
 
+export function pipelineOf(clock: PlaybackController, client: DashboardClient): Pipeline {
+  const base = baseClient(client);
+  return pipelineFor(pageClock(clock), base, () => lanesHost(base));
+}
+
 export function usePipeline(clock: PlaybackController | null, client: DashboardClient | null): Pipeline | null {
-  return useMemo(() => {
-    if (!clock || !client) return null;
-    const base = baseClient(client);
-    return pipelineFor(pageClock(clock), base, () => lanesHost(base));
-  }, [clock, client]);
+  return useMemo(() => (clock && client ? pipelineOf(clock, client) : null), [clock, client]);
 }
 
 export function usePipelineGeneration(clock: PlaybackController | null): number {

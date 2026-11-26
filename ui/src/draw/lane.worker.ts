@@ -2,7 +2,7 @@ import { fieldsView } from './views/fields.ts';
 import { panelViews, readingStructure } from './panels/views.ts';
 import { stretch } from './weakCpu.ts';
 import type { FromLane, ToLane } from './laneMessages';
-import { drawnViews } from './views/drawn.ts';
+import { drawnViews, prepareProjections } from './views/drawn.ts';
 import { cropSurfaces, laneDispatch, macrotaskSchedule, type LaneSide } from './laneDispatch.ts';
 
 const fields = fieldsView(readingStructure, (product, panel, hour) => {
@@ -18,6 +18,7 @@ export function startLaneWorker(
   return laneDispatch(post, {
     views: overrides?.views ?? ((kind, wake) => kind === 'fields' ? fields : drawnViews(kind, wake) ?? fields),
     crop: overrides?.crop ?? (sources => cropSurfaces(sources)),
+    prepare: overrides?.prepare ?? prepareProjections,
     later: overrides?.later ?? (run => { if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => run()); else setTimeout(run, 16); }),
     ...schedule ? { schedule } : {},
     ...overrides?.clock ? { clock: overrides.clock } : {},

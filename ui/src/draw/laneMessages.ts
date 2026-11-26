@@ -3,9 +3,12 @@ import type { FrameRequest } from '../dashboard/follow/page';
 import type { PayloadsMessage } from '../dashboard/follow/payloads';
 import type { Binding, Presented, Supply } from './lane';
 
+export type ProjectionKey = readonly [family: string, kind: string, view: string];
+
 export type ToLane =
   | { type: 'init'; lane: number; lanes: number; port: MessagePort; rate: number }
   | { type: 'options'; rate: number }
+  | { type: 'prepare'; ask: number; families: readonly string[]; projections: readonly ProjectionKey[] }
   | { type: 'follow'; sub: number; channel: Channel; product?: string }
   | { type: 'route'; sub: number; route: number; native: number; seek: number; offset: number }
   | { type: 'unfollow'; sub: number }
@@ -23,6 +26,7 @@ export type ToLane =
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
+  | { type: 'prepared'; lane: number; ask: number }
   | { type: 'sub-failed'; lane: number; sub: number; reason: string }
   | { type: 'widget-failed'; lane: number; widget: number; reason: string; stamp?: number }
   | { type: 'hit'; widget: number; key: string | null; installedId?: number; owner?: string }

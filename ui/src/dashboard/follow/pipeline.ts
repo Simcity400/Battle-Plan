@@ -7,7 +7,7 @@ import { Page, type PageMessage, type PageSurface, type RebindChange, type Widge
 import type { Channel } from './facts';
 import type { Binding, Dated, Supply } from '../../draw/lane';
 import { PayloadSender } from './payloads.ts';
-import type { FromLane, ToLane } from '../../draw/laneMessages';
+import type { FromLane, ProjectionKey, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
@@ -17,7 +17,7 @@ import { asFailure, RefusedError, type Failure } from '../queryError.ts';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
-export interface LaneWorker { postMessage(message: ToLane, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<FromLane>) => void) | null }
+export interface LaneWorker { postMessage(message: ToLane, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<FromLane>) => void) | null; onerror?: ((event: ErrorEvent) => void) | null }
 
 export interface PipelineHost {
   lanes: readonly LaneWorker[];
@@ -97,17 +97,26 @@ export class Pipeline {
   private stopPublish: (() => void) | null = null;
   private stopClock: (() => void) | null = null;
   private rate: number;
+  private prepareAsk = 0;
+  private preparedAt: number[];
+  private heard: boolean[];
+  private readonly preparedWaiters = new Set<() => void>();
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
     this.clock = clock; this.client = client; this.host = host; this.rate = host.rate(); this.generation = generation;
     const count = host.lanes.length;
     perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
+    this.preparedAt = Array.from({ length: count }, () => 0);
+    this.heard = Array.from({ length: count }, () => false);
     this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
     this.payloads = host.lanes.map(lane => new PayloadSender(message => lane.postMessage(message)));
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
-    host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
+    host.lanes.forEach((lane, index) => {
+      lane.onmessage = ({ data }) => this.receive(index, data);
+      if ('onerror' in lane) lane.onerror = () => this.unstarted(index);
+    });
     const channels = host.lanes.map(() => host.channel());
     channels.forEach((channel, lane) => host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: this.rate }, [channel.port1]));
     this.ports = channels.map(channel => channel.port2);
@@ -119,19 +128,35 @@ export class Pipeline {
 
   get lanes() { return this.host.lanes.length; }
 
+  prepare(families: readonly string[], projections: readonly ProjectionKey[]) {
+    if (this.closed) return;
+    const ask = ++this.prepareAsk;
+    for (const lane of this.host.lanes) lane.postMessage({ type: 'prepare', ask, families, projections });
+  }
+
+  prepared(): boolean {
+    return this.closed || this.preparedAt.every(ask => ask >= this.prepareAsk);
+  }
+
+  whenPrepared(): Promise<void> {
+    return this.prepared() ? Promise.resolve() : new Promise(resolve => { this.preparedWaiters.add(resolve); });
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
     this.abort.abort();
     this.stopPublish?.(); this.stopPublish = null;
     this.stopClock?.(); this.stopClock = null;
-    for (const lane of this.host.lanes) lane.onmessage = null;
+    for (const lane of this.host.lanes) { lane.onmessage = null; if ('onerror' in lane) lane.onerror = null; }
     this.closeReader?.(); this.closeReader = null;
     this.host.close?.();
     for (const port of this.ports) port.close();
     this.page.dispose();
     perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
+    for (const resolve of this.preparedWaiters) resolve();
+    this.preparedWaiters.clear();
     this.dateWatchers.clear(); this.placed.clear(); this.kindCost.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
   }
@@ -263,8 +288,28 @@ export class Pipeline {
     }
   }
 
+  private unstarted(lane: number) {
+    if (this.closed || this.heard[lane]) return;
+    this.heard[lane] = true;
+    this.preparedAt[lane] = Infinity;
+    this.settlePrepared();
+  }
+
+  private settlePrepared() {
+    if (!this.prepared()) return;
+    const waiters = [...this.preparedWaiters];
+    this.preparedWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
   private receive(lane: number, message: FromLane) {
     if (this.closed) return;
+    this.heard[lane] = true;
+    if (message.type === 'prepared') {
+      this.preparedAt[lane] = Math.max(this.preparedAt[lane] ?? 0, message.ask);
+      this.settlePrepared();
+      return;
+    }
     if (message.type === 'failure') {
       const routes = new Set<number>();
       for (const widget of this.widgets.values()) if (message.lane === -1 || widget.lane === lane) routes.add(this.page.widgets.get(widget.id)!.route);
@@ -804,6 +849,19 @@ const ownerOf = new WeakMap<Pipeline, { clock: PlaybackController; slot: Pipelin
 
 export const pipelineGeneration = (clock: PlaybackController) => clockGeneration.get(clock) ?? 1;
 
+export interface LaneNeeds { readonly families: readonly string[]; readonly projections: readonly ProjectionKey[] }
+const laneNeeds = new WeakMap<PlaybackController, LaneNeeds>();
+
+export function prepareLanes(clock: PlaybackController, needs: LaneNeeds) {
+  laneNeeds.set(clock, needs);
+  byClock.get(clock)?.pipeline.prepare(needs.families, needs.projections);
+}
+
+function prepareFrom(clock: PlaybackController, pipeline: Pipeline) {
+  const needs = laneNeeds.get(clock);
+  if (needs?.families.length) pipeline.prepare(needs.families, needs.projections);
+}
+
 export function pipelineFor(clock: PlaybackController, client: DashboardClient, host: () => PipelineHost): Pipeline {
   let byClient = pipelines.get(clock);
   if (!byClient) pipelines.set(clock, byClient = new WeakMap());
@@ -813,6 +871,7 @@ export function pipelineFor(clock: PlaybackController, client: DashboardClient, 
     const generation = existing ? (clockGeneration.get(clock) ?? 1) + 1 : (clockGeneration.get(clock) ?? 1);
     clockGeneration.set(clock, generation);
     const pipeline = new Pipeline(clock, client, host(), generation);
+    prepareFrom(clock, pipeline);
     slot = { pipeline, client, host, listeners: new Set() };
     byClient.set(client, slot);
     ownerOf.set(pipeline, { clock, slot });
@@ -837,6 +896,7 @@ export function restartPipeline(pipeline: Pipeline): Pipeline | null {
   const generation = (clockGeneration.get(clock) ?? 0) + 1;
   clockGeneration.set(clock, generation);
   const next = new Pipeline(clock, slot.client, slot.host(), generation);
+  prepareFrom(clock, next);
   slot.pipeline = next;
   byClock.set(clock, slot);
   ownerOf.set(next, { clock, slot });

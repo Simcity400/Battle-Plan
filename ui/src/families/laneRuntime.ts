@@ -329,28 +329,27 @@ export type LaneFamilyLoad = () => Promise<LaneFamily<any, any, any>>;
 
 export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
   let view: LaneView | null = null;
-  let loading = false;
+  let loading: Promise<void> | null = null;
   let failure: string | null = null;
   const waiting = new Set<number>();
   const failedGenerations = new Map<number, number>();
+  const start = (): Promise<void> => loading ??= load().then(
+    lane => { view = createLaneView(lane, wake, options); },
+    (error: unknown) => { failure = error instanceof Error ? error.message : String(error); },
+  ).finally(() => {
+    loading = null;
+    const woken = [...waiting];
+    waiting.clear();
+    for (const widget of woken) wake(widget);
+  });
   const ready = (widget: number): LaneView | null => {
     if (view || failure !== null) return view;
     waiting.add(widget);
-    if (!loading) {
-      loading = true;
-      load().then(
-        lane => { view = createLaneView(lane, wake, options); },
-        (error: unknown) => { failure = error instanceof Error ? error.message : String(error); },
-      ).finally(() => {
-        loading = false;
-        const woken = [...waiting];
-        waiting.clear();
-        for (const widget of woken) wake(widget);
-      });
-    }
+    void start();
     return null;
   };
   return {
+    prepare: () => (view || failure !== null ? Promise.resolve() : start()),
     next(scene, hour, state) {
       const loaded = ready(scene.widget);
       return loaded?.next ? loaded.next(scene, hour, state) : null;
