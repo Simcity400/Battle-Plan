@@ -49,6 +49,7 @@ export interface PointSourceRead {
     mode: 'static' | 'exact',
   ) => Readonly<Record<string, unknown>> | null;
   readonly provenInterval?: (data: unknown, hour: number) => readonly [number, number] | null;
+  readonly idleInterval?: (hour: number) => readonly [number, number] | null;
   readonly dynamicKeys?: readonly string[];
   readonly validate?: (raw: unknown) => unknown;
 }

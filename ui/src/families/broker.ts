@@ -463,6 +463,10 @@ export function playbackIdleInterval(
   const unrecorded = (): readonly [number, number] => (gap ? options.gate.recordedRun?.(raw) : undefined) ?? [raw, raw];
   if (read.shape === 'point') {
     if (gap) return unrecorded();
+    if (read.idleInterval) {
+      const idle = read.idleInterval(raw);
+      if (idle && idle[0] <= raw && raw <= idle[1]) return idle;
+    }
     return read.params && read.buildExactParams ? [raw, raw] : [-Infinity, Infinity];
   }
   if (read.shape !== 'branch-to-hour' && read.shape !== 'trailing-window' && read.shape !== 'range') return [-Infinity, Infinity];

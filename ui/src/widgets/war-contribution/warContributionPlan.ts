@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
-import { WAR_NOT_STARTED, chosenWar, readHourFor } from './warContributionData.ts';
+import { WAR_NOT_STARTED, chosenWar, readHourFor, warChipStateAt } from './warContributionData.ts';
 
 export type WarSide = 'viewpoint' | 'opposing';
 
@@ -61,6 +61,9 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
     const saved = options.wars.wars.find(item => item.id === options.saved);
     return { kind: 'blank', empty: saved ? WAR_NOT_STARTED : NO_WAR, emptyKind: 'empty' };
   }
+  if (!observationAt(war, readHourFor(war, hour))) {
+    return { kind: 'blank', empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
+  }
   const reply = replyFor(readView, war, hour);
   if (!reply) return { kind: 'loading' };
   const observation = observationAt(war, reply.hour);
@@ -69,36 +72,54 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   return { kind: 'shown', war, reply, observation, group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
 }
 
-function endedHour(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number; readonly until: number } {
-  const war = wars ? chosenWar(wars, saved, hour) : null;
-  if (!war) {
-    const future = wars?.wars.find(item => item.id === saved);
-    const next = future?.firstHour ?? wars?.wars.reduce((soonest, item) => item.firstHour > hour ? Math.min(soonest, item.firstHour) : soonest, Infinity);
-    return { at: hour, until: next === undefined ? hour : next - 1 };
+function endedRead(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number | null; readonly valid: readonly [number, number] } {
+  const state = warChipStateAt(wars, saved, hour);
+  if (!state.war || observationAt(state.war, hour) !== null) return { at: null, valid: state.valid };
+  const target = readHourFor(state.war, hour);
+  return observationAt(state.war, target) !== null ? { at: target, valid: state.valid } : { at: null, valid: state.valid };
+}
+
+function staticHour(ctx: FamilyPlanContext<WarsReply>): number | null {
+  const { time } = ctx.widget;
+  if (time.mode === 'campaign') return ctx.lastRecordedHour ?? ctx.branch.lastHour;
+  if (time.mode === 'pin') {
+    const window = time.windows[ctx.track.id];
+    return window ? ctx.branch.firstHour + window.lastOffset : null;
   }
-  if (hour <= war.lastHour) return { at: war.firstHour, until: war.lastHour };
-  const next = wars!.wars.reduce((soonest, other) => (other.firstHour > hour && other.firstHour < soonest ? other.firstHour : soonest), Infinity);
-  return { at: readHourFor(war, hour), until: next - 1 };
+  if (time.mode === 'range') return ctx.staticSpan ? ctx.staticSpan[1] : null;
+  return null;
 }
 
 export function warContributionSources(ctx: FamilyPlanContext<WarsReply>): SourcePlan {
   const viewpoint = ctx.countryTag;
   const params = { branchId: ctx.branch.id, viewpoint: viewpoint === null ? null : countryFromKey(viewpoint) };
   const saved = savedWar(ctx.options);
+  const owner = `war-contribution:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${viewpoint ?? ''}:${saved ?? ''}`;
+  if (!ctx.aux || !ctx.aux.available || !ctx.aux.wars.length) {
+    return { owner, entries: [], allowEmptyFollow: true };
+  }
   const entry = (name: string, read: SourceEntry['read']): SourceEntry => ({ name, source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read });
-  return {
-    owner: `war-contribution:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${viewpoint ?? ''}:${saved ?? ''}`,
-    entries: [
-      entry('live', {
-        shape: 'point', channel: 'panel', coverage: { mode: 'population', form: 'all' }, product: 'war-contributions',
-        followQuery: { panel: 'war-contributions', ...params }, params, validate: validateWarContributions,
-      }),
-      entry('ended', {
-        shape: 'point', channel: 'followed', coverage: { mode: 'population', form: 'all' }, product: 'war-contributions', followQuery: null, params,
-        buildExactParams: (base, hour) => ({ ...base, hour: endedHour(ctx.aux, saved, hour).at }),
-        provenInterval: (_data, hour) => [hour, endedHour(ctx.aux, saved, hour).until],
-        validate: validateWarContributions,
-      }),
-    ],
-  };
+  const live = entry('live', {
+    shape: 'point', channel: 'panel', coverage: { mode: 'population', form: 'all' }, product: 'war-contributions',
+    followQuery: { panel: 'war-contributions', ...params }, params, validate: validateWarContributions,
+  });
+  const ended = entry('ended', {
+    shape: 'point', channel: 'followed', coverage: { mode: 'population', form: 'all' }, product: 'war-contributions', followQuery: null, params,
+    buildExactParams: (base, hour) => {
+      const read = endedRead(ctx.aux, saved, hour);
+      return read.at === null ? null : { ...base, hour: read.at };
+    },
+    provenInterval: (_data, hour) => endedRead(ctx.aux, saved, hour).valid,
+    idleInterval: hour => endedRead(ctx.aux, saved, hour).valid,
+    validate: validateWarContributions,
+  });
+  if (!ctx.following) {
+    const at = staticHour(ctx);
+    if (at !== null) {
+      const war = chosenWar(ctx.aux, saved, at);
+      if (!war || !observationAt(war, readHourFor(war, at))) return { owner, entries: [], allowEmptyFollow: true };
+      return { owner, entries: [observationAt(war, at) !== null ? live : ended] };
+    }
+  }
+  return { owner, entries: [live, ended] };
 }

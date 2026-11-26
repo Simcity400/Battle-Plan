@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionGroup, WarMeasureSide, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { chosenWar, readHourFor, warChipAt, warChoicesAt } from './warContributionData.ts';
-import { heldAt } from '../army-size/headHour.ts';
+import { chosenWar, createWarChipTracker, createWarMenuTracker, readHourFor, warChipLeaderHour, warChipStateAt, warChoicesAt } from './warContributionData.ts';
 
 const observation = (first: number, last: number, viewpointSide: string[], opposingSide: string[], name = 'Synthetic war'): WarObservation => ({
   firstHour: first, lastHour: last, viewpointTag: viewpointSide[0], viewpointSide, opposingSide, attackersAreViewpoint: true, representative: null,
@@ -42,9 +41,10 @@ test('the saved war wins while it exists, else the war with most participants go
   const changing = { ...reply, wars: [{ ...reply.wars[0]!, observations: [
     observation(0, 49, ['A'], ['B']), { ...observation(50, 100, ['A'], ['B']), attackersAreViewpoint: false },
   ] }] };
-  const before = heldAt(null, warChipAt(changing, '1', 49).key, 49);
-  const after = heldAt(before, warChipAt(changing, '1', 50).key, 50);
-  assert.equal(warChipAt(changing, '1', after.hour).observation?.attackersAreViewpoint, false, 'the chip changes sides while the same war keeps playing');
+  assert.equal(warChipStateAt(changing, '1', 49).observation?.attackersAreViewpoint, true);
+  assert.deepEqual(warChipStateAt(changing, '1', 49).valid, [0, 49]);
+  assert.equal(warChipStateAt(changing, '1', 50).observation?.attackersAreViewpoint, false, 'the chip changes sides while the same war keeps playing');
+  assert.deepEqual(warChipStateAt(changing, '1', 50).valid, [50, 100]);
 });
 
 const knownValueOf = (value: number) => ({ kind: 'known' as const, value });
@@ -207,4 +207,179 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.equal(missingLeftTip?.payload?.hour, endedAt);
   assert.deepEqual(missingLeftTip?.payload?.items, [{ label: 'Flag', missingReason: 'Loading' }], 'missing-member left-side tooltip preserves default art status items');
   assert.equal(barsLane.tooltip({ model: rightLonger } as never, 'row:opposing:none:1', false), null, 'empty synthetic left half on a right-longer roster emits no tooltip');
+});
+
+test('warContributionSources plans no contribution reads when no eligible war exists and keeps ended idle while live or prestart', async () => {
+  const { warContributionSources } = await import('./warContributionPlan.ts');
+  const { setToken } = await import('../../dashboard/options.ts');
+  const { buildPlaybackBoundedRequest, playbackIdleInterval } = await import('../../families/broker.ts');
+  const makeCtx = (aux: WarsReply | undefined, following: boolean, saved?: string, mode: 'follow' | 'pin' | 'campaign' = following ? 'follow' : 'campaign', pinOffset = 0) => ({
+    track: { id: 't1', source: { id: 's1', revision: 1 }, branch: { id: 'b1', firstHour: 0, lastHour: 1000 }, axisOffset: 0 },
+    branch: { id: 'b1', firstHour: 0, lastHour: 1000 },
+    lastRecordedHour: 1000,
+    widget: { id: 'w1', kind: 'war-contribution', trackIds: ['t1'], time: mode === 'pin' ? { mode: 'pin', windows: { t1: { firstOffset: pinOffset, lastOffset: pinOffset } } } : { mode }, countries: { kind: 'selected', tags: ['AAA'] } },
+    options: saved ? { war: setToken(saved) } : {},
+    following,
+    aux,
+    countryTag: 'AAA',
+    countrySubject: null,
+    countryName: 'Alpha',
+    countries: {} as never,
+    gateSpan: (first: number, last: number) => ({ firstHour: first, lastHour: last }),
+    staticSpan: null,
+  }) as unknown as Parameters<typeof warContributionSources>[0];
+
+  const emptyWars = { available: true, wars: [] } as unknown as WarsReply;
+  const unavailableWars = { available: false, wars: [] } as unknown as WarsReply;
+  for (const aux of [undefined, emptyWars, unavailableWars]) {
+    for (const following of [true, false]) {
+      const plan = warContributionSources(makeCtx(aux, following));
+      assert.equal(plan.entries.length, 0);
+      assert.equal(plan.allowEmptyFollow, true);
+    }
+  }
+
+  const withWars = { available: true, wars: [war('1', 100, 200, [['AAA'], ['BBB']]), war('2', 600, 900, [['AAA'], ['CCC']])] } as unknown as WarsReply;
+  const livePlan = warContributionSources(makeCtx(withWars, true));
+  const endedEntry = livePlan.entries.find(e => e.name === 'ended')!;
+  const gate = { recorded: (h: number | null | undefined) => (h == null ? null : h), span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as unknown as Parameters<typeof buildPlaybackBoundedRequest>[1]['gate'];
+  const opts = (currentHour: number) => ({ branch: { firstHour: 0, lastHour: 1000 }, effectiveEndHour: 1000, currentHour, gate });
+  assert.equal(buildPlaybackBoundedRequest(endedEntry, opts(50)), null, 'no ended read before any war starts');
+  assert.deepEqual(playbackIdleInterval(endedEntry, opts(50)), [-Infinity, 99]);
+  assert.equal(buildPlaybackBoundedRequest(endedEntry, opts(150)), null, 'no ended read while a war is live');
+  assert.deepEqual(playbackIdleInterval(endedEntry, opts(150)), [100, 200]);
+  const afterEnd = buildPlaybackBoundedRequest(endedEntry, opts(250));
+  assert.equal((afterEnd?.request.params as { hour?: number } | undefined)?.hour, 200, 'ended war reads its last observed hour');
+
+  assert.equal(warContributionSources(makeCtx(withWars, false, undefined, 'pin', 50)).entries.length, 0);
+  assert.deepEqual(warContributionSources(makeCtx(withWars, false, undefined, 'pin', 150)).entries.map(e => e.name), ['live']);
+  assert.deepEqual(warContributionSources(makeCtx(withWars, false, undefined, 'pin', 250)).entries.map(e => e.name), ['ended']);
+  assert.equal(warContributionSources(makeCtx(withWars, false, '2', 'pin', 250)).entries.length, 0, 'prestart saved war plans no read');
+
+  const gappedWar = {
+    ...war('1', 100, 300, [['AAA'], ['BBB']]),
+    observations: [observation(100, 150, ['AAA'], ['BBB']), observation(200, 300, ['AAA'], ['BBB'])],
+  } as unknown as WarTimeline;
+  const gappedWars = { available: true, wars: [gappedWar] } as unknown as WarsReply;
+  const gappedPlan = warContributionSources(makeCtx(gappedWars, true, '1'));
+  const gappedEnded = gappedPlan.entries.find(e => e.name === 'ended')!;
+  assert.equal(buildPlaybackBoundedRequest(gappedEnded, opts(175)), null, 'observation gap does not fetch ended');
+  assert.deepEqual(playbackIdleInterval(gappedEnded, opts(175)), [151, 199]);
+  assert.equal(warContributionSources(makeCtx(gappedWars, false, '1', 'pin', 175)).entries.length, 0);
+  const { chosenGroup } = await import('./warContributionPlan.ts');
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  assert.deepEqual(
+    chosenGroup(createBoundedReadView({ hour: 175, panels: new Map() }), { wars: gappedWars, saved: '1' }),
+    { kind: 'blank', empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' },
+  );
+  const savedEndedPlan = warContributionSources(makeCtx(withWars, true, '1'));
+  const savedEnded = savedEndedPlan.entries.find(e => e.name === 'ended')!;
+  assert.equal(savedEnded.read.shape, 'point');
+  if (savedEnded.read.shape === 'point') {
+    assert.deepEqual(savedEnded.read.provenInterval?.(undefined, 250), [201, Infinity], 'saved ended war stays valid even when another war starts');
+  }
+});
+
+test('war chip and menu watchers stay quiet across 100 played hours and wake only on observation or lead-identity changes', async () => {
+  const { PlaybackController } = await import('../../dashboard/playback.ts');
+  const { watchBoundary } = await import('../../dashboard/widgetTime.ts');
+  const { IdentityBroker } = await import('../../families/identity/broker.ts');
+  const { countryTagKey, readIdentityAtHeadHour, UNHELD_HEAD_HOUR } = await import('../../families/identity/react.ts');
+
+  const wars = {
+    available: true,
+    wars: [
+      {
+        ...war('1', 100, 300, [['AAA'], ['BBB']]),
+        observations: [
+          observation(100, 229, ['AAA'], ['BBB'], 'Early war'),
+          { ...observation(230, 300, ['AAA'], ['BBB'], 'Flipped war'), attackersAreViewpoint: false },
+        ],
+      } as unknown as WarTimeline,
+      war('2', 400, 500, [['AAA'], ['CCC']]),
+    ],
+  } as unknown as WarsReply;
+
+  const offset = 10;
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 600 }, true);
+  clock.seek(110);
+
+  let scans = 0;
+  let wakes = 0;
+  const shownHour = (axis: number) => Math.floor(axis) + offset;
+  const tracker = createWarChipTracker(wars, null, shownHour, offset, (reply, saved, at) => {
+    scans++;
+    return warChipStateAt(reply, saved, at);
+  });
+  const initial = tracker.read(clock.getHour());
+  assert.equal(initial.war?.id, '1');
+  assert.equal(initial.observation?.attackersAreViewpoint, true);
+  assert.equal(scans, 1);
+
+  const stopChip = watchBoundary(clock, tracker.span, () => { wakes++; });
+  assert.equal(scans, 1, 'registering watchBoundary reuses cached span without rescanning');
+
+  for (let step = 0; step < 100; step++) clock.step(1);
+  assert.equal(clock.getHour(), 210);
+  assert.equal(scans, 1, 'zero war-roster scans over 100 played hours inside an observation');
+  assert.equal(wakes, 0, 'zero chip notifications inside an observation');
+
+  clock.seek(219);
+  assert.equal(scans, 1);
+  assert.equal(wakes, 0);
+  clock.step(1);
+  assert.equal(clock.getHour(), 220);
+  assert.equal(wakes, 1, 'wakes at exact observation flip (track hour 230)');
+  assert.equal(scans, 2);
+  assert.equal(tracker.read(clock.getHour()).observation?.attackersAreViewpoint, false);
+  assert.equal(scans, 2, 'reading after wake hits the updated cache');
+
+  clock.seek(390);
+  assert.equal(wakes, 2, 'wakes when newer war starts (track hour 400)');
+  assert.equal(tracker.read(clock.getHour()).war?.id, '2');
+  stopChip();
+
+  clock.seek(110);
+  let menuWakes = 0;
+  const menu = createWarMenuTracker(wars, shownHour, offset);
+  assert.equal(menu.read(clock.getHour()), 100);
+  const stopMenu = watchBoundary(clock, menu.span, () => { menuWakes++; });
+  for (let step = 0; step < 100; step++) clock.step(1);
+  assert.equal(menuWakes, 0);
+  clock.seek(220);
+  assert.equal(menuWakes, 1);
+  assert.equal(menu.read(clock.getHour()), 230);
+  stopMenu();
+
+  const broker = new IdentityBroker({} as never);
+  const scope = { sourceId: 's1', revision: '1', branchId: 'b1', content: 1 };
+  const index = broker.indexOf(scope, undefined, [0, 600]);
+  index.setFacts({
+    branchId: 'b1',
+    known: [[0, 600]],
+    names: ['Old Alpha', 'New Alpha', 'Post-war Alpha'],
+    reasons: [],
+    flags: [{ keys: ['AAA', null, null], reasons: [null, null, null] }],
+    countries: [{ tag: 'AAA', runs: [[0, 0, 0, -1, 0], [150, 1, 0, -1, 0], [300, 2, 0, -1, 0]] }],
+    warnings: [],
+  }, true);
+  const obs = observation(100, 229, ['AAA'], ['BBB']);
+  const keys = [countryTagKey('AAA')];
+  const held = { current: UNHELD_HEAD_HOUR };
+  clock.seek(110);
+  const h1 = readIdentityAtHeadHour(broker, clock, scope, true, keys, h => warChipLeaderHour(obs, h, shownHour), undefined, [0, 600], held);
+  assert.equal(h1, 120);
+  clock.seek(139);
+  const h2 = readIdentityAtHeadHour(broker, clock, scope, true, keys, h => warChipLeaderHour(obs, h, shownHour), undefined, [0, 600], held);
+  assert.equal(h2, 120, 'holds resolved hour while lead-country identity is unchanged');
+  clock.seek(140);
+  const h3 = readIdentityAtHeadHour(broker, clock, scope, true, keys, h => warChipLeaderHour(obs, h, shownHour), undefined, [0, 600], held);
+  assert.equal(h3, 150, 'updates lead-country identity hour when renamed mid-observation');
+  assert.equal(index.resolve(countryTagKey('AAA'), h3!).kind, 'known');
+  clock.seek(350);
+  const h4 = readIdentityAtHeadHour(broker, clock, scope, true, keys, h => warChipLeaderHour(obs, h, shownHour), undefined, [0, 600], held);
+  assert.equal(warChipLeaderHour(obs, clock.getHour(), shownHour), 229, 'clamps lead-country identity lookup to the observation end');
+  assert.equal(h4, 150, 'post-war rename at 300 does not leak into the ended war chip');
+  broker.dispose();
 });
