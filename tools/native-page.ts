@@ -169,9 +169,8 @@ async function fetchFixtureModule(
   fixture: string,
   url: string,
   failures: ServerFailure[],
-  requireJavaScript: boolean,
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<{ code: string; url: string }> {
   const before = failures.length;
   const target = `http://127.0.0.1:${port}${url}`;
   let response: Response;
@@ -192,12 +191,36 @@ async function fetchFixtureModule(
   }
   const contentType = response.headers.get('content-type') ?? '';
   if (!/(?:javascript|ecmascript)/i.test(contentType)) {
-    if (requireJavaScript) {
-      throw formatFixtureLoadError(fixture, `server returned non-JavaScript content-type ${JSON.stringify(contentType)} for ${url}`, failures.slice(before), []);
-    }
-    return null;
+    throw formatFixtureLoadError(fixture, `server returned non-JavaScript content-type ${JSON.stringify(contentType)} for ${url}`, failures.slice(before), []);
   }
-  return text;
+  const resolved = response.url ? new URL(response.url) : null;
+  const finalUrl = resolved ? `${resolved.pathname}${resolved.search}` : url;
+  return { code: text, url: finalUrl };
+}
+
+export async function runFixtureLoadStage(
+  stage: <T>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => Promise<T>,
+  label: string,
+  served: Pick<ServedFixture, 'fixture' | 'failures'>,
+  work: (signal: AbortSignal, beginLoad: () => BrowserNetworkFailure[]) => Promise<void>,
+  timeout?: number,
+): Promise<void> {
+  let activeLoad: { failuresBefore: number; networkFailures: BrowserNetworkFailure[] } | undefined;
+  try {
+    await stage(label, async signal => {
+      await work(signal, () => {
+        const networkFailures: BrowserNetworkFailure[] = [];
+        activeLoad = { failuresBefore: served.failures.length, networkFailures };
+        return networkFailures;
+      });
+      activeLoad = undefined;
+    }, timeout);
+  } catch (error) {
+    if (activeLoad && !(error instanceof Error && error.message.startsWith('fixture could not be loaded ('))) {
+      throw formatFixtureLoadError(served.fixture, errorDetail(error), served.failures.slice(activeLoad.failuresBefore), activeLoad.networkFailures);
+    }
+    throw error;
+  }
 }
 
 export function loadFixture(
@@ -385,7 +408,7 @@ export async function builtServer(name: string, route: string, out: string): Pro
     port: address.port,
     fixture: '/fixture.js',
     failures,
-    ready: async signal => { await fetchFixtureModule(address.port, '/fixture.js', '/fixture.js', failures, true, signal); },
+    ready: async signal => { await fetchFixtureModule(address.port, '/fixture.js', '/fixture.js', failures, signal); },
     close: () => new Promise<void>(done => { server.close(() => done()); server.closeAllConnections(); }),
   };
 }
@@ -408,46 +431,49 @@ export async function devServer(name: string, route: string, fixture: string, pr
   const capturePlugin: PluginOption = {
     name: `${name}-page-capture`,
     enforce: 'pre',
-    configureServer(server) {
-      server.middlewares.use((request, response, next) => {
-        const url = request.url ?? '/';
-        if (url === '/favicon.ico') { response.statusCode = 204; response.end(); return; }
-        const chunks: Buffer[] = [];
-        let captured = 0;
-        const push = (chunk: unknown, encoding?: BufferEncoding) => {
-          if (response.statusCode < 400 || captured >= 512) return;
-          const buffer = captureBodyChunk(chunk, encoding);
-          if (!buffer) return;
-          const slice = buffer.subarray(0, 512 - captured);
-          chunks.push(slice);
-          captured += slice.length;
+    configureServer: {
+      order: 'pre',
+      handler(server) {
+        server.middlewares.use((request, response, next) => {
+          const url = request.url ?? '/';
+          if (url === '/favicon.ico') { response.statusCode = 204; response.end(); return; }
+          const chunks: Buffer[] = [];
+          let captured = 0;
+          const push = (chunk: unknown, encoding?: BufferEncoding) => {
+            if (response.statusCode < 400 || captured >= 512) return;
+            const buffer = captureBodyChunk(chunk, encoding);
+            if (!buffer) return;
+            const slice = buffer.subarray(0, 512 - captured);
+            chunks.push(slice);
+            captured += slice.length;
+          };
+          const write = response.write.bind(response);
+          response.write = ((chunk: unknown, encoding?: BufferEncoding | ((error?: Error | null) => void), cb?: (error?: Error | null) => void) => {
+            push(chunk, typeof encoding === 'string' ? encoding : undefined);
+            return write(chunk as never, encoding as never, cb as never);
+          }) as typeof response.write;
+          const end = response.end.bind(response);
+          response.end = ((chunk?: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) => {
+            push(chunk, typeof encoding === 'string' ? encoding : undefined);
+            return end(chunk as never, encoding as never, cb as never);
+          }) as typeof response.end;
+          response.on('finish', () => {
+            if (response.statusCode >= 400) {
+              const body = Buffer.concat(chunks).toString('utf8').replace(/\s+/g, ' ').trim();
+              const detail = body || response.statusMessage || viteErrors.at(-1) || 'HTTP error';
+              record(url, response.statusCode, detail);
+            }
+          });
+          next();
+        });
+        return () => {
+          server.middlewares.use((error: unknown, request: IncomingMessage, _response: ServerResponse, next: (err?: unknown) => void) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            record(request.url ?? fixture, 500, reason);
+            next(error);
+          });
         };
-        const write = response.write.bind(response);
-        response.write = ((chunk: unknown, encoding?: BufferEncoding | ((error?: Error | null) => void), cb?: (error?: Error | null) => void) => {
-          push(chunk, typeof encoding === 'string' ? encoding : undefined);
-          return write(chunk as never, encoding as never, cb as never);
-        }) as typeof response.write;
-        const end = response.end.bind(response);
-        response.end = ((chunk?: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) => {
-          push(chunk, typeof encoding === 'string' ? encoding : undefined);
-          return end(chunk as never, encoding as never, cb as never);
-        }) as typeof response.end;
-        response.on('finish', () => {
-          if (response.statusCode >= 400) {
-            const body = Buffer.concat(chunks).toString('utf8').replace(/\s+/g, ' ').trim();
-            const detail = body || response.statusMessage || viteErrors.at(-1) || 'HTTP error';
-            record(url, response.statusCode, detail);
-          }
-        });
-        next();
-      });
-      return () => {
-        server.middlewares.use((error: unknown, request: IncomingMessage, _response: ServerResponse, next: (err?: unknown) => void) => {
-          const reason = error instanceof Error ? error.message : String(error);
-          record(request.url ?? fixture, 500, reason);
-          next(error);
-        });
-      };
+      },
     },
   };
   const routePlugin: PluginOption = {
@@ -491,9 +517,9 @@ export async function devServer(name: string, route: string, fixture: string, pr
       const url = queue.shift()!;
       if (seen.has(url)) continue;
       seen.add(url);
-      const code = await fetchFixtureModule(address.port, fixture, url, failures, url === fixture, signal);
-      if (code === null) continue;
-      for (const imported of staticImportsOf(code, url)) {
+      const fetched = await fetchFixtureModule(address.port, fixture, url, failures, signal);
+      seen.add(fetched.url);
+      for (const imported of staticImportsOf(fetched.code, fetched.url)) {
         if (!seen.has(imported)) queue.push(imported);
       }
     }
@@ -505,7 +531,16 @@ export async function devServer(name: string, route: string, fixture: string, pr
     ready,
     close: async () => {
       if ('closeAllConnections' in httpServer) httpServer.closeAllConnections();
-      await vite.close();
+      await new Promise<void>(done => { httpServer.close(() => done()); });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          vite.close().catch(() => {}),
+          new Promise<void>(done => { timer = setTimeout(done, 500); }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }
@@ -551,32 +586,19 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     const owned = browser;
     const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) =>
       browserStage(owned, label, signal => guard.run(signal, () => work(signal)), timeout);
-    let activeLoad: { failuresBefore: number; networkFailures: BrowserNetworkFailure[] } | undefined;
-    try {
-      await stage(`${name} page load`, async signal => {
-        const onAbort = () => readyAbort.abort(signal.reason);
-        signal.addEventListener('abort', onAbort, { once: true });
-        try {
-          const readyError = await ready;
-          if (readyError) throw readyError;
-        } finally {
-          signal.removeEventListener('abort', onAbort);
-        }
-        await navigate(target, `http://127.0.0.1:${address.port}${route}`, signal);
-        const networkFailures: BrowserNetworkFailure[] = [];
-        activeLoad = { failuresBefore: served.failures.length, networkFailures };
-        try {
-          await loadFixture(target, served, signal, networkFailures);
-        } finally {
-          activeLoad = undefined;
-        }
-      }, PAGE_LOAD_MS);
-    } catch (error) {
-      if (activeLoad && !(error instanceof Error && error.message.startsWith('fixture could not be loaded ('))) {
-        throw formatFixtureLoadError(served.fixture, errorDetail(error), served.failures.slice(activeLoad.failuresBefore), activeLoad.networkFailures);
+    await runFixtureLoadStage(stage, `${name} page load`, served, async (signal, beginLoad) => {
+      const onAbort = () => readyAbort.abort(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        const readyError = await ready;
+        if (readyError) throw readyError;
+      } finally {
+        signal.removeEventListener('abort', onAbort);
       }
-      throw error;
-    }
+      await navigate(target, `http://127.0.0.1:${address.port}${route}`, signal);
+      const networkFailures = beginLoad();
+      await loadFixture(target, served, signal, networkFailures);
+    }, PAGE_LOAD_MS);
     const press = async (key: NativeKey, shift = false) => {
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 }, guard.getStore());
       await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());

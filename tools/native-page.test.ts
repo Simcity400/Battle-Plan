@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
+import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { builtServer, devServer, formatFixtureLoadError, loadFixture, type ServerFailure } from './native-page.ts';
+import { browserStage } from './canvas-page.ts';
+import { builtServer, devServer, formatFixtureLoadError, loadFixture, runFixtureLoadStage, type BrowserNetworkFailure, type ServerFailure } from './native-page.ts';
 
 function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handler: (message: Record<string, unknown>) => void) => void) => void) {
   const server = createServer();
@@ -102,7 +105,7 @@ test('builtServer verifies fixture readiness, sets Content-Length, records missi
   }
 });
 
-test('devServer pre-warms virtual HTTP modules, aborts stalled transforms, and captures plugin errors and binary/callback bodies', async () => {
+test('devServer pre-warms virtual and redirected HTTP modules, checks dependency MIME, captures pre-order plugin errors, and closes while a transform stalls', async () => {
   const brokenProfile = await mkdtemp(resolve(tmpdir(), 'native-dev-broken-'));
   const broken = await devServer('test-broken', '/test-broken-page', '/virtual/broken-fixture.ts', brokenProfile, [{
     name: 'broken-fixture',
@@ -136,21 +139,23 @@ test('devServer pre-warms virtual HTTP modules, aborts stalled transforms, and c
   const virtualId = '\0virtual:fixture-library';
   const ok = await devServer('test-ok', '/test-ok-page', '/virtual/ok-fixture.ts', virtualProfile, [{
     name: 'ok-fixture',
-    configureServer(server) {
-      server.middlewares.use('/plugin-503-bytes', (_request, response) => {
-        response.statusCode = 503;
-        response.end(new Uint8Array(Buffer.from('transform unavailable', 'utf8')));
-      });
-      server.middlewares.use('/plugin-503-cb', (_request, response) => {
-        response.statusCode = 503;
-        response.statusMessage = 'Service Unavailable';
-        response.end(() => {});
-      });
-      server.middlewares.use('/truncated-200', (_request, response) => {
-        response.writeHead(200, { 'Content-Type': 'text/javascript', 'Content-Length': '100' });
-        response.write('export const partial = 1;');
-        response.socket?.destroy();
-      });
+    configureServer: {
+      order: 'pre',
+      handler(server) {
+        server.middlewares.use('/plugin-pre-503', (_request, response) => {
+          response.statusCode = 503;
+          response.end('early plugin unavailable');
+        });
+        server.middlewares.use('/plugin-503-bytes', (_request, response) => {
+          response.statusCode = 503;
+          response.end(new Uint8Array(Buffer.from('transform unavailable', 'utf8')));
+        });
+        server.middlewares.use('/plugin-503-cb', (_request, response) => {
+          response.statusCode = 503;
+          response.statusMessage = 'Service Unavailable';
+          response.end(() => {});
+        });
+      },
     },
     resolveId(id) {
       if (id === '/virtual/ok-fixture.ts') return id;
@@ -165,13 +170,71 @@ test('devServer pre-warms virtual HTTP modules, aborts stalled transforms, and c
   }]);
   try {
     await ok.ready();
+    assert.equal((await fetch(`http://127.0.0.1:${ok.port}/plugin-pre-503`)).status, 503);
     assert.equal((await fetch(`http://127.0.0.1:${ok.port}/plugin-503-bytes`)).status, 503);
     assert.equal((await fetch(`http://127.0.0.1:${ok.port}/plugin-503-cb`)).status, 503);
+    assert.ok(ok.failures.some(entry => entry.url === '/plugin-pre-503' && entry.status === 503 && entry.reason === 'early plugin unavailable'));
     assert.ok(ok.failures.some(entry => entry.url === '/plugin-503-bytes' && entry.status === 503 && entry.reason === 'transform unavailable'));
     assert.ok(ok.failures.some(entry => entry.url === '/plugin-503-cb' && entry.status === 503 && entry.reason === 'Service Unavailable'));
   } finally {
     await ok.close();
     await rm(virtualProfile, { recursive: true, force: true });
+  }
+
+  const redirectProfile = await mkdtemp(resolve(tmpdir(), 'native-dev-redirect-'));
+  const redirected = await devServer('test-redirect', '/test-redirect-page', '/alias.js', redirectProfile, [{
+    name: 'redirect-fixture',
+    configureServer(server) {
+      server.middlewares.use('/alias.js', (_request, response) => {
+        response.statusCode = 302;
+        response.setHeader('Location', '/deep/entry.js');
+        response.end();
+      });
+      server.middlewares.use('/deep/entry.js', (_request, response) => {
+        response.setHeader('Content-Type', 'text/javascript');
+        response.end('import "./module.js";\n');
+      });
+      server.middlewares.use('/deep/module.js', (_request, response) => {
+        response.setHeader('Content-Type', 'text/javascript');
+        response.end('export const redirected = true;\n');
+      });
+    },
+  }]);
+  try {
+    await redirected.ready();
+  } finally {
+    await redirected.close();
+    await rm(redirectProfile, { recursive: true, force: true });
+  }
+
+  const mimeProfile = await mkdtemp(resolve(tmpdir(), 'native-dev-mime-'));
+  const badMime = await devServer('test-mime', '/test-mime-page', '/mime-entry.js', mimeProfile, [{
+    name: 'mime-fixture',
+    configureServer(server) {
+      server.middlewares.use('/mime-entry.js', (_request, response) => {
+        response.setHeader('Content-Type', 'text/javascript');
+        response.end('import "./mismatch.js";\n');
+      });
+      server.middlewares.use('/mismatch.js', (_request, response) => {
+        response.setHeader('Content-Type', 'text/html');
+        response.end('<!doctype html><p>not js</p>');
+      });
+    },
+  }]);
+  try {
+    await assert.rejects(
+      () => badMime.ready(),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.ok(!(error instanceof assert.AssertionError));
+        assert.match(error.message, /fixture could not be loaded \(\/mime-entry\.js\)/);
+        assert.match(error.message, /non-JavaScript content-type "text\/html" for \/mismatch\.js/);
+        return true;
+      },
+    );
+  } finally {
+    await badMime.close();
+    await rm(mimeProfile, { recursive: true, force: true });
   }
 
   const truncatedProfile = await mkdtemp(resolve(tmpdir(), 'native-dev-trunc-'));
@@ -180,8 +243,10 @@ test('devServer pre-warms virtual HTTP modules, aborts stalled transforms, and c
     configureServer(server) {
       server.middlewares.use('/truncated-entry.js', (_request, response) => {
         response.writeHead(200, { 'Content-Type': 'text/javascript', 'Content-Length': '128' });
-        response.write('export const cut = 1;');
-        response.socket?.destroy();
+        response.flushHeaders();
+        response.write('export const cut = 1;\n', () => {
+          setImmediate(() => response.socket?.destroy());
+        });
       });
     },
   }]);
@@ -192,6 +257,7 @@ test('devServer pre-warms virtual HTTP modules, aborts stalled transforms, and c
         assert.ok(error instanceof Error);
         assert.ok(!(error instanceof assert.AssertionError));
         assert.match(error.message, /fixture could not be loaded \(\/truncated-entry\.js\)/);
+        assert.match(error.message, /terminated/);
         assert.match(error.message, /UND_ERR_SOCKET/);
         return true;
       },
@@ -224,14 +290,14 @@ test('devServer pre-warms virtual HTTP modules, aborts stalled transforms, and c
     await transformEntered;
     controller.abort(new Error('stalled page load timed out'));
     await assert.rejects(() => pending, /stalled page load timed out/);
+    await stalled.close();
   } finally {
     releaseTransform();
-    await stalled.close();
-    await rm(stalledProfile, { recursive: true, force: true });
+    await rm(stalledProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
-test('loadFixture reports server and browser fetch failures on rejection and preserves evidence on abort', async () => {
+test('loadFixture and runFixtureLoadStage report server and browser fetch failures on rejection and preserve evidence across stage abort', async () => {
   const failures: ServerFailure[] = [];
   const cdp = await wsServer((send, onMessage) => {
     onMessage(message => {
@@ -286,27 +352,31 @@ test('loadFixture reports server and browser fetch failures on rejection and pre
     });
   });
   try {
-    const controller = new AbortController();
+    const child = Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null }) as unknown as ChildProcess;
+    const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => browserStage(child, label, work, timeout);
     let seenNetworkFailure!: () => void;
     const networkFailureSeen = new Promise<void>(done => { seenNetworkFailure = done; });
-    const trackedNetworkFailures: { url: string; status?: number; reason: string }[] = [];
-    const originalPush = trackedNetworkFailures.push.bind(trackedNetworkFailures);
-    trackedNetworkFailures.push = (...items) => {
-      const count = originalPush(...items);
-      seenNetworkFailure();
-      return count;
-    };
-    const pending = loadFixture(stallCdp.url, { fixture: '/fixture.js', failures: [] }, controller.signal, trackedNetworkFailures);
+    const served = { fixture: '/fixture.js', failures: [] as ServerFailure[] };
+    const staged = runFixtureLoadStage(stage, 'fixture page load', served, async (signal, beginLoad) => {
+      const tracked = beginLoad();
+      const originalPush = tracked.push.bind(tracked);
+      tracked.push = (...items: BrowserNetworkFailure[]) => {
+        const count = originalPush(...items);
+        seenNetworkFailure();
+        return count;
+      };
+      await loadFixture(stallCdp.url, served, signal, tracked);
+    });
     await networkFailureSeen;
-    controller.abort(new Error('fixture page load timed out'));
+    child.emit('close', 42, null);
     await assert.rejects(
-      () => pending,
+      () => staged,
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.ok(!(error instanceof assert.AssertionError));
         assert.match(error.message, /fixture could not be loaded \(\/fixture\.js\)/);
         assert.match(error.message, /browser net::ERR_CONNECTION_RESET \(http:\/\/127\.0\.0\.1:1\/chunks\/drop\.js\)/);
-        assert.match(error.message, /fixture page load timed out/);
+        assert.match(error.message, /Edge exited \(42\)/);
         return true;
       },
     );
