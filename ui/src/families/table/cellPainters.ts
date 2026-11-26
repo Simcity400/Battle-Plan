@@ -125,7 +125,9 @@ const UNIT_ART_GAP = 5;
 
 function drawFigurePhrase(rc: CellRenderContext, figure: string, suffix: string, left: number, right: number, middle: number, figureFont: string, suffixFont: string, figureColor: string): void {
   const { ctx, theme, measure, fit } = rc;
-  const shown = fit(figure, figureFont, Math.max(0, right - left));
+  const suffixW = suffix ? measure(suffix, suffixFont) : 0;
+  const unit = suffixW > 0 && suffixW + 12 <= right - left;
+  const shown = fit(figure, figureFont, Math.max(0, right - left - (unit ? suffixW : 0)));
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
@@ -133,7 +135,7 @@ function drawFigurePhrase(rc: CellRenderContext, figure: string, suffix: string,
   ctx.fillStyle = figureColor;
   ctx.fillText(shown, left, middle);
   const after = left + measure(shown, figureFont);
-  if (suffix && after + measure(suffix, suffixFont) <= right) {
+  if (unit) {
     ctx.font = suffixFont;
     ctx.fillStyle = theme.muted;
     ctx.fillText(suffix, after, middle);
@@ -141,7 +143,9 @@ function drawFigurePhrase(rc: CellRenderContext, figure: string, suffix: string,
   ctx.restore();
 }
 
-const endAligned = (column: FamilyColumnLayout, rc: CellRenderContext): boolean => !!column.numeric && rc.hideHeader !== true;
+const figureStarts = (column: FamilyColumnLayout, rc: CellRenderContext): boolean =>
+  rc.hideHeader === true && (column.cellKind === undefined || column.cellKind === 'track');
+const endAligned = (column: FamilyColumnLayout, rc: CellRenderContext): boolean => !!column.numeric && !figureStarts(column, rc);
 
 export interface CellDrawArgs {
   readonly item: Extract<FlatTableRow, { kind: 'data' }>;
@@ -687,7 +691,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (kind === 'track' || column.display === 'track' || column.display === 'meterAfter' || column.display === 'meterBefore') {
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: rc.hideHeader !== true, muted: item.row.muted }, theme, measure, fit);
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !figureStarts(column, rc), muted: item.row.muted }, theme, measure, fit);
       return;
     }
     const valFont = fontOf(theme, 13.5, 500);
@@ -699,7 +703,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const trackW = Math.min(56, Math.max(18, right - left - numSlot - 10));
     const tracked = trackW >= 18 && fraction !== null;
     const figureColor = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
-    if (rc.hideHeader === true) {
+    if (figureStarts(column, rc)) {
       if (tracked) {
         drawTrackBar(ctx, left, middle, trackW, 6, fraction, paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme), theme);
       }
@@ -850,7 +854,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       : (isZero || item.row.muted)
         ? theme.muted
         : theme.text;
-    if (rc.hideHeader === true) {
+    if (figureStarts(column, rc)) {
       let at = left;
       if (cell?.unitArt && avail >= UNIT_ART_SIZE + UNIT_ART_GAP) {
         drawArtSlot(ctx, at, Math.round(textMid - UNIT_ART_SIZE / 2), UNIT_ART_SIZE, UNIT_ART_SIZE, slotOf(cell.unitArt, cell.unitSuffix ?? column.label, rc), theme, { radius: 2 });
