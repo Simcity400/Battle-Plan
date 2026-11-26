@@ -23,8 +23,9 @@ BATTLEPLAN_USER_DIR, else the Paradox user folder):
 It reads the installation and writes nothing there. Its index lives outside the repository in
 --cache (default: the user's cache folder) and is rebuilt per game or mod only when Steam's
 manifest for it, or the size or time of a file of a mod outside Steam, changes; under `--against`
-an out-of-date index is reported as `not run here`, never rebuilt in the push check. Where no
-installation is found it prints `not run here` and why, and reports only the tree checks.
+a missing or out-of-date index fails and names `python tools/check-game-content.py` to build or
+refresh it, never rebuilding in the push check. Where no installation is found, or when
+`--tree-only` is passed, it prints `not run here` and why, and reports only the tree checks.
 `--against REF` (as `ci.py check` runs it) compares only the files changed since the merge base
 with REF; without it the whole tree is compared.
 
@@ -507,22 +508,37 @@ def compare_installation(args, files, rules, say):
     if cache.is_relative_to(ROOT) or any(cache.is_relative_to(folder.resolve()) for _, folder, _ in roots):
         return ["installation index must be outside the worktree, game and mod folders"]
     if args.against and not cache.is_file():
-        say("not run here: installation comparison (no index yet; run python tools/check-game-content.py once)")
-        return []
-    index = Index(cache, readonly=bool(args.against))
+        detail = f"no index at {cache}; run python tools/check-game-content.py"
+        say(f"not run here: installation comparison ({detail})")
+        return [f"installation comparison: {detail}"]
+    try:
+        index = Index(cache, readonly=bool(args.against))
+    except sqlite3.Error as error:
+        if not args.against:
+            raise
+        detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
+        say(f"not run here: installation comparison ({detail})")
+        return [f"installation comparison: {detail}"]
     with closing(index.db):
         if args.against:
-            index.db.execute("BEGIN")
-            current = {key: index.current(key, folder, stamp)[0] for key, folder, stamp in roots}
-            stale = [key for key, root in current.items() if root is None]
+            try:
+                index.db.execute("BEGIN")
+                current = {key: index.current(key, folder, stamp)[0] for key, folder, stamp in roots}
+                stale = [key for key, root in current.items() if root is None]
+                active = set(current.values()) - {None}
+                findings = install_findings(index, files, rules, active) if active else []
+            except sqlite3.Error as error:
+                detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
+                say(f"not run here: installation comparison ({detail})")
+                return [f"installation comparison: {detail}"]
             if stale:
-                say("not run here: installation comparison for " + ", ".join(stale)
-                    + " (index out of date; run python tools/check-game-content.py once)")
-            active = set(current.values()) - {None}
+                missing = ", ".join(stale)
+                say(f"not run here: installation comparison for {missing} (index out of date; run python tools/check-game-content.py)")
+                findings.append(f"installation comparison: index out of date for {missing}; run python tools/check-game-content.py")
         else:
             active = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
             index.drop_others(active)
-        findings = install_findings(index, files, rules, active) if active else []
+            findings = install_findings(index, files, rules, active) if active else []
     say(f"installation comparison: {len(active)} game and mod folders, {len(files)} files"
         + (f" changed since {args.against}" if args.against else ""))
     return findings

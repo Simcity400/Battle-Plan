@@ -1,6 +1,8 @@
 """Tests for tools/check-game-content.py: python tools/check_game_content_test.py"""
 
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -173,6 +175,94 @@ class Installation(unittest.TestCase):
         self.assertEqual(index.refresh("mod", self.folder / "mod", None, notes.append), first)
         self.assertEqual(len(notes), 2)
         self.assertIsNone(index.current("game", self.folder / "mod", "build 2")[0])
+
+    def init_repo(self):
+        repo = self.folder / "repo"
+        self.write("repo/new.rs", "original")
+        self.write("repo/tools/game-content.allow", "")
+        self.addCleanup(setattr, cgc, "ROOT", cgc.ROOT)
+        self.addCleanup(setattr, cgc, "ALLOW", cgc.ALLOW)
+        cgc.ROOT, cgc.ALLOW = repo, repo / cgc.ALLOW_NAME
+        def git(*args):
+            subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+        git("init")
+        git("add", ".")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
+        return repo
+
+    def run_main(self, argv):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cgc.main(argv)
+        return code, output.getvalue()
+
+    @patch.object(cgc, "registry_value", return_value=None)
+    def test_push_requires_a_current_index_when_an_installation_is_present(self, _registry):
+        repo = self.init_repo()
+        game = self.folder / "game"
+        user = self.folder / "user"
+        cache = self.folder / "cache"
+        snippet = "fixture_script = { flag = violet }"
+        self.write("game/trial.txt", snippet)
+        self.write("user/mod/extra/mod.txt", "mod_fixture = { tone = amber }")
+        index_path = cache / f"index-v{cgc.INDEX_VERSION}.sqlite3"
+        base_args = ["--against", "HEAD", "--game", str(game), "--user-dir", str(user), "--cache", str(cache)]
+
+        notes = lambda text: [line for line in text.splitlines() if line.startswith("not run here: ")]
+
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertFalse(index_path.exists())
+        self.assertTrue(any("no index at " in line and "python tools/check-game-content.py" in line for line in notes(out)))
+
+        code, out = self.run_main(["--tree-only", *base_args])
+        self.assertEqual(code, 0)
+        self.assertFalse(index_path.exists())
+        self.assertEqual(notes(out), ["not run here: installation comparison (--tree-only)"])
+
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("BATTLEPLAN_GAME_DIR", "BATTLEPLAN_USER_DIR")}
+        with patch.dict(os.environ, clean_env, clear=True):
+            code, out = self.run_main(["--against", "HEAD", "--cache", str(cache)])
+        self.assertEqual(code, 0)
+        self.assertFalse(index_path.exists())
+        self.assertTrue(any("no game installation" in line for line in notes(out)))
+
+        self.write(f"cache/index-v{cgc.INDEX_VERSION}.sqlite3", "not a sqlite database")
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("unreadable index at " in line and "python tools/check-game-content.py" in line for line in notes(out)))
+        index_path.unlink()
+
+        code, _ = self.run_main(["--game", str(game), "--user-dir", str(user), "--cache", str(cache)])
+        self.assertEqual(code, 0)
+        self.assertTrue(index_path.is_file())
+
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 0)
+        self.assertEqual(notes(out), [])
+        self.assertIn("installation comparison: 2 game and mod folders", out)
+
+        self.write("repo/new.rs", snippet)
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertIn("copy equals game file trial.txt", out)
+
+        self.write("user/mod/extra/mod.txt", "mod_fixture = { tone = amber, changed = yes }")
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("for mod extra" in line and "python tools/check-game-content.py" in line for line in notes(out)))
+        self.assertIn("copy equals game file trial.txt", out)
+        with contextlib.closing(cgc.Index(index_path, readonly=True).db) as db:
+            probe = cgc.Index.__new__(cgc.Index)
+            probe.db = db
+            self.assertIsNone(probe.current("mod extra", user / "mod" / "extra", None)[0])
+
+        self.write("repo/new.rs", "ours")
+        code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("for mod extra" in line and "python tools/check-game-content.py" in line for line in notes(out)))
+        self.assertIn("index out of date for mod extra", out)
+        self.assertIn("python tools/check-game-content.py", out)
 
     def test_no_installation_is_reported_as_not_run(self):
         missing = SimpleNamespace(game=str(self.folder / "absent"), user_dir=None)
