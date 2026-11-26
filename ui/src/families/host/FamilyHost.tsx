@@ -83,6 +83,7 @@ import {
 import { useFamilyTheme } from './theme.ts';
 import { FamilyHeaderSummary } from './FamilyHeaderSummary.tsx';
 import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary } from './headerSummary.ts';
+import { rowHoverPublisher } from './hoverRow.ts';
 import type { FamilyTooltipField } from './tooltips.ts';
 import './familyHost.css';
 
@@ -219,6 +220,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null, drawnKeys?: DrawnKeys) => void;
+  readonly onHoverRow?: (subject: string | null) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
@@ -282,6 +284,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onArtDemands,
   onViewportChange,
   onHoverHour,
+  onHoverRow,
   selectedKey = null,
   onActivate,
   onToggle,
@@ -459,6 +462,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onArtDemands,
     onViewportChange,
     onHoverHour,
+    onHoverRow,
     selectedKey,
     onActivate,
     onToggle,
@@ -475,6 +479,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     latestRef.current.onRegions?.({ op: 'open', x: anchor.x, y: anchor.y, rows: field?.rows ?? [], ...(field?.active ? { active: field.active } : {}) });
   };
   latestRef.current = latest;
+
+  const publishHoverRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, () => latestRef.current.onHoverRow), []);
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
     const normalized = nextHour !== null && Number.isFinite(nextHour) ? Math.floor(nextHour) : null;
@@ -809,6 +815,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     inspectedHitRef.current = null;
     lastMirrorObjRef.current = null;
     publishHoverHour(null);
+    publishHoverRow(null);
     if (viewportRef.current.zoomWindow) {
       viewportRef.current.zoomWindow = null;
       notifyViewportChange();
@@ -1108,6 +1115,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       parseHit: hitKey => parseFamilyHit(latestRef.current.adapter, hitKey),
       inspectToken: key => familyInspectToken(latestRef.current.adapter, key),
       onHoverChange: hit => publishHoverHour(hit?.hour ?? null),
+      onHoverHit: publishHoverRow,
       ...(gestures
         ? {
             gestures: {

@@ -104,6 +104,10 @@ function actionOf(adapter: FamilyHostAdapter<any, any, any, any>, record: Instal
   };
 }
 
+export function hoveredSubject(adapter: FamilyHostAdapter<any, any, any, any>, record: InstalledRecord | null, hit: ParsedFamilyHit | null): string | null {
+  return record && hit ? actionOf(adapter, record, hit, false)?.subject ?? null : null;
+}
+
 export function resolveHostInput(
   adapter: FamilyHostAdapter<any, any, any, any>,
   command: HostCommand,

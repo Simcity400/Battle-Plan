@@ -90,6 +90,7 @@ export interface DeclaredFamilyWidgetProps<
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null) => void;
+  readonly onHoverRow?: (subject: string | null) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly extraWarnings?: readonly string[];
 }
@@ -119,6 +120,7 @@ export default function DeclaredFamilyWidget<
   contextMenuItems: customContextMenuItems,
   onViewportChange: externalViewportChange,
   onHoverHour: externalHoverHour,
+  onHoverRow,
   onArtDemands: externalArtDemands,
   extraWarnings,
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
@@ -353,6 +355,7 @@ export default function DeclaredFamilyWidget<
       onArtDemands={laneArt.onArtDemands}
       onViewportChange={handleViewportChange}
       onHoverHour={handleHoverHour}
+      onHoverRow={onHoverRow}
       selectedKey={selectedKey}
       onActivate={onActivate}
       onToggle={onToggle}

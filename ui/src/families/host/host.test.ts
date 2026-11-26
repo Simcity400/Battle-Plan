@@ -17,7 +17,7 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
-import { tableHostAdapter } from '../table/hostAdapter.ts';
+import { parseTableHit, tableHostAdapter } from '../table/hostAdapter.ts';
 import { cardHostAdapter } from '../card/hostAdapter.ts';
 import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager } from '../table/rowSource.ts';
@@ -35,6 +35,7 @@ import {
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { keepEqual } from './stableValue.ts';
+import { rowHoverPublisher } from './hoverRow.ts';
 import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
@@ -43,6 +44,7 @@ import { reducedMotionEnabled, sameFamilyTheme } from './theme.ts';
 import {
   buildTooltipContent,
   FamilyTooltipController,
+  HOVER_CLOSE_MS,
   resolveTooltipEntryContent,
   type FamilyActionPayload,
   type FamilyTooltipEntry,
@@ -1708,4 +1710,107 @@ test('a war group chosen by recorded slot matches that slot under every tag it h
     { tag: 'POL', firstHour: 10, lastHour: 60 },
     { tag: 'ITA', firstHour: 70, lastHour: 80 },
   ], 'a war group chosen by tag keeps matching the tag');
+});
+
+test('the hovered row is the subject the row would activate, reported when it changes, never while the pointer rests there or playback advances under it, and cleared on leaving', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  type Listener = (event: unknown) => void;
+  const listeners = new Map<string, Set<Listener>>();
+  const body = {
+    addEventListener(type: string, fn: Listener) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: Listener) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    contains: (node: unknown) => node === body,
+  };
+  const nav: FamilyNavTuple[] = [['GER', 'Germany', 0, -1, '', null], ['FRA', 'France', 1, -1, '', null]];
+  const picture = (id: number): InstalledPicture => {
+    const installed: InstalledPicture = {
+      id, owner: 'owner-A', generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100 + id),
+      viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
+      actionKeys: lazyActionKeys(nav, displayedHour(100 + id)), accessibleDescription: null,
+    };
+    recordInstalled(installed, { nav }, null);
+    return installed;
+  };
+  let installed = picture(7);
+  const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const fakePipeline = {
+    pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
+    inspect() {},
+    view() { return null; },
+  } as unknown as Pipeline;
+  const reply = (key: string | null) => { while (pending.length) pending.shift()!(key, { installedId: installed.id, owner: installed.owner }); };
+  const rows: (string | null)[] = [];
+  let hoverNotices = 0;
+  const publish = rowHoverPublisher(() => tableHostAdapter, () => installedRecordOf(installed), () => subject => rows.push(subject));
+  const stop = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement, pictureNode: body as unknown as HTMLElement, menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline, pipe: 1, tooltips: new FamilyTooltipController('delayed-worker'), inspectedKeyRef: { current: null }, inspectedHitRef: { current: null },
+    lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
+    parseHit: parseTableHit,
+    onHoverChange: () => { hoverNotices++; },
+    onHoverHit: publish,
+    onActivate: () => {},
+  });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  reply('row:GER');
+  for (const id of [8, 9, 10]) {
+    installed = picture(id);
+    body.dispatch('pointermove', { isTrusted: true, clientX: 10 + id, clientY: 10 });
+    reply('row:GER');
+  }
+  assert.deepEqual(rows, ['GER'], 'one report while the pointer rests on GER and playback advances under it');
+  assert.equal(hoverNotices, 1, 'a new picture under the same row is no hover change for the hour publisher');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 30 });
+  reply('row:FRA');
+  assert.deepEqual(rows, ['GER', 'FRA'], 'a new row under the pointer is reported once');
+  body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
+  t.mock.timers.tick(HOVER_CLOSE_MS);
+  assert.deepEqual(rows, ['GER', 'FRA', null], 'leaving clears the hovered row');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
+  t.mock.timers.tick(HOVER_CLOSE_MS);
+  reply('row:GER');
+  assert.deepEqual(rows, ['GER', 'FRA', null], 'a hit answered after the pointer left reports no row');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 22, clientY: 10 });
+  body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
+  t.mock.timers.tick(HOVER_CLOSE_MS);
+  body.dispatch('pointermove', { isTrusted: true, clientX: 22, clientY: 30 });
+  const meta = { installedId: installed.id, owner: installed.owner };
+  pending.shift()!('row:GER', meta);
+  pending.shift()!('row:FRA', meta);
+  assert.deepEqual(rows, ['GER', 'FRA', null, 'FRA'], 'a hit from before the tooltip closed is not reported on the next visit');
+  stop();
+
+  const lane = (id: number, row: string) => {
+    const shown = picture(id);
+    recordInstalled(shown, { extent: { rows: [{ id: row, label: row }] } }, null);
+    return shown;
+  };
+  installed = lane(20, 'GER');
+  const laneRows: (string | null)[] = [];
+  const stopLanes = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement, pictureNode: body as unknown as HTMLElement, menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline, pipe: 1, tooltips: new FamilyTooltipController('delayed-worker'), inspectedKeyRef: { current: null }, inspectedHitRef: { current: null },
+    lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
+    parseHit: parseHeatLanesHit,
+    onHoverHit: rowHoverPublisher(() => heatLanesHostAdapter, () => installedRecordOf(installed), () => subject => laneRows.push(subject)),
+    onActivate: () => {},
+  });
+  for (const [x, hit] of [[40, 'lane:#0@100'], [41, 'lane:#0@101'], [42, 'lane:#0']] as const) {
+    body.dispatch('pointermove', { isTrusted: true, clientX: x, clientY: 10 });
+    reply(hit);
+  }
+  assert.deepEqual(laneRows, ['GER'], 'moving along one heat lane across hours is one row');
+  installed = lane(21, 'FRA');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 43, clientY: 10 });
+  reply('lane:#0');
+  assert.deepEqual(laneRows, ['GER', 'FRA'], 'the same lane key over another lane in a new picture is a new row');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 44, clientY: 30 });
+  stopLanes();
+  reply('lane:#0');
+  assert.deepEqual(laneRows, ['GER', 'FRA', null], 'a hit answered after the binding is gone reports no row');
 });
