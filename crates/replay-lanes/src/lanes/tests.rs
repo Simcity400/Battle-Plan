@@ -1160,12 +1160,14 @@ fn a_coarse_piece_ending_inside_a_bucket_does_not_reach_past_its_last_hour() {
 #[test]
 fn a_walked_mark_ends_where_the_piece_after_it_begins_and_a_walk_between_pieces_keeps_their_ends() {
     let spans = [(11_623, 12_342, summary::bucket_hours(1))];
-    let grid = WalkGrid { spans: &spans, ends: &[12_342], covered: &[], bucket_hours: summary::bucket_hours(2) };
+    let grid = WalkGrid { spans: &spans, ends: &[12_342], covered: &[] };
     assert!(grid.mark(11_622) < grid.mark(11_623), "an hour before a piece is marked before the piece's own hours");
     assert_eq!(grid.mark(11_623), hour_mark(11_711), "a piece's hour is marked at the end of the piece's own bucket");
     let unfolded = [(823, 1_542, summary::bucket_hours(0))];
-    let edge = WalkGrid { spans: &unfolded, ends: &[824], covered: &[], bucket_hours: 6 };
+    let edge = WalkGrid { spans: &unfolded, ends: &[824], covered: &[] };
     assert!(edge.mark(822) < edge.mark(823), "a piece holding the measure bounds the walk's marks even where it folds nothing");
+    let bare = WalkGrid { spans: &[], ends: &[2_879], covered: &[] };
+    assert!(bare.mark(2_000) < bare.mark(2_879), "hours no piece covers are marked at their own six hours, so a later reading ranks later");
     let constant = |value: i64, hour: i64| {
         let mut fold = summary::Fold::constant(value, 1, summary::bucket_of(hour, 0));
         fold.last_bucket = summary::bucket_of(hour, 0);

@@ -2188,7 +2188,7 @@ fn top_with(
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
         false => {
-            grid.top_folded(&decoded, &walked, &WalkGrid { spans: &spans, ends: &walked_ends, covered: &covered, bucket_hours: summary::bucket_hours(level) }, n, by)
+            grid.top_folded(&decoded, &walked, &WalkGrid { spans: &spans, ends: &walked_ends, covered: &covered }, n, by)
         }
     }
 }
@@ -2198,7 +2198,6 @@ struct WalkGrid<'a> {
     spans: &'a [(i64, i64, i64)],
     ends: &'a [i64],
     covered: &'a [(i64, i64)],
-    bucket_hours: i64,
 }
 
 impl WalkGrid<'_> {
@@ -2208,7 +2207,7 @@ impl WalkGrid<'_> {
         let at = self.spans.partition_point(|&(_, last, _)| last < hour);
         let last = match self.spans.get(at).filter(|&&(first, ..)| first <= hour) {
             Some(&(_, last, size)) => bucket_last(size).min(last),
-            None => bucket_last(self.bucket_hours).min(self.spans.get(at).map_or(i64::MAX, |&(first, ..)| first - 1)),
+            None => bucket_last(summary::bucket_hours(0)).min(self.spans.get(at).map_or(i64::MAX, |&(first, ..)| first - 1)),
         };
         hour_mark(last.min(range_last))
     }
