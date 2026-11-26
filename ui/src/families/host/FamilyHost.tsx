@@ -480,7 +480,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   };
   latestRef.current = latest;
 
-  const publishHoverRow = useMemo(() => rowHoverPublisher(() => latestRef.current.onHoverRow), []);
+  const publishHoverRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, () => latestRef.current.onHoverRow), []);
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
     const normalized = nextHour !== null && Number.isFinite(nextHour) ? Math.floor(nextHour) : null;
@@ -815,7 +815,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     inspectedHitRef.current = null;
     lastMirrorObjRef.current = null;
     publishHoverHour(null);
-    publishHoverRow(null);
     if (viewportRef.current.zoomWindow) {
       viewportRef.current.zoomWindow = null;
       notifyViewportChange();
@@ -1116,7 +1115,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       inspectToken: key => familyInspectToken(latestRef.current.adapter, key),
       onHoverChange: hit => {
         publishHoverHour(hit?.hour ?? null);
-        publishHoverRow(hit?.subject ?? null);
+        publishHoverRow(hit);
       },
       ...(gestures
         ? {

@@ -170,7 +170,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     const moved = installedNow();
     const stamp: PictureStamp = { installedId: moved?.id, owner: moved?.owner };
     pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
+      if (isBlocked() || !lastPointerRef.current || !acceptsReply(hitMeta, stamp)) return;
       if (getInstalled && installedNow()?.id !== stamp.installedId) {
         const last = lastPointerRef.current;
         if (last) hover(last.x, last.y);

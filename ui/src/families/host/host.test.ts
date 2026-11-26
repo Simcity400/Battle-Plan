@@ -17,7 +17,7 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
-import { tableHostAdapter } from '../table/hostAdapter.ts';
+import { parseTableHit, tableHostAdapter } from '../table/hostAdapter.ts';
 import { cardHostAdapter } from '../card/hostAdapter.ts';
 import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager } from '../table/rowSource.ts';
@@ -1712,7 +1712,7 @@ test('a war group chosen by recorded slot matches that slot under every tag it h
   ], 'a war group chosen by tag keeps matching the tag');
 });
 
-test('the hovered row is reported when the row under the pointer changes, never while it rests there or while playback advances under it, and cleared on leaving', t => {
+test('the hovered row is the subject the row would activate, reported when it changes, never while the pointer rests there or playback advances under it, and cleared on leaving', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   type Listener = (event: unknown) => void;
   const listeners = new Map<string, Set<Listener>>();
@@ -1723,12 +1723,17 @@ test('the hovered row is reported when the row under the pointer changes, never 
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
     contains: (node: unknown) => node === body,
   };
-  const picture = (id: number, keys: readonly string[]): InstalledPicture => ({
-    id, owner: 'owner-A', generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100 + id),
-    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
-    actionKeys: lazyActionKeys(keys.map((key, i) => [key, key, i, -1, '', null] as FamilyNavTuple), displayedHour(100 + id)), accessibleDescription: null,
-  });
-  let installed = picture(7, ['GER', 'FRA']);
+  const nav: FamilyNavTuple[] = [['GER', 'Germany', 0, -1, '', null], ['FRA', 'France', 1, -1, '', null]];
+  const picture = (id: number): InstalledPicture => {
+    const installed: InstalledPicture = {
+      id, owner: 'owner-A', generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100 + id),
+      viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
+      actionKeys: lazyActionKeys(nav, displayedHour(100 + id)), accessibleDescription: null,
+    };
+    recordInstalled(installed, { nav }, null);
+    return installed;
+  };
+  let installed = picture(7);
   const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
   const fakePipeline = {
     pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
@@ -1737,39 +1742,40 @@ test('the hovered row is reported when the row under the pointer changes, never 
   } as unknown as Pipeline;
   const reply = (key: string | null) => { while (pending.length) pending.shift()!(key, { installedId: installed.id, owner: installed.owner }); };
   const rows: (string | null)[] = [];
-  let hoverChanges = 0;
-  const publish = rowHoverPublisher(() => subject => rows.push(subject));
+  const publish = rowHoverPublisher(() => tableHostAdapter, () => installedRecordOf(installed), () => subject => rows.push(subject));
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement, pictureNode: body as unknown as HTMLElement, menuHost: body as unknown as HTMLElement,
     pipeline: fakePipeline, pipe: 1, tooltips: new FamilyTooltipController('delayed-worker'), inspectedKeyRef: { current: null }, inspectedHitRef: { current: null },
     lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
     accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
-    parseHit: hit => { const row = parseDefaultRowHit(hit); return row ? { ...row, hour: 100 + installed.id } : null; },
-    onHoverChange: hit => { hoverChanges++; publish(hit?.subject ?? null); },
+    parseHit: parseTableHit,
+    onHoverChange: publish,
     onActivate: () => {},
   });
   body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
   reply('row:GER');
-  body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 10 });
-  reply('row:GER');
   for (const id of [8, 9, 10]) {
-    installed = picture(id, ['GER', 'FRA']);
-    body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 10 });
-    reply('row:GER');
-  }
-  assert.deepEqual(rows, ['GER'], 'one report while the pointer rests on GER and playback advances under it');
-  for (const id of [11, 12, 13]) {
-    installed = picture(id, ['GER', 'FRA']);
+    installed = picture(id);
     body.dispatch('pointermove', { isTrusted: true, clientX: 10 + id, clientY: 10 });
     reply('row:GER');
   }
-  assert.deepEqual(rows, ['GER'], 'moving within GER as playback advances reports nothing new');
+  assert.deepEqual(rows, ['GER'], 'one report while the pointer rests on GER and playback advances under it');
   body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 30 });
   reply('row:FRA');
   assert.deepEqual(rows, ['GER', 'FRA'], 'a new row under the pointer is reported once');
   body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
   t.mock.timers.tick(HOVER_CLOSE_MS);
   assert.deepEqual(rows, ['GER', 'FRA', null], 'leaving clears the hovered row');
-  assert.ok(hoverChanges > rows.length, 'the pointer reported hover changes, such as a new hour, that were not row changes');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
+  body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
+  t.mock.timers.tick(HOVER_CLOSE_MS);
+  reply('row:GER');
+  assert.deepEqual(rows, ['GER', 'FRA', null], 'a hit answered after the pointer left reports no row');
   stop();
+
+  const lanes = recordInstalled(picture(20), { extent: { rows: [{ id: 'GER', label: 'Germany' }] } }, null);
+  const laneRows: (string | null)[] = [];
+  const lanePublish = rowHoverPublisher(() => heatLanesHostAdapter, () => lanes, () => subject => laneRows.push(subject));
+  for (const hour of [100, 101, 102]) lanePublish(parseHeatLanesHit(`lane:#0@${hour}`));
+  assert.deepEqual(laneRows, ['GER'], 'moving along one heat lane across hours is one row');
 });
