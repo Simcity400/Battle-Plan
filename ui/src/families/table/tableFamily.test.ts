@@ -2289,20 +2289,20 @@ test('a glide whose movers all stay below the viewport asks for no animation fra
   const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction: 'descending' } });
   const rows = Array.from({ length: 200 }, (_, i): Row => ({ id: `C${String(i).padStart(3, '0')}`, v: 1000 - i }));
   const swapped = rows.map(row => (row.id === 'C150' ? { ...row, v: 1000 - 151 } : row.id === 'C151' ? { ...row, v: 1000 - 150 } : row));
+  const panels = new Map<Row[], { readonly main: { readonly rows: Row[] } }>();
   const bound = (list: Row[], scrollTop: number) => ({
-    family: 'table' as const, theme: TEST_THEME, kind: 'test-offscreen-glide', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows: list } },
+    family: 'table' as const, theme: TEST_THEME, kind: 'test-offscreen-glide', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: panels.get(list) ?? panels.set(list, { main: { rows: list } }).get(list)!,
     width: 400, height: 300, scrollLeft: 0, scrollTop, focusedKey: null, reducedMotion: false,
   });
   const recording = installRecordingCanvas();
   try {
     const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 300, dpr: 1 });
-    lane.paint({ label: 'first', binding: bound(rows, 0), hour: 1, speed: 24, seek: 1, now: 1000 });
+    const first = lane.paint({ label: 'first', binding: bound(rows, 0), hour: 1, speed: 24, seek: 1, now: 1000 });
     const below = lane.paint({ label: 'two rows far below swap', binding: bound(swapped, 0), hour: 2, speed: 24, seek: 1, now: 2000 });
     assert.equal(below.motion, false, 'nothing on screen moves, so no frame is asked for');
-    const lane2 = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 300, dpr: 1 });
-    lane2.paint({ label: 'first', binding: bound(rows, 150 * ROW_HEIGHT.normal), hour: 1, speed: 24, seek: 1, now: 1000 });
-    const shown = lane2.paint({ label: 'the swap on screen', binding: bound(swapped, 150 * ROW_HEIGHT.normal), hour: 2, speed: 24, seek: 1, now: 2000 });
-    assert.equal(shown.motion, true, 'a mover on screen glides');
+    assert.equal(below.surfaces[0]?.content, first.surfaces[0]?.content, 'and the rows on screen are not drawn again');
+    const scrolled = lane.paint({ label: 'scrolled to the swap while it glides', binding: bound(swapped, 150 * ROW_HEIGHT.normal), hour: 2, speed: 24, seek: 1, now: 2050 });
+    assert.equal(scrolled.motion, true, 'a glide scrolled into view moves again');
   } finally {
     recording.restore();
   }
