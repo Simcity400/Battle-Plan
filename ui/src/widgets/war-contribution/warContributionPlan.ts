@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
-import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warChipStateAt, warEligibilityAt } from './warContributionData.ts';
+import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warChipStateAt, warEligibilityAt, warNextChangeAt } from './warContributionData.ts';
 
 export type WarSide = 'viewpoint' | 'opposing';
 
@@ -53,9 +53,7 @@ function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): Wa
 }
 
 export function warContributionNextChange(hour: number, options: WarChoiceOptions): number {
-  if (!options.wars || !options.wars.available) return Infinity;
-  const until = warChipStateAt(options.wars, options.saved, hour).valid[1];
-  return Number.isFinite(until) ? until + 1 : Infinity;
+  return warNextChangeAt(options.wars ?? undefined, options.saved, hour);
 }
 
 export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions): ChosenGroup {

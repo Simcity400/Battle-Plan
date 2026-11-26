@@ -332,6 +332,14 @@ function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly 
   return segments;
 }
 
+export function warNextChangeAt(wars: WarsReply | undefined, saved: string | null, at: number): number {
+  if (!wars || !wars.available || !Number.isFinite(at)) return Infinity;
+  const hour = Math.floor(at);
+  const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
+  const until = spanFromEdges(explicit ? warEdgesOf(explicit, wars) : chipEdgesOf(wars), hour)[1];
+  return Number.isFinite(until) ? until + 1 : Infinity;
+}
+
 export function warEligibilityAt(
   wars: WarsReply | undefined,
   saved: string | null,

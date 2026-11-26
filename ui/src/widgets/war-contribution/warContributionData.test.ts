@@ -523,6 +523,27 @@ test('warContributionSources plans no contribution reads when no eligible war ex
   assert.deepEqual(warEligibilityAt(overlappingGapWars, null, 6), { mode: 'none', valid: [6, 7] }, 'larger gapped war outranks smaller ended short war');
   assert.deepEqual(warEligibilityAt(overlappingGapWars, null, 4 + 500 * 4 + 2), { mode: 'ended', valid: [4 + 500 * 4 + 2, 4 + 500 * 4 + 3] }, 'larger ended short war outranks smaller gapped war');
 
+  const { warContributionNextChange } = await import('./warContributionPlan.ts');
+  let nextReads = 0;
+  const activeThousand = {
+    available: true,
+    wars: Array.from({ length: 1000 }, (_, i) => ({
+      ...war(String(i + 1), 0, 500, [['AAA'], [`B${i}`]]),
+      observations: new Proxy([observation(0, 500, ['AAA'], [`B${i}`])], {
+        get(target, prop, receiver) {
+          if (typeof prop === 'string' && /^\d+$/.test(prop)) nextReads++;
+          return Reflect.get(target, prop, receiver);
+        },
+      }),
+    } as unknown as WarTimeline)),
+  } as unknown as WarsReply;
+  assert.equal(warContributionNextChange(10, { wars: activeThousand, saved: null }), 501);
+  nextReads = 0;
+  for (let h = 11; h <= 110; h++) {
+    assert.equal(warContributionNextChange(h, { wars: activeThousand, saved: null }), 501);
+  }
+  assert.equal(nextReads, 0, 'warm warContributionNextChange reads the edge index without rescanning wars');
+
   const { createLaneView } = await import('../../families/laneRuntime.ts');
   const { barsLane } = await import('../../families/bars/laneView.ts');
   const { installRecordingCanvas, LANE_THEME, LaneTransport } = await import('../../families/laneRuntime.fixture.ts');
