@@ -856,7 +856,8 @@ impl Window {
             &document.small_flags,
             &document.large_flags,
             inventory,
-        );
+        )
+        .with_physical_viewport(input.is_some().then(|| extent.map(|side| side as i32)));
         let tick = lifecycle::Tick {
             time,
             dt: self

@@ -1,6 +1,6 @@
 use crate::document::{Content, Document};
 use dashboard_base::Source;
-use dashboard_core::protocol::{BattleWindow, DashboardMapState, DashboardMapView};
+use dashboard_core::protocol::{BattleKind, BattleWindow, DashboardMapState, DashboardMapView};
 use eframe::{egui, wgpu};
 use replay::campaign::{HourCursor, SeekResult};
 use replay_data::{BranchId, Hour, rows::TableId};
@@ -62,9 +62,17 @@ struct Picture {
     rect: [f32; 2],
 }
 
+fn selection(battle: &BattleWindow) -> Option<Selection> {
+    let combat = battle.handle()?;
+    Some(match battle.kind {
+        BattleKind::Land => Selection::Land(combat),
+        BattleKind::Naval => Selection::Naval(combat),
+    })
+}
+
 struct Held {
     document: Document,
-    combat: u64,
+    selection: Selection,
     window: Window,
     pass: SpritePass,
     arena: shader_pipeline::gpu::Arena,
@@ -174,7 +182,7 @@ impl BattleView {
         let canvas = egui::Color32::from_rgb(battle.canvas[0], battle.canvas[1], battle.canvas[2]);
         let ink = egui::Color32::from_rgb(battle.text[0], battle.text[1], battle.text[2]);
         ui.painter().rect_filled(body, 0.0, canvas);
-        if self.held.as_ref().is_some_and(|held| !Arc::ptr_eq(&held.document.content, content) || Some(held.combat) != battle.handle()) {
+        if self.held.as_ref().is_some_and(|held| !Arc::ptr_eq(&held.document.content, content) || Some(held.selection) != selection(battle)) {
             self.retire(frame);
         }
         if self.held.is_none() && self.error.is_none() {
@@ -302,7 +310,7 @@ fn note(ui: &mut egui::Ui, body: egui::Rect, ink: egui::Color32, text: &str) {
 impl Held {
     fn open(source: &Source, content: &Arc<Content>, battle: &BattleWindow, gpu: &(wgpu::Device, wgpu::Queue), icons: Arc<IconTextures>) -> Result<Self, String> {
         let (device, queue) = gpu;
-        let combat = battle.handle().ok_or("The battle's combat handle is not a full number.")?;
+        let selection = selection(battle).ok_or("The battle's combat handle is not a full number.")?;
         let mut document = Document::from_content(Arc::clone(content), source.replay())
             .map_err(|error| format!("The battle window could not open the recording: {error}"))?;
         document.bind_source(source);
@@ -318,14 +326,14 @@ impl Held {
         }));
         let navy = Arc::clone(content);
         window.set_navy_sources_of(Arc::new(move |frame, ours, region| navy.naval_dominance_sources(frame, ours, region)));
-        window.open(Selection::Land(combat));
+        window.open(selection);
         let layout = content.combat.window_cache.at(EXTENT.map(|side| side as u32)).map_err(|error| format!("Could not lay out the battle window: {error}"))?;
         let tables = VISION_TABLES.to_vec();
         let replay = source.replay();
         let cursor = Arc::new(Mutex::new(HourCursor::new(Arc::clone(&replay), &tables, false)));
         Ok(Self {
             document,
-            combat,
+            selection,
             window,
             pass,
             arena: shader_pipeline::gpu::Arena::new(device),
@@ -431,7 +439,7 @@ impl Held {
                 ctx.request_repaint_after(ANIMATION_FRAME);
             }
             if !self.window.is_open() {
-                self.closed = self.at.map(|at| at.hour);
+                self.closed = self.at.filter(|at| at.seek == self.epoch).map(|at| at.hour);
             }
             if self.picture.is_some() {
                 self.shown = self.at;
@@ -493,6 +501,7 @@ impl Held {
         self.asked = None;
         self.refused = None;
         self.at = None;
+        self.closed = None;
         self.start = played_from.filter(|from| *from <= target.hour).unwrap_or(target.hour);
         self.next = Some(self.start);
     }
@@ -551,7 +560,7 @@ impl Held {
             if self.closed == Some(target.hour) && self.next.is_none_or(|next| next > target.hour) {
                 return;
             }
-            self.window.open(Selection::Land(self.combat));
+            self.window.open(self.selection);
         }
         let rosters = self.document.playback.roster_sampler();
         let nato = self.document.game_options.nato_counters;
