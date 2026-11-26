@@ -651,8 +651,12 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             terms_wanted.entry((run, occurrence.date)).or_default().push((seller, agreement, u8::from(!contract.request)));
         }
         let listed = expanded.contains(occurrence.id.to_string().as_str());
-        for child in contract.children.iter().filter(|child| child.hour <= hour && (listed || child.hour == occurrence.date)) {
-            if let (Some(variant), Some(run)) = (child.variant, run_of(child.hour)) {
+        for child in contract.children.iter().filter(|child| child.hour <= hour) {
+            let Some(variant) = child.variant else { continue };
+            if let Some(run) = run_of(occurrence.date) {
+                variants_wanted.entry((run, occurrence.date)).or_default().insert(variant);
+            }
+            if let (true, Some(run)) = (listed, run_of(child.hour)) {
                 variants_wanted.entry((run, child.hour)).or_default().insert(variant);
             }
         }
