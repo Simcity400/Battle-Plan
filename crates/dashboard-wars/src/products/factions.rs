@@ -229,7 +229,8 @@ struct EverIndexes(HashMap<(u64, Option<String>), (Arc<CountryGroupReply>, Arc<E
 
 impl EverIndex {
     fn build(reply: &CountryGroupReply, slots: &HashMap<u64, Vec<(u32, i32, i32)>>) -> Self {
-        let mut edges: Vec<i32> = reply.unobserved.factions.iter().map(|span| span.first_hour).collect();
+        let unknown_from = reply.unobserved.factions.iter().map(|span| span.first_hour).min();
+        let mut edges: Vec<i32> = unknown_from.into_iter().collect();
         let mut joins: BTreeMap<String, Vec<(i32, u32)>> = BTreeMap::new();
         for faction in &reply.factions {
             edges.push(faction.first_hour);
@@ -240,7 +241,7 @@ impl EverIndex {
         }
         edges.sort_unstable();
         edges.dedup();
-        Self { edges, joins, refused: None, unknown_from: None }
+        Self { edges, joins, refused: None, unknown_from }
     }
 
     fn of_group(reply: &CountryGroupReply, group: &GroupSelection, holders: &Holders, slots: &HashMap<u64, Vec<(u32, i32, i32)>>) -> io::Result<Self> {
@@ -290,6 +291,9 @@ impl EverIndex {
     }
 
     fn valid_through(&self, hour: i32) -> i32 {
+        if self.unknown_from.is_some_and(|first| first <= hour) {
+            return i32::MAX;
+        }
         self.edges.get(self.edges.partition_point(|&edge| edge <= hour)).map_or(i32::MAX, |&edge| edge - 1)
     }
 
@@ -508,7 +512,7 @@ impl AtHour for FactionTotalsAt {
                     _ => {
                         member_countries.push(country.clone());
                         if missing.is_none() {
-                            missing = Some(format!("A member ({tag}) is not present at this hour"));
+                            missing = Some(at.holders.not_known_as(&tag, frame.hour).unwrap_or_else(|| format!("A member ({tag}) is not present at this hour")));
                         }
                     }
                 }

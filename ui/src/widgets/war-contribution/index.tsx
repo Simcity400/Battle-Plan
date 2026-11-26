@@ -16,7 +16,7 @@ import { warChipAt } from './warContributionData.ts';
 import { attackersFirst, savedWar } from './warContributionPlan.ts';
 
 const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
-import { useWarChoices, useWars, useWarsReply } from './useWarChoices';
+import { useWarChoices, useWarMenu, useWars } from './useWarChoices';
 import './warContribution.css';
 
 function WarContributionView(props: FamilyViewProps) {
@@ -65,7 +65,7 @@ function WarChip(props: FamilyViewCountryChipProps) {
 }
 
 function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuProps) {
-  const reply = useWarsReply(resolveWidgetCampaign({ ...widget, options: {} }, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), runtime, true);
+  const { reply, choices } = useWarMenu(resolveWidgetCampaign({ ...widget, options: {} }, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), runtime);
   const wars = reply.data;
   const pending = !wars ? (reply.error ? failureText(reply.error, 'The wars were not read') : 'Loading wars…') : wars.available ? null : 'Wars are not in this recording.';
   const saved = storedWar(options);
@@ -74,13 +74,9 @@ function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuP
     <div className="war-menu-heading">War</div>
     <button type="button" className={`war-menu-row${saved === null ? ' is-chosen' : ''}`} onClick={() => choose(null)}>The country’s main war at the date</button>
     {pending && <div className="war-menu-pending" role="status">{pending}</div>}
-    {(wars?.wars ?? []).map(war => {
-      const observation = war.observations.at(-1) ?? null;
-      const name = observation?.name.known ? observation.name.text : 'War name not recorded';
-      return <button key={war.id} type="button" className={`war-menu-row${saved === war.id ? ' is-chosen' : ''}`} onClick={() => choose(war.id)}>
-        <span>{name}</span><small>{`From ${dayLabel(war.firstHour)}`}</small>
-      </button>;
-    })}
+    {choices.map(war => <button key={war.id} type="button" className={`war-menu-row${saved === war.id ? ' is-chosen' : ''}`} onClick={() => choose(war.id)}>
+      <span>{war.name}</span><small>{`From ${dayLabel(war.firstHour)}`}</small>
+    </button>)}
   </div>;
 }
 

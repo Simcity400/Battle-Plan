@@ -3,12 +3,14 @@ import { useMemo } from 'react';
 import { dayLabel } from '../../charts/draw';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
-import type { WidgetBase, WidgetSpec } from '../../dashboard/model';
+import { resolveWindow, type WidgetBase, type WidgetSpec } from '../../dashboard/model';
+import { entryAt } from '../../dashboard/reads.ts';
 import { setToken } from '../../dashboard/options';
 import { type ProductState, useProduct } from '../../dashboard/products';
 import type { WarsReply } from '../../generated/dashboard';
 import { validateWarsReply } from '../wars/warsData';
-import { warName } from './warContributionData';
+import { useHeadHour } from '../army-size/headHour';
+import { warChoicesAt } from './warContributionData';
 import { productRequest } from '../../dashboard/request.ts';
 
 export function useWarsReply(widget: WidgetBase, runtime: WidgetRuntime, active: boolean): ProductState<WarsReply> {
@@ -22,8 +24,20 @@ export function useWars(widget: WidgetBase, runtime: WidgetRuntime, active: bool
   return useWarsReply(widget, runtime, active).data;
 }
 
+export function useWarMenu(widget: WidgetBase, runtime: WidgetRuntime) {
+  const reply = useWarsReply(widget, runtime, true);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const starts = useMemo(() => (reply.data?.wars ?? []).flatMap(war => war.observations).sort((a, b) => a.firstHour - b.firstHour), [reply.data]);
+  const date = (clock: number) => track ? resolveWindow(widget, track, runtime.tracks, clock)?.lastHour ?? -Infinity : -Infinity;
+  const edge = (clock: number) => entryAt(starts, date(clock))?.firstHour ?? -Infinity;
+  const clock = useHeadHour(runtime.clock, !!reply.data && widget.time.mode === 'follow', hour => String(edge(hour)));
+  const at = edge(clock);
+  const choices = useMemo(() => warChoicesAt(reply.data, at), [reply.data, at]);
+  return { reply, choices };
+}
+
 export function useWarChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const wars = useWars(widget, runtime, true);
-  return useMemo(() => ({ war: (wars?.wars ?? []).map(war => ({ value: setToken(war.id),
-    label: `${warName(war.observations.at(-1) ?? null)} · ${dayLabel(war.firstHour)}` })) }), [wars]);
+  const { choices } = useWarMenu(widget, runtime);
+  return useMemo(() => ({ war: choices.map(war => ({ value: setToken(war.id),
+    label: `${war.name} · ${dayLabel(war.firstHour)}` })) }), [choices]);
 }

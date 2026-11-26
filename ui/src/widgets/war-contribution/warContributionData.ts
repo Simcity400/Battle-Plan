@@ -1,20 +1,22 @@
+import { entryAt } from '../../dashboard/reads.ts';
 import type { WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { labelObservationAt, observationAt } from '../wars/warsData.ts';
+import { labelObservationAt } from '../wars/warsData.ts';
 
 export function chosenWar(reply: WarsReply, saved: string | null, at: number): WarTimeline | null {
   if (saved) {
     const war = reply.wars.find(item => item.id === saved);
-    if (war) return war;
+    if (war) return war.firstHour <= at ? war : null;
   }
-  let best: { war: WarTimeline; active: boolean; count: number } | null = null;
+  let best: { war: WarTimeline; active: boolean; count: number; last: number } | null = null;
   for (const war of reply.wars) {
-    if (war.firstHour > at) continue;
-    const active = observationAt(war, at) != null;
-    const observation = labelObservationAt(war, Math.min(at, war.lastHour));
-    const count = observation ? new Set([...observation.viewpointSide, ...observation.opposingSide]).size : 0;
+    const observation = entryAt(war.observations, at);
+    if (!observation) continue;
+    const active = at <= observation.lastHour;
+    const last = Math.min(at, observation.lastHour);
+    const count = new Set([...observation.viewpointSide, ...observation.opposingSide]).size;
     const better = !best || (active !== best.active ? active : count !== best.count ? count > best.count
-      : war.lastHour !== best.war.lastHour ? war.lastHour > best.war.lastHour : Number(war.id) < Number(best.war.id));
-    if (better) best = { war, active, count };
+      : last !== best.last ? last > best.last : Number(war.id) < Number(best.war.id));
+    if (better) best = { war, active, count, last };
   }
   return best?.war ?? null;
 }
@@ -28,3 +30,10 @@ export function warChipAt(wars: WarsReply | undefined, saved: string | null, at:
 }
 
 export const warName = (observation: WarObservation | null) => observation?.name.known ? observation.name.text : 'Name not recorded';
+
+export function warChoicesAt(wars: WarsReply | undefined, at: number) {
+  return (wars?.wars ?? []).flatMap(war => {
+    const observation = entryAt(war.observations, at);
+    return observation ? [{ id: war.id, firstHour: war.firstHour, name: warName(observation) }] : [];
+  });
+}
