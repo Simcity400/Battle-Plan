@@ -70,6 +70,54 @@ export function watchCanvasSize(element: HTMLCanvasElement, resized: () => void)
   };
 }
 
+export function windowRatio(): number {
+  return typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
+}
+
+export function deviceScale(element: Element): number {
+  const zoom = element.currentCSSZoom;
+  return windowRatio() * (zoom > 0 ? zoom : 1);
+}
+
+export interface DeviceFit { readonly width: number; readonly height: number; readonly dpr: number }
+
+export function deviceFit(element: Element, cssWidth: number, cssHeight: number): DeviceFit {
+  const dpr = deviceScale(element);
+  const whole = (css: number) => Math.max(0, Math.floor(css * dpr + 1e-3)) / dpr;
+  return { width: whole(cssWidth), height: whole(cssHeight), dpr };
+}
+
+export function snapToDevice(css: number, scale: number): number {
+  return Math.round(css * scale) / scale;
+}
+
+const ratioListeners = new Set<() => void>();
+let ratioQuery: { readonly media: MediaQueryList; readonly changed: () => void } | null = null;
+
+function armRatioQuery() {
+  if (typeof matchMedia !== 'function') return;
+  const media = matchMedia(`(resolution: ${windowRatio()}dppx)`);
+  const changed = () => {
+    media.removeEventListener('change', changed);
+    ratioQuery = null;
+    if (ratioListeners.size) armRatioQuery();
+    for (const listener of [...ratioListeners]) listener();
+  };
+  media.addEventListener('change', changed);
+  ratioQuery = { media, changed };
+}
+
+export function watchDevicePixelRatio(listener: () => void): () => void {
+  ratioListeners.add(listener);
+  if (!ratioQuery) armRatioQuery();
+  return () => {
+    ratioListeners.delete(listener);
+    if (ratioListeners.size || !ratioQuery) return;
+    ratioQuery.media.removeEventListener('change', ratioQuery.changed);
+    ratioQuery = null;
+  };
+}
+
 export function toLocal(clientX: number, clientY: number, rect: { left: number; top: number; width: number; height: number },
   layoutWidth: number, layoutHeight: number): { x: number; y: number } {
   return {
