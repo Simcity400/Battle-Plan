@@ -327,7 +327,7 @@ pub struct CampaignMapSettings {
     pub visual_mods: Option<Vec<content_reader_layers::content::visual::Choice>>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedMapSettings {
     pub graphics: MapGraphics,

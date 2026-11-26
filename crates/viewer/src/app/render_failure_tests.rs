@@ -93,6 +93,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
         index: 0,
         paced: false,
         export: None,
+        video: None,
     });
 }
 

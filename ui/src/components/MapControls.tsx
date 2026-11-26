@@ -17,6 +17,7 @@ import { FailureLine } from './FailureLine';
 import { actionFailure, type PlainFailure } from '../dashboard/queryError.ts';
 import type { BranchJoin } from '../generated/dashboard';
 import { historyLabels } from '../shell/diagnosticsData';
+import { useExportVideo } from '../export/ExportVideoContext';
 import './mapControls.css';
 
 export default function MapControls({ source, client, metadata, branchId, onBranch, onChooseHistory, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, onPopoutRetry, popoutStopped, popoutCameraMode, popoutCameraOverlays = false, aircraft = null, onAircraft, popoutFlyAircraft = null, aircraftHost = null }: {
@@ -39,6 +40,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<(PlainFailure & { retry?: () => void }) | null>(null);
   const [saved, setSaved] = useState<SavedExport | null>(null);
+  const { openMapVideoExport } = useExportVideo();
   const branch = metadata?.branches.find(item => item.id === branchId);
 
   const failed = (sentence: string, cause: unknown, retry?: () => void) => setError({ ...actionFailure(sentence, errorMessage(cause)), retry });
@@ -70,6 +72,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
         onChooseHistory={onChooseHistory && ((segmentId, parent) => void run('Couldn’t change the campaign history.', () => onChooseHistory(segmentId, parent)))} />
       <div className="map-menu-section">
         <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available in the desktop app'} onClick={() => void exportImage(viewId)}><Icon name="save" />Export map image</button>
+        <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Export a constant-frame-rate MP4 video of this map' : 'Available in the desktop app'} onClick={() => { menu.close(); openMapVideoExport({ viewId, label: viewId ? 'Map widget' : 'Campaign map' }); }}><Icon name="play" />Export map video…</button>
         {saved && <p className="map-menu-note" role="status" data-detail={saved.warning ?? undefined}>{saved.warning ? `${saved.message}, but Windows didn’t confirm it reached the disk.` : saved.message}</p>}
         {problem && <FailureLine className="map-menu-error" message={problem.text} detail={problem.detail}
           onRetry={popoutStopped ? undefined : onPopoutRetry} onDismiss={popoutStopped || onPopoutRetry ? undefined : () => setDismissed(popoutProblem ?? null)} />}
@@ -81,6 +84,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
           <AircraftPicker client={client} source={source} chosen={aircraft} status={popoutFlyAircraft} onChoose={onAircraft} host={aircraftHost} /></div>}
         {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window’s map as a PNG image" onClick={() => void exportImage('popout')}><Icon name="save" />Export pop-out map</button>
+          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Export an MP4 video of the pop-out window’s map" onClick={() => { menu.close(); openMapVideoExport({ viewId: 'popout', label: 'Pop-out map' }); }}><Icon name="play" />Export pop-out map video…</button>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run('Couldn’t move the pop-out map.', () => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>
           <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run('Couldn’t close the pop-out map.', () => closePopout(popoutGeneration))}><Icon name="close" />Close pop-out map</button>
         </> : <button type="button" className="map-menu-action" disabled={!metadata || busy} data-tooltip="Show this map alone in its own window, following this app’s clock and settings" onClick={() => void run('Couldn’t pop out the map.', async () => { await openPopout(); })}><Icon name="monitor" />Pop out map</button>)}

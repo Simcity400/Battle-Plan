@@ -55,6 +55,7 @@ impl Viewer {
                     }
                     Err(error) => {
                         self.refuse_exports(pending.exports, &format!("The map widgets could not start: {error}"));
+                        self.refuse_snapshots(pending.snapshots, &format!("The map widgets could not start: {error}"));
                         self.error = Some(error.to_string());
                         self.report_embedded(ctx);
                         return;
@@ -89,6 +90,9 @@ impl Viewer {
         }
         for job in pending.exports {
             self.host_export(job, ctx, frame);
+        }
+        for job in pending.snapshots {
+            self.host_snapshot(job);
         }
         {
             let _other_cost = replay_frame::cpu::scope("frame.fly-aircraft", Some("other"));
@@ -357,6 +361,23 @@ impl Viewer {
         }
     }
 
+    fn refuse_snapshots(&mut self, jobs: Vec<crate::host::SnapshotJob>, why: &str) {
+        for job in jobs {
+            job.answer(Err(why.to_owned()));
+        }
+    }
+
+    pub(crate) fn host_snapshot(&mut self, job: crate::host::SnapshotJob) {
+        if let Some(id) = job.view_id.clone() {
+            match self.dashboard.as_mut() {
+                Some(dashboard) => dashboard.snapshot_view(&id, job),
+                None => job.answer(Err("The requested map widget is unavailable".into())),
+            }
+            return;
+        }
+        job.answer(self.build_export_snapshot());
+    }
+
     pub(crate) fn host_export(&mut self, job: crate::host::ExportJob, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(id) = job.view_id.clone() {
             match self.dashboard.as_mut() {
@@ -380,6 +401,7 @@ impl Viewer {
             index: 0,
             paced: false,
             export: Some(job),
+            video: None,
         });
     }
 

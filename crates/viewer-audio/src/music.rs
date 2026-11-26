@@ -28,6 +28,35 @@ pub fn track_channel() -> (SyncSender<Chunk>, TrackStream) {
     (sender, TrackStream { chunks })
 }
 
+pub(crate) fn decode_all(
+    mut next: impl FnMut() -> Result<Option<(u32, u16, Vec<f32>)>, String>,
+) -> TrackStream {
+    let (sender, chunks) = mpsc::channel();
+    let mut pending = Vec::with_capacity(CHUNK_SAMPLES);
+    loop {
+        match next() {
+            Ok(Some((_, _, samples))) => {
+                pending.extend(samples.iter().map(|sample| to_s16(*sample)));
+                if pending.len() >= CHUNK_SAMPLES {
+                    let chunk = std::mem::replace(&mut pending, Vec::with_capacity(CHUNK_SAMPLES));
+                    let _ = sender.send(Ok(chunk));
+                }
+            }
+            Ok(None) => {
+                if !pending.is_empty() {
+                    let _ = sender.send(Ok(pending));
+                }
+                break;
+            }
+            Err(why) => {
+                let _ = sender.send(Err(why));
+                break;
+            }
+        }
+    }
+    TrackStream { chunks }
+}
+
 fn to_s16(sample: f32) -> i16 {
     (sample * 32_768.0)
         .round_ties_even()

@@ -112,6 +112,20 @@ impl Inner {
         Ok(answered)
     }
 
+    fn ask_snapshot(&mut self, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::SnapshotAnswer>, String> {
+        if self.map.is_none() || !self.status.ready || self.shutting_down {
+            return Err("The map isn’t ready yet".into());
+        }
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let reply = viewer::host::SnapshotReply::new(move |result| drop(answer.send(result)));
+        let job = viewer::host::SnapshotJob::new(view_id, reply);
+        self.flush();
+        if let Some(Err(job)) = self.map.as_ref().map(|map| map.send_snapshot(job)) {
+            job.answer(Err(viewer::host::STOPPED.to_owned()));
+        }
+        Ok(answered)
+    }
+
     pub(super) fn dashboard_snapshot(&self) -> DashboardSnapshot {
         self.dashboard_views
             .clone()
@@ -272,6 +286,11 @@ impl NativeHost {
     pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         inner.ask_export(path, view_id)
+    }
+
+    pub fn snapshot(&self, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::SnapshotAnswer>, String> {
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        inner.ask_snapshot(view_id)
     }
 
     pub fn map_action(&self, action: dashboard_core::protocol::MapAction) -> Result<(), String> {

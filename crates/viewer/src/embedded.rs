@@ -66,6 +66,7 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
 pub struct Pending {
     pub actions: VecDeque<dashboard_core::protocol::MapAction>,
     pub exports: Vec<crate::host::ExportJob>,
+    pub snapshots: Vec<crate::host::SnapshotJob>,
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
@@ -92,6 +93,7 @@ impl Pending {
         self.open.is_none()
             && self.actions.is_empty()
             && self.exports.is_empty()
+            && self.snapshots.is_empty()
             && !self.campaign_map
             && self.map_views.is_none()
             && self.seek.is_none()
@@ -111,6 +113,10 @@ impl Pending {
             crate::host::Command::Native(command) => command,
             crate::host::Command::Export(job) => {
                 self.exports.push(job);
+                return Ok(());
+            }
+            crate::host::Command::Snapshot(job) => {
+                self.snapshots.push(job);
                 return Ok(());
             }
             crate::host::Command::Holes(holes) => {

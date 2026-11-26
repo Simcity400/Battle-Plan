@@ -79,6 +79,7 @@ pub(super) fn viewer(
         index: 0,
         paced: true,
         export: None,
+        video: None,
     });
     Ok(viewer)
 }

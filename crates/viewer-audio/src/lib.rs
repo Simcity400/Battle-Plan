@@ -6,12 +6,14 @@ static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 pub mod battle;
 pub mod engine;
 pub mod music;
+pub mod offline;
 mod sdl;
 mod system;
 
 pub use battle::Battles;
 pub use engine::{Content, Engine, Load, Samples, Started};
 pub use music::Chances;
+pub use offline::OfflineMixer;
 pub use system::{Owner, Source, Status, System};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]

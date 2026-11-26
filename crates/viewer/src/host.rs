@@ -224,9 +224,49 @@ impl ExportJob {
     }
 }
 
+pub type SnapshotAnswer = Result<crate::video_export::MapExportSnapshot, String>;
+
+pub struct SnapshotReply(Option<Box<dyn FnOnce(SnapshotAnswer) + Send>>);
+
+impl SnapshotReply {
+    pub fn new(answer: impl FnOnce(SnapshotAnswer) + Send + 'static) -> Self {
+        Self(Some(Box::new(answer)))
+    }
+
+    fn send(mut self, answer: SnapshotAnswer) {
+        if let Some(reply) = self.0.take() {
+            reply(answer);
+        }
+    }
+}
+
+impl Drop for SnapshotReply {
+    fn drop(&mut self) {
+        if let Some(reply) = self.0.take() {
+            reply(Err(STOPPED.to_owned()));
+        }
+    }
+}
+
+pub struct SnapshotJob {
+    reply: SnapshotReply,
+    pub view_id: Option<String>,
+}
+
+impl SnapshotJob {
+    pub fn new(view_id: Option<String>, reply: SnapshotReply) -> Self {
+        Self { reply, view_id }
+    }
+
+    pub fn answer(self, answer: SnapshotAnswer) {
+        self.reply.send(answer);
+    }
+}
+
 pub enum Command {
     Native(NativeCommand),
     Export(ExportJob),
+    Snapshot(SnapshotJob),
     Holes(Holes),
 }
 
@@ -264,7 +304,14 @@ impl Map {
     pub fn send_export(&self, job: ExportJob) -> Result<(), ExportJob> {
         self.commands.send(Command::Export(job)).map_err(|refused| match refused.0 {
             Command::Export(job) => job,
-            Command::Native(_) | Command::Holes(_) => unreachable!("an export was sent"),
+            Command::Native(_) | Command::Snapshot(_) | Command::Holes(_) => unreachable!("an export was sent"),
+        })
+    }
+
+    pub fn send_snapshot(&self, job: SnapshotJob) -> Result<(), SnapshotJob> {
+        self.commands.send(Command::Snapshot(job)).map_err(|refused| match refused.0 {
+            Command::Snapshot(job) => job,
+            Command::Native(_) | Command::Export(_) | Command::Holes(_) => unreachable!("a snapshot was sent"),
         })
     }
 }

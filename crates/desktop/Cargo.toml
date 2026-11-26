@@ -27,6 +27,7 @@ dashboard.workspace = true
 dashboard-follow = { path = "../dashboard-follow" }
 shader-pipeline = { path = "../shader-pipeline" }
 viewer = { path = "../viewer" }
+video-export.workspace = true
 engine-heap.workspace = true
 rfd.workspace = true
 tokio = { version = "1", features = ["sync"] }

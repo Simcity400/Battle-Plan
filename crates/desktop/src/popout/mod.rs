@@ -701,6 +701,11 @@ pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Resul
     running(popouts, Some(generation))?.export(path, None)
 }
 
+pub fn snapshot(popouts: &PopOuts, generation: Option<u64>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::SnapshotAnswer>, String> {
+    let generation = generation.ok_or("The map isn’t popped out")?;
+    running(popouts, Some(generation))?.snapshot(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

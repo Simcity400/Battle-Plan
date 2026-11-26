@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dashboard_service;
+mod export_jobs;
+mod export_settings;
 mod follow_push;
 mod game_windows;
 mod leaving;
@@ -624,6 +626,7 @@ fn main() {
                 Arc::new(updates::Host(app.handle().clone())),
             )?;
             recorder::start_recorder();
+            export_settings::sweep_pending_stages();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
             viewer::host::install_follow(move |kind, payload, session| {
@@ -645,6 +648,7 @@ fn main() {
         .manage(DashboardService::default())
         .manage(game_windows::GameWindows::default())
         .manage(follow_push::FollowPush::default())
+        .manage(export_jobs::ExportJobs::default())
         .manage(Leaving::default())
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
@@ -666,6 +670,20 @@ fn main() {
             select_native_view,
             map_action,
             export_map,
+            export_settings::export_settings,
+            export_settings::set_export_settings,
+            export_settings::export_backends,
+            export_settings::choose_ffmpeg_binary,
+            export_jobs::video_export_state,
+            export_jobs::video_export_active,
+            export_jobs::map_export_snapshot,
+            export_jobs::choose_video_export_path,
+            export_jobs::preview_map_video,
+            export_jobs::start_map_video_export,
+            export_jobs::cancel_video_export,
+            export_jobs::save_partial_video_export,
+            export_jobs::dismiss_video_export,
+            export_jobs::reveal_export_file,
             choose_content_folder,
             dashboard_service::content_folders,
             dashboard_service::set_content_folders,
@@ -847,6 +865,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
 }
 
 fn shutdown(app: &tauri::AppHandle) -> bool {
+    app.state::<export_jobs::ExportJobs>().cancel_and_cleanup_for_shutdown();
     app.state::<popout::PopOuts>().close(app);
     let (ended, waited) = std::sync::mpsc::channel();
     app.state::<NativeHost>().shutdown(move || {

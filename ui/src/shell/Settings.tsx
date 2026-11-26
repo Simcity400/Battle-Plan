@@ -11,6 +11,7 @@ import GameFolderSettings from './GameFolderSettings';
 import { actionFailure } from '../dashboard/queryError';
 import { FailureLine } from '../components/FailureLine';
 import RecordingCompressionSetting from './RecordingCompressionSetting';
+import ExportSettingsBlock from '../export/ExportSettingsBlock';
 import UpdateSettings from '../update/UpdateSettings';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId } from './appearance/AppearanceSettings';
@@ -36,6 +37,7 @@ const searchItems: SettingsTarget[] = [
   { section: 'folders', title: 'Recordings folder', keywords: 'recordings library campaigns save path' },
   { section: 'folders', title: 'Recording compression', id: 'recording-compression', keywords: 'recording recordings recorder low high live compression cpu stop save size file storage' },
   { section: 'folders', title: 'Auto compress', id: 'recording-auto-compress', fallback: 'recording-compression', keywords: 'recording recordings recorder compression background smaller file after saving storage' },
+  { section: 'folders', title: 'Video export encoding', id: 'export-encoding', keywords: 'mp4 video export encoder ffmpeg media foundation h264' },
   { section: 'appearance', title: 'Colour scheme', id: 'appearance-scheme', keywords: 'color dark light system mode' },
   { section: 'appearance', title: 'Themes', id: 'appearance-themes', keywords: 'theme palette colours colors accent' },
   { section: 'appearance', title: 'Import theme', id: 'appearance-import-theme', keywords: 'vs code vscode json file paste' },
@@ -260,6 +262,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
             <ReplayFolderSetting library={library} client={client} />
             <RecordingCompressionSetting client={client} />
           </SettingsBlock>
+          <ExportSettingsBlock />
         </>}
         {section === 'appearance' && <><AppearanceSettings appearance={appearance} searchTarget={target?.id} onEdit={editTheme} /><ResetPages onReset={onResetPages} /></>}
         {section === 'graphics' && <MapAppearance key={`${folders?.game ?? ''}:${folders?.user ?? ''}`} global source={null} client={client} userFolder={folders?.user} />}

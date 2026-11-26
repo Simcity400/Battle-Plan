@@ -241,12 +241,7 @@ impl Receipt<'_> {
     }
 
     pub fn replace(&self, path: &Path, write: impl FnOnce(&mut BufWriter<&File>) -> io::Result<()>) -> io::Result<Applied> {
-        if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
-            fs::create_dir_all(folder)?;
-        }
-        let mut name = path.as_os_str().to_owned();
-        name.push(format!(".{}.{}.tmp", std::process::id(), STAGED.fetch_add(1, Ordering::Relaxed)));
-        let staged = PathBuf::from(name);
+        let staged = stage_path(path)?;
         let file = fs::OpenOptions::new().write(true).create_new(true).open(&staged)?;
         let result = (|| {
             let mut out = BufWriter::new(&file);
@@ -255,19 +250,97 @@ impl Receipt<'_> {
             drop(out);
             file.sync_all()?;
             drop(file);
-            #[cfg(windows)]
-            let replaced = match crate::publication::replace_file(&staged, path) {
-                Ok(()) => Ok(Applied::confirmed()),
-                Err(crate::publication::ReplaceError::Unrenamed(error)) => Err(error),
-                Err(crate::publication::ReplaceError::Unflushed(error)) => Ok(Applied::unconfirmed(&error)),
-            };
-            #[cfg(not(windows))]
-            let replaced = fs::rename(&staged, path).map(|()| Applied::confirmed());
-            replaced
+            replace_staged_inner(&staged, path)
         })();
         let _ = fs::remove_file(&staged);
         result
     }
+
+    pub fn replace_staged(&self, staged: &Path, path: &Path) -> io::Result<Applied> {
+        if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+            fs::create_dir_all(folder)?;
+        }
+        let result = (|| {
+            let file = fs::OpenOptions::new().read(true).write(true).open(staged)?;
+            file.sync_all()?;
+            drop(file);
+            replace_staged_inner(staged, path)
+        })();
+        let _ = fs::remove_file(staged);
+        result
+    }
+
+    pub fn publish_distinct(&self, staged: &Path, preferred: &Path) -> io::Result<Applied<PathBuf>> {
+        if let Some(folder) = preferred.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+            fs::create_dir_all(folder)?;
+        }
+        let file = fs::OpenOptions::new().read(true).write(true).open(staged)?;
+        file.sync_all()?;
+        drop(file);
+        let stem = preferred.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = preferred.extension().map(|ext| ext.to_string_lossy());
+        let mut attempt = 0u32;
+        loop {
+            let candidate = if attempt == 0 {
+                preferred.to_path_buf()
+            } else {
+                let name = match &ext {
+                    Some(ext) => format!("{stem} ({attempt}).{ext}"),
+                    None => format!("{stem} ({attempt})"),
+                };
+                preferred.with_file_name(name)
+            };
+            #[cfg(windows)]
+            let moved = crate::publication::rename_new(staged, &candidate);
+            #[cfg(not(windows))]
+            let moved = if candidate.exists() {
+                Err(io::Error::new(io::ErrorKind::AlreadyExists, "destination exists"))
+            } else {
+                fs::rename(staged, &candidate)
+            };
+            match moved {
+                Ok(()) => {
+                    #[cfg(windows)]
+                    let warning = crate::publication::sync_file(&candidate).err().map(|error| {
+                        format!("the change was made, but Windows didn’t confirm it reached the disk: {error}")
+                    });
+                    #[cfg(not(windows))]
+                    let warning = None;
+                    return Ok(Applied { value: candidate, result: (), warning });
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::AlreadyExists
+                        || matches!(error.raw_os_error(), Some(80 | 183)) =>
+                {
+                    attempt = attempt.checked_add(1).ok_or_else(|| io::Error::other("could not reserve distinct file name"))?;
+                }
+                Err(error) => {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
+pub fn stage_path(path: &Path) -> io::Result<PathBuf> {
+    if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+        fs::create_dir_all(folder)?;
+    }
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.{}.tmp", std::process::id(), STAGED.fetch_add(1, Ordering::Relaxed)));
+    Ok(PathBuf::from(name))
+}
+
+fn replace_staged_inner(staged: &Path, path: &Path) -> io::Result<Applied> {
+    #[cfg(windows)]
+    let replaced = match crate::publication::replace_file(staged, path) {
+        Ok(()) => Ok(Applied::confirmed()),
+        Err(crate::publication::ReplaceError::Unrenamed(error)) => Err(error),
+        Err(crate::publication::ReplaceError::Unflushed(error)) => Ok(Applied::unconfirmed(&error)),
+    };
+    #[cfg(not(windows))]
+    let replaced = fs::rename(staged, path).map(|()| Applied::confirmed());
+    replaced
 }
 
 pub static EXIT: Exit = Exit::new();
@@ -388,5 +461,33 @@ mod tests {
         assert_eq!((applied.value, applied.result), (7, "kept"), "the change and its caller’s result go on as though confirmed");
         assert!(applied.warning.is_some_and(|warning| warning.contains("didn’t confirm") && warning.contains("the disk didn’t answer")));
         assert_eq!(Applied::confirmed().with(7, ()).warned(None).warning, None);
+    }
+
+    #[test]
+    fn staged_replacement_and_distinct_partial_publication_preserve_existing_files() {
+        let folder = scratch("staged");
+        let dest = folder.join("campaign.mp4");
+        fs::write(&dest, b"original video").unwrap();
+        let exit = Exit::new();
+        let receipt = exit.admit(What::Export).unwrap();
+
+        let missing = stage_path(&dest).unwrap();
+        assert!(receipt.replace_staged(&missing, &dest).is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"original video");
+
+        let partial = stage_path(&dest).unwrap();
+        fs::write(&partial, b"partial clip").unwrap();
+        let published = receipt.publish_distinct(&partial, &dest).unwrap();
+        assert_ne!(published.value, dest);
+        assert_eq!(fs::read(&dest).unwrap(), b"original video");
+        assert_eq!(fs::read(&published.value).unwrap(), b"partial clip");
+
+        let complete = stage_path(&dest).unwrap();
+        fs::write(&complete, b"finished clip").unwrap();
+        let _ = receipt.replace_staged(&complete, &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"finished clip");
+        assert!(!complete.exists());
+        drop(receipt);
+        fs::remove_dir_all(folder).unwrap();
     }
 }

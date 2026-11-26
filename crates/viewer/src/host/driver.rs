@@ -216,3 +216,66 @@ pub(crate) fn run(
         }
     }
 }
+
+pub(crate) fn run_headless(
+    size: [u32; 2],
+    lost: &Lost,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    make: impl FnOnce(&egui::Context, &egui_wgpu::RenderState) -> Result<app::Viewer, String>,
+) -> Result<(), String> {
+    let (state, _) = map_device(None)?;
+    let state = Released(Some(state));
+    renderer_host::bind(&state);
+    let ctx = egui::Context::default();
+    lost.watch(&state.device, || {});
+    let mut viewer = make(&ctx, &state)?;
+    let mut frame = eframe::Frame::_new_kittest();
+    frame.wgpu_render_state = Some(state.clone());
+    let started = Instant::now();
+    let max_texture_side = state.device.limits().max_texture_dimension_2d as usize;
+    let rect = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(size[0] as f32, size[1] as f32),
+    );
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            viewer.cancel_video_export();
+            return Ok(());
+        }
+        if let Some(reason) = lost.reason() {
+            viewer.fail_video_export(reason.clone());
+            return Err(reason);
+        }
+        let mut raw = egui::RawInput {
+            screen_rect: Some(rect),
+            max_texture_side: Some(max_texture_side),
+            time: Some(started.elapsed().as_secs_f64()),
+            focused: false,
+            events: vec![egui::Event::PointerGone],
+            ..Default::default()
+        };
+        let viewport = raw.viewports.entry(egui::ViewportId::ROOT).or_default();
+        viewport.native_pixels_per_point = Some(1.0);
+        viewport.inner_rect = Some(rect);
+        viewport.focused = Some(false);
+        viewer.raw_input_hook(&ctx, &mut raw);
+        let output = ctx.run_ui(raw, |ui| {
+            viewer.logic(ui.ctx(), &mut frame);
+            viewer.ui(ui, &mut frame);
+        });
+        let close = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|root| {
+                root.commands
+                    .iter()
+                    .any(|command| matches!(command, egui::ViewportCommand::Close))
+            });
+        if close {
+            return Ok(());
+        }
+        if viewer.video_export_idle() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}

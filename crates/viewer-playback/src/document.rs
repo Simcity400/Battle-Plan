@@ -1558,13 +1558,38 @@ impl Document {
         visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
     ) -> io::Result<Self> {
-        let _generation = content_reader_layers::content::Generation::inherit();
         let path = fs::canonicalize(path)?;
         let replay = Arc::new(Replay::open_timelines(&path)?);
+        let revision = dashboard_core::protocol::replay_revision(&path)?;
+        Self::load_replay(
+            &path,
+            replay,
+            revision,
+            options,
+            allow_unverified,
+            initial,
+            visual_mods,
+            texture_quality,
+        )
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "mirrors Document::load with a pre-opened replay handle and verified revision")]
+    pub fn load_replay(
+        path: &Path,
+        replay: Arc<Replay>,
+        revision: String,
+        options: &ResolveOptions,
+        allow_unverified: bool,
+        initial: &InitialHour,
+        visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
+        texture_quality: u8,
+    ) -> io::Result<Self> {
+        let _generation = content_reader_layers::content::Generation::inherit();
+        let path = fs::canonicalize(path)?;
         let source = dashboard_base::Source::from_replay(
             dashboard_base::SourceKey {
                 source_id: format!("native-map:{}", path.display()),
-                revision: dashboard_core::protocol::replay_revision(&path)?,
+                revision,
             },
             path.clone(),
             Arc::clone(&replay),
