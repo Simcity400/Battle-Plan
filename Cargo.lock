@@ -10676,6 +10676,17 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
+ "collector-air",
+ "collector-air-histories",
+ "collector-air-sorties",
+ "collector-hook-failures",
+ "collector-lifetime",
+ "collector-missions",
+ "collector-model-inputs",
+ "collector-observers",
+ "collector-raw",
+ "collector-ship-models",
+ "collector-workers",
  "content-reader-country-names",
  "content-reader-key-names",
  "content-reader-localisation",
@@ -10697,6 +10708,7 @@ dependencies = [
  "replay-identity",
  "smallvec",
  "test-unify",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -108,7 +108,7 @@ impl Bases {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn decode_states(
         &mut self,
         job: &super::AirBasesJob,
@@ -185,22 +185,16 @@ impl Bases {
                 Some(hit) => hit,
                 None => {
                     let result = match job.segments[job_idx].carried_raw.as_deref() {
-                        Some(raw) => {
-                            let overlay = raw.memory(recorded);
-                            engine_native::ccountry::Reader::new(&overlay, image, job.game_state)
-                                .and_then(|overlay_countries| {
-                                    engine_native_air::cair_base::state_country_order(
-                                        &overlay,
-                                        image,
-                                        pointer,
-                                        base,
-                                        &overlay_countries,
-                                        resolved,
-                                        &mut self.countries[start..],
-                                        &mut self.names[self.names_len..],
-                                    )
-                                })
-                        }
+                        Some(raw) => engine_native_air::cair_base::state_country_order(
+                            &raw.memory(recorded),
+                            image,
+                            pointer,
+                            base,
+                            countries,
+                            resolved,
+                            &mut self.countries[start..],
+                            &mut self.names[self.names_len..],
+                        ),
                         None => engine_native_air::cair_base::state_country_order(
                             recorded,
                             image,
