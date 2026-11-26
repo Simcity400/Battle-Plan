@@ -264,13 +264,11 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
     const scale = scaleOf(options.count);
     const seriesList: TimeChartSeriesModel[] = [];
     const auditRows: FamilyAuditRow[] = [];
-    const rowOf = new Map(orderedKeys.map((key, idx) => [key, idx]));
     const looks = countrySeriesLooks(orderedKeys, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: true,
-      recordedOrdinal: key => rowOf.get(key) ?? 0,
       tailColor: tailColour(options.surface),
     });
 

@@ -1,5 +1,5 @@
 import { rankSource } from '../seriesRank.ts';
-import { colour, nudgeApart, readableColour, tailColour } from '../../charts/palette.ts';
+import { resolveLineColors, tailColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
@@ -9,7 +9,6 @@ import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
 import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
-import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { identityName, LOADING_NAME } from '../table/identityCell.ts';
 import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMarkerItem, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
@@ -263,7 +262,6 @@ export interface CountrySeriesLooksInput {
   readonly from: number;
   readonly surface: string;
   readonly withFlag: boolean;
-  readonly recordedOrdinal: (tag: string) => number;
   readonly singleColor?: string;
   readonly tailColor?: string;
 }
@@ -279,7 +277,6 @@ interface IdentityStretch {
 }
 
 const COLOURED_SERIES = 8;
-const FALLBACK_RGB = { r: 120, g: 160, b: 220 };
 
 function identityStretches(
   key: string,
@@ -335,55 +332,37 @@ export function countrySeriesLooks(
 ): ReadonlyMap<string, CountrySeriesLook> {
   const hour = readView.hour;
   const stretches = ordered.map(tag => identityStretches(tag, input.holders?.[tag], readView, input.from, hour, input.withFlag));
-  const single = ordered.length === 1 && input.singleColor !== undefined;
-  const bg = parseColor(input.surface)!;
-  const coloured = Math.min(ordered.length, COLOURED_SERIES);
-  const asked: { r: number; g: number; b: number }[] = [];
-  const slotOf = new Map<string, number>();
-  const ask = (tag: string, stretch: IdentityStretch) => {
-    const hex = stretch.mapColour !== null ? readableColour(stretch.mapColour, input.surface) : colour(input.surface, input.recordedOrdinal(tag));
-    asked.push(parseColor(hex) ?? FALLBACK_RGB);
-  };
-  const currentOf = (index: number) => stretches[index]![stretches[index]!.length - 1];
-  if (!single) {
-    for (let index = 0; index < coloured; index++) {
-      const current = currentOf(index);
-      if (current) ask(ordered[index]!, current);
-    }
-    for (let index = 0; index < coloured; index++) {
-      const current = currentOf(index);
-      for (const stretch of stretches[index]!) {
-        if (stretch === current || stretch.mapColour === current?.mapColour) continue;
-        const key = `${index}\u0000${stretch.mapColour}`;
-        if (slotOf.has(key)) continue;
-        slotOf.set(key, asked.length);
-        ask(ordered[index]!, stretch);
+  const coloured = stretches.slice(0, COLOURED_SERIES);
+  const keys = ordered.slice(0, coloured.length).map(countryFromKey);
+  const positions = coloured.map(() => 0);
+  const runs = coloured.map((): ChartIdentityRun[] => []);
+  for (let first = Math.min(input.from, hour); coloured.length > 0 && first <= hour;) {
+    const active = coloured.map((history, i) => history[positions[i]!]!);
+    const last = Math.min(...active.map(stretch => stretch.lastHour));
+    const colors = ordered.length === 1 && input.singleColor !== undefined
+      ? new Map([[keys[0]!, input.singleColor]])
+      : resolveLineColors(active.map((stretch, i) => ({ key: keys[i]!, color: stretch.mapColour })), input.surface);
+    active.forEach((stretch, i) => {
+      const color = colors.get(keys[i]!)!;
+      const line = runs[i]!;
+      const previous = line.at(-1);
+      if (previous && previous.lastHour >= stretch.firstHour && previous.color === color) {
+        line[line.length - 1] = { ...previous, lastHour: last };
+      } else {
+        line.push({ firstHour: first, lastHour: last, name: stretch.name, color, ...(stretch.flag ? { flag: stretch.flag } : {}) });
       }
-    }
+      if (stretch.lastHour === last) positions[i] = positions[i]! + 1;
+    });
+    first = last + 1;
   }
-  const distinct = single ? [] : nudgeApart(asked, bg);
-  const tailColor = input.tailColor ?? tailColour(input.surface);
+  const tail = input.tailColor ?? tailColour(input.surface);
   const out = new Map<string, CountrySeriesLook>();
-  let currentSlot = 0;
-  ordered.forEach((tag, index) => {
-    const current = currentOf(index);
-    const currentColour = single
-      ? input.singleColor!
-      : index < coloured
-        ? (current ? toHex(distinct[currentSlot++]!) : tailColor)
-        : tailColor;
-    const identities: ChartIdentityRun[] = stretches[index]!.map(stretch => {
-      const historical = !single && index < coloured && stretch !== current && stretch.mapColour !== current?.mapColour;
-      const color = historical ? toHex(distinct[slotOf.get(`${index}\u0000${stretch.mapColour}`)!]!) : currentColour;
-      return { firstHour: stretch.firstHour, lastHour: stretch.lastHour, name: stretch.name, color, ...(stretch.flag ? { flag: stretch.flag } : {}) };
-    });
-    const now = identities[identities.length - 1];
-    out.set(tag, {
-      name: now?.name ?? tag,
-      color: currentColour,
-      ...(now?.flag ? { flag: now.flag } : {}),
-      identities,
-    });
+  ordered.forEach((tag, i) => {
+    const identities = runs[i] ?? stretches[i]!.map(stretch => ({
+      firstHour: stretch.firstHour, lastHour: stretch.lastHour, name: stretch.name, color: tail, ...(stretch.flag ? { flag: stretch.flag } : {}),
+    }));
+    const now = identities.at(-1);
+    out.set(tag, { name: now?.name ?? tag, color: now?.color ?? tail, ...(now?.flag ? { flag: now.flag } : {}), identities });
   });
   return out;
 }
