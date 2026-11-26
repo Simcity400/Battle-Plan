@@ -18,7 +18,6 @@ export interface ResolvedPane {
   readonly key: string;
   readonly title: TablePaneTitle;
   readonly rows: readonly FlatTableRow[];
-  readonly rowIndex: ReadonlyMap<string, number>;
   readonly geom: RowLayoutGeometry;
 }
 
@@ -60,15 +59,13 @@ export function resolvePanes(
   const seen = new Set<string>();
   return panes.map(pane => {
     const rows = resolveTableRows(paneModel(model, pane), settings, expanded);
-    const rowIndex = new Map<string, number>();
     for (let i = 0; i < rows.length; i++) {
       const item = rows[i]!;
       if (item.kind === 'group-header' || item.kind === 'loading') continue;
       if (seen.has(item.key)) throw new Error(`table pane ${pane.key}: row key ${item.key} is already in another pane`);
       seen.add(item.key);
-      rowIndex.set(item.key, i);
     }
-    return { key: pane.key, title: pane.title, rows, rowIndex, geom: computeRowLayout(rows, settings.density, rowHeightMode) };
+    return { key: pane.key, title: pane.title, rows, geom: computeRowLayout(rows, settings.density, rowHeightMode) };
   });
 }
 

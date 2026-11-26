@@ -2222,6 +2222,47 @@ test('an animation frame of a 1,500-row table with a flag per row joins no list 
   }
 });
 
+test('after a refresh with the same flags, a one-row scroll hands the art cache the offscreen list it already holds', () => {
+  type Row = { id: string; v: number };
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  registerFamilyProjection({
+    kind: 'test-art-scroll-1500',
+    family: 'table', theme: TEST_THEME,
+    project: readView => ({
+      hour: readView.hour, columns,
+      rows: (readView.panel('main') as { rows: Row[] }).rows.map(r => {
+        const url = `asset://flag-${r.id}.png`;
+        readView.art({ kind: 'url', url });
+        return { key: r.id, name: r.id, cells: { name: { value: knownValue(r.id), art: readyArt(url) }, v: { value: knownValue(r.v), format: 'integer' } } };
+      }),
+    }),
+  });
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  const rows = Array.from({ length: 1500 }, (_, i): Row => ({ id: `C${String(i).padStart(4, '0')}`, v: i }));
+  const bound = (scrollTop: number) => ({
+    family: 'table' as const, theme: TEST_THEME, kind: 'test-art-scroll-1500', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } },
+    width: 600, height: 300, scrollLeft: 0, scrollTop, focusedKey: null, reducedMotion: false,
+  });
+  const recording = installRecordingCanvas();
+  const request = LaneArtCache.prototype.requestVisible;
+  const offscreens: unknown[] = [];
+  LaneArtCache.prototype.requestVisible = function (this: LaneArtCache, visible, offscreen) { offscreens.push(offscreen); return request.call(this, visible, offscreen); };
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    lane.paint({ label: 'first', binding: bound(0), hour: 1, now: 1000 });
+    lane.paint({ label: 'a refresh with the same flags', binding: bound(0), hour: 2, now: 2000 });
+    lane.paint({ label: 'one row further', binding: bound(34), hour: 2, now: 3000 });
+    assert.ok(offscreens.length >= 2, 'the scroll asks for the newly visible flag');
+    assert.equal(offscreens.at(-1), offscreens[0], 'the offscreen list handed over is the one the cache already holds');
+  } finally {
+    LaneArtCache.prototype.requestVisible = request;
+    recording.restore();
+  }
+});
+
 test('the movers a viewport evaluates are exactly those whose path crosses it', () => {
   const N = 1500;
   const rows = Array.from({ length: N }, (_, i): FlatTableRow => ({ kind: 'data', key: `R${i}`, name: `R${i}`, level: 1, rank: i + 1, row: { key: `R${i}`, name: `R${i}`, cells: {} } } as FlatTableRow));

@@ -171,6 +171,7 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   content: string;
   motion: boolean;
   artShown: string | null;
+  artSeen: readonly string[] | null;
   artUrls: readonly string[] | null;
   artUrlsKey: string;
   structureKey: readonly unknown[];
@@ -425,7 +426,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       demandFields: {},
       layout: null, layoutKey: [], expiry: Infinity,
       windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
-      drawKey: [], content: '', motion: false, artShown: null, artUrls: null, artUrlsKey: '',
+      drawKey: [], content: '', motion: false, artShown: null, artSeen: null, artUrls: null, artUrlsKey: '',
       structureKey: [], structureFields: {},
       kept: new Map(),
       frameKey: [], frameRevision: 0,
@@ -620,15 +621,18 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         const shown = [...family.visibleArt(frame)];
         const shownKey = shown.join('\u0000');
         let offscreenChanged = false;
-        if (projected.artUrls !== keep.artUrls) {
+        if (projected.artUrls !== keep.artSeen) {
           const urlsKey = projected.artUrls.join('\u0000');
-          offscreenChanged = keep.artUrls === null || urlsKey !== keep.artUrlsKey;
-          keep.artUrls = projected.artUrls;
-          keep.artUrlsKey = urlsKey;
+          keep.artSeen = projected.artUrls;
+          if (keep.artUrls === null || urlsKey !== keep.artUrlsKey) {
+            offscreenChanged = true;
+            keep.artUrls = projected.artUrls;
+            keep.artUrlsKey = urlsKey;
+          }
         }
         if (offscreenChanged || shownKey !== keep.artShown) {
           keep.artShown = shownKey;
-          keep.art.requestVisible(shown, projected.artUrls);
+          keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
         const drawCanvas = () => {
           keep.ctx.save();

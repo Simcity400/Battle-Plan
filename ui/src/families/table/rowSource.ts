@@ -75,8 +75,7 @@ export interface PageFetchAsk {
 
 export type SnapshotPage<TRow extends DatedLogRow = DatedLogRow> =
   | { readonly hour: number; readonly offset: number; readonly limit: number; readonly reply: TailReply<TRow>; readonly raw: unknown }
-  | { readonly hour: number; readonly offset: number; readonly limit: number; readonly refused: string }
-  | { readonly hour: number; readonly offset: number; readonly limit: number; readonly pending: true };
+  | { readonly hour: number; readonly offset: number; readonly limit: number; readonly refused: string };
 
 export type SnapshotPages<TRow extends DatedLogRow = DatedLogRow> = Readonly<Record<number, SnapshotPage<TRow>>>;
 
@@ -261,11 +260,6 @@ function pageAt<TRow extends DatedLogRow>(pages: SnapshotPages<TRow>, ordinal: n
   return pages[Math.floor(ordinal / pageSize) * pageSize];
 }
 
-export function frozenHour(pages: SnapshotPages | undefined, hour: number): number | null {
-  const held = pages ? Object.values(pages) : [];
-  return held.length > 0 && held.every(page => page.hour <= hour) ? held[0]!.hour : null;
-}
-
 export function frozenAnswer<TRow extends DatedLogRow>(pages: SnapshotPages<TRow> | undefined, hour: number): Extract<SnapshotPage<TRow>, { reply: unknown }> | undefined {
   const held = pages ? Object.values(pages) : [];
   if (held.length === 0 || held.some(page => page.hour > hour)) return undefined;
@@ -279,8 +273,8 @@ export function buildRowSourceFromHead(
   hour: number,
   pages: SnapshotPages = NO_PAGES,
 ): TableRowSource<DatedLogRow> | null {
-  const frozenAt = frozenHour(pages, hour);
-  const shown = frozenAt === null ? NO_PAGES : pages;
+  const held = Object.values(pages);
+  const shown = held.length > 0 && held.every(page => page.hour <= hour) ? pages : NO_PAGES;
   const answered = frozenAnswer(shown, hour);
   if (answered) {
     const { reply, hour: at, limit } = answered;
@@ -298,7 +292,6 @@ export function buildRowSourceFromHead(
         const page = pageAt(shown, ordinal, limit);
         if (!page || page.hour !== at) return { kind: 'loading', ordinal, readAt: reqHour };
         if ('refused' in page) return { kind: 'refused', ordinal, readAt: reqHour, reason: page.refused };
-        if (!('reply' in page)) return { kind: 'loading', ordinal, readAt: reqHour };
         const row = page.reply.rows[ordinal - page.offset];
         return row ? { kind: 'data', ordinal, readAt: reqHour, row } : { kind: 'loading', ordinal, readAt: reqHour };
       }),
@@ -306,40 +299,24 @@ export function buildRowSourceFromHead(
   }
   const refusals = Object.values(shown);
   const refusedAt = (ordinal: number) => refusals.find(page => 'refused' in page && ordinal >= page.offset && ordinal < page.offset + page.limit);
-  if (frozenAt !== null && headRefused === undefined && !isTailReplyLike(headRaw)) {
-    const total = Math.max(...refusals.map(page => page.offset + page.limit));
-    return {
-      identity,
-      total,
-      at: frozenAt,
-      missing: [],
-      refused: null,
-      frozen: true,
-      sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, total, ordinal => {
-        const refusal = refusedAt(ordinal);
-        return refusal && 'refused' in refusal ? { kind: 'refused', ordinal, readAt: reqHour, reason: refusal.refused } : { kind: 'loading', ordinal, readAt: reqHour };
-      }),
-    };
-  }
   if (headRefused !== undefined) {
     return {
       identity,
       total: 0,
-      at: frozenAt ?? hour,
+      at: hour,
       missing: [],
       refused: headRefused,
       sliceAt: (reqHour, first, count) => (count > 0 ? [{ kind: 'refused', ordinal: Math.max(0, Math.floor(first)), readAt: reqHour, reason: headRefused }] : []),
     };
   }
   if (!isTailReplyLike(headRaw)) return null;
-  const head = validateGenericTailReply(headRaw, frozenAt ?? hour);
+  const head = validateGenericTailReply(headRaw, hour);
   return {
     identity,
     total: head.total,
-    at: frozenAt ?? hour,
+    at: hour,
     missing: head.missing,
     refused: null,
-    ...(frozenAt !== null ? { frozen: true as const } : {}),
     facetTotals: head.facetTotals,
     ...(head.facetMissing ? { facetMissing: head.facetMissing } : {}),
     rawHead: headRaw,
@@ -519,16 +496,12 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     for (const offset of this.#inFlight) {
       if (wanted.includes(offset)) continue;
       this.#inFlight.delete(offset);
-      this.#pages.delete(offset);
-      this.#dirty = true;
       cancel.push(offset);
     }
     const fetch: PageFetchAsk[] = [];
     for (const offset of wanted) {
       if (this.#pages.has(offset) || this.#inFlight.has(offset)) continue;
       this.#inFlight.add(offset);
-      this.#pages.set(offset, { hour: this.#hour, offset, limit: this.#pageSize, pending: true });
-      this.#dirty = true;
       fetch.push({ offset, limit: this.#pageSize, hour: this.#hour });
     }
     return { fetch, cancel };
