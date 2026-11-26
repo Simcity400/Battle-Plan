@@ -61,3 +61,18 @@ test('a division’s name and training survive unread manpower, and held amounts
   const tip = typeof first!.tooltipExtra === 'function' ? first!.tooltipExtra() : first!.tooltipExtra;
   assert.deepEqual(tip?.[0]?.value, partialValue('1,000 needed', 'Held equipment not read whole'), 'no exact held figure that leaves out what was not read, and the recorded need still shown');
 });
+
+test('the order tooltip distinguishes parallel divisions in training from serial waves remaining, including continuous orders', () => {
+  const finite = project(reply()).rows[0]!;
+  const finiteTip = typeof finite.tooltipExtra === 'function' ? finite.tooltipExtra() : finite.tooltipExtra;
+  assert.deepEqual(finiteTip?.slice(0, 2).map(item => [item.label, item.value]), [
+    ['Parallel divisions in training', knownValue('2')],
+    ['Serial waves remaining', knownValue('6')],
+  ]);
+  const continuous = project(reply({ orders: [{ ...reply().orders[0]!, amount: -1 }] })).rows[0]!;
+  const continuousTip = typeof continuous.tooltipExtra === 'function' ? continuous.tooltipExtra() : continuous.tooltipExtra;
+  assert.deepEqual(continuousTip?.slice(0, 2).map(item => [item.label, item.value]), [
+    ['Parallel divisions in training', knownValue('2')],
+    ['Serial waves remaining', knownValue('Continuous')],
+  ]);
+});

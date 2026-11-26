@@ -26,7 +26,11 @@ const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
   { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name),
-    extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
+    extra: row => row.kind === 'ship'
+      ? shipPictureCell(row.ship, row.picture)
+      : row.port.queue.length === 0
+        ? { subtext: row.port.queueMissing ?? 'No ships waiting' }
+        : {} },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
     extra: row => (row.kind === 'port' ? { blank: true } : {}),

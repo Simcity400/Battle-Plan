@@ -6,19 +6,35 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
-import type { TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
+import type { TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
-import { knownValue, notRecorded } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { LandBattleLogRow, LandBattlesTailReply } from '../../generated/dashboard';
 import { LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition.ts';
 
 const IC_UNRECORDED = 'IC lost not recorded: a lost design has no recorded build cost, or the equipment lost was not read';
+
+function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], unknown: boolean): Value<string> {
+  if (!side.length) return notRecorded('Country not recorded');
+  const names = side.map(who => who.name).join(', ');
+  return unknown ? partialValue(names, 'Some participants on this side were not recorded') : knownValue(names);
+}
+
+function coalitionSummary(sides: readonly (readonly ReturnType<typeof resolveIdentity>[])[]): string | undefined {
+  const parts = sides
+    .map((side, i) => side.length > 1 ? `+${side.length - 1} ${i === 0 ? 'attacker' : 'defender'}${side.length - 1 === 1 ? '' : 's'}` : '')
+    .filter(Boolean);
+  return parts.length ? parts.join(', ') : undefined;
+}
 
 function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: IdentityBoundary): TableRow {
   const place = row.province === null ? notRecorded('Province not recorded') : resolveName(view, 'province', String(row.province), { atHour: row.hour, boundary }).value;
   const name = place.kind === 'known' ? knownValue('Battle of ' + place.value) : place;
   const sides = row.countries.map((slots, i) => slots.map(slot => resolveIdentity(view, 'country', countryKey(slot), { atHour: row.countriesHour[i], boundary })));
   const flags = row.countries.map((slots, i) => ({ tag: slots.length ? countryKey(slots[0]!) : null, atHour: row.countriesHour[i] }));
+  const countryCell = logCountryCell(view, flags, row.hour, boundary);
+  const countryNames = sides.map(side => side.length ? side.map(who => who.name).join(', ') : 'Country not recorded').join(' · ');
+  const extraAllies = coalitionSummary(sides);
   const title = name.kind === 'known' ? name.value : 'Battle name not recorded';
   const colors = sides.map(side => side[0]?.color);
   const live = row.result === 'ongoing';
@@ -26,10 +42,16 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
     : logStatusCell(row.result === 'attackerWon' ? 'Attacker won' : 'Defender won', 'finished');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, sides, colors },
+    tooltipExtra: (): TooltipExtraRow[] => sides.map((side, i) => ({
+      label: i === 0 ? 'Attackers' : 'Defenders',
+      value: sideParticipants(side, row.countriesUnknown[i]!),
+      ...(i === 0 ? { divider: true } : {}),
+    })),
     cells: {
       date: logDateCell(row.hour),
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_landbattle_strip', frame: 0 }, 'square', 'Land battle', 'Battle artwork unavailable'),
-      country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
+      country: { ...countryCell, value: knownValue(countryNames) },
+      item: { value: name, ...(extraAllies ? { inlineSubtext: extraAllies } : {}) },
       place: { value: row.state === null ? notRecorded('Province state not recorded') : resolveName(view, 'state', String(row.state), { atHour: row.hour, boundary }).value },
       casualties: logPairCell(row.casualties, 'Casualties', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined),
       icLost: logPairCell(row.icLost, 'IC lost', colors, row.lossesSoFar ? LOSSES_SO_FAR : undefined, IC_UNRECORDED),

@@ -94,8 +94,8 @@ function orderIcon(order: TrainingOrder, readView: BoundedReadView): ArtResult {
 
 function orderTooltip(order: TrainingOrder): TooltipExtraRow[] {
   return [
-    { label: 'Divisions in training', value: knownValue(count(order.divisions.length)), divider: true },
-    { label: 'Ordered', value: knownValue(count(order.amount)) },
+    { label: 'Parallel divisions in training', value: knownValue(count(order.divisions.length)), divider: true },
+    { label: 'Serial waves remaining', value: knownValue(order.amount < 0 ? 'Continuous' : count(order.amount)) },
     { label: 'Location', value: textValue(order.locationName, order.locationMissing ?? 'Location not recorded') },
     { label: 'Equipment priority', value: textValue(order.priorityName, order.priorityMissing ?? 'Priority not recorded') },
     ...(order.exile ? [{ label: 'Government in exile', value: knownValue(order.exile) }] : []),

@@ -270,7 +270,8 @@ export const warsProjection: TimelineProjection<WarsOptions> = registerFamilyPro
   tooltip(model, hit, readView) {
     const reply = readView.panel<WarTimelineReply>('main');
     const lane = laneByKey(model, hit.laneKey);
-    const meta = lane?.meta as WarLaneMeta | undefined;
+    const span = hit.spanId ? lane?.spans.find(item => item.id === hit.spanId) : undefined;
+    const meta = (span?.meta ?? lane?.meta) as WarLaneMeta | undefined;
     const war = meta && reply?.wars.find(item => item.id === meta.warId);
     if (!lane || !war) return lane ? { title: lane.label, hour: hit.hour ?? model.hour, items: [] } : null;
     const sides = warSides(war);

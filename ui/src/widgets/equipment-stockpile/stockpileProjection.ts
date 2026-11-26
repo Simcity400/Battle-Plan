@@ -19,6 +19,7 @@ export interface StockpileProjectionOptions {
 }
 
 const STORED: ValueFormat = { decimals: 5, maxDecimals: 0 };
+const STORED_EXACT: ValueFormat = { decimals: 5, maxDecimals: 5 };
 const RATE_SMALL: ValueFormat = { decimals: 0, maxDecimals: 1, fixedDecimals: true };
 const RATE_LARGE: ValueFormat = { decimals: 0, maxDecimals: 0 };
 const RATE_CUT = 100n * 100_000n;
@@ -96,22 +97,34 @@ function tooltipRows(row: StockTypeRow): TooltipExtraRow[] {
     return { label, value: raw === null ? notRecorded(value.missing ?? `${label} not recorded`) : knownValue(rate(raw, signed)) };
   };
   return [
-    { label: 'Stored', value: stored(row.stored), format: STORED },
+    { label: 'Stored', value: stored(row.stored), format: STORED_EXACT },
     figure('Produced a day', row.produced),
     figure('Need a day', row.need),
     figure('Balance a day', row.balance, true),
   ];
 }
 
-function variantRow(readView: BoundedReadView, parent: string, variant: StockVariantRow): TableRow {
+function variantRow(
+  readView: BoundedReadView,
+  parent: string,
+  variant: StockVariantRow,
+  duplicateName: boolean,
+  duplicateNameOrigin: boolean,
+): TableRow {
   const name = variant.name ?? `Variant ${variant.id}`;
   const origin = variant.origin ? resolveIdentity(readView, 'country', variant.origin, { flag: 'small' }) : null;
+  const disambiguator = duplicateNameOrigin
+    ? (origin ? `${origin.name} · Design #${variant.id}` : `Design #${variant.id}`)
+    : duplicateName
+      ? (origin ? origin.name : `Design #${variant.id}`)
+      : undefined;
   return {
     key: `${parent}/${variant.id}`,
     name,
     cells: {
       equipment: {
         value: knownValue(name),
+        ...(disambiguator ? { inlineSubtext: disambiguator } : {}),
         ...(origin?.art ? { art: origin.art } : {}),
         ...(origin?.artKey ? { artKey: origin.artKey } : {}),
         ...(variant.origin ? { country: variant.origin } : {}),
@@ -121,8 +134,9 @@ function variantRow(readView: BoundedReadView, parent: string, variant: StockVar
       sum: { value: stored(variant.stored), format: STORED, unitSuffix: 'stored' },
     },
     tooltipExtra: [
+      ...(duplicateNameOrigin ? [{ label: 'Design ID', value: knownValue(variant.id) }] : []),
       { label: 'Design origin', value: origin ? origin.value : notRecorded('The design names no origin') },
-      { label: 'Stored', value: stored(variant.stored), format: STORED },
+      { label: 'Stored', value: stored(variant.stored), format: STORED_EXACT },
       { label: 'Produced a day', value: figureOf(variant.produced) === null ? notRecorded(variant.produced.missing ?? 'Not recorded') : knownValue(rate(figureOf(variant.produced)!)) },
     ],
   };
@@ -132,6 +146,14 @@ function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<
   const name = row.name ?? unresolvedTypeName(row.key);
   const picture = art.get(`type:${row.key.toLowerCase()}`);
   const note = shareNote(row);
+  const nameCounts = new Map<string, number>();
+  const originCounts = new Map<string, number>();
+  for (const variant of row.variants) {
+    const label = variant.name ?? `Variant ${variant.id}`;
+    nameCounts.set(label, (nameCounts.get(label) ?? 0) + 1);
+    const key = `${label}\u0000${variant.origin ?? ''}`;
+    originCounts.set(key, (originCounts.get(key) ?? 0) + 1);
+  }
   return {
     key: row.key,
     name,
@@ -143,7 +165,20 @@ function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<
     },
     tooltipExtra: tooltipRows(row),
     ...(note ? { tooltipNote: note } : {}),
-    ...(row.variants.length ? { children: row.variants.map(variant => variantRow(readView, row.key, variant)) } : {}),
+    ...(row.variants.length
+      ? {
+          children: row.variants.map(variant => {
+            const label = variant.name ?? `Variant ${variant.id}`;
+            return variantRow(
+              readView,
+              row.key,
+              variant,
+              (nameCounts.get(label) ?? 0) > 1,
+              (originCounts.get(`${label}\u0000${variant.origin ?? ''}`) ?? 0) > 1,
+            );
+          }),
+        }
+      : {}),
   };
 }
 
