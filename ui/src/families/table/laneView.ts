@@ -168,11 +168,10 @@ function textSamples(columns: readonly { readonly key: string; readonly numeric?
 
 function flagCounts(columns: readonly { readonly key: string; readonly display?: string }[], rows: readonly FlatTableRow[]): Record<string, number> {
   const counts: Record<string, number> = {};
-  const limit = Math.min(rows.length, TEXT_SAMPLE_ROWS);
   for (const column of columns) {
-    if (column.display !== 'flagName') continue;
+    if (column.display !== 'flagName' && column.display !== 'flag') continue;
     let most = 0;
-    for (let i = 0; i < limit; i++) {
+    for (let i = 0; i < rows.length; i++) {
       const item = rows[i]!;
       if (item.kind === 'data') most = Math.max(most, item.row.cells[column.key]?.flags?.length ?? 0);
     }

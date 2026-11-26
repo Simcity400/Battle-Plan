@@ -3789,3 +3789,192 @@ test('declareTableProjection incremental cache keeps unchanged rows across ticks
   const m3 = proj.project(makeView(12), options);
   assert.equal(m3.rows[0]!.name, 'Alpha Renamed', 'country identity change invalidates the incremental snapshot');
 });
+
+test('flag columns widen for multi-country coalitions past row 40, preserve two-flag narrow columns, and reserve inline subtext beside missing or long names in compact density', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: '', as: 'flag', cellKind: 'country', offered: ['flagName', 'name', 'flag'], priority: 0, minWidth: 52, grow: 0 },
+    { key: 'name', label: 'Port', as: 'plain', cellKind: 'item', offered: ['plain'], priority: 0, text: true, minWidth: 160, maxWidth: 220 },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'name', direction: 'ascending' } });
+  const baseCols = buildColumnLayouts(columns, settings);
+  const twoWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7, undefined, { flags: { country: 2 } });
+  const fourWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7, undefined, { flags: { country: 4 } });
+  assert.equal(twoWidths.country, 52);
+  assert.ok(fourWidths.country! > twoWidths.country!, 'four coalition flags widen a flag-only column');
+  const missingFlag = productArt({ status: 'confirmedMissing', reason: 'missing' });
+  const model: TableModel = {
+    hour: 1,
+    rhythm: 'log',
+    columns,
+    rows: [
+      {
+        key: 'unnamed',
+        name: 'Port name unavailable',
+        cells: {
+          country: {
+            value: knownValue('Alpha, Charlie · Bravo, Delta'),
+            flags: [
+              { tag: 'AA', art: missingFlag },
+              { tag: 'CC', art: missingFlag },
+              { tag: 'BB', art: missingFlag, separator: true },
+              { tag: 'DD', art: missingFlag },
+            ],
+          },
+          name: { value: notRecorded('Port name unavailable'), inlineSubtext: 'No ships waiting' },
+        },
+      },
+      {
+        key: 'long-named',
+        name: 'Very Long Naval Repair Anchorage Name Filling The Column',
+        cells: {
+          country: { value: knownValue('Alpha · Bravo'), flags: [{ tag: 'AA', art: missingFlag }, { tag: 'BB', art: missingFlag }] },
+          name: { value: knownValue('Very Long Naval Repair Anchorage Name Filling The Column'), inlineSubtext: 'No ships waiting' },
+        },
+      },
+    ],
+  };
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, twoWidths), 272, { rhythm: 'log' });
+  const twoFlagGrid = gridContext(272, 120);
+  drawFamilyTable(twoFlagGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout,
+    rows: resolveTableRows({ ...model, rows: [model.rows[1]!] }, settings),
+    settings,
+    hour: 1,
+    width: 272,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+    rhythm: 'log',
+  });
+  const texts = [...twoFlagGrid.marks.values()];
+  assert.ok(texts.includes('AA') && texts.includes('BB'), 'a 52px two-flag column still draws both flags');
+  assert.ok(texts.includes('No ships waiting'), 'inline status remains visible beside a long recorded port name in compact density');
+
+  const wideLayout = layoutFamilyTable(buildColumnLayouts(columns, settings, fourWidths), 400);
+  const wideGrid = gridContext(400, 120);
+  drawFamilyTable(wideGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout: wideLayout,
+    rows: resolveTableRows(model, settings),
+    settings,
+    hour: 1,
+    width: 400,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+  });
+  const wideTexts = [...wideGrid.marks.values()];
+  assert.ok(['AA', 'CC', 'BB', 'DD'].every(code => wideTexts.includes(code)), 'all four coalition flags paint in the widened flag column');
+  assert.equal(wideTexts.filter(text => text === 'No ships waiting').length, 2, 'inline status paints beside both a missing-name hatch and a long named row');
+
+  const resizedLayout = layoutFamilyTable(buildColumnLayouts(columns, settings, { country: 68, name: 220 }), 300, { rhythm: 'log' });
+  const resizedGrid = gridContext(300, 120);
+  drawFamilyTable(resizedGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout: resizedLayout,
+    rows: resolveTableRows({ ...model, rows: [model.rows[0]!] }, settings),
+    settings,
+    hour: 1,
+    width: 300,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+    rhythm: 'log',
+  });
+  const resizedTexts = [...resizedGrid.marks.values()];
+  assert.ok(resizedTexts.includes('AA') && resizedTexts.includes('CC'), 'leading coalition flags fit inside a resized 68px column');
+  assert.equal(resizedTexts.includes('BB') || resizedTexts.includes('DD'), false, 'coalition flags stop at the resized column edge instead of overlapping the next column');
+
+  const namedSettings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'name', direction: 'ascending' } });
+  namedSettings.columns.country = { ...namedSettings.columns.country!, as: 'flagName', showNames: true };
+  const resizedNamedLayout = layoutFamilyTable(buildColumnLayouts(columns, namedSettings, { country: 68, name: 220 }), 300, { rhythm: 'log' });
+  const resizedNamedGrid = gridContext(300, 120);
+  drawFamilyTable(resizedNamedGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout: resizedNamedLayout,
+    rows: resolveTableRows({ ...model, rows: [model.rows[0]!] }, namedSettings),
+    settings: namedSettings,
+    hour: 1,
+    width: 300,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+    rhythm: 'log',
+  });
+  const resizedNamedTexts = [...resizedNamedGrid.marks.values()];
+  assert.ok(resizedNamedTexts.includes('AA') && resizedNamedTexts.includes('CC'), 'leading coalition flags fit inside a resized 68px flagName column');
+  assert.equal(resizedNamedTexts.includes('BB') || resizedNamedTexts.includes('DD'), false, 'coalition flags stop at the resized flagName column edge');
+
+  const rows45 = Array.from({ length: 45 }, (_, idx) => ({
+    key: `r${idx}`,
+    name: `Battle ${idx}`,
+    cells: {
+      country: {
+        value: knownValue('Alpha · Bravo'),
+        flags: idx === 42
+          ? [{ tag: 'AAA', art: PENDING_ART }, { tag: 'CCC', art: PENDING_ART }, { tag: 'BBB', art: PENDING_ART, separator: true }]
+          : [{ tag: 'AAA', art: PENDING_ART }, { tag: 'BBB', art: PENDING_ART }],
+      },
+      name: { value: knownValue(`Battle ${idx}`) },
+    },
+  }));
+  const lateKind = 'test-late-coalition-flags';
+  registerFamilyProjection({
+    kind: lateKind,
+    family: 'table',
+    theme: TEST_THEME,
+    project: readView => ({ hour: readView.hour, rhythm: 'log', columns, rows: rows45 }),
+  });
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return gridContext(this.width, this.height).ctx; }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  try {
+    const view = createLaneView(tableLane, () => {});
+    const state = new Map<string, unknown>();
+    const transport = new LaneTransport();
+    const painted = view.paint({
+      widget: 1, subs: [], pictures: [],
+      model: { family: 'table' as const, kind: lateKind, options: transport.carry({}), settings, sources: {}, staticPanels: { main: { at: 1 } }, width: 480, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 480, height: 200, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
+    }, state, () => 'c1');
+    const twoFlagLaidOut = layout.columns.find(col => col.key === 'country')!.width;
+    const countryW = (painted.fields.widths?.value as { widths: Record<string, number> }).widths.country!;
+    assert.ok(countryW > twoFlagLaidOut, `row 42 coalition widens the country column beyond the two-flag laid-out width ${twoFlagLaidOut}px (got ${countryW}px)`);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});

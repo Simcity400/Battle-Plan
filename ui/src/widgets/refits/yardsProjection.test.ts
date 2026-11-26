@@ -83,6 +83,7 @@ test('ships linked or waiting are counted only from a whole read; the ships that
   const port = repairs().ports[0]!;
   const docks = project(dockyardsProjection, repairs({ ports: [{ ...port, queue: [], queueMissing: queueUnread }] }));
   assert.deepEqual(tipValue(docks.rows[0], 'Ships waiting'), notRecorded(queueUnread));
+  assert.equal(docks.rows[0]!.cells.name!.inlineSubtext, queueUnread, 'an unread queue does not claim no ships are waiting');
   assert.deepEqual(tipValue(project(dockyardsProjection, repairs()).rows[0], 'Ships waiting'), knownValue('1'));
 });
 
@@ -107,6 +108,8 @@ test('a port shows its priority and dockyards, its queued ships their strength, 
   assert.deepEqual([cell(brest, 'priority'), cell(brest, 'dockyards')], [knownValue(2), zeroValue(0)]);
   assert.deepEqual(cell(brest!.children![0], 'strength'), zeroValue(0));
   assert.deepEqual(cell(unnamed, 'name'), notRecorded('Port name unavailable'));
+  assert.equal(brest!.cells.name!.inlineSubtext, undefined, 'a port with ships waiting needs no empty-queue label');
+  assert.equal(unnamed!.cells.name!.inlineSubtext, 'No ships waiting', 'a priority-only port with no queued ships says so');
   assert.equal(cell(unnamed, 'dockyards')?.kind, 'notRecorded');
   assert.equal(unnamed!.children, undefined, 'a port with no queue has nothing to open');
   assert.equal(model.titleSummary, '1 ship waiting · 0 / 29 repair dockyards in use');

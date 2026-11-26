@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import type { StockFigure, StockTypeRow, StockpileArtworkReply, StockpileTypesReply } from '../../generated/dashboard';
 import { buildColumnLayouts, measureFixedColumnWidths } from '../../families/table/layout.ts';
+import { deriveRowTooltip } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
+import { formatValueState } from '../../families/valueFormat.ts';
 import { STOCKPILE_BASE, stockpileColumns, stockpileProjection } from './stockpileProjection.ts';
 
 const known = (raw: number): StockFigure => ({ raw: String(Math.round(raw * 100_000)), missing: null });
@@ -73,4 +76,40 @@ test('the Short or over header is as wide as its words; Produced − Need = Bala
   const widths = measureFixedColumnWidths(buildColumnLayouts(columns, settings), settings, { font: 'sans-serif', fontSize: { small: 12, body: 13 } }, text => text.length * 10);
   assert.ok(widths.net! >= 'ShortOver'.length * 10, `net ${widths.net}`);
   assert.ok(widths.sum! >= 3 * ('Produced'.length * 10 + 14), `three equal slots, each as wide as the widest word and its operator (${widths.sum})`);
+});
+
+test('small signed residues, exact zeros and same-name variants remain distinguishable in model rows and tooltips', () => {
+  const identity = datedIdentity({ AAA: [{ from: 0, name: 'Alpha' }], BBB: [{ from: 0, name: 'Bravo' }] });
+  const rows = [
+    type('rifle', {
+      stored: { raw: '-14000', missing: null },
+      variants: [
+        { id: '1', name: 'Model A', origin: 'AAA', stored: { raw: '-14000', missing: null }, produced: known(0) },
+        { id: '2', name: 'Model A', origin: 'AAA', stored: { raw: '14000', missing: null }, produced: known(0) },
+        { id: '3', name: 'Model A', origin: 'BBB', stored: { raw: '0', missing: null }, produced: known(0) },
+        { id: '4', name: 'Model A', origin: null, stored: { raw: '-100000', missing: null }, produced: known(0) },
+      ],
+    }),
+  ];
+  const view = createBoundedReadView({ hour: 100, identity, panels: new Map<string, unknown>([['main', reply(rows)]]) });
+  const model = stockpileProjection.project(view, { layout: 'sum' });
+  const children = model.rows[0]!.children!;
+  assert.deepEqual(
+    children.map(child => {
+      const shown = formatValueState(child.cells.sum!.value, child.cells.sum!.format);
+      return shown.kind === 'known' || shown.kind === 'zero' ? shown.text : shown.kind;
+    }),
+    ['\u2212<1', '<1', '0', '\u22121'],
+  );
+  assert.deepEqual(children.map(child => child.cells.equipment!.inlineSubtext), [
+    'Alpha · Design #1',
+    'Alpha · Design #2',
+    'Bravo',
+    'Design #4',
+  ]);
+  const first = children[0]!;
+  const tip = deriveRowTooltip({ kind: 'data', key: first.key, name: first.name, rank: 1, level: 2, parent: model.rows[0]!.key, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: first }, model.columns);
+  const storedRow = tip.rows.find(entry => entry.label === 'Stored');
+  assert.equal(storedRow?.valueState?.kind === 'known' ? storedRow.valueState.text : null, '\u22120.14');
+  assert.deepEqual(tip.rows.find(entry => entry.label === 'Design ID')?.rawValue, { kind: 'known', value: '1' });
 });

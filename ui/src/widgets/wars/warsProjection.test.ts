@@ -46,3 +46,23 @@ test('a war timeline reply holds nothing after its hour and proves up to its nex
   assert.deepEqual(warTimelineProof(ok, [0, 200], 220), [200, 249]);
   assert.equal(warTimelineProof(ok, [0, 200], 250), null);
 });
+
+test('every bar in the countries view identifies its country and resolves its war tooltip from the hovered span', () => {
+  const ended = war('2', 100, 199);
+  const identity = datedIdentity({ AAA: [{ from: 0, name: 'Alpha' }], BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] });
+  const view = createBoundedReadView({ hour: 400, identity, panels: new Map([['main', reply(400, [war('1', 300, 400), ended])]]) });
+  const model = warsProjection.project(view, { ...OPTIONS, view: 'countries' });
+  assert.deepEqual(model.lanes.map(lane => [lane.flagTag, lane.label, lane.subtitle, lane.flag?.status]), [
+    ['AAA', 'Alpha', '1 war ongoing', 'pending'],
+    ['CCC', 'Charlie', '1 war ongoing', 'pending'],
+    ['BBB', 'Bravo', '1 war ongoing', 'pending'],
+  ]);
+  const alpha = model.lanes[0]!;
+  assert.equal(alpha.spans.length, 2);
+  const tip = warsProjection.tooltip!(model, { kind: 'span', laneKey: alpha.key, spanId: alpha.spans[0]!.id, hour: 350 }, view, { ...OPTIONS, view: 'countries' });
+  assert.equal(tip?.title, 'Alpha');
+  assert.deepEqual(tip?.items?.map(item => [item.label, item.value]), [
+    ['Attackers (2)', 'Alpha, Charlie (joined Hour 350)'],
+    ['Defenders (1)', 'Bravo'],
+  ]);
+});

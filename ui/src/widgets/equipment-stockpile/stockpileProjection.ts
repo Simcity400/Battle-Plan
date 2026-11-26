@@ -103,15 +103,27 @@ function tooltipRows(row: StockTypeRow): TooltipExtraRow[] {
   ];
 }
 
-function variantRow(readView: BoundedReadView, parent: string, variant: StockVariantRow): TableRow {
+function variantRow(
+  readView: BoundedReadView,
+  parent: string,
+  variant: StockVariantRow,
+  duplicateName: boolean,
+  duplicateNameOrigin: boolean,
+): TableRow {
   const name = variant.name ?? `Variant ${variant.id}`;
   const origin = variant.origin ? resolveIdentity(readView, 'country', variant.origin, { flag: 'small' }) : null;
+  const disambiguator = duplicateNameOrigin
+    ? (origin ? `${origin.name} · Design #${variant.id}` : `Design #${variant.id}`)
+    : duplicateName
+      ? (origin ? origin.name : `Design #${variant.id}`)
+      : undefined;
   return {
     key: `${parent}/${variant.id}`,
     name,
     cells: {
       equipment: {
         value: knownValue(name),
+        ...(disambiguator ? { inlineSubtext: disambiguator } : {}),
         ...(origin?.art ? { art: origin.art } : {}),
         ...(origin?.artKey ? { artKey: origin.artKey } : {}),
         ...(variant.origin ? { country: variant.origin } : {}),
@@ -121,6 +133,7 @@ function variantRow(readView: BoundedReadView, parent: string, variant: StockVar
       sum: { value: stored(variant.stored), format: STORED, unitSuffix: 'stored' },
     },
     tooltipExtra: [
+      ...(duplicateNameOrigin ? [{ label: 'Design ID', value: knownValue(variant.id) }] : []),
       { label: 'Design origin', value: origin ? origin.value : notRecorded('The design names no origin') },
       { label: 'Stored', value: stored(variant.stored), format: STORED },
       { label: 'Produced a day', value: figureOf(variant.produced) === null ? notRecorded(variant.produced.missing ?? 'Not recorded') : knownValue(rate(figureOf(variant.produced)!)) },
@@ -132,6 +145,14 @@ function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<
   const name = row.name ?? unresolvedTypeName(row.key);
   const picture = art.get(`type:${row.key.toLowerCase()}`);
   const note = shareNote(row);
+  const nameCounts = new Map<string, number>();
+  const originCounts = new Map<string, number>();
+  for (const variant of row.variants) {
+    const label = variant.name ?? `Variant ${variant.id}`;
+    nameCounts.set(label, (nameCounts.get(label) ?? 0) + 1);
+    const key = `${label}\u0000${variant.origin ?? ''}`;
+    originCounts.set(key, (originCounts.get(key) ?? 0) + 1);
+  }
   return {
     key: row.key,
     name,
@@ -143,7 +164,20 @@ function typeRow(readView: BoundedReadView, row: StockTypeRow, art: ReadonlyMap<
     },
     tooltipExtra: tooltipRows(row),
     ...(note ? { tooltipNote: note } : {}),
-    ...(row.variants.length ? { children: row.variants.map(variant => variantRow(readView, row.key, variant)) } : {}),
+    ...(row.variants.length
+      ? {
+          children: row.variants.map(variant => {
+            const label = variant.name ?? `Variant ${variant.id}`;
+            return variantRow(
+              readView,
+              row.key,
+              variant,
+              (nameCounts.get(label) ?? 0) > 1,
+              (originCounts.get(`${label}\u0000${variant.origin ?? ''}`) ?? 0) > 1,
+            );
+          }),
+        }
+      : {}),
   };
 }
 

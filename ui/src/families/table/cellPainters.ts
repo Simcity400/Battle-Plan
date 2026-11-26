@@ -786,9 +786,19 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (cell?.flags && cell.flags.length > 0) {
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
+    const boundCoalition = (column.display === 'flag' || column.display === 'flagName') && cell.flags.length > 2;
     for (const fl of cell.flags) {
+      if (fl.separator && fx > left) {
+        if ((column.narrow === 'flag' || boundCoalition) && fx + 7 + FLAG_SLOT_WIDTH > right) break;
+        ctx.save();
+        ctx.fillStyle = theme.gridLine ?? theme.muted;
+        ctx.fillRect(fx, fy + 1, 1, FLAG_SLOT_HEIGHT - 2);
+        ctx.restore();
+        fx += 7;
+      }
       if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
-      const state = slotOf(fl.art, fl.tag, rc);
+      if (boundCoalition && fx > left && fx + FLAG_SLOT_WIDTH > right) break;
+      const state = slotOf(fl.art, fl.artName ?? (fl.tag.startsWith('\u0000') ? '?' : fl.tag), rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
     }
@@ -817,7 +827,18 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
     if (kind === 'item' && formatted.kind === 'notRecorded' && !cell?.missingFigure) {
-      const hatchW = Math.min(148, Math.max(0, right - left - 4));
+      const avail = Math.max(0, right - left - 4);
+      const inline = cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined ? cell.inlineSubtext : undefined;
+      if (inline) {
+        const inlineFont = fontOf(theme, 12.5, 400);
+        const gap = 8;
+        const hatchW = Math.min(avail, Math.min(72, Math.max(24, avail - measure(inline, inlineFont) - gap)));
+        if (hatchW > 0) drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
+        const rem = avail - hatchW - gap;
+        if (rem >= 20) drawInlineRuns(rc, inline, left + hatchW + gap, middle, rem, inlineFont, theme.muted);
+        return;
+      }
+      const hatchW = Math.min(148, avail);
       drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
       return;
     }
@@ -931,13 +952,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
         : isChild || column.textTone === 'secondary'
           ? tokens.textSecondary
           : theme.text;
-  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail, textFont, textColor);
-  if (cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined) {
-    const gap = 8;
+  const inline = cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined ? cell.inlineSubtext : undefined;
+  const inlineFont = inline ? fontOf(theme, 12.5, 400) : '';
+  const gap = 8;
+  const maxReserve = Math.max(Math.floor((avail - gap) / 2), avail - gap - 72);
+  const reserve = inline && avail >= 60 ? Math.min(Math.ceil(measure(inline, inlineFont)), Math.max(0, maxReserve)) + gap : 0;
+  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail - reserve, textFont, textColor);
+  if (inline) {
     const rem = avail - drawnW - gap;
     if (rem >= 20) {
-      const inlineFont = fontOf(theme, 12.5, 400);
-      drawInlineRuns(rc, cell.inlineSubtext, left + drawnW + gap, middle, rem, inlineFont, theme.muted);
+      drawInlineRuns(rc, inline, left + drawnW + gap, middle, rem, inlineFont, theme.muted);
     }
   }
 }
