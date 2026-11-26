@@ -1157,52 +1157,64 @@ impl<'a> VariableReuse<'a> {
         pending_updates.clear();
 
         let visited_ok = (|| -> Option<()> {
-            for visit in 0..self.store.visits.len() {
-                let (index, marked) = self.store.visits[visit];
-                let at = index as usize;
-                if let Some(&(next, _)) = self.store.visits.get(visit + 1)
-                    && let Some(meta) = self.store.held.meta.get(next as usize)
-                {
-                    memory.prefetch(meta.container, cvariables::STORAGE + HEADER);
+            let total = self.store.visits.len();
+            let mut containers = [0_usize; cvariables::HEAD_BATCH];
+            let mut heads = [cvariables::Head::default(); cvariables::HEAD_BATCH];
+            let mut start = 0_usize;
+            while start < total {
+                let batch = (total - start).min(cvariables::HEAD_BATCH);
+                for j in 0..batch {
+                    let (index, _) = self.store.visits[start + j];
+                    containers[j] = self.store.held.meta[index as usize].container;
                 }
-                let (scope, _, _, _) = self.store.held.snapshot.get(at)?;
-                let container = self.store.held.meta[at].container;
-                self.store.visiting = Some((index, marked));
-                let read = cvariables::read_store_carried(
-                    memory,
-                    base,
-                    scope,
-                    container,
-                    Buffer::Growing(&mut scratch_entries),
-                    Buffer::Growing(&mut scratch_names),
-                    &mut *self,
-                );
-                self.store.visiting = None;
-                let (walk, seed) = read.ok()?;
-                let Outcome::Rows { len: count } = walk.outcome else {
-                    return None;
-                };
-                if self.store.plans.len() != visit + 1 {
-                    return None;
+                cvariables::read_heads(memory, &containers[..batch], &mut heads[..batch]);
+                for j in 0..batch {
+                    let visit = start + j;
+                    let (index, marked) = self.store.visits[visit];
+                    let at = index as usize;
+                    let (scope, _, _, _) = self.store.held.snapshot.get(at)?;
+                    let container = containers[j];
+                    self.store.visiting = Some((index, marked));
+                    let read = cvariables::read_store_carried_with_head(
+                        memory,
+                        base,
+                        scope,
+                        container,
+                        heads[j],
+                        Buffer::Growing(&mut scratch_entries),
+                        Buffer::Growing(&mut scratch_names),
+                        &mut *self,
+                    );
+                    self.store.visiting = None;
+                    let (walk, seed) = read.ok()?;
+                    let Outcome::Rows { len: count } = walk.outcome else {
+                        return None;
+                    };
+                    if self.store.plans.len() != visit + 1 {
+                        return None;
+                    }
+                    let (_, old_seed, old_entries, old_names) = self.store.held.snapshot.get(at)?;
+                    let same = old_seed == seed
+                        && (self.store.plans[visit].carried
+                            || scratch_entries
+                                .get(..count)
+                                .zip(scratch_names.get(..walk.bytes_len))
+                                .is_some_and(|(entries, names)| {
+                                    same_entries(entries, names, old_entries, old_names)
+                                }));
+                    if !same {
+                        let entries_slice = scratch_entries.get(..count)?;
+                        let names_slice = scratch_names.get(..walk.bytes_len)?;
+                        let next =
+                            HeldScope::from_normalized(scope, seed, entries_slice, names_slice)?;
+                        allocation::advisory(|| allocation::reserve(&mut pending_updates, 1))
+                            .ok()?;
+                        pending_updates.push((at, next));
+                        self.store.renewed = true;
+                        self.store.change(index);
+                    }
                 }
-                let (_, old_seed, old_entries, old_names) = self.store.held.snapshot.get(at)?;
-                let same = old_seed == seed
-                    && (self.store.plans[visit].carried
-                        || scratch_entries
-                            .get(..count)
-                            .zip(scratch_names.get(..walk.bytes_len))
-                            .is_some_and(|(entries, names)| {
-                                same_entries(entries, names, old_entries, old_names)
-                            }));
-                if !same {
-                    let entries_slice = scratch_entries.get(..count)?;
-                    let names_slice = scratch_names.get(..walk.bytes_len)?;
-                    let next = HeldScope::from_normalized(scope, seed, entries_slice, names_slice)?;
-                    allocation::advisory(|| allocation::reserve(&mut pending_updates, 1)).ok()?;
-                    pending_updates.push((at, next));
-                    self.store.renewed = true;
-                    self.store.change(index);
-                }
+                start += batch;
             }
             Some(())
         })();

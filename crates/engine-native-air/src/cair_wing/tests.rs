@@ -859,6 +859,10 @@ fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence()
                             naval: true,
                             name_header: name_header(&bytes, [WING_A, WING_B][index]),
                             crew: Some([0, 0]),
+                            fuel: Some(fuel_inputs::Gathered::default()),
+                            cumulative: Some((0, 0)),
+                            group_handle: Some(0),
+                            replacement_setting: Some(0),
                         }
                     );
                     assert_eq!(source.row, full[index]);
@@ -1070,6 +1074,10 @@ fn shared_walk_leaf_faults_preserve_each_independently_capped_consumer() {
                                 naval: true,
                                 name_header: name_header(&bytes, WING_A),
                                 crew: Some([0, 0]),
+                                fuel: Some(fuel_inputs::Gathered::default()),
+                                cumulative: Some((0, 0)),
+                                group_handle: Some(0),
+                                replacement_setting: Some(0),
                             }
                         );
                     }
@@ -1107,6 +1115,10 @@ fn shared_walk_counting_lanes_do_not_hide_map_source_or_naval_admissions() {
                     naval: true,
                     name_header: name_header(&bytes, WING_B),
                     crew: Some([0, 0]),
+                    fuel: Some(fuel_inputs::Gathered::default()),
+                    cumulative: Some((0, 0)),
+                    group_handle: Some(0),
+                    replacement_setting: Some(0),
                 }
             )
         );

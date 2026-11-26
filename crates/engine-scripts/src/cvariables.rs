@@ -1,5 +1,11 @@
 
-use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read, read_slice,
+    walk::Outcome,
+};
 use engine_native::{
     ccharacter::{self, manager as ccharacter_manager},
     ccountry,
@@ -204,14 +210,75 @@ pub fn walk_scopes_carried(
         )?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut found_country = false;
-        for slot in 1..countries.count() {
-            if let Some(country) = countries.at(slot)? {
+        let mut country_ids = [0_u32; HEAD_BATCH];
+        let mut country_ptrs = [0_usize; HEAD_BATCH];
+        let mut country_raw = [0_u8; HEAD_BATCH * 8];
+        let mut country_containers = [0_usize; HEAD_BATCH];
+        let mut heads = [Head::default(); HEAD_BATCH];
+        let mut slot = 1_u32;
+        while slot < countries.count() {
+            let mut batch_len = 0_usize;
+            let mut deferred_err = None;
+            while slot < countries.count() && batch_len < HEAD_BATCH {
+                match countries.at(slot) {
+                    Ok(Some(country)) => {
+                        country_ids[batch_len] = country.id;
+                        country_ptrs[batch_len] = country.pointer;
+                        batch_len += 1;
+                    }
+                    Ok(None) => {}
+                    Err(reason) => {
+                        deferred_err = Some(reason);
+                        break;
+                    }
+                }
+                slot += 1;
+            }
+            if batch_len > 0 {
                 found_country = true;
-                scope(
-                    Scope::Country(country.id),
-                    scope_pointer(memory, country.pointer, ccountry::VARIABLES)?,
-                    None,
-                )?;
+                let copied = memory.copy_records(
+                    RecordSources::Pointers(&country_ptrs[..batch_len]),
+                    &COUNTRY_VAR_LAYOUT,
+                    &mut country_raw[..batch_len * 8],
+                );
+                let mut valid = 0_usize;
+                let mut valid_err = None;
+                for i in 0..copied {
+                    let raw = u64::from_le_bytes(country_raw[i * 8..(i + 1) * 8].try_into().unwrap());
+                    match usize::try_from(raw) {
+                        Ok(container) => {
+                            country_containers[valid] = container;
+                            valid += 1;
+                        }
+                        Err(_) => {
+                            valid_err = Some("script variable scope root unreadable");
+                            break;
+                        }
+                    }
+                }
+                if valid > 0 {
+                    read_heads(memory, &country_containers[..valid], &mut heads[..valid]);
+                    for i in 0..valid {
+                        scope(
+                            Scope::Country(country_ids[i]),
+                            country_containers[i],
+                            Some(heads[i]),
+                        )?;
+                    }
+                }
+                if let Some(reason) = valid_err {
+                    return Err(reason);
+                }
+                for i in copied..batch_len {
+                    scope(
+                        Scope::Country(country_ids[i]),
+                        scope_pointer(memory, country_ptrs[i], ccountry::VARIABLES)?,
+                        None,
+                    )?;
+                }
+            }
+            if let Some(reason) = deferred_err {
+                return Err(reason);
             }
         }
         if !found_country {
@@ -228,50 +295,105 @@ pub fn walk_scopes_carried(
             engine_sites::at(base, cstate::VTABLE_RVA).ok_or("state vtable overflow")? as u64;
         let mut found_state = false;
         let mut first = 1;
-        let mut pointers = [0_u8; 64 * 8];
+        let mut pointers = [0_u8; HEAD_BATCH * 8];
+        let mut state_ptrs = [0_usize; HEAD_BATCH];
+        let mut state_expected_ids = [0_u32; HEAD_BATCH];
+        let mut state_raw = [0_u8; HEAD_BATCH * STATE_STRIDE];
+        let mut state_containers = [0_usize; HEAD_BATCH];
         while first < states.count {
-            let count = ((states.count - first) as usize).min(64);
+            let count = ((states.count - first) as usize).min(HEAD_BATCH);
             let address = states
                 .element(first, 8)
                 .ok_or("variable state scope address overflow")?;
             if !read_slice(memory, address, &mut pointers[..count * 8]) {
                 return Err("variable state scope pointers unreadable");
             }
+            let mut batch_len = 0_usize;
             for (index, bytes) in pointers[..count * 8].chunks_exact(8).enumerate() {
                 let state = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
                     .map_err(|_| "variable state scope pointer overflow")?;
-                if state == 0 {
-                    continue;
+                if state != 0 {
+                    state_ptrs[batch_len] = state;
+                    state_expected_ids[batch_len] = first + index as u32;
+                    batch_len += 1;
                 }
-                let mut vtable = [0_u8; 8];
-                let mut id = [0_u8; 4];
-                let mut container = [0_u8; 8];
-                if memory.copy_scattered(
-                    [
-                        state,
-                        state
-                            .checked_add(cstate::ID)
-                            .ok_or("variable state id address overflow")?,
-                        state
-                            .checked_add(cstate::VARIABLES)
-                            .ok_or("variable state root address overflow")?,
-                    ],
-                    &mut [&mut vtable, &mut id, &mut container],
-                ) != 3
-                {
-                    return Err("variable state scope fields unreadable");
+            }
+            if batch_len > 0 {
+                let done = memory.copy_records(
+                    RecordSources::Pointers(&state_ptrs[..batch_len]),
+                    &STATE_LAYOUT,
+                    &mut state_raw[..batch_len * STATE_STRIDE],
+                ) / STATE_FIELDS.len();
+                let mut valid = 0_usize;
+                let mut valid_err = None;
+                for i in 0..done {
+                    let rec = &state_raw[i * STATE_STRIDE..(i + 1) * STATE_STRIDE];
+                    if u64::from_le_bytes(rec[0..8].try_into().unwrap()) != expected {
+                        valid_err = Some("variable state vtable mismatch");
+                        break;
+                    }
+                    let id = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+                    if id != state_expected_ids[i] {
+                        valid_err = Some("variable state id differs from slot");
+                        break;
+                    }
+                    match usize::try_from(u64::from_le_bytes(rec[12..20].try_into().unwrap())) {
+                        Ok(container) => {
+                            state_containers[valid] = container;
+                            valid += 1;
+                        }
+                        Err(_) => {
+                            valid_err = Some("variable scope pointer overflow");
+                            break;
+                        }
+                    }
                 }
-                if u64::from_le_bytes(vtable) != expected {
-                    return Err("variable state vtable mismatch");
+                if valid > 0 {
+                    found_state = true;
+                    read_heads(memory, &state_containers[..valid], &mut heads[..valid]);
+                    for i in 0..valid {
+                        scope(
+                            Scope::State(state_expected_ids[i]),
+                            state_containers[i],
+                            Some(heads[i]),
+                        )?;
+                    }
                 }
-                let id = u32::from_le_bytes(id);
-                if id != first + index as u32 {
-                    return Err("variable state id differs from slot");
+                if let Some(reason) = valid_err {
+                    return Err(reason);
                 }
-                let container = usize::try_from(u64::from_le_bytes(container))
-                    .map_err(|_| "variable scope pointer overflow")?;
-                found_state = true;
-                scope(Scope::State(id), container, None)?;
+                for i in done..batch_len {
+                    let state = state_ptrs[i];
+                    let mut vtable = [0_u8; 8];
+                    let mut id = [0_u8; 4];
+                    let mut container = [0_u8; 8];
+                    if memory.copy_scattered(
+                        [
+                            state,
+                            state
+                                .checked_add(cstate::ID)
+                                .ok_or("variable state id address overflow")?,
+                            state
+                                .checked_add(cstate::VARIABLES)
+                                .ok_or("variable state root address overflow")?,
+                        ],
+                        &mut [&mut vtable, &mut id, &mut container],
+                    ) != 3
+                    {
+                        return Err("variable state scope fields unreadable");
+                    }
+                    if u64::from_le_bytes(vtable) != expected {
+                        return Err("variable state vtable mismatch");
+                    }
+                    let id = u32::from_le_bytes(id);
+                    if id != state_expected_ids[i] {
+                        return Err("variable state id differs from slot");
+                    }
+                    let container = usize::try_from(u64::from_le_bytes(container))
+                        .map_err(|_| "variable scope pointer overflow")?;
+                    found_state = true;
+                    scope(Scope::State(id), container, None)?;
+                }
             }
             first += count as u32;
         }
@@ -279,20 +401,63 @@ pub fn walk_scopes_carried(
             return Err("state table has no readable states");
         }
         let mut characters = ccharacter_manager::Roster::read(memory, base, game_state)?.cursor();
-        while let Some(character) = characters.next_occurrence(memory)? {
-            let mut head = Head::default();
-            let (id, copied) = ccharacter::identity_with_spans(
-                memory,
-                base,
-                character,
-                [VTABLE, STORAGE, SEED].map(|offset| ccharacter::VARIABLES + offset),
-                [&mut head.vtable, &mut head.header, &mut head.seed],
-            )?;
-            let container = character
-                .checked_add(ccharacter::VARIABLES)
-                .ok_or("character variables address overflow")?;
-            head.copied = copied;
-            scope(Scope::Character(id), container, Some(head))?;
+        let mut char_ptrs = [0_usize; HEAD_BATCH];
+        let mut char_raw = [0_u8; HEAD_BATCH * CHAR_STRIDE];
+        loop {
+            let mut batch_len = 0_usize;
+            let mut deferred_err = None;
+            while batch_len < HEAD_BATCH {
+                match characters.next_occurrence(memory) {
+                    Ok(Some(character)) => {
+                        char_ptrs[batch_len] = character;
+                        batch_len += 1;
+                    }
+                    Ok(None) => break,
+                    Err(reason) => {
+                        deferred_err = Some(reason);
+                        break;
+                    }
+                }
+            }
+            if batch_len == 0 {
+                if let Some(reason) = deferred_err {
+                    return Err(reason);
+                }
+                break;
+            }
+            let done = memory.copy_records(
+                RecordSources::Pointers(&char_ptrs[..batch_len]),
+                &CHAR_LAYOUT,
+                &mut char_raw[..batch_len * CHAR_STRIDE],
+            ) / CHAR_FIELDS.len();
+            for i in 0..done {
+                let character = char_ptrs[i];
+                let rec = &char_raw[i * CHAR_STRIDE..(i + 1) * CHAR_STRIDE];
+                let id = ccharacter::identity_from_header(base, rec[..16].try_into().unwrap())?;
+                let container = character
+                    .checked_add(ccharacter::VARIABLES)
+                    .ok_or("character variables address overflow")?;
+                let head = Head::from_span(rec[16..16 + HEAD_SPAN].try_into().unwrap());
+                scope(Scope::Character(id), container, Some(head))?;
+            }
+            for &character in &char_ptrs[done..batch_len] {
+                let mut head = Head::default();
+                let (id, copied) = ccharacter::identity_with_spans(
+                    memory,
+                    base,
+                    character,
+                    [VTABLE, STORAGE, SEED].map(|offset| ccharacter::VARIABLES + offset),
+                    [&mut head.vtable, &mut head.header, &mut head.seed],
+                )?;
+                let container = character
+                    .checked_add(ccharacter::VARIABLES)
+                    .ok_or("character variables address overflow")?;
+                head.copied = copied;
+                scope(Scope::Character(id), container, Some(head))?;
+            }
+            if let Some(reason) = deferred_err {
+                return Err(reason);
+            }
         }
         Ok(ScopeWalk {
             outcome: if missing == 0 {
@@ -388,6 +553,119 @@ pub fn read_store_carried(
     Ok((rows, head.seed()))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pre-gathered head travels beside the standard read_store_carried operands"
+)]
+pub fn read_store_carried_with_head(
+    memory: &impl Memory,
+    base: usize,
+    scope: Scope,
+    container: usize,
+    head: Head,
+    entries: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
+    carry: &mut impl VariableCarry,
+) -> Result<(NameWalk, Option<u32>), &'static str> {
+    if container == 0 {
+        return Err("script variable scope root is null");
+    }
+    let rows = store_rows(memory, base, scope, container, head, entries, names, carry)?;
+    Ok((rows, head.seed()))
+}
+
+pub const HEAD_BATCH: usize = 64;
+const HEAD_SPAN: usize = STORAGE + HEADER;
+const _: () = {
+    assert!(VTABLE == 0);
+    assert!(SEED + 4 <= STORAGE);
+};
+const HEAD_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: HEAD_SPAN,
+}];
+const HEAD_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&HEAD_FIELDS, HEAD_SPAN) {
+    Some(layout) => layout,
+    None => panic!("valid variables head layout"),
+};
+const COUNTRY_VAR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::VARIABLES,
+    destination_offset: 0,
+    len: 8,
+}];
+const COUNTRY_VAR_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&COUNTRY_VAR_FIELDS, 8) {
+    Some(layout) => layout,
+    None => panic!("valid country variables layout"),
+};
+const STATE_FIELDS: [RecordField; 3] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: cstate::ID,
+        destination_offset: 8,
+        len: 4,
+    },
+    RecordField {
+        source_offset: cstate::VARIABLES,
+        destination_offset: 12,
+        len: 8,
+    },
+];
+const STATE_STRIDE: usize = 20;
+const STATE_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&STATE_FIELDS, STATE_STRIDE) {
+    Some(layout) => layout,
+    None => panic!("valid state variables layout"),
+};
+const CHAR_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 16,
+    },
+    RecordField {
+        source_offset: ccharacter::VARIABLES,
+        destination_offset: 16,
+        len: HEAD_SPAN,
+    },
+];
+const CHAR_STRIDE: usize = 16 + HEAD_SPAN;
+const CHAR_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&CHAR_FIELDS, CHAR_STRIDE) {
+    Some(layout) => layout,
+    None => panic!("valid character variables layout"),
+};
+
+pub fn read_heads(memory: &impl Memory, containers: &[usize], out: &mut [Head]) {
+    let total = containers.len().min(out.len());
+    let mut raw = [0_u8; HEAD_BATCH * HEAD_SPAN];
+    let mut offset = 0_usize;
+    while offset < total {
+        let batch = (total - offset).min(HEAD_BATCH);
+        let slice = &containers[offset..offset + batch];
+        let done = memory.copy_records(
+            RecordSources::Pointers(slice),
+            &HEAD_LAYOUT,
+            &mut raw[..batch * HEAD_SPAN],
+        );
+        for i in 0..done {
+            out[offset + i] =
+                Head::from_span(raw[i * HEAD_SPAN..(i + 1) * HEAD_SPAN].try_into().unwrap());
+        }
+        for i in done..batch {
+            let container = slice[i];
+            out[offset + i] = if container == 0 {
+                Head::default()
+            } else {
+                read_head(memory, container)
+            };
+        }
+        offset += batch;
+    }
+}
+
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -415,7 +693,7 @@ pub fn walk_buffer(
 }
 
 #[derive(Clone, Copy, Default)]
-struct Head {
+pub struct Head {
     vtable: [u8; 8],
     header: [u8; HEADER],
     seed: [u8; 4],
@@ -424,6 +702,16 @@ struct Head {
 }
 
 impl Head {
+    fn from_span(bytes: [u8; HEAD_SPAN]) -> Self {
+        Self {
+            vtable: bytes[0..8].try_into().unwrap(),
+            header: bytes[STORAGE..STORAGE + HEADER].try_into().unwrap(),
+            seed: bytes[SEED..SEED + 4].try_into().unwrap(),
+            copied: 3,
+            overflow: false,
+        }
+    }
+
     fn seed(&self) -> Option<u32> {
         (self.copied == 3).then(|| u32::from_le_bytes(self.seed))
     }

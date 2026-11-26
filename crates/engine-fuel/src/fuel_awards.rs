@@ -171,6 +171,8 @@ pub fn start_held(
     }
     let owner = u64::from_le_bytes(raw[1]) as usize;
     let game_state = u64::from_le_bytes(raw[11]) as usize;
+    let expected_country = engine_sites::at(base, ccountry::VTABLE_RVA).map(|at| at as u64);
+    let mut owner_vtable = [0_u8; 8];
     let mut backlink = [0_u8; 8];
     let mut surrender = [0_u8; 4];
     let mut owner_id = [0_u8; 4];
@@ -178,6 +180,7 @@ pub fn start_held(
     let mut links_header = [0_u8; 16];
     let second_ok = (|| -> Option<()> {
         let addresses = [
+            owner,
             owner.checked_add(ccountry::FUEL_STATUS)?,
             owner.checked_add(ccountry::SURRENDER_TARGET)?,
             owner.checked_add(ccountry::ID)?,
@@ -187,13 +190,14 @@ pub fn start_held(
         (memory.copy_scattered(
             addresses,
             &mut [
+                &mut owner_vtable[..],
                 &mut backlink[..],
                 &mut surrender[..],
                 &mut owner_id[..],
                 &mut countries_header[..],
                 &mut links_header[..],
             ],
-        ) == 5)
+        ) == 6)
             .then_some(())
     })()
     .is_some();
@@ -208,11 +212,15 @@ pub fn start_held(
                 .ok_or("country links unreadable or invalid")?;
             ccountry::Reader::from_arrays(memory, base, game_state, [countries, links])?
         };
+        let vtable_ok = expected_country == Some(u64::from_le_bytes(owner_vtable));
         let (country, taken) = match held {
             Some(held) if held.owner == owner => (held.country, true),
-            _ if authenticated => {
+            _ if authenticated || vtable_ok => {
                 let id = u32::from_le_bytes(owner_id);
-                let resolved = match countries.verify_canonical_pointer(owner, id) {
+                let resolved = match (id != 0)
+                    .then(|| countries.verify_canonical_pointer(owner, id))
+                    .flatten()
+                {
                     Some(country) => country,
                     None => countries.of_pointer(owner)?,
                 };

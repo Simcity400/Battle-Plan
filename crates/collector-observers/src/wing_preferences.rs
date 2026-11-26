@@ -103,6 +103,22 @@ fn retire(pointer: usize) {
         Err(_) => invalidate(),
     }
 }
+pub fn quiet_token() -> Option<(u64, u64)> {
+    if !AVAILABLE.load(Ordering::Acquire) || ACTIVE.load(Ordering::Acquire) != 0 {
+        return None;
+    }
+    let epoch = EPOCH.load(Ordering::Acquire);
+    let revision = REVISION.load(Ordering::Acquire);
+    if !AVAILABLE.load(Ordering::Acquire)
+        || ACTIVE.load(Ordering::Acquire) != 0
+        || EPOCH.load(Ordering::Acquire) != epoch
+        || REVISION.load(Ordering::Acquire) != revision
+    {
+        return None;
+    }
+    Some((epoch, revision))
+}
+
 pub fn read(memory: &impl Memory, pointer: usize, id: u64) -> Option<u8> {
     if !AVAILABLE.load(Ordering::Acquire) || ACTIVE.load(Ordering::Acquire) != 0 {
         return None;
@@ -493,5 +509,24 @@ mod tests {
         let old = ORIGINAL[0].swap(original as *const () as usize, Ordering::AcqRel);
         assert_eq!(unsafe { deploy(11, 22, 33, 44, 55, 66, 77, 88) }, 99);
         ORIGINAL[0].store(old, Ordering::Release);
+    }
+
+    #[test]
+    fn quiet_token_tracks_availability_active_scopes_and_revisions() {
+        let _serial = SERIAL.lock().unwrap();
+        let previous = AVAILABLE.swap(false, Ordering::AcqRel);
+        assert_eq!(quiet_token(), None);
+        AVAILABLE.store(true, Ordering::Release);
+        let before = quiet_token().unwrap();
+        assert_eq!(quiet_token(), Some(before));
+        let scope = Scope::begin(false);
+        assert_eq!(quiet_token(), None);
+        scope.finish(0);
+        let after_scope = quiet_token().unwrap();
+        assert_ne!(after_scope, before);
+        invalidate();
+        let after_invalidate = quiet_token().unwrap();
+        assert_ne!(after_invalidate, after_scope);
+        AVAILABLE.store(previous, Ordering::Release);
     }
 }

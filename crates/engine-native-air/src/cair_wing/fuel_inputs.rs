@@ -13,6 +13,62 @@ pub struct Inputs {
     pub override_resolved: Option<bool>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Gathered {
+    pub base_fuel: i64,
+    pub mission_vtable: u64,
+    pub current_type: i32,
+    pub effective_aircraft: i32,
+    pub context_mode: u8,
+    pub wing_backlink: u64,
+    pub capacity_class: i32,
+}
+
+pub fn from_gathered(
+    memory: &impl Memory,
+    base: usize,
+    wing: usize,
+    row: &Row,
+    gathered: &Gathered,
+    references: &mut ScopedResolver,
+) -> Inputs {
+    let expected_vtable = engine_sites::at(base, air_mission::VTABLE_RVA).map(|at| at as u64);
+    let mut out = Inputs {
+        base_fuel: Some(gathered.base_fuel),
+        ..Default::default()
+    };
+    if expected_vtable != Some(gathered.mission_vtable) {
+        return out;
+    }
+    out.current_type = Some(gathered.current_type);
+    match gathered.current_type {
+        current if current != 0 => {
+            out.effective_aircraft = Some(gathered.effective_aircraft);
+            out.context_mode = Some(gathered.context_mode);
+        }
+        0 if row.mission_mask & air_mission::TRAINING_MASK != 0
+            && row.eligibility_veto == 0
+            && row.eligibility_counter <= row.eligibility_limit
+            && row.planes > 0 =>
+        {
+            out.override_resolved = if row.base_override == 0 {
+                Some(false)
+            } else {
+                references
+                    .resolve(memory, row.base_override)
+                    .ok()
+                    .map(|value| value.is_some())
+            };
+            if out.override_resolved == Some(false) && gathered.wing_backlink == wing as u64 {
+                out.capacity_class = Some(gathered.capacity_class);
+                out.context_mode = Some(gathered.context_mode);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 fn field<T: Raw>(memory: &impl Memory, wing: usize, offset: usize) -> Option<T> {
     wing.checked_add(offset).and_then(|at| read(memory, at))
 }
@@ -260,5 +316,46 @@ mod tests {
             capture(&memory, 0, WING, &denied, &mut ScopedResolver::new(0)).capacity_class,
             None
         );
+    }
+
+    #[test]
+    fn from_gathered_matches_capture_across_idle_active_and_training_wings() {
+        for (current, mask, planes, veto, backlink) in [
+            (0, 0, 10, 0, WING as u64),
+            (4, 1, 10, 0, WING as u64),
+            (0, air_mission::TRAINING_MASK, 1, 0, WING as u64),
+            (0, air_mission::TRAINING_MASK, 1, 0, 0),
+            (0, air_mission::TRAINING_MASK, 1, 1, WING as u64),
+        ] {
+            let mut memory = self::memory(current);
+            memory.bytes[WING + MISSION + air_mission::EFFECTIVE_AIRCRAFTS
+                ..WING + MISSION + air_mission::EFFECTIVE_AIRCRAFTS + 4]
+                .copy_from_slice(&42_i32.to_le_bytes());
+            memory.bytes[WING + MISSION + air_mission::CONTEXT_MODE] = 3;
+            memory.bytes[WING + MISSION + air_mission::WING
+                ..WING + MISSION + air_mission::WING + 8]
+                .copy_from_slice(&backlink.to_le_bytes());
+            memory.bytes[WING + MISSION + air_mission::CAPACITY_CLASS
+                ..WING + MISSION + air_mission::CAPACITY_CLASS + 4]
+                .copy_from_slice(&7_i32.to_le_bytes());
+            let row = Row {
+                mission_mask: mask,
+                planes,
+                eligibility_veto: veto,
+                ..Default::default()
+            };
+            let gathered = Gathered {
+                base_fuel: 123_456,
+                mission_vtable: air_mission::VTABLE_RVA.0 as u64,
+                current_type: current,
+                effective_aircraft: 42,
+                context_mode: 3,
+                wing_backlink: backlink,
+                capacity_class: 7,
+            };
+            let expected = capture(&memory, 0, WING, &row, &mut ScopedResolver::new(0));
+            let actual = from_gathered(&memory, 0, WING, &row, &gathered, &mut ScopedResolver::new(0));
+            assert_eq!(actual, expected);
+        }
     }
 }
