@@ -1934,7 +1934,11 @@ countries?: Array<CountryRef>,
 /**
  * Rows naming a member of the group at the row's date, membership resolved in Rust.
  */
-group?: GroupSelection, search?: string, sort?: OccurrenceSort, offset?: string, limit: number,
+group?: GroupSelection, search?: string,
+/**
+ * One row by its key, with the detail text list rows leave out; no row when it is not in the log at the hour.
+ */
+row?: string, sort?: OccurrenceSort, offset?: string, limit: number,
 /**
  * The events whose choices are listed; every one when none. Decisions take none.
  */
@@ -1953,19 +1957,19 @@ export type ScriptEdge = { row: EventFeedRow,
 /**
  * The executed option's signed native ordinal.
  */
-option: number | null,
+option?: number | null,
 /**
  * The writer's lifecycle result, where its boundary supplies one.
  */
-lifecycle: number | null,
+lifecycle?: number | null,
 /**
  * The writer's duration result in days.
  */
-days: number | null,
+days?: number | null,
 /**
- * The power the execution was proven to charge; null when not proven.
+ * The power the execution was proven to charge; absent when not proven.
  */
-costs: Array<ScriptCost> | null, };
+costs?: Array<ScriptCost> | null, };
 export type ScriptOccurrence = { id: string,
 /**
  * Whether the first edge opened the card; false for a continuing row whose opening was not
@@ -2552,15 +2556,23 @@ countries?: Array<CountryRef>,
 /**
  * Rows naming a member of the group at the row's date, membership resolved in Rust.
  */
-group?: GroupSelection, search?: string, sort?: OccurrenceSort, offset?: string, limit: number, categories: Array<EventFeedCategory>,
+group?: GroupSelection, search?: string,
+/**
+ * One row by its key, with the detail text list rows leave out; no row when it is not in the log at the hour.
+ */
+row?: string, sort?: OccurrenceSort, offset?: string, limit: number, categories: Array<EventFeedCategory>,
 /**
  * Kinds left out of the categories asked, by name; an unknown name is refused.
  */
 exclude?: Array<string>, };
 export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
 export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged" | "eventWindowPresented";
-export type EventFeedOption = { ordinal: number, name: string | null, };
-export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description: string | null,
+export type EventFeedOption = { ordinal: number,
+/**
+ * In a list row only the chosen option's name; the opened row holds every option's.
+ */
+name: string | null, };
+export type EventFeedItem = { token: string | null, name: string | null, icon: string | null, description?: string | null,
 /**
  * A scripted event's authored options in the game's order; absent for other kinds and when
  * the event's content does not resolve.
@@ -2579,31 +2591,39 @@ export type EventFeedCause = {
 /**
  * The native operation the event happened in.
  */
-how: string | null,
+how?: string,
 /**
  * The operation that one ran inside.
  */
-within: string | null,
+within?: string,
 /**
  * The peace conference starting or applying, as its reference in decimal.
  */
-conference: string | null,
+conference?: string,
 /**
  * A state whose owner changed.
  */
-state: number | null,
+state?: number,
 /**
  * A join's ally.
  */
-ally: string | null,
+ally?: string,
 /**
  * A join's hostility reason.
  */
-reason: string | null,
+reason?: string,
 /**
- * The native operands that change what the event means.
+ * The native operands that change what the event means; empty in a list row, read with the opened row.
  */
-notes: Array<string>, };
+notes: Array<string>,
+/**
+ * A scripted event's selected native option ordinal, where recorded.
+ */
+selectedOption?: number,
+/**
+ * Whether a scripted event recorded a country or numeric target.
+ */
+targetRecorded: boolean, };
 export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notApplicable", reason: string, } | { "kind": "notRecorded", reason: string, };
 export type EventWindowDecision = "requested" | "aiControlled" | "hiddenOrAiControlled" | "notViewingCountry" | "senderExcluded" | "playerRestrictedNotMajor" | "playerRestrictedOptionTrigger" | "existingInstance" | "alreadyOpen";
 export type EventWindowKind = "normal" | "news" | "leader" | "operative";
@@ -2672,7 +2692,7 @@ nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKi
  * Native action roles, actor then target. Null keeps a role that names no country or that
  * no link and holder witnessed.
  */
-participants?: [string | null, string | null], item: EventFeedItem | null, amount: number | null,
+participants?: [string | null, string | null], item: EventFeedItem | null, amount?: number | null,
 /**
  * A native event's recorded cause; absent when the recording holds none.
  */
@@ -6562,7 +6582,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "country-identities": { "branchId": "leaf" },
   "country-stability-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-styles": { "branchId": "leaf", "hour": "leaf", "tags": "node", "tags[]": "leaf" },
-  "decisions-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "events": "node", "events[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
+  "decisions-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "events": "node", "events[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "row": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
   "decorated-divisions": { "branchId": "leaf", "by": "leaf", "count": "leaf", "countries": "node", "countries[]": "node", "countries[].firstHour": "leaf", "countries[].lastHour": "leaf", "countries[].tag": "leaf", "descending": "leaf", "hour": "leaf" },
   "decryption": { "branchId": "leaf", "hour": "leaf" },
   "diplomatic-pacts": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6583,10 +6603,10 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "equipment-stockpile-lines": { "branchId": "leaf", "family": "node", "family.country": "any", "family.included": "node", "family.included[]": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "hour": "leaf", "top": "leaf" },
   "equipment-stockpile-types": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "espionage-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "countryRole": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "operationTypes": "node", "operationTypes[]": "leaf", "runningOrder": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
-  "event-choices-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "events": "node", "events[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
+  "event-choices-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "events": "node", "events[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "row": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
   "event-feed-activity": { "binHours": "leaf", "branchId": "leaf", "categories": "node", "categories[]": "leaf", "countries": "node", "countries[]": "any", "exclude": "node", "exclude[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf" },
   "event-feed-kinds": { "branchId": "leaf" },
-  "event-feed-tail": { "branchId": "leaf", "categories": "node", "categories[]": "leaf", "countries": "node", "countries[]": "any", "exclude": "node", "exclude[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
+  "event-feed-tail": { "branchId": "leaf", "categories": "node", "categories[]": "leaf", "countries": "node", "countries[]": "any", "exclude": "node", "exclude[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "row": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "to": "leaf" },
   "faction-details": { "branchId": "leaf", "faction": "leaf", "hour": "leaf", "viewpoint": "any" },
   "faction-pools": { "branchId": "leaf", "country": "any", "faction": "leaf", "hour": "leaf", "pool": "leaf" },
   "faction-state": { "branchId": "leaf", "faction": "leaf", "view": "leaf", "viewpoint": "any" },
