@@ -1,6 +1,6 @@
 use super::{
     Counts, MISSING_BASELINE, NavalAttribution, NavalKind, NavalLossesAtParams, NavalPeriod,
-    month_start, part_runs, reply_at,
+    missing_holder, month_start, part_runs, reply_at, unlinked_tag_at,
 };
 use dashboard_base::{
     Source,
@@ -287,6 +287,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                 }
             }
         }
+        let mut unlinked_by_hour = BTreeMap::new();
         for ((country, _), force_runs) in held.into_iter().zip(runs_by_index) {
             let within = within_by_country.get(&country).map(Vec::as_slice);
             let mut pieces = Vec::new();
@@ -301,6 +302,25 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                     }),
                     None => push_missing(&mut missing, run.first_hour, run.last_hour, MISSING_BASELINE),
                 }
+            }
+            let mut holder_gaps = Vec::new();
+            let mut hour = scan_first;
+            loop {
+                let held = query.holders.at(&country, hour);
+                let end = held.map_or_else(|| query.holders.interval(hour).1, |run| run.last).min(clip);
+                if let Some(reason) = missing_holder(&query.holders, &country, hour, held.map(|run| run.holder), || {
+                    *unlinked_by_hour.entry(hour).or_insert_with(|| unlinked_tag_at(&query.holders, hour))
+                }) {
+                    push_missing(&mut holder_gaps, hour, end, &format!("Who holds {country} is not known: {reason}"));
+                }
+                if end == clip {
+                    break;
+                }
+                hour = end + 1;
+            }
+            if !holder_gaps.is_empty() {
+                missing.extend(holder_gaps);
+                missing.sort_unstable_by_key(|gap| gap.first_hour);
             }
             let mut pieces = clip_pieces(pieces, within);
             pieces.sort_by_key(|piece| piece.first);
@@ -350,7 +370,7 @@ mod tests {
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
     use replay_data::rows::{CountryLinkRow, CountryRow, SunkConvoyRow, SunkShipEntry, SunkShipsRow, TableId, TableRows};
-    use replay_frame::frame::TableView;
+    use replay_frame::frame::{DecodedFrame, TableView};
     use std::sync::Arc;
 
     fn naval_source() -> Source {
@@ -358,6 +378,14 @@ mod tests {
     }
 
     fn losses_source(convoys: bool, refused: Option<(i32, u32)>, unlinked: Option<(i32, i32)>) -> Source {
+        losses_with(convoys, refused, |frame| {
+            if unlinked.is_some_and(|(first, last)| (first..=last).contains(&frame.hour)) {
+                *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "not read".into() };
+            }
+        })
+    }
+
+    fn losses_with(convoys: bool, refused: Option<(i32, u32)>, edit: impl Fn(&mut DecodedFrame)) -> Source {
         const FIRST: i32 = 1_000;
         const LAST: i32 = 1_040;
         let sunk = |name: &[u8], sink_hour: i32| SunkShipEntry {
@@ -400,14 +428,12 @@ mod tests {
                     *frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }]));
                     frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
                 }
-                if unlinked.is_some_and(|(first, last)| (first..=last).contains(&hour)) {
-                    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "not read".into() };
-                }
                 if convoys {
                     let rows = (hour >= 1_010).then(|| SunkConvoyRow { month: 0, killer_country: 9002, owner_country: 9001, convoys: hour - 1_009, ordinal: 0 });
                     *frame.tables[TableId::SunkConvoys.index()] = TableView::Complete(TableRows::SunkConvoys(rows.into_iter().collect()));
                     frame.metrics.table_ns[TableId::SunkConvoys.index()] = 1;
                 }
+                edit(&mut frame);
                 frame
             })
             .collect();
@@ -552,5 +578,55 @@ mod tests {
         assert_eq!(reply.missing, None);
         assert_eq!(reply.rows.len(), 1, "{:?}", reply.rows);
         assert_eq!((reply.rows[0].total, reply.rows[0].missing.is_some()), (None, true));
+    }
+
+    #[test]
+    fn a_chosen_slot_with_an_unlinked_tag_keeps_its_row_and_tile_gap() {
+        let src = losses_with(false, None, |frame| {
+            if (1_025..=1_027).contains(&frame.hour) {
+                let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+                links.retain(|link| link.id != 9001);
+            }
+        });
+        let slot = Country::Slot(7);
+        for hour in [1_024, 1_028] {
+            let reply = head(&src, hour, vec![slot.clone()], None);
+            assert_eq!(reply.rows[0].total, Some(2));
+        }
+        let reply = head(&src, 1_026, vec![slot.clone(), Country::Slot(8)], None);
+        assert_eq!((reply.first_hour, reply.last_hour), (1_025, 1_027));
+        assert_eq!(reply.rows[0].total, Some(0), "the linked country still has a known count");
+        let row = reply.rows.iter().find(|row| row.country == slot).expect("the chosen slot keeps its row");
+        assert_eq!((row.total, row.values.as_slice()), (None, [None].as_slice()));
+        assert!(row.missing.as_deref().unwrap().contains(dashboard_query::identity::TAG_UNLINKED));
+
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let tile = tile(&src, &query, &serde_json::json!({
+            "branchId": "1", "family": { "kind": SERIES, "countKind": "ships", "attribution": "lost", "period": "running" },
+            "binHours": 1, "index": 1_024 / BINS as i64, "countries": [7],
+            "within": [[7, [{ "firstHour": 1_024, "lastHour": 1_028 }]]],
+        }), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        assert_eq!(tile.lines[0].country, slot);
+        let gaps = &tile.lines[0].missing;
+        assert_eq!(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect::<Vec<_>>(), [(1_025, 1_027)]);
+        assert!(gaps[0].reason.contains(dashboard_query::identity::TAG_UNLINKED));
+    }
+
+    #[test]
+    fn top_losses_warn_only_for_refused_sinkings_of_the_rows_shown() {
+        let src = losses_with(false, Some((1_033, 9002)), |frame| {
+            if frame.hour >= 1_030 {
+                let TableView::Complete(TableRows::SunkShips(rows)) = &mut *frame.tables[TableId::SunkShips.index()] else { unreachable!() };
+                rows[0].entries[2].victim_country = 9002;
+            }
+        });
+        let rank = |limit| head(&src, 1_035, Vec::new(), Some(limit));
+        let both = rank(2);
+        let counts = |rows: &[dashboard_land::products::forces::ForceAtRow]| rows.iter().map(|row| (row.slot, row.total)).collect::<Vec<_>>();
+        assert_eq!(counts(&both.rows), [(Some(7), Some(2)), (Some(8), Some(1))]);
+        assert!(both.warnings.iter().any(|warning| warning.starts_with("1 sinkings")));
+        let first = rank(1);
+        assert_eq!(counts(&first.rows), [(Some(7), Some(2))]);
+        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
     }
 }
