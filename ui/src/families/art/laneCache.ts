@@ -11,6 +11,7 @@ export interface LaneArtCacheOptions<TBitmap extends ArtBitmap = ImageBitmap> {
   readonly maxConcurrent?: number;
   readonly contentRevision?: number;
   readonly fetchBitmap?: LaneArtFetcher<TBitmap>;
+  readonly pool?: LaneArtPool<TBitmap>;
   readonly onSettle?: () => void;
 }
 
@@ -26,14 +27,69 @@ async function defaultFetchBitmap(url: string, signal: AbortSignal): Promise<Ima
   return createImageBitmap(blob);
 }
 
+export interface LaneArtClaim<TBitmap extends ArtBitmap = ImageBitmap> {
+  readonly bitmap: Promise<TBitmap>;
+  release(): void;
+}
+
+interface Pooled<TBitmap extends ArtBitmap> {
+  users: number;
+  ready: TBitmap | null;
+  readonly controller: AbortController;
+  readonly bitmap: Promise<TBitmap>;
+}
+
+export class LaneArtPool<TBitmap extends ArtBitmap = ImageBitmap> {
+  private readonly entries = new Map<string, Pooled<TBitmap>>();
+
+  private readonly fetchBitmap: LaneArtFetcher<TBitmap>;
+
+  constructor(fetchBitmap: LaneArtFetcher<TBitmap> = defaultFetchBitmap as LaneArtFetcher<TBitmap>) {
+    this.fetchBitmap = fetchBitmap;
+  }
+
+  acquire(url: string, revision: number): LaneArtClaim<TBitmap> {
+    const key = `${revision}\u0000${url}`;
+    let entry = this.entries.get(key);
+    if (!entry) {
+      const controller = new AbortController();
+      const made: Pooled<TBitmap> = { users: 0, ready: null, controller, bitmap: this.fetchBitmap(url, controller.signal) };
+      made.bitmap.then(
+        bitmap => { if (this.entries.get(key) === made) made.ready = bitmap; else bitmap.close(); },
+        () => { if (this.entries.get(key) === made) this.entries.delete(key); },
+      );
+      this.entries.set(key, entry = made);
+    }
+    const held = entry;
+    held.users++;
+    let released = false;
+    return {
+      bitmap: held.bitmap,
+      release: () => {
+        if (released) return;
+        released = true;
+        if (--held.users > 0 || this.entries.get(key) !== held) return;
+        this.entries.delete(key);
+        if (held.ready) held.ready.close();
+        else held.controller.abort();
+      },
+    };
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
+
 export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   private readonly bitmaps = new Map<string, TBitmap>();
+  private readonly claims = new Map<string, LaneArtClaim<TBitmap>>();
   private readonly failed = new Map<string, string>();
-  private readonly pending = new Map<string, AbortController>();
+  private readonly pending = new Map<string, LaneArtClaim<TBitmap>>();
   private readonly maxEntries: number;
   private readonly maxFailed: number;
   private readonly maxConcurrent: number;
-  private readonly fetchBitmap: LaneArtFetcher<TBitmap>;
+  private readonly pool: LaneArtPool<TBitmap>;
   private onSettle?: () => void;
   private contentRevision: number;
   private settleVersion = 0;
@@ -51,7 +107,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     this.maxFailed = Math.max(1, options.maxFailed ?? DEFAULT_MAX_FAILED);
     this.maxConcurrent = Math.max(1, options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT);
     this.contentRevision = options.contentRevision ?? 0;
-    this.fetchBitmap = options.fetchBitmap ?? (defaultFetchBitmap as LaneArtFetcher<TBitmap>);
+    this.pool = options.pool ?? new LaneArtPool(options.fetchBitmap);
     this.onSettle = options.onSettle;
   }
 
@@ -66,10 +122,9 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   }
 
   flush(): void {
-    for (const controller of this.pending.values()) controller.abort();
+    for (const claim of this.pending.values()) claim.release();
     this.pending.clear();
-    for (const bitmap of this.bitmaps.values()) bitmap.close();
-    this.bitmaps.clear();
+    this.releaseAll();
     this.failed.clear();
     this.shownCursor = 0;
     this.demandedCursor = 0;
@@ -188,10 +243,10 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
       this.demandedCursor = 0;
       for (const url of demanded) this.touch(url);
     }
-    for (const [url, controller] of this.pending) {
+    for (const [url, claim] of this.pending) {
       if (!this.wants(url)) {
         this.pending.delete(url);
-        controller.abort();
+        claim.release();
       }
     }
     for (const url of shown) this.touch(url);
@@ -203,15 +258,14 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     if (this.disposed) return;
     this.disposed = true;
     this.onSettle = undefined;
-    for (const controller of this.pending.values()) controller.abort();
+    for (const claim of this.pending.values()) claim.release();
     this.pending.clear();
     this.visible = new Set();
     this.demanded = new Set();
     this.demandedFrom = null;
     this.shownQueue = [];
     this.demandedQueue = [];
-    for (const bitmap of this.bitmaps.values()) bitmap.close();
-    this.bitmaps.clear();
+    this.releaseAll();
     this.failed.clear();
   }
 
@@ -277,36 +331,50 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     }
   }
 
+  private releaseAll(): void {
+    for (const claim of this.claims.values()) claim.release();
+    this.claims.clear();
+    this.bitmaps.clear();
+  }
+
+  private drop(url: string): void {
+    this.bitmaps.delete(url);
+    this.claims.get(url)?.release();
+    this.claims.delete(url);
+  }
+
   private startFetch(url: string): void {
-    const controller = new AbortController();
     const rev = this.contentRevision;
-    this.pending.set(url, controller);
-    void this.fetchBitmap(url, controller.signal).then(
+    const claim = this.pool.acquire(url, rev);
+    this.pending.set(url, claim);
+    void claim.bitmap.then(
       bitmap => {
-        if (this.pending.get(url) === controller) this.pending.delete(url);
-        if (this.disposed || controller.signal.aborted || this.contentRevision !== rev) {
-          bitmap.close();
+        const current = this.pending.get(url) === claim;
+        if (current) this.pending.delete(url);
+        if (this.disposed || !current || this.contentRevision !== rev) {
+          if (current) claim.release();
           return;
         }
-        const prev = this.bitmaps.get(url);
-        if (prev) {
-          this.bitmaps.delete(url);
-          prev.close();
-        }
+        this.drop(url);
         this.failed.delete(url);
         if (this.wants(url)) {
           this.bitmaps.set(url, bitmap);
+          this.claims.set(url, claim);
           this.trim();
         } else {
-          bitmap.close();
+          claim.release();
         }
         this.pump();
         this.settleVersion++;
         this.onSettle?.();
       },
       error => {
-        if (this.pending.get(url) === controller) this.pending.delete(url);
-        if (this.disposed || controller.signal.aborted || this.contentRevision !== rev) return;
+        const current = this.pending.get(url) === claim;
+        if (current) {
+          this.pending.delete(url);
+          claim.release();
+        }
+        if (this.disposed || !current || this.contentRevision !== rev) return;
         const reason = error instanceof Error ? error.message : String(error || 'Art decode failed');
         this.failed.set(url, reason);
         while (this.failed.size > this.maxFailed) {
@@ -322,10 +390,9 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   }
 
   private evictOne(evictable: (url: string) => boolean): boolean {
-    for (const [key, bitmap] of this.bitmaps) {
+    for (const key of this.bitmaps.keys()) {
       if (this.visible.has(key) || !evictable(key)) continue;
-      this.bitmaps.delete(key);
-      bitmap.close();
+      this.drop(key);
       return true;
     }
     return false;

@@ -4,7 +4,7 @@ import { createBoundedReadView } from '../boundedView.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { flagChoiceKey, parseFlagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
-import { LaneArtCache } from './laneCache.ts';
+import { LaneArtCache, LaneArtPool } from './laneCache.ts';
 import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../theme.fixture.ts';
@@ -121,6 +121,36 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
   assert.equal(cache.stateOfUrl(flakyRes.url), 'unrequested', 'content revision flush clears cache');
 
   cache.dispose();
+});
+
+test('widgets in one lane decode each art once: a pool shares the bitmap, keeps it while any widget holds it, and decodes again for a new content revision', async () => {
+  const decoded: string[] = [];
+  const bitmaps: (ArtBitmap & { closed: boolean })[] = [];
+  const pool = new LaneArtPool(async url => { decoded.push(url); const bitmap = fakeBitmap(); bitmaps.push(bitmap); return bitmap; });
+  const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+  const first = new LaneArtCache({ pool, maxEntries: 1 });
+  const second = new LaneArtCache({ pool, maxEntries: 1 });
+  first.requestVisible(['art://flag-a']);
+  second.requestVisible(['art://flag-a']);
+  await settle();
+  assert.deepEqual(decoded, ['art://flag-a'], 'two widgets showing the same flag decode it once');
+  assert.equal(first.bitmapOf('art://flag-a'), second.bitmapOf('art://flag-a'), 'and draw the same bitmap');
+  first.requestVisible(['art://flag-b']);
+  await settle();
+  first.requestVisible(['art://flag-c']);
+  await settle();
+  assert.equal(first.stateOfUrl('art://flag-a'), 'unrequested', 'the first widget evicts the flag it no longer shows');
+  assert.equal(bitmaps[0]!.closed, false, 'the bitmap stays open while the second widget still shows it');
+  second.dispose();
+  assert.equal(bitmaps[0]!.closed, true, 'and closes when the last widget lets it go');
+  const third = new LaneArtCache({ pool, contentRevision: 2 });
+  third.requestVisible(['art://flag-b']);
+  await settle();
+  assert.equal(decoded.filter(url => url === 'art://flag-b').length, 2, 'a new content revision decodes its own copy');
+  first.dispose();
+  third.dispose();
+  assert.equal(pool.size, 0, 'nothing stays in the pool once every widget has gone');
+  assert.ok(bitmaps.every(bitmap => bitmap.closed), 'and every decoded bitmap is closed');
 });
 
 test('DomArtCache distinguishes pending, ready, and failed, wakes listeners, retries, and flushes on content revision', () => {
