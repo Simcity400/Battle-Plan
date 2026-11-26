@@ -101,9 +101,9 @@ export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRace
   },
   sources: airForceSizeRaceSources,
   projection: airForceSizeRaceProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     return {
-      ...seriesRaceSelection(ctx),
+      ...seriesRaceSelection(ctx, extra),
       measure: airMeasure(ctx.options.measure),
       ownership: airOwnership(ctx.options.ownership),
       split: ctx.options.split === true,

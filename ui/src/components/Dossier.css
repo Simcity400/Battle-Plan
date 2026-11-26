@@ -2,11 +2,11 @@
 .dossier-hero { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 16px; padding: 16px 18px; }
 .dossier-art { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 14px;
   background: color-mix(in srgb, var(--text) 4%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent), 0 6px 18px rgb(0 0 0 / .3); }
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent), 0 6px 18px color-mix(in srgb, var(--ink-dark) 30%, transparent); }
 .dossier-art > img { max-width: 56px; max-height: 56px; object-fit: contain; }
 .dossier-art > .art-fallback { width: 100%; height: 100%; }
 .dossier-art.is-blueprint { width: 132px; height: 84px; border-radius: 10px; background: linear-gradient(160deg, color-mix(in srgb, var(--blueprint) 80%, var(--blueprint-border)), var(--blueprint));
-  box-shadow: inset 0 0 0 1px var(--blueprint-border), 0 6px 18px rgb(0 0 0 / .3); }
+  box-shadow: inset 0 0 0 1px var(--blueprint-border), 0 6px 18px color-mix(in srgb, var(--ink-dark) 30%, transparent); }
 .dossier-art.is-blueprint > img { max-width: 120px; max-height: 74px; }
 .dossier-title { display: grid; gap: 8px; min-width: 0; }
 .dossier-title h3 { margin: 0; font-size: 1.0625rem; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; text-wrap: balance; }

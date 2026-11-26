@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
 import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
@@ -11,16 +11,14 @@ import { formatScalar } from '../../families/valueFormat.ts';
 import type { NukeCountry, NukeType } from '../../generated/dashboard';
 import { nuclearArsenalSources, nukeRowIdentity, typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
-const PART_SURFACE = DEFAULT_CARD_SURFACE;
-
 export interface NuclearArsenalRaceOptions extends SeriesRaceBaseOptions {
   readonly split: boolean;
 }
 
-function typeInfoMap(types: readonly NukeType[]): Map<number, { readonly label: string; readonly color: string }> {
+function typeInfoMap(types: readonly NukeType[], surface: string): Map<number, { readonly label: string; readonly color: string }> {
   const map = new Map<number, { readonly label: string; readonly color: string }>();
   types.forEach((type, index) => {
-    map.set(type.ordinal, { label: typeName(type), color: colour(PART_SURFACE, index) });
+    map.set(type.ordinal, { label: typeName(type), color: colour(surface, index) });
   });
   return map;
 }
@@ -30,6 +28,7 @@ function makeRow(
   row: NukeCountry,
   types: ReadonlyMap<number, { readonly label: string; readonly color: string }>,
   split: boolean,
+  surface: string,
 ): BarsDataRow {
   const { key, pres } = nukeRowIdentity(readView, row);
   const value = row.total === 0 ? zeroValue() : knownValue(row.total);
@@ -42,7 +41,7 @@ function makeRow(
     const sum = positive.reduce((acc, count) => acc + count.value, 0);
     if (sum > 0) {
       segments = positive.map((count, idx) => {
-        const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(PART_SURFACE, types.size + idx) };
+        const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(surface, types.size + idx) };
         const text = count.ready > 0
           ? `${formatScalar(count.value, 'integer')} (${formatScalar(count.ready, 'integer')} ready)`
           : formatScalar(count.value, 'integer');
@@ -60,7 +59,7 @@ function makeRow(
   } else if (row.counts.length > 0) {
     row.counts.forEach((count, idx) => {
       if (count.value <= 0) return;
-      const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(PART_SURFACE, types.size + idx) };
+      const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(surface, types.size + idx) };
       tooltipItems.push({ label: info.label, value: formatScalar(count.value, 'integer') });
     });
   }
@@ -113,8 +112,8 @@ export const nuclearArsenalRaceProjection: BarsProjection<NuclearArsenalRaceOpti
       return { ...baseModel, rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
     }
 
-    const types = typeInfoMap(reply.types);
-    const rows = reply.countries.map(row => makeRow(readView, row, types, options.split));
+    const types = typeInfoMap(reply.types, options.surface);
+    const rows = reply.countries.map(row => makeRow(readView, row, types, options.split, options.surface));
 
     return {
       ...baseModel,
@@ -139,7 +138,7 @@ export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenal
   },
   sources: ctx => nuclearArsenalSources(ctx, 'race'),
   projection: nuclearArsenalRaceProjection,
-  projectionOptions: ctx => ({ ...seriesRaceSelection(ctx), split: ctx.options.split !== false }),
+  projectionOptions: (ctx, extra) => ({ ...seriesRaceSelection(ctx, extra), split: ctx.options.split !== false }),
   unavailable: seriesRaceUnavailable,
   warnings: (_ctx, followRefused) => seriesRaceWarnings(followRefused),
   jumpToDate: true,

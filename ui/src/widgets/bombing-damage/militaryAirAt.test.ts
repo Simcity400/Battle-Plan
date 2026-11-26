@@ -22,7 +22,7 @@ const identity: IdentityProvider = {
   },
 };
 
-const AIR: MilitaryAirAtOptions = {
+const AIR: MilitaryAirAtOptions = { surface: '#1e1e1e',
   family: 'airLosses', scale: 100_000, digits: 5, shownDecimals: 0, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true,
   group: false, none: 'No aircraft lost yet.', filters: { regions: [], causes: [] },
 };

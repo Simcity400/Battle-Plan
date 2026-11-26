@@ -7,7 +7,6 @@ export const CHART_LAYOUT = { right: 14, countryEndLabels: 150, measureEndLabels
 export interface ChartTokens {
   surface: string; raised: string; text: string; muted: string; border: string;
   grid: string; axis: string; accent: string; positive: string; warning: string; error: string;
-  blueprint: string; blueprintBorder: string; blueprintText: string;
   categories: string[];
   font: string;
   fontSize: { small: number; body: number; title: number };
@@ -21,7 +20,6 @@ const DEFAULT_PREFERENCES: ChartPreferences = { motion: 'smooth', reducedMotion:
 const VARIABLES = {
   surface: '--surface', raised: '--raised', text: '--text', muted: '--muted', border: '--border',
   grid: '--chart-grid', axis: '--chart-axis', accent: '--accent', positive: '--positive', warning: '--warning', error: '--error',
-  blueprint: '--blueprint', blueprintBorder: '--blueprint-border', blueprintText: '--blueprint-text',
 } as const;
 
 const DEFAULT_SIZES: ChartTokens['fontSize'] = { small: 11, body: 12, title: 13 };

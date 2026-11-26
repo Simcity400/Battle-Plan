@@ -118,10 +118,10 @@ export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions,
   },
   sources: armySizeRaceSources,
   projection: armySizeRaceProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const measure = armyMeasure(ctx.options.measure, ctx.aux?.measures);
     return {
-      ...seriesRaceSelection(ctx),
+      ...seriesRaceSelection(ctx, extra),
       measure,
       countFor: armyCountFor(ctx.options.countFor),
       split: measure === 'battalions' && ctx.options.byType === true,

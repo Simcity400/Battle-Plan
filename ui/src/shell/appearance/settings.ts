@@ -3,7 +3,7 @@ import { isWidgetKind, parseIconStyles } from './iconStyle.ts';
 import type { WidgetIconStyles } from './iconStyle.ts';
 import { isSidebarIconId } from './sidebarIcons.ts';
 import type { SidebarIconStyles } from './sidebarIcons.ts';
-import { BUILT_IN_THEMES, DEFAULT_THEME_ID, completeColors, findTheme, themeColors, themeRoles } from './themes.ts';
+import { BUILT_IN_THEMES, DEFAULT_SEEDS, DEFAULT_THEME_ID, completeColors, findTheme, themeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
 import { MAX_THEME_NAME } from './themeFile.ts';
 import { DEFAULT_TYPOGRAPHY, parseTypography } from './typography.ts';
@@ -138,7 +138,7 @@ export function migrateLegacy(input: unknown): AppearanceSettings | null {
   const colors = completeColors({
     canvas: old.background, chrome: old.surface, surface: old.surface, raised: old.raised, overlay: old.surface, border: old.border,
     text: old.text, muted: old.muted, accent: old.accent, selection: old.selection, positive: old.positive, warning: old.warning, error: old.error,
-  }, { canvas: mode === 'dark' ? '#0a0f16' : '#e9eef4', accent: '#5cb2ff' });
+  }, DEFAULT_SEEDS[mode]);
   settings.custom = [{ id: 'migrated-custom', name: 'My theme', variants: { [mode]: colors } }];
   settings.themes[mode] = 'migrated-custom';
   return settings;

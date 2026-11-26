@@ -1,10 +1,11 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatDateOnly, formatRational, formatRecordedPercent, formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type ChartValueFormat, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 import { hitChartRows, rowsTooltip } from './rows.ts';
+
+const NEGATIVE_SWATCH = 'var(--error-ink)';
 
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
@@ -330,7 +331,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
             item: {
               label: look.name,
               value: formatExactFigure(s.exact.value, model, model.yAxis.format, s.exact.raw, s.exact.denominator),
-              swatch: negative ? CHART_MEASURE_COLOURS.shortInk : look.color,
+              swatch: negative ? NEGATIVE_SWATCH : look.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
               ...(iconUrl ? { icon: iconUrl } : {}),
@@ -377,7 +378,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         item: {
           label: look.name,
           value: text,
-          swatch: s.negRed && sampled.value < 0 ? CHART_MEASURE_COLOURS.shortInk : look.color,
+          swatch: s.negRed && sampled.value < 0 ? NEGATIVE_SWATCH : look.color,
           tone: s.negRed && sampled.value < 0 ? 'negative' : undefined,
           ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           ...(iconUrl ? { icon: iconUrl } : {}),

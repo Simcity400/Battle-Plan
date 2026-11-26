@@ -35,7 +35,7 @@ function baseOptions(overrides?: Partial<TerritoryRaceOptions>): TerritoryRaceOp
     measureLabel: 'Controlled states',
     scaleUnit: 'States',
     group: false,
-    factions: {
+    factions: { surface: '#1e1e1e',
       kind: 'territory',
       measure: 'controlledStates',
       measureLabel: 'Controlled states',

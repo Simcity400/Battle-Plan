@@ -158,7 +158,7 @@ export const territoryRaceDeclaration: BarsWidgetDeclaration<TerritoryRaceOption
   },
   sources: territoryRaceSources,
   projection: territoryRaceProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const measure = measureOf(ctx.options.measure);
     const rule = ruleOf(ctx.options.rule);
     const seriesMeasure = territorySeriesMeasure(measure, rule);
@@ -186,6 +186,7 @@ export const territoryRaceDeclaration: BarsWidgetDeclaration<TerritoryRaceOption
         aggregated,
         groupLabel: groupTitleForSelection(ctx.widget.countries),
         top: factionSelectionTop(ctx.widget.countries),
+        surface: extra.surface,
       },
     };
   },

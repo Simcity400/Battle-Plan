@@ -51,7 +51,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
       hour: H1941_SEP15,
       panels: new Map([['main', makeReply()]]),
     });
-    const model = armyLossesProjection.project(readView, {
+    const model = armyLossesProjection.project(readView, { surface: '#111111',
       measure: 'manpower',
       ledger: 'combat',
       stack: 'channel',
@@ -87,7 +87,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
         months: [{ month: may, firstHour: firstHourOfMonth(may), lastHour: firstHourOfMonth(may + 1) - 1, liveRow: null, missing: 'Combat Log equipment months of a country not read yet are unknown', values: [], total: '0' }],
       },
     });
-    const unavail = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', allUnknown]]) }), {
+    const unavail = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', allUnknown]]) }), { surface: '#111111',
       measure: 'equipment',
       ledger: 'combat',
       stack: 'type',
@@ -102,7 +102,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
     const partialReply = makeReply();
     const aug = 1941 * 12 + 7;
     partialReply.rollup!.months.push({ month: aug, firstHour: firstHourOfMonth(aug), lastHour: firstHourOfMonth(aug + 1) - 1, liveRow: null, missing: 'Combat Log equipment months of a country not read yet are unknown', values: [], total: '0' });
-    const partial = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', partialReply]]) }), {
+    const partial = armyLossesProjection.project(createBoundedReadView({ hour: H1941_SEP15, panels: new Map([['main', partialReply]]) }), { surface: '#111111',
       measure: 'manpower',
       ledger: 'combat',
       stack: 'channel',
@@ -125,7 +125,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
       hour: H1941_SEP15,
       panels: new Map([['main', makeReply()]]),
       live: new Map([['main', live]]),
-    }), {
+    }), { surface: '#111111',
       measure: 'manpower',
       ledger: 'combat',
       stack: 'channel',
@@ -162,6 +162,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
         countryName: 'German Reich',
         following: true,
         extent: [H1936, H1941_SEP15],
+        surface: '#111111',
       } as Parameters<typeof armyLossesProjection.project>[1],
     );
     const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
@@ -245,7 +246,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
 
   it('S21: binds archetype and army-group colours to stable identity, not current loss rank', () => {
     const may = 1941 * 12 + 4;
-    const baseOpts = {
+    const baseOpts = { surface: '#111111',
       measure: 'equipment' as const,
       ledger: 'combat' as const,
       stack: 'type' as const,
@@ -345,7 +346,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
       hour: H1941_SEP15,
       panels: new Map([['main', reply]]),
       live: new Map([['main', live]]),
-    }), {
+    }), { surface: '#111111',
       measure: 'manpower',
       ledger: 'combat',
       stack: 'channel',
@@ -368,7 +369,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
       hour: H1941_SEP15,
       panels: new Map([['main', reply]]),
       live: new Map([['main', missingNavyLive]]),
-    }), {
+    }), { surface: '#111111',
       measure: 'manpower',
       ledger: 'combat',
       stack: 'channel',

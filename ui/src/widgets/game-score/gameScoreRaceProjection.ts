@@ -1,5 +1,5 @@
 import { rankReading } from '../../charts/race/measureRaceData.ts';
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
 import {
@@ -29,11 +29,11 @@ export interface GameScoreRaceOptions extends SeriesRaceBaseOptions {
 
 const splits = (options: Pick<GameScoreRaceOptions, 'by' | 'split'>) => options.split && options.by === 'total';
 
-function splitParts(reply: SeriesRankReply, row: SeriesRankRow): SeriesRaceParts {
+function splitParts(surface: string, reply: SeriesRankReply, row: SeriesRankRow): SeriesRaceParts {
   const items: TooltipListItem[] = [];
   const known: { readonly part: typeof SPLIT_PARTS[number]; readonly color: string; readonly amount: number }[] = [];
   SPLIT_PARTS.forEach((part, at) => {
-    const color = colour(DEFAULT_CARD_SURFACE, at);
+    const color = colour(surface, at);
     const reading = rankReading(reply, row, part);
     const decimals = reply.measures.find(measure => measure.name === part)?.decimals ?? 0;
     if (!reading?.run) {
@@ -68,7 +68,7 @@ export const gameScoreRaceProjection: BarsProjection<GameScoreRaceOptions> = reg
       scaleUnit: SCORE_LABELS[options.by],
       valueLabel: SCORE_LABELS[options.by],
       emptyMessage: 'No country’s scores recorded at this time.',
-      ...(splits(options) ? { parts: splitParts } : {}),
+      ...(splits(options) ? { parts: (reply: SeriesRankReply, row: SeriesRankRow) => splitParts(options.surface, reply, row) } : {}),
     });
   },
 }, 'race');
@@ -97,8 +97,8 @@ export const gameScoreRaceDeclaration: BarsWidgetDeclaration<GameScoreRaceOption
   },
   sources: gameScoreRaceSources,
   projection: gameScoreRaceProjection,
-  projectionOptions: ctx => ({
-    ...seriesRaceSelection(ctx),
+  projectionOptions: (ctx, extra) => ({
+    ...seriesRaceSelection(ctx, extra),
     by: scorePart(ctx.options.topMeasure),
     split: ctx.options.split !== false,
   }),

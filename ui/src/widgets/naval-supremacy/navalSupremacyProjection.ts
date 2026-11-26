@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
@@ -8,7 +8,7 @@ import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '.
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLaneRun, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
-import { contestedGrey, countryColourAt, readableOn, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
+import { contestedGrey, countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
@@ -35,13 +35,13 @@ interface Look {
 
 function lookOf(readView: BoundedReadView, reply: NavalSupremacyReply, options: SupremacyOptions): Look {
   const { surface, viewer } = options;
-  const noColour = readableOn(CHART_MEASURE_COLOURS.bopRight, surface);
+  const noColour = measureColour('bopRight', surface);
   const friendly = viewer
     ? (hour: number) => countryColourAt(readView, viewer, hour, surface, noColour)
     : () => ({ colour: noColour, through: Infinity });
   return {
     friendly,
-    enemy: readableOn(CHART_MEASURE_COLOURS.short, surface),
+    enemy: measureColour('short', surface),
     contested: contestedGrey(surface, [friendly(reply.lastHour).colour]),
     friendlyLabel: 'Friendly control',
     enemyLabel: 'Enemy control',

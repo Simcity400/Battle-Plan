@@ -1,5 +1,5 @@
 import { dayLabel } from '../../charts/draw.ts';
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { forceAtSources, GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
@@ -12,8 +12,6 @@ import { knownValue, zeroValue } from '../../families/value.ts';
 import type { Country, OccupationReserveReply, ReserveHolder } from '../../generated/dashboard';
 import { persons, validateOccupationReserve } from './occupationReserveData.ts';
 
-const FALLBACK_SOURCE_COLOUR = colour(DEFAULT_CARD_SURFACE, 0);
-
 export type OccupationReserveRaceOptions = SeriesRaceBaseOptions;
 
 export interface OccupationReserveRowMeta {
@@ -22,19 +20,19 @@ export interface OccupationReserveRowMeta {
   readonly key: string;
 }
 
-function sourcePresentation(readView: BoundedReadView, source: Country): { readonly key: string; readonly label: string; readonly color: string } {
+function sourcePresentation(readView: BoundedReadView, source: Country, surface: string): { readonly key: string; readonly label: string; readonly color: string } {
   if (source.tag === null) {
-    return { key: `unresolved:${source.id}`, label: 'Source country unavailable', color: FALLBACK_SOURCE_COLOUR };
+    return { key: `unresolved:${source.id}`, label: 'Source country unavailable', color: colour(surface, 0) };
   }
   const pres = countryRowPresentation(readView, source.tag);
   return {
     key: source.tag,
     label: pres.labelMissing ? 'Source country unavailable' : pres.label,
-    color: pres.color ?? FALLBACK_SOURCE_COLOUR,
+    color: pres.color ?? colour(surface, 0),
   };
 }
 
-function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHour: number | null): BarsDataRow | null {
+function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHour: number | null, surface: string): BarsDataRow | null {
   const tag = holder.country.tag;
   if (tag === null) return null;
   const key = holder.slot === null ? tag : countryKey(holder.slot);
@@ -47,7 +45,7 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
   const positiveItems: TooltipListItem[] = [];
   const negativeItems: TooltipListItem[] = [];
   for (const entry of holder.entries) {
-    const src = sourcePresentation(readView, entry.source);
+    const src = sourcePresentation(readView, entry.source, surface);
     if (entry.amount > 0) {
       const existing = bySource.get(src.key);
       if (existing) existing.amount += entry.amount;
@@ -132,7 +130,7 @@ export const occupationReserveRaceProjection: BarsProjection<OccupationReserveRa
 
     const rows: BarsDataRow[] = [];
     for (const holder of reply.holders) {
-      const row = makeHolderRow(readView, holder, reply.readHour);
+      const row = makeHolderRow(readView, holder, reply.readHour, options.surface);
       if (row) rows.push(row);
     }
 

@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { type MeasureColour, measureColour } from '../../charts/palette.ts';
 import { rankReading, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import {
@@ -19,10 +19,10 @@ import { formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '.
 import type { SeriesRankReply, SeriesState } from '../../generated/dashboard';
 import { SHARE_MEASURES, STATE_LABELS, STATES, SUPPLY_FAMILY, type SupplyState } from './supplyHealthData.ts';
 
-const BAND_COLOURS: Readonly<Record<SupplyState, string>> = {
-  noSupply: CHART_MEASURE_COLOURS.supplyNone,
-  strained: CHART_MEASURE_COLOURS.supplyStrained,
-  inSupply: CHART_MEASURE_COLOURS.supplyOk,
+const BAND_COLOURS: Readonly<Record<SupplyState, MeasureColour>> = {
+  noSupply: 'supplyNone',
+  strained: 'supplyStrained',
+  inSupply: 'supplyOk',
 };
 
 const BAND_OPACITY: Readonly<Record<SupplyState, number>> = {
@@ -39,6 +39,7 @@ export interface SupplyHealthOptions {
   readonly subject: string | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
+  readonly surface: string;
 }
 
 const PERCENT_SCALE = { numerator: 100n } as const;
@@ -58,7 +59,7 @@ function formatSupplyShare(reading: KnownHeadReading): string {
 
 const missingOf = (state: SeriesState | null) => state?.missing ?? notRecordedLabel();
 
-function supplyHoverDetail(readView: BoundedReadView, subject: string): ChartHoverDetail | null {
+function supplyHoverDetail(readView: BoundedReadView, subject: string, surface: string): ChartHoverDetail | null {
   let hover;
   try {
     hover = readView.hover<SeriesRankReply>('hover');
@@ -82,7 +83,7 @@ function supplyHoverDetail(readView: BoundedReadView, subject: string): ChartHov
     const shareRaw = readingRaw(reply, share, shareMeasure);
     const countRaw = readingRaw(reply, count, state);
     if (shareRaw === null || countRaw === null) {
-      return { label: STATE_LABELS[state], swatch: BAND_COLOURS[state], missingReason: missingOf(shareRaw === null ? share : count), tone: 'muted' };
+      return { label: STATE_LABELS[state], swatch: measureColour(BAND_COLOURS[state], surface), missingReason: missingOf(shareRaw === null ? share : count), tone: 'muted' };
     }
     const unit = countRaw.decimals === 0 && countRaw.raw === 1n ? 'division' : 'divisions';
     const countText = countRaw.decimals > 0
@@ -90,7 +91,7 @@ function supplyHoverDetail(readView: BoundedReadView, subject: string): ChartHov
       : formatScalar(countRaw.raw, 'integer');
     return {
       label: STATE_LABELS[state],
-      swatch: BAND_COLOURS[state],
+      swatch: measureColour(BAND_COLOURS[state], surface),
       value: `${formatShareRatio(shareRaw.raw, 10n ** BigInt(shareRaw.decimals))} · ${countText} ${unit}`,
     };
   });
@@ -125,14 +126,14 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
         id: state,
         key: state,
         name: STATE_LABELS[state],
-        color: BAND_COLOURS[state],
+        color: measureColour(BAND_COLOURS[state], options.surface),
         opacity: BAND_OPACITY[state],
         parts: [series ? { series } : {}],
         valueScale: 100,
         head,
         endLabel: !head || !('value' in head)
           ? null
-          : { colorBar: BAND_COLOURS[state], name: STATE_LABELS[state], fullName: STATE_LABELS[state], value: formatSupplyShare(head) },
+          : { colorBar: measureColour(BAND_COLOURS[state], options.surface), name: STATE_LABELS[state], fullName: STATE_LABELS[state], value: formatSupplyShare(head) },
       };
     }), hour);
 
@@ -159,7 +160,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       series: [],
       stack,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      hoverDetail: subject ? supplyHoverDetail(readView, subject) : null,
+      hoverDetail: subject ? supplyHoverDetail(readView, subject, options.surface) : null,
       empty,
       auditRows,
     };
@@ -225,7 +226,7 @@ export const supplyHealthDeclaration: TimeChartWidgetDeclaration<SupplyHealthOpt
     };
   },
   projection: supplyHealthProjection,
-  projectionOptions(ctx, { extent }) {
-    return { subject: ctx.countrySubject, extent, gaps: branchGapsOf(ctx.branch) };
+  projectionOptions(ctx, { extent, surface }) {
+    return { subject: ctx.countrySubject, extent, gaps: branchGapsOf(ctx.branch), surface };
   },
 };

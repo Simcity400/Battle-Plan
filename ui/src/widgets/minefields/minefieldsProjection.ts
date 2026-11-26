@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { DEFAULT_CARD_SURFACE, reservedGrey } from '../../charts/palette.ts';
+import { reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
@@ -17,14 +17,13 @@ import type { MinedRegion } from '../../generated/dashboard';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
 import { identityName } from '../../families/table/identityCell.ts';
 
-const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
-
 export type MinefieldsOrderOption = 'mines' | 'name';
 
 const MINED_REGIONS: RegionNouns = { one: 'mined region', many: 'mined regions', none: 'No minefields at this date.' };
 
 export interface MinefieldsProjectionOptions {
   readonly order: MinefieldsOrderOption;
+  readonly surface: string;
 }
 
 function readBigInt(live: ReturnType<BoundedReadView['live']>, key: string): bigint | null {
@@ -45,6 +44,7 @@ function projectMineRegion(
   region: MinedRegion,
   scale: number,
   readView: BoundedReadView,
+  surface: string,
 ): ShareRowEntry {
   const id = String(region.region);
   const named = regionLabel(readView, region.region, null);
@@ -128,7 +128,7 @@ function projectMineRegion(
 
   const segments: BarsSegment[] = [];
   const items: TooltipListItem[] = [{ label: 'Mines', value: minesCountText(total, scale) }];
-  const unrecordedColour = reservedGrey(FALLBACK_SURFACE);
+  const unrecordedColour = reservedGrey(surface);
   for (const owner of region.owners) {
     const identity = readView.who('country', owner.tag);
     const ownerName = identityName(readView, 'country', owner.tag);
@@ -199,7 +199,7 @@ export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> =
     const picked: ShareRowEntry[] = [];
     const automatic: ShareRowEntry[] = [];
     for (const region of reply.regions) {
-      (region.pinned ? picked : automatic).push({ ...projectMineRegion(region, reply.scale, readView), region: region.region });
+      (region.pinned ? picked : automatic).push({ ...projectMineRegion(region, reply.scale, readView, options.surface), region: region.region });
     }
     const empty = reply.empty ? noRegionsBody(reply.empty, MINED_REGIONS) : null;
     return buildShareRowsModel({
@@ -257,8 +257,9 @@ export const minefieldsDeclaration: BarsWidgetDeclaration<MinefieldsProjectionOp
   countries: { mode: 'none' },
   sources: minefieldsSources,
   projection: minefieldsProjection,
-  projectionOptions: ctx => ({
+  projectionOptions: (ctx, extra) => ({
     order: ctx.options.order === 'name' ? 'name' : 'mines',
+    surface: extra.surface,
   }),
   jumpToDate: true,
   keyByBranch: true,

@@ -69,9 +69,9 @@ export const airForceSizeMixDeclaration: BarsWidgetDeclaration<AirForceSizeMixOp
   },
   sources: airForceSizeMixSources,
   projection: airForceSizeMixProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     return {
-      ...seriesRaceSelection(ctx),
+      ...seriesRaceSelection(ctx, extra),
       measure: airMeasure(ctx.options.measure),
       ownership: airOwnership(ctx.options.ownership),
     };

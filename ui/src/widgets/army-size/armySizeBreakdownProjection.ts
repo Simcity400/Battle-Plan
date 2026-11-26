@@ -113,7 +113,7 @@ function missingAtHour(reply: ArmyBreakdownReply, hour: number): string | null {
 
 function assignGroupColours(keys: readonly string[], surface: string): ReadonlyMap<string, string> {
   const out = new Map<string, string>();
-  const bg = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
+  const bg = parseColor(surface)!;
   const rawRgbs = keys.map((_, index) => parseColor(colour(surface, index)) ?? { r: 120, g: 160, b: 220 });
   const distinct = nudgeApart(rawRgbs, bg);
   keys.forEach((key, index) => out.set(key, toHex(distinct[index]!)));

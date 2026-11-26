@@ -64,7 +64,7 @@ export default function BattleCourseChart({ title, sides, start, until }: {
     const element = canvas.current;
     if (!element) return;
     const surface = drawingSurface(element);
-    if (!surface.context) return;
+    if (!surface.context || !theme) return;
     const context = surface.context;
     const measure = canvasMeasureText(context);
     const font = theme?.font ?? "'Segoe UI', system-ui, sans-serif";

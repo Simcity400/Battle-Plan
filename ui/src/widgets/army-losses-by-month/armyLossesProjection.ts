@@ -1,7 +1,7 @@
 import { auditRow } from '../../families/auditRow.ts';
 import { liveKey, type LiveValues } from '../../charts/live.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { type MeasureColour, measureColour, neutralColour } from '../../charts/palette.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -32,24 +32,22 @@ export const LEDGER_LABELS: Readonly<Record<LossLedger, string>> = {
   enemy: 'Enemy losses dealt',
 };
 
-const CHANNEL_COLORS: Readonly<Record<string, string>> = {
-  ground: CHART_MEASURE_COLOURS.armyExperience,
-  air: CHART_MEASURE_COLOURS.airExperience,
-  navy: CHART_MEASURE_COLOURS.navyExperience,
+const CHANNEL_COLORS: Readonly<Record<string, MeasureColour>> = {
+  ground: 'armyExperience',
+  air: 'airExperience',
+  navy: 'navyExperience',
 };
 
-const CATEGORY_COLORS = [
-  CHART_MEASURE_COLOURS.armyExperience,
-  CHART_MEASURE_COLOURS.airExperience,
-  CHART_MEASURE_COLOURS.navyExperience,
-  CHART_MEASURE_COLOURS.politicalPower,
-  CHART_MEASURE_COLOURS.commandPower,
-  CHART_MEASURE_COLOURS.fuel,
-  CHART_MEASURE_COLOURS.warSupport,
-  CHART_MEASURE_COLOURS.intelCoverage,
-] as const;
-
-const OTHER_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
+const CATEGORY_COLORS: readonly MeasureColour[] = [
+  'armyExperience',
+  'airExperience',
+  'navyExperience',
+  'politicalPower',
+  'commandPower',
+  'fuel',
+  'warSupport',
+  'intelCoverage',
+];
 
 export interface ArmyLossesChartOptions {
   readonly measure: LossMeasure;
@@ -60,6 +58,7 @@ export interface ArmyLossesChartOptions {
   readonly countryName: string;
   readonly following: boolean;
   readonly extent: readonly [number, number];
+  readonly surface: string;
 }
 
 export interface ResolvedArmyMonthRow {
@@ -203,9 +202,9 @@ function stableKeyIndex(key: string, count: number): number {
   return (hash >>> 0) % count;
 }
 
-function partColor(key: string): string {
-  if (key === 'other' || key === 'unresolved' || key === 'unclassified') return OTHER_COLOR;
-  return CHANNEL_COLORS[key] ?? CATEGORY_COLORS[stableKeyIndex(key, CATEGORY_COLORS.length)]!;
+function partColor(key: string, surface: string): string {
+  if (key === 'other' || key === 'unresolved' || key === 'unclassified') return neutralColour('fallback', surface);
+  return measureColour(CHANNEL_COLORS[key] ?? CATEGORY_COLORS[stableKeyIndex(key, CATEGORY_COLORS.length)]!, surface);
 }
 
 function toPlotted(raw: bigint, unitScale: number): number {
@@ -224,6 +223,7 @@ function resolveBar(
   wrapI32: boolean,
   live: ReturnType<BoundedReadView['live']>,
   hour: number,
+  surface: string,
 ): ChartMonthSlot {
   const { year, month } = monthAt(bar.month);
   const partial = hour >= bar.firstHour && hour < bar.lastHour;
@@ -272,7 +272,7 @@ function resolveBar(
     segments.push({
       id: part.key,
       label: part.label,
-      color: partColor(part.key),
+      color: partColor(part.key, surface),
       value: toPlotted(raw, unitScale),
       exactText: formatLossRaw(raw, measure),
     });
@@ -401,7 +401,7 @@ export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> =
         });
         continue;
       }
-      const slot = resolveBar(bar, rollup.parts, options.measure, rollup.unitScale, rollup.wrapI32, live, hour);
+      const slot = resolveBar(bar, rollup.parts, options.measure, rollup.unitScale, rollup.wrapI32, live, hour, options.surface);
       if (slot.status === 'recorded') recordedCount++;
       else if (slot.status === 'not-recorded' && firstUnknownReason === null) firstUnknownReason = slot.reason ?? 'Not recorded';
       slots.push(slot);
@@ -434,7 +434,7 @@ export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> =
     }
     const hasQuietOrMissing = slots.some(s => s.status !== 'recorded');
     const legend: ChartLegendEntry[] = [
-      ...rollup.parts.map(part => ({ id: part.key, label: part.label, color: partColor(part.key) })),
+      ...rollup.parts.map(part => ({ id: part.key, label: part.label, color: partColor(part.key, options.surface) })),
       ...(hasQuietOrMissing ? [{ id: '__unrecorded__', label: 'Not recorded', hatch: true }] : []),
     ];
     const auditRows = slots
@@ -518,7 +518,7 @@ export const armyLossesDeclaration: TimeChartWidgetDeclaration<ArmyLossesChartOp
     };
   },
   projection: armyLossesProjection,
-  projectionOptions(ctx, { extent }) {
+  projectionOptions(ctx, { extent, surface }) {
     const resolved = resolveArmyLossesOptions(ctx.options);
     return {
       ...resolved,
@@ -526,6 +526,7 @@ export const armyLossesDeclaration: TimeChartWidgetDeclaration<ArmyLossesChartOp
       countryName: ctx.countryName || ctx.countryTag || 'This country',
       following: ctx.following,
       extent,
+      surface,
     };
   },
 };

@@ -25,7 +25,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const BASE_OPTS: OccupationTrendRaceOptions = {
+const BASE_OPTS: OccupationTrendRaceOptions = { surface: '#1e1e1e',
   rank: 'resistance',
   digits: 2,
   top: 10,

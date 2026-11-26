@@ -101,13 +101,13 @@ export function rgbaRgb(rgb: Rgb, alpha: number): string {
   return `rgba(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)}, ${alpha})`;
 }
 
-export function rgbaColor(color: string, alpha: number, fallback: string): string {
-  const key = `${color}\0${alpha}\0${fallback}`;
+export function rgbaColor(color: string, alpha: number): string {
+  const key = `${color}\0${alpha}`;
   const cached = rgbaCache.get(key);
   if (cached !== undefined) return cached;
   rgbaMisses++;
   const rgb = parseColor(color);
-  return cacheSet(rgbaCache, key, rgb ? rgbaRgb(rgb, alpha) : fallback);
+  return cacheSet(rgbaCache, key, rgb ? rgbaRgb(rgb, alpha) : color);
 }
 
 export function tintColour(color: string, amount: number): string {
@@ -118,8 +118,20 @@ export function shadeColour(color: string, amount: number): string {
   return mix(color, '#000000', amount);
 }
 
-export function surfaceMix(surface: string, amount: number): string {
-  return mix(surface, '#f5f5f5', amount);
+function extendRgb(from: Rgb, through: Rgb): Rgb {
+  let reach = Infinity;
+  for (const channel of ['r', 'g', 'b'] as const) {
+    const step = through[channel] - from[channel];
+    if (step > 0) reach = Math.min(reach, (255 - from[channel]) / step);
+    else if (step < 0) reach = Math.min(reach, -from[channel] / step);
+  }
+  if (!Number.isFinite(reach)) return through;
+  return { r: from.r + (through.r - from.r) * reach, g: from.g + (through.g - from.g) * reach, b: from.b + (through.b - from.b) * reach };
+}
+
+export function extendColor(from: string, through: string): string {
+  const start = parseColor(from), end = parseColor(through);
+  return start && end ? toHex(extendRgb(start, end)) : through;
 }
 
 const LINEAR_BYTE = Float64Array.from({ length: 256 }, (_, i) => {

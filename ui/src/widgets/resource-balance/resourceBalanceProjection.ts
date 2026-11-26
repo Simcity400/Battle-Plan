@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { unavailableArt } from '../../families/art/types.ts';
@@ -13,6 +13,7 @@ import { RESOURCE_BALANCE, resourceName, validateResourceBalance } from './resou
 
 export interface ResourceBalanceOptions {
   readonly country: string | null;
+  readonly surface: string;
 }
 
 const NO_ICON = 'The current installation has no icon for this resource';
@@ -26,7 +27,7 @@ function figure(raw: string | null, reason: string): Value<bigint> {
   return raw === null ? notRecorded(reason) : knownValue(BigInt(raw));
 }
 
-function row(readView: BoundedReadView, info: ResourceInfo, ordinal: number, net: ResourceNet, decimals: number): BarsDataRow {
+function row(readView: BoundedReadView, info: ResourceInfo, ordinal: number, net: ResourceNet, decimals: number, surface: string): BarsDataRow {
   const reason = net.missing ?? 'Not recorded at this hour';
   const amount: ValueFormat = { decimals, maxDecimals: 2 };
   const value = figure(net.net, reason);
@@ -38,7 +39,7 @@ function row(readView: BoundedReadView, info: ResourceInfo, ordinal: number, net
     label: resourceName(info),
     ...(info.name === null ? { labelMissing: true } : {}),
     media: media(readView, info),
-    color: colour(DEFAULT_CARD_SURFACE, ordinal),
+    color: colour(surface, ordinal),
     value: {
       value,
       format: { ...amount, signed: true },
@@ -56,7 +57,7 @@ function summary(short: number, unrecorded: number): string {
   return [counted, missing].filter(Boolean).join(' · ');
 }
 
-function project(readView: BoundedReadView): BarsModel {
+function project(readView: BoundedReadView, options: ResourceBalanceOptions): BarsModel {
   const base = { form: 'net' as const, hour: readView.hour };
   const refused = readView.refused('main');
   if (refused) return { ...base, rows: [], empty: refused, emptyKind: 'unavailable' };
@@ -69,7 +70,7 @@ function project(readView: BoundedReadView): BarsModel {
   const ordinals = new Map(reply.resources.map((info, index) => [info.id, [info, index] as const]));
   const rows = reply.rows.flatMap(net => {
     const held = ordinals.get(net.resource);
-    return held ? [row(readView, held[0], held[1], net, reply.decimals)] : [];
+    return held ? [row(readView, held[0], held[1], net, reply.decimals, options.surface)] : [];
   });
   return {
     ...base,
@@ -122,7 +123,7 @@ export const resourceBalanceDeclaration: BarsWidgetDeclaration<ResourceBalanceOp
   countries: { mode: 'none' },
   sources,
   projection: resourceBalanceProjection,
-  projectionOptions: ctx => ({ country: countryOf(ctx) }),
+  projectionOptions: (ctx, extra) => ({ country: countryOf(ctx), surface: extra.surface }),
   jumpToDate: true,
   keyByBranch: true,
 };

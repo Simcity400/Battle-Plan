@@ -106,9 +106,9 @@ export const navySizeRaceDeclaration: BarsWidgetDeclaration<NavySizeRaceOptions>
   },
   sources: navySizeRaceSources,
   projection: navySizeRaceProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     return {
-      ...seriesRaceSelection(ctx),
+      ...seriesRaceSelection(ctx, extra),
       measure: navyMeasure(ctx.options.measure),
       ownership: navyOwnership(ctx.options.ownership),
       grouping: navyGrouping(ctx.options.grouping),

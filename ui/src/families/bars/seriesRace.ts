@@ -4,6 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { SeriesRankReply, SeriesRankRow } from '../../generated/dashboard';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
+import type { DeclaredProjectionExtra } from '../host/DeclaredFamilyWidget.tsx';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, valueFromRawBigInt, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
@@ -15,6 +16,7 @@ export interface SeriesRaceBaseOptions {
   readonly top: number | null;
   readonly all?: boolean;
   readonly group: boolean;
+  readonly surface: string;
 }
 
 export interface SeriesRaceConfig {
@@ -38,8 +40,9 @@ export interface SeriesRaceProjectConfig {
   readonly parts?: (reply: SeriesRankReply, row: SeriesRankRow) => SeriesRaceParts;
 }
 
-export function seriesRaceSelection(ctx: FamilyPlanContext): SeriesRaceBaseOptions {
+export function seriesRaceSelection(ctx: FamilyPlanContext, extra: DeclaredProjectionExtra): SeriesRaceBaseOptions {
   return {
+    surface: extra.surface,
     top: ctx.countries.top,
     all: ctx.countries.all,
     group: !ctx.countries.all && ctx.countries.top == null && groupSelection(ctx.widget.countries) !== null,

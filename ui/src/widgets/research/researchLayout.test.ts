@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour, neutralColour } from '../../charts/palette.ts';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { setToken } from '../../dashboard/options.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
@@ -168,8 +168,8 @@ test('research lanes draw the product\'s answer at the hour: pieces split at unr
   assert.ok(audit.some(row => row.key === '__summary__' && row.value?.includes('partial:')));
 
   const filtered = researchProjection.project(view, { ...opt, folders: setToken('folder_two') });
-  assert.equal(filtered.lanes[0]!.spans[0]!.color, CHART_MEASURE_COLOURS.other, 'a technology outside the chosen folders is dimmed');
-  assert.equal(filtered.lanes[0]!.spans[3]!.color, CHART_MEASURE_COLOURS.intelCoverage);
+  assert.equal(filtered.lanes[0]!.spans[0]!.color, neutralColour('other', opt.surface), 'a technology outside the chosen folders is dimmed');
+  assert.equal(filtered.lanes[0]!.spans[3]!.color, measureColour('intelCoverage', opt.surface));
 });
 
 test('missing research is said with its reason; an empty campaign is said only when fully read', () => {

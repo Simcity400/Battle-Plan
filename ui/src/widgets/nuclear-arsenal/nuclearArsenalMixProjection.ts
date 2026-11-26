@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
 import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
@@ -11,8 +11,6 @@ import { knownValue, notRecorded } from '../../families/value.ts';
 import { formatScalar, formatShare } from '../../families/valueFormat.ts';
 import type { NuclearArsenalReply, NukeType } from '../../generated/dashboard';
 import { nuclearArsenalSources, nukeRowIdentity, typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
-
-const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export type NuclearArsenalMixOptions = SeriesRaceBaseOptions;
 
@@ -41,7 +39,7 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
 
     const typeByOrdinal = new Map<number, { readonly type: NukeType; readonly color: string; readonly label: string }>();
     reply.types.forEach((type, index) => {
-      typeByOrdinal.set(type.ordinal, { type, color: colour(PART_SURFACE, index), label: typeName(type) });
+      typeByOrdinal.set(type.ordinal, { type, color: colour(options.surface, index), label: typeName(type) });
     });
 
     const usedOrdinals = new Set<number>();
@@ -87,7 +85,7 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
       for (const count of positive) {
         const info = typeByOrdinal.get(count.ordinal);
         const label = info?.label ?? `Unnamed nuclear type ${count.ordinal}`;
-        const color = info?.color ?? colour(PART_SURFACE, count.ordinal);
+        const color = info?.color ?? colour(options.surface, count.ordinal);
         const share = count.value / row.total;
         usedOrdinals.add(count.ordinal);
         segments.push({

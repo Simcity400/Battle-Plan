@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { type MeasureColour, measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
@@ -21,16 +21,17 @@ import { formatRational, formatScalar } from '../../families/valueFormat.ts';
 export const EXPERIENCE_SCALE = 1 / 32_768;
 const EXPERIENCE_RATIONAL_SCALE = { denominator: 32_768n } as const;
 
-export const EXPERIENCE_BRANCHES: readonly { readonly id: 'army' | 'navy' | 'air'; readonly label: string; readonly colour: string; readonly art: ChartMeasureArt }[] = [
-  { id: 'army', label: 'Army', colour: CHART_MEASURE_COLOURS.armyExperience, art: 'armyExperience' },
-  { id: 'navy', label: 'Navy', colour: CHART_MEASURE_COLOURS.navyExperience, art: 'navyExperience' },
-  { id: 'air', label: 'Air', colour: CHART_MEASURE_COLOURS.airExperience, art: 'airExperience' },
+export const EXPERIENCE_BRANCHES: readonly { readonly id: 'army' | 'navy' | 'air'; readonly label: string; readonly colour: MeasureColour; readonly art: ChartMeasureArt }[] = [
+  { id: 'army', label: 'Army', colour: 'armyExperience', art: 'armyExperience' },
+  { id: 'navy', label: 'Navy', colour: 'navyExperience', art: 'navyExperience' },
+  { id: 'air', label: 'Air', colour: 'airExperience', art: 'airExperience' },
 ];
 
 export interface ExperienceOptions {
   readonly tag: string | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
+  readonly surface: string;
 }
 
 export function formatExperience(value: number): string {
@@ -65,7 +66,7 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
         id: branch.id,
         key: branch.id,
         name: branch.label,
-        color: branch.colour,
+        color: measureColour(branch.colour, options.surface),
         role: 'primary',
         step: false,
         bounded,
@@ -141,7 +142,7 @@ export const experienceDeclaration: TimeChartWidgetDeclaration<ExperienceOptions
     };
   },
   projection: experienceProjection,
-  projectionOptions(ctx, { extent }) {
-    return { tag: ctx.countries.tags[0] ?? null, extent, gaps: branchGapsOf(ctx.branch) };
+  projectionOptions(ctx, { extent, surface }) {
+    return { tag: ctx.countries.tags[0] ?? null, extent, gaps: branchGapsOf(ctx.branch), surface };
   },
 };

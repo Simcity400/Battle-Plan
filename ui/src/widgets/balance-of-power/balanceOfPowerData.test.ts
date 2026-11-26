@@ -57,7 +57,7 @@ const detail = (balances: BalanceRecord[]): PoliticsStateReply => ({
   branchId: '1', view: 'balances', exiles: [], exilesMissing: null, balances, current: [{ tag: 'AAA', record: 0 }], unavailable: [], warnings: [],
 });
 const NO_ART: ArtResult = { status: 'noArtExpected' };
-const options = { subject: '\u00007', extent: [0, 1000] as const, branchFirstHour: 0, branchGaps: [], gaps: [] };
+const options = { surface: '#111111', subject: '\u00007', extent: [0, 1000] as const, branchFirstHour: 0, branchGaps: [], gaps: [] };
 const project = (hour: number, panels: [string, unknown][], hovers?: Map<string, { hour: number; data: unknown }>) => balanceOfPowerProjection.project(createBoundedReadView({
   hour, panels: new Map<string, unknown>(panels), ...(hovers ? { hovers } : {}), art: { resolve: () => NO_ART },
 }), options);

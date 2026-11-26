@@ -8,6 +8,7 @@ import { STYLES } from './useCountriesAt';
 import type { Rgb } from '../shell/appearance/color';
 import { Icon } from '../components/Icons';
 import { factionColours } from '../charts/factionColours';
+import { neutralColour } from '../charts/palette.ts';
 import { readTokens, subscribeTokens } from '../charts/tokens';
 import type { DashboardClient, DashboardSource } from './client';
 import { chosenColour, factionIdentity, saveCampaignSettings, setFactionColour, setFactionStyle, useCampaignSettings } from './campaignSettings';
@@ -125,7 +126,7 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
       const set = scope === 'campaign' ? style?.colour : shared?.colour;
       return <li key={faction.id} data-faction={faction.id} data-faction-name={recorded}>
         <label className="faction-swatch" data-tooltip="Change colour" style={{ background: colours.get(faction.id) }}>
-          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${recorded}`}
+          <input type="color" value={colours.get(faction.id) ?? neutralColour('fallback', readTokens().surface)} aria-label={`Colour for ${recorded}`}
             onChange={event => setMessage(setColour(faction.id, event.currentTarget.value, scope))} /></label>
         { }
         <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={named.name ?? unnamed(faction.id)} maxLength={160} aria-label={`Display name of ${recorded}`}

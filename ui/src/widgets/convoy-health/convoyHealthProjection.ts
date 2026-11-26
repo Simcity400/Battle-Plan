@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, CONVOY_EFFICIENCY_STOPS } from '../../charts/palette.ts';
+import { CONVOY_EFFICIENCY_STOPS, measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
@@ -263,7 +263,7 @@ function dealName(deal: Deal, reply: ConvoyHealthReply, hour: number): string {
 }
 
 function tradeRows(tiles: readonly ConvoyHealthReply[], now: ConvoyHealthReply, through: number, surface: string): ConvoyRow[] {
-  const routeBad = readableOn(CHART_MEASURE_COLOURS.short, surface);
+  const routeBad = measureColour('short', surface);
   const held = tiles.map(tile => tileTrade(tile, routeBad));
   const tileDeals = tiles.map(tile => new Map(tile.deals.map(deal => [deal.id, deal])));
   const tileLeases = tiles.map(tile => new Map(tile.leases.map(lease => [lease.handle, lease])));

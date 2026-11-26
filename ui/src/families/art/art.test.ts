@@ -7,7 +7,7 @@ import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
 import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
-import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
+import { DEFAULT_FAMILY_THEME } from '../theme.fixture.ts';
 import { SpriteCaches, artCacheScope, artCalls, settleCall, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
 import {

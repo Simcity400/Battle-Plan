@@ -66,6 +66,14 @@ inputs = ["**"]
 command = ["{python}", "tools/check-patterns.py", "--against", "{base}"]
 
 [[job]]
+name = "colour-literals"
+group = "linux"
+tier = "check"
+toolchain = "python"
+inputs = ["ui/src/**", "tools/check-colour-literals.py"]
+command = ["{python}", "tools/check-colour-literals.py"]
+
+[[job]]
 name = "workflows"
 group = "linux"
 tier = "check"

@@ -67,8 +67,8 @@ export const occupationTrendRaceDeclaration: BarsWidgetDeclaration<OccupationTre
   },
   sources: occupationTrendRaceSources,
   projection: occupationTrendRaceProjection,
-  projectionOptions: ctx => ({
-    ...seriesRaceSelection(ctx),
+  projectionOptions: (ctx, extra) => ({
+    ...seriesRaceSelection(ctx, extra),
     rank: resolveRank(ctx.options),
     digits: clampDigits(ctx.options.digits),
   }),

@@ -1,5 +1,5 @@
 import { rankSource } from '../../families/seriesRank.ts';
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
@@ -14,8 +14,6 @@ import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } fr
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { FactoryGroupsReply, SeriesRankReply, SeriesState } from '../../generated/dashboard';
 import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
-
-const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface FactoryPartSpec {
   readonly id: string;
@@ -34,6 +32,7 @@ export interface FactoriesProjectionOptions {
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly group: boolean;
   readonly top: number | null;
+  readonly surface: string;
 }
 
 export interface FactoriesRowMeta {
@@ -41,13 +40,13 @@ export interface FactoriesRowMeta {
   readonly key: string;
 }
 
-function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGroupsReply | undefined): FactoryPartSpec[] {
+function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGroupsReply | undefined, surface: string): FactoryPartSpec[] {
   return chosenGroups(types).map(group => ({
     id: group.value,
     label: groupName(group.value, groups),
     source: `${mode}${group.bit}`,
     ...(mode === 'built' ? { damagedSource: `damaged${group.bit}` } : {}),
-    color: colour(PART_SURFACE, FACTORY_GROUPS.indexOf(group)),
+    color: colour(surface, FACTORY_GROUPS.indexOf(group)),
   }));
 }
 
@@ -120,7 +119,7 @@ function buildPartSegments(
     const hurt = Math.min(total, Math.max(0, amount));
     tooltipItems.push({ label: 'Damaged', value: countText(hurt) });
     if (hurt <= 0) return { tooltipItems };
-    const fill = baseColor ?? colour(PART_SURFACE, 0);
+    const fill = baseColor ?? colour(options.surface, 0);
     const segments: BarsSegment[] = [];
     if (total > hurt) segments.push(segment('healthy', 'Undamaged', total - hurt, total, fill));
     segments.push(segment('damaged', 'Damaged', hurt, total, fill, true));
@@ -153,7 +152,7 @@ function buildPartSegments(
     if (hurt > 0) segments.push(segment(`damaged:${spec.id}`, `Damaged ${spec.label}`, hurt, total, spec.color, true));
   }
   if (unknownReason !== null && total > known) {
-    segments.push({ key: 'unrecorded', label: 'Not recorded', share: (total - known) / total, value: notRecorded(unknownReason), color: PART_SURFACE, hatched: true });
+    segments.push({ key: 'unrecorded', label: 'Not recorded', share: (total - known) / total, value: notRecorded(unknownReason), color: options.surface, hatched: true });
   }
   return { ...(segments.length ? { segments } : {}), tooltipItems };
 }
@@ -284,7 +283,7 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
   },
   sources: factoriesSources,
   projection: factoriesProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const mode = countMode(ctx.options.count);
     const types = contentSet(ctx.options.types);
     const modeTitle = COUNT_MODES.find(item => item.value === mode)?.label.toLowerCase() ?? 'available';
@@ -293,11 +292,12 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
       mode,
       modeLabel: `Factories, ${modeTitle}`,
       split: ctx.options.split === true,
-      parts: partSpecs(mode, types, ctx.aux),
+      parts: partSpecs(mode, types, ctx.aux, extra.surface),
       ...(mode === 'built' ? { damagedSource: damagedMeasure(types) } : {}),
       holders: top == null ? ctx.countries.holders : null,
       group: top == null && groupSelection(ctx.widget.countries) !== null,
       top,
+      surface: extra.surface,
     };
   },
   unavailable: ctx => {

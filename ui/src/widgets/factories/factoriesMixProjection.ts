@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
@@ -14,13 +14,12 @@ import type { FactoryMixPart, FactoryMixReply, FactoryMixRow } from '../../gener
 import { COUNT_MODES, FACTORY_GROUPS, countMode, type CountMode } from './factoriesData.ts';
 import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
-const PART_SURFACE = DEFAULT_CARD_SURFACE;
-
 export interface FactoriesMixOptions {
   readonly mode: CountMode;
   readonly modeLabel: string;
   readonly group: boolean;
   readonly top: number | null;
+  readonly surface: string;
 }
 
 const isObj = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -96,7 +95,7 @@ export const factoriesMixProjection: BarsProjection<FactoriesMixOptions> = regis
     const partInfo = reply.parts.map(part => ({
       part,
       label: partLabel(part),
-      color: colour(PART_SURFACE, groupIndex(part.group)),
+      color: colour(options.surface, groupIndex(part.group)),
     }));
     const usedParts = new Set<number>();
     const rows: ShareRowEntry[] = [];
@@ -303,7 +302,7 @@ export const factoriesMixDeclaration: BarsWidgetDeclaration<FactoriesMixOptions>
   },
   sources: factoriesMixSources,
   projection: factoriesMixProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const mode = countMode(ctx.options.count);
     const modeTitle = COUNT_MODES.find(item => item.value === mode)?.label.toLowerCase() ?? 'available';
     const top = ctx.countries.top;
@@ -313,6 +312,7 @@ export const factoriesMixDeclaration: BarsWidgetDeclaration<FactoriesMixOptions>
       modeLabel: `Factories, ${modeTitle}`,
       group: top == null && !all && groupSelection(ctx.widget.countries) !== null,
       top,
+      surface: extra.surface,
     };
   },
   unavailable: ctx => ctx.countries.reason,

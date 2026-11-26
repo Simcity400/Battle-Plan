@@ -26,7 +26,7 @@ label.map-option-row:has(input:not(:disabled)) { cursor: pointer; }
 .map-option-control { display: flex; align-items: center; gap: 4px; flex: none; }
 :is(.map-option-inherit, .font-reset) { color: var(--muted); }
 :is(.map-option-inherit, .font-reset):hover:not(:disabled) { color: var(--accent); }
-.map-appearance input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--accent), 0 2px 6px rgb(0 0 0 / 35%); }
+.map-appearance input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--accent), 0 2px 6px color-mix(in srgb, var(--ink-dark) 35%, transparent); }
 .map-option-row[data-overridden] > span:first-child { font-weight: 600; }
 .map-graphics-group { display: grid; gap: 2px; margin-top: 6px; }
 .map-graphics-group > .group-label { display: flex; align-items: center; gap: 4px; padding: 0 4px; }

@@ -72,7 +72,7 @@ function project(data: FuelBranchesReply, digits = 0, hour = 500) {
     hour: displayedHour(hour),
     panels: new Map([['main', data]]),
     art: { demandOwner: 'view', resolve: handle => (handle.kind === 'url' ? readyArt(handle.url) : PENDING_ART) },
-  }), { digits });
+  }), { surface: '#1e1e1e', digits });
   assertBarsModelValid(model, hour);
   return model;
 }
@@ -146,7 +146,7 @@ test('a quiet stretch of played hours makes no projection or request work', () =
     family: 'bars',
     kind: 'fuel-branches',
     view: 'bars',
-    options: { digits: 0 },
+    options: { surface: '#1e1e1e', digits: 0 },
     sources: {},
     staticPanels: { main: sampleReply() },
     width: 640,

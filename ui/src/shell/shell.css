@@ -57,8 +57,8 @@
 @property --fade-top { syntax: '<length>'; inherits: false; initial-value: 0px; }
 @property --fade-bottom { syntax: '<length>'; inherits: false; initial-value: 0px; }
 .scroll-fade {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, var(--ink-dark) var(--fade-top), var(--ink-dark) calc(100% - var(--fade-bottom)), transparent);
+  mask-image: linear-gradient(to bottom, transparent, var(--ink-dark) var(--fade-top), var(--ink-dark) calc(100% - var(--fade-bottom)), transparent);
   animation: scroll-fade linear both; animation-timeline: scroll(self);
 }
 @keyframes scroll-fade { 0% { --fade-top: 0px; --fade-bottom: 20px; } 12% { --fade-top: 20px; } 88% { --fade-bottom: 20px; } 100% { --fade-top: 20px; --fade-bottom: 0px; } }
@@ -169,7 +169,7 @@
   background: var(--overlay-glass); -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(1.5); backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(1.5);
   box-shadow: inset 0 0 0 1px var(--line), var(--edge), var(--shadow-lg);
 }
-.leave-confirm::backdrop { background: rgb(0 0 0 / 32%); }
+.leave-confirm::backdrop { background: color-mix(in srgb, var(--ink-dark) 32%, transparent); }
 .leave-confirm .menu-confirm { width: min(380px, calc(100vw - 56px)); gap: 6px; padding: 0; }
 .leave-confirm .menu-confirm > strong { font-size: 0.875rem; }
 .leave-confirm .menu-confirm > p { font-size: 0.8125rem; }

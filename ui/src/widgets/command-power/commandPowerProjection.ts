@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
@@ -85,7 +85,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       surface: options.surface,
       withFlag: !single,
       recordedOrdinal: tag => rowOf.get(tag) ?? 0,
-      singleColor: CHART_MEASURE_COLOURS.commandPower,
+      singleColor: measureColour('commandPower', options.surface),
     }), ranking.unnamed, hour);
 
     const measureIcon: ChartArtSlot | undefined = single

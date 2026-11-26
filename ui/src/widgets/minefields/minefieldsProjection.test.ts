@@ -61,7 +61,7 @@ test("minefields projection projects owner shares from Rust live totals, the use
     identity,
   });
 
-  const model = minefieldsProjection.project(view, { order: 'mines' });
+  const model = minefieldsProjection.project(view, { surface: '#1e1e1e', order: 'mines' });
   assertBarsModelValid(model, 350);
   assert.equal(model.form, 'share');
 
@@ -94,7 +94,7 @@ test('minefields projection marks truncated total as notRecorded rather than zer
     live: new Map([['main', live]]),
   });
 
-  const model = minefieldsProjection.project(view, { order: 'mines' });
+  const model = minefieldsProjection.project(view, { surface: '#1e1e1e', order: 'mines' });
   assertBarsModelValid(model, 100);
   const first = model.rows.find(row => row.key === '3') as BarsDataRow;
   assert.equal(first.value?.value.kind, 'notRecorded');
@@ -112,7 +112,7 @@ test('an owner without a recorded colour keeps one colour whichever place its am
     ]), 'Not recorded at this hour');
     const reply: MinefieldsReply = { ...REPLY, regions: [{ region: 3, owners: owners.map(tag => ({ tag })), unknownOwners: 0, pinned: false, missing: null }] };
     const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', reply]]), live: new Map([['main', live]]), identity });
-    const row = minefieldsProjection.project(view, { order: 'mines' }).rows.find(item => item.key === '3') as BarsDataRow;
+    const row = minefieldsProjection.project(view, { surface: '#1e1e1e', order: 'mines' }).rows.find(item => item.key === '3') as BarsDataRow;
     return row.segments!.find(segment => segment.key === 'ENG')!.color;
   };
   assert.equal(colourOf(['ENG', 'GER'], [900000, 500000]), colourOf(['GER', 'ENG'], [900000, 500000]));
@@ -121,7 +121,7 @@ test('an owner without a recorded colour keeps one colour whichever place its am
 test('hiding the only mined region is said as such, never as no minefields', () => {
   const body = (empty: MinefieldsReply['empty']) => {
     const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', { ...REPLY, regions: [], empty }]]) });
-    const model = minefieldsProjection.project(view, { order: 'mines' });
+    const model = minefieldsProjection.project(view, { surface: '#1e1e1e', order: 'mines' });
     return [model.empty, model.emptyKind];
   };
   assert.deepEqual(body({ kind: 'filtered', hidden: 1, outside: 0 }), ['The only mined region at this date is removed from this chart.', 'empty']);
@@ -131,6 +131,6 @@ test('hiding the only mined region is said as such, never as no minefields', () 
 
 test('sorted by name, the automatic rows are not headed "Most active"', () => {
   const view = createBoundedReadView({ hour: displayedHour(350), panels: new Map([['main', REPLY]]) });
-  const label = (order: 'mines' | 'name') => minefieldsProjection.project(view, { order }).rows.find(row => row.key === '__section:auto')?.label;
+  const label = (order: 'mines' | 'name') => minefieldsProjection.project(view, { surface: '#1e1e1e', order }).rows.find(row => row.key === '__section:auto')?.label;
   assert.deepEqual([label('mines'), label('name')], ['Most active', 'Mined regions']);
 });

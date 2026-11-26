@@ -1,5 +1,4 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
@@ -59,7 +58,7 @@ export interface PlacedEndLabel {
   readonly x: number;
   readonly width: number;
   readonly height: number;
-  readonly color: string;
+  readonly color?: string;
   readonly faded: boolean;
   readonly colorBar?: string;
   readonly flag?: TimeChartSeriesModel['flag'];
@@ -69,6 +68,7 @@ export interface PlacedEndLabel {
   readonly value: string;
   readonly valueColor?: string;
   readonly valueMuted?: boolean;
+  readonly negative?: boolean;
   readonly hasLeader: boolean;
 }
 
@@ -502,7 +502,7 @@ export function layoutTimeChart(
     id: string;
     seriesId: string;
     anchorVal: number;
-    color: string;
+    color?: string;
     faded: boolean;
     colorBar?: string;
     flag?: TimeChartSeriesModel['flag'];
@@ -512,6 +512,7 @@ export function layoutTimeChart(
     value: string;
     valueColor?: string;
     valueMuted?: boolean;
+    negative?: boolean;
     fixedWidth: number;
     estWidth: number;
   }[] = [];
@@ -543,15 +544,16 @@ export function layoutTimeChart(
         id: s.id,
         seriesId: s.id,
         anchorVal: end.value,
-        color: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.color,
+        color: s.color,
         faded: false,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
-        valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
+        valueColor: s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
+        negative: isNegative,
         fixedWidth,
         estWidth,
       });
@@ -623,7 +625,7 @@ export function layoutTimeChart(
           id: TOTAL_LABEL,
           seriesId: TOTAL_LABEL,
           anchorVal: tv,
-          color: model.stack.total.color ?? CHART_MEASURE_COLOURS.lightInk,
+          color: model.stack.total.color,
           faded: false,
           icon: el.icon,
           name: null,
@@ -706,6 +708,7 @@ export function layoutTimeChart(
         value: l.value,
         valueColor: l.valueColor,
         valueMuted: l.valueMuted,
+        negative: l.negative,
         hasLeader: Math.abs(ly - anchorY) > 2,
       });
     }

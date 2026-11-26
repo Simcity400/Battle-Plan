@@ -145,7 +145,7 @@ function assignSourceColours(
   surface: string,
 ): ReadonlyMap<number, string> {
   const out = new Map<number, string>();
-  const bg = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
+  const bg = parseColor(surface)!;
   const rawRgbs = sources.map((source, index) => {
     const tag = latestSourceTag(history, source, hour);
     const who = tag ? readView.who('country', tag, hour) : null;

@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, authoredHex } from '../../charts/palette.ts';
+import { authoredHex, measureColour, surfaceGrey } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -22,7 +22,7 @@ import { countrySubject, noRegionsBody, regionLanes } from '../../families/regio
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
-import { mix, surfaceMix } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 
 export const AIR_TOP_DEFAULT = 7;
 
@@ -294,15 +294,15 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   if (!tiles) return emptyModel(hour, { waiting: true });
   const through = now.lastHour;
   const surface = options.surface;
-  const noViewer = readableOn(CHART_MEASURE_COLOURS.bopRight, surface);
+  const noViewer = measureColour('bopRight', surface);
   const viewpointCountry = options.viewpointCountry;
   const sideColours = new Set<string>();
   for (const reply of [...tiles, now]) for (const colour of sidePalette(reply, surface)) if (colour) sideColours.add(colour);
   const look: Look = {
-    track: surfaceMix(surface, 0.04),
+    track: surfaceGrey(surface, 0.04),
     contested: contestedGrey(surface, [...sideColours].sort()),
-    enemy: readableOn(CHART_MEASURE_COLOURS.short, surface),
-    unknownSide: surfaceMix(surface, 0.45),
+    enemy: measureColour('short', surface),
+    unknownSide: surfaceGrey(surface, 0.45),
     viewer: viewpointCountry ? at => countryColourAt(readView, viewpointCountry, at, surface, noViewer) : null,
     noViewer,
   };

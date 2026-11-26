@@ -14,6 +14,8 @@ export function readFamilyTheme(): FamilyTheme | undefined {
     text: tokens.text,
     muted: tokens.muted,
     accent: tokens.accent,
+    red: tokens.error,
+    green: tokens.positive,
   });
   return {
     surface: tokens.surface,

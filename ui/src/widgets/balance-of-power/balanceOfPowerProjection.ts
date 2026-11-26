@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { POLITICS_HISTORY, readAt, unknownHours, valueAt } from '../../dashboard/politicsHistory.ts';
 import {
@@ -55,6 +55,7 @@ interface BalanceOfPowerOptions {
   readonly branchFirstHour: number;
   readonly branchGaps: readonly HourSpan[];
   readonly gaps: readonly ChartGap[];
+  readonly surface: string;
 }
 
 const STANDARD_AXIS = { format: 'signed1', fixed: [-1, 1], ticks: [-1, -0.5, 0, 0.5, 1] } as const;
@@ -144,6 +145,7 @@ function buildHoverDetail(
   balance: BalanceHistory,
   history: PoliticsHistoryReply,
   known: readonly HourSpan[],
+  surface: string,
 ): ChartHoverDetail | null {
   let hover;
   try {
@@ -166,7 +168,7 @@ function buildHoverDetail(
   }
   const items: TooltipListItem[] = [
     value !== null
-      ? { label: title, value: exactValue(value), swatch: CHART_MEASURE_COLOURS.bopRight, strong: true }
+      ? { label: title, value: exactValue(value), swatch: measureColour('bopRight', surface), strong: true }
       : { label: title, strong: true },
   ];
   if (record?.name === null && record.nameReason) items.push({ label: record.nameReason, tone: 'muted' });
@@ -235,7 +237,7 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
       id: balance.token,
       key: balance.token,
       name: title,
-      color: CHART_MEASURE_COLOURS.bopRight,
+      color: measureColour('bopRight', options.surface),
       role: 'primary',
       step: true,
       area: false,
@@ -256,8 +258,8 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
     }];
 
     const overlays: ChartOverlayLabel[] = [
-      ...(right ? [{ position: 'top-right' as const, text: right.label, arrow: 'right' as const, color: CHART_MEASURE_COLOURS.bopRight }] : []),
-      ...(left ? [{ position: 'bottom-right' as const, text: left.label, arrow: 'left' as const, color: CHART_MEASURE_COLOURS.bopLeft }] : []),
+      ...(right ? [{ position: 'top-right' as const, text: right.label, arrow: 'right' as const, color: measureColour('bopRight', options.surface) }] : []),
+      ...(left ? [{ position: 'bottom-right' as const, text: left.label, arrow: 'left' as const, color: measureColour('bopLeft', options.surface) }] : []),
     ];
 
     const axis = balanceAxis(record ?? balance);
@@ -272,7 +274,7 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
       series,
       gaps: gaps.length > 0 ? gaps : undefined,
       overlays,
-      hoverDetail: buildHoverDetail(readView, balance, history, known),
+      hoverDetail: buildHoverDetail(readView, balance, history, known, options.surface),
       warnings: warnings.length > 0 ? warnings : undefined,
       auditRows: headRaw === null ? [] : [
         auditRow(balance.token, `${exactValue(headRaw)}|${range?.name ?? ''}|${range?.token ?? ''}|${right?.label ?? ''}|${left?.label ?? ''}`),
@@ -339,10 +341,11 @@ export const balanceOfPowerDeclaration: TimeChartWidgetDeclaration<BalanceOfPowe
     };
   },
   projection: balanceOfPowerProjection,
-  projectionOptions(ctx, { extent }) {
+  projectionOptions(ctx, { extent, surface }) {
     return {
       subject: ctx.countrySubject,
       extent,
+      surface,
       branchFirstHour: ctx.branch.firstHour,
       branchGaps: ctx.branch.gaps,
       gaps: branchGapsOf(ctx.branch),

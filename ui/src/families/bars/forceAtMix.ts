@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import type { BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
@@ -8,12 +8,11 @@ import { forcePartLabel, forceRowIdentity, GROUP_EMPTY, witnessedPartItems } fro
 import { type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
 
-const PART_SURFACE = DEFAULT_CARD_SURFACE;
-
 export interface ForceAtMixOptions {
   readonly top: number | null;
   readonly all?: boolean;
   readonly group: boolean;
+  readonly surface: string;
 }
 
 export interface ForceAtMixConfig {
@@ -62,7 +61,7 @@ export function projectForceAtMix(
     });
   }
 
-  const partColours = reply.parts.map((_part, index) => colour(PART_SURFACE, index));
+  const partColours = reply.parts.map((_part, index) => colour(options.surface, index));
   const usedParts = new Set<number>();
   const rows: ShareRowEntry[] = [];
 

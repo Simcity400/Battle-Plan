@@ -291,7 +291,7 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   const hoverTab = drawDateTab(chromeCtx.ctx, '1 Sep 1939', 100, 120, THEME, 'hover', { left: 10, right: 200 });
   assert.ok(hoverTab.width > 0);
   const tokens = resolveKitTokens(THEME);
-  assert.equal(tokens.shortage, '#ff6b6f');
+  assert.equal(tokens.shortage, mix(THEME.red, THEME.text, 0.4), 'negative figures use the theme error colour as ink, as the DOM --error-ink does');
   assert.equal(tokens.dateTabBg, THEME.raised);
   assert.equal(tokens.hoverTabBg, THEME.text);
 
@@ -393,9 +393,8 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   drawChevron(chev.ctx, 4, 18, true, THEME);
   assert.equal(chev.ops.filter(op => op.op === 'stroke').length, 2);
 
-  assert.equal(winRateColor(0.2, THEME), 'rgb(255, 107, 111)');
-  assert.equal(winRateColor(0.5, THEME), 'rgb(212, 212, 212)');
-  assert.equal(winRateColor(0.8, THEME), 'rgb(111, 212, 150)');
+  const rateTokens = resolveKitTokens(THEME);
+  assert.deepEqual([winRateColor(0.2, THEME), winRateColor(0.5, THEME), winRateColor(0.8, THEME)], [rateTokens.shortage, rateTokens.textSecondary, rateTokens.positiveInk]);
   const wr = makeFakeCtx();
   assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 0, 0, THEME), { pct: null });
   assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 12, 4, THEME), { pct: 75 });
@@ -429,7 +428,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
 
   const netShort = makeFakeCtx();
   drawNetBar(netShort.ctx, 0, 120, 0, 36, -0.5, THEME);
-  assert.equal(netShort.ops.find(op => op.op === 'fill')?.fillStyle, '#e5484d', 'shortage net bar uses CHART_MEASURE_COLOURS.short');
+  assert.equal(netShort.ops.find(op => op.op === 'fill')?.fillStyle, THEME.red, 'a shortage net bar is filled with the theme error colour');
   const tall = { kind: 'ready', bitmap: {} as CanvasImageSource, width: 18, height: 36 } as const;
   assert.deepEqual([iconStripSlotWidth(tall, 28), iconStripSlotWidth({ ...tall, width: 72 }, 28), iconStripSlotWidth({ kind: 'pending' }, 28)], [14, 28, 28],
     'a tall medal takes its own width at the strip height, so the gap between medals is the strip gap');
@@ -466,11 +465,12 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   }, THEME);
   assert.ok(clock.ops.some(op => op.op === 'fillText' && op.args[0] === '12:30:00'));
 
-  assert.equal(contrastInkForFill('#f4f6f9', THEME), 'rgba(17, 17, 17, 0.88)');
-  assert.equal(contrastInkForFill('#888888', THEME), 'rgba(17, 17, 17, 0.88)');
-  assert.equal(contrastInkForFill('#7a7a7a', THEME), 'rgba(255, 255, 255, 0.96)', 'R2-K8: the inks are compared as painted, translucent over the fill (light 4.10 to 1, dark 3.90 to 1)');
-  assert.equal(contrastInkForFill('#1e4fa3', THEME), 'rgba(255, 255, 255, 0.96)');
-  assert.equal(contrastInkForFill('#16181d', THEME), 'rgba(255, 255, 255, 0.96)');
+  const fillInk = resolveKitTokens(THEME);
+  assert.equal(contrastInkForFill('#f4f6f9', THEME), fillInk.darkFillInk);
+  assert.equal(contrastInkForFill('#888888', THEME), fillInk.darkFillInk);
+  assert.equal(contrastInkForFill('#7a7a7a', THEME), fillInk.lightFillInk, 'R2-K8: the inks are compared as painted, translucent over the fill');
+  assert.equal(contrastInkForFill('#1e4fa3', THEME), fillInk.lightFillInk);
+  assert.equal(contrastInkForFill('#16181d', THEME), fillInk.lightFillInk);
   assert.equal(contrastInkForFill('not-a-colour', THEME), THEME.text);
 });
 

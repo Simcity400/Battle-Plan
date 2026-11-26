@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { DeclaredProduct } from '../../dashboard/request';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
@@ -9,8 +9,6 @@ import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForceAtRow, ForcePart, NavalLossesAtReply } from '../../generated/dashboard';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment, type CountryRowPresentation } from './model.ts';
 import type { SeriesRaceBaseOptions } from './seriesRace.ts';
-
-const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface ForceAtRaceBaseOptions extends SeriesRaceBaseOptions {
   readonly split: boolean;
@@ -191,7 +189,7 @@ export function projectForceAtReply(
     return { ...baseModel, rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   }
 
-  const partColours = reply.parts.map((_part, index) => colour(PART_SURFACE, index));
+  const partColours = reply.parts.map((_part, index) => colour(options.surface, index));
   const rows: BarsDataRow[] = [];
   for (const item of reply.rows) {
     const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);

@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { COMMAND_TERM_COLOURS, measureColour } from '../../charts/palette.ts';
 import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import { subjectHandle } from '../../dashboard/chosen.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -38,9 +38,6 @@ export interface CareerTimelineOptions {
 const PARTIAL = 'Battle counts are incomplete: some battles were not recorded.';
 const PARTIAL_MONTH = 'Part of this month was not recorded: battles then are not counted.';
 const FLEET_NOTE = 'Fleet commands cover fleets the recording names this leader for.';
-const COMMAND_COLOURS = ['#394d72', '#3b64a8', '#44587e', '#355c96'] as const;
-const HELD_DIAMOND = '#5c8df6';
-const GAINED_DIAMOND = '#e5a43b';
 const TRAIT_CLASSES = ['Held before', 'Gained', 'Gained'] as const;
 
 export function validateLeaderCareer(input: unknown): LeaderCareerReply {
@@ -273,7 +270,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
           id: `cmd:${cmd.formation}:${cmd.firstHour}`,
           firstHour: Math.max(opt.firstHour, cmd.firstHour),
           lastHour: open ? hour : Math.min(hour, cmd.lastHour),
-          color: COMMAND_COLOURS[index % COMMAND_COLOURS.length]!,
+          color: COMMAND_TERM_COLOURS[index % COMMAND_TERM_COLOURS.length]!,
           label,
           open,
           meta: { kind: 'command', name: label, firstHour: cmd.firstHour, lastHour: cmd.lastHour, open },
@@ -294,7 +291,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
         id: `bat:${index}:${first}`,
         firstHour: first,
         lastHour: last,
-        color: CHART_MEASURE_COLOURS.supplyOk,
+        color: measureColour('supplyOk', opt.surface),
         open: last === hour && m.monthLast > hour,
         histogram: { positive: m.won, negative: m.lost, max: maxMonthly },
         meta,
@@ -311,7 +308,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     }
     const traitSpans: TimelineSpan[] = [...gainsAt].sort((a, b) => a[0] - b[0]).map(([at, entries]) => {
       const gained = entries.filter(entry => entry.gainClass !== 0);
-      const colour = gained.length ? GAINED_DIAMOND : HELD_DIAMOND;
+      const colour = measureColour(gained.length ? 'gainedTrait' : 'heldTrait', opt.surface);
       return {
         id: `trait:${at}`,
         firstHour: at,

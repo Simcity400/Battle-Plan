@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { typographyVariables } from './typography';
 import { loadAppearance, resolveAppearance, saveAppearance } from './settings';
 import type { AppearanceSettings, Backdrop, ResolvedAppearance } from './settings';
-import { contrastColors, cssVariable, themeRoles } from './themes';
+import { contrastColors, cssVariable, themeRoles, themeVariables } from './themes';
+import { paletteVariables } from '../../charts/palette.ts';
 import type { ThemeColors, ThemeMode } from './themes';
 import { getBackdrop } from './backdrops';
 import { APPEARANCE_EVENT } from './events';
@@ -25,6 +26,7 @@ function useMedia(store: ReturnType<typeof mediaStore>): boolean {
 export function applyAppearance(root: HTMLElement, settings: AppearanceSettings, resolved: ResolvedAppearance, themed: ThemeColors = resolved.colors, mode: ThemeMode = resolved.mode): void {
   const colors = contrastColors(themed, settings.contrast);
   for (const role of themeRoles) root.style.setProperty(cssVariable(role), colors[role]);
+  for (const [name, value] of Object.entries({ ...themeVariables(colors), ...paletteVariables(colors.surface) })) root.style.setProperty(name, value);
   for (const id of sidebarIconIds) root.style.setProperty(`--sidebar-icon-${id}`, settings.sidebarIcons[id]?.colour ?? SIDEBAR_ICONS[id][mode]);
   root.style.setProperty('--glass', `${settings.glass}%`);
   root.style.setProperty('--glass-blur', settings.glass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.glass) * 0.2)}px`);

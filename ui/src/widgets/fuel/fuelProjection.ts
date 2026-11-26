@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { FutureDataError, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../../families/contract.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
@@ -33,6 +33,7 @@ export interface FuelOptions {
   readonly windowHours?: number | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
+  readonly surface: string;
 }
 
 export function formatFuelAmount(value: number): string {
@@ -65,7 +66,7 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       id: 'fuel',
       key: 'fuel',
       name: 'Fuel',
-      color: CHART_MEASURE_COLOURS.fuel,
+      color: measureColour('fuel', options.surface),
       role: 'primary',
       step: false,
       area: options.area,
@@ -86,7 +87,7 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
         id: 'capacity',
         key: 'capacity',
         name: 'Capacity',
-        color: CHART_MEASURE_COLOURS.fuel,
+        color: measureColour('fuel', options.surface),
         role: 'ceiling',
         step: true,
         dash: CEILING_DASH,
@@ -112,20 +113,20 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       yAxis: { format: 'compact' },
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      hoverDetail: fuelHoverDetail(readView, options.digits),
+      hoverDetail: fuelHoverDetail(readView, options.digits, options.surface),
       auditRows: readings.map(([row, reading]) => auditReading(row, reading, known => formatFuelReading(known, options.digits))),
     };
   },
 });
 
-const HOVER_COLOURS = {
-  fuel: CHART_MEASURE_COLOURS.fuel,
-  capacity: CHART_MEASURE_COLOURS.fuel,
-  gained: CHART_MEASURE_COLOURS.supplyOk,
-  burned: CHART_MEASURE_COLOURS.short,
-};
+const hoverColours = (surface: string) => ({
+  fuel: measureColour('fuel', surface),
+  capacity: measureColour('fuel', surface),
+  gained: measureColour('supplyOk', surface),
+  burned: measureColour('short', surface),
+});
 
-function fuelHoverDetail(readView: BoundedReadView, digits: number): ChartHoverDetail | null {
+function fuelHoverDetail(readView: BoundedReadView, digits: number, surface: string): ChartHoverDetail | null {
   let hover;
   try {
     hover = readView.hover<CountryFuelReply>('fuelHover');
@@ -134,7 +135,7 @@ function fuelHoverDetail(readView: BoundedReadView, digits: number): ChartHoverD
     throw error;
   }
   if (!hover) return null;
-  const [card] = fuelTooltips(hover.data, formatDateOnly(hover.hour), HOVER_COLOURS, digits);
+  const [card] = fuelTooltips(hover.data, formatDateOnly(hover.hour), hoverColours(surface), digits);
   if (!card) return null;
   const items = cardItems(card.rows, false);
   return { hour: hover.hour, items: card.note ? [...items, { label: card.note, tone: 'muted', divider: true }] : items, replacesSeries: true };
@@ -193,8 +194,9 @@ export const fuelDeclaration: TimeChartWidgetDeclaration<FuelOptions> = {
     };
   },
   projection: fuelProjection,
-  projectionOptions(ctx, { extent }) {
+  projectionOptions(ctx, { extent, surface }) {
     return {
+      surface,
       tag: ctx.countries.tags[0] ?? null,
       capacity: ctx.options.capacity !== false,
       area: ctx.options.areaFill !== false,

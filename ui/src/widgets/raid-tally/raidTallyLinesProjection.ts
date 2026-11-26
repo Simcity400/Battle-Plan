@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
+import { SECONDARY_DASH, tailColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
@@ -42,7 +42,6 @@ import type {
 import { validateRaidTallyAt } from './raidTallyRaceProjection.ts';
 import { identityName, identityNameOr } from '../../families/table/identityCell.ts';
 
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
 const LAUNCHED_SUFFIX = '\u0000launched';
 const SUCCEEDED_SUFFIX = '\u0000succeeded';
@@ -322,7 +321,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       surface: options.surface,
       withFlag: true,
       recordedOrdinal: key => rowOf.get(key) ?? 0,
-      tailColor: TAIL_COLOUR,
+      tailColor: tailColour(options.surface),
     });
     const looks = new Map(
       [...rawLooks.entries()].map(([key, look]) => {

@@ -1,5 +1,5 @@
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsValueField, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -46,6 +46,7 @@ export interface MilitaryAirAtOptions {
   readonly none: string;
   readonly filters: MilitaryAirFilters;
   readonly paired?: { readonly solid: string; readonly outline: string };
+  readonly surface: string;
 }
 
 export function militaryAirParams(ctx: FamilyPlanContext, family: MilitaryAirFamily, metric: MilitaryAirMetric, filters: MilitaryAirFilters): Record<string, unknown> {
@@ -183,10 +184,6 @@ function emptyText(options: MilitaryAirAtOptions): string {
   return options.group ? 'No country of this group at this date.' : options.none;
 }
 
-function causeColour(cause: number): string {
-  return colour(DEFAULT_CARD_SURFACE, cause);
-}
-
 export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirAtOptions): BarsModel {
   const base = { form: 'stacked' as const, hour: readView.hour, animateOrder: true };
   const read = readReply(readView, options);
@@ -202,7 +199,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
         seen.set(cause.cause, cause);
         return {
           key: String(cause.cause), label: causeLabel(cause), share: Number((BigInt(cause.taken) * 10_000n) / taken) / 10_000,
-          ...militaryAirAmount(cause.taken, null, options), color: causeColour(cause.cause),
+          ...militaryAirAmount(cause.taken, null, options), color: colour(options.surface, cause.cause),
         };
       })
       : [];
@@ -228,7 +225,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
     };
   });
   rows.push(...absentRows(readView, reply, 'stacked'));
-  const legend: BarsLegendItem[] = [...seen.values()].sort((a, b) => a.cause - b.cause).map(cause => ({ key: String(cause.cause), label: causeLabel(cause), color: causeColour(cause.cause) }));
+  const legend: BarsLegendItem[] = [...seen.values()].sort((a, b) => a.cause - b.cause).map(cause => ({ key: String(cause.cause), label: causeLabel(cause), color: colour(options.surface, cause.cause) }));
   const shownNotes = notes(reply, options);
   return {
     ...base,

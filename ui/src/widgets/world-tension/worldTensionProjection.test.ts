@@ -19,6 +19,7 @@ import { FAMILY_VIEWS } from '../familyManifest.ts';
 import { worldTensionEventsDeclaration, worldTensionEventsProjection } from './worldTensionEventsProjection.ts';
 import { worldTensionLinesDeclaration, worldTensionLinesProjection } from './worldTensionLinesProjection.ts';
 import { worldTensionDeclaration, worldTensionProjection } from './worldTensionProjection.ts';
+import { DEFAULT_FAMILY_THEME } from '../../families/theme.fixture.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
@@ -123,7 +124,7 @@ describe('world-tension projections', () => {
         return (...args: unknown[]) => { ops.push(String(prop)); return args; };
       },
     }) as unknown as Canvas2D;
-    drawTimeChart(ctx, model, fullLayout, undefined, `plot:${H1936 + 5000}`, 1);
+    drawTimeChart(ctx, model, fullLayout, DEFAULT_FAMILY_THEME, `plot:${H1936 + 5000}`, 1);
     assert.ok(ops.includes('fill') && ops.includes('arc'), 'stepped stack paints bands and hover dot');
   });
 

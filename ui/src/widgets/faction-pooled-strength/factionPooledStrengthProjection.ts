@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import { artTooltipItem } from '../../families/art/adapters.ts';
@@ -23,6 +23,7 @@ import type {
 
 export interface FactionPooledStrengthOptions {
   readonly pool: FactionPoolKind;
+  readonly surface: string;
 }
 
 const POOLS = new Set<string>(['resources', 'manpower', 'research', 'doctrine']);
@@ -143,7 +144,7 @@ function nonOkModel(base: { readonly form: 'ordered'; readonly hour: number; rea
   return { ...base, rows: [], empty: reply.reason ?? 'This faction’s pools were not recorded at this time.', emptyKind: 'unavailable', warnings };
 }
 
-function projectResources(readView: BoundedReadView, reply: FactionPoolsReply): BarsModel {
+function projectResources(readView: BoundedReadView, reply: FactionPoolsReply, surface: string): BarsModel {
   const base = { form: 'ordered' as const, hour: readView.hour, showAxis: false as const };
   const count = reply.resources.length;
   const summaryText = `${count} ${count === 1 ? 'resource' : 'resources'}`;
@@ -176,7 +177,7 @@ function projectResources(readView: BoundedReadView, reply: FactionPoolsReply): 
       label,
       labelMissing,
       media,
-      color: colour(DEFAULT_CARD_SURFACE, entry.ordinal),
+      color: colour(surface, entry.ordinal),
       value: { value, format, label: 'Pooled' },
       numeric,
       ...(formatted && 'text' in formatted ? {
@@ -339,7 +340,7 @@ function projectPool(readView: BoundedReadView, options: FactionPooledStrengthOp
   if (panel === undefined) return { ...base, rows: [] };
   const reply = validateFactionPools(panel);
   if (reply.status !== 'ok') return nonOkModel(base, reply);
-  if (options.pool === 'resources') return projectResources(readView, reply);
+  if (options.pool === 'resources') return projectResources(readView, reply, options.surface);
   if (options.pool === 'manpower') return projectManpower(readView, reply);
   if (options.pool === 'research') return projectResearch(readView, reply);
   return projectDoctrines(readView, reply);
@@ -395,7 +396,7 @@ function makePoolView(pool: FactionPoolKind): {
     countries: { mode: 'single', choose: 'Choose a country to see its faction’s pools.' },
     sources: ctx => poolSources(ctx, pool),
     projection,
-    projectionOptions: () => ({ pool }),
+    projectionOptions: (_ctx, extra) => ({ pool, surface: extra.surface }),
     jumpToDate: true,
     keyByBranch: true,
   };

@@ -1,4 +1,4 @@
-import { CATEGORY_LIMIT, CHART_MEASURE_COLOURS, colour } from '../../charts/palette.ts';
+import { CATEGORY_LIMIT, colour, tailColour } from '../../charts/palette.ts';
 import { factionIdentity, type FactionStyle } from '../../dashboard/campaignSettings.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
@@ -35,7 +35,6 @@ import { branchGapsOf, headReading, missingSpansOf, type HeadReading } from './s
 import { chartAxis, chartWindow, lineChartSettings, type LineChartSettings } from './settings.ts';
 
 const COLOURED = 8;
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 
 export interface FactionSpanSummary {
   readonly id: string;
@@ -490,7 +489,7 @@ function projectDirectTiles(
   const series: TimeChartSeriesModel[] = shown.map((item, rank) => {
     const isTail = rank >= COLOURED;
     const pres = factionPresentation(readView, item.faction.id, options, hour, item.faction.founder);
-    const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
+    const color = isTail && !pres.customColour ? tailColour(options.surface) : pres.color;
     const headValue = item.active ? item.known : null;
     const absentReason = item.active ? item.missing : null;
     if (item.active) {
@@ -632,7 +631,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
     const series: TimeChartSeriesModel[] = ids.map((id, rank) => {
       const isTail = rank >= COLOURED;
       const pres = factionPresentation(readView, id, options, hour);
-      const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
+      const color = isTail && !pres.customColour ? tailColour(options.surface) : pres.color;
       const bounded = tiles.get(id) ?? null;
       auditRows.push(auditRow(id, headPanel.missing!));
       return {
@@ -673,7 +672,7 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
   const series: TimeChartSeriesModel[] = shown.map((row, rank) => {
     const isTail = rank >= COLOURED;
     const pres = factionPresentation(readView, row.id, options, hour);
-    const color = isTail && !pres.customColour ? TAIL_COLOUR : pres.color;
+    const color = isTail && !pres.customColour ? tailColour(options.surface) : pres.color;
     const bounded = tiles?.get(row.id) ?? null;
     const headValue = row.total;
     const absentReason = headValue === null ? (row.missing ?? 'Not recorded at this hour') : null;

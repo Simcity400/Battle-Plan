@@ -30,11 +30,11 @@
   display: block;
   border-radius: 1px;
   min-height: 1px;
-  background: oklch(0.703 0.068 82.8);
+  background: var(--event-politics);
 }
 
 .efs-seg.is-politics {
-  background: oklch(0.703 0.068 82.8);
+  background: var(--event-politics);
 }
 
 .efs-seg.is-warsPeace {
@@ -42,11 +42,11 @@
 }
 
 .efs-seg.is-diplomacy {
-  background: oklch(0.72 0.11 225);
+  background: var(--event-diplomacy);
 }
 
 .efs-seg.is-milestones {
-  background: oklch(0.72 0.11 142);
+  background: var(--event-milestones);
 }
 
 .efs-gap {

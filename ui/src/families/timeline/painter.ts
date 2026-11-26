@@ -1,5 +1,4 @@
 import { fitLine } from '../../charts/labels.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
@@ -583,12 +582,12 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
       ctx.save();
       if (positive > 0 && max > 0) {
         const h = Math.max(2, Math.round((positive / max) * halfMax));
-        ctx.fillStyle = CHART_MEASURE_COLOURS.supplyOk;
+        ctx.fillStyle = theme.green;
         ctx.fillRect(x0, Math.round(mid) - h, w, h);
       }
       if (negative > 0 && max > 0) {
         const h = Math.max(2, Math.round((negative / max) * halfMax));
-        ctx.fillStyle = CHART_MEASURE_COLOURS.short;
+        ctx.fillStyle = theme.red;
         ctx.fillRect(x0, Math.round(mid) + 1, w, h);
       }
       ctx.restore();

@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { categoricalPalette, DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
+import { categoricalPalette } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { keyId, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
@@ -234,7 +234,7 @@ export const rulingPartyDeclaration: TimeChartWidgetDeclaration<RulingPartyOptio
     const history = ctx.aux;
     const owner = `ruling-party:${ctx.track.source.id}:${ctx.branch.id}:${subject ?? ''}`;
     if (!subject || !history) return { owner, entries: [] };
-    const keys = bandKeys(bands(history, categoricalPalette(DEFAULT_DARK_SURFACE)), subject);
+    const keys = bandKeys(history.parties.map(series => ({ owned: series.parts })), subject);
     if (!keys.length) return { owner: `${owner}:empty`, entries: [], allowEmptyFollow: true };
     const country = countryFromKey(subject);
     const reads = keys.map(key => ({ country, part: key.part }));

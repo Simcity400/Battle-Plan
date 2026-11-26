@@ -48,7 +48,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
       GER: { name: 'German Reich', color: '#6b7280' },
     }),
   });
-  const model = projectForceAtMix(view, reply, { top: 10, all: false, group: false }, {
+  const model = projectForceAtMix(view, reply, { surface: '#1e1e1e', top: 10, all: false, group: false }, {
     decimals: 0,
     valueFormat: { decimals: 0 },
     valueLabel: 'Ships and convoys lost',

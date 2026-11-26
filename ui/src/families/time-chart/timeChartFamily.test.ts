@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ChartBucket } from '../../charts/chartSummary.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { Run } from '../../charts/series.ts';
@@ -170,7 +170,7 @@ describe('time-chart BoundedSeries & Foundation C integration', () => {
         id: 'GER',
         key: 'GER',
         name: 'German Reich',
-        color: CHART_MEASURE_COLOURS.politicalPower,
+        color: measureColour('politicalPower', '#111111'),
         role: 'primary',
         step: false,
         bounded,
@@ -247,7 +247,7 @@ describe('time-chart layout & rules C1-C12', () => {
         id: 'GER',
         key: 'GER',
         name: 'German Reich',
-        color: CHART_MEASURE_COLOURS.politicalPower,
+        color: measureColour('politicalPower', '#111111'),
         role: 'primary',
         area: true,
         negRed: true,
@@ -320,7 +320,7 @@ describe('time-chart layout & rules C1-C12', () => {
           id: 'a',
           key: 'GER',
           name: 'German Reich',
-          color: CHART_MEASURE_COLOURS.politicalPower,
+          color: measureColour('politicalPower', '#111111'),
           role: 'primary',
           area: true,
           negRed: true,
@@ -387,7 +387,7 @@ describe('time-chart layout & rules C1-C12', () => {
         status: recorded ? 'recorded' : 'no-rows',
         ...(recorded
           ? {
-              segments: [{ id: 'ground', label: 'Ground', color: CHART_MEASURE_COLOURS.armyExperience, value: i === 7 ? 0 : 1000, exactText: i === 7 ? '0' : '1,000' }],
+              segments: [{ id: 'ground', label: 'Ground', color: measureColour('armyExperience', '#111111'), value: i === 7 ? 0 : 1000, exactText: i === 7 ? '0' : '1,000' }],
               totalValue: i === 7 ? 0 : 1000,
               totalText: i === 7 ? '0' : '1,000',
             }
@@ -500,7 +500,7 @@ describe('time-chart laneView integration', () => {
             id: 'ger',
             key: 'GER',
             name: 'German Reich',
-            color: CHART_MEASURE_COLOURS.politicalPower,
+            color: measureColour('politicalPower', '#111111'),
             role: 'primary',
             area: true,
             negRed: true,
@@ -1070,7 +1070,7 @@ describe('experience and fuel', () => {
         ['army', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(raw(32.57)) })]])],
         ['navy', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: notRecorded('Navy experience was not read') })]])],
       ]),
-    }), { tag: 'GER', extent: [base, base + 95], gaps: [] });
+    }), { surface: '#111111', tag: 'GER', extent: [base, base + 95], gaps: [] });
     assert.deepEqual(model.series.map(s => s.id), ['army', 'navy', 'air']);
     assert.equal(model.series[0]!.endLabel?.value, '32.57');
     assert.equal(model.series[0]!.endLabel?.name, 'Army');
@@ -1103,7 +1103,7 @@ describe('experience and fuel', () => {
         ['navyHover', { hour: hoverAt, data: { decimals: 0, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '3453199' }, missing: null }] } }],
         ['airHover', { hour: hoverAt, data: { decimals: 0, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '328' }, missing: null }] } }],
       ]),
-    }), { tag: 'GER', extent: [base, base + 95], gaps: [] });
+    }), { surface: '#111111', tag: 'GER', extent: [base, base + 95], gaps: [] });
 
     assert.equal(model.series[0]!.endLabel?.value, '10,000,000,000', 'Q15 327,680,000,000,327 truncates to 10,000,000,000, not float 10,000,000,000.01');
     assert.equal(model.series[1]!.endLabel?.value, '105.38', 'Q15 3,453,419 truncates toward zero to 105.38');
@@ -1133,7 +1133,7 @@ describe('experience and fuel', () => {
         ['capacity', new Map([['GER', boundTiledSeries(capLine, displayedHour(hour), { headValue: knownValue(raw(665_000)) })]])],
       ]),
       hovers: new Map([['fuelHover', { hour: base + 50, data: { ...reply, missing: 'Fuel was not read on this day' } }]]),
-    }), { tag: 'GER', capacity: true, area: true, digits: 0, extent: [base, base + 95], gaps: [] });
+    }), { surface: '#111111', tag: 'GER', capacity: true, area: true, digits: 0, extent: [base, base + 95], gaps: [] });
     assert.equal(model.series[0]!.endLabel?.value, '598K');
     assert.equal(model.series[1]!.role, 'ceiling');
     assert.equal(model.series[1]!.step, true);
@@ -1500,7 +1500,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const measures = [{ name: 'divisions', decimals: 0 }, ...['noSupply', 'strained', 'inSupply'].map(name => ({ name, decimals: 0 })),
       ...['noSupplyShare', 'strainedShare', 'inSupplyShare'].map(name => ({ name, decimals: 5 }))];
     const rankReply = (readings: ReturnType<typeof reading>[]) => ({ hour: hoverAt, data: { branchId: '1', hour: hoverAt, measures, rows: [{ country: 7, readings }], refused: null, from: hoverAt, until: hoverAt } });
-    const options = { subject, extent: [base, base + 287] as const, gaps: [] };
+    const options = { surface: '#111111', subject, extent: [base, base + 287] as const, gaps: [] };
     const model = supplyHealthProjection.project(createBoundedReadView({
       hour,
       series: new Map([
@@ -1513,16 +1513,16 @@ describe('stacked bounded series, supply health, and ruling party', () => {
 
     assert.equal(model.mode, 'stack');
     assert.deepEqual(model.stack?.bands.map(b => [b.id, b.color, b.endLabel?.value]), [
-      ['noSupply', CHART_MEASURE_COLOURS.supplyNone, '7.0%'],
-      ['strained', CHART_MEASURE_COLOURS.supplyStrained, '66%'],
-      ['inSupply', CHART_MEASURE_COLOURS.supplyOk, '27%'],
+      ['noSupply', measureColour('supplyNone', '#111111'), '7.0%'],
+      ['strained', measureColour('supplyStrained', '#111111'), '66%'],
+      ['inSupply', measureColour('supplyOk', '#111111'), '27%'],
     ]);
     const layout = layoutTimeChart(model, 720, 260, FONT, measure);
     assert.equal(layout.endLabels.length, 3);
     assert.deepEqual(layout.yTicks, [0, 50, 100]);
 
     const { ctx, ops } = mockCanvas(720, 260);
-    drawTimeChart(ctx, model, layout, undefined, null, 1);
+    drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
     assert.ok(ops.some(op => op === 'text:27%'));
     assert.ok(ops.some(op => op === 'text:66%'));
     assert.ok(ops.some(op => op === 'text:7.0%'));
@@ -1723,7 +1723,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         id: 'bop',
         key: 'bop',
         name: 'Power Balance',
-        color: CHART_MEASURE_COLOURS.bopRight,
+        color: measureColour('bopRight', '#111111'),
         role: 'primary',
         step: true,
         points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.9 }],
@@ -1735,8 +1735,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         },
       }],
       overlays: [
-        { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: CHART_MEASURE_COLOURS.bopRight },
-        { position: 'bottom-right', text: 'Grand Council of Fascism', arrow: 'left', color: CHART_MEASURE_COLOURS.bopLeft },
+        { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: measureColour('bopRight', '#111111') },
+        { position: 'bottom-right', text: 'Grand Council of Fascism', arrow: 'left', color: measureColour('bopLeft', '#111111') },
       ],
     };
     const { ctx, ops } = mockCanvas(960, 160);
@@ -1799,7 +1799,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
           warnings: [],
         },
       }]]),
-    }), { subject: 'GER', extent: [base, base + 95], gaps: [] });
+    }), { surface: '#111111', subject: 'GER', extent: [base, base + 95], gaps: [] });
     const inSupplyBand = supplyModel.stack!.bands.find(b => b.id === 'inSupply')!;
     assert.equal(inSupplyBand.endLabel?.value, '15%', '14,500/100,000 exact share prints 15%, not float 14%');
     assert.equal(supplyModel.auditRows?.find(r => r.row === 'inSupply')?.value, '15%');
@@ -1852,7 +1852,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const fuelModel = fuelProjection.project(createBoundedReadView({
       hour,
       answers: new Map([['fuel', fuelAnswer], ['capacity', tinyFuelAnswer]]),
-    }), { tag: 'GER', capacity: true, area: true, digits: 0, extent: [base, base + 95], gaps: [] });
+    }), { surface: '#111111', tag: 'GER', capacity: true, area: true, digits: 0, extent: [base, base + 95], gaps: [] });
     assert.equal(fuelModel.series[0]!.endLabel?.value, '597K', '597,999.61 fuel truncates to 597K, never rounds to 598K');
     assert.equal(fuelModel.series[1]!.endLabel?.value, '<1', 'non-zero 1/32,768 fuel prints <1, never 0');
     assert.equal(fuelModel.auditRows?.find(r => r.row === 'fuel')?.value, '597K');

@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, identityColour } from '../../charts/palette.ts';
+import { identityColour, measureColour, surfaceGrey } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -12,7 +12,7 @@ import {
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
-import { readableOn, regionLabel, signedRampColour } from '../../families/heat/scale.ts';
+import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { regionLanes } from '../../families/regions/regionRows.ts';
@@ -23,7 +23,6 @@ import type {
   RegionalWeatherReply,
   WeatherReadout,
 } from '../../generated/dashboard';
-import { surfaceMix } from '../../shell/appearance/color.ts';
 import { type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
@@ -63,10 +62,10 @@ function palette(reply: RegionalWeatherReply, surface: string): Palette {
   reply.flags.forEach((item, ordinal) => flag.set(item.id, identityColour(surface, 'weather', item.id, ordinal)));
   return {
     flag,
-    track: surfaceMix(surface, 0.04),
-    cold: readableOn(CHART_MEASURE_COLOURS.temperatureCold, surface),
-    warm: readableOn(CHART_MEASURE_COLOURS.temperatureWarm, surface),
-    ramp: readableOn(CHART_MEASURE_COLOURS.weatherModifier, surface),
+    track: surfaceGrey(surface, 0.04),
+    cold: measureColour('temperatureCold', surface),
+    warm: measureColour('temperatureWarm', surface),
+    ramp: measureColour('weatherModifier', surface),
   };
 }
 
