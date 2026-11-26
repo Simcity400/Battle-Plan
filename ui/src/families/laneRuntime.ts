@@ -94,6 +94,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   status(model: TModel): LaneStatus;
   readonly view: readonly (keyof TBinding & string)[];
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
+  keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
   paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number | { drew: boolean; next: boolean | number };
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): LaneTooltip | null;
@@ -237,7 +238,7 @@ function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
-function sameFieldValue(a: unknown, b: unknown): boolean {
+export function sameFieldValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a === 'number' && typeof b === 'number') return Number.isNaN(a) && Number.isNaN(b);
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
@@ -648,7 +649,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.ctx.restore();
           return result;
         };
-        const painted = drawCanvas();
+        const painted = keep.content && family.keepsCanvas?.(keep.ctx, frame) ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
         if (!incremental) markCanvasPainted(keep.canvas, drawCanvas);
         const next = incremental ? painted.next : painted;

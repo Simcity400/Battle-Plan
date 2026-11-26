@@ -170,8 +170,12 @@ function nonDataMark(item: Exclude<FlatTableRow, { kind: 'data' }>): string {
   return `load:${item.key}`;
 }
 
-function barSpanOf(column: FamilyColumnLayout): number {
-  return Math.max(1, column.width - CELL_INSET * 2);
+export function barPixelSpan(column: FamilyColumnLayout, dpr: number): number {
+  return Math.max(1, Math.max(1, column.width - CELL_INSET * 2) * dpr);
+}
+
+export function barPixels(fraction: number | null, span: number): number {
+  return fraction === null ? -1 : Math.round(fraction * span);
 }
 
 function paintRowBackground(
@@ -481,8 +485,8 @@ export function drawFamilyTable(
     const cell = item.row.cells[column.key];
     const paintModel = resolveCellPaintModel(cell, column, maxima);
     const formatted = formatValueState(paintModel.value, paintModel.format, cell?.loading ? { loading: true } : cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
-    const span = Math.max(1, barSpanOf(column) * dpr);
-    const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
+    const span = barPixelSpan(column, dpr);
+    const pixels = barPixels(paintModel.bar.fraction, span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
     const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
     const art = artStateOf(paintModel.art);
@@ -1020,21 +1024,25 @@ export function tableGlide(offsets: ReadonlyMap<string, GlideOffset>, rows: read
   return { offsets, movers, starts, ends };
 }
 
+function visitGlideCrossings(glide: TableGlide, top: number, bottom: number, out: number[] | null, node = 1, first = 0, span = glide.ends.length / 2): boolean {
+  if (first >= glide.starts.length || glide.starts[first]! >= bottom || glide.ends[node]! <= top) return false;
+  if (span === 1) {
+    if (!out) return true;
+    out.push(glide.movers[first]!.index);
+    return false;
+  }
+  const half = span / 2;
+  return visitGlideCrossings(glide, top, bottom, out, 2 * node, first, half) ||
+    visitGlideCrossings(glide, top, bottom, out, 2 * node + 1, first + half, half);
+}
+
+export function hasGlideCrossing(glide: TableGlide, top: number, bottom: number): boolean {
+  return visitGlideCrossings(glide, top, bottom, null);
+}
+
 export function glideCrossing(glide: TableGlide, top: number, bottom: number): number[] {
-  const { movers, starts, ends } = glide;
   const out: number[] = [];
-  const size = ends.length / 2;
-  const visit = (node: number, first: number, span: number): void => {
-    if (first >= starts.length || starts[first]! >= bottom || ends[node]! <= top) return;
-    if (span === 1) {
-      out.push(movers[first]!.index);
-      return;
-    }
-    const half = span / 2;
-    visit(2 * node, first, half);
-    visit(2 * node + 1, first + half, half);
-  };
-  if (size >= 1) visit(1, 0, size);
+  visitGlideCrossings(glide, top, bottom, out);
   return out;
 }
 

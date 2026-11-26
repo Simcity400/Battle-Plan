@@ -990,23 +990,26 @@ export function computeColumnMaxima(
   return maxima;
 }
 
-export function barFractionOf(
+export function cellBarFraction(
   cell: TableCell,
   value: Value,
   top: number | undefined,
   magnitude = false,
-): { readonly fraction: number | null; readonly alert: boolean } {
-  if (cell.bar === null) return { fraction: null, alert: false };
+): number | null {
+  if (cell.bar === null) return null;
   if (cell.bar !== undefined) {
     const raw = valueNumber(cell.bar.fraction);
-    if (raw === undefined) return { fraction: null, alert: false };
-    return { fraction: Math.max(0, Math.min(1, raw)), alert: cell.bar.alert === true };
+    return raw === undefined ? null : Math.max(0, Math.min(1, raw));
   }
-  if (value.kind === 'zero') return { fraction: null, alert: false };
+  if (value.kind === 'zero') return null;
   const read = valueNumber(value);
   const num = read !== undefined && magnitude ? Math.abs(read) : read;
-  if (num === undefined || top === undefined || top <= 0 || num <= 0) return { fraction: null, alert: false };
-  return { fraction: Math.max(0, Math.min(1, num / top)), alert: false };
+  return num === undefined || top === undefined || top <= 0 || num <= 0 ? null : Math.max(0, Math.min(1, num / top));
+}
+
+function barFractionOf(cell: TableCell, value: Value, top: number | undefined, magnitude = false): { readonly fraction: number | null; readonly alert: boolean } {
+  const fraction = cellBarFraction(cell, value, top, magnitude);
+  return { fraction, alert: fraction !== null && cell.bar?.alert === true };
 }
 
 export function resolveCellPaintModel(

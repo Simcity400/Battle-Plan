@@ -1,11 +1,15 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
+import { BEHIND_BAR_MAX_WIDTH, BEHIND_BAR_OFFSET } from '../../draw/kit.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
+import { sameFieldValue } from '../laneRuntime.ts';
+import { treeLevelsOf } from './cellPainters.ts';
 import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, extentTop, layoutFamilyTable, measureFixedColumnWidths, rowExtents, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowExtents, type RowLayoutGeometry } from './layout.ts';
 import {
+  cellBarFraction,
   computeColumnMaxima,
   deriveTableAudit,
   deriveTableMirror,
@@ -17,13 +21,14 @@ import {
   tableRank,
   updateColumnMaximaIncremental,
   type FlatTableRow,
+  type TableCell,
   type TableColumnSpec,
   type TableModel,
   type TableRow,
 } from './model.ts';
-import { createTablePicture, drawFamilyTable, drawPaneFrame, glideCrossing, glideDurationForSpeed, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
+import { barPixels, barPixelSpan, createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hasGlideCrossing, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
-import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
+import { CELL_INSET, MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'table';
@@ -51,6 +56,7 @@ interface TableShape {
   readonly hasGroups: boolean;
   readonly incremental: boolean;
   readonly hasTree: boolean;
+  readonly treeLevels: number | readonly number[];
   readonly panes: readonly ResolvedPane[] | null;
   readonly paneGeom: ReturnType<typeof paneGeometry> | null;
   readonly paneSpans: ReturnType<typeof combinedPaneGeometry> | null;
@@ -86,24 +92,39 @@ interface TableMotion {
 interface TableLayout {
   readonly shape: TableShape;
   readonly localScrollTop: number;
+  readonly scrollLeft: number;
   readonly rowWindow: { readonly first: number; readonly count: number };
   readonly shownWindows: readonly { readonly first: number; readonly count: number }[];
   readonly tops: (index: number) => number;
   readonly heights: (index: number) => number;
   readonly focusedIndex: number;
   readonly height: number;
+  readonly visibleRows: readonly { readonly first: number; readonly count: number }[];
+  readonly visibleColumns: readonly FamilyColumnLayout[] | null;
 }
 
 type TableFrame = LaneFrame<FamilyTableBinding, TableModel, TableLayout>;
 
-const pictures = new WeakMap<OffscreenCanvasRenderingContext2D, { width: number; height: number; art: number; list: FamilyTablePicture[] }>();
+interface PaintedTable {
+  readonly width: number;
+  readonly height: number;
+  readonly art: number;
+  readonly list: FamilyTablePicture[];
+  still?: TableLayout;
+  inspect?: string | null;
+  selected?: string | null;
+  focused?: string | null;
+  dpr?: number;
+}
 
-function picturesFor(ctx: OffscreenCanvasRenderingContext2D, surface: Surface, art: number): FamilyTablePicture[] {
+const pictures = new WeakMap<OffscreenCanvasRenderingContext2D, PaintedTable>();
+
+function picturesFor(ctx: OffscreenCanvasRenderingContext2D, surface: Surface, art: number): PaintedTable {
   const width = surface.width * surface.dpr;
   const height = surface.height * surface.dpr;
   let held = pictures.get(ctx);
   if (!held || held.width !== width || held.height !== height || held.art !== art) pictures.set(ctx, held = { width, height, art, list: [] });
-  return held.list;
+  return held;
 }
 
 function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: FamilyTheme, hideHeader: boolean): string {
@@ -265,8 +286,11 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
     : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true, flags });
-  const allLayouts = buildColumnLayouts(model.columns, settings, fixedWidths);
-  const columns = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth, rhythm: model.rhythm });
+  const allLayouts = prev && prev.settings === settings && prev.fixedWidths === fixedWidths && sameFieldValue(prev.model.columns, model.columns)
+    ? prev.allLayouts : buildColumnLayouts(model.columns, settings, fixedWidths);
+  const columns = prev && prev.allLayouts === allLayouts && (prev.paneGeom?.width ?? prev.width) === layoutWidth &&
+    prev.rankShown === rankShown && prev.rankWidth === rankWidth && prev.model.rhythm === model.rhythm
+    ? prev.columns : layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth, rhythm: model.rhythm });
   const rowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
@@ -286,10 +310,11 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
       : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys))
     : computeColumnMaxima(flatRows, columns.columns);
   const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
+  const treeLevels = inc && prev ? prev.treeLevels : panes ? panes.map(pane => treeLevelsOf(pane.rows)) : treeLevelsOf(flatRows);
   const shape: TableShape = {
     model, options: binding.options, settings, expanded, width, theme,
     flatRows, rowIndex, hasGroups, incremental: inc !== null,
-    hasTree: inc === null && flatRows.some(item => item.kind === 'data' && item.isTreeGroup),
+    treeLevels, hasTree: inc === null && (typeof treeLevels === 'number' ? treeLevels !== 0 : treeLevels.some(levels => levels !== 0)),
     panes, paneGeom, paneSpans: panes ? combinedPaneGeometry(panes) : null, paneStarts, rankShown, rankMarkersOn, rankWidth,
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
     windowOffset, totalCount, totalHeight, extents, maxima, maximaCols,
@@ -317,7 +342,41 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   const heights = (index: number) => (spans ? spans.heights[index]! : rowGeom ? rowGeom.heights[index]! : rowHeight);
   const focused = binding.focusedKey;
   const focusedIndex = focused ? (shape.rowIndex.get(focused) ?? -1) : -1;
-  return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height };
+  const previous = step.previous?.layout;
+  const columnWidth = shape.paneGeom?.width ?? surface.width;
+  const left = Math.max(0, Math.min(binding.scrollLeft, shape.columns.totalWidth - columnWidth));
+  const visibleColumns = previous && previous.shape.columns === shape.columns && previous.scrollLeft === left && !!previous.shape.panes === !!panes
+    ? previous.visibleColumns : columnsOnScreen(shape, columnWidth, left);
+  const visibleRows = panes ? shownWindows : [visibleRange(shape, localScrollTop, surface.height)];
+  return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height, visibleRows, visibleColumns, scrollLeft: left };
+}
+
+function canSpillLeft(col: FamilyColumnLayout, x: number, width: number): boolean {
+  if (col.headerGroup || col.display === 'track' || col.display === 'meterBefore' || col.display === 'meterAfter') return true;
+  switch (col.cellKind) {
+    case undefined: case 'standard': case 'item': case 'country': case 'numeric': case 'status':
+      return !!col.numeric && x + col.width - (col.trailInset ?? 0) - CELL_INSET + BEHIND_BAR_OFFSET - BEHIND_BAR_MAX_WIDTH < width;
+    default:
+      return true;
+  }
+}
+
+function columnsOnScreen(shape: TableShape, width: number, left: number): FamilyColumnLayout[] | null {
+  const layout = shape.columns;
+  const shown: FamilyColumnLayout[] = [];
+  let inView = 0;
+  let x = shape.rankShown && !shape.panes ? shape.rankWidth : 0;
+  for (let i = 0; i < layout.columns.length; i++) {
+    const col = layout.columns[i]!;
+    const pinned = i < layout.pinnedCount;
+    const start = pinned ? x : x - left;
+    if (col.width > 0) {
+      if (start < width && start + col.width > (pinned ? 0 : layout.pinnedWidth)) inView++;
+      if (start < width || canSpillLeft(col, start, width)) shown.push(col);
+    }
+    x += col.width;
+  }
+  return shown.length - inView <= inView ? shown : null;
 }
 
 const NO_MOTION: TableMotion = { markers: new Map(), expiries: [], glide: NO_GLIDE, started: -Infinity };
@@ -372,10 +431,8 @@ function nextExpiry(motion: TableMotion, now: number): number {
   return Infinity;
 }
 
-function visibleRange(layout: TableLayout, gliding: boolean): readonly [number, number] {
-  const { shape, localScrollTop, height } = layout;
+function visibleRange(shape: TableShape, localScrollTop: number, height: number): { first: number; count: number } {
   const { rowGeom, rowHeight, flatRows } = shape;
-  const extra = gliding ? 2 : 0;
   if (rowGeom) {
     let lo = 0;
     let hi = flatRows.length;
@@ -386,9 +443,92 @@ function visibleRange(layout: TableLayout, gliding: boolean): readonly [number, 
     }
     let end = lo;
     while (end < flatRows.length && rowGeom.tops[end]! < localScrollTop + height) end++;
-    return [lo, Math.min(flatRows.length, end + extra)];
+    return { first: lo, count: end - lo };
   }
-  return [Math.max(0, Math.floor(localScrollTop / rowHeight)), Math.min(flatRows.length, Math.ceil((localScrollTop + height) / rowHeight) + extra)];
+  const first = Math.max(0, Math.floor(localScrollTop / rowHeight));
+  return { first, count: Math.max(0, Math.min(flatRows.length, Math.ceil((localScrollTop + height) / rowHeight)) - first) };
+}
+
+function sameRoundedFigure(a: TableCell, b: TableCell, col: FamilyColumnLayout): boolean {
+  if (!col.numeric || (col.cellKind && col.cellKind !== 'numeric' && col.cellKind !== 'standard') ||
+      a.value.kind !== 'known' || b.value.kind !== 'known') return false;
+  const left = a.value.value, right = b.value.value;
+  const format = b.format ?? col.valueFormat;
+  if (typeof left !== 'number' || typeof right !== 'number' || Math.sign(left) !== Math.sign(right) ||
+      Math.trunc(left) !== Math.trunc(right) ||
+      (format && format !== 'integer' && !(typeof format === 'object' && (format.decimals > 0 || !format.maxDecimals)))) return false;
+  for (const key in a) {
+    if (key !== 'value' && !sameFieldValue(a[key as keyof TableCell], b[key as keyof TableCell])) return false;
+  }
+  for (const key in b) if (!Object.hasOwn(a, key) && b[key as keyof TableCell] !== undefined) return false;
+  return true;
+}
+
+function sameVisibleCell(a: TableCell | undefined, b: TableCell | undefined, col: FamilyColumnLayout, oldMax: number | undefined, newMax: number | undefined, dpr: number): boolean {
+  if (!a || !b) return a === b;
+  const same = sameFieldValue(a, b);
+  if (!same && !sameRoundedFigure(a, b, col)) return false;
+  if (same && (oldMax === newMax || a.bar !== undefined || a.maximum !== undefined)) return true;
+  const magnitude = col.cellKind === 'twoWay' || col.cellKind === 'shaded';
+  const span = barPixelSpan(col, dpr);
+  return barPixels(cellBarFraction(a, a.value, a.maximum ?? oldMax, magnitude), span) ===
+    barPixels(cellBarFraction(b, b.value, b.maximum ?? newMax, magnitude), span);
+}
+
+function samePaintedRow(previous: TableLayout, layout: TableLayout, columns: readonly FamilyColumnLayout[], i: number, dpr: number, scaleChanged: boolean): boolean {
+  const a = previous.shape.flatRows[i]!;
+  const b = layout.shape.flatRows[i]!;
+  if (a.kind !== 'data' || b.kind !== 'data') return sameFieldValue(a, b);
+  if (a.key !== b.key || a.name !== b.name || a.level !== b.level || a.isTreeGroup !== b.isTreeGroup ||
+      a.isOpen !== b.isOpen || a.isDayEnd !== b.isDayEnd || a.isLiveEnd !== b.isLiveEnd || a.isTotal !== b.isTotal ||
+      a.showDate !== b.showDate || (layout.shape.rankShown && a.rank !== b.rank) ||
+      a.row.muted !== b.row.muted || a.row.pageParent !== b.row.pageParent || !!a.row.pageGroup !== !!b.row.pageGroup ||
+      a.row.detailColumn !== b.row.detailColumn) return false;
+  if (a.level > 1) {
+    const afterA = previous.shape.flatRows[i + 1];
+    const afterB = layout.shape.flatRows[i + 1];
+    if ((afterA?.kind === 'data' && afterA.level > 1) !== (afterB?.kind === 'data' && afterB.level > 1)) return false;
+  }
+  if (b.row.detailColumn && (!sameFieldValue(previous.shape.rowGeom?.detailRows?.get(i), layout.shape.rowGeom?.detailRows?.get(i)) ||
+      !sameFieldValue(a.row.cells[b.row.detailColumn], b.row.cells[b.row.detailColumn]))) return false;
+  if (a.row === b.row && !scaleChanged) return true;
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]!;
+    if (!sameVisibleCell(a.row.cells[col.key], b.row.cells[col.key], col, previous.shape.maxima.get(col.key), layout.shape.maxima.get(col.key), dpr)) return false;
+    if (col.inlineFlags) for (let f = 0; f < col.inlineFlags.length; f++) {
+      const key = col.inlineFlags[f]!;
+      if (!sameFieldValue(a.row.cells[key], b.row.cells[key])) return false;
+    }
+  }
+  return true;
+}
+
+function sameViewport(before: TableLayout, after: TableLayout, dpr: number): boolean {
+  if (before === after) return true;
+  const a = before.shape, b = after.shape;
+  if (a.theme !== b.theme || a.settings !== b.settings || a.columns !== b.columns || a.width !== b.width ||
+      before.height !== after.height || before.localScrollTop !== after.localScrollTop || before.scrollLeft !== after.scrollLeft ||
+      a.windowOffset !== b.windowOffset || a.rowHeightMode !== b.rowHeightMode || a.hasTree !== b.hasTree ||
+      a.model.dateGrouped !== b.model.dateGrouped || a.model.dayDividersOnly !== b.model.dayDividersOnly ||
+      a.model.hideHeader !== b.model.hideHeader || a.model.empty !== b.model.empty || a.model.endNote !== b.model.endNote ||
+      (b.model.endNote && (a.totalCount !== b.totalCount || a.totalHeight !== b.totalHeight || a.flatRows.length !== b.flatRows.length)) ||
+      !sameFieldValue(a.model.clockSummary, b.model.clockSummary) || !sameFieldValue(a.paneGeom, b.paneGeom)) return false;
+  const columns = after.visibleColumns;
+  if (!columns || !sameFieldValue(a.treeLevels, b.treeLevels)) return false;
+  let scaleChanged = false;
+  for (let c = 0; c < columns.length && !scaleChanged; c++) {
+    const key = columns[c]!.key;
+    scaleChanged = a.maxima.get(key) !== b.maxima.get(key);
+  }
+  if (before.visibleRows.length !== after.visibleRows.length) return false;
+  for (let w = 0; w < after.visibleRows.length; w++) {
+    const win = after.visibleRows[w]!, old = before.visibleRows[w]!;
+    if (win.first !== old.first || win.count !== old.count) return false;
+    for (let i = win.first; i < win.first + win.count; i++) {
+      if (before.tops(i) !== after.tops(i) || before.heights(i) !== after.heights(i) || !samePaintedRow(before, after, columns, i, dpr, scaleChanged)) return false;
+    }
+  }
+  return true;
 }
 
 const shapeFieldCache = new WeakMap<TableShape, { readonly width: number; readonly fields: Readonly<Record<string, unknown>> }>();
@@ -457,14 +597,28 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   },
   view: ['settings', 'expanded', 'scrollTop', 'scrollLeft', 'focusedKey', 'reducedMotion'],
   layout: layoutTable,
+  keepsCanvas(ctx, frame) {
+    const last = pictures.get(ctx);
+    if (!last?.still || last.art !== frame.art.version || last.dpr !== frame.surface.dpr ||
+        last.inspect !== frame.inspect || last.selected !== frame.binding.selectedKey || last.focused !== frame.binding.focusedKey ||
+        !sameViewport(last.still, frame.layout, frame.surface.dpr)) return false;
+    const motion = motionOf(frame);
+    if ((motion.expiries.at(-1) ?? -Infinity) > frame.now) return false;
+    const glide = motion.glide;
+    const top = frame.layout.localScrollTop, bottom = top + frame.layout.height;
+    return !glide.offsets.size || frame.now - motion.started >= glideDurationForSpeed(frame.speed, frame.binding.reducedMotion) ||
+      !hasGlideCrossing(glide, top, bottom);
+  },
   paint(ctx, frame) {
     const { layout, binding, model, theme } = frame;
     const shape = layout.shape;
     const live = liveGlide(frame);
-    const gliding = live.glide.offsets.size > 0 && glideCrossing(live.glide, layout.localScrollTop, layout.localScrollTop + layout.height).length > 0;
+    const gliding = live.glide.offsets.size > 0 && hasGlideCrossing(live.glide, layout.localScrollTop, layout.localScrollTop + layout.height);
     const { duration, glide } = gliding ? live : { duration: live.duration, glide: NO_GLIDE };
     const motion = motionOf(frame);
-    const list = picturesFor(ctx, frame.surface, frame.art.version);
+    const picture = picturesFor(ctx, frame.surface, frame.art.version);
+    const list = picture.list;
+    picture.still = undefined;
     const common = {
       layout: shape.columns,
       settings: binding.settings,
@@ -536,6 +690,13 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     }
     if (gliding) return { drew, next: true };
     const until = nextExpiry(motion, frame.now);
+    if (!Number.isFinite(until)) {
+      picture.still = layout;
+      picture.dpr = frame.surface.dpr;
+      picture.inspect = frame.inspect;
+      picture.selected = binding.selectedKey;
+      picture.focused = binding.focusedKey;
+    }
     return { drew, next: Number.isFinite(until) ? until : false };
   },
   hit(frame, point) {
@@ -597,7 +758,8 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         return visibleCellArtItems(pane.rows, shape.columns.columns, first, last);
       }));
     }
-    const [first, last] = visibleRange(layout, liveGlide(frame).glide.offsets.size > 0);
+    const { first, count } = layout.visibleRows[0]!;
+    const last = first + count + (liveGlide(frame).glide.offsets.size > 0 ? 2 : 0);
     return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, first, last));
   },
 };

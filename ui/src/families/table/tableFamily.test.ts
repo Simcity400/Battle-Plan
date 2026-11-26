@@ -43,7 +43,7 @@ import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
-import { createTablePicture, drawFamilyTable, glideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
+import { createTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
@@ -2272,7 +2272,7 @@ test('a log scrolled deep into its rows numbers them from the top of the log, in
   }
 });
 
-test('a glide whose movers all stay below the viewport asks for no animation frame', () => {
+test('glides, figures and bars outside the displayed range leave the table canvas untouched', () => {
   type Row = { id: string; v: number };
   const columns: TableColumnSpec[] = [
     { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
@@ -2298,11 +2298,62 @@ test('a glide whose movers all stay below the viewport asks for no animation fra
   try {
     const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 300, dpr: 1 });
     const first = lane.paint({ label: 'first', binding: bound(rows, 0), hour: 1, speed: 24, seek: 1, now: 1000 });
+    const frames = recording.canvases[0]!.frames.length;
     const below = lane.paint({ label: 'two rows far below swap', binding: bound(swapped, 0), hour: 2, speed: 24, seek: 1, now: 2000 });
     assert.equal(below.motion, false, 'nothing on screen moves, so no frame is asked for');
+    assert.equal(recording.canvases[0]!.frames.length, frames, 'an off-screen reorder never touches the canvas');
     assert.equal(below.surfaces[0]?.content, first.surfaces[0]?.content, 'and the rows on screen are not drawn again');
     const scrolled = lane.paint({ label: 'scrolled to the swap while it glides', binding: bound(swapped, 150 * ROW_HEIGHT.normal), hour: 2, speed: 24, seek: 1, now: 2050 });
     assert.equal(scrolled.motion, true, 'a glide scrolled into view moves again');
+    const rounded = rows.map((row, i) => i === 0 ? { ...row, v: row.v + 0.1 } : row);
+    lane.paint({ label: 'back at the top', binding: bound(rows, 0), hour: 3, speed: 24, now: 3000 });
+    const settled = recording.canvases[0]!.frames.length;
+    lane.paint({ label: 'same displayed integer', binding: bound(rounded, 0), hour: 4, speed: 24, now: 4000 });
+    assert.equal(recording.canvases[0]!.frames.length, settled, 'precision below the displayed figure costs no canvas work');
+
+    const byName = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+    byName.columns.v!.as = 'faint';
+    const largestBelow = (v: number) => ({ ...bound(rows.map((row, i) => i === rows.length - 1 ? { ...row, v } : row), 0), settings: byName });
+    lane.paint({ label: 'bars scaled to an off-screen maximum', binding: largestBelow(2500.1), hour: 5, speed: 24 });
+    const bars = recording.canvases[0]!.frames.length;
+    lane.paint({ label: 'same bar widths', binding: largestBelow(2500.2), hour: 6, speed: 24 });
+    assert.equal(recording.canvases[0]!.frames.length, bars);
+    lane.paint({ label: 'shorter visible bars', binding: largestBelow(5000), hour: 7, speed: 24 });
+    assert.ok(recording.canvases[0]!.frames.length > bars);
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a focused action still paints where its label extends left of an off-screen column', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'pinned', label: 'Pinned', as: 'plain', offered: ['plain'], priority: 0 },
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0 },
+    { key: 'action', label: 'Action', as: 'plain', offered: ['plain'], priority: 1, cellKind: 'action' },
+  ];
+  const kind = 'test-overhanging-action';
+  registerFamilyProjection({
+    kind, family: 'table', theme: TEST_THEME,
+    project: view => ({
+      columns, hour: view.hour, nextChangeAt: view.hour + 1, unsorted: true,
+      rows: [{ key: 'r', name: 'Row', cells: { action: { value: knownValue('Open'), actionLabel: view.hour === 1 ? 'Show construction orders' : 'Show details' } } }],
+    }),
+  });
+  const surface = { width: 145, height: 32, dpr: 1 };
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  settings.columns.pinned!.width = 40;
+  settings.columns.name!.width = 100;
+  settings.columns.action!.width = 40;
+  const binding = { family: 'table', kind, theme: TEST_THEME, options: NO_OPTIONS, sources: NO_SOURCES, settings, ...surface, scrollTop: 0, scrollLeft: 0, focusedKey: 'r' };
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, surface);
+    lane.paint({ label: 'long button', binding, hour: 1, speed: 24 });
+    const frames = recording.canvases[0]!.frames;
+    const first = frames.length;
+    lane.paint({ label: 'shorter button', binding, hour: 2, speed: 24 });
+    assert.ok(frames.length > first);
+    assert.ok(frames.at(-1)!.includes('fillText("Show details")'));
   } finally {
     recording.restore();
   }
@@ -2314,13 +2365,14 @@ test('the movers a viewport evaluates are exactly those whose path crosses it', 
   const rowIndex = new Map(rows.map((row, i) => [row.key, i] as const));
   const offsets = new Map(rows.map((row, i) => [row.key, { from: (N - 1 - 2 * i) * 20, to: 0, started: 0 }] as const));
   const glide = tableGlide(offsets, rows, rowIndex, null, 20);
-  for (const [top, bottom] of [[0, 300], [14000, 14300], [29700, 30000]] as const) {
+  for (const [top, bottom] of [[-300, 0], [0, 300], [14000, 14300], [29700, 30000], [30000, 30300]] as const) {
     const brute = rows.flatMap((_, i) => {
       const from = offsets.get(`R${i}`)!.from;
       const lo = i * 20 + Math.min(from, 0);
       const hi = i * 20 + Math.max(from, 0) + 20;
       return hi > top && lo < bottom ? [i] : [];
     });
+    assert.equal(hasGlideCrossing(glide, top, bottom), brute.length > 0);
     assert.deepEqual([...glideCrossing(glide, top, bottom)].sort((a, b) => a - b), brute, `viewport ${top}..${bottom}`);
   }
   assert.ok(glideCrossing(glide, 0, 300).length < 40, 'a viewport at the top meets only the rows passing through it');
