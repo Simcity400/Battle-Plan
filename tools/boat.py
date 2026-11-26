@@ -924,24 +924,25 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
     raise Failure("Could not claim a VM after three attempts")
 
 
-def game_content(worktree, names):
-    """tools/check-game-content.py's asset findings for files about to be sent."""
-    spec = importlib.util.spec_from_file_location("check_game_content", Path(__file__).resolve().parent / "check-game-content.py")
+def content_guard():
+    spec = importlib.util.spec_from_file_location("check_game_content", TOOLS / "check-game-content.py")
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)
-    files = [(name, (worktree / name).read_bytes()) for name in names if (worktree / name).is_file()]
-    return guard.offenders(files, guard.allow_rules(worktree))
+    return guard
+
+
+def refuse_content(guard, rules, name, data):
+    findings = guard.offenders([(name, data)], rules)
+    if findings:
+        raise Refused("Boat would send a file that may be game content: " + findings[0])
 
 
 def source_manifest(worktree, cache=None):
-    """Hashes of the files Git would send; `cache` keeps them for files whose size and mtime stay put.
-    Refuses an untracked file that is an asset or binary not in tools/game-content.allow: game
-    content never reaches the VM (tracked files are checked in CI)."""
-    untracked = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--others", "--exclude-standard"], capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
-    found = game_content(worktree, [os.fsdecode(raw).replace("\\", "/") for raw in untracked.split(b"\0") if raw])
-    if found:
-        raise Refused("Boat would send these untracked files, which may be game content; delete or ignore them, or list ours in tools/game-content.allow:\n" + "\n".join(found))
-    names = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
+    """Hashes of the files Git would send. Check new files before claiming a VM."""
+    command = ["git", "-C", str(worktree), "ls-files", "-t", "-z", "--cached", "--others", "--exclude-standard"]
+    names = subprocess.run(command, capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
+    guard = content_guard()
+    rules = guard.allow_rules(worktree)
     try:
         known = json.loads(cache.read_text()) if cache else {}
     except (FileNotFoundError, ValueError):
@@ -949,7 +950,8 @@ def source_manifest(worktree, cache=None):
     settled = time.time_ns() - 2_000_000_000
     files, kept = {}, {}
     safe_dirs = {worktree}
-    for raw in set(names.split(b"\0")) - {b""}:
+    for entry in set(names.split(b"\0")) - {b""}:
+        tag, _, raw = entry.partition(b" ")
         name = os.fsdecode(raw).replace("\\", "/")
         path = worktree / name
         try:
@@ -966,7 +968,12 @@ def source_manifest(worktree, cache=None):
             parent = parent.parent
         stamp = [status.st_size, status.st_mtime_ns]
         previous = known.get(name)
-        files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
+        if tag == b"?":
+            data = path.read_bytes()
+            refuse_content(guard, rules, name, data)
+            files[name] = hashlib.sha256(data).hexdigest()
+        else:
+            files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
         if status.st_mtime_ns < settled:
             kept[name] = [*stamp, files[name]]
     if cache:
@@ -1029,10 +1036,13 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     changed = [name for name, digest in manifest.items() if old.get(name) != digest]
     deleted = sorted(old.keys() - manifest.keys())
     say(f"Source: {len(manifest)} files; uploading {len(changed)} changed, removing {len(deleted)}")
+    guard = content_guard()
+    rules = guard.allow_rules(worktree)
     bundle = io.BytesIO()
     with tarfile.open(fileobj=bundle, mode="w:xz", preset=2) as archive:
         for name in changed:
             data = (worktree / name).read_bytes()
+            refuse_content(guard, rules, name, data)
             manifest[name] = hashlib.sha256(data).hexdigest()
             entry = tarfile.TarInfo("files/" + name)
             entry.size = len(data)

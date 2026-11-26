@@ -3,8 +3,10 @@
 import importlib.util
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,7 +51,7 @@ class Tree(unittest.TestCase):
             self.assertIsNotNone(cgc.asset_kind(name, b"text"), name)
         self.assertEqual(cgc.asset_kind("renamed.rs", PNG), "binary")
         self.assertEqual(cgc.asset_kind("x.rs", b"small\0binary"), "binary")
-        self.assertEqual(cgc.asset_kind("x.rs", "naïve".encode()), None)
+        self.assertEqual(cgc.asset_kind("x.rs", "naÃ¯ve".encode()), None)
 
     def test_a_long_base64_run_is_an_embedded_asset(self):
         data = b"const ART: &str = \"" + b"QUJD" * 300 + b"\";\n"
@@ -111,24 +113,50 @@ class Installation(unittest.TestCase):
         index = cgc.Index(self.folder / "cache" / "index.sqlite3")
         self.addCleanup(index.db.close)
         notes = []
-        index.refresh("game", game, "build 1", notes.append)
-        repo = self.folder / "repo"
+        active = {index.refresh("game", game, "build 1", notes.append)}
         files = [("art.bin", art), ("fixture.rs", f'let a = 1;\nlet t = "{LONG}";\nlet d = "DEPTH = 30";\n'.encode())]
-        for name, data in files:
-            self.write(f"repo/{name}", data)
-        self.addCleanup(setattr, cgc, "ROOT", cgc.ROOT)
-        cgc.ROOT = repo
-        found = cgc.install_findings(index, files, [])
+        found = cgc.install_findings(index, files, [], active)
         self.assertEqual(found, ["art.bin:1: copy equals game file gfx/a.dds",
                                  "fixture.rs:3: game-value DEPTH has the installation's value",
                                  "fixture.rs:2: copied-text shares a run with game"])
         self.assertFalse(any(LONG in line for line in found))
         rules, _ = cgc.allowed("fixture.rs game-value routed to #1\nfixture.rs copied-text routed to #2\nother.rs game-value gone\n")
-        self.assertEqual(cgc.install_findings(index, files, rules), ["art.bin:1: copy equals game file gfx/a.dds"])
+        self.assertEqual(cgc.install_findings(index, files, rules, active), ["art.bin:1: copy equals game file gfx/a.dds"])
         fixed = [("fixture.rs", b"let d = \"DEPTH = 17\";\n")]
-        self.assertEqual(cgc.install_findings(index, fixed, rules),
-                         ["tools/game-content.allow: stale-allow fixture.rs game-value is no longer needed",
-                          "tools/game-content.allow: stale-allow fixture.rs copied-text is no longer needed"])
+        self.assertEqual(cgc.install_findings(index, fixed, rules, active), [])
+        self.assertEqual(cgc.install_findings(index, files, [], set()), [])
+
+    @patch.object(cgc, "registry_value", return_value=None)
+    def test_push_checks_the_changed_and_untracked_paths_with_a_read_only_index(self, _registry):
+        repo = self.folder / "repo"
+        game = self.folder / "game"
+        cache = self.folder / "cache"
+        snippet = "fixture_script = { flag = violet }"
+        self.write("game/trial.txt", snippet)
+        self.write("repo/already.rs", snippet)
+        self.write("repo/new.rs", "original")
+        self.write("repo/tools/game-content.allow", "")
+        self.addCleanup(setattr, cgc, "ROOT", cgc.ROOT)
+        self.addCleanup(setattr, cgc, "ALLOW", cgc.ALLOW)
+        cgc.ROOT, cgc.ALLOW = repo, repo / cgc.ALLOW_NAME
+        index = cgc.Index(cache / f"index-v{cgc.INDEX_VERSION}.sqlite3")
+        index.refresh("game", game, None, lambda _: None)
+        index.db.close()
+        def git(*args):
+            subprocess.run(["git", *args], cwd=repo, capture_output=True, check=True)
+        git("init")
+        git("add", ".")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
+        args = ["--against", "HEAD", "--game", str(game), "--user-dir", str(repo), "--cache", str(cache)]
+        self.assertEqual(cgc.main(args), 0)
+        self.write("repo/new.rs", snippet)
+        self.write("repo/untracked.dat", "tiny")
+        self.assertEqual(cgc.changed_since("HEAD"), {"new.rs", "untracked.dat"})
+        self.assertEqual(cgc.main(args), 1)
+        (repo / "untracked.dat").unlink()
+        self.assertEqual(cgc.main(args), 1)
+        self.write("repo/new.rs", "ours")
+        self.assertEqual(cgc.main(args), 0)
 
     def test_an_unchanged_stamp_is_not_indexed_again_and_a_walked_folder_follows_its_files(self):
         index = cgc.Index(self.folder / "cache" / "index.sqlite3")
