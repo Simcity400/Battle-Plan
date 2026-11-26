@@ -65,29 +65,29 @@ class ArrayBoundedSlice<T> implements BoundedSlice<T> {
   readonly closedLength: number;
   readonly length: number;
   readonly tail?: T;
-  private readonly raw: readonly T[];
-  private readonly hasTail: boolean;
+  readonly #raw: readonly T[];
+  readonly #hasTail: boolean;
 
   constructor(raw: readonly T[], closedLength: number, tail: T | undefined, hasTail: boolean) {
-    this.raw = raw;
+    this.#raw = raw;
     this.source = sliceSourceOf(raw);
     this.closedLength = closedLength;
-    this.hasTail = hasTail;
+    this.#hasTail = hasTail;
     this.length = closedLength + (hasTail ? 1 : 0);
     if (hasTail) this.tail = tail;
   }
 
   at(index: number): T | undefined {
     if (index < 0 || index >= this.length) return undefined;
-    if (index < this.closedLength) return this.raw[index];
+    if (index < this.closedLength) return this.#raw[index];
     return this.tail;
   }
 
   *[Symbol.iterator](): Iterator<T> {
-    const raw = this.raw;
+    const raw = this.#raw;
     const closed = this.closedLength;
     for (let i = 0; i < closed; i++) yield raw[i]!;
-    if (this.hasTail) yield this.tail!;
+    if (this.#hasTail) yield this.tail!;
   }
 }
 

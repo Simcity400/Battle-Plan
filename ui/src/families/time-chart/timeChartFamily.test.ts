@@ -30,7 +30,7 @@ import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths, collectVisibleChartArt, fillLineBuffer, fitTimeChartLegend } from './painter.ts';
-import { pathCalls } from './path2d.fixture.ts';
+import { addPathCalls, pathAllocations, pathCalls } from './path2d.fixture.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, countrySeriesLooks, headReading, headValueOf } from './seriesHelpers.ts';
@@ -2369,7 +2369,7 @@ describe('playback cost', () => {
         widget: 1, subs: [], pictures: [], model: binding, hour, seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [surface], offset: 0, pin: null }, inspect: null, now: 1000,
       }, state, () => `c${++seq}`);
-      const reset = () => { counts.projections = 0; counts.layouts = 0; counts.paints = 0; counts.reads = 0; pathCalls.count = 0; };
+      const reset = () => { counts.projections = 0; counts.layouts = 0; counts.paints = 0; counts.reads = 0; pathCalls.count = 0; pathAllocations.count = 0; addPathCalls.count = 0; };
       const first = T0 + closed * BIN + 2;
       paint(first);
       reset();
@@ -2377,7 +2377,7 @@ describe('playback cost', () => {
       const quiet = { ...counts };
       reset();
       for (let hour = first + 1; hour <= first + PLAYED; hour++) paint(hour);
-      return { quiet, played: { ...counts, path: pathCalls.count } };
+      return { quiet, played: { ...counts, path: pathCalls.count, pathAllocations: pathAllocations.count, addPathCalls: addPathCalls.count } };
     } finally {
       recording.restore();
     }
@@ -2390,7 +2390,9 @@ describe('playback cost', () => {
       assert.deepEqual(long.quiet, { projections: 0, layouts: 0, paints: 0, reads: 0 }, 'frames at the same hour project, lay out, paint and read nothing');
       assert.equal(long.played.paints, PLAYED, 'every played hour moves the axis end, so it is painted');
       assert.equal(long.played.reads, short.played.reads, `a played hour reads the same buckets for 16 and 128 closed buckets (${short.played.reads} and ${long.played.reads} over ${PLAYED} hours)`);
-      assert.equal(long.played.path, short.played.path, `and makes the same path calls (${short.played.path} and ${long.played.path})`);
+      assert.equal(long.played.path, 0, 'cached direct draw makes no Path2D vertex calls');
+      assert.equal(long.played.pathAllocations, 0, 'cached direct draw allocates no Path2D');
+      assert.equal(long.played.addPathCalls, 0, 'cached direct draw makes no Path2D.addPath calls');
     });
   }
 });
@@ -2713,16 +2715,24 @@ describe('time-chart PR 2 lines zero-Path2D drawing', () => {
     const origClip = ctx.clip.bind(ctx);
     ctx.clip = () => { clips++; origClip(); };
     pathCalls.count = 0;
+    pathAllocations.count = 0;
+    addPathCalls.count = 0;
     drawTimeChart(ctx, model, layout, LANE_THEME, null, 1, null);
-    assert.equal(pathCalls.count, 0, 'cached line draw constructs no Path2D');
+    assert.equal(pathCalls.count, 0, 'cached line draw makes no Path2D vertex calls');
+    assert.equal(pathAllocations.count, 0, 'cached line draw allocates no Path2D');
+    assert.equal(addPathCalls.count, 0, 'cached line draw makes no Path2D.addPath calls');
     assert.equal(clips, 1 + buf.subpathCount * 4, `only outer plot clip plus area/signed subpaths clip (clips=${clips})`);
 
     const tailOnlyModel: TimeChartModel = { ...model, series: series.slice(2) };
     const tailLayout = layoutTimeChart(tailOnlyModel, 720, 280, FONT, measure);
     clips = 0;
     pathCalls.count = 0;
+    pathAllocations.count = 0;
+    addPathCalls.count = 0;
     drawTimeChart(ctx, tailOnlyModel, tailLayout, LANE_THEME, null, 1, null);
     assert.equal(pathCalls.count, 0);
+    assert.equal(pathAllocations.count, 0);
+    assert.equal(addPathCalls.count, 0);
     assert.equal(clips, 1, '10 plain lines share exactly one hoisted plot clip');
   });
 });

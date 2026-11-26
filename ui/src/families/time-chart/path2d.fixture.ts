@@ -1,11 +1,14 @@
 export type PathOp = readonly ['M' | 'L', number, number] | readonly ['Z'];
 
 export const pathCalls = { count: 0 };
+export const pathAllocations = { count: 0 };
+export const addPathCalls = { count: 0 };
 
 export class RecordedPath2D {
   readonly ops: PathOp[] = [];
 
   constructor(from?: RecordedPath2D) {
+    pathAllocations.count++;
     if (from) this.ops.push(...from.ops);
   }
 
@@ -28,6 +31,7 @@ export class RecordedPath2D {
   }
 
   addPath(path: RecordedPath2D, m: { a?: number; b?: number; c?: number; d?: number; e?: number; f?: number } = {}): void {
+    addPathCalls.count++;
     const { a = 1, b = 0, c = 0, d = 1, e = 0, f = 0 } = m;
     for (const op of path.ops) this.ops.push(op[0] === 'Z' ? op : [op[0], a * op[1] + c * op[2] + e, b * op[1] + d * op[2] + f]);
   }

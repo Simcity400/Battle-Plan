@@ -595,6 +595,140 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   for (let i = 0; i < prodGridPx.length; i++) if (prodGridPx[i] !== refGridPx[i]) gridDiff++;
   if (gridDiff > 0) failures.push({ label: 'per-stroke-y-grid-dpr-125', diffBytes: gridDiff, firstDiff: null, navEqual: true, looksEqual: true });
 
+  const compareChart = (
+    label: string,
+    model: TimeChartModel,
+    w: number,
+    h: number,
+    scale: number,
+    prepareCtx?: (ctx: OffscreenCanvasRenderingContext2D) => void,
+  ) => {
+    const cbw = Math.round(w * scale);
+    const cbh = Math.round(h * scale);
+    const lay = layoutTimeChart(model, w, h, darkTheme.font, cachedMeasure);
+    const prodC = new OffscreenCanvas(cbw, cbh);
+    const prodCtx = prodC.getContext('2d', { willReadFrequently: true })!;
+    prepareCtx?.(prodCtx);
+    drawTimeChart(prodCtx, model, lay, darkTheme, null, scale, null);
+    const refC = new OffscreenCanvas(cbw, cbh);
+    const refCtx = refC.getContext('2d', { willReadFrequently: true })!;
+    prepareCtx?.(refCtx);
+    const prev = timeChartCacheState.enabled;
+    timeChartCacheState.enabled = false;
+    try {
+      drawTimeChart(refCtx, model, lay, darkTheme, null, scale, null);
+    } finally {
+      timeChartCacheState.enabled = prev;
+    }
+    const pPx = prodCtx.getImageData(0, 0, cbw, cbh).data;
+    const rPx = refCtx.getImageData(0, 0, cbw, cbh).data;
+    let diffBytes = 0;
+    for (let i = 0; i < pPx.length; i++) if (pPx[i] !== rPx[i]) diffBytes++;
+    if (diffBytes > 0) failures.push({ label, diffBytes, firstDiff: null, navEqual: true, looksEqual: true });
+  };
+
+  const highOffsetTiled = makeTiled('HI', d => 1e14 + (d % 8) * 0.125, [], []);
+  const highOffsetHour = H0 + 7 * BIN;
+  const highOffsetBounded = boundTiledSeries(highOffsetTiled, displayedHour(highOffsetHour), {
+    headPoint: { hour: highOffsetHour, value: 1e14 + 0.5 },
+    headValue: knownValue(1e14 + 0.5),
+  });
+  compareChart('high-offset-y-precision-dpr125', {
+    kind: 'high-offset',
+    measureTitle: 'High offset',
+    mode: 'lines',
+    hour: highOffsetHour,
+    extent: [H0, highOffsetHour],
+    yAxis: { format: 'number', fixed: [1e14, 1e14 + 1] },
+    series: [{
+      id: 'HI',
+      key: 'HI',
+      name: 'High',
+      color: darkTheme.blue,
+      role: 'primary',
+      bounded: highOffsetBounded,
+      headValue: 1e14 + 0.5,
+      headHour: highOffsetHour,
+      endLabel: { name: 'High', fullName: 'High', value: '0.5' },
+    }],
+  }, 360, 200, dpr);
+
+  const negDotTiled = makeTiled('NEGDOT', d => 5 - d * 0.5, seriesMissing, []);
+  const negDotHour = H0 + 10 * BIN;
+  const negDotBounded = boundTiledSeries(negDotTiled, displayedHour(negDotHour), {
+    headPoint: { hour: negDotHour, value: -0.05 },
+    headValue: knownValue(-0.05),
+  });
+  compareChart('negred-end-dot-direct-dpr125', {
+    kind: 'neg-dot',
+    measureTitle: 'Neg dot',
+    mode: 'lines',
+    hour: negDotHour,
+    extent: [H0, negDotHour],
+    yAxis: { format: 'number', fixed: [0, 10] },
+    series: [{
+      id: 'NEGDOT',
+      key: 'NEGDOT',
+      name: 'NegDot',
+      color: darkTheme.blue,
+      role: 'primary',
+      negRed: true,
+      area: false,
+      bounded: negDotBounded,
+      headValue: -0.05,
+      headHour: negDotHour,
+      endLabel: { name: 'NegDot', fullName: 'NegDot', value: '-0.05' },
+    }],
+  }, 360, 200, dpr);
+
+  const incomingStyleHour = H0 + 300 * BIN;
+  const plainBounded = boundTiledSeries(tiledByTag.SOV!, displayedHour(incomingStyleHour), {
+    headPoint: { hour: incomingStyleHour, value: 120 },
+    headValue: knownValue(120),
+  });
+  const dashedBounded = boundTiledSeries(tiledByTag.GER!, displayedHour(incomingStyleHour), {
+    headPoint: { hour: incomingStyleHour, value: 160 },
+    headValue: knownValue(160),
+  });
+  compareChart('incoming-canvas-styles-preserved-dpr125', {
+    kind: 'incoming-style',
+    measureTitle: 'Incoming style',
+    mode: 'lines',
+    hour: incomingStyleHour,
+    extent: [H0, incomingStyleHour],
+    yAxis: { format: 'number' },
+    series: [
+      {
+        id: 'PLAIN',
+        key: 'PLAIN',
+        name: 'Plain',
+        color: darkTheme.blue,
+        role: 'primary',
+        bounded: plainBounded,
+        headValue: 120,
+        headHour: incomingStyleHour,
+        missingSpans: missingSpansOf(plainBounded),
+        endLabel: null,
+      },
+      {
+        id: 'DASHED',
+        key: 'DASHED',
+        name: 'Dashed',
+        color: darkTheme.amber,
+        role: 'secondary',
+        dash: [4, 3],
+        bounded: dashedBounded,
+        headValue: 160,
+        headHour: incomingStyleHour,
+        endLabel: null,
+      },
+    ],
+  }, 420, 200, dpr, ctx => {
+    ctx.setLineDash([7, 4]);
+    ctx.globalAlpha = 0.6;
+    ctx.lineCap = 'square';
+  });
+
   return { checked: steps.length, failures };
 }
 

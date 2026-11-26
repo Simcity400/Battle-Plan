@@ -28,7 +28,6 @@ import {
   rankedOrder, unnamedLooks,
   withinMapOf,
   type ExactReading,
-  type HeadReading,
   type KnownHeadReading,
 } from './seriesHelpers.ts';
 
@@ -252,7 +251,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const secondLines = options.second ? readView.series('second') : undefined;
       const detailHour = spec.hover ? hoverHourOf(readView, 'detail') : null;
       const lines: CountryLine[] = [];
-      const readings: [string, HeadReading | null][] = [];
+      const auditRows: ReturnType<typeof auditReading>[] = [];
       const format = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, options.digits);
       const recorded = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format === 'percent' ? 'percent' : 'number', spec.format === 'percent' ? null : options.decimals);
       const series: TimeChartSeriesModel[] = [];
@@ -263,7 +262,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         const bounded = drawn?.get(tag) ?? null;
         const headKey = { tag, rankRow: population?.rows.get(tag) };
         const reading = presentSet.has(tag) ? headReading(readView, 'main', headKey, options.decimals) ?? tileHeads?.get(tag) ?? null : undefined;
-        if (reading !== undefined) readings.push([tag, reading]);
+        if (reading !== undefined) auditRows.push(auditReading(tag, reading, recorded));
         const headValue = headValueOf(reading);
         const exact = exactByCountry?.get(tag) ?? null;
         const look = looks.get(tag)!;
@@ -300,7 +299,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         const secondReading = presentSet.has(tag)
           ? headReading(readView, 'second', { tag }, options.decimals) ?? (top ? headReading(readView, 'main', { ...headKey, reading: 1 }, options.decimals) : null)
           : undefined;
-        if (secondReading !== undefined) readings.push([`${tag}${SECOND_SUFFIX}`, secondReading]);
+        if (secondReading !== undefined) auditRows.push(auditReading(`${tag}${SECOND_SUFFIX}`, secondReading, recorded));
         series.push({
           id: `${tag}${SECOND_SUFFIX}`,
           key: `${tag}${SECOND_SUFFIX}`,
@@ -334,7 +333,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         ...(ranking.warnings.length > 0 ? { warnings: ranking.warnings } : {}),
         hoverDetail: spec.hover ? spec.hover.detail(readView, lines, options) : undefined,
-        auditRows: readings.map(([row, reading]) => auditReading(row, reading, recorded)),
+        auditRows,
       };
     },
   };

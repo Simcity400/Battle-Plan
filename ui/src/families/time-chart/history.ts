@@ -55,16 +55,6 @@ export class LineTrace {
     this.prevLastHour = other.prevLastHour;
   }
 
-  continueInto(sink: LineSink): LineTrace {
-    const next = new LineTrace(this.step, this.scale, this.binHours, sink);
-    next.open = this.open;
-    next.lastHour = this.lastHour;
-    next.lastValue = this.lastValue;
-    next.ended = this.ended;
-    next.prevLastHour = this.prevLastHour;
-    return next;
-  }
-
   private start(hour: number, value: number): void {
     this.sink.move(hour, value);
     this.open = true;
@@ -166,10 +156,6 @@ export class LineTrace {
 
 export interface HistorySubpath {
   coords: Float64Array;
-  readonly firstHour: number;
-  readonly firstValue: number;
-  lastHour: number;
-  lastValue: number;
   count: number;
 }
 
@@ -215,7 +201,7 @@ function coordSink(state: Building): LineSink {
       const coords = new Float64Array(INITIAL_SUBPATH_FLOATS);
       coords[0] = hour;
       coords[1] = value;
-      state.subpaths.push({ coords, firstHour: hour, firstValue: value, lastHour: hour, lastValue: value, count: 1 });
+      state.subpaths.push({ coords, count: 1 });
     },
     line(hour, value) {
       const sub = state.subpaths[state.subpaths.length - 1]!;
@@ -227,8 +213,6 @@ function coordSink(state: Building): LineSink {
       }
       sub.coords[offset] = hour;
       sub.coords[offset + 1] = value;
-      sub.lastHour = hour;
-      sub.lastValue = value;
       sub.count++;
     },
   };

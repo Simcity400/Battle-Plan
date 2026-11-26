@@ -284,10 +284,14 @@ const CEILING_DASH: readonly number[] = [5, 4];
 const linearSinkState = {
   ctx: null as Canvas2D | null,
   buf: null as LineVertexBuffer | null,
-  sx: 1,
-  xOff: 0,
-  sy: 1,
-  yOff: 0,
+  left: 0,
+  x0: 0,
+  xSpan: 1,
+  plotWidth: 1,
+  top: 0,
+  y0: 0,
+  ySpan: 1,
+  plotHeight: 1,
   open: false,
   toX: null as ((h: number) => number) | null,
   toY: null as ((v: number) => number) | null,
@@ -299,12 +303,18 @@ const directLinearSink: LineSink = {
     const ctx = st.ctx!;
     if (st.open) ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(hour * st.sx + st.xOff, st.yOff - value * st.sy);
+    ctx.moveTo(
+      st.left + ((hour - st.x0) / st.xSpan) * st.plotWidth,
+      st.top + (1 - (value - st.y0) / st.ySpan) * st.plotHeight,
+    );
     st.open = true;
   },
   line(hour, value) {
     const st = linearSinkState;
-    st.ctx!.lineTo(hour * st.sx + st.xOff, st.yOff - value * st.sy);
+    st.ctx!.lineTo(
+      st.left + ((hour - st.x0) / st.xSpan) * st.plotWidth,
+      st.top + (1 - (value - st.y0) / st.ySpan) * st.plotHeight,
+    );
   },
 };
 
@@ -326,11 +336,19 @@ const directGenericSink: LineSink = {
 const bufferLinearSink: LineSink = {
   move(hour, value) {
     const st = linearSinkState;
-    pushBufferSubpath(st.buf!, hour * st.sx + st.xOff, st.yOff - value * st.sy);
+    pushBufferSubpath(
+      st.buf!,
+      st.left + ((hour - st.x0) / st.xSpan) * st.plotWidth,
+      st.top + (1 - (value - st.y0) / st.ySpan) * st.plotHeight,
+    );
   },
   line(hour, value) {
     const st = linearSinkState;
-    pushBufferPoint(st.buf!, hour * st.sx + st.xOff, st.yOff - value * st.sy);
+    pushBufferPoint(
+      st.buf!,
+      st.left + ((hour - st.x0) / st.xSpan) * st.plotWidth,
+      st.top + (1 - (value - st.y0) / st.ySpan) * st.plotHeight,
+    );
   },
 };
 
@@ -348,27 +366,41 @@ const bufferGenericSink: LineSink = {
 function emitHistorySubpathLinear(
   ctx: Canvas2D,
   sub: HistorySubpath,
-  sx: number,
-  xOff: number,
-  sy: number,
-  yOff: number,
+  left: number,
+  x0: number,
+  xSpan: number,
+  plotWidth: number,
+  top: number,
+  y0: number,
+  ySpan: number,
+  plotHeight: number,
 ): void {
   const coords = sub.coords;
   const n = sub.count * 2;
   ctx.beginPath();
-  ctx.moveTo(coords[0]! * sx + xOff, yOff - coords[1]! * sy);
+  ctx.moveTo(
+    left + ((coords[0]! - x0) / xSpan) * plotWidth,
+    top + (1 - (coords[1]! - y0) / ySpan) * plotHeight,
+  );
   for (let i = 2; i < n; i += 2) {
-    ctx.lineTo(coords[i]! * sx + xOff, yOff - coords[i + 1]! * sy);
+    ctx.lineTo(
+      left + ((coords[i]! - x0) / xSpan) * plotWidth,
+      top + (1 - (coords[i + 1]! - y0) / ySpan) * plotHeight,
+    );
   }
 }
 
 function appendHistorySubpathLinear(
   buf: LineVertexBuffer,
   sub: HistorySubpath,
-  sx: number,
-  xOff: number,
-  sy: number,
-  yOff: number,
+  left: number,
+  x0: number,
+  xSpan: number,
+  plotWidth: number,
+  top: number,
+  y0: number,
+  ySpan: number,
+  plotHeight: number,
 ): void {
   const count = sub.count;
   const s = buf.subpathCount;
@@ -386,8 +418,8 @@ function appendHistorySubpathLinear(
   const out = ensureBufferCoords(buf, base + n);
   const src = sub.coords;
   for (let i = 0; i < n; i += 2) {
-    out[base + i] = src[i]! * sx + xOff;
-    out[base + i + 1] = yOff - src[i + 1]! * sy;
+    out[base + i] = left + ((src[i]! - x0) / xSpan) * plotWidth;
+    out[base + i + 1] = top + (1 - (src[i + 1]! - y0) / ySpan) * plotHeight;
   }
   buf.starts[s] = base;
   buf.counts[s] = count;
@@ -469,14 +501,16 @@ export function fillLineBuffer(
   const history = bounded && !layout.logShown ? lineHistory(bounded, series.step === true, series.valueScale ?? 1) : null;
   if (bounded && history && historyFits(history, scratchWindow)) {
     const x0 = layout.xDomain[0];
+    const xSpan = layout.xDomain[1] - x0;
     const y0 = layout.yDomain[0];
-    const sx = layout.plotWidth / (layout.xDomain[1] - x0);
-    const sy = layout.plotHeight / (layout.yDomain[1] - y0);
-    const xOff = layout.left - x0 * sx;
-    const yOff = layout.top + layout.plotHeight + y0 * sy;
+    const ySpan = layout.yDomain[1] - y0;
+    const left = layout.left;
+    const plotWidth = layout.plotWidth;
+    const top = layout.top;
+    const plotHeight = layout.plotHeight;
     const subs = history.subpaths;
     for (let i = 0; i < subs.length; i++) {
-      appendHistorySubpathLinear(out, subs[i]!, sx, xOff, sy, yOff);
+      appendHistorySubpathLinear(out, subs[i]!, left, x0, xSpan, plotWidth, top, y0, ySpan, plotHeight);
     }
     const tailLen = bounded.runs && bounded.runs.length > 0 ? bounded.runs.length : bounded.buckets.length;
     const headHour = series.headHour ?? until;
@@ -484,22 +518,26 @@ export function fillLineBuffer(
     if (history.items < tailLen || hasHead) {
       const st = linearSinkState;
       st.buf = out;
-      st.sx = sx;
-      st.xOff = xOff;
-      st.sy = sy;
-      st.yOff = yOff;
+      st.left = left;
+      st.x0 = x0;
+      st.xSpan = xSpan;
+      st.plotWidth = plotWidth;
+      st.top = top;
+      st.y0 = y0;
+      st.ySpan = ySpan;
+      st.plotHeight = plotHeight;
       scratchTrace.copyFrom(history.trace, bufferLinearSink);
       if (history.items < tailLen) traceBounded(scratchTrace, bounded, scratchWindow, history.items);
       if (hasHead) scratchTrace.head(headHour, series.headValue!);
       if (scratchTrace.ended) {
         out.hasEnd = true;
-        out.endX = scratchTrace.lastHour * sx + xOff;
-        out.endY = yOff - scratchTrace.lastValue * sy;
+        out.endX = left + ((scratchTrace.lastHour - x0) / xSpan) * plotWidth;
+        out.endY = top + (1 - (scratchTrace.lastValue - y0) / ySpan) * plotHeight;
       }
     } else if (history.trace.ended) {
       out.hasEnd = true;
-      out.endX = history.trace.lastHour * sx + xOff;
-      out.endY = yOff - history.trace.lastValue * sy;
+      out.endX = left + ((history.trace.lastHour - x0) / xSpan) * plotWidth;
+      out.endY = top + (1 - (history.trace.lastValue - y0) / ySpan) * plotHeight;
     }
     return out;
   }
@@ -539,15 +577,17 @@ function strokeLineDirect(
   const history = bounded && !layout.logShown ? lineHistory(bounded, series.step === true, series.valueScale ?? 1) : null;
   if (bounded && history && historyFits(history, scratchWindow)) {
     const x0 = layout.xDomain[0];
+    const xSpan = layout.xDomain[1] - x0;
     const y0 = layout.yDomain[0];
-    const sx = layout.plotWidth / (layout.xDomain[1] - x0);
-    const sy = layout.plotHeight / (layout.yDomain[1] - y0);
-    const xOff = layout.left - x0 * sx;
-    const yOff = layout.top + layout.plotHeight + y0 * sy;
+    const ySpan = layout.yDomain[1] - y0;
+    const left = layout.left;
+    const plotWidth = layout.plotWidth;
+    const top = layout.top;
+    const plotHeight = layout.plotHeight;
     const subs = history.subpaths;
     const lastSub = subs.length - 1;
     for (let i = 0; i < lastSub; i++) {
-      emitHistorySubpathLinear(ctx, subs[i]!, sx, xOff, sy, yOff);
+      emitHistorySubpathLinear(ctx, subs[i]!, left, x0, xSpan, plotWidth, top, y0, ySpan, plotHeight);
       ctx.stroke();
     }
     const tailLen = bounded.runs && bounded.runs.length > 0 ? bounded.runs.length : bounded.buckets.length;
@@ -556,12 +596,16 @@ function strokeLineDirect(
     if (history.items < tailLen || hasHead) {
       const st = linearSinkState;
       st.ctx = ctx;
-      st.sx = sx;
-      st.xOff = xOff;
-      st.sy = sy;
-      st.yOff = yOff;
+      st.left = left;
+      st.x0 = x0;
+      st.xSpan = xSpan;
+      st.plotWidth = plotWidth;
+      st.top = top;
+      st.y0 = y0;
+      st.ySpan = ySpan;
+      st.plotHeight = plotHeight;
       if (lastSub >= 0) {
-        emitHistorySubpathLinear(ctx, subs[lastSub]!, sx, xOff, sy, yOff);
+        emitHistorySubpathLinear(ctx, subs[lastSub]!, left, x0, xSpan, plotWidth, top, y0, ySpan, plotHeight);
         st.open = true;
       } else {
         st.open = false;
@@ -573,18 +617,18 @@ function strokeLineDirect(
       st.ctx = null;
       if (scratchTrace.ended) {
         outEnd.hasEnd = true;
-        outEnd.x = scratchTrace.lastHour * sx + xOff;
-        outEnd.y = yOff - scratchTrace.lastValue * sy;
+        outEnd.x = left + ((scratchTrace.lastHour - x0) / xSpan) * plotWidth;
+        outEnd.y = top + (1 - (scratchTrace.lastValue - y0) / ySpan) * plotHeight;
       }
     } else {
       if (lastSub >= 0) {
-        emitHistorySubpathLinear(ctx, subs[lastSub]!, sx, xOff, sy, yOff);
+        emitHistorySubpathLinear(ctx, subs[lastSub]!, left, x0, xSpan, plotWidth, top, y0, ySpan, plotHeight);
         ctx.stroke();
       }
       if (history.trace.ended) {
         outEnd.hasEnd = true;
-        outEnd.x = history.trace.lastHour * sx + xOff;
-        outEnd.y = yOff - history.trace.lastValue * sy;
+        outEnd.x = left + ((history.trace.lastHour - x0) / xSpan) * plotWidth;
+        outEnd.y = top + (1 - (history.trace.lastValue - y0) / ySpan) * plotHeight;
       }
     }
     return;
@@ -1181,6 +1225,14 @@ export function drawTimeChart(
       const plotClipWidth = layout.plotWidth + 1;
       const plotClipBottom = layout.top + layout.plotHeight + 2;
       const directEnd = { hasEnd: false, x: 0, y: 0 };
+      const incomingAlpha = ctx.globalAlpha;
+      const incomingLineCap = ctx.lineCap;
+      const incomingLineJoin = ctx.lineJoin;
+      const incomingLineWidth = ctx.lineWidth;
+      const incomingStrokeStyle = ctx.strokeStyle;
+      const incomingDash: readonly number[] = typeof ctx.getLineDash === 'function' ? ctx.getLineDash() : [];
+      const endDotColorOf = (s: TimeChartSeriesModel) =>
+        s.negRed && s.headValue != null && s.headValue < 0 ? tokens.shortage : s.color;
 
       ctx.save();
       ctx.beginPath();
@@ -1192,14 +1244,15 @@ export function drawTimeChart(
       let curAlpha = NaN;
       let curStroke = '';
       let curWidth = NaN;
-      let curDash: readonly number[] | null = null;
+      let curDash: readonly number[] = incomingDash;
       const applyStroke = (alpha: number, color: string, width: number, dash: readonly number[] | null) => {
         if (alpha !== curAlpha) { ctx.globalAlpha = alpha; curAlpha = alpha; }
         if (color !== curStroke) { ctx.strokeStyle = color; curStroke = color; }
         if (width !== curWidth) { ctx.lineWidth = width; curWidth = width; }
-        if (!sameDash(dash, curDash)) {
-          ctx.setLineDash(dash ? [...dash] : []);
-          curDash = dash;
+        const targetDash = dash ?? incomingDash;
+        if (!sameDash(targetDash, curDash)) {
+          ctx.setLineDash([...targetDash]);
+          curDash = targetDash;
         }
       };
 
@@ -1216,7 +1269,7 @@ export function drawTimeChart(
           applyStroke(opacity, s.color, lineWidth, dash);
           strokeLineDirect(ctx, s, layout, model.hour, directEnd);
           if (directEnd.hasEnd && s.endLabel) {
-            endDots.push({ x: directEnd.x, y: directEnd.y, color: s.color, opacity });
+            endDots.push({ x: directEnd.x, y: directEnd.y, color: endDotColorOf(s), opacity });
           }
         } else {
           const buf = fillLineBuffer(s, layout, model.hour, scratchBuffer);
@@ -1284,6 +1337,8 @@ export function drawTimeChart(
           } else {
             const above = signed ? clipZeroY : plotClipBottom;
             const columns = stretches ?? [{ color: s.color, x0: layout.left, x1: layout.left + plotClipWidth }];
+            const targetDash = dash ?? incomingDash;
+            const needsDashOverride = !sameDash(targetDash, curDash);
             for (let si = 0; si < subCount; si++) {
               for (let ci = 0; ci < columns.length; ci++) {
                 const stretch = columns[ci]!;
@@ -1295,8 +1350,7 @@ export function drawTimeChart(
                 ctx.globalAlpha = opacity;
                 ctx.strokeStyle = stretch.color;
                 ctx.lineWidth = lineWidth;
-                if (dash) ctx.setLineDash([...dash]);
-                else if (curDash) ctx.setLineDash([]);
+                if (needsDashOverride) ctx.setLineDash([...targetDash]);
                 emitBufferSubpath(ctx, buf, si);
                 ctx.stroke();
                 ctx.restore();
@@ -1309,8 +1363,7 @@ export function drawTimeChart(
                 ctx.globalAlpha = opacity;
                 ctx.strokeStyle = tokens.shortage;
                 ctx.lineWidth = lineWidth;
-                if (dash) ctx.setLineDash([...dash]);
-                else if (curDash) ctx.setLineDash([]);
+                if (needsDashOverride) ctx.setLineDash([...targetDash]);
                 emitBufferSubpath(ctx, buf, si);
                 ctx.stroke();
                 ctx.restore();
@@ -1319,18 +1372,18 @@ export function drawTimeChart(
           }
 
           if (buf.hasEnd && s.endLabel) {
-            const isNeg = s.negRed && s.headValue != null && s.headValue < 0;
-            endDots.push({ x: buf.endX, y: buf.endY, color: isNeg ? tokens.shortage : s.color, opacity });
+            endDots.push({ x: buf.endX, y: buf.endY, color: endDotColorOf(s), opacity });
           }
         }
 
         if (s.missingSpans && s.missingSpans.length > 0) {
           ctx.save();
-          ctx.globalAlpha = 1;
-          ctx.lineCap = 'butt';
-          ctx.lineJoin = 'miter';
-          ctx.lineWidth = 1;
-          if (curDash !== null) ctx.setLineDash([]);
+          ctx.globalAlpha = incomingAlpha;
+          ctx.lineCap = incomingLineCap;
+          ctx.lineJoin = incomingLineJoin;
+          ctx.lineWidth = incomingLineWidth;
+          ctx.strokeStyle = incomingStrokeStyle;
+          if (!sameDash(incomingDash, curDash)) ctx.setLineDash([...incomingDash]);
           for (const span of s.missingSpans) {
             const sa = Math.max(layout.xDomain[0], span.firstHour);
             const sb = Math.min(layout.xDomain[1], model.hour, span.lastHour);
