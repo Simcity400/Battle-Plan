@@ -450,7 +450,7 @@ impl Held {
                 self.refused = Some((at.hour, why));
                 self.answered_sequence = self.at_sequence;
             }
-        } else if animating {
+        } else if animating && matches!(prepared, Prepared::Kept) {
             ctx.request_repaint_after(ANIMATION_FRAME.saturating_sub(since.unwrap_or_default()));
         }
         if let Some(retired) = self.window.take_retired() {
@@ -826,7 +826,7 @@ impl Held {
             && egui::Tooltip::should_show_tooltip(&response, false)
         {
             let width = ui.style().spacing.tooltip_width;
-            egui::Area::new(ui.id().with("battle tooltip"))
+            egui::Area::new(egui::Tooltip::tooltip_id(response.id, 0))
                 .order(egui::Order::Tooltip)
                 .interactable(false)
                 .fixed_pos(pointer + egui::vec2(12.0, 12.0))

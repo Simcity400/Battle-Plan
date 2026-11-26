@@ -1840,8 +1840,13 @@ fn by_reason(unavailable: BTreeSet<String>) -> BTreeSet<String> {
     let mut tactics: BTreeMap<String, usize> = BTreeMap::new();
     let mut reasons = BTreeSet::new();
     for reason in unavailable {
-        match reason.strip_prefix("tactic ").and_then(|rest| rest.split_once("'s ")) {
-            Some((_, why)) => *tactics.entry(why.to_owned()).or_default() += 1,
+        let grouped = reason.strip_prefix("tactic ").and_then(|rest| {
+            let (token, tail) = rest.split_at(rest.find(|c: char| c == '\'' || c == ':' || c.is_whitespace())?);
+            let why = tail.strip_prefix("'s ").or_else(|| tail.strip_prefix(": "))?;
+            (!token.is_empty()).then_some(why)
+        });
+        match grouped {
+            Some(why) => *tactics.entry(why.to_owned()).or_default() += 1,
             None => {
                 reasons.insert(reason);
             }
@@ -1868,6 +1873,8 @@ mod tests {
             "tactic attack's immediate hover: sources unavailable".to_owned(),
             "tactic shock's immediate hover: sources unavailable".to_owned(),
             "tactic shock's selection hover: weights unavailable".to_owned(),
+            "tactic attack: the attacker's preferred country tactic modifier is not recorded".to_owned(),
+            "tactic shock: the attacker's preferred country tactic modifier is not recorded".to_owned(),
             "the viewing country's side is unavailable".to_owned(),
         ]);
         assert_eq!(
@@ -1875,6 +1882,7 @@ mod tests {
             BTreeSet::from([
                 "immediate hover: sources unavailable (in 2 tactic(s))".to_owned(),
                 "selection hover: weights unavailable (in 1 tactic(s))".to_owned(),
+                "the attacker's preferred country tactic modifier is not recorded (in 2 tactic(s))".to_owned(),
                 "the viewing country's side is unavailable".to_owned(),
             ])
         );
