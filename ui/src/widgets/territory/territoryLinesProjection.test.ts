@@ -112,7 +112,7 @@ const lineIdentities = fakeIdentity(Object.fromEntries(slots.map((slot, i) => [
   `country:${countryKey(slot)}`, { name: `Country ${slot}`, color: recorded[i]! },
 ])));
 
-function territoryColors(order: number[], hour: number, surface: string, identity = lineIdentities) {
+function territoryColors(order: (string | number)[], hour: number, surface: string, identity = lineIdentities) {
   const view = createBoundedReadView({
     hour,
     identity,
@@ -141,10 +141,10 @@ test('a collision starts at the recorded colour change for both the stroke and i
   ]);
 });
 
-test('a missing map colour keeps its palette fallback when the rankings swap', () => {
+test('a tag without a recorded slot or colour keeps its fallback when it overtakes slot-keyed lines', () => {
   const surface = '#493c51';
-  const first = territoryColors([2, 12, 53], 200, surface);
-  const next = territoryColors([53, 12, 2], 201, surface);
+  const first = territoryColors([2, 12, 'A53'], 200, surface);
+  const next = territoryColors(['A53', 12, 2], 201, surface);
   assert.deepEqual(new Map(first.map(line => [line.id, line.color])), new Map(next.map(line => [line.id, line.color])));
 });
 

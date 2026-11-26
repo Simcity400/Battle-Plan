@@ -543,7 +543,10 @@ export function resolveLineColors<K extends number | string>(
   lines: readonly { readonly key: K; readonly color: string | null }[],
   surface: string,
 ): ReadonlyMap<K, string> {
-  const ordered = [...lines].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  const ordered = [...lines].sort((a, b) => {
+    if (typeof a.key !== typeof b.key) return typeof a.key === 'number' ? -1 : 1;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
   const bases = ordered.map((line, index) => readableColour(line.color ?? colour(surface, index), surface));
   const palette = forSurface(surface);
   const key = bases.join('');
