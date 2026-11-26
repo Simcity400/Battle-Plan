@@ -882,28 +882,29 @@ impl Fingerprint for super::world::Invasion<'_> {
     }
 }
 
-static UNREUSABLE: AtomicU64 = AtomicU64::new(0);
-
-pub(crate) fn row_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) {
-    if wire_fingerprint(row, into).is_err() {
-        into.write_u64(u64::MAX);
-        into.write_u64(UNREUSABLE.fetch_add(1, Ordering::Relaxed));
-    }
+pub(crate) fn row_fingerprint<R: RowCodec + std::fmt::Debug>(row: &R, into: &mut DefaultHasher) {
+    wire_fingerprint(row, into);
+    native_fingerprint(row, into);
 }
 
-fn wire_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) -> std::io::Result<()> {
-    if row.has_display_steps() {
-        let mut rounded = row.clone();
-        rounded.round_to_display();
-        if rounded != *row {
-            return Err(std::io::Error::other("a row holds a value between its display steps"));
-        }
-    }
+fn wire_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) {
     into.write_u128(row.key());
-    row.visit_wire(&mut |index, field| {
+    let walked = row.visit_wire(&mut |index, field| {
         into.write_usize(index);
         field_fingerprint(field, into)
-    })
+    });
+    into.write_u8(u8::from(walked.is_ok()));
+}
+
+fn native_fingerprint<V: std::fmt::Debug + ?Sized>(value: &V, into: &mut DefaultHasher) {
+    struct Writing<'h>(&'h mut DefaultHasher);
+    impl std::fmt::Write for Writing<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            Ok(())
+        }
+    }
+    let _ = std::fmt::Write::write_fmt(&mut Writing(into), format_args!("{value:?}"));
 }
 
 fn list_fingerprint<T: Hash>(list: List<'_, T>, into: &mut DefaultHasher) {
@@ -1071,7 +1072,7 @@ impl RowsVisit for RowsFingerprint<'_> {
     type Output = ();
     fn rows<R: RowCodec>(self, rows: &[R]) {
         self.0.write_usize(rows.len());
-        rows.iter().for_each(|row| row_fingerprint(row, self.0));
+        rows.iter().for_each(|row| wire_fingerprint(row, self.0));
     }
 }
 
@@ -1079,6 +1080,7 @@ impl Fingerprint for TableRows {
     fn fingerprint(&self, into: &mut DefaultHasher) {
         std::mem::discriminant(self).hash(into);
         self.visit(RowsFingerprint(into));
+        native_fingerprint(self, into);
     }
 }
 

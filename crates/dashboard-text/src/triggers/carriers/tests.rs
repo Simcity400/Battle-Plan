@@ -815,6 +815,11 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
         (true, true, 0),
         "a change to the organisation's funds alone leaves its size, and the evaluation, as they were"
     );
+    assert_eq!(
+        confirm(&inputs, &funded, TableChange::Any),
+        (false, true, 1),
+        "read again, the size's own fingerprint is unchanged"
+    );
     let shrunk = sized(2, Some(&[(OTHER, 5), (MIO, 5), (HELD, 8)]));
     let rows = [changed(MIO)];
     assert_eq!(

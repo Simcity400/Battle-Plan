@@ -2402,3 +2402,20 @@ fn feed_tables_differing_in_bytes_that_are_not_text_or_in_an_older_format_have_d
         assert_ne!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xff", 11, windows_recorded)])), "windows recorded: {windows_recorded}: another read hour");
     }
 }
+
+#[test]
+fn format_101_rows_fingerprint_their_retained_inputs_and_their_stamped_hours_the_same_each_time() {
+    use replay_data::rows::{CountryAttackInputs, LandCombatDetailsRow, PacketHour, Recorded, ReservedCountryNamingRow, RetiredKept, Witnessed};
+    let combat = |anti_air: i64| {
+        let mut row = LandCombatDetailsRow { combat: 7, ..Default::default() };
+        row.sides[0].anti_air_attack = RetiredKept(Some(anti_air));
+        TableView::Complete(TableRows::LandCombatDetails(vec![row]))
+    };
+    assert_ne!(fingerprint(&combat(1)), fingerprint(&combat(2)), "a retained older input is part of the row");
+    assert_eq!(fingerprint(&combat(1)), fingerprint(&combat(1)));
+    let naming = || {
+        let attack = CountryAttackInputs { sample_hour: PacketHour::Stamped(1000), land_night_attack: Some(-20_000), land_bunker_effectiveness_factor: None };
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow { attack: Recorded::Value(Witnessed(Some(Some(attack)))), ..Default::default() }]))
+    };
+    assert_eq!(fingerprint(&naming()), fingerprint(&naming()), "a stamped hour the writer cannot write still reads the same twice");
+}
