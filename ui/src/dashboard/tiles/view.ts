@@ -72,7 +72,7 @@ const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.imm
 export class TileView {
   private wanted: Wanted | null = null;
   private lines: ReadonlyMap<string, TiledLine> | null = null;
-  private told: { readonly failure: unknown; readonly refused: string | null } = { failure: null, refused: null };
+  private told: { readonly failure: unknown; readonly refused: string | null; readonly from: number | null; readonly until: number | null } = { failure: null, refused: null, from: null, until: null };
   private readonly made = new WeakMap<TiledLine, { readonly tiles: readonly Tile[]; readonly from: number; readonly to: number; readonly width: number; readonly cell: number | null }>();
   private assembled: Assembled | null = null;
   private failure: unknown = null;
@@ -273,13 +273,24 @@ export class TileView {
     });
     this.assembled = { binHours: wanted.binHours, first: wanted.first, last: wanted.last, width: wanted.width, cell: wanted.cell };
     this.failure = null;
-    if (same && this.told.failure === null && this.told.refused === (this.ranked?.refused ?? null)) return;
+    if (
+      same
+      && this.told.failure === null
+      && this.told.refused === (this.ranked?.refused ?? null)
+      && this.told.from === (this.ranked?.from ?? null)
+      && this.told.until === (this.ranked?.until ?? null)
+    ) return;
     if (!same) this.lines = lines;
     this.notify();
   }
 
   private notify(): void {
-    this.told = { failure: this.failure, refused: this.ranked?.refused ?? null };
+    this.told = {
+      failure: this.failure,
+      refused: this.ranked?.refused ?? null,
+      from: this.ranked?.from ?? null,
+      until: this.ranked?.until ?? null,
+    };
     this.changed();
   }
 }

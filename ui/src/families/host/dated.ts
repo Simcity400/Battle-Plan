@@ -44,11 +44,19 @@ export class StaticSupply {
   }
 
   data(fields: Readonly<Record<string, unknown>>, group = 'data'): void {
-    const was = this.groups.get(group) ?? {};
-    const names = new Set([...Object.keys(was), ...Object.keys(fields)]);
-    if ([...names].every(name => was[name] === fields[name])) return;
-    this.groups.set(group, fields);
-    if (this.held !== undefined) this.send(this.payload());
+    this.update({ [group]: fields });
+  }
+
+  update(entries: Readonly<Record<string, Readonly<Record<string, unknown>>>>): void {
+    let changed = false;
+    for (const [group, fields] of Object.entries(entries)) {
+      const was = this.groups.get(group) ?? {};
+      const names = new Set([...Object.keys(was), ...Object.keys(fields)]);
+      if ([...names].every(name => was[name] === fields[name])) continue;
+      this.groups.set(group, fields);
+      changed = true;
+    }
+    if (changed && this.held !== undefined) this.send(this.payload());
   }
 
   private payload(): SupplyChange {

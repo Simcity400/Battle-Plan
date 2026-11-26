@@ -25,7 +25,7 @@ import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
 import { rowExtents } from '../table/layout.ts';
 import type { TableModel } from '../table/model.ts';
 import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './auditBinding.ts';
-import { boundDated } from './dated.ts';
+import { boundDated, StaticSupply } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
   anchoredRowWindow,
@@ -42,7 +42,9 @@ import {
 } from './keyboard.ts';
 import { keepEqual } from './stableValue.ts';
 import { rowHoverPublisher } from './hoverRow.ts';
-import { emptyPagers, pagerWindow, replacePagers, type PagedEntry } from './pagers.ts';
+import { createExactReadView, emptyPagers, pagedSnapshots, pagerWindow, replacePagers, type PagedEntry } from './pagers.ts';
+import { NO_TILED_SERIES, reuseTiledSeries, reuseTileUnrecorded } from './tiledState.ts';
+import type { TiledLine } from '../../dashboard/tiles/view.ts';
 import { mirrorToSync, optionElementId, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
@@ -2075,4 +2077,175 @@ test('a scrolled log keeps its frozen hour when its plan changes, as expanding a
   const homed = replacePagers(frozenAt100(), 'home', [expanded]);
   pagerWindow(homed, expanded, head, 124);
   assert.deepEqual(hours(pagerWindow(homed, expanded, scrolled, 130).step), [130], 'returning to the head drops the frozen hour');
+});
+
+test('audit exact reads keep the snapshot page states captured with the installed window across head returns and atomic supply updates', async () => {
+  const source = { id: 'log-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 5000 }] } } as unknown as DashboardSource;
+  const entry = pagedTailEntry('main', source, '1', 0, { product: 'event-feed-tail', branchId: '1', facets: [], from: null, limit: 64, ask: {} }, true) as PagedEntry;
+  const pastHead = { first: 65, count: 20, dataFirst: 65, dataCount: 20 };
+  const deep = { first: 600, count: 20, dataFirst: 600, dataCount: 20 };
+  const head = { first: 0, count: 20, dataFirst: 0, dataCount: 20 };
+  const rowAt = (hour: number, offset: number) => ({ key: `r${hour}-${offset}`, hour: Math.min(hour, 95) });
+  const fakeTail = (offset: number, hour: number) => ({
+    total: 800,
+    offset,
+    baseOrdinal: 0,
+    firstOrdinal: offset,
+    rows: [rowAt(hour, offset)],
+    facetTotals: new Map<string, number>(),
+    missing: [],
+  });
+
+  const requested: { hour: number; offset: string }[] = [];
+  const client = {
+    product: async (req: { params: { hour: number; offset: string } }) => {
+      requested.push({ hour: req.params.hour, offset: req.params.offset });
+      const off = Number(req.params.offset);
+      return { data: { total: '800', offset: req.params.offset, rows: [rowAt(req.params.hour, off)], counts: [], missing: [] } };
+    },
+  } as unknown as DashboardClient;
+  const gate: FrozenGate = {
+    recorded: hour => hour as never,
+    span: (first, last) => ({ firstHour: first as never, lastHour: last as never }),
+  };
+  const exactOpts = {
+    client,
+    following: true,
+    timeMode: 'follow' as const,
+    branch: { firstHour: 0, lastHour: 5000 },
+    window: null,
+    staticSpan: null,
+    gate,
+  };
+
+  const deepHeld = emptyPagers('deep');
+  const deepStep = pagerWindow(deepHeld, entry, deep, 100);
+  const deepAsk = deepStep.step.fetch[0]!;
+  assert.equal(deepAsk.offset, 512, 'scrolling to row 600 loads only offset 512');
+  const pendingSnap = pagedSnapshots({ main: deepStep.pager.pages() });
+  const pendingExact = createExactReadView({ owner: 'o', entries: [entry] }, pendingSnap, exactOpts);
+  const auditedPending = await pendingExact(100, deep);
+  assert.equal(auditedPending?.rows('main')?.sliceAt(100, 600, 1)[0]?.kind, 'loading', 'a pending page 512 past the live head stays loading in the audit');
+  assert.deepEqual(requested, [{ hour: 100, offset: '0' }], 'pending pages reconstruct only the live head, never fetching offset 512');
+
+  requested.length = 0;
+  deepStep.pager.answer(deepAsk, fakeTail(deepAsk.offset, deepAsk.hour), { total: '800', offset: '512', rows: [rowAt(100, 512)] });
+  const deepSnap = pagedSnapshots({ main: deepStep.pager.pages() });
+  const deepExact = createExactReadView({ owner: 'o', entries: [entry] }, deepSnap, exactOpts);
+  const auditedSeekBack = await deepExact(99, deep);
+  assert.equal(auditedSeekBack?.rows('main')?.sliceAt(99, 600, 1)[0]?.kind, 'loading', 'seeking before the captured page hour 100 falls back to live head at 99 with row 600 loading');
+  assert.deepEqual(requested, [{ hour: 99, offset: '0' }]);
+
+  requested.length = 0;
+  pagerWindow(deepHeld, entry, head, 150);
+  const deepAuditedHead = await deepExact(150, head);
+  assert.equal(deepAuditedHead?.rows('main')?.sliceAt(150, 0, 1)[0]?.kind, 'loading', 'head row absent from offset-512 frozen snapshot stays loading in audit, never fetching offset 0');
+  assert.deepEqual(requested, [{ hour: 100, offset: '512' }], 'exact reader re-reads only the answered offset 512 at hour 100');
+
+  requested.length = 0;
+  const bothHeld = emptyPagers('both');
+  const p0 = pagerWindow(bothHeld, entry, pastHead, 100);
+  p0.pager.answer(p0.step.fetch[0]!, {
+    total: 800,
+    offset: 0,
+    baseOrdinal: 0,
+    firstOrdinal: 0,
+    rows: Array.from({ length: 256 }, (_, i) => rowAt(100, i)),
+    facetTotals: new Map(),
+    missing: [],
+  }, { total: '800', offset: '0', rows: Array.from({ length: 256 }, (_, i) => rowAt(100, i)) });
+  const p256 = pagerWindow(bothHeld, entry, { first: 256, count: 20, dataFirst: 256, dataCount: 20 }, 100);
+  p256.pager.answer(p256.step.fetch[0]!, fakeTail(256, 100), { total: '800', offset: '256', rows: [rowAt(100, 256)] });
+  const bothClient = {
+    product: async (req: { params: { hour: number; offset: string } }) => {
+      requested.push({ hour: req.params.hour, offset: req.params.offset });
+      const off = Number(req.params.offset);
+      const count = off === 0 ? 256 : 1;
+      return { data: { total: '800', offset: req.params.offset, rows: Array.from({ length: count }, (_, i) => rowAt(req.params.hour, off + i)), counts: [], missing: [] } };
+    },
+  } as unknown as DashboardClient;
+  const bothSnap = pagedSnapshots({ main: p256.pager.pages() });
+  const bothExact = createExactReadView({ owner: 'o', entries: [entry] }, bothSnap, { ...exactOpts, client: bothClient });
+  const gapShifted = await bothExact(120, { first: 256, count: 20, dataFirst: 256, dataCount: 20 });
+  const shiftedSlot = gapShifted?.rows('main')?.sliceAt(120, 255, 1)[0];
+  assert.equal(shiftedSlot?.kind === 'data' ? shiftedSlot.row.key : null, 'r100-255', 'all captured answered pages are re-read so a gap shift onto row 255 from page 0 stays data');
+  assert.deepEqual(requested, [{ hour: 100, offset: '0' }, { hour: 100, offset: '256' }]);
+
+  requested.length = 0;
+  const held = emptyPagers('s1');
+  const step1 = pagerWindow(held, entry, pastHead, 100);
+  const ask1 = step1.step.fetch[0]!;
+  assert.equal(ask1.offset, 0, 'scrolling to row 65 with a 256-row page loads page 0');
+  step1.pager.answer(ask1, fakeTail(ask1.offset, ask1.hour), { total: '800', offset: '0', rows: [rowAt(100, 0)] });
+  const stepRefused = pagerWindow(held, entry, { first: 256, count: 20, dataFirst: 256, dataCount: 20 }, 110);
+  stepRefused.pager.refuse(stepRefused.step.fetch[0]!, 'Offline page');
+  const frozenPages = { main: step1.pager.pages() };
+  const captured = pagedSnapshots(frozenPages);
+  assert.equal(pagedSnapshots(frozenPages, captured), captured, 'identical page states keep snapshot object identity');
+  const retainedExact = createExactReadView({ owner: 'o', entries: [entry] }, captured, exactOpts);
+
+  pagerWindow(held, entry, head, 150);
+  const liveSnap = pagedSnapshots({ main: step1.pager.pages() }, captured);
+  assert.deepEqual(liveSnap, {}, 'returning to live head clears captured pages for subsequent snapshots');
+
+  const auditedHead = await retainedExact(150, head);
+  const frozenSlot = auditedHead?.rows('main')?.sliceAt(150, 0, 1)[0];
+  assert.equal(frozenSlot?.kind === 'data' ? frozenSlot.row.key : null, 'r100-0', 'answered offset 0 under a frozen snapshot audits hour 100');
+
+  const auditedRefused = await retainedExact(150, { first: 256, count: 1, dataFirst: 256, dataCount: 1 });
+  const refusedSlot = auditedRefused?.rows('main')?.sliceAt(150, 256, 1)[0];
+  assert.deepEqual(
+    refusedSlot?.kind === 'refused' ? [refusedSlot.kind, refusedSlot.reason] : null,
+    ['refused', 'Offline page'],
+    'refused page state is preserved in audit reconstruction',
+  );
+  assert.deepEqual(requested, [{ hour: 100, offset: '0' }, { hour: 100, offset: '0' }]);
+
+  const liveExact = createExactReadView({ owner: 'o', entries: [entry] }, liveSnap, exactOpts);
+  const liveView = await liveExact(150, head);
+  const liveSlot = liveView?.rows('main')?.sliceAt(150, 0, 1)[0];
+  assert.equal(liveSlot?.kind === 'data' ? liveSlot.row.key : null, 'r150-0', 'a new capture after returning to live head audits hour 150');
+
+  const emitted: Record<string, unknown>[] = [];
+  const supply = new StaticSupply(change => {
+    if (change.statics) emitted.push(change.statics);
+  });
+  const art1 = new Map([['a', 'ready-1']]);
+  const art2 = new Map([['a', 'ready-2']]);
+  supply.statics(null, null);
+  supply.update({ view: { auditId: 1 }, data: { pagedRows: undefined }, art: { artResolutions: art1 } });
+  supply.data({ artResolutions: art2 }, 'art');
+  supply.update({ view: { auditId: 2 }, data: { pagedRows: frozenPages }, art: { artResolutions: art2 } });
+  supply.data({ artResolutions: art1 }, 'art');
+  supply.update({ view: { auditId: 3 }, data: { pagedRows: undefined }, art: { artResolutions: art1 } });
+  assert.deepEqual(
+    emitted.map(payload => [payload.auditId ?? null, payload.pagedRows === frozenPages, payload.artResolutions === art2]),
+    [[1, false, false], [1, false, true], [2, true, true], [2, true, false], [3, false, false]],
+    'art updates stay in their own group and never pair new pagedRows with a previous audit id',
+  );
+});
+
+test('ranking interval updates preserve tiled series identity and reuse valid unrecorded bounds', () => {
+  const line = (tag: string): TiledLine => ({
+    tag,
+    head: tag,
+    decimals: 0,
+    summary: { from: 0, to: 100, width: 100, buckets: [] },
+    missing: [{ firstHour: 0, lastHour: 20, reason: 'Not recorded yet' }],
+    parts: [],
+    marks: null,
+  });
+  const firstMap = new Map<string, TiledLine>([['AAA', line('AAA')]]);
+  const views = new Map([['main', { current: firstMap }]]);
+  const s1 = reuseTiledSeries(NO_TILED_SERIES, views);
+  const s2 = reuseTiledSeries(s1, views);
+  assert.equal(s2, s1, 'unchanged line maps keep the exact series reference so downstream serialization does not re-run');
+
+  const u1 = reuseTileUnrecorded(null, s1, 10);
+  assert.equal(u1?.result?.reason, 'Not recorded yet');
+  const u2 = reuseTileUnrecorded(u1, s2, 15);
+  assert.equal(u2, u1, 'hours inside the proven validInterval reuse the previous unrecorded result');
+  const u3 = reuseTileUnrecorded(u2, s2, 25);
+  assert.notEqual(u3, u2);
+  assert.equal(u3?.result?.reason, null);
 });

@@ -12,6 +12,9 @@ import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, TILE_BINS, binHoursOf, tilesOf 
 import type { Tile } from './tile.ts';
 import { TileView, tileBuckets, unrecordedReason } from './view.ts';
 import type { TiledLine, TileLane, TileViewport } from './view.ts';
+import { watchBoundary } from '../widgetTime.ts';
+import type { PlaybackController } from '../playback';
+import { topTileProof } from '../../families/host/tiledState.ts';
 
 function reply(tags: readonly string[], binHours: number, index: number, lastHour: number, value: (tag: number, hour: number) => number | null): SeriesTileReply {
   const first = index * TILE_BINS * binHours;
@@ -449,4 +452,85 @@ test('a page chart joining a tile the prepare lane holds waiting sends it at onc
   held.release();
   await settle();
   assert.equal(cache.joins.size, 0, 'a landed tile leaves nothing to send');
+});
+
+test('a top tile view survives an empty first window, stays quiet through the second empty interval under watchBoundary, and installs later data without remounting', async () => {
+  const cache = new TileCache();
+  const topAsked: number[] = [];
+  let applyCount = 0;
+  let clockHour = 50;
+  let sequence = 1;
+  const frameListeners = new Set<() => void>();
+  const anchorListeners = new Set<() => void>();
+  const clock = {
+    getHour: () => clockHour,
+    getSnapshot: () => ({ hour: clockHour, sequence, playing: true, hoursPerSecond: 24, seekSequence: 0 }),
+    subscribeFrame: (fn: () => void) => { frameListeners.add(fn); return () => { frameListeners.delete(fn); }; },
+    subscribe: (fn: () => void) => { anchorListeners.add(fn); return () => { anchorListeners.delete(fn); }; },
+  } as unknown as PlaybackController;
+  const advanceTo = (hour: number) => {
+    clockHour = hour;
+    sequence++;
+    for (const fn of [...frameListeners]) fn();
+  };
+
+  const base = lane([], 1000);
+  const topLane: TileLane = {
+    ...base,
+    key: 'source|1|1|top-empty-first',
+    top: {
+      ask(binHours, index, hour) {
+        topAsked.push(hour);
+        if (hour <= 100) {
+          return Promise.resolve({ ...reply([], binHours, index, 1000, value), ranking: { hour, from: 0, until: 100, refused: null } });
+        }
+        if (hour <= 200) {
+          return Promise.resolve({ ...reply([], binHours, index, 1000, value), ranking: { hour, from: 101, until: 200, refused: null } });
+        }
+        return Promise.resolve({ ...reply(['AAA'], binHours, index, 1000, value), ranking: { hour, from: 201, until: 300, refused: null } });
+      },
+    },
+  };
+
+  let stopWatch = () => {};
+  let view!: TileView;
+  const apply = () => {
+    applyCount++;
+    view.setHour(Math.floor(clock.getHour()));
+  };
+  const armWatch = () => {
+    stopWatch();
+    stopWatch = watchBoundary(
+      clock,
+      () => topTileProof([view], Math.floor(clock.getHour()), 0, hour => hour, hour => [hour, hour]),
+      apply,
+    );
+  };
+
+  view = new TileView(cache, topLane, () => { armWatch(); });
+  view.setView({ from: 0, to: 100, end: 1000, width: 200 });
+  apply();
+  armWatch();
+  await settle();
+  assert.equal(view.current?.size, 0, 'the empty first window installs an empty map');
+  assert.deepEqual(view.top, { tags: [], hour: 50, from: 0, until: 100, refused: null });
+
+  const afterFirstApply = applyCount;
+  for (const hour of [60, 80, 100]) advanceTo(hour);
+  assert.equal(applyCount, afterFirstApply, 'boundary watch stays quiet inside the first empty interval');
+
+  advanceTo(101);
+  await settle();
+  assert.equal(view.current?.size, 0);
+  assert.deepEqual(view.top, { tags: [], hour: 101, from: 101, until: 200, refused: null });
+  const afterSecondApply = applyCount;
+  for (const hour of [120, 150, 200]) advanceTo(hour);
+  assert.equal(applyCount, afterSecondApply, 'boundary watch re-arms on the second empty interval and stays quiet through hour 200');
+
+  advanceTo(201);
+  await settle();
+  assert.deepEqual([...(view.current?.keys() ?? [])], ['AAA'], 'crossing the second empty upper bound installs AAA on the same tile view');
+  assert.deepEqual(topAsked, [50, 101, 201]);
+  stopWatch();
+  view.close();
 });

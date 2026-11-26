@@ -686,12 +686,21 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view };
   }, [audit.capture, sourceIdsRef]);
 
+  const supplyDataFields = (cur: typeof latestRef.current) => ({
+    tiledBySource: cur.tiledBySource,
+    hovers: cur.hovers && Object.keys(cur.hovers).length ? cur.hovers : undefined,
+    pagedRows: cur.pagedRows && Object.keys(cur.pagedRows).length ? cur.pagedRows : undefined,
+  });
+  const supplyArtFields = (cur: typeof latestRef.current) => ({
+    artResolutions: cur.laneArt?.resolutions,
+  });
+
   const showView = useCallback(() => {
     if (!surfaceRef.current || !pipeline || pipe === null) return;
-    const { rowWindow, view } = frame();
+    const { cur, rowWindow, view } = frame();
     requestedWindowRef.current = rowWindow;
     reportWindow();
-    supply?.data(view, 'view');
+    supply?.update({ view, data: supplyDataFields(cur), art: supplyArtFields(cur) });
   }, [frame, pipeline, pipe, reportWindow, supply]);
 
   const bind = useCallback(() => {
@@ -746,7 +755,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         pendingArt: Array.isArray(boundView?.fields?.artDemands) && (boundView.fields.artDemands as unknown[]).length > 0,
       });
     }
-    supply?.data(view, 'view');
+    supply?.update({ view, data: supplyDataFields(cur), art: supplyArtFields(cur) });
     supplyDated();
   }, [frame, pipeline, pipe, supply, supplyDated, reportWindow, widget.id, instanceId]);
   const showViewRef = useRef(showView);
@@ -1452,17 +1461,17 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   ]);
 
   const supplyData = useCallback(() => {
-    const cur = latestRef.current;
-    supply?.data({
-      tiledBySource: cur.tiledBySource,
-      hovers: cur.hovers && Object.keys(cur.hovers).length ? cur.hovers : undefined,
-      pagedRows: cur.pagedRows && Object.keys(cur.pagedRows).length ? cur.pagedRows : undefined,
-      artResolutions: cur.laneArt?.resolutions,
-    });
+    supply?.data(supplyDataFields(latestRef.current));
+  }, [supply]);
+  const supplyArt = useCallback(() => {
+    supply?.data(supplyArtFields(latestRef.current), 'art');
   }, [supply]);
   useLayoutEffect(() => {
     supplyData();
-  }, [supplyData, tiledBySource, hovers, pagedRows, laneArt]);
+  }, [supplyData, tiledBySource, hovers, pagedRows]);
+  useLayoutEffect(() => {
+    supplyArt();
+  }, [supplyArt, laneArt]);
 
   useLayoutEffect(() => {
     supply?.statics(staticSources, datedNow());
@@ -1473,7 +1482,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipeline.supply(pipe, { identity: identitySnapshot });
   }, [pipeline, pipe, identitySnapshot]);
 
-  useLayoutEffect(() => laneArt?.subscribe(supplyData), [laneArt, supplyData]);
+  useLayoutEffect(() => laneArt?.subscribe(supplyArt), [laneArt, supplyArt]);
 
   useLayoutEffect(() => staticProof?.subscribe(supplyDated), [staticProof, supplyDated]);
 

@@ -455,11 +455,6 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
 
   get hour(): number | null { return this.#hour; }
 
-  get shownHour(): number | null {
-    for (const page of this.#pages.values()) if ('reply' in page) return page.hour;
-    return null;
-  }
-
   window(window: RowWindow, installedHour: number | null): PagerStep {
     const data = dataWindowOf(window);
     if (!data) return NO_STEP;
