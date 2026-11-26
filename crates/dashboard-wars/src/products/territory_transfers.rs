@@ -93,7 +93,7 @@ impl History {
         let counted = self.steps.partition_point(|step| step.hour <= through);
         let step = self.steps.get(counted.checked_sub(1)?)?;
         let read = self.reads.partition_point(|read| read.hour <= through);
-        let victory_points = (read == counted).then(|| read.checked_sub(1).map_or(0, |at| self.reads[at].points));
+        let victory_points = (read == counted).then(|| self.reads[read - 1].points);
         let (tag, hour) = &self.names[step.named];
         Some(TerritoryCountry {
             key: self.key.clone(),
