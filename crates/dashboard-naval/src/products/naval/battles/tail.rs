@@ -354,6 +354,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                 continue;
             };
             let first = step.hour.max(date);
+            let named = date.max(span.first);
             let last = result.get(i + 1).map_or(span.last, |s| s.hour - 1);
             if first > last {
                 continue;
@@ -386,14 +387,14 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     if let Some(list) = sides.get_mut(side)
                         && at(reads, hour).is_some()
                     {
-                        country(list, links.slot_at(*key as u32, date));
+                        country(list, links.slot_at(*key as u32, named));
                     }
                 }
                 let line = lines.entry(battle).or_default();
                 line.reads.truncate(line.reads.partition_point(|(at, _)| *at <= hour));
                 let countries_hour = std::array::from_fn(|i| {
                     if !sides[i].is_empty() {
-                        return Some(date);
+                        return Some(named);
                     }
                     let (at, prior) = line.reads.iter().rev().find(|(_, read)| !read.countries[i].is_empty())?;
                     sides[i].clone_from(&prior.countries[i]);
@@ -770,5 +771,20 @@ mod tests {
         result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
         let (hour, last) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
         assert_eq!((*hour, last.result, last.sunk, last.ic), (13, NavalBattleStatus::AttackerWon, [Some(1), Some(0)], [Some(5), Some(0)]));
+    }
+
+    #[test]
+    fn a_result_from_before_the_recording_names_its_sides_at_the_first_recorded_hour() {
+        let results = History { keys: vec![(99, vec![step(10, Some(&[1, 5, 2]))])], ..History::default() };
+        let countries = History {
+            keys: vec![((99 << 40) | 7, vec![step(10, Some(&[0]))]), ((99 << 40) | (1 << 32) | 8, vec![step(10, Some(&[0]))])],
+            ..History::default()
+        };
+        let links = RunLinks { slots: HashMap::from([(7, vec![(10, 20, Some(3))]), (8, vec![(10, 20, Some(4))])]) };
+        let span = Stretch { run: 1, first: 10, last: 20, join: dashboard_query::timeline::Join::Start };
+        let mut lines = BTreeMap::new();
+        result_lines(&mut lines, span, &links, &results, &History::default(), &countries);
+        let (hour, read) = lines[&Battle::Result(99, 5)].reads.first().unwrap();
+        assert_eq!((*hour, read.result, read.countries.clone(), read.countries_hour), (10, NavalBattleStatus::DefenderWon, [vec![3], vec![4]], [Some(10); 2]));
     }
 }

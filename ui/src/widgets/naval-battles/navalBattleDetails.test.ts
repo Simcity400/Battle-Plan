@@ -61,6 +61,7 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   const ended = model(true).rows[1]!.cells.status!;
   assert.deepEqual([ended.value, ended.statusKind], [{ kind: 'known', value: 'Ended' }, 'finished']);
   assert.deepEqual(ended.tooltipRows!.map(line => [line.label, line.value.kind]), [['Result', 'known'], ['Winner', 'notRecorded']]);
+  assert.match(JSON.stringify(ended.tooltipRows![1]!.value), /only for battles a player takes part in/);
   const endedRow = model(true).rows[1]!;
   const found = { kind: 'data', key: endedRow.key, name: endedRow.name, row: endedRow, rank: 0, level: 1, parent: null, isTreeGroup: false, isOpen: false, childCount: 0 } as const;
   const lines = deriveRowTooltip(found, model(true).columns).rows.filter(line => line.lookupKey !== ART_STATUS_ROW);
