@@ -880,8 +880,20 @@ pub(super) fn compute_stack(
         return StackOutput { top_slots, next_change_hour: next_change, ..Default::default() };
     };
     let restricted = filter.is_some() || group_filter.is_some() || top_limit.is_some();
-    let other_count = if restricted { 0 } else { tail.iter().filter(|entry| entry.end.is_some_and(|value| value != 0)).count() as u32 };
-    let has_other = !restricted && !tail.is_empty();
+    let (has_other, other_count) = if filter.is_some() {
+        let shown: HashSet<u32> = top.iter().map(|entry| entry.slot).collect();
+        let mut present = false;
+        let mut count = 0;
+        for (&slot, runs) in input.slots {
+            if shown.contains(&slot) { continue; }
+            let start = runs.partition_point(|run| run.1 < first);
+            present |= runs[start..].iter().take_while(|run| run.0 <= last).any(|run| run.2.is_some_and(|value| value != 0));
+            count += u32::from(rank_hour.and_then(|hour| lookup_slot(Some(runs), rank_complete, hour)).is_some_and(|value| value != 0));
+        }
+        (present, count)
+    } else {
+        (!restricted && !tail.is_empty(), if restricted { 0 } else { tail.iter().filter(|entry| entry.end.is_some_and(|value| value != 0)).count() as u32 })
+    };
     let mut raw_hours = Vec::new();
     raw_hours.push(first);
     collect_change_hours(input.tension, first, last, &mut raw_hours);

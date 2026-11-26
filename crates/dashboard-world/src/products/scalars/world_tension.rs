@@ -1,10 +1,11 @@
 
-use super::{Named, rows};
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour}}};
+use super::{Named, rows, world_tension_stack::TensionValueMode};
+use crate::products::group_members::GroupsAt;
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::{
     Query,
-    series::{self, NavigationKey},
+    coverage::{Witness, witnessed}, series::{self, NavigationKey, ranked::GroupSelection},
 };
 use dashboard_text::metadata::link_slot;
 use engine_stability::{cthreat_source, cworld_threat};
@@ -22,6 +23,9 @@ pub struct WorldTension;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorldTensionParams {
     pub branch_id: String,
+    pub countries: Option<Vec<u32>>,
+    pub values: Option<TensionValueMode>,
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -33,6 +37,9 @@ pub struct TensionContribution {
     pub tag: Option<String>,
     #[doc = " The tag no longer holds the slot: it is the last that did."]
     pub remembered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub reading: Option<Result<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -67,7 +74,6 @@ pub struct WorldTensionReply {
     #[doc = " (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the"]
     #[doc = " sum from slots no tag ever held), both in contribution units."]
     pub unnamed: bool,
-    #[doc = " Every nonzero contribution, greatest first, ties by slot."]
     pub contributions: Vec<TensionContribution>,
     #[doc = " In the game's list order."]
     pub sources: Vec<TensionSource>,
@@ -132,11 +138,11 @@ impl AtHour for WorldTension {
     const KEY: &'static str = "world-tension";
     const TITLE: &'static str = "World tension";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = WorldTensionParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", values, group];
     type Reply = WorldTensionReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -152,10 +158,26 @@ impl AtHour for WorldTension {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
     }
 
-    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.valid_through(params.group.as_ref(), at.hour)
+    }
+
+    fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
+        if step != 0 { return Vec::new(); }
+        Self::tables(params).into_iter().map(|table| match (&params.countries, table) {
+            (Some(slots), TableId::ThreatCountryAggregates) => Read::these(table, slots.iter().copied().map(u128::from)),
+            _ => Read::all(table),
+        }).collect()
+    }
+
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = WorldTensionReply {
             tension_scale: (cthreat_source::FIXED_POINT_SCALE / cworld_threat::SCALAR_DIVISOR) as u32,
             contribution_scale: cthreat_source::FIXED_POINT_SCALE as u32,
@@ -173,20 +195,41 @@ impl AtHour for WorldTension {
         }
         let named = Named::new(at.holders, frame.hour);
         let mut unnamed = Vec::new();
-        match rows::<tables::ThreatCountryAggregates>(frame) {
-            Err(reason) => reply.warnings.push(format!("Country contributions are not known at this hour: {reason}")),
-            Ok(aggregates) => {
-                unnamed.extend(aggregates.iter().filter(|row| !named.known(row.country_slot) && row.total_raw != 0).map(|row| row.country_slot));
-                reply.unnamed = !unnamed.is_empty();
-                let mut held: Vec<_> = aggregates.iter().filter(|row| row.total_raw != 0).collect();
-                held.sort_unstable_by(|a, b| b.total_raw.cmp(&a.total_raw).then(a.country_slot.cmp(&b.country_slot)));
-                for row in held {
-                    let tag = named.slot(row.country_slot, frame.hour);
-                    reply.contributions.push(TensionContribution {
-                        slot: row.country_slot,
-                        tag: tag.map(|(tag, _)| tag.to_owned()),
-                        remembered: tag.is_some_and(|(_, remembered)| remembered),
-                    });
+        if let Some(slots) = &params.countries {
+            let members = at.context.chosen_slots(params.group.as_ref(), &[], at.holders, frame.hour)?;
+            for &slot in slots {
+                let tag = named.slot(slot, frame.hour);
+                let reading = match &members {
+                    Err(reason) => Err(reason.clone()),
+                    Ok(Some(members)) if !members.contains(&slot) => Err("Not a member of the selected group at this hour.".to_owned()),
+                    _ => match witnessed::<tables::ThreatCountryAggregates>(frame, u128::from(slot)) {
+                        Witness::Row(row) => Ok(row.total_raw.to_string()),
+                        Witness::Absent => Ok("0".to_owned()),
+                        Witness::NotRecorded(reason) => Err(reason),
+                    },
+                };
+                reply.contributions.push(TensionContribution {
+                    slot, tag: tag.map(|(tag, _)| tag.to_owned()), remembered: tag.is_some_and(|(_, remembered)| remembered),
+                    reading: Some(reading),
+                });
+            }
+        } else {
+            match rows::<tables::ThreatCountryAggregates>(frame) {
+                Err(reason) => reply.warnings.push(format!("Country contributions are not known at this hour: {reason}")),
+                Ok(aggregates) => {
+                    unnamed.extend(aggregates.iter().filter(|row| !named.known(row.country_slot) && row.total_raw != 0).map(|row| row.country_slot));
+                    reply.unnamed = !unnamed.is_empty();
+                    let mut held: Vec<_> = aggregates.iter().filter(|row| row.total_raw != 0).collect();
+                    held.sort_unstable_by(|a, b| b.total_raw.cmp(&a.total_raw).then(a.country_slot.cmp(&b.country_slot)));
+                    for row in held {
+                        let tag = named.slot(row.country_slot, frame.hour);
+                        reply.contributions.push(TensionContribution {
+                            reading: None,
+                            slot: row.country_slot,
+                            tag: tag.map(|(tag, _)| tag.to_owned()),
+                            remembered: tag.is_some_and(|(_, remembered)| remembered),
+                        });
+                    }
                 }
             }
         }
@@ -209,7 +252,7 @@ impl AtHour for WorldTension {
                 }
             }
         }
-        let slots: Vec<u32> = reply.contributions.iter().map(|item| item.slot).collect();
+        let slots: Vec<u32> = reply.contributions.iter().filter(|item| item.reading.is_none()).map(|item| item.slot).collect();
         let ordinals: Vec<u32> = reply.sources.iter().map(|item| item.ordinal).collect();
         name_cells(at.live, &Columns::new()?, &slots, &unnamed, &ordinals);
         Ok(reply)

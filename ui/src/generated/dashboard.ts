@@ -3851,7 +3851,7 @@ countries: Array<NukeCountry>,
  */
 missing: string | null, warnings: Array<string>, };
 export type NuclearArsenalParamsAtHour = NuclearArsenalParams & { hour: number };
-export type WorldTensionParams = { branchId: string, };
+export type WorldTensionParams = { branchId: string, countries: Array<number> | null, values: TensionValueMode | null, group: GroupSelection | null, };
 export type TensionContribution = { slot: number,
 /**
  * The tag holding the slot, or the one that last held it; null when none ever did.
@@ -3860,7 +3860,7 @@ tag: string | null,
 /**
  * The tag no longer holds the slot: it is the last that did.
  */
-remembered: boolean, };
+remembered: boolean, reading?: { Ok : string } | { Err : string }, };
 export type TensionSource = { ordinal: number,
 /**
  * The country that caused it, or the tag that last held its slot; null when none is known.
@@ -3897,11 +3897,7 @@ ceilingRaw: string,
  * (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the
  * sum from slots no tag ever held), both in contribution units.
  */
-unnamed: boolean,
-/**
- * Every nonzero contribution, greatest first, ties by slot.
- */
-contributions: Array<TensionContribution>,
+unnamed: boolean, contributions: Array<TensionContribution>,
 /**
  * In the game's list order.
  */
@@ -6693,7 +6689,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "war-timeline": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "wargoals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "wars": { "branchId": "leaf", "viewpoint": "any" },
-  "world-tension": { "branchId": "leaf", "hour": "leaf" },
+  "world-tension": { "branchId": "leaf", "countries": "node", "countries[]": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "values": "leaf" },
   "world-tension-stack": { "branchId": "leaf", "countries": "node", "countries[]": "leaf", "firstHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "includeEvents": "leaf", "includeStack": "leaf", "lastHour": "leaf", "layers": "leaf", "top": "leaf", "values": "leaf", "width": "leaf" },
 };
 /** Each product's dated request fields, with E an exact read's hour and B a range bound's. */

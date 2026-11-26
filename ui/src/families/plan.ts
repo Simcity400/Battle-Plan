@@ -122,6 +122,7 @@ export interface ExactHoverSourceRead {
   readonly readsOf?: string;
   readonly countriesOf?: string;
   readonly countryParamsOf?: Readonly<Record<string, string>>;
+  readonly allowEmptyCountries?: boolean;
   readonly membership?: Readonly<Record<string, readonly (readonly [number, number])[]>> | null;
   readonly validate?: (raw: unknown) => unknown;
 }

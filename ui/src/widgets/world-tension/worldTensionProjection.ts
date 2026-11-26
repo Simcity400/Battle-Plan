@@ -2,6 +2,7 @@ import { auditRow } from '../../families/auditRow.ts';
 import { neutralColour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { liveKey } from '../../charts/live.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
@@ -183,15 +184,28 @@ function buildMarkers(
   return markers;
 }
 
-function buildHoverDetail(
-  readView: BoundedReadView,
-  hour: number,
-): TimeChartModel['hoverDetail'] {
+export function tensionHover(readView: BoundedReadView) {
   const hover = readView.hover<WorldTensionReply>('hover');
-  if (!hover || hover.hour > hour) return null;
+  if (!hover?.data || hover.hour > readView.hour) return null;
   const detail = hover.data;
-  if (!detail) return null;
   const cells = repliedCells(detail).read();
+  const rows = new Map(detail.contributions.map(row => [row.slot, row]));
+  const at = (band: WorldTensionStackReply['bands'][number]) => {
+    const row = rows.get(band.slot);
+    const tag = row?.tag ?? null;
+    const remembered = row?.remembered ?? false;
+    if (!row?.reading) return { tag, remembered, reason: 'This slot was not read at this hour.' };
+    return 'Ok' in row.reading ? { tag, remembered, raw: BigInt(row.reading.Ok) } : { tag, remembered, reason: row.reading.Err };
+  };
+  return { detail, cells, at, hour: hover.hour };
+}
+
+function buildHoverDetail(
+  readView: BoundedReadView, reply: WorldTensionStackReply, options: WorldTensionChartOptions,
+): TimeChartModel['hoverDetail'] {
+  const hover = tensionHover(readView);
+  if (!hover) return null;
+  const { detail, cells } = hover;
   const tensionVal = cells.get(liveKey('world', 'tension'));
   const sumVal = cells.get(liveKey('world', 'sum'));
   const items: TooltipListItem[] = [];
@@ -223,29 +237,30 @@ function buildHoverDetail(
       if (sumText !== null) items.push({ label: 'Uncapped sum', value: sumText, tone: 'muted' });
     }
   }
-  const topContribs = detail.contributions.slice(0, 10);
-  topContribs.forEach((c, idx) => {
-    const key = liveKey(String(c.slot), 'value');
-    const val = cells.get(key);
-    const valRaw = cells.raw?.(key);
-    const info = contributorLabel(readView, c.tag, c.remembered, hover.hour);
-    const flagRes = info.flagChoice ? readView.art({ kind: 'flag', choice: info.flagChoice, size: 'small' }) : null;
-    const valText = val !== undefined
-      ? (valRaw !== undefined
-        ? formatRawPct(valRaw.toString(), detail.contributionScale, false)
-        : Number.isFinite(Number(val) / detail.contributionScale) ? formatRecordedPercent(Number(val) / detail.contributionScale) : null)
-      : null;
-    items.push({
-      label: info.fullName,
-      ...(valText !== null
-        ? { value: valText }
-        : { missingReason: cells.missing(key), tone: 'muted' as const }),
-      ...(flagRes?.status === 'ready' && flagRes.url ? { countryFlag: { flag: flagRes.url } } : {}),
-      ...(idx === 0 ? { divider: true } : {}),
-    });
+  const tension = cells.raw?.(liveKey('world', 'tension'));
+  const sum = cells.raw?.(liveKey('world', 'sum'));
+  const figure = (raw: bigint | undefined, reason?: string) => {
+    const exact = exactBandRational(raw?.toString() ?? null, options.values, tension?.toString(), sum?.toString(), detail.tensionScale, detail.contributionScale);
+    if (exact) return { value: formatEndPct(Number(exact.raw) / Number(exact.denominator), options.values, exact) };
+    const missing = reason ?? (tension === undefined ? detail.missing ?? cells.missing(liveKey('world', 'tension'))
+      : sum === undefined ? cells.missing(liveKey('world', 'sum')) : 'No share is defined for these contributions.');
+    return { missingReason: missing, tone: 'muted' as const };
+  };
+  let shown = 0n;
+  let missing: string | undefined;
+  reply.bands.forEach((band, index) => {
+    const reading = hover.at(band);
+    if (reading.raw !== undefined) shown += reading.raw;
+    else missing ??= reading.reason;
+    const info = contributorLabel(readView, reading.tag, reading.remembered, hover.hour);
+    const flag = info.flagChoice ? readView.art({ kind: 'flag', choice: info.flagChoice, size: 'small' }) : null;
+    items.push({ label: info.fullName, ...figure(reading.raw, reading.reason),
+      ...(flag?.status === 'ready' && flag.url ? { countryFlag: { flag: flag.url } } : {}), ...(index === 0 ? { divider: true } : {}) });
   });
-  if (detail.contributions.length > topContribs.length) {
-    items.push({ label: `${detail.contributions.length - topContribs.length} more countries`, tone: 'muted' });
+  if (reply.other) {
+    const label = reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other';
+    const rest = sum !== undefined && missing === undefined ? sum - shown : undefined;
+    items.push({ label, ...figure(rest, missing ?? (sum === undefined ? cells.missing(liveKey('world', 'sum')) : undefined)) });
   }
   const sameHourSources = detail.sources.filter(src => src.date === hover.hour);
   sameHourSources.forEach((src, idx) => {
@@ -415,7 +430,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       endHour !== null && value !== null && Number.isFinite(value) ? formatEndPct(value, options.values, exact) : (missing ?? END_UNKNOWN);
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
-    const hoverDetail = buildHoverDetail(readView, hour);
+    const hoverDetail = buildHoverDetail(readView, reply, options);
     const auditRows = [
       auditRow('__total__', worldText ?? reply.endMissing ?? WORLD_UNKNOWN),
       ...reply.bands.map((band, i) => auditRow(`slot:${band.slot}`, endText(band.endValue, bandEndExacts[i] ?? null, band.endMissing))),
@@ -433,6 +448,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         ...(hasNegative ? {} : { min: 0 }),
       },
       series: [],
+      drawnKeys: { main: reply.bands.map(band => countryKey(band.slot)) },
       stack: {
         ...(reply.downsampled ? { reduced: true } : {}),
         hours: reply.hours,
@@ -512,7 +528,9 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
           read: {
             shape: 'exact-hover',
             product: 'world-tension',
-            params: { branchId: ctx.branch.id },
+            countriesOf: 'main',
+            allowEmptyCountries: true,
+            params: { branchId: ctx.branch.id, values, group },
             validate: validateWorldTensionHover,
           },
         },

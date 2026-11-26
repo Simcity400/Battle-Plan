@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { DashboardClient } from '../../dashboard/client';
-import { readPlanExact } from '../../families/broker.ts';
+import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { FrozenGate } from '../../families/sources.ts';
@@ -81,6 +81,58 @@ function sampleStack(): WorldTensionStackReply {
 }
 
 describe('world-tension projections', () => {
+  it('hovers only installed contributors and Other in Share mode and withholds pre-membership readings', () => {
+    const at = H1936 + 5;
+    const base = sampleStack();
+    const main = { ...base, bands: [base.bands[0]!], other: { ...base.other!, count: 1 } };
+    const data = {
+      tensionScale: 1000, contributionScale: 100000, contributions: [
+        { slot: 1, tag: 'GER', remembered: false, reading: { Ok: '8000000' } },
+      ], sources: [], warnings: [], missing: null,
+      live: {
+        rows: ['world'], kinds: ['tension', 'sum'].map(id => ({ id, op: 'value', scale: 1 })),
+        groups: [
+          { table: 1, columns: [0], keys: ['0'], values: [50000] },
+          { table: 2, columns: [0], keys: ['0'], values: [20000000] },
+        ],
+        cells: [0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0],
+      },
+    };
+    const view = (detail: unknown, picture: WorldTensionStackReply) => createBoundedReadView({
+      hour: H1941, panels: new Map([['main', picture]]), identity: makeIdentity(),
+      hovers: new Map([['hover', { hour: at, data: detail }]]),
+    });
+    const opts = { extent: [H1936, H1941] as const, surface: '#111111', gaps: [] };
+    const stack = worldTensionProjection.project(view(data, { ...main, bands: [{ ...main.bands[0]!, remembered: true }] }),
+      { ...opts, layers: 1, values: 'share', showMarkers: false });
+    const items = stack.hoverDetail!.items.filter(item => !['World tension', 'Uncapped sum'].includes(item.label));
+    assert.deepEqual(items.map(item => [item.label, item.value]), [['German Reich', '20%'], ['Other (1)', '30%']]);
+    const ctx = {
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: H1936, lastHour: H1941, gaps: [] },
+      countries: { all: false, tags: ['GER'], top: null }, options: { values: 'share' },
+      widget: { countries: { kind: 'tags', tags: ['GER'] } },
+    } as unknown as FamilyPlanContext;
+    const bounds = { width: 800, height: 300, following: false, staticSpan: null };
+    const plan = worldTensionDeclaration.sources(ctx, bounds);
+    assert.deepEqual(hoverAsks(plan, at, name => stack.drawnKeys?.[name])[0]?.request.params,
+      { branchId: '1', values: 'share', group: null, countries: [1], hour: at });
+    assert.deepEqual(hoverAsks(plan, at, () => [])[0]?.request.params,
+      { branchId: '1', values: 'share', group: null, countries: [], hour: at });
+    const reason = 'Not a member of the selected group at this hour.';
+    const lines = worldTensionLinesProjection.project(view({ ...data, contributions: [
+      { slot: 1, tag: 'GER', remembered: false, reading: { Err: reason } },
+    ] }, { ...main, other: null }), opts);
+    const group = { type: 'humans', membership: 'hour' };
+    const groupPlan = worldTensionLinesDeclaration.sources({ ...ctx,
+      widget: { ...ctx.widget, countries: { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } },
+    }, bounds);
+    assert.deepEqual(hoverAsks(groupPlan, at, name => lines.drawnKeys?.[name])[0]?.request.params,
+      { branchId: '1', values: 'recorded', group, countries: [1], hour: at });
+    assert.equal(lines.series[0]?.exact?.value, null);
+    assert.equal(lines.series[0]?.exact?.reason, reason);
+  });
+
   it('projects stepped stack with Other at bottom, leader on top, shortName at small, and clamps future events', () => {
     const reply = sampleStack();
     const readView = createBoundedReadView({
@@ -352,7 +404,7 @@ describe('world-tension projections', () => {
       contributionScale: 100000,
       ceilingRaw: '10000000',
       unnamed: false,
-      contributions: [{ slot: 1, tag: 'GER', remembered: false }],
+      contributions: [{ slot: 1, tag: 'GER', remembered: false, reading: { Ok: '500000' } }],
       sources: [
         { ordinal: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', finalRaw: '500000', dailyRaw: '0', date: hoverHour },
       ],
@@ -474,7 +526,7 @@ describe('world-tension projections', () => {
       contributionScale: 100000,
       ceilingRaw: '10000000',
       unnamed: false,
-      contributions: [{ slot: 1, tag: 'GER', remembered: false }],
+      contributions: [{ slot: 1, tag: 'GER', remembered: false, reading: { Ok: '3500000' } }],
       sources: [],
       missing: null,
       warnings: [],

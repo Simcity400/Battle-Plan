@@ -452,6 +452,12 @@ fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_
     assert_eq!(one.total, [Some(100.0)], "one selected contributor of 20% does not make the world 20%");
     assert_eq!(one.bands.len(), 1);
     assert_eq!(one.bands[0].end_raw.as_deref(), Some("2000000"));
+    let other = one.other.expect("the selected country and the remaining contributions have separate bands");
+    assert_eq!(other.count, 2);
+    assert_eq!(other.end_raw.as_deref(), Some("10500000"));
+    let held = StackInput { aggregates_complete: &[(10, 19)], ..input };
+    let after = compute_stack(&held, 10, 21, 5, TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
+    assert_eq!(after.other.unwrap().count, 1, "Other counts nonzero contributors at the witnessed ranking hour");
 
     let gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(gap.end_missing.as_deref(), Some("World tension withheld"), "the world end states why it is not known");
@@ -693,6 +699,50 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
         let full = compute_stack(&partial, 10, 30, 5, TensionValueMode::Recorded, countries, group, None, 200, tag_of, |_, _| None);
         assert_eq!(full.bands.iter().map(|band| band.slot).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(full.bands[1].end_value, Some(9.0));
+    }
+
+    use crate::products::group_members::GroupsAt;
+    use dashboard_base::products::at_hour::{At, AtHour};
+    use crate::products::groups::{CountryGroupReply, FactionGroup, UnobservedHours};
+    use dashboard_query::series::ranked::{GroupSelection, GroupKind};
+    use replay_data::rows::{TableId, TableRows, ThreatCountryAggregateRow};
+    use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
+
+    let groups_reply = CountryGroupReply {
+        branch_id: "1".into(),
+        humans: Vec::new(),
+        factions: vec![FactionGroup {
+            id: "42".into(),
+            name: Some("Example faction".into()),
+            name_reason: None,
+            names: Vec::new(),
+            recorded_name: "Example faction".into(),
+            first_hour: 10,
+            last_hour: 40,
+            members: members.to_vec(),
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        }],
+        wars: Vec::new(),
+        war_starts: Vec::new(),
+        capitulations: Vec::new(),
+        identity_changes: Vec::new(),
+        country_identities: Vec::new(),
+        unobserved: UnobservedHours::default(),
+        warnings: Vec::new(),
+    };
+    let sel = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
+    let groups = GroupsAt::new(groups_reply.into(), 10);
+    let params = world_tension::WorldTensionParams { branch_id: "1".into(), countries: Some(vec![2]), values: Some(TensionValueMode::Recorded), group: Some(sel) };
+    for (hour, raw, expected) in [(24, Some(300_000), None), (24, None, None), (25, Some(300_000), Some("300000")), (25, None, Some("0"))] {
+        let mut tables = std::array::from_fn(|_| not_selected());
+        let rows = raw.into_iter().map(|total_raw| ThreatCountryAggregateRow { country_slot: 2, total_raw }).collect();
+        tables[TableId::ThreatCountryAggregates.index()] = TableView::Complete(TableRows::ThreatCountryAggregates(rows)).into();
+        let frame = DecodedFrame { branch: 1, hour, tables, metrics: Metrics::default() };
+        let at = At { hour, holders: &holders, owner: None, context: &groups, cancelled: &false.into(), live: &Default::default() };
+        let reply = world_tension::WorldTension::reply(&frame, &params, &at).unwrap();
+        assert_eq!(reply.contributions[0].reading.as_ref().unwrap().as_deref().map_err(String::as_str),
+            expected.ok_or("Not a member of the selected group at this hour."));
     }
 }
 
