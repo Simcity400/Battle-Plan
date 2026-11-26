@@ -893,8 +893,17 @@ fn wire_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) {
         into.write_usize(index);
         field_fingerprint(field, into)
     });
-    into.write_u8(u8::from(walked.is_ok()));
+    match walked {
+        Ok(()) => into.write_u8(0),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => into.write_u8(1),
+        Err(_) => {
+            into.write_u8(2);
+            into.write_u64(UNREUSABLE.fetch_add(1, Ordering::Relaxed));
+        }
+    }
 }
+
+static UNREUSABLE: AtomicU64 = AtomicU64::new(0);
 
 fn native_fingerprint<V: std::fmt::Debug + ?Sized>(value: &V, into: &mut DefaultHasher) {
     struct Writing<'h>(&'h mut DefaultHasher);
