@@ -633,7 +633,7 @@ struct Recorded {
 fn check_damage(recorded: &Recorded, report: &mut Report) {
     use replay_data::rows::CombatLogObserverKind as K;
     let whole = |combat: u64| match (recorded.opened.get(&combat), recorded.ended.get(&combat)) {
-        (Some(&opened), Some(&ended)) => recorded.unrecorded.range(opened..=ended).next().is_none(),
+        (Some(&opened), Some(&ended)) => opened <= ended && recorded.unrecorded.range(opened..=ended).next().is_none(),
         _ => false,
     };
     let mut groups = BTreeMap::new();
@@ -826,9 +826,16 @@ mod tests {
         let mut ambiguous = Report::default();
         check_damage(&reused, &mut ambiguous);
         assert!(ambiguous.differences.iter().all(|line| !line.contains("activity")), "a reused combat handle is not compared: {:?}", ambiguous.differences);
+        reused.reused.clear();
+        reused.opened.insert(9, 30);
+        reused.unrecorded.insert(25);
+        let mut reopened = Report::default();
+        check_damage(&reused, &mut reopened);
+        assert!(reopened.differences.iter().all(|line| !line.contains("activity")), "a handle that ended before its seen opening is not compared: {:?}", reopened.differences);
         recorded = std::mem::take(&mut reused);
+        recorded.opened.insert(9, 10);
+        recorded.unrecorded.clear();
         recorded.unrecorded.insert(15);
-        recorded.reused.clear();
         recorded.exits.insert(5, (5, Some(1_000)));
         recorded.exits.remove(&6);
         let mut overdrawn = Report::default();
