@@ -204,6 +204,16 @@ impl DashboardMaps {
         engine_executable::executable_tables::scope(tables, || view.viewer.host_export(job, ctx, frame));
     }
 
+    pub(crate) fn snapshot_view(&mut self, id: &str, job: crate::host::SnapshotJob) {
+        let Some(view) = self.views.get(id) else {
+            return job.answer(Err("The requested map widget is unavailable".into()));
+        };
+        if !view.viewer.has_map() {
+            return job.answer(Err("Wait for the map widget to finish loading before exporting".into()));
+        }
+        job.answer(view.viewer.build_export_snapshot());
+    }
+
     pub fn new(
         config: Config,
         options: Options,

@@ -55,6 +55,7 @@ use viewer_playback::render;
 mod renderer_host;
 mod screen_count;
 mod suite_input;
+pub mod video_export;
 use viewer_playback::visual_fallback;
 use viewer_playback::worker_pool;
 
@@ -97,6 +98,10 @@ viewer --viewpoint-switch <replay> --hour H --out <directory> --countries <TAG,T
          times switches of the viewing country to the first changed and the settled frame
 viewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>
 viewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>
+viewer --export-video <replay.battleplan> --from-hour <n> --to-hour <n> --out <video.mp4>
+         [--branch <id>] [--fps 30|60] [--speed <h/s>] [--width W] [--height H]
+         [--quality standard|high|max] [--backend auto|media-foundation|ffmpeg] [--ffmpeg <path>]
+         [--skip-gaps] [--date-stamp on|off] [--audio on|off] [--camera <x,z,height>]
 viewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]
 Folders: --game-dir <directory> --user-dir <directory>, default the desktop app's saved folders
 Capture artwork: --visual-mod <mod id> (repeatable), mounted above recorded artwork
@@ -1103,6 +1108,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(result?);
     }
     if let Some(result) = playback_cost::dispatch(&args) {
+        return Ok(result?);
+    }
+    if let Some(result) = video_export::dispatch(&args) {
         return Ok(result?);
     }
     let options = Options::parse(args.into_iter())?;

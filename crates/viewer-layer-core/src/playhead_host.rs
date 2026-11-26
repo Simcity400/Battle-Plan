@@ -184,6 +184,15 @@ pub fn open(units: Units, settings: Settings) -> io::Result<Arc<Entry>> {
     open_clocked(units, settings, 0, Side::Map)
 }
 
+pub fn open_private(units: Units, settings: Settings, side: Side) -> io::Result<Arc<Entry>> {
+    let settings = Settings { entering: Some(if side == Side::Follow { entered } else { entered_map }), ..settings };
+    let hooks = Arc::new(Hooks::default());
+    let stepper_hooks = Arc::clone(&hooks);
+    let hook: playhead::Hook = Box::new(move |step: &Step, lanes: &Lanes<'_>| stepper_hooks.run(step, lanes));
+    let playhead = Playhead::new(Arc::clone(&units.pages), units.timeline, settings, Some(hook))?;
+    Ok(Arc::new(Entry { page_time: Default::default(), playhead, pages: units.pages, kinds: units.kinds, hooks, anchors: Mutex::new((None, None)), capture: Default::default(), maps: Default::default(), rosters: Default::default() }))
+}
+
 pub fn open_clocked(units: Units, settings: Settings, clock: Hour, side: Side) -> io::Result<Arc<Entry>> {
     let key: Key = (side, units.name.clone(), units.timeline.pieces().iter().map(|piece| (piece.run, piece.first, piece.last)).collect(), clock);
     let mut entries = lock(&ENTRIES);

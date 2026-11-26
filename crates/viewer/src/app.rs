@@ -496,6 +496,7 @@ struct Capture {
     index: u32,
     paced: bool,
     export: Option<crate::host::ExportJob>,
+    video: Option<Box<crate::video_export::VideoSession>>,
 }
 
 pub(crate) struct VisualStale {
@@ -815,6 +816,8 @@ pub struct Viewer {
     picker_controls: Option<([f32; 2], Vec<viewer_combat::picker::Placed>)>,
     capture: Option<Capture>,
     capture_note: Option<String>,
+    private_playhead: bool,
+    video_crop: Option<(Option<[u32; 2]>, crate::video_export::CropRect)>,
     failure: Arc<Mutex<Option<String>>>,
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
     profile_frame: u32,
@@ -1138,6 +1141,7 @@ impl Viewer {
             index: 0,
             paced: false,
             export: None,
+            video: None,
         });
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
@@ -1358,6 +1362,8 @@ impl Viewer {
             picker_controls: None,
             capture,
             capture_note: None,
+            private_playhead: false,
+            video_crop: None,
             failure,
             gpu,
             profile_frame: 0,
@@ -1521,10 +1527,115 @@ impl Viewer {
     }
 
     fn frame_day_night(&self, hour: i32, speeds: &Result<GameSpeeds, String>) -> DayNight {
-        let shown = speeds.as_ref().map_or(!self.playing, |speeds| {
-            speeds.shows_cycle(self.playing, self.speed)
+        let playing = self.playing || self.capture.as_ref().is_some_and(|c| c.video.is_some());
+        let shown = speeds.as_ref().map_or(!playing, |speeds| {
+            speeds.shows_cycle(playing, self.speed)
         });
         DayNight::at_hour(hour).with_cycle(self.graphics.day_night && shown)
+    }
+
+    pub(crate) fn configure_video_export(
+        &mut self,
+        session: crate::video_export::VideoSession,
+        speed: f64,
+        source_viewport: Option<[u32; 2]>,
+        crop: crate::video_export::CropRect,
+    ) {
+        self.private_playhead = true;
+        self.speed = speed;
+        self.video_crop = (!crop.is_full()).then_some((source_viewport, crop));
+        let size = session.size;
+        let first_time = session
+            .current()
+            .map_or(0.0, |f| f.presentation_time as f32);
+        let step = 1.0 / session.schedule.fps as f32;
+        self.capture = Some(Capture {
+            path: PathBuf::from("video-export"),
+            remaining: 1,
+            pinned: Some((size, self.camera)),
+            exit: true,
+            time: Some(first_time),
+            step,
+            frames: 1,
+            index: 0,
+            paced: false,
+            export: None,
+            video: Some(Box::new(session)),
+        });
+    }
+
+    pub(crate) fn cancel_video_export(&mut self) {
+        if let Some(mut capture) = self.end_capture()
+            && let Some(mut session) = capture.video.take()
+        {
+            session.finish_cancelled();
+        }
+    }
+
+    pub(crate) fn video_export_idle(&self) -> bool {
+        self.capture.is_none()
+    }
+
+    pub(crate) fn build_export_snapshot(&self) -> Result<crate::video_export::MapExportSnapshot, String> {
+        let document = self
+            .document
+            .as_ref()
+            .ok_or_else(|| "Open a map before exporting".to_owned())?;
+        let replay = document.playback.replay();
+        let branch = self
+            .playhead
+            .map_or_else(|| document.playback.branch(), |head| head.branch);
+        let current_hour = self
+            .playhead
+            .map_or_else(|| document.playback.hour(), |head| head.hour);
+        let timeline = dashboard_query::timeline::resolve(replay, branch)
+            .map_err(|e| format!("Couldn’t read branch timeline: {e}"))?;
+        let (stretches, unheld) = crate::video_export::timeline_to_schedule_inputs(&timeline);
+        let first_hour = stretches.first().map_or(current_hour, |s| s.first);
+        let last_hour = stretches.last().map_or(current_hour, |s| s.last);
+        let (placement, viewport, ui_scale) = if let Some(view) = &self.last_view {
+            (view.camera.placement(), view.viewport, view.ui_scale)
+        } else {
+            let map_size = MapSize::of(&document.map);
+            let fallback_vp = [1920, 1080];
+            let cam = self.camera.map_or_else(
+                || Camera::fit(map_size, document.map_defines, fallback_vp).placement(),
+                |p| p,
+            );
+            (cam, fallback_vp, 1.0)
+        };
+        let perspective = match &self.perspective.country {
+            viewer_foundation::perspective::Country::Tag(tag)
+            | viewer_foundation::perspective::Country::Slot { tag, .. } => Some(tag.clone()),
+            viewer_foundation::perspective::Country::Recorded => None,
+        };
+        let max_texture_dimension = self
+            .gpu
+            .as_ref()
+            .map_or(8192, |(device, _)| device.limits().max_texture_dimension_2d);
+        Ok(crate::video_export::MapExportSnapshot {
+            path: document.source_path.to_string_lossy().into_owned(),
+            revision: self.revision.clone(),
+            branch,
+            current_hour,
+            placement: crate::video_export::SavedPlacement::from(placement),
+            viewport,
+            ui_scale,
+            map_mode: self.shown_mode().token(),
+            perspective,
+            fog: self.perspective.fog,
+            day_night: self.graphics.day_night,
+            allied_plans: self.graphics.show_allied_plans,
+            counter_colors_country: self.counter_view.settings.color_mode
+                == viewer_counter_kit::CounterColorMode::Country,
+            nato_counters: self.counter_view.settings.nato,
+            audio_muted: self.muted,
+            max_texture_dimension,
+            stretches,
+            unheld,
+            first_hour,
+            last_hour,
+        })
     }
 
     pub(crate) fn set_embedded_graphics(
@@ -2994,7 +3105,9 @@ impl Viewer {
     fn refused(&mut self, error: &str) -> Option<bool> {
         let mut capture = self.end_capture()?;
         let message = format!("Capture {} failed: {error}", capture.path.display());
-        if capture.exit {
+        if let Some(mut session) = capture.video.take() {
+            session.finish_render_failure(error.to_owned());
+        } else if capture.exit {
             *self
                 .failure
                 .lock()
@@ -3014,7 +3127,7 @@ impl Viewer {
     #[cfg(test)]
     pub(crate) fn arm_export(&mut self, path: &str) -> crate::host::tests::Answers {
         let (job, answers) = crate::host::tests::job(path);
-        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
+        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job), video: None });
         answers
     }
 
@@ -3080,6 +3193,27 @@ impl Viewer {
                     self.volumes = document.game_audio;
                 }
                 self.shown_whole = false;
+                if let Some((source_viewport, crop)) = self.video_crop.take() {
+                    let map_size = MapSize::of(&document.map);
+                    let base_vp = source_viewport.unwrap_or(self.options.size);
+                    let base = self
+                        .camera
+                        .unwrap_or_else(|| Camera::fit(map_size, document.map_defines, base_vp).placement());
+                    let cropped = crate::video_export::apply_crop_to_placement(
+                        base,
+                        map_size,
+                        document.map_defines,
+                        source_viewport,
+                        crop,
+                    );
+                    self.camera = Some(cropped);
+                    self.camera_manual = true;
+                    if let Some(capture) = self.capture.as_mut()
+                        && let Some((_, pinned_cam)) = capture.pinned.as_mut()
+                    {
+                        *pinned_cam = Some(cropped);
+                    }
+                }
                 drop(self.replace_document(Some(document)));
                 self.scene = Some(scene);
                 self.uploaded = Uploaded::default();
@@ -3169,7 +3303,102 @@ impl Viewer {
             Some(_) => {}
             None => return,
         }
-        let capture = self.end_capture().expect("matched above");
+        let mut capture = self.end_capture().expect("matched above");
+        if let Some(mut session) = capture.video.take() {
+            let scene = self.scene.as_ref().expect("a frame was drawn");
+            let unverified = document
+                .warnings
+                .iter()
+                .filter(|warning| warning.starts_with("UNVERIFIED CONTENT"))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ");
+            let unverified_ref = (!unverified.is_empty()).then_some(unverified.as_str());
+            session.ensure_mixer(document);
+            match session.drain_non_recorded(&state.device, &state.queue) {
+                Ok(true) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    session.finish_render_failure(error);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+            }
+            let audio_frame = if session.audio_enabled {
+                build_audio_frame(
+                    document,
+                    scene,
+                    &camera,
+                    AudioInputs {
+                        volumes: self.volumes,
+                        muted: false,
+                        reset: std::mem::take(&mut self.audio_reset),
+                        music: self
+                            .playhead_map
+                            .as_ref()
+                            .and_then(|side| side.products().music.clone())
+                            .or_else(|| self.music.clone()),
+                        battles: self.battles.clone(),
+                        interface: std::mem::take(&mut self.interface_sounds),
+                        interface_key: &mut self.interface_key,
+                    },
+                )
+            } else {
+                None
+            };
+            let done = match session.consume_recorded(
+                &state.device,
+                &state.queue,
+                scene,
+                document,
+                &camera,
+                audio_frame,
+                unverified_ref,
+            ) {
+                Ok(done) => done,
+                Err(error) => {
+                    session.finish_render_failure(error);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+            };
+            if done {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            if let Some(next) = session.current().cloned()
+                && let video_export::schedule::FrameKind::Recorded {
+                    hour,
+                    fraction,
+                    reset_continuity,
+                    ..
+                } = next.kind
+            {
+                let branch = self
+                    .playhead
+                    .map_or_else(|| document.playback.branch(), |head| head.branch);
+                self.playhead = Some(Playhead {
+                    branch,
+                    hour,
+                    fraction,
+                });
+                if reset_continuity {
+                    self.audio_reset = true;
+                }
+                capture.time = Some(next.presentation_time as f32);
+                capture.remaining = 0;
+                capture.video = Some(session);
+                self.capture = Some(capture);
+                ctx.request_repaint();
+            } else {
+                let _ = session.finish_complete();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            return;
+        }
         let output = if capture.frames > 1 || capture.index > 0 {
             let stem = capture
                 .path
@@ -3915,7 +4144,12 @@ impl Viewer {
         {
             self.playhead_opened = true;
             let at = crate::playhead_host::At { branch: clock.branch, hour: clock.hour, playing: self.playing, speed: self.speed };
-            match viewer_playback::map_open::open_document(document, Some(at)) {
+            let opened = if self.private_playhead {
+                viewer_playback::map_open::open_document_private(document, Some(at))
+            } else {
+                viewer_playback::map_open::open_document(document, Some(at))
+            };
+            match opened {
                 Ok(opening) => self.playhead_opening = Some(opening),
                 Err(error) => self.playhead_refused = Some(refusal(&error)),
             }
@@ -6668,13 +6902,12 @@ impl InterfaceSound {
     }
 }
 
-fn present_audio(
-    audio: &mut Option<viewer_audio::Owner>,
+fn build_audio_frame(
     document: &Document,
     scene: &Scene,
     camera: &Camera,
     inputs: AudioInputs<'_>,
-) {
+) -> Option<viewer_audio::Frame> {
     let AudioInputs {
         volumes,
         muted,
@@ -6684,14 +6917,7 @@ fn present_audio(
         interface,
         interface_key,
     } = inputs;
-    let Some(source) = &document.audio else {
-        if let Some(owner) = audio {
-            owner.release();
-        }
-        return;
-    };
-    let owner = audio.get_or_insert_with(|| viewer_audio::System::shared().owner());
-    owner.claim();
+    let source = document.audio.as_ref()?;
     let mut emitters = scene
         .sound_events
         .iter()
@@ -6740,22 +6966,40 @@ fn present_audio(
     } else {
         [1.0, 0.0, 0.0]
     };
-    owner.frame(
-        source,
-        viewer_audio::Frame {
-            listener: viewer_audio::Listener {
-                position: camera.eye(),
-                right,
-                altitude: camera.height,
-            },
-            emitters,
-            mix: audio_mix(document, volumes, muted),
-            reset,
-            elapsed: 0.0,
-            hour: Some(document.playback.hour()),
-            music,
+    Some(viewer_audio::Frame {
+        listener: viewer_audio::Listener {
+            position: camera.eye(),
+            right,
+            altitude: camera.height,
         },
-    );
+        emitters,
+        mix: audio_mix(document, volumes, muted),
+        reset,
+        elapsed: 0.0,
+        hour: Some(document.playback.hour()),
+        music,
+    })
+}
+
+fn present_audio(
+    audio: &mut Option<viewer_audio::Owner>,
+    document: &Document,
+    scene: &Scene,
+    camera: &Camera,
+    inputs: AudioInputs<'_>,
+) {
+    let Some(source) = &document.audio else {
+        if let Some(owner) = audio {
+            owner.release();
+        }
+        return;
+    };
+    let Some(frame) = build_audio_frame(document, scene, camera, inputs) else {
+        return;
+    };
+    let owner = audio.get_or_insert_with(|| viewer_audio::System::shared().owner());
+    owner.claim();
+    owner.frame(source, frame);
 }
 
 impl Drop for Viewer {
@@ -7394,6 +7638,7 @@ pub(crate) mod tests {
             index: 0,
             paced: false,
             export: None,
+            video: None,
         };
         assert!(!builds_warnings(false, None));
         for remaining in [0, 1, 3_321] {
@@ -8561,7 +8806,7 @@ pub(crate) mod tests {
 
     fn export(path: &str) -> (Capture, crate::host::tests::Answers) {
         let (job, answers) = crate::host::tests::job(path);
-        (Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) }, answers)
+        (Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job), video: None }, answers)
     }
 
     use crate::host::tests::taken;
@@ -8690,7 +8935,7 @@ pub(crate) mod tests {
         assert!(!viewer.embedded.as_ref().unwrap().visible(), "the map’s window reports itself hidden, as it does once BattlePlan hides its own");
         let exit: &'static replay_settings::exit::Exit = Box::leak(Box::new(replay_settings::exit::Exit::new()));
         let (job, answers) = crate::host::tests::job_under(exit, "map.png");
-        viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
+        viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job), video: None });
         let mut frame = eframe::Frame::_new_kittest();
         let mut output = ctx.run_ui(Default::default(), |ui| eframe::App::logic(&mut viewer, ui.ctx(), &mut frame));
         output.textures_delta.clear();
@@ -8702,7 +8947,7 @@ pub(crate) mod tests {
         assert_eq!(taken(&answers).len(), 1, "the job is answered");
         assert!(exit.empty_within(std::time::Duration::ZERO), "and lets the exit go once it is");
         let (job, answers) = crate::host::tests::job("map.png");
-        viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job) });
+        viewer.capture = Some(Capture { path: "map.png".into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, export: Some(job), video: None });
         let mut output = ctx.run_ui(Default::default(), |ui| {
             eframe::App::logic(&mut viewer, ui.ctx(), &mut frame);
             eframe::App::ui(&mut viewer, ui, &mut frame);

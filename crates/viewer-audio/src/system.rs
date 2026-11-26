@@ -437,7 +437,7 @@ enum Payload {
 
 type Request = (u64, Arc<Source>, Load);
 
-fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
+pub(crate) fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
     match load {
         Load::Sound(sound) => source
             .content
@@ -464,19 +464,19 @@ fn read_bytes(source: &Source, load: Load) -> Result<content_reader_layers::cont
         .map_err(|error| format!("{path}: {error}"))
 }
 
-fn decode(source: &Source, load: Load) -> Result<Arc<Samples>, String> {
+pub(crate) fn decode(source: &Source, load: Load) -> Result<Arc<Samples>, String> {
     let path = sample_path(source, load)?;
     let pcm = content_reader_sound::wav::decode(&read_bytes(source, load)?)
         .map_err(|why| format!("{path}: {why}"))?;
     Ok(Arc::new(Samples::from_pcm(&pcm)))
 }
 
-fn open_track(source: &Source, load: Load) -> Result<content_reader_sound::ogg::Stream, String> {
+pub(crate) fn open_track(source: &Source, load: Load) -> Result<content_reader_sound::ogg::Stream, String> {
     let path = sample_path(source, load)?;
     content_reader_sound::ogg::open(read_bytes(source, load)?).map_err(|why| format!("{path}: {why}"))
 }
 
-fn guarded<T>(
+pub(crate) fn guarded<T>(
     source: &Source,
     load: Load,
     decode: impl FnOnce(&Source, Load) -> Result<T, String>,

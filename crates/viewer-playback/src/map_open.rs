@@ -4,7 +4,7 @@ use viewer_layers_counters::{air_mission_counters, base_counters, counters, gun_
 use viewer_layers_forces::{aircraft, convoys, intel_icons, orders, ships, units as ground_units};
 use viewer_layers_infrastructure::{buildings, intel, radar, rails, snow, sounds, strikes, trains};
 use viewer_layers_political::{labels, map_text, mode_fills, names, naval, occupation_marks, political, resource_icons};
-use viewer_layer_core::{layers::{Layer, SightInputs, View}, playhead_host::{At, PlaybackProducts, combat::Asking, keep_registered, open, settings, units, views}};
+use viewer_layer_core::{layers::{Layer, SightInputs, View}, playhead_host::{At, PlaybackProducts, Side, combat::Asking, keep_registered, open, open_private, settings, units, views}};
 use crate::{document::Content, overlay::{Ask, Made, Overlay}};
 use replay_data::Hour;
 use std::{io, sync::Arc};
@@ -46,7 +46,11 @@ impl Asking for Combat {
 }
 
 pub fn for_document_at(document: &crate::document::Document, at: Option<At>) -> io::Result<MapSide> {
-    ForMap::of(document, at).made()
+    ForMap::of(document, at).made(false)
+}
+
+pub fn for_document_private(document: &crate::document::Document, at: Option<At>) -> io::Result<MapSide> {
+    ForMap::of(document, at).made(true)
 }
 
 pub struct ForMap {
@@ -70,11 +74,15 @@ impl ForMap {
         }
     }
 
-    fn made(self) -> io::Result<MapSide> {
+    fn made(self, private: bool) -> io::Result<MapSide> {
         let Self { content: document, replay, branch: recording, hour, at, weather } = self;
         let units = units::of(&replay, recording)?;
         let (engaged, branch) = (crate::engaged_index::lanes::shared(&replay, &units, recording, &viewer_foundation::perspective::Country::Recorded)?, recording);
-        let entry = open(units, settings())?;
+        let entry = if private {
+            open_private(units, settings(), Side::Map)?
+        } else {
+            open(units, settings())?
+        };
         entry.set_capture(replay.capture_mode);
         let content = Arc::new(political::Content::new(Arc::clone(&document.map), Arc::clone(&document.border_meshes)));
         let place_in = Arc::clone(&document);
@@ -151,5 +159,10 @@ impl ForMap {
 
 pub fn open_document(document: &crate::document::Document, at: Option<At>) -> io::Result<Opening> {
     let made = ForMap::of(document, at);
-    Opening::spawn(move || made.made())
+    Opening::spawn(move || made.made(false))
+}
+
+pub fn open_document_private(document: &crate::document::Document, at: Option<At>) -> io::Result<Opening> {
+    let made = ForMap::of(document, at);
+    Opening::spawn(move || made.made(true))
 }

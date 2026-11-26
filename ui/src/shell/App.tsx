@@ -51,6 +51,18 @@ import type { RestartGuard } from '../update/UpdateControl';
 import { leavePrompt, leavingTitle, RESTARTING, unsavedDetail } from './unsaved';
 import { draftSection, registerDraft, retryFailed, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
 import { closeGuard, type CloseGuard, type CloseGuardFailure, type LeavingFor } from './closeGuard.ts';
+import ExportProgressDock from '../export/ExportProgressDock';
+import ExportVideoDialog from '../export/ExportVideoDialog';
+import { ExportVideoContext, type MapVideoExportTarget } from '../export/ExportVideoContext';
+import {
+  cancelVideoExport,
+  getVideoExportState,
+  IDLE_EXPORT_JOB,
+  onVideoExportProgress,
+  startMapVideoExport,
+  type ExportJobSnapshot,
+  type MapVideoRequest,
+} from '../export/videoExportApi';
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
@@ -186,9 +198,9 @@ function LeaveConfirm({ prompt, closing, confirming, failures, onCancel, onSave,
       <p id="leave-confirm-detail">{prompt.detail}</p>
       {shownFailures}
       <div className="menu-confirm-actions">
-        <button ref={cancel} type="button" className="button small quiet" onClick={onCancel}>Cancel</button>
+        <button ref={cancel} type="button" className="button small quiet" onClick={onCancel}>{prompt.keep ?? 'Cancel'}</button>
         <button type="button" className="button small is-danger" disabled={confirming} onClick={onDiscard}>{confirming ? RESTARTING : prompt.discard}</button>
-        <button type="button" className="button small primary" disabled={confirming} onClick={onSave}>Save…</button>
+        {!prompt.hideSave && <button type="button" className="button small primary" disabled={confirming} onClick={onSave}>Save…</button>}
       </div>
     </div>}
   </dialog>;
@@ -258,11 +270,32 @@ export default function App() {
   const restartConfirmed = useRef(false);
   const guard = useRef<CloseGuard | null>(null);
   const layoutReader = useRef<(() => readonly PageId[]) | null>(null);
+  const [exportJob, setExportJob] = useState<ExportJobSnapshot>(IDLE_EXPORT_JOB);
+  const [videoExportTarget, setVideoExportTarget] = useState<MapVideoExportTarget | null>(null);
+  const lastExportRef = useRef<{ request: MapVideoRequest; destination: string; label: string } | null>(null);
+  const exportRunning = exportJob.state === 'running';
+  const exportRunningRef = useRef(false);
+  exportRunningRef.current = exportRunning;
+  useEffect(() => {
+    if (!desktopAvailable) return;
+    let unlisten: (() => void) | null = null;
+    void getVideoExportState().then(setExportJob, () => undefined);
+    void onVideoExportProgress(setExportJob).then(stop => { unlisten = stop; }, () => undefined);
+    return () => { unlisten?.(); };
+  }, []);
+  const openMapVideoExport = useCallback((target: MapVideoExportTarget) => {
+    setVideoExportTarget(target);
+  }, []);
+  const exportContextValue = useMemo(
+    () => ({ openMapVideoExport, job: exportJob }),
+    [openMapVideoExport, exportJob],
+  );
   const unsavedNow = useCallback(() => pendingUnsaved(), []);
   useEffect(() => {
     const layouts = registerDraft(() => (layoutReader.current?.().length ?? 0) > 0);
     const theme = registerDraft(() => themeUnsaved(themeRef.current));
-    return () => { layouts(); theme(); };
+    const videoExport = registerDraft(() => exportRunningRef.current);
+    return () => { layouts(); theme(); videoExport(); };
   }, []);
   const writes = useSyncExternalStore(watchWrites, writesState);
   useEffect(() => {
@@ -400,7 +433,8 @@ export default function App() {
   }
 
   const themeChanged = themeUnsaved(themeEditing);
-  const unsavedWork = layoutsUnsaved || themeChanged || writes !== null;
+  const unsavedWork = layoutsUnsaved || themeChanged || writes !== null || exportRunning;
+  const exportOnlyUnsaved = exportRunning && !layoutsUnsaved && !themeChanged && writes === null;
   const leavingNow = useRef(leaving);
   leavingNow.current = leaving;
   const editingToLeave = useRef<typeof leaving>(null);
@@ -419,8 +453,13 @@ export default function App() {
     window.addEventListener('beforeunload', unloading);
     return () => window.removeEventListener('beforeunload', unloading);
   }, [unsavedWork, unsavedNow]);
-  const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeChanged ? themeEditing!.draft.name.trim() : null, writes);
-  const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
+  const unsavedNames = unsavedDetail(
+    unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id),
+    themeChanged ? themeEditing!.draft.name.trim() : null,
+    writes,
+    exportRunning,
+  );
+  const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames, exportOnlyUnsaved) : null;
   const leaveShown = !!prompt || closing !== null;
   useEffect(() => {
     const created = closeGuard({ requests: closeRequests, answer: answerCloseQuestion, leave: leaveApp }, {
@@ -445,6 +484,9 @@ export default function App() {
     if (back instanceof HTMLElement && back.isConnected) requestAnimationFrame(() => back.focus({ preventScroll: true }));
   };
   const discardAndLeave = () => {
+    if (exportRunningRef.current) {
+      void cancelVideoExport().catch(() => undefined);
+    }
     if (leaving?.kind !== 'update' || !leaving.restart) { guard.current?.leave(); return; }
     const { restart } = leaving;
     restartConfirmed.current = true;
@@ -503,6 +545,7 @@ export default function App() {
   const sectionLabel = settingsSections.find(item => item.id === settingsSection)?.label;
 
   return (
+    <ExportVideoContext.Provider value={exportContextValue}>
     <div className={`app-shell${sidebar.resizing ? ' is-resizing' : ''}`} data-sidebar={sidebar.peek ? 'peek' : sidebar.hidden ? 'hidden' : 'shown'} data-tab={tab}
       data-native-map={desktopAvailable && mapSurface || undefined}
       style={{ '--sidebar-width': sidebar.hidden ? '0px' : `${sidebar.width}px`, '--sidebar-peek-width': `${sidebar.width}px` } as CSSProperties}>
@@ -600,7 +643,29 @@ export default function App() {
       <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />
       <LeaveConfirm prompt={prompt} closing={closing} confirming={!!leaving?.confirmed} failures={leaveShown ? guardFailures : []}
         onCancel={stayHere} onSave={saveBeforeClose} onDiscard={discardAndLeave} />
+      <ExportVideoDialog
+        target={videoExportTarget}
+        busyExport={exportRunning}
+        onClose={() => setVideoExportTarget(null)}
+        onStarted={(request, destination, label) => {
+          lastExportRef.current = { request, destination, label };
+        }}
+      />
+      <ExportProgressDock
+        job={exportJob}
+        onRetry={
+          lastExportRef.current
+            ? () => {
+                const last = lastExportRef.current;
+                if (last) {
+                  void startMapVideoExport(last.request, last.destination, last.label);
+                }
+              }
+            : undefined
+        }
+      />
     </div>
+    </ExportVideoContext.Provider>
   );
 }
 

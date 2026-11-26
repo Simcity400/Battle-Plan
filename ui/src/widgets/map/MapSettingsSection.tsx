@@ -8,6 +8,7 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { actionFailure, type PlainFailure } from '../../dashboard/queryError.ts';
 import { desktopAvailable, errorMessage, exportMap } from '../../shell/api';
 import type { MapOptions, SavedExport } from '../../shell/api';
+import { useExportVideo } from '../../export/ExportVideoContext';
 import '../../components/mapControls.css';
 
 export function MapSettingsSection({ widget, reference, runtime, mapOptions, onMapOptions }: {
@@ -20,6 +21,7 @@ export function MapSettingsSection({ widget, reference, runtime, mapOptions, onM
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<(PlainFailure & { retry?: () => void }) | null>(null);
   const [saved, setSaved] = useState<SavedExport | null>(null);
+  const { openMapVideoExport } = useExportVideo();
   const metadata = reference?.source.metadata ?? null;
   const branch = reference?.branch ?? null;
 
@@ -43,6 +45,11 @@ export function MapSettingsSection({ widget, reference, runtime, mapOptions, onM
       <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy}
         data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available in the desktop app'} onClick={() => void exportImage()}>
         <Icon name="save" />Export map image
+      </button>
+      <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy}
+        data-tooltip={desktopAvailable ? 'Export a constant-frame-rate MP4 video of this map widget' : 'Available in the desktop app'}
+        onClick={() => openMapVideoExport({ viewId: widget.id, label: widget.title || 'Map widget' })}>
+        <Icon name="play" />Export map video…
       </button>
       {saved && <p className="map-menu-note" role="status" data-detail={saved.warning ?? undefined}>
         {saved.warning ? `${saved.message}, but Windows didn’t confirm it reached the disk.` : saved.message}
