@@ -304,6 +304,7 @@ impl OccurrenceReply for MarketLedgerTailReply {
 #[derive(Clone, Debug)]
 struct Child {
     key: u128,
+    occurrence: Option<u64>,
     hour: i32,
     observed: i32,
     kind: MarketContractEventKind,
@@ -315,11 +316,11 @@ struct Child {
 
 impl Child {
     fn rank(&self) -> Rank {
-        (self.hour, self.key)
+        (self.hour, self.occurrence, self.key)
     }
 }
 
-type Rank = (i32, u128);
+type Rank = (i32, Option<u64>, u128);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Delivered {
@@ -518,13 +519,6 @@ enum Line {
 struct Opening {
     expanded: BTreeSet<u32>,
     full: BTreeSet<u32>,
-    from: Option<i32>,
-    to: Option<i32>,
-}
-
-struct Lines {
-    index: Index<Line>,
-    read: HashMap<u32, Box<[i32]>>,
 }
 
 type TermsKey = (i32, u32, u64, u8);
@@ -534,8 +528,8 @@ struct Ledger {
     by_key: HashMap<u128, u32>,
     unread: Unread,
     untold: Vec<(i32, [u32; 2])>,
-    closed: Arc<Lines>,
-    opened: Mutex<Option<(Opening, Arc<Lines>)>>,
+    closed: Arc<Index<Line>>,
+    opened: Mutex<Option<(Opening, Arc<Index<Line>>)>>,
     terms: Mutex<HashMap<TermsKey, Option<Arc<Terms>>>>,
 }
 
@@ -546,10 +540,10 @@ impl Ledger {
         };
         let expanded = find(&params.expanded);
         let full = find(&params.full).intersection(&expanded).copied().collect();
-        Opening { expanded, full, from: params.from, to: params.to }
+        Opening { expanded, full }
     }
 
-    fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Lines>> {
+    fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
         if opening.expanded.is_empty() {
             return Ok(Arc::clone(&self.closed));
         }
@@ -575,10 +569,8 @@ fn following(states: &[(i32, u8)], from: i32, hidden: Option<i32>) -> Box<[(i32,
     out.into_boxed_slice()
 }
 
-fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Lines> {
+fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Index<Line>> {
     let opened: usize = opening.expanded.iter().map(|&at| contracts[at as usize].contract.children.len() + 1).sum();
-    let bounds = opening.from.unwrap_or(i32::MIN)..=opening.to.unwrap_or(i32::MAX);
-    let mut read = HashMap::with_capacity(opening.expanded.len());
     let mut entries = Vec::with_capacity(contracts.len() + opened);
     let mut push = |payload: Line, placed: &Placed, kind: u16, observed: i32, states: Box<[(i32, u8)]>| {
         entries.push(Occurrence {
@@ -602,8 +594,7 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
         }
         let children = &placed.contract.children;
         let full = opening.full.contains(&at);
-        let within: Vec<u32> = (0..children.len() as u32).filter(|&place| bounds.contains(&children[place as usize].hour)).collect();
-        let mut ranked = within.clone();
+        let mut ranked: Vec<u32> = (0..children.len() as u32).collect();
         ranked.sort_unstable_by_key(|&place| Reverse(children[place as usize].rank()));
         let mut newer: BinaryHeap<i32> = BinaryHeap::with_capacity(CHILDREN_SHOWN + 1);
         for place in ranked {
@@ -620,12 +611,11 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
             }
             push(Line::Event(at, place), placed, EVENT, child.observed, following(&placed.states, child.observed, hidden));
         }
-        if let Some(first) = within.get(CHILDREN_SHOWN).map(|&place| &children[place as usize]) {
+        if let Some(first) = children.get(CHILDREN_SHOWN) {
             push(Line::More(at), placed, MORE, first.observed, following(&placed.states, first.observed, None));
         }
-        read.insert(at, within.iter().map(|&place| children[place as usize].observed).collect());
     }
-    Ok(Lines { index: Index::new(entries, gaps, &LIVE)?, read })
+    Index::new(entries, gaps, &LIVE)
 }
 
 #[derive(Default)]
@@ -728,7 +718,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
     let mut made: Vec<(Contract, u32, u128)> = Vec::new();
     let mut open: Opened = HashMap::new();
     let mut incarnations: HashMap<(Option<i64>, u64, bool), u32> = HashMap::new();
-    let mut removed: HashMap<(Option<i64>, u64), (usize, u32, u64)> = HashMap::new();
+    let mut removed: HashMap<(Option<i64>, u64, u32), Vec<(u64, usize)>> = HashMap::new();
     let run_of = |hour: i32| query.timeline.at(hour).map(|stretch| stretch.run);
     for (observed, key, kind, hour, cells) in rows {
         let occurrence = number(&cells, columns.occurrence).map(|occurrence| occurrence as u64);
@@ -740,7 +730,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         let buyer = number(&cells, columns.receiver);
         let variant = number(&cells, columns.variant).map(|variant| variant as u64).filter(|&variant| variant != 0);
         let Some(agreement) = number(&cells, columns.agreement).map(|agreement| agreement as u64) else {
-            let child = Child { key, hour, observed, kind: MarketContractEventKind::Delivery, variant, amount: None, total: None, reason: Some("The contract of this event was not recorded") };
+            let child = Child { key, occurrence, hour, observed, kind: MarketContractEventKind::Delivery, variant, amount: None, total: None, reason: Some("The contract of this event was not recorded") };
             made.push((Contract { seller, buyer, buyer_later: None, agreement: None, request: false, requested: None, started: None, ended: None, children: vec![child] }, 0, key));
             continue;
         };
@@ -771,14 +761,18 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
                 };
                 made[at].0.ended = Some((hour, observed));
                 if let (false, Some(run), Some(occurrence)) = (request, run_of(observed), occurrence) {
-                    removed.insert((seller, agreement), (at, run, occurrence));
+                    let ended = removed.entry((seller, agreement, run)).or_default();
+                    ended.insert(ended.partition_point(|&(ending, _)| ending < occurrence), (occurrence, at));
                 }
                 (at, if request { MarketContractEventKind::RequestEnded } else { MarketContractEventKind::ContractEnded })
             }
             _ => {
-                let ending = removed.get(&(seller, agreement)).filter(|&&(_, run, ending)| run_of(observed) == Some(run) && occurrence.is_some_and(|occurrence| occurrence <= ending));
+                let ending = run_of(observed)
+                    .zip(occurrence)
+                    .and_then(|(run, occurrence)| removed.get(&(seller, agreement, run)).and_then(|ended| ended.get(ended.partition_point(|&(ending, _)| ending < occurrence))))
+                    .map(|&(_, at)| at);
                 let at = match (ending, still_open(&open, &made, (seller, agreement, false))) {
-                    (Some(&(at, ..)), _) | (None, Some(at)) => at,
+                    (Some(at), _) | (None, Some(at)) => at,
                     (None, None) => begin(&mut made, &mut open, &mut incarnations, fresh(false), key),
                 };
                 let child_kind = match kind {
@@ -800,7 +794,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
         {
             contract.buyer_later = Some((raw, observed));
         }
-        contract.children.push(Child { key, hour, observed, kind: child_kind, variant, amount, total, reason });
+        contract.children.push(Child { key, occurrence, hour, observed, kind: child_kind, variant, amount, total, reason });
     }
     untold.sort_unstable();
     let untold: Vec<(i32, [u32; 2])> = untold
@@ -982,7 +976,7 @@ const UNNAMED: &str = "The recording does not name this design at the ledger's r
 
 struct Prepared {
     ledger: Arc<Ledger>,
-    lines: Arc<Lines>,
+    index: Arc<Index<Line>>,
     selection: Option<Selection>,
     context: Arc<names::Context>,
     namings: Arc<BTreeMap<u32, Arc<names::Naming>>>,
@@ -1006,8 +1000,8 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, 
     let ledger = ledger(source, query, branch, cancelled)?;
     let opening = ledger.opening(params);
     let full = opening.full.clone();
-    let lines = ledger.index(opening, cancelled)?;
-    Ok(Prepared { ledger, lines, selection, context: Arc::new(context), namings: Arc::new(namings), full })
+    let index = ledger.index(opening, cancelled)?;
+    Ok(Prepared { ledger, index, selection, context: Arc::new(context), namings: Arc::new(namings), full })
 }
 
 type NameOf<'a> = &'a dyn Fn(i32, u64) -> (Option<String>, Option<String>, Option<String>);
@@ -1093,7 +1087,7 @@ fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, term
 
 fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<MarketLedgerTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let (ledger, index) = (&prepared.ledger, &prepared.lines.index);
+    let (ledger, index) = (&prepared.ledger, &prepared.index);
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let states: Vec<u8> = match &params.statuses {
         Some(statuses) => statuses.iter().map(|status| status.code()).collect(),
@@ -1206,7 +1200,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             }
             Line::More(at) => {
                 let placed = &ledger.contracts[at as usize];
-                let total = prepared.lines.read.get(&at).map_or(0, |read| read.partition_point(|&observed| observed <= hour));
+                let total = placed.contract.read_by(hour);
                 let hidden = if prepared.full.contains(&at) { 0 } else { total.saturating_sub(CHILDREN_SHOWN) };
                 MarketLedgerLine::More(MarketEventsMore { key: format!("more:{}", placed.key), hour: placed.date, contract: placed.key.to_string(), total: total.to_string(), hidden: hidden.to_string() })
             }

@@ -223,6 +223,12 @@ fn a_removal_ends_only_the_kind_it_records_and_an_isolated_one_makes_no_contract
                     MarketEventRow { agreement: 0x14, ..event(8, hour, 11, MarketEventRow::default()) },
                     MarketEventRow { agreement: 0x14, ..event(9, hour, 12, MarketEventRow { flags: 1, ..Default::default() }) },
                     MarketEventRow { agreement: 0x14, occurrence: 9, ..event(10, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }) },
+                    MarketEventRow { agreement: 0x15, occurrence: 11, ..event(11, hour, 11, MarketEventRow::default()) },
+                    MarketEventRow { agreement: 0x15, occurrence: 20, ..event(12, hour, 12, MarketEventRow { flags: 1, ..Default::default() }) },
+                    MarketEventRow { agreement: 0x15, occurrence: 30, ..event(13, hour, 11, MarketEventRow::default()) },
+                    MarketEventRow { agreement: 0x15, occurrence: 40, ..event(14, hour, 12, MarketEventRow { flags: 1, ..Default::default() }) },
+                    MarketEventRow { agreement: 0x15, occurrence: 20, ..event(15, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }) },
+                    MarketEventRow { agreement: 0x15, occurrence: 40, ..event(16, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }) },
                 ],
                 _ => Vec::new(),
             };
@@ -261,10 +267,11 @@ fn a_removal_ends_only_the_kind_it_records_and_an_isolated_one_makes_no_contract
     );
     let refused = load(&src, &ask(110));
     let terminal: Vec<_> = contracts(&refused).into_iter().filter(|row| row.hour == 109).map(|row| (row.status, row.live, row.events_total.clone(), row.delivery_missing.clone())).collect();
+    let ended = (MarketContractStatus::Ended, false, "3".to_owned(), Some("Delivery amount unavailable: purchase manifest not acquired before removal".to_owned()));
     assert_eq!(
         terminal,
-        [(MarketContractStatus::Ended, false, "3".into(), Some("Delivery amount unavailable: purchase manifest not acquired before removal".into()))],
-        "a refusal published after its removal, from the removal's own occurrence, belongs to the ended contract and starts no other"
+        [ended.clone(), ended.clone(), ended],
+        "a refusal published after its removal belongs to the first contract ended at or after its own occurrence, and starts no other"
     );
 }
 
@@ -281,7 +288,8 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
                     101 => vec![
                         MarketEventRow { agreement: 0x13, ..event(4, hour, 21, MarketEventRow { amount_raw: 2_000, ..Default::default() }) },
                         MarketEventRow { agreement: 0x13, ..delivered(5, hour, 6, 3_000, 9_000) },
-                        MarketEventRow { agreement: 0x13, ..event(8, hour, 20, MarketEventRow { variant: 7, amount_raw: 4_000, ..Default::default() }) },
+                        MarketEventRow { agreement: 0x13, occurrence: 30, ..event(8, hour, 20, MarketEventRow { variant: 7, amount_raw: 4_000, ..Default::default() }) },
+                        MarketEventRow { agreement: 0x13, occurrence: 29, ..delivered(10, hour, 7, 6_000, 10_000) },
                     ],
                     102 => vec![event(2, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }), event(3, hour, 21, MarketEventRow { amount_raw: 5_000, ..Default::default() })],
                     107 => vec![event(6, 104, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
@@ -327,8 +335,8 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
     );
     assert_eq!(
         (unseen.items[1].delivered_raw.as_deref(), unseen.items[1].delivery_unavailable.as_deref()),
-        (Some("4000"), Some(START_UNSEEN)),
-        "a delivery with no cumulative total, seen after an unrecorded start, is at least its own amount"
+        (Some("14000"), None),
+        "a certificate published after an increment in the same hour, from an earlier occurrence, does not cover it"
     );
     let inside = witnessed(&load(&src, &ask(105)));
     assert_eq!(inside.status, MarketContractStatus::NotRecorded, "an unread stretch with no recorded end leaves the status unknown");
@@ -413,12 +421,14 @@ fn an_opened_contract_pages_its_events_after_it_and_lists_the_newest_until_asked
     assert!(matches!(every.rows.last(), Some(MarketLedgerLine::More(more)) if more.hidden == "0"));
     let page = load(&src, &MarketLedgerTailParams { offset: Some("35".into()), limit: 4, ..all });
     assert_eq!(events(&page).iter().map(|ev| ev.hour).collect::<Vec<_>>(), [106, 105, 104, 103], "an opened contract's events page like any other line");
-    let bounded = load(&src, &MarketLedgerTailParams { to: Some(135), ..opened.clone() });
+    let bounded = load(&src, &MarketLedgerTailParams { to: Some(105), ..opened.clone() });
     assert_eq!(
-        (events(&bounded).first().map(|ev| ev.hour), events(&bounded).last().map(|ev| ev.hour), bounded.rows.last()),
-        (Some(135), Some(104), Some(&MarketLedgerLine::More(MarketEventsMore { key: format!("more:{key}"), hour: 100, contract: key.clone(), total: "37".into(), hidden: "5".into() }))),
-        "the asked range bounds each event by its own hour before the newest are listed and the rest counted"
+        (bounded.total.as_str(), events(&bounded).first().map(|ev| ev.hour)),
+        ("34", Some(140)),
+        "the asked range picks contracts by their date, and an opened one lists its events whatever their own hour"
     );
+    let later = load(&src, &MarketLedgerTailParams { from: Some(105), ..opened.clone() });
+    assert_eq!((later.total.as_str(), later.rows.len()), ("0", 0), "a contract outside the range is not listed, and no event of it is listed alone");
     let early = load(&src, &MarketLedgerTailParams { hour: Some(120), ..opened });
     assert_eq!((early.total.as_str(), early.rows.iter().any(|line| matches!(line, MarketLedgerLine::More(_)))), ("22", false), "the cap counts only the events read by the hour asked");
     stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "expanded": [key] }), &[120, 131, 132, 133, 140, 141, 136]);
