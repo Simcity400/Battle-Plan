@@ -50,7 +50,7 @@ fn reply() -> PowerSpendingReply {
             SpendCategory { id: "notIdentified".into(), name: "Not identified".into(), identified: false },
         ],
         payments: vec![payment(0, 5, Some(64_000_000)), payment(2, 6, Some(35_200_000)), payment(3, 7, Some(6_300_000)), payment(0, 40, Some(1))],
-        days: vec![SpendDay { item: 1, day: Some(0), read: 10, days: 1, charge_raw: Some("207100000".into()), payments: 1, unknown: 0, uncovered: 0, realized_raw: None, credits: 0 }],
+        days: vec![SpendDay { item: 1, day: Some(0), read: 10, days: 1, charge_raw: Some("207100000".into()), payments: 1, unknown: 0, uncovered: 0, realized_raw: None, credits: 0, unknown_credits: 0 }],
         gains: vec![
             SpendGain { hour: None, read: 9, gained_raw: Some("530600000".into()), capped_raw: Some("100000".into()), days: 1, unknown_days: 0, unmatched: 0 },
             SpendGain { hour: None, read: 30, gained_raw: Some("1".into()), capped_raw: Some("0".into()), days: 1, unknown_days: 0, unmatched: 0 },
@@ -186,11 +186,20 @@ fn decisions_group_by_their_category_with_each_decision_beneath() {
 #[test]
 fn a_credit_is_named_from_the_day_it_was_read() {
     let mut held = reply();
-    held.days.push(SpendDay { item: 1, day: Some(48), read: 50, days: 1, charge_raw: Some("0".into()), payments: 1, unknown: 0, uncovered: 0, realized_raw: None, credits: 1 });
+    held.items[1].action = "Daily cost".into();
+    held.days.push(SpendDay { item: 1, day: Some(48), read: 50, days: 1, charge_raw: Some("0".into()), payments: 1, unknown: 0, uncovered: 0, realized_raw: None, credits: 1, unknown_credits: 0 });
+    held.days.push(SpendDay { item: 1, day: None, read: 60, days: 0, charge_raw: Some("0".into()), payments: 0, unknown: 0, uncovered: 0, realized_raw: None, credits: 0, unknown_credits: 1 });
     let index = index(&held, &unread(), &[]);
     assert!(index.at(49).warnings.is_empty());
     assert_eq!(index.at(49).through, 49);
     assert_eq!(index.at(50).warnings.len(), 1);
+    assert_eq!(index.at(59).through, 59, "a credit whose amount was not recorded is a dated change of its own");
+    assert_eq!(index.at(60).breakdown, index.at(59).breakdown, "a credit is not spending: it adds no amount and moves no date");
+    assert_eq!(
+        index.at(60).warnings[1],
+        "Negative daily cost component Daily cost: its credit's amount was not recorded and is not counted as spending",
+        "a credit whose amount was not recorded is named, never dropped"
+    );
 }
 
 #[test]

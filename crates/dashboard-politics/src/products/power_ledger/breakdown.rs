@@ -210,6 +210,7 @@ struct Entry {
     unknown: u32,
     uncovered: bool,
     credits: u32,
+    unknown_credits: u32,
 }
 
 fn entries(reply: &PowerSpendingReply) -> Vec<Entry> {
@@ -224,6 +225,7 @@ fn entries(reply: &PowerSpendingReply) -> Vec<Entry> {
             unknown: payment.unknown,
             uncovered: payment.uncovered,
             credits: 0,
+            unknown_credits: 0,
         })
         .chain(reply.days.iter().map(|day| Entry {
             item: day.item,
@@ -233,6 +235,7 @@ fn entries(reply: &PowerSpendingReply) -> Vec<Entry> {
             unknown: day.unknown,
             uncovered: day.uncovered > 0,
             credits: day.credits,
+            unknown_credits: day.unknown_credits,
         }))
         .collect();
     entries.sort_by_key(|entry| (entry.read, entry.item));
@@ -344,7 +347,9 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         }
         let leaf = built.leaf(path);
         let count = Some(u64::from(entry.payments));
+        let credit_only = entry.payments == 0 && (entry.credits > 0 || entry.unknown_credits > 0);
         match entry.charge.and_then(|charge| Exact::scaled(charge, reply.decimals)) {
+            _ if credit_only => {}
             Some(charge) => {
                 let amount = if entry.uncovered { Amount::Partial(charge, "Some payments may be missing.".into()) } else { Amount::Known(charge) };
                 built.add(entry.read, leaf, amount, count);
@@ -354,9 +359,12 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
             }
             None => built.add(entry.read, leaf, Amount::NotRecorded("Some payment costs were not recorded.".into()), count),
         }
-        if entry.credits > 0 {
-            let label = item.name.as_deref().unwrap_or(&item.action);
-            let warning = format!("Negative daily cost component {label}: its credit is not counted as spending");
+        let label = item.name.as_deref().unwrap_or(&item.action);
+        let credit = [
+            (entry.credits > 0).then(|| format!("Negative daily cost component {label}: its credit is not counted as spending")),
+            (entry.unknown_credits > 0).then(|| format!("Negative daily cost component {label}: its credit's amount was not recorded and is not counted as spending")),
+        ];
+        for warning in credit.into_iter().flatten() {
             if !dated_warnings.iter().any(|(_, held)| *held == warning) {
                 dated_warnings.push((entry.read, warning));
             }

@@ -157,6 +157,8 @@ pub struct SpendDay {
     pub realized_raw: Option<String>,
     #[doc = " Negative daily costs: a credit, not spending."]
     pub credits: u32,
+    #[doc = " Credits whose amount was not recorded."]
+    pub unknown_credits: u32,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -411,23 +413,41 @@ pub(super) fn listed(change: &Change<'_>, item: u32, include_days: bool) -> (Opt
             uncovered: count(change, "uncovered") > 0,
         }
     });
+    let unknown_credits = if count(change, "payments") == 0 { count(change, "unknown") } else { 0 };
     let days = count(change, "days");
     let day_payments = count(change, "day_payments");
-    let day = (include_days && (days > 0 || day_payments > 0 || count(change, "credits") > 0)).then(|| SpendDay {
-        item,
-        day: after("last_day").number().map(|day| day as i32),
-        read: change.hour,
-        days,
-        charge_raw: raw(delta(change, "day_charge")),
-        payments: day_payments,
-        unknown: count(change, "day_unknown"),
-        uncovered: count(change, "days_uncovered"),
-        realized_raw: (count(change, "realized_unknown") == 0)
-            .then(|| delta(change, "realized_gained").zip(delta(change, "realized_lost")).map(|(gained, lost)| gained.saturating_add(lost)))
-            .flatten()
-            .map(|value| value.to_string()),
-        credits: count(change, "credits"),
-    });
+    let day = if include_days && (days > 0 || day_payments > 0 || count(change, "credits") > 0 || unknown_credits > 0) {
+        Some(SpendDay {
+            item,
+            day: after("last_day").number().map(|day| day as i32),
+            read: change.hour,
+            days,
+            charge_raw: raw(delta(change, "day_charge")),
+            payments: day_payments,
+            unknown: count(change, "day_unknown"),
+            uncovered: count(change, "days_uncovered"),
+            realized_raw: (count(change, "realized_unknown") == 0)
+                .then(|| delta(change, "realized_gained").zip(delta(change, "realized_lost")).map(|(gained, lost)| gained.saturating_add(lost)))
+                .flatten()
+                .map(|value| value.to_string()),
+            credits: count(change, "credits"),
+            unknown_credits,
+        })
+    } else {
+        (unknown_credits > 0).then(|| SpendDay {
+            item,
+            day: None,
+            read: change.hour,
+            days: 0,
+            charge_raw: Some("0".into()),
+            payments: 0,
+            unknown: 0,
+            uncovered: 0,
+            realized_raw: None,
+            credits: 0,
+            unknown_credits,
+        })
+    };
     (payment, day)
 }
 
@@ -509,6 +529,7 @@ fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut
                         .flatten()
                         .map(|value| value.to_string()),
                     credits,
+                    unknown_credits: 0,
                 },
             );
         })
@@ -1392,7 +1413,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         warnings: Vec::new(),
     };
     let mut items = Items::default();
-    let mut credits: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut credits: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
     let mut allocations = AllocationTotals::default();
@@ -1446,8 +1467,10 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         }
         for day in &mut reply.days[days_from..] {
             day.item = resolved[&(day.item, day.read)].0;
-            if day.credits > 0 {
-                *credits.entry(day.item).or_default() += day.credits;
+            if day.credits > 0 || day.unknown_credits > 0 {
+                let held = credits.entry(day.item).or_default();
+                held.0 += day.credits;
+                held.1 += day.unknown_credits;
             }
         }
         if missing != 0 {
@@ -1460,7 +1483,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     for day in &mut reply.days {
         day.item = items.resolved(day.item);
     }
-    let credits: BTreeMap<u32, u32> = credits.into_iter().map(|(at, count)| (items.resolved(at), count)).collect();
+    let credits: BTreeMap<u32, (u32, u32)> = credits.into_iter().map(|(at, count)| (items.resolved(at), count)).collect();
     reply.payments.sort_by_key(|payment| (payment.read, payment.hour, payment.item));
     reply.days.sort_by_key(|day| (day.read, day.day, day.item));
     reply.gains = gain_buckets
@@ -1538,12 +1561,15 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         categories.entry(id.to_owned()).or_insert_with(|| SpendCategory { id: id.to_owned(), name: name.to_owned(), identified: false });
     }
     reply.items.extend(items.unrecorded.iter().map(unrecorded_item));
-    for (at, count) in credits {
+    for (at, (known, unknown)) in credits {
         let item = &reply.items[at as usize];
-        reply.warnings.push(format!(
-            "Negative daily political power cost component {}: recorded credit is not included in spending (count: {count})",
-            item.name.as_deref().unwrap_or(&item.action)
-        ));
+        let label = item.name.as_deref().unwrap_or(&item.action);
+        if known > 0 {
+            reply.warnings.push(format!("Negative daily political power cost component {label}: recorded credit is not included in spending (count: {known})"));
+        }
+        if unknown > 0 {
+            reply.warnings.push(format!("Negative daily political power cost component {label}: credit whose amount was not recorded is not included in spending (count: {unknown})"));
+        }
     }
     for (reason, hours) in day_gap_hours {
         reply.warnings.push(format!("{reason} (hours: {hours})"));
