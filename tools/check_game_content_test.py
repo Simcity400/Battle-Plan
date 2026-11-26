@@ -27,8 +27,17 @@ class Tree(unittest.TestCase):
                           "tools/game-content.allow: stale-allow ui/art/*.png matches no file"])
 
     def test_an_entry_without_provenance_is_refused(self):
-        _, errors = cgc.allowed("# comment\n\nui/a.png\n")
-        self.assertEqual(errors, ["tools/game-content.allow:3: allow entry gives no provenance"])
+        _, errors = cgc.allowed("# comment\n\nui/a.png\nui/b.rs game-value\n")
+        self.assertEqual(errors, ["tools/game-content.allow:3: allow entry gives no provenance",
+                                  "tools/game-content.allow:4: allow entry gives no provenance"])
+
+    def test_a_kind_entry_exempts_one_finding_and_never_an_asset(self):
+        rules, _ = cgc.allowed("ui/b.rs game-value until #1 lands\nui/*.png drawn here\n")
+        self.assertEqual(rules, [("ui/b.rs", "game-value", "until #1 lands"), ("ui/*.png", None, "drawn here")])
+        self.assertEqual(cgc.allow_match("ui/b.rs", rules, "game-value"), "ui/b.rs")
+        self.assertIsNone(cgc.allow_match("ui/b.rs", rules, "copied-text"))
+        self.assertEqual(cgc.tree_findings([("ui/b.rs", PNG), ("ui/a.png", PNG)], rules),
+                         ["ui/b.rs:1: asset binary file not in game-content.allow"])
 
     def test_a_glob_star_stays_in_its_folder(self):
         self.assertTrue(cgc.glob_match("a/b.png", "a/*.png"))
@@ -111,18 +120,28 @@ class Installation(unittest.TestCase):
                                  "fixture.rs:3: game-value DEPTH has the installation's value",
                                  "fixture.rs:2: copied-text shares a run with game"])
         self.assertFalse(any(LONG in line for line in found))
+        rules, _ = cgc.allowed("fixture.rs game-value routed to #1\nfixture.rs copied-text routed to #2\nother.rs game-value gone\n")
+        self.assertEqual(cgc.install_findings(index, files, rules), ["art.bin:1: copy equals game file gfx/a.dds"])
+        fixed = [("fixture.rs", b"let d = \"DEPTH = 17\";\n")]
+        self.assertEqual(cgc.install_findings(index, fixed, rules),
+                         ["tools/game-content.allow: stale-allow fixture.rs game-value is no longer needed",
+                          "tools/game-content.allow: stale-allow fixture.rs copied-text is no longer needed"])
 
     def test_an_unchanged_stamp_is_not_indexed_again_and_a_walked_folder_follows_its_files(self):
         index = cgc.Index(self.folder / "cache" / "index.sqlite3")
         self.addCleanup(index.db.close)
         notes = []
         self.write("mod/a.txt", LONG)
+        self.assertIsNone(index.current("mod", self.folder / "mod", None)[0])
         first = index.refresh("mod", self.folder / "mod", None, notes.append)
         index.refresh("mod", self.folder / "mod", None, notes.append)
         self.assertEqual(len(notes), 1)
+        self.assertEqual(index.current("mod", self.folder / "mod", None)[0], first)
         self.write("mod/b.txt", LONG + " again")
+        self.assertIsNone(index.current("mod", self.folder / "mod", None)[0])
         self.assertEqual(index.refresh("mod", self.folder / "mod", None, notes.append), first)
         self.assertEqual(len(notes), 2)
+        self.assertIsNone(index.current("game", self.folder / "mod", "build 2")[0])
 
     def test_no_installation_is_reported_as_not_run(self):
         missing = SimpleNamespace(game=str(self.folder / "absent"), user_dir=None)

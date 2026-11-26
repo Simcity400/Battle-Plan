@@ -9,5 +9,18 @@ crates/desktop/icons/* the desktop app's icons, drawn for BattlePlan (#9)
 crates/recorder-app/icons/* the recorder tray app's icons, drawn for BattlePlan
 ui/public/favicon.svg the UI's icon, drawn for BattlePlan (#9)
 vendor/eframe/data/icon.png the eframe crate's own icon, vendored with its MIT licence
-LICENSE our MIT licence; mods ship the same standard text
-crates/engine-dlc/src/dlc_feature_state.rs DLC names the reader matches against the installed DLC files: identifiers, allowed (owner, 26 Nov)
+LICENSE copied-text our MIT licence; mods ship the same standard text
+crates/engine-dlc/src/dlc_feature_state.rs copied-text DLC names the reader matches against the installed DLC files: identifiers, allowed (owner, 26 Nov)
+crates/dashboard-base/src/products/artwork.rs game-value routed to the last test-conversion pull request, after #961 and #967 (lead, 26 Nov)
+crates/dashboard-wars/src/products/wargoals.rs game-value routed to the last test-conversion pull request, after #961 and #967 (lead, 26 Nov)
+crates/dashboard-politics/src/products/focus_artwork.rs game-value routed to the last test-conversion pull request, after #961 and #967 (lead, 26 Nov)
+crates/viewer-raids/src/map/raids/tests.rs game-value routed to #994 (lead, 26 Nov)
+crates/dashboard-base/src/catalogue/parity_tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-base/src/presentation/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-base/src/products/read_ahead.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-land/src/products/doctrine_mastery/rewards/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-land/src/products/doctrines.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-politics/src/products/politics/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-research/src/products/special_projects/details/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-text/src/catalogue.rs game-value routed to #1009 at its rebase (lead, 26 Nov)
+crates/dashboard-world/src/products/place_names/tests.rs game-value routed to #1009 at its rebase (lead, 26 Nov)

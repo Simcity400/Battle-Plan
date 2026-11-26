@@ -1,6 +1,6 @@
 """Keep the game's and its mods' files out of the repository (Python 3.11+).
 
-usage: python tools/check-game-content.py [--game DIR] [--user-dir DIR] [--cache DIR] [--tree-only]
+usage: python tools/check-game-content.py [--against REF] [--game DIR] [--user-dir DIR] [--cache DIR] [--tree-only]
 
 The files checked are those Git tracks or would add (untracked and not ignored), as Boat sends them.
 
@@ -15,15 +15,20 @@ Against the installation, where one is found (--game or BATTLEPLAN_GAME_DIR, els
 registry entry) with its mods (each installed workshop item, and the mods of --user-dir or
 BATTLEPLAN_USER_DIR, else the Paradox user folder):
 - `copy`: a file whose bytes equal a file of the game or a mod;
-- `copied-text`: a line, quoted string or comment of 40 or more characters, spaces folded, that a
-  text file of the game or a mod also has;
+- `copied-text`: a line, quoted string or comment, spaces folded, that a text file of the game or a
+  mod also has: of 40 or more characters, or of 20 or more for a string or comment of three or
+  more words without script marks (in-game text sits in strings and comments). A text file on the
+  allow list may share text (a licence mods also ship), never bytes;
 - `game-value`: `KEY = number` where KEY is one of the game's or a mod's defines and the number is
   a value they give it, other than 0, 1 and -1. A test needs a value, not the game's: use an
   obviously made-up one, or read the number from a fixture we wrote when the test is about it.
 It reads the installation and writes nothing there. Its index lives outside the repository in
 --cache (default: the user's cache folder) and is rebuilt per game or mod only when Steam's
-manifest for it, or the size or time of a file of a mod outside Steam, changes. Where no
+manifest for it, or the size or time of a file of a mod outside Steam, changes; under `--against`
+an out-of-date index is reported as `not run here`, never rebuilt in the push check. Where no
 installation is found it prints `not run here` and why, and reports only the tree checks.
+`--against REF` (as `ci.py check` runs it) compares only the files changed since the merge base
+with REF; without it the whole tree is compared.
 
 Findings print as `<file>:<line>: <kind> <detail>` and never quote game text. Exits 1 on any.
 """
@@ -47,13 +52,13 @@ INDEX_VERSION = 1
 
 ASSET_TYPES = {
     "image": {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".dds", ".tga", ".webp", ".ico", ".svg", ".psd", ".pdn", ".tif", ".tiff", ".cur", ".ani"},
-    "sound": {".wav", ".ogg", ".mp3", ".flac", ".bank", ".fsb", ".asset"},
+    "sound": {".wav", ".ogg", ".mp3", ".flac", ".bank", ".fsb"},
     "font": {".ttf", ".otf", ".woff", ".woff2", ".fnt"},
     "video": {".mp4", ".webm", ".bk2", ".bik", ".avi", ".mov"},
     "model": {".mesh", ".anim", ".fbx"},
     "archive": {".zip", ".7z", ".rar", ".gz", ".xz", ".tar", ".pak"},
     "binary data": {".bin", ".dat"},
-    "game data": {".gui", ".gfx", ".lua", ".yml", ".yaml", ".shader", ".fxh", ".fx", ".csv", ".mod", ".dlc", ".sfx", ".map"},
+    "game data": {".gui", ".gfx", ".lua", ".yml", ".yaml", ".shader", ".fxh", ".fx", ".csv", ".mod", ".dlc", ".sfx", ".map", ".asset"},
     "save or recording": {".hoi4", ".h4s", ".sav", ".battleplan", ".spool"},
 }
 TYPE_OF = {extension: kind for kind, extensions in ASSET_TYPES.items() for extension in extensions}
@@ -97,17 +102,24 @@ def base64_run(data):
     return data.count(b"\n", 0, start) + 1, (len(folded) if end < 0 else end) - start
 
 
+TEXT_KINDS = ("copied-text", "game-value")
+
+
 def allowed(text):
-    """The (glob, provenance) of each entry, ignoring blank and `#` lines; an entry needs both."""
+    """Each entry as (glob, kind, provenance): `<glob> <provenance>` allows an asset file, and
+    `<glob> copied-text|game-value <provenance>` exempts a text file from that finding alone.
+    Blank and `#` lines are ignored; every entry needs a provenance."""
     rules, errors = [], []
     for number, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        glob, _, provenance = line.partition(" ")
-        if not provenance.strip():
+        glob, _, rest = line.partition(" ")
+        kind, _, after = rest.strip().partition(" ")
+        kind, provenance = (kind, after.strip()) if kind in TEXT_KINDS else (None, rest.strip())
+        if not provenance:
             errors.append(f"{ALLOW_NAME}:{number}: allow entry gives no provenance")
-        rules.append((glob, provenance.strip()))
+        rules.append((glob, kind, provenance))
     return rules, errors
 
 
@@ -127,26 +139,25 @@ def asset_kind(name, head):
 
 
 def tree_findings(files, rules):
-    """`asset`, `embedded` and `stale-allow` findings for (name, bytes) pairs."""
-    used = set()
-    found = offenders(files, rules, used)
-    found += [f"{ALLOW_NAME}: stale-allow {glob} matches no file" for glob, _ in rules if glob not in used]
+    """`asset`, `embedded` and `stale-allow` findings for (name, bytes) pairs: an entry that
+    matches no file is stale."""
+    found = offenders(files, rules)
+    names = [name for name, _ in files]
+    found += [f"{ALLOW_NAME}: stale-allow {glob}{f' {kind}' if kind else ''} matches no file"
+              for glob, kind, _ in rules if not any(glob_match(name, glob) for name in names)]
     return found
 
 
-def allow_match(name, rules):
-    return next((glob for glob, _ in rules if glob_match(name, glob)), None)
+def allow_match(name, rules, kind=None):
+    """The first entry of `kind` (None: an asset entry) whose glob matches `name`."""
+    return next((glob for glob, entry_kind, _ in rules if entry_kind == kind and glob_match(name, glob)), None)
 
 
-def offenders(files, rules, used=None):
-    """`asset` and `embedded` findings for (name, bytes) pairs not on the allow list; adds each
-    allow glob used to `used`."""
+def offenders(files, rules):
+    """`asset` and `embedded` findings for (name, bytes) pairs that no asset entry allows."""
     found = []
-    used = set() if used is None else used
     for name, data in files:
-        match = allow_match(name, rules)
-        if match:
-            used.add(match)
+        if allow_match(name, rules):
             continue
         kind = asset_kind(name, data)
         if kind:
@@ -160,7 +171,7 @@ def offenders(files, rules, used=None):
 
 def allow_rules(root=ROOT):
     """The allow file's rules under `root`, or none when it is absent."""
-    path = root / "tools" / ALLOW.name
+    path = root / ALLOW_NAME
     return allowed(path.read_text(encoding="utf-8"))[0] if path.exists() else []
 
 
@@ -348,7 +359,7 @@ class Index:
 
     def __init__(self, path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, timeout=3600)
         self.db.executescript(f"""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS meta(version INTEGER);
@@ -357,24 +368,31 @@ class Index:
             CREATE INDEX IF NOT EXISTS files_by_head ON files(size, head);
             CREATE TABLE IF NOT EXISTS segments(hash INTEGER, root INTEGER, PRIMARY KEY(hash, root)) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS defines(root INTEGER, key TEXT, value REAL);
-            CREATE TABLE IF NOT EXISTS tree(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, hashes BLOB, lines BLOB);
+            DROP TABLE IF EXISTS tree;
+            CREATE TABLE IF NOT EXISTS tree_text(digest BLOB PRIMARY KEY, hashes BLOB, lines BLOB) WITHOUT ROWID;
         """)
         version = self.db.execute("SELECT version FROM meta").fetchone()
         if version is None or version[0] != INDEX_VERSION:
-            self.db.executescript("DELETE FROM roots; DELETE FROM files; DELETE FROM segments; DELETE FROM defines; DELETE FROM tree; DELETE FROM meta;")
+            self.db.executescript("DELETE FROM roots; DELETE FROM files; DELETE FROM segments; DELETE FROM defines; DELETE FROM tree_text; DELETE FROM meta;")
             self.db.execute("INSERT INTO meta VALUES (?)", (INDEX_VERSION,))
             self.db.commit()
 
-    def refresh(self, key, folder, stamp, say):
-        """Indexes one game or mod folder unless its stamp is the one indexed; returns its id."""
+    def current(self, key, folder, stamp):
+        """(root id or None when the index is not of this stamp, full stamp, walked listing or None)."""
         listing = None
         if stamp is None:
             listing = sorted(walk(folder))
             stamp = "walk " + hashlib.sha256("\n".join(f"{p}\t{s.st_size}\t{s.st_mtime_ns}" for p, s in listing).encode()).hexdigest()
         stamp = f"{folder}|{stamp}"
         row = self.db.execute("SELECT id, stamp FROM roots WHERE key = ?", (key,)).fetchone()
-        if row and row[1] == stamp:
-            return row[0]
+        return (row[0] if row and row[1] == stamp else None), stamp, listing
+
+    def refresh(self, key, folder, stamp, say):
+        """Indexes one game or mod folder unless its stamp is the one indexed; returns its id."""
+        root, stamp, listing = self.current(key, folder, stamp)
+        if root is not None:
+            return root
+        row = self.db.execute("SELECT id FROM roots WHERE key = ?", (key,)).fetchone()
         started = time.monotonic()
         if row:
             root = row[0]
@@ -417,17 +435,16 @@ class Index:
             self.db.execute("DELETE FROM roots WHERE id = ?", (root,))
         self.db.commit()
 
-    def tree_hashes(self, name, path, data):
-        """(hash, line) pairs of a tree text file, reused while its size and time stay put."""
-        status = path.stat()
-        row = self.db.execute("SELECT size, mtime, hashes, lines FROM tree WHERE path = ?", (name,)).fetchone()
-        if row and row[0] == status.st_size and row[1] == status.st_mtime_ns:
-            count = len(row[2]) // 8
-            return list(zip(struct.unpack(f"<{count}q", row[2]), struct.unpack(f"<{count}I", row[3])))
+    def tree_hashes(self, data):
+        """(hash, line) pairs of a tree text file, kept by its content so every worktree reuses them."""
+        digest = hashlib.blake2b(data, digest_size=16).digest()
+        row = self.db.execute("SELECT hashes, lines FROM tree_text WHERE digest = ?", (digest,)).fetchone()
+        if row:
+            count = len(row[0]) // 8
+            return list(zip(struct.unpack(f"<{count}q", row[0]), struct.unpack(f"<{count}I", row[1])))
         pairs = text_hashes(data.decode("utf-8", "replace"))
-        self.db.execute("INSERT OR REPLACE INTO tree VALUES (?, ?, ?, ?, ?)",
-                        (name, status.st_size, status.st_mtime_ns, struct.pack(f"<{len(pairs)}q", *(h for h, _ in pairs)),
-                         struct.pack(f"<{len(pairs)}I", *(n for _, n in pairs))))
+        self.db.execute("INSERT OR REPLACE INTO tree_text VALUES (?, ?, ?)",
+                        (digest, struct.pack(f"<{len(pairs)}q", *(h for h, _ in pairs)), struct.pack(f"<{len(pairs)}I", *(n for _, n in pairs))))
         return pairs
 
 
@@ -442,7 +459,7 @@ def install_findings(index, files, rules):
         installed.setdefault(key, set()).add(value)
     index.db.execute("CREATE TEMP TABLE IF NOT EXISTS probe(hash INTEGER, file INTEGER, line INTEGER)")
     index.db.execute("DELETE FROM probe")
-    names = []
+    names, text_found = [], []
     for name, data in files:
         if len(data) >= MIN_FILE:
             for root, path in index.db.execute("SELECT root, path FROM files WHERE size = ? AND head = ?", (len(data), digest64(data[:HEAD]))):
@@ -452,19 +469,29 @@ def install_findings(index, files, rules):
                     same = False
                 if same:
                     found.append(f"{name}:1: copy equals {keys[root]} file {path}")
-        if is_binary(data) or allow_match(name, rules):
+        if is_binary(data):
             continue
         number = len(names)
         names.append(name)
-        index.db.executemany("INSERT INTO probe VALUES (?, ?, ?)", ((h, number, line) for h, line in index.tree_hashes(name, ROOT / name, data)))
-        found += [f"{name}:{line}: game-value {key} has the installation's value"
-                  for line, key in game_values(data.decode("utf-8", "replace"), installed)]
+        index.db.executemany("INSERT INTO probe VALUES (?, ?, ?)", ((h, number, line) for h, line in index.tree_hashes(data)))
+        text_found += [(name, line, "game-value", f"game-value {key} has the installation's value")
+                       for line, key in game_values(data.decode("utf-8", "replace"), installed)]
     index.db.commit()
     hits = index.db.execute("SELECT DISTINCT probe.file, probe.line, segments.root FROM probe JOIN segments ON segments.hash = probe.hash ORDER BY 1, 2")
     by_line = {}
     for number, line, root in hits:
         by_line.setdefault((names[number], line), []).append(keys[root])
-    found += [f"{name}:{line}: copied-text shares a run with {', '.join(sorted(set(where))[:3])}" for (name, line), where in sorted(by_line.items())]
+    text_found += [(name, line, "copied-text", f"copied-text shares a run with {', '.join(sorted(set(where))[:3])}")
+                   for (name, line), where in sorted(by_line.items())]
+    used = set()
+    for name, line, kind, detail in text_found:
+        entry = allow_match(name, rules, kind)
+        if entry:
+            used.add((entry, kind))
+        else:
+            found.append(f"{name}:{line}: {detail}")
+    found += [f"{ALLOW_NAME}: stale-allow {glob} {kind} is no longer needed"
+              for glob, kind, _ in rules if kind and (glob, kind) not in used and any(glob_match(name, glob) for name in names)]
     return found
 
 
@@ -473,6 +500,14 @@ def candidates():
     listed = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT, capture_output=True, check=True)
     names = sorted({n for n in listed.stdout.decode("utf-8").split("\0") if n})
     return [name for name in names if (ROOT / name).is_file()]
+
+
+def changed_since(ref):
+    """Paths the working tree changes or adds against its merge base with `ref`."""
+    git = lambda *args: subprocess.run(["git", *args], cwd=ROOT, capture_output=True, check=True).stdout
+    base = git("merge-base", ref, "HEAD").decode().strip()
+    names = git("diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", base) + git("ls-files", "-z", "--others", "--exclude-standard")
+    return {name for name in names.decode("utf-8").split("\0") if name}
 
 
 def default_cache():
@@ -486,6 +521,7 @@ def main(argv=None):
     parser.add_argument("--user-dir", help="the Paradox user folder whose mods to read (default: BATTLEPLAN_USER_DIR, else Documents)")
     parser.add_argument("--cache", type=Path, help="where the index lives (default: the user's cache folder)")
     parser.add_argument("--tree-only", action="store_true", help="skip the comparison with the installation")
+    parser.add_argument("--against", metavar="REF", help="compare with the installation only the files changed since the merge base with REF")
     args = parser.parse_args(argv)
     started = time.monotonic()
     say = lambda text: print(text, flush=True)
@@ -501,10 +537,20 @@ def main(argv=None):
             say(f"not run here: installation comparison ({reason})")
         else:
             index = Index((args.cache or default_cache()) / "index.sqlite3")
-            kept = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
-            index.drop_others(kept)
-            found += install_findings(index, files, rules)
-            say(f"installation comparison: {len(roots)} game and mod folders, {len(files)} files")
+            stale = [key for key, folder, stamp in roots if index.current(key, folder, stamp)[0] is None] if args.against else []
+            if stale:
+                say(f"not run here: installation comparison (the index is out of date for {', '.join(stale[:3])}"
+                    f"{' and more' if len(stale) > 3 else ''}; run `python tools/check-game-content.py` once to rebuild it)")
+            else:
+                kept = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
+                index.drop_others(kept)
+                compared = files
+                if args.against:
+                    changed = changed_since(args.against)
+                    compared = [(name, data) for name, data in files if name in changed]
+                found += install_findings(index, compared, rules)
+                say(f"installation comparison: {len(roots)} game and mod folders, {len(compared)} files"
+                    + (f" changed since {args.against}" if args.against else ""))
     for line in found:
         print(line)
     say(f"{len(found)} finding(s) in {time.monotonic() - started:.1f} s")

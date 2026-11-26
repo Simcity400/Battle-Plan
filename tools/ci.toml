@@ -43,8 +43,9 @@ name = "game-content"
 group = "linux"
 tier = "check"
 toolchain = "python"
+base = true
 inputs = ["**"]
-command = ["{python}", "tools/check-game-content.py"]
+command = ["{python}", "tools/check-game-content.py", "--against", "{base}"]
 
 [[job]]
 name = "agent-context"
