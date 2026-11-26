@@ -211,7 +211,7 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     use replay_data::rows::{DivisionHistoryRow, LandCombatEdgesRow, LandCombatRow, LandDivisionDamageRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use serde_json::json;
-    let experience = |id: u64, hour: i32| 20 * id as i64 + i64::from(hour);
+    let experience = |id: u64, hour: i32| 20 * id as i64 + 1_000 * i64::from(hour - 100);
     let source = decorated_source((100..=107).map(|hour| {
         let mut frame = decorated_world(hour, |id| experience(id, hour));
         let (damage, exits) = if hour == 106 {
@@ -274,6 +274,7 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     let gone = ask(104, Some("3"));
     assert_eq!(gone.selected.as_ref().map(|d| d.last_seen), Some(Some(103)));
     assert_eq!(pinned.selected.as_ref().map(|d| d.last_seen), Some(None), "a division in the census at the hour asked holds no hour that would change with it");
+    assert_ne!(measured(3, 103), measured(3, 104));
     let facts = gone.facts.as_ref().unwrap();
     assert_eq!((facts.experience_raw.clone(), facts.casualties_taken), (measured(3, 103), Some(10)), "a division out of the census shows its facts when last seen");
     assert!(pinned.missing.iter().any(|gap| gap.first_hour == 103 && gap.last_hour == 103 && gap.reason.contains("history")), "{:?}", pinned.missing);
