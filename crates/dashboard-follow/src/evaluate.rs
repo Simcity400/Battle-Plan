@@ -202,6 +202,11 @@ fn unnamed_slot(series: &dashboard_declare::Series, key: u128) -> Option<u32> {
     }
 }
 
+fn chosen_not_ranked(query: &Query, lane: &Lane) -> Option<String> {
+    let Query::Series { mode: SeriesMode::Top { population: false, .. }, identity, .. } = query else { return None };
+    identity.holders.not_ranked(head(lane))
+}
+
 fn unknown_contender(query: &Query, lane: &Lane, at: Option<u32>) -> String {
     let Query::Series { series, measure, countries: names, identity, .. } = query else { return String::new() };
     match at {
@@ -223,7 +228,7 @@ impl Ranking {
         let source = query.source()?;
         let cells = lane.cells();
         out.clear();
-        if let Some(reason) = reasons.unrecorded(lane) {
+        if let Some(reason) = reasons.unrecorded(lane).or_else(|| chosen_not_ranked(query, lane)) {
             self.clear();
             answer::not_recorded(&reason, out);
             return Some(0);
@@ -537,6 +542,10 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             let drop_zero = !*least && measure.drops_zeros_in_top();
             table.clear(1, false);
             ranked.clear();
+            if let Some(reason) = chosen_not_ranked(query, lane) {
+                answer::not_recorded(&reason, out);
+                return;
+            }
             for slot in cells.rows() {
                 let Some(key) = cells.key(slot) else { continue };
                 if series.skips_row(key) {

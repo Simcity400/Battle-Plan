@@ -31,6 +31,9 @@ pub struct OccurrenceSort {
 pub struct OccurrenceCount {
     pub key: String,
     pub total: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub missing: Option<String>,
 }
 
 pub trait OccurrenceReply: Clone + Serialize + Send + Sync + 'static {
@@ -67,7 +70,7 @@ pub fn order(sort: Option<&OccurrenceSort>, columns: &[&str]) -> io::Result<(Ord
 }
 
 pub fn counts(answer: &Answer, keys: &[&str]) -> Vec<OccurrenceCount> {
-    keys.iter().zip(&answer.chips).map(|(key, total)| OccurrenceCount { key: (*key).to_owned(), total: total.to_string() }).collect()
+    keys.iter().zip(&answer.chips).map(|(key, total)| OccurrenceCount { key: (*key).to_owned(), total: total.to_string(), missing: None }).collect()
 }
 
 pub fn occurrence_panel<R, F>(executable: Option<engine_executable::executable_tables::Tables>, read: F) -> Box<dyn Panel>

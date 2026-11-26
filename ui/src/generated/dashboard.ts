@@ -971,7 +971,7 @@ ownOrdinal?: string,
  */
 cells: Array<LogCell>, };
 export type LogFacetCountAsk = { key: string, facets: Array<FacetFilter>, };
-export type OccurrenceCount = { key: string, total: string, };
+export type OccurrenceCount = { key: string, total: string, missing?: string, };
 export type LogTailParams = { branchId: string, log: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, columns: Array<string> | null, countFacets: Array<LogFacetCountAsk>, };
 export type LogTailReply = { branchId: string, log: string, columns: Array<string>, baseOrdinal: string, firstOrdinal: string, offset: string, total: string, rows: Array<LogPageRow>, counts: Array<OccurrenceCount>, missing: Array<MissingSpan>, warnings: Array<string>, };
 export type MilitaryAirParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,

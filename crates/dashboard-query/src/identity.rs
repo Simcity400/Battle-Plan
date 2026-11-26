@@ -246,6 +246,22 @@ impl Holders {
         self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last).map(|(_, _, reason)| reason.as_str())
     }
 
+    pub fn chosen_not_known(&self, from: i32, to: i32) -> Vec<(i32, i32, String)> {
+        self.unknown
+            .iter()
+            .filter(|&&(first, last, _)| first <= to && from <= last)
+            .map(|(first, last, reason)| ((*first).max(from), (*last).min(to), format!("Who holds the chosen countries is not known: {reason}")))
+            .collect()
+    }
+
+    pub fn unknown_within(&self, from: i32, to: i32) -> bool {
+        self.unknown.iter().any(|&(first, last, _)| first <= to && from <= last)
+    }
+
+    pub fn not_ranked(&self, hour: i32) -> Option<String> {
+        self.unknown_reason(hour).map(|reason| format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}"))
+    }
+
     pub fn not_known(&self, country: &Country, hour: i32) -> Option<String> {
         self.unknown_reason(hour).map(|reason| format!("Who holds {} is not known: {reason}", self.label(country, hour).unwrap_or_else(|| country.key().into_owned())))
     }

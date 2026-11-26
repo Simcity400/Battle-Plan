@@ -210,8 +210,8 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn totals_ranked(&self, hour: i32, n: usize, parts: Parts<'_>, back: Back<'_>, keep: &dyn Fn(i64) -> bool) -> io::Result<Result<Vec<String>, String>> {
-        if let Some(reason) = self.query.holders.unknown_reason(hour) {
-            return Ok(Err(unranked(reason)));
+        if let Some(reason) = self.query.holders.not_ranked(hour) {
+            return Ok(Err(reason));
         }
         let running = self.running()?;
         let columns = self.total_columns(running)?;
@@ -243,8 +243,8 @@ impl<'q, 'a> Line<'q, 'a> {
             None => None,
             Some(back) => {
                 let Some(start) = back(read).filter(|&start| start >= stretch.first && since.is_none_or(|since| since <= start)) else { return Ok(Ok(Vec::new())) };
-                if let Some(reason) = self.query.holders.unknown_reason(start) {
-                    return Ok(Err(unranked(reason)));
+                if let Some(reason) = self.query.holders.not_ranked(start) {
+                    return Ok(Err(reason));
                 }
                 if clock(start)?.and_then(|(_, read)| read) != Some(start) {
                     return Ok(Ok(Vec::new()));
@@ -302,10 +302,6 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 }
 
-fn unranked(reason: &str) -> String {
-    format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}")
-}
-
 static EMPTY: Runs = Vec::new();
 
 fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, value: Result<i64, Gap>) {
@@ -344,7 +340,7 @@ mod tests {
         assert_eq!(line.totals_ranked(read, 5, &whole, None, &|_| true).unwrap(), Ok(vec!["GER".to_owned()]), "the totals at the read hour rank GER");
         assert_eq!(
             line.totals_ranked(read, 5, &whole, Some(&day_before), &|_| true).unwrap(),
-            Err(unranked(reason)),
+            Err(format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}")),
             "the comparison hour's holders are not known, though production there was read late: refused, never an empty ranking"
         );
     }
@@ -360,7 +356,7 @@ mod tests {
         let series = dashboard_declare::series("country-measure").unwrap();
         let line = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
         let ranked = line.totals_ranked(FIRST + 11, 5, &|_| Vec::new(), None, &|_| true).unwrap();
-        assert_eq!(ranked, Err(unranked(reason)), "no country is ranked, and the ranking says why, never an empty list");
+        assert_eq!(ranked, Err(format!("Who holds each country is not known at this hour, so they cannot be ranked: {reason}")), "no country is ranked, and the ranking says why, never an empty list");
     }
 
     #[test]
