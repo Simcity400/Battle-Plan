@@ -578,7 +578,7 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
     use std::sync::{Arc, atomic::AtomicBool};
     use world_tension_stack::{WorldTensionStack, WorldTensionStackParams, TensionValueMode};
 
-    let frames = (100..=105).map(|hour| {
+    let frames = (100..=106).map(|hour| {
         let mut frame = test_fixtures::source(1, hour, None);
         if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
             links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
@@ -590,6 +590,8 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
         ));
         *frame.tables[TableId::ThreatCountryAggregates.index()] = if matches!(hour, 102 | 104 | 105) {
             TableView::Unavailable { reason: if hour == 105 { "Fixture read interrupted" } else { "Fixture contributions unread" }.into() }
+        } else if hour == 106 {
+            TableView::Truncated { rows: TableRows::ThreatCountryAggregates(vec![ThreatCountryAggregateRow { country_slot: 8, total_raw: 6 }]), missing: 1 }
         } else {
             TableView::Complete(TableRows::ThreatCountryAggregates(
                 [(7, 3), (8, 6)].into_iter().filter(|&(slot, _)| hour != 101 || slot != 8).map(|(country_slot, peak)| ThreatCountryAggregateRow {
@@ -626,6 +628,9 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
             let all = read(104, None);
             assert_eq!(all.bands[0].slot, 7, "the historical band remains the last witnessed leader through a gap");
             assert_eq!(all.bands[0].end_raw, None);
+            let partial = read(106, None);
+            assert_eq!(partial.bands[0].slot, 7, "a partial read cannot displace the last fully witnessed leader");
+            assert_eq!(partial.bands[0].end_raw, None);
         }
     }
 }

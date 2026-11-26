@@ -746,6 +746,7 @@ impl DatedGroupFilter {
 #[derive(Default)]
 pub(super) struct StackOutput {
     top_slots: Option<HashSet<u32>>,
+    ranking_missing: Option<String>,
     refused: Option<String>,
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
@@ -806,19 +807,14 @@ pub(super) fn compute_stack(
         }
     }
     let last_complete = is_complete(input.aggregates_complete, last);
-    let rank_hour = if top_limit.is_some() || last_complete {
-        last
+    let complete = input.aggregates_complete;
+    let at = complete.partition_point(|span| span.0 <= last);
+    let rank_hour = if top_limit.is_some() || filter.is_some() {
+        Some(last)
     } else {
-        let complete = input.aggregates_complete;
-        let at = complete.partition_point(|span| span.0 <= last);
-        let complete_hour = complete[..at].last().map(|span| span.1);
-        input.slots.values().filter_map(|runs| {
-            let at = runs.partition_point(|run| run.0 <= last);
-            runs[..at].iter().rev().take_while(|run| run.1 >= first)
-                .find(|run| run.2.is_some()).map(|run| run.1.min(last))
-        }).chain(complete_hour).filter(|hour| *hour >= first).max().unwrap_or(last)
+        complete[..at].last().map(|span| span.1.min(last)).filter(|&hour| hour >= first)
     };
-    let rank_complete = is_complete(input.aggregates_complete, rank_hour);
+    let rank_complete = rank_hour.is_some_and(|hour| is_complete(complete, hour));
     let capped_end_raw_val = lookup_run(input.tension, last);
     let capped_end_tension = capped_end_raw_val.map(|raw| raw as f64 / tension_scale);
     let capped_end_tension_raw = capped_end_raw_val.map(|raw| raw.to_string());
@@ -831,6 +827,7 @@ pub(super) fn compute_stack(
     let mut ranked: Vec<RankedSlot> = Vec::new();
     let mut unknown = !last_complete;
     for (&slot, runs) in input.slots {
+        let Some(rank_hour) = rank_hour else { break };
         let resolved = slot_tag(slot, last);
         if let Some(wanted) = filter
             && !resolved.as_ref().is_some_and(|(tag, _)| wanted.contains(tag.as_str()))
@@ -848,7 +845,7 @@ pub(super) fn compute_stack(
         let mut peak_abs = 0;
         for &(lo, hi) in spans {
             let lo = lo.max(first);
-            let hi = hi.min(last);
+            let hi = hi.min(rank_hour);
             let start = runs.partition_point(|run| run.1 < lo);
             for &(_, _, val) in runs[start..].iter().take_while(|run| run.0 <= hi) {
                 if let Some(val) = val {
@@ -1148,6 +1145,7 @@ pub(super) fn compute_stack(
     });
     StackOutput {
         top_slots,
+        ranking_missing: rank_hour.is_none().then(|| reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN).to_owned()),
         refused: None,
         end_hour,
         capped_end_tension,
@@ -1457,7 +1455,8 @@ impl Product for WorldTensionStack {
         } else {
             Vec::new()
         };
-        let warnings = dated_warnings(&held, last, &mut next_change_hour);
+        let mut warnings = dated_warnings(&held, last, &mut next_change_hour);
+        warnings.extend(computed.ranking_missing);
         let reply = WorldTensionStackReply {
             branch_id: params.branch_id.clone(),
             tension_scale,
