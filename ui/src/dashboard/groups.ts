@@ -83,13 +83,20 @@ export function everStateAt(bounds: EverBounds, hour: number): EverState {
 
 export const EVER_UNRECORDED = 'Group membership was not recorded at this time.';
 
-function soFarMembership(groups: CountryGroupReply, runs: readonly MembershipRun[], until: number): Map<string, MembershipRun[]> {
-  const spans: MembershipRun[] = [];
-  for (const run of runs) if (run.firstHour <= until) spans.push({ tag: run.tag, firstHour: run.firstHour, lastHour: Math.min(run.lastHour, until) });
-  if (validCountryIdentityHistories(groups.countryIdentities)) {
-    const index = countryIdentityIndex(groups.countryIdentities);
-    for (const [key, from] of index.firstHoursDuring(runs)) if (from <= until) spans.push(...index.aliasRuns(new Set([key]), from, until));
+function soFarMembership(groups: CountryGroupReply, runs: readonly MembershipRun[], until: number, max: number): { membership: Map<string, MembershipRun[]>; countries: number } {
+  const index = validCountryIdentityHistories(groups.countryIdentities) ? countryIdentityIndex(groups.countryIdentities) : null;
+  const countries: { id: string; from: number; spans: MembershipRun[] }[] = [];
+  const loose = new Map<string, { id: string; from: number; spans: MembershipRun[] }>();
+  for (const run of runs) {
+    if (run.firstHour > until || index?.keyAt(run.tag, run.firstHour) != null) continue;
+    const span = { tag: run.tag, firstHour: run.firstHour, lastHour: Math.min(run.lastHour, until) };
+    const held = loose.get(run.tag);
+    if (held) { held.spans.push(span); held.from = Math.min(held.from, span.firstHour); } else loose.set(run.tag, { id: `tag:${run.tag}`, from: span.firstHour, spans: [span] });
   }
+  countries.push(...loose.values());
+  if (index) for (const [key, from] of index.firstHoursDuring(runs)) if (from <= until) countries.push({ id: key, from, spans: index.aliasRuns(new Set([key]), from, until) });
+  countries.sort((a, b) => a.from - b.from || a.id.localeCompare(b.id));
+  const spans = countries.slice(0, max).flatMap(country => country.spans);
   spans.sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const membership = new Map<string, MembershipRun[]>();
   for (const span of spans) {
@@ -99,7 +106,7 @@ function soFarMembership(groups: CountryGroupReply, runs: readonly MembershipRun
     else if (previous && span.firstHour <= previous.lastHour + 1) own[own.length - 1] = { ...previous, lastHour: Math.max(previous.lastHour, span.lastHour) };
     else own.push({ ...span });
   }
-  return membership;
+  return { membership, countries: countries.length };
 }
 
 export const DEFAULT_TOP = 10;
@@ -345,17 +352,9 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   if (!runs) return { ...none, reason: UNAVAILABLE, known };
   const unobserved = groupUnobserved(groups, selection.group);
   if (selection.membership === 'ever') {
-    const soFar = soFarMembership(groups, runs, Math.min(lastHour, everKnownBefore(unobserved) - 1));
-    if (!soFar.size && !unobserved.length) return { ...none, reason: NO_MEMBERS.ever, known };
-    const index = validCountryIdentityHistories(groups.countryIdentities) ? countryIdentityIndex(groups.countryIdentities) : null;
-    const countries = new Map<string, string[]>();
-    for (const [tag, spans] of soFar) {
-      const id = index?.keyAt(tag, spans[0].firstHour) ?? tag;
-      const held = countries.get(id);
-      if (held) held.push(tag); else countries.set(id, [tag]);
-    }
-    const tags = [...countries.values()].slice(0, max).flat();
-    return { tags, membership: new Map(tags.map(tag => [tag, soFar.get(tag)!])), unobserved, dropped: Math.max(0, countries.size - max), known, reason: null };
+    const { membership, countries } = soFarMembership(groups, runs, Math.min(lastHour, everKnownBefore(unobserved) - 1), max);
+    if (!countries && !unobserved.length) return { ...none, reason: NO_MEMBERS.ever, known };
+    return { tags: [...membership.keys()], membership, unobserved, dropped: Math.max(0, countries - max), known, reason: null };
   }
   const members = [...new Set([...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag)).map(run => run.tag))];
   if (!members.length && unobserved.length) return { ...none, unobserved, reason: INCOMPLETE, known };
@@ -379,9 +378,15 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   if (selection.kind === 'all' || (selection.kind === 'group' && selection.group.type === 'top')) return { tags: [], ready: true, reason: null };
   const identities = identitiesFor(groups, index);
   if (!identities || selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
-  const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
-  const reason = resolved.reason ?? (selection.kind !== 'group' ? worldFilter(selection, fallback, groups, lastHour, identities).reason
-    : !resolved.tags.length ? groupUnobserved(groups!, selection.group).length ? INCOMPLETE : NO_MEMBERS.ever
-    : identities.keysDuring(groupRuns(groups!, selection.group) ?? []).size ? null : MEMBERS_UNAVAILABLE);
-  return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
+  if (selection.kind !== 'group') {
+    const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
+    const reason = resolved.reason ?? worldFilter(selection, fallback, groups, lastHour, identities).reason;
+    return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
+  }
+  const runs = groupRuns(groups!, selection.group);
+  if (!runs) return { tags: [], ready: false, reason: UNAVAILABLE };
+  const tags = [...new Set([...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag)).map(run => run.tag))];
+  const reason = !tags.length ? groupUnobserved(groups!, selection.group).length ? INCOMPLETE : NO_MEMBERS.ever
+    : identities.keysDuring(runs).size ? null : MEMBERS_UNAVAILABLE;
+  return { tags, ready: reason === null, reason };
 }
