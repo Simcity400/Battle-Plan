@@ -30,6 +30,7 @@ import type {
 import { familyViewOptionFields } from '../../widgets/manifest.ts';
 import { DEFAULT_VIEW } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
+import type { TooltipRowSource } from './hoverRow.ts';
 import { keepEqual } from './stableValue.ts';
 import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
@@ -90,7 +91,7 @@ export interface DeclaredFamilyWidgetProps<
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null) => void;
-  readonly onHoverRow?: (subject: string | null) => void;
+  readonly onTooltipRow?: (subject: string | null, by: TooltipRowSource) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly extraWarnings?: readonly string[];
 }
@@ -120,7 +121,7 @@ export default function DeclaredFamilyWidget<
   contextMenuItems: customContextMenuItems,
   onViewportChange: externalViewportChange,
   onHoverHour: externalHoverHour,
-  onHoverRow,
+  onTooltipRow,
   onArtDemands: externalArtDemands,
   extraWarnings,
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
@@ -355,7 +356,7 @@ export default function DeclaredFamilyWidget<
       onArtDemands={laneArt.onArtDemands}
       onViewportChange={handleViewportChange}
       onHoverHour={handleHoverHour}
-      onHoverRow={onHoverRow}
+      onTooltipRow={onTooltipRow}
       selectedKey={selectedKey}
       onActivate={onActivate}
       onToggle={onToggle}

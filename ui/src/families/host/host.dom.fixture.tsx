@@ -237,6 +237,7 @@ const lastViewWindow = new Map<number, unknown>();
 let staticSupplies: { readonly id: number; readonly statics: boolean; readonly tiledHead?: string; readonly hoverHour?: number; readonly paged?: unknown; readonly art?: unknown }[] = [];
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
+const tooltipRows: [string, string | null][] = [];
 let currentState = {
   source: sourceA,
   active: true,
@@ -455,6 +456,7 @@ function renderApp() {
               pin={null}
               bounds={BOUNDS}
               onActivate={action => { activated.push(action.subject); }}
+              onTooltipRow={(subject, by) => { tooltipRows.push([by, subject]); }}
             />
           </div>
           {currentState.secondMounted && (
@@ -663,6 +665,40 @@ window.hostDom = {
     sendHour(subs, 30, [90n, 70n, 50n, 30n], true);
     await until(() => pipeline.view(newPipe)?.mode === 'picture' && !pipeline.view(newPipe)?.dim);
     return { tipVisible, clearedOnDeactivate: afterDeactivate === null, oldPipe: pipeId, newPipe };
+  },
+
+  async testFocusRow() {
+    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
+    const rows = () => [...container!.querySelectorAll<HTMLTableRowElement>('[data-slot="primary"] table tbody tr')];
+    const focused = () => tooltipRows.filter(([by]) => by === 'focus').map(([, subject]) => subject);
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    (document.activeElement as HTMLElement | null)?.blur();
+    await frames(2);
+    tooltipRows.length = 0;
+    rows()[0]!.focus();
+    await until(() => focused().length === 1, 2000);
+    rows()[1]!.focus();
+    await until(() => focused().length === 2, 2000);
+    const moved = focused();
+    const subs = subsForPipe(pipeId);
+    const before = focused().length;
+    const startHour = clock.getSnapshot().hour;
+    await frames(2);
+    commits = 0;
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    for (let i = 0; i < 12; i++) {
+      sendHour(subs, clock.getSnapshot().hour, [90n + BigInt(i), 70n, 50n, 30n]);
+      await frames(1);
+    }
+    await frames(4);
+    clock.setPlaying(false);
+    const playing = { hoursAdvanced: clock.getSnapshot().hour - startHour, calls: focused().length - before, commits };
+    (document.activeElement as HTMLElement | null)?.blur();
+    await until(() => focused().at(-1) === null, 2000);
+    return { moved, playing, left: focused().slice(before) };
   },
 
   async testF3UnrelatedAppearanceAndF4ReducedMotion() {

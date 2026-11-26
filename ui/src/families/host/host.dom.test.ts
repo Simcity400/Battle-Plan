@@ -39,6 +39,12 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1 });
       const f5Activated = await act<string[]>('waitActivated()');
       assert.deepEqual(f5Activated, ['GER'], 'F5: updating widget frame mid-press preserves pointerdown and activates row on release');
+
+      const focus = await act<{ moved: (string | null)[]; playing: { hoursAdvanced: number; calls: number; commits: number }; left: (string | null)[] }>('testFocusRow()');
+      assert.deepEqual(focus.moved, ['GER', 'FRA'], 'the focused row is reported each time keyboard focus moves to another row');
+      assert.ok(focus.playing.hoursAdvanced > 0, 'playback advanced under the resting focus');
+      assert.deepEqual([focus.playing.calls, focus.playing.commits], [0, 0], `while playback runs under a resting focus: no report and no React render (${focus.playing.hoursAdvanced} hours)`);
+      assert.deepEqual(focus.left, [null], 'focus leaving the rows clears the focused row');
     } finally {
       cdp.close();
     }

@@ -90,7 +90,7 @@ import {
 import { useFamilyTheme } from './theme.ts';
 import { FamilyHeaderSummary } from './FamilyHeaderSummary.tsx';
 import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary } from './headerSummary.ts';
-import { rowHoverPublisher } from './hoverRow.ts';
+import { rowHoverPublisher, type TooltipRowSource } from './hoverRow.ts';
 import type { FamilyTooltipField } from './tooltips.ts';
 import './familyHost.css';
 
@@ -234,7 +234,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null, drawnKeys?: DrawnKeys) => void;
-  readonly onHoverRow?: (subject: string | null) => void;
+  readonly onTooltipRow?: (subject: string | null, by: TooltipRowSource) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
@@ -298,7 +298,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onArtDemands,
   onViewportChange,
   onHoverHour,
-  onHoverRow,
+  onTooltipRow,
   selectedKey = null,
   onActivate,
   onToggle,
@@ -478,7 +478,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onArtDemands,
     onViewportChange,
     onHoverHour,
-    onHoverRow,
+    onTooltipRow,
     selectedKey,
     onActivate,
     onToggle,
@@ -496,7 +496,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   };
   latestRef.current = latest;
 
-  const publishHoverRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, () => latestRef.current.onHoverRow), []);
+  const tooltipRow = useCallback((by: TooltipRowSource) => () => {
+    const report = latestRef.current.onTooltipRow;
+    return report ? (subject: string | null) => report(subject, by) : undefined;
+  }, []);
+  const publishHoverRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, tooltipRow('pointer')), [tooltipRow]);
+  const publishFocusRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, tooltipRow('focus')), [tooltipRow]);
+  const publishFocusKey = useCallback(() => {
+    const key = focusInsideRef.current ? focusedKeyRef.current : null;
+    publishFocusRow(key === null ? null : { key });
+  }, [publishFocusRow]);
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
     const normalized = nextHour !== null && Number.isFinite(nextHour) ? Math.floor(nextHour) : null;
@@ -876,6 +885,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     lastMirrorObjRef.current = null;
     publishHoverHour(null);
     publishHoverRow(null);
+    publishFocusRow(null);
     if (viewportRef.current.zoomWindow) {
       viewportRef.current.zoomWindow = null;
       notifyViewportChange();
@@ -1019,6 +1029,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
+      publishFocusKey();
       if (lastHoverHourRef.current !== null) publishHoverHour(lastHoverHourRef.current);
       const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
         summaryText: rawMeta?.summaryText ?? null,

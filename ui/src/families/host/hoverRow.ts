@@ -1,6 +1,8 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from './adapter.ts';
 import { hoveredSubject, type InstalledRecord } from './installed.ts';
 
+export type TooltipRowSource = 'pointer' | 'focus';
+
 export function rowHoverPublisher(
   adapter: () => FamilyHostAdapter<any, any, any, any>,
   record: () => InstalledRecord | null,
