@@ -1,6 +1,5 @@
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
-import { serializeTiledBySource } from '../sceneTiles.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
@@ -190,12 +189,10 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   deriveAuditRows: model => model.auditRows ?? [],
   buildBinding: ctx => {
     if (!ctx.extent) return null;
-    const tiledBySource = ctx.tiledSeries ? serializeTiledBySource(ctx.tiledSeries) : {};
     const headSourceBySeries = ctx.plan ? headSourcesOf(ctx.plan) : null;
     return {
       extent: ctx.extent,
       ...(ctx.viewport.zoomWindow ? { zoom: zoomOf(ctx.viewport.zoomWindow) } : {}),
-      tiledBySource,
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
       ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
     };

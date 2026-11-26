@@ -73,6 +73,10 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(statics.staticsSupplied, statics.rounds, 'each new panel set is one statics supply');
     assert.equal(statics.commits, statics.rounds, 'and costs one React commit, the one that passed the panels');
 
+    const tiles = await act<{ rounds: number; binds: number; tilesSupplied: readonly (string | null)[]; generationKept: boolean }>('testTilesSupplied()');
+    assert.deepEqual([tiles.binds, tiles.generationKept], [0, true], `${tiles.rounds} tile publishes bind nothing and keep the binding generation, so the installed picture is not dimmed and in-flight pictures are not refused (${tiles.binds} binds)`);
+    assert.deepEqual(tiles.tilesSupplied, Array.from({ length: tiles.rounds }, (_, at) => `GER:${at + 1}`), 'each tile publish is one supply carrying the line of that round');
+
     const span = await act<{ hoursAdvanced: number; answers: number; binds: number; mode: string }>('testSpanEndOnly()');
     assert.ok(span.hoursAdvanced > 0 && span.answers >= 5, `playing a followed span read brings new answers (${span.answers} over ${span.hoursAdvanced} hours; ${span.mode})`);
     assert.equal(span.binds, 0, `${span.answers} new answers that only extend the span's end bind nothing (${span.binds} binds)`);

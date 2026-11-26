@@ -1,6 +1,5 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
-import type { TiledLine } from '../../dashboard/tiles/view';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResolution } from '../art/types.ts';
 import type {
@@ -202,7 +201,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly settings: TSettings | undefined;
   readonly sources: Readonly<Record<string, number>>;
   readonly pagedRows?: PagedRows;
-  readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent: readonly [number, number] | null;

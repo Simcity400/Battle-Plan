@@ -38,6 +38,7 @@ import {
   FamilySourceBroker,
   hoverAsks,
   type HeldHover,
+  type HoverAsk,
   readPlanExact,
   stabilizeCanvasDimension,
 } from '../broker.ts';
@@ -99,6 +100,7 @@ import {
 import type { FamilyRowWindow } from './adapter.ts';
 
 const NO_TAGS: readonly string[] = [];
+const NO_SERIES: Readonly<Record<string, ReadonlyMap<string, TiledLine>>> = {};
 const EVERY_COUNTRY: DeclaredCountryFilter = { passing: null, unrecorded: [], bounds: [] };
 const filterCache = new WeakMap<object, Map<string, DeclaredCountryFilter>>();
 
@@ -194,7 +196,6 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly pagedRows: PagedRows | undefined;
   readonly onRowWindow: (window: FamilyRowWindow, hour: number | null) => void;
   readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
-  readonly tiledRevision: number;
   readonly onSeriesViewport: (viewport: TileViewport) => void;
   readonly retryTiles: () => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -694,8 +695,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
   const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
   const displayedSeries = tiledState.key === pixelBinnedKey ? tiledState.series : undefined;
+  const asksRef = useRef<readonly HoverAsk[] | undefined>(undefined);
   const asks = useMemo(
-    () => (active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }) : []),
+    () => (asksRef.current = active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }, asksRef.current) : []),
     [active, plan, hoverHour, displayedSeries],
   );
   const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
@@ -1203,8 +1205,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     staticHeld,
     pagedRows,
     onRowWindow,
-    tiledSeries: currentTiled?.series ?? {},
-    tiledRevision: currentTiled?.revision ?? 0,
+    tiledSeries: currentTiled?.series ?? NO_SERIES,
     onSeriesViewport,
     retryTiles,
     hovers,

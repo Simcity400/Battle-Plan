@@ -131,12 +131,18 @@ test('a top of tiles takes its countries from the ranked reply, keeps them while
   view.setHour(4999);
   await settle();
   assert.equal(ranks.length, 1, 'an hour inside the proof asks nothing');
-  const before = base.asked.length;
+  const before = base.asked.length, germany = view.current!.get('GER');
   view.setHour(6000);
   await settle();
   assert.equal(ranks.length, 2);
   assert.deepEqual([...view.current!.keys()], ['SOV', 'GER']);
   assert.ok(base.asked.slice(before).every(ask => ask.tags.every(tag => tag === 'SOV')), 'a country already held keeps its tiles; only the newcomer is asked');
+  assert.equal(view.current!.get('GER'), germany, 'a country still ranked keeps its line object, so the lane is not sent it again');
+  const shown = view.current, drawn = renders;
+  view.retry();
+  await settle();
+  assert.equal(view.current, shown, 'assembling unchanged tiles keeps the lines');
+  assert.equal(renders, drawn, 'and publishes nothing');
 });
 
 test('a failing top-rank read does not re-ask the same hour when setHour runs again, retries on retry(), and asks a new hour', async () => {
@@ -171,6 +177,32 @@ test('a failing top-rank read does not re-ask the same hour when setHour runs ag
   assert.deepEqual(asked, [100, 200, 200], 'retry() re-asks the failed top-rank hour');
   assert.equal(view.error, null);
   assert.deepEqual([...view.current!.keys()], ['GER']);
+});
+
+test('a top whose lines stay the same still tells the chart when its refusal or failure clears', async () => {
+  const cache = new TileCache();
+  let mode: 'refused' | 'empty' | 'ger' | 'fail' = 'refused';
+  const base = lane([], LAST);
+  const top: TileLane = { ...base, top: { ask(binHours, index, hour) {
+    if (mode === 'fail') return Promise.reject(new Error('not recorded'));
+    const tags = mode === 'ger' ? ['GER'] : [];
+    return Promise.resolve({ ...reply(tags, binHours, index, LAST, value), ranking: { hour, from: hour, until: hour, refused: mode === 'refused' ? 'Not recorded at this hour.' : null } });
+  } } };
+  let changes = 0;
+  const view = new TileView(cache, top, () => { changes++; });
+  view.setView({ from: 0, to: 8759, end: 8759, width: 600 });
+  const at = async (hour: number, next: typeof mode) => { mode = next; const before = changes; view.setHour(hour); await settle(); await settle(); return changes - before; };
+  await at(10, 'refused');
+  assert.equal(view.top?.refused, 'Not recorded at this hour.');
+  assert.ok(await at(20, 'empty') > 0, 'an empty ranking after a refused one is told, though both draw no line');
+  assert.equal(view.top?.refused, null);
+  await at(30, 'ger');
+  const germany = view.current!.get('GER');
+  assert.ok(await at(40, 'fail') > 0);
+  assert.ok(view.error instanceof Error);
+  assert.ok(await at(50, 'ger') > 0, 'a ranking after a failure is told, though its line is the one already held');
+  assert.equal(view.error, null);
+  assert.equal(view.current!.get('GER'), germany);
 });
 
 test('an immutable tile is never asked twice, the last tile is asked again only when the history grows past it', async () => {

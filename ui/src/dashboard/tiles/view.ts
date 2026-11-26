@@ -77,6 +77,8 @@ const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.imm
 export class TileView {
   private wanted: Wanted | null = null;
   private lines: ReadonlyMap<string, TiledLine> | null = null;
+  private told: { readonly failure: unknown; readonly refused: string | null } = { failure: null, refused: null };
+  private readonly made = new WeakMap<TiledLine, { readonly head: string; readonly tiles: readonly Tile[]; readonly from: number; readonly to: number; readonly width: number; readonly cell: number | null }>();
   private assembled: Assembled | null = null;
   private failure: unknown = null;
   private closed = false;
@@ -129,7 +131,10 @@ export class TileView {
       if (!ranking || !Array.isArray(reply.lines)) throw new Error('The chart tile reply names no top.');
       const tags = reply.lines.map(held => countryKey(held.country));
       const tiles = tilesOf(reply, tags, binHours, index, tag => tileKey(this.lane, tag, binHours, index));
-      for (const tile of tiles) this.cache.put(Object.assign(tile, { askedFor: this.lane.lastHour }));
+      for (const tile of tiles) {
+        const held = this.cache.has(tile.key) ? this.cache.get(tile.key) : undefined;
+        if (!held || !fresh(held, this.lane.lastHour)) this.cache.put(Object.assign(tile, { askedFor: this.lane.lastHour }));
+      }
       this.ranked = { tags, hour: ranking.hour, from: ranking.from, until: ranking.until, refused: ranking.refused };
       this.repin();
       this.fetch();
@@ -141,7 +146,7 @@ export class TileView {
       this.rankPending = false;
       this.rankFailedHour = hour;
       this.failure = error;
-      this.changed();
+      this.notify();
     });
   }
 
@@ -227,7 +232,7 @@ export class TileView {
     void flight.then(() => this.assemble(), error => {
       if (this.closed) return;
       this.failure = error;
-      this.changed();
+      this.notify();
     }).finally(() => {
       for (const key of keys) if (this.cache.inflight.get(key) === flight) { this.cache.inflight.delete(key); this.cache.joins.delete(key); }
     });
@@ -247,13 +252,29 @@ export class TileView {
       }
       tiles.push(own);
     }
-    const span = TILE_BINS * wanted.binHours;
+    const span = TILE_BINS * wanted.binHours, from = wanted.first * span, to = (wanted.last + 1) * span - 1, cell = this.lane.marks === true ? wanted.cell : null;
+    const previous = this.lines ? [...this.lines.keys()] : [];
     const lines = new Map<string, TiledLine>();
-    this.tags.forEach((tag, at) => lines.set(tag, line(tag, tileHead(this.lane.key, tag), tiles[at], wanted.first * span, (wanted.last + 1) * span - 1,
-      wanted.width, this.lane.marks === true ? wanted.cell : null)));
-    this.lines = lines;
+    let same = this.lines !== null && previous.length === this.tags.length;
+    this.tags.forEach((tag, at) => {
+      const head = tileHead(this.lane.key, tag), held = this.lines?.get(tag);
+      const made = held ? this.made.get(held) : undefined;
+      const kept = made && made.head === head && made.from === from && made.to === to && made.width === wanted.width && made.cell === cell
+        && made.tiles.length === tiles[at].length && made.tiles.every((tile, index) => tile === tiles[at][index]) ? held! : null;
+      if (!kept || previous[at] !== tag) same = false;
+      const built = kept ?? line(tag, head, tiles[at], from, to, wanted.width, cell);
+      if (!kept) this.made.set(built, { head, tiles: tiles[at], from, to, width: wanted.width, cell });
+      lines.set(tag, built);
+    });
     this.assembled = { binHours: wanted.binHours, first: wanted.first, last: wanted.last, width: wanted.width, cell: wanted.cell };
     this.failure = null;
+    if (same && this.told.failure === null && this.told.refused === (this.ranked?.refused ?? null)) return;
+    if (!same) this.lines = lines;
+    this.notify();
+  }
+
+  private notify(): void {
+    this.told = { failure: this.failure, refused: this.ranked?.refused ?? null };
     this.changed();
   }
 }
