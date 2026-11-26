@@ -7,7 +7,7 @@ import { marketLedgerProjection } from './marketLedgerProjection.ts';
 
 const events: MarketContractEvent[] = [
   { key: '3', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
-  { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
+  { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Brasswick Rifle Set', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
 ];
 
 const reply = (listed: boolean): MarketLedgerTailReply => ({
@@ -33,7 +33,7 @@ const reply = (listed: boolean): MarketLedgerTailReply => ({
     sellerNotRecorded: false,
     buyer: 'FRA',
     buyerNotRecorded: false,
-    items: [{ variant: '6', name: 'Infantry Equipment I', nameMissing: null, icon: null, deliveredRaw: '25000000', contractedRaw: '50000000', deliveryUnavailable: null }],
+    items: [{ variant: '6', name: 'Brasswick Rifle Set', nameMissing: null, icon: null, deliveredRaw: '25000000', contractedRaw: '50000000', deliveryUnavailable: null }],
     deliveryMissing: null,
     paidRaw: '4800000',
     paidMissing: null,
