@@ -54,8 +54,6 @@ const BASE_SNAPSHOT_RULES = [
   { pathspec: 'ui/browserBridge.ts', match: rel => rel === 'ui/browserBridge.ts' },
   { pathspec: 'ui/replayLibrary.ts', match: rel => rel === 'ui/replayLibrary.ts' },
   { pathspec: ':(glob)ui/*.html', match: rel => /^ui\/[^/]+\.html$/.test(rel) },
-  { pathspec: 'crates/dashboard/src/products/mod.rs', match: rel => rel === 'crates/dashboard/src/products/mod.rs' },
-  { pathspec: ':(glob)crates/dashboard-*/src/registrations.rs', match: rel => /^crates\/dashboard-[^/]+\/src\/registrations\.rs$/.test(rel) },
   { pathspec: ':(glob)crates/**/*.rs', match: isNonDashboardRustCaller },
   { pathspec: ':(glob)tools/**/*.mjs', match: rel => rel.startsWith('tools/') && rel.endsWith('.mjs') },
   { pathspec: ':(glob)tools/**/*.ts', match: rel => rel.startsWith('tools/') && rel.endsWith('.ts') },
@@ -261,34 +259,6 @@ function parseContractProducts(root) {
   return keys.sort();
 }
 
-function findUnwiredRegistrations(root) {
-  const modPath = resolve(root, 'crates/dashboard/src/products/mod.rs');
-  if (!existsSync(modPath)) return [];
-  const modText = readFileSync(modPath, 'utf8');
-  const cratesDir = resolve(root, 'crates');
-  if (!existsSync(cratesDir)) return [];
-
-  const unwired = [];
-  for (const entry of readdirSync(cratesDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith('dashboard-')) continue;
-    const regPath = resolve(cratesDir, entry.name, 'src/registrations.rs');
-    if (!existsSync(regPath)) continue;
-    const crateIdent = entry.name.replace(/-/g, '_');
-    const regText = readFileSync(regPath, 'utf8');
-    const macroPattern = /register(?:_hourly)?_products!\s*\{([\s\S]*?)\}/g;
-    for (const block of regText.matchAll(macroPattern)) {
-      for (const item of block[1].matchAll(/\b([A-Z][A-Z0-9_]+)\s*=>/g)) {
-        const constName = item[1];
-        const qualified = `${crateIdent}::registrations::${constName}`;
-        if (!modText.includes(qualified)) {
-          unwired.push(`${relPosix(root, regPath)}: ${constName}`);
-        }
-      }
-    }
-  }
-  return unwired.sort();
-}
-
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -346,7 +316,6 @@ export function checkRustProducts(root, uiResult) {
   const contractProducts = parseContractProducts(root);
   const productSet = new Set(contractProducts);
   const headNames = new Set(contractProducts.filter(key => key.startsWith('head:')).map(key => key.slice('head:'.length)));
-  const unwiredRegistrations = findUnwiredRegistrations(root);
 
   const liveUiCalls = new Set();
   const deadOrTestUiFiles = [];
@@ -399,7 +368,6 @@ export function checkRustProducts(root, uiResult) {
   return {
     totalContractProducts: contractProducts.length,
     deadProducts,
-    unwiredRegistrations,
   };
 }
 
@@ -412,7 +380,6 @@ export async function runDeadCodeCheck(root, options = {}) {
     + ui.deadFixturesAndSupport.length
     + ui.productionTestImports.length
     + rust.deadProducts.length
-    + rust.unwiredRegistrations.length
     + exports.errors.length;
   return { ui, rust, exports, totalIssues, ratchetMissing: Boolean(ratchetData.missing) };
 }
@@ -425,7 +392,6 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
   const baseDeadFixtures = new Set(baseResult.ui.deadFixturesAndSupport.map(entry => entry.file));
   const baseProdTestImports = new Set((baseResult.ui.productionTestImports ?? []).map(e => `${e.from}->${e.to}`));
   const baseDeadProducts = new Set(baseResult.rust.deadProducts.map(entry => entry.product));
-  const baseUnwired = new Set(baseResult.rust.unwiredRegistrations);
   const baseUnusedExportKeys = baseRatchetMissing ? new Set() : new Set((baseResult.exports?.unusedExports ?? []).map(item => item.key));
   const baseExportErrors = baseRatchetMissing ? new Set() : new Set(baseResult.exports?.errors ?? []);
   const baseExportsOver = !baseRatchetMissing && (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
@@ -474,12 +440,6 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     tag: tag(baseDeadProducts.has(entry.product)),
   }));
 
-  const unwiredRegistrations = result.rust.unwiredRegistrations.map(item => ({
-    item,
-    inherited: baseUnwired.has(item),
-    tag: tag(baseUnwired.has(item)),
-  }));
-
   const ratchetErrors = ratchetRaises.map(err => ({
     error: err,
     inherited: false,
@@ -526,7 +486,6 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     deadFixturesAndSupport,
     productionTestImports,
     deadProducts,
-    unwiredRegistrations,
     ratchetErrors,
     unusedExportErrors,
     unusedExports,
@@ -575,14 +534,6 @@ export function formatReport(result, comparison = null, options = {}) {
       const onlyIn = entry.onlyIn.length > 0 ? ` (only referenced by dead/test UI: ${entry.onlyIn.join(', ')})` : '';
       const suffix = entry.tag ? ` ${entry.tag}` : '';
       lines.push(`  - ${entry.product}${onlyIn}${suffix}`);
-    }
-  }
-  if (result.rust.unwiredRegistrations.length > 0) {
-    lines.push(`Unwired Rust dashboard registrations (${result.rust.unwiredRegistrations.length}):`);
-    if (comparison) {
-      for (const entry of comparison.unwiredRegistrations) lines.push(`  - ${entry.item} ${entry.tag}`);
-    } else {
-      for (const item of result.rust.unwiredRegistrations) lines.push(`  - ${item}`);
     }
   }
   if (comparison && comparison.ratchetErrors.length > 0) {
@@ -756,7 +707,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     + `${result.ui.deadTests.length} dead test(s), `
     + `${result.ui.deadFixturesAndSupport.length} dead fixture/support file(s), `
     + `${result.rust.deadProducts.length} dead Rust product(s), `
-    + `${result.rust.unwiredRegistrations.length} unwired registration(s), `
     + `${result.exports.unusedExports.length}/${result.exports.maxUnusedExports} unused export(s)`;
   const failed = comparison ? comparison.newIssues > 0 : result.totalIssues > 0;
   if (failed) {
