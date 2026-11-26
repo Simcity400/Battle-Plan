@@ -154,7 +154,7 @@ fn a_ready_raid_keeps_the_preparation_last_read_and_only_raids_in_preparation_ar
     let going = raid(8, 1, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE);
     let source = opened("tail-ready", &recording(&[vec![
         at(10, whole(vec![prep.clone()]), 30),
-        at(11, whole(vec![{ prep.preparation_hours = 2; prep.clone() }]), 30),
+        at(11, whole(vec![{ prep.preparation_hours = 2; prep }]), 30),
         at(12, whole(vec![ready.clone(), going.clone()]), 30),
         at(13, whole(vec![ready, going]), 30),
     ]]));
@@ -190,13 +190,17 @@ fn a_tokens_spelling_is_dated_from_its_first_read_and_follows_a_change_of_text()
 }
 
 #[test]
-fn a_spelling_read_before_an_unread_stretch_of_the_dictionary_keeps_its_first_hour() {
+fn a_spelling_read_before_an_unread_or_truncated_dictionary_keeps_its_first_hour() {
     let prep = raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE);
     let frames = (10..=20)
         .map(|hour| {
             let mut frame = super::frame_at(1, &at(hour, whole(vec![prep.clone()]), 30));
             if (13..=17).contains(&hour) {
                 *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "not read this hour".into() };
+            }
+            if hour >= 18 {
+                *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] =
+                    TableView::Truncated { rows: TableRows::LexicalTokens(vec![replay_data::rows::LexicalTokenRow { token: 41, literal: b"dam_raid".to_vec() }]), missing: 1 };
             }
             frame
         })

@@ -668,7 +668,7 @@ fn dated_spellings(
 ) -> io::Result<HashMap<u128, Vec<(i32, String)>>> {
     let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::LexicalTokens, from, to))?;
     let mut spans: Vec<(i32, i32)> = Vec::new();
-    for status in statuses.iter().filter(|status| replay_recording::columnar_frames::available(status.status)) {
+    for status in statuses.iter().filter(|status| replay_recording::columnar_frames::complete(status.status)) {
         match spans.last_mut() {
             Some(span) if span.1 + 1 >= status.first => span.1 = span.1.max(status.last),
             _ => spans.push((status.first, status.last)),
