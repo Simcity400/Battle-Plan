@@ -957,7 +957,7 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
             vec![
                 NukeRow { country: 9001, nuke_type: 0, amount_raw: 0, ready: 0 },
                 NukeRow { country: 9002, nuke_type: 0, amount_raw: 0, ready: 0 },
-                NukeRow { country: 9003, nuke_type: 0, amount_raw: 200_000_000, ready: 0 },
+                NukeRow { country: 9003, nuke_type: 0, amount_raw: if hour < 125 { 200_000_000 } else { -100_000_000 }, ready: 0 },
             ]
         };
         frame.table(TableId::Nukes, Input::Snapshot { rows: &nukes, partial: None, read: true, sample: Sample::FromReadBit })?;
@@ -990,6 +990,9 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     assert_eq!(tiles_top.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), vec!["USA"], "lines and race agree on positive-only top");
     let tiles_empty = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 121 / BINS as i64, "top": 5, "hour": 121 })).unwrap();
     assert!(tiles_empty.lines.is_empty() && tiles_empty.ranking.unwrap().refused.is_none(), "all-zero count top yields an empty unproven-free tile reply");
+    assert_eq!(nukes.rank_at(125, 1, false).unwrap(), Ok(vec![Country::from("USA")]), "only zero is dropped: a negative count is ranked");
+    let summary_top: Vec<String> = nukes.ranked(120, 125, 1, 1).unwrap().into_iter().map(|line| line.tag).collect();
+    assert_eq!(summary_top, vec!["USA".to_owned()], "a bin whose stored top holds only dropped zeros is ranked exactly, never drawn short");
 
     let chosen: ranked::SeriesRankReply = serde_json::from_value(
         answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "countries": ["USA", "ABK"], "hour": 124 }))

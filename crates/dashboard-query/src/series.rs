@@ -670,17 +670,17 @@ impl<'q, 'a> Line<'q, 'a> {
                 continue;
             }
             held.insert(key);
+            let read = self.source.read(&view, slot);
+            if matches!(read, Computed::NotApplicable(_)) || (drop_zero && matches!(read, Computed::Value(0))) {
+                continue;
+            }
             let country = match (tag_of(key), self.unnamed_slot(key)) {
                 (Some(tag), _) => Country::from(tag),
                 (None, Some(slot)) => Country::Slot(slot),
                 (None, None) => return Ok(Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table)))),
             };
-            match self.source.read(&view, slot) {
-                Computed::Value(value) => {
-                    if !drop_zero || value > 0 {
-                        values.push((value, country));
-                    }
-                }
+            match read {
+                Computed::Value(value) => values.push((value, country)),
                 Computed::NotApplicable(_) => {}
                 Computed::Unrecorded => return Ok(Err(self.query.holders.say(&country, hour, |name| board::measure_unrecorded(name, self.measure.name)))),
             }
@@ -843,12 +843,17 @@ impl<'q, 'a> Line<'q, 'a> {
                 if slot >= bins {
                     continue;
                 }
-                let drawn: Vec<(&str, ChartBucket, Vec<(i32, i32)>)> = match (bin == 0 && edges.0) || (bin + 1 == count && edges.1) {
+                let truncated = members.len() > n;
+                let eligible: Vec<(&str, replay_lanes::lanes::Bin)> = members
+                    .into_iter()
+                    .filter(|(_, value)| !self.measure.drops_zeros_in_top() || value.last != 0)
+                    .filter_map(|(key, value)| Some((tag_of(key, hi as i32)?, value)))
+                    .collect();
+                let unproven = truncated && eligible.len() < n;
+                let drawn: Vec<(&str, ChartBucket, Vec<(i32, i32)>)> = match (bin == 0 && edges.0) || (bin + 1 == count && edges.1) || unproven {
                     true => self.exact_top(stretch.run, (lo as i32, hi as i32), level, stretch_bins, n, &holders)?,
-                    false => members
+                    false => eligible
                         .into_iter()
-                        .filter(|(_, value)| !self.measure.drops_zeros_in_top() || value.last > 0)
-                        .filter_map(|(key, value)| Some((tag_of(key, hi as i32)?, value)))
                         .take(n)
                         .map(|(tag, value)| {
                             let at_hour = |bucket: i32| (i64::from(bucket) * six).clamp(lo, hi) as i32;
@@ -1775,7 +1780,7 @@ impl<'q, 'a> Line<'q, 'a> {
             .filter_map(|slot| {
                 let key = view.key(slot)?;
                 let value = self.source.value(&view, slot)?;
-                if drop_zero && value <= 0 {
+                if drop_zero && value == 0 {
                     return None;
                 }
                 Some((value, key, tag_of(key, last)?))
